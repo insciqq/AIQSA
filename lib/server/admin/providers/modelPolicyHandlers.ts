@@ -1,6 +1,10 @@
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {
+  MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  MCP_RUN_PLAN_LIMITS
+} from "../../../contracts/mcp";
+import {
   AdminModelPolicyServiceError,
   type createAdminModelPolicyService
 } from "./modelPolicyService";
@@ -64,14 +68,26 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
         return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
       }
       try {
-        if ("maxToolCalls" in value || "maxToolRounds" in value) {
-          if (!Number.isSafeInteger(value.maxToolCalls) || Number(value.maxToolCalls) < 1 ||
+        if ("maxToolCalls" in value || "maxToolRounds" in value ||
+          "maxMcpToolsPerDiscovery" in value ||
+          "mcpAutoDiscoveryTimeoutSeconds" in value) {
+          if (!Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
+            Number(value.mcpAutoDiscoveryTimeoutSeconds) <
+              MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
+            Number(value.mcpAutoDiscoveryTimeoutSeconds) >
+              MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
+            !Number.isSafeInteger(value.maxMcpToolsPerDiscovery) ||
+            Number(value.maxMcpToolsPerDiscovery) < 1 ||
+            Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
+            !Number.isSafeInteger(value.maxToolCalls) || Number(value.maxToolCalls) < 1 ||
             !Number.isSafeInteger(value.maxToolRounds) || Number(value.maxToolRounds) < 1 ||
             "providerModelId" in value) {
             return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
           }
           await input.service.updateToolBudgets({
             expectedVersion: Number(value.expectedVersion),
+            mcpAutoDiscoveryTimeoutSeconds: Number(value.mcpAutoDiscoveryTimeoutSeconds),
+            maxMcpToolsPerDiscovery: Number(value.maxMcpToolsPerDiscovery),
             maxToolCalls: Number(value.maxToolCalls),
             maxToolRounds: Number(value.maxToolRounds),
             userId: auth.session.userId

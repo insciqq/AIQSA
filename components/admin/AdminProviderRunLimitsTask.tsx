@@ -12,6 +12,10 @@ import {
 } from "@/components/admin/adminPrimitives";
 import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
+import {
+  MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  MCP_RUN_PLAN_LIMITS
+} from "@/lib/contracts/mcp";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -29,6 +33,8 @@ export function AdminProviderRunLimitsTask({
   onMutationCommitted?(): void | Promise<unknown>;
 }>) {
   const [catalog, setCatalog] = useState<AdminModelPolicyCatalog | null>(null);
+  const [mcpAutoDiscoveryTimeoutSeconds, setMcpAutoDiscoveryTimeoutSeconds] = useState("");
+  const [maxMcpToolsPerDiscovery, setMaxMcpToolsPerDiscovery] = useState("");
   const [maxToolCalls, setMaxToolCalls] = useState("");
   const [maxToolRounds, setMaxToolRounds] = useState("");
   const [loading, setLoading] = useState(false);
@@ -39,6 +45,10 @@ export function AdminProviderRunLimitsTask({
 
   const apply = useCallback((next: AdminModelPolicyCatalog) => {
     setCatalog(next);
+    setMcpAutoDiscoveryTimeoutSeconds(String(
+      next.policy.mcpAutoDiscoveryTimeoutSeconds
+    ));
+    setMaxMcpToolsPerDiscovery(String(next.policy.maxMcpToolsPerDiscovery));
     setMaxToolCalls(String(next.policy.maxToolCalls));
     setMaxToolRounds(String(next.policy.maxToolRounds));
   }, []);
@@ -74,7 +84,12 @@ export function AdminProviderRunLimitsTask({
 
   const parsedCalls = positiveSafeInteger(maxToolCalls);
   const parsedRounds = positiveSafeInteger(maxToolRounds);
+  const parsedDiscoveryTimeout = positiveSafeInteger(mcpAutoDiscoveryTimeoutSeconds);
+  const parsedDiscoveryTools = positiveSafeInteger(maxMcpToolsPerDiscovery);
   const dirty = Boolean(catalog) && (
+    mcpAutoDiscoveryTimeoutSeconds !==
+      String(catalog?.policy.mcpAutoDiscoveryTimeoutSeconds) ||
+    maxMcpToolsPerDiscovery !== String(catalog?.policy.maxMcpToolsPerDiscovery) ||
     maxToolCalls !== String(catalog?.policy.maxToolCalls) ||
     maxToolRounds !== String(catalog?.policy.maxToolRounds)
   );
@@ -88,12 +103,18 @@ export function AdminProviderRunLimitsTask({
   });
 
   const save = async () => {
-    if (!catalog || busy || parsedCalls === null || parsedRounds === null) return;
+    if (!catalog || busy || parsedCalls === null || parsedRounds === null ||
+      parsedDiscoveryTimeout === null ||
+      parsedDiscoveryTimeout > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
+      parsedDiscoveryTools === null ||
+      parsedDiscoveryTools > MCP_RUN_PLAN_LIMITS.maxTools) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     const result = await updateAdminToolBudgets({
       expectedVersion: catalog.policy.version,
+      mcpAutoDiscoveryTimeoutSeconds: parsedDiscoveryTimeout,
+      maxMcpToolsPerDiscovery: parsedDiscoveryTools,
       maxToolCalls: parsedCalls,
       maxToolRounds: parsedRounds
     });
@@ -133,7 +154,7 @@ export function AdminProviderRunLimitsTask({
         {notice ? <p className="mt-4 rounded-control bg-positive/10 px-3 py-2 text-xs text-positive" role="status">{notice}</p> : null}
 
         {catalog ? (
-          <div className="mt-5 grid max-w-xl gap-4">
+          <div className="mt-5 grid max-w-3xl gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="installation-max-tool-rounds">
                 Maximum tool rounds
@@ -163,14 +184,50 @@ export function AdminProviderRunLimitsTask({
                   value={maxToolCalls}
                 />
               </label>
+              <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="installation-max-mcp-tools-per-discovery">
+                Maximum Auto tools per discovery
+                <input
+                  className={inputClass}
+                  disabled={busy || loading}
+                  id="installation-max-mcp-tools-per-discovery"
+                  inputMode="numeric"
+                  max={MCP_RUN_PLAN_LIMITS.maxTools}
+                  min={1}
+                  onChange={(event) => setMaxMcpToolsPerDiscovery(event.currentTarget.value)}
+                  step={1}
+                  type="number"
+                  value={maxMcpToolsPerDiscovery}
+                />
+              </label>
+              <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="installation-mcp-auto-discovery-timeout-seconds">
+                Auto discovery timeout (seconds)
+                <input
+                  className={inputClass}
+                  disabled={busy || loading}
+                  id="installation-mcp-auto-discovery-timeout-seconds"
+                  inputMode="numeric"
+                  max={MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds}
+                  min={MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds}
+                  onChange={(event) => setMcpAutoDiscoveryTimeoutSeconds(
+                    event.currentTarget.value
+                  )}
+                  step={1}
+                  type="number"
+                  value={mcpAutoDiscoveryTimeoutSeconds}
+                />
+              </label>
             </div>
             <p className="text-xs leading-5 text-ink-muted">
-              There is no product-defined maximum. Values must be positive whole numbers. Each <code>find_tools</code> invocation uses one call, and its tool round counts toward the round limit.
+              Round and call limits have no product-defined maximum. Auto discovery may load up to {MCP_RUN_PLAN_LIMITS.maxTools} tools per <code>find_tools</code> invocation and may wait at most {MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds} seconds across routing attempts. Values must be positive whole numbers; each discovery uses one call and its tool round counts toward the round limit.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className={primaryButton}
-                disabled={busy || !dirty || parsedCalls === null || parsedRounds === null}
+                disabled={busy || !dirty || parsedCalls === null || parsedRounds === null ||
+                  parsedDiscoveryTimeout === null ||
+                  parsedDiscoveryTimeout > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
+                  parsedDiscoveryTools === null ||
+                  parsedDiscoveryTools > MCP_RUN_PLAN_LIMITS.maxTools}
                 onClick={() => void save()}
                 type="button"
               >

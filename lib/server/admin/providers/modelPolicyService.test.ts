@@ -49,6 +49,8 @@ describe("administrator model policy service", () => {
       modelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           defaultProviderModel: unavailableTarget,
+          mcpAutoDiscoveryTimeoutSeconds: 60n,
+          maxMcpToolsPerDiscovery: 10n,
           maxToolCalls: 20n,
           maxToolRounds: 8n,
           updatedAt: NOW,
@@ -83,6 +85,8 @@ describe("administrator model policy service", () => {
           displayName: "Answer model",
           id: "model-old"
         },
+        mcpAutoDiscoveryTimeoutSeconds: 60,
+        maxMcpToolsPerDiscovery: 10,
         maxToolCalls: 20,
         maxToolRounds: 8,
         updatedAt: NOW.toISOString(),
@@ -186,6 +190,8 @@ describe("administrator model policy service", () => {
 
     await createAdminModelPolicyService(prisma).updateToolBudgets({
       expectedVersion: 5,
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
       userId: "admin-1"
@@ -193,6 +199,8 @@ describe("administrator model policy service", () => {
 
     expect(update).toHaveBeenCalledWith({
       data: {
+        mcpAutoDiscoveryTimeoutSeconds: 60n,
+        maxMcpToolsPerDiscovery: 10n,
         maxToolCalls: 200n,
         maxToolRounds: 200n,
         updatedByUserId: "admin-1",

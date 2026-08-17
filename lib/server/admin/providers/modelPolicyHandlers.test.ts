@@ -60,7 +60,13 @@ describe("administrator model policy handlers", () => {
     const accepted = await handlers.PATCH(new Request(
       "http://local.test/api/admin/providers/model-policy",
       {
-        body: JSON.stringify({ expectedVersion: 2, maxToolCalls: 200, maxToolRounds: 200 }),
+        body: JSON.stringify({
+          expectedVersion: 2,
+          mcpAutoDiscoveryTimeoutSeconds: 60,
+          maxMcpToolsPerDiscovery: 10,
+          maxToolCalls: 200,
+          maxToolRounds: 200
+        }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       }
@@ -68,6 +74,8 @@ describe("administrator model policy handlers", () => {
     expect(accepted.status).toBe(200);
     expect(service.updateToolBudgets).toHaveBeenCalledWith({
       expectedVersion: 2,
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
       userId: "user-1"
@@ -76,7 +84,13 @@ describe("administrator model policy handlers", () => {
     const rejected = await handlers.PATCH(new Request(
       "http://local.test/api/admin/providers/model-policy",
       {
-        body: JSON.stringify({ expectedVersion: 2, maxToolCalls: 0, maxToolRounds: 8 }),
+        body: JSON.stringify({
+          expectedVersion: 2,
+          mcpAutoDiscoveryTimeoutSeconds: 60,
+          maxMcpToolsPerDiscovery: 10,
+          maxToolCalls: 0,
+          maxToolRounds: 8
+        }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       }

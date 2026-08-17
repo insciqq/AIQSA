@@ -309,3 +309,9 @@ export const MCP_RUN_PLAN_LIMITS = Object.freeze({
   maxToolSchemaBytes: 512 * 1_024,
   maxTools: 128
 });
+
+export const MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS = Object.freeze({
+  defaultSeconds: 60,
+  maxSeconds: 120,
+  minSeconds: 1
+});

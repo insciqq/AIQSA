@@ -131,6 +131,8 @@ export type NormalizedRunRequest = {
   searchPlan: NormalizedSearchPlan;
   /** Exact installation tool-loop limits frozen when the run is accepted. */
   toolBudgets?: Readonly<{
+    mcpAutoDiscoveryTimeoutSeconds?: number;
+    maxMcpToolsPerDiscovery?: number;
     maxToolCalls: number;
     maxToolRounds: number;
   }>;

@@ -1236,6 +1236,7 @@ describe("Prisma-backed run repository", () => {
           roundIndex: 0,
           runId: created.runId,
           snapshot,
+          toolIds: [namespacedName],
           userId
         });
 
@@ -1261,6 +1262,7 @@ describe("Prisma-backed run repository", () => {
           roundIndex: 0,
           runId: created.runId,
           snapshot,
+          toolIds: [namespacedName],
           userId
         })).resolves.toEqual(appended);
         await expect(prisma.modelRun.findUnique({

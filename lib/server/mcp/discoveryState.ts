@@ -1,4 +1,5 @@
-import { MCP_DISCOVERY_MAX_RESULTS } from "./discovery";
+import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { LEGACY_MCP_DISCOVERY_MAX_RESULTS } from "./discovery";
 import type {
   McpCapabilityCatalog,
   McpCapabilityCatalogServer,
@@ -120,7 +121,8 @@ function catalog(value: unknown): McpCapabilityCatalog | null {
 function epoch(
   value: unknown,
   expectedOrdinal: number,
-  catalogToolIds: ReadonlySet<string>
+  catalogToolIds: ReadonlySet<string>,
+  maxResults: number
 ): McpDiscoveryEpoch | null {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     "epoch",
@@ -131,7 +133,7 @@ function epoch(
   ]) || value.epoch !== expectedOrdinal || !nonBlank(value.goal) || value.goal.length > 400 ||
     !nonBlank(value.modelRunToolCallId) || !Number.isSafeInteger(value.roundIndex) ||
     Number(value.roundIndex) < 0 || !Array.isArray(value.toolIds) ||
-    value.toolIds.length > MCP_DISCOVERY_MAX_RESULTS ||
+    value.toolIds.length > maxResults ||
     value.toolIds.some((toolId) => typeof toolId !== "string" || !catalogToolIds.has(toolId)) ||
     new Set(value.toolIds).size !== value.toolIds.length) {
     return null;
@@ -145,7 +147,12 @@ function epoch(
   };
 }
 
-export function decodeMcpDiscoveryState(value: unknown): McpDiscoveryState | null {
+export function decodeMcpDiscoveryState(
+  value: unknown,
+  maxResults = LEGACY_MCP_DISCOVERY_MAX_RESULTS
+): McpDiscoveryState | null {
+  if (!Number.isSafeInteger(maxResults) || maxResults < 1 ||
+    maxResults > MCP_RUN_PLAN_LIMITS.maxTools) return null;
   if (!isRecord(value) || !hasOnlyKeys(value, ["catalog", "epochs", "version"]) ||
     value.version !== 2 || !Array.isArray(value.epochs)) return null;
   const decodedCatalog = catalog(value.catalog);
@@ -154,7 +161,7 @@ export function decodeMcpDiscoveryState(value: unknown): McpDiscoveryState | nul
     server.tools.map((tool) => tool.namespacedName)
   ));
   const epochs = value.epochs.flatMap((candidate, index) => {
-    const decoded = epoch(candidate, index + 1, catalogToolIds);
+    const decoded = epoch(candidate, index + 1, catalogToolIds, maxResults);
     return decoded ? [decoded] : [];
   });
   if (epochs.length !== value.epochs.length ||

@@ -99,7 +99,7 @@ function harness(activeCatalog: McpCapabilityCatalog = catalog) {
           goal: input.goal,
           modelRunToolCallId: input.modelRunToolCallId,
           roundIndex: input.roundIndex,
-          toolIds: input.snapshot.tools.map((tool) => tool.namespacedName)
+          toolIds: [...input.toolIds]
         }]
       };
     }

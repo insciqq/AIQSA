@@ -6,7 +6,7 @@ import type {
 } from "./runPlan";
 
 export const MCP_FIND_TOOLS_NAME = "find_tools";
-export const MCP_DISCOVERY_MAX_RESULTS = 5;
+export const LEGACY_MCP_DISCOVERY_MAX_RESULTS = 5;
 
 export const mcpFindToolsTool: RunTool = {
   capability: "mcp",

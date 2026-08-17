@@ -31,10 +31,12 @@ import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
   MCP_FIND_TOOLS_NAME,
+  mcpFindToolsArguments,
   mcpFindToolsTool
 } from "../mcp/discovery";
 import {
   executeDurableMcpDiscovery,
+  executeDurableMcpDiscoveryBatch,
   McpAutoDiscoveryUnavailableError
 } from "../mcp/durableDiscovery";
 import type { McpSemanticRouter } from "../mcp/router";
@@ -951,6 +953,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
+        const mcpDiscoveryBatches = new Map<string, Readonly<{
+          calls: readonly Readonly<{
+            call: ModelToolCall;
+            modelRunToolCallId: string;
+          }>[];
+          execute(): Promise<ReadonlyMap<string, ToolExecutionResult>>;
+        }>>();
         let memoryMutationAttempted = false;
         let mcpDiscoveryQueue = Promise.resolve();
         const serializeMcpDiscovery = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -1062,7 +1071,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           bridge: toolBridge,
           budgets: {
             maxConcurrency: 4,
-            ...toolBudgets
+            maxToolCalls: toolBudgets.maxToolCalls,
+            maxToolRounds: toolBudgets.maxToolRounds
           },
           executeTool: async (call, context) => {
               const persisted = persistedCalls.get(call.id);
@@ -1210,7 +1220,14 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     : null;
                 }
                 if (isMcpDiscoveryCall(call.name)) {
-                  result = await serializeMcpDiscovery(async () => {
+                  const batch = mcpDiscoveryBatches.get(call.id);
+                  if (batch) {
+                    const results = await batch.execute();
+                    const coalesced = results.get(call.id);
+                    if (!coalesced) throw new Error("mcp_discovery_checkpoint_conflict");
+                    result = coalesced;
+                  } else {
+                    result = await serializeMcpDiscovery(async () => {
                     const discovery = activeMcpDiscovery;
                     if (!discovery || !materializeMcpTools || !appendMcpDiscoveryEpoch) {
                       throw new Error("mcp_discovery_arguments_invalid");
@@ -1221,6 +1238,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       appendEpoch: appendMcpDiscoveryEpoch,
                       call,
                       materialize: materializeMcpTools,
+                      maxResults: toolBudgets.maxMcpToolsPerDiscovery,
                       modelRunToolCallId: claim.call.id,
                       onUsage(attribution) {
                         rememberReportedUsage(
@@ -1234,6 +1252,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       router: mcpRouter,
                       runId,
                       signal: context.signal,
+                      timeoutMs: toolBudgets.mcpAutoDiscoveryTimeoutSeconds * 1_000,
                       userId: input.userId
                     });
                     activeMcpSnapshot = executed.snapshot;
@@ -1248,7 +1267,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       }
                     }
                     return executed.toolResult;
-                  });
+                    });
+                  }
                 } else if (isKnowledgeCall(call.name)) {
                   result = await knowledgeExecutor!.execute(call, {
                     persistedToolCallId: claim.call.id,
@@ -1432,6 +1452,66 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not persist");
             }
             for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
+            const discoveryCalls = calls.flatMap((candidate) => {
+              const call = modelToolCall(candidate);
+              const persistedCall = persistedCalls.get(call.id);
+              return call.name === MCP_FIND_TOOLS_NAME && persistedCall &&
+                mcpFindToolsArguments(call.arguments)
+                ? [{ call, modelRunToolCallId: persistedCall.id }]
+                : [];
+            });
+            if (discoveryCalls.length > 1) {
+              let execution: Promise<ReadonlyMap<string, ToolExecutionResult>> | null = null;
+              const batch = {
+                calls: discoveryCalls,
+                execute() {
+                  execution ??= serializeMcpDiscovery(async () => {
+                    const discovery = activeMcpDiscovery;
+                    if (!discovery || !materializeMcpTools || !appendMcpDiscoveryEpoch) {
+                      throw new Error("mcp_discovery_arguments_invalid");
+                    }
+                    const executed = await executeDurableMcpDiscoveryBatch({
+                      activeDiscovery: discovery,
+                      ...(activeMcpSnapshot ? { activeSnapshot: activeMcpSnapshot } : {}),
+                      appendEpoch: appendMcpDiscoveryEpoch,
+                      calls: discoveryCalls,
+                      materialize: materializeMcpTools,
+                      maxResults: toolBudgets.maxMcpToolsPerDiscovery,
+                      onUsage(attribution) {
+                        rememberReportedUsage(
+                          attribution.provider,
+                          attribution.modelId,
+                          attribution.usage
+                        );
+                      },
+                      request,
+                      roundIndex: round,
+                      router: mcpRouter,
+                      runId,
+                      signal,
+                      timeoutMs: toolBudgets.mcpAutoDiscoveryTimeoutSeconds * 1_000,
+                      userId: input.userId
+                    });
+                    activeMcpSnapshot = executed.snapshot;
+                    activeMcpDiscovery = executed.discovery;
+                    normalizedRequest.mcp = executed.snapshot;
+                    normalizedRequest.mcpDiscovery = executed.discovery;
+                    const knownToolNames = new Set(tools.map((tool) => tool.name));
+                    for (const tool of mcpRunTools(executed.snapshot)) {
+                      if (!knownToolNames.has(tool.name)) {
+                        tools.push(tool);
+                        knownToolNames.add(tool.name);
+                      }
+                    }
+                    return executed.toolResults;
+                  });
+                  return execution;
+                }
+              } as const;
+              for (const candidate of discoveryCalls) {
+                mcpDiscoveryBatches.set(candidate.call.id, batch);
+              }
+            }
             await tokenBuffer.flush();
             if (hasMcpTools) {
               await emit(
@@ -1468,11 +1548,14 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               );
             }
           },
-          prepareRequest: async (roundRequest) => {
+          prepareRequest: async (roundRequest, round) => {
             const budgeted = applyProviderRequestContextBudget({
               bridge: toolBridge,
               request: {
                 ...roundRequest,
+                ...(activeMcpDiscovery && round === 1
+                  ? { parallelToolCalls: false }
+                  : {}),
                 ...(activeMcpSnapshot ? { mcp: activeMcpSnapshot } : {}),
                 ...(activeMcpDiscovery ? { mcpDiscovery: activeMcpDiscovery } : {})
               }

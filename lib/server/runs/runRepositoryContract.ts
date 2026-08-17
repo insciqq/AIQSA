@@ -371,6 +371,7 @@ export type RunRepository = {
     roundIndex: number;
     runId: string;
     snapshot: McpRunPlanSnapshot;
+    toolIds: readonly string[];
     userId: string;
   }): Promise<Readonly<{
     discovery: McpDiscoveryState;

@@ -8,6 +8,8 @@ describe("administrator model policy contract", () => {
         candidates: [],
         policy: {
           defaultModel: null,
+          mcpAutoDiscoveryTimeoutSeconds: 60,
+          maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 200,
           maxToolRounds: 200,
           updatedAt: "2026-08-17T00:00:00.000Z",
@@ -15,7 +17,12 @@ describe("administrator model policy contract", () => {
           version: 1
         }
       }
-    })?.modelPolicy.policy).toMatchObject({ maxToolCalls: 200, maxToolRounds: 200 });
+    })?.modelPolicy.policy).toMatchObject({
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
+      maxToolCalls: 200,
+      maxToolRounds: 200
+    });
   });
 
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
@@ -26,6 +33,8 @@ describe("administrator model policy contract", () => {
           candidates: [],
           policy: {
             defaultModel: null,
+            mcpAutoDiscoveryTimeoutSeconds: 60,
+            maxMcpToolsPerDiscovery: 10,
             maxToolCalls,
             maxToolRounds: 8,
             updatedAt: "2026-08-17T00:00:00.000Z",

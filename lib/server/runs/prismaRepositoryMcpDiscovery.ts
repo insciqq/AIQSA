@@ -1,6 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  MCP_DISCOVERY_MAX_RESULTS,
   MCP_FIND_TOOLS_NAME,
   mcpFindToolsArguments,
   mergeMcpRunPlanSnapshots
@@ -14,6 +13,7 @@ import type {
 import { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 import type { RunRepository } from "./runRepositoryContract";
 import { json } from "./prismaRepositoryShared";
+import { toolRunBudgetsForRequest } from "./toolBudgets";
 
 type McpDiscoveryOperations = Pick<Required<RunRepository>, "appendMcpDiscoveryEpoch">;
 
@@ -30,7 +30,8 @@ function runPlanSnapshot(value: unknown): McpRunPlanSnapshot | undefined {
 
 function addedSnapshotMatchesCatalog(
   discovery: McpDiscoveryState,
-  snapshot: McpRunPlanSnapshot
+  snapshot: McpRunPlanSnapshot,
+  maxResults: number
 ): boolean {
   const catalogTools = new Map(discovery.catalog.servers.flatMap((server) =>
     server.tools.map((tool) => [tool.namespacedName, {
@@ -42,7 +43,7 @@ function addedSnapshotMatchesCatalog(
   const snapshotServers = new Map(snapshot.servers.map((server) => [server.serverId, server] as const));
   const usedServerIds = new Set(snapshot.tools.map((tool) => tool.serverId));
   if (snapshot.tools.length === 0) return snapshot.servers.length === 0;
-  return snapshot.tools.length <= MCP_DISCOVERY_MAX_RESULTS &&
+  return snapshot.tools.length <= maxResults &&
     snapshotServers.size === snapshot.servers.length &&
     new Set(snapshot.tools.map((tool) => tool.namespacedName)).size === snapshot.tools.length &&
     usedServerIds.size === snapshot.servers.length &&
@@ -76,10 +77,22 @@ export function createPrismaMcpDiscoveryOperations(
       `;
       if (!run || !["queued", "streaming", "in_progress"].includes(run.status) ||
         !isRecord(run.normalizedRequest)) return null;
-      const currentDiscovery = decodeMcpDiscoveryState(run.normalizedRequest.mcpDiscovery);
-      if (!currentDiscovery || !addedSnapshotMatchesCatalog(currentDiscovery, input.snapshot)) {
+      const maxResults = toolRunBudgetsForRequest(run.normalizedRequest)
+        .maxMcpToolsPerDiscovery;
+      const currentDiscovery = decodeMcpDiscoveryState(
+        run.normalizedRequest.mcpDiscovery,
+        maxResults
+      );
+      if (!currentDiscovery ||
+        !addedSnapshotMatchesCatalog(currentDiscovery, input.snapshot, maxResults)) {
         return null;
       }
+      const catalogToolIds = new Set(currentDiscovery.catalog.servers.flatMap((server) =>
+        server.tools.map((tool) => tool.namespacedName)
+      ));
+      if (input.toolIds.length > maxResults ||
+        new Set(input.toolIds).size !== input.toolIds.length ||
+        input.toolIds.some((toolId) => !catalogToolIds.has(toolId))) return null;
       const persistedCall = await tx.modelRunToolCall.findFirst({
         select: { arguments: true, roundIndex: true, toolName: true },
         where: { id: input.modelRunToolCallId, modelRunId: input.runId }
@@ -116,6 +129,12 @@ export function createPrismaMcpDiscoveryOperations(
       } catch {
         return null;
       }
+      const addedToolIds = input.snapshot.tools.map((tool) => tool.namespacedName);
+      const mergedToolIds = new Set(merged.tools.map((tool) => tool.namespacedName));
+      if ((addedToolIds.length > 0 && (
+        addedToolIds.length !== input.toolIds.length ||
+        addedToolIds.some((toolId) => !input.toolIds.includes(toolId))
+      )) || input.toolIds.some((toolId) => !mergedToolIds.has(toolId))) return null;
       const existingFingerprints = new Set((await tx.mcpRunBinding.findMany({
         select: { runtimeGenerationFingerprint: true },
         where: { modelRunId: input.runId }
@@ -137,7 +156,7 @@ export function createPrismaMcpDiscoveryOperations(
             goal: input.goal,
             modelRunToolCallId: input.modelRunToolCallId,
             roundIndex: input.roundIndex,
-            toolIds: input.snapshot.tools.map((tool) => tool.namespacedName)
+            toolIds: [...input.toolIds]
           }
         ]
       };
