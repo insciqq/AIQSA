@@ -18,11 +18,13 @@ import { validateRunAccess } from "../auth/entitlements";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
   MCP_FIND_TOOLS_NAME,
+  mcpFindToolsArguments,
   mcpFindToolsTool
 } from "../mcp/discovery";
 import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
 import {
   executeDurableMcpDiscovery,
+  executeDurableMcpDiscoveryBatch,
   McpAutoDiscoveryUnavailableError
 } from "../mcp/durableDiscovery";
 import type { McpSemanticRouter } from "../mcp/router";
@@ -523,6 +525,9 @@ type RecoveryToolContext = {
   activeMcpDiscovery: McpDiscoveryState | undefined;
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
   deps: RunRecoveryDeps;
+  mcpDiscoveryBatches: Map<string, Readonly<{
+    execute(signal: AbortSignal): Promise<ReadonlyMap<string, ToolExecutionResult>>;
+  }>>;
   mcpDiscoveryQueue: Promise<void>;
   persistedUsageRecordedAt: number | null;
   providerRequest: ProviderRunRequest;
@@ -679,6 +684,13 @@ async function executeRecoveredMcpDiscovery(
   context: RecoveryToolContext,
   signal: AbortSignal
 ): Promise<ToolExecutionResult> {
+  const batch = context.mcpDiscoveryBatches.get(call.id);
+  if (batch) {
+    const results = await batch.execute(signal);
+    const coalesced = results.get(call.id);
+    if (!coalesced) throw new Error("mcp_discovery_checkpoint_conflict");
+    return coalesced;
+  }
   const operation = async (): Promise<ToolExecutionResult> => {
     const discovery = context.activeMcpDiscovery;
     const materialize = context.deps.mcp?.materialize;
@@ -695,6 +707,8 @@ async function executeRecoveredMcpDiscovery(
       appendEpoch,
       call,
       materialize,
+      maxResults: toolRunBudgetsForRequest(context.run.normalizedRequest)
+        .maxMcpToolsPerDiscovery,
       modelRunToolCallId: persisted.id,
       onUsage(attribution) {
         context.usageAttributions.push(attribution);
@@ -704,6 +718,8 @@ async function executeRecoveredMcpDiscovery(
       router,
       runId: context.run.id,
       signal,
+      timeoutMs: toolRunBudgetsForRequest(context.run.normalizedRequest)
+        .mcpAutoDiscoveryTimeoutSeconds * 1_000,
       userId: context.run.userId
     });
     context.activeMcpSnapshot = executed.snapshot;
@@ -720,6 +736,76 @@ async function executeRecoveredMcpDiscovery(
   const result = context.mcpDiscoveryQueue.then(operation, operation);
   context.mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
   return result;
+}
+
+function registerRecoveredMcpDiscoveryBatch(
+  calls: readonly PersistedToolLoopCall[],
+  context: RecoveryToolContext
+): void {
+  const discoveryCalls = [...calls]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .flatMap((persisted) => {
+      const call = modelToolCall(persisted);
+      return call.name === MCP_FIND_TOOLS_NAME && mcpFindToolsArguments(call.arguments)
+        ? [{ call, modelRunToolCallId: persisted.id }]
+        : [];
+    });
+  if (discoveryCalls.length < 2) return;
+
+  let execution: Promise<ReadonlyMap<string, ToolExecutionResult>> | null = null;
+  const batch = {
+    execute(signal: AbortSignal) {
+      execution ??= (() => {
+        const operation = async (): Promise<ReadonlyMap<string, ToolExecutionResult>> => {
+          const discovery = context.activeMcpDiscovery;
+          const materialize = context.deps.mcp?.materialize;
+          const router = context.deps.mcp?.router;
+          const appendEpoch = context.deps.repository.appendMcpDiscoveryEpoch;
+          if (!discovery || !materialize || !appendEpoch) {
+            throw new Error("mcp_discovery_arguments_invalid");
+          }
+          const budgets = toolRunBudgetsForRequest(context.run.normalizedRequest);
+          const executed = await executeDurableMcpDiscoveryBatch({
+            activeDiscovery: discovery,
+            ...(context.activeMcpSnapshot
+              ? { activeSnapshot: context.activeMcpSnapshot }
+              : {}),
+            appendEpoch,
+            calls: discoveryCalls,
+            materialize,
+            maxResults: budgets.maxMcpToolsPerDiscovery,
+            onUsage(attribution) {
+              context.usageAttributions.push(attribution);
+            },
+            request: context.providerRequest,
+            roundIndex: calls[0]!.roundIndex,
+            router,
+            runId: context.run.id,
+            signal,
+            timeoutMs: budgets.mcpAutoDiscoveryTimeoutSeconds * 1_000,
+            userId: context.run.userId
+          });
+          context.activeMcpSnapshot = executed.snapshot;
+          context.activeMcpDiscovery = executed.discovery;
+          const knownToolNames = new Set(context.tools.map((tool) => tool.name));
+          for (const tool of mcpRunTools(executed.snapshot)) {
+            if (!knownToolNames.has(tool.name)) {
+              context.tools.push(tool);
+              knownToolNames.add(tool.name);
+            }
+          }
+          return executed.toolResults;
+        };
+        const result = context.mcpDiscoveryQueue.then(operation, operation);
+        context.mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
+        return result;
+      })();
+      return execution;
+    }
+  } as const;
+  for (const candidate of discoveryCalls) {
+    context.mcpDiscoveryBatches.set(candidate.call.id, batch);
+  }
 }
 
 async function executePersistedToolCall(
@@ -998,6 +1084,7 @@ async function executePersistedToolBatch(
   if (ordered.some((call) => call.state === "cancelled")) {
     throw new ToolLoopRecoveryStopped();
   }
+  registerRecoveredMcpDiscoveryBatch(ordered, context);
 
   const results = new Array<ToolLoopSettledCall<ToolExecutionResult> | undefined>(ordered.length);
   let cursor = 0;
@@ -1200,9 +1287,10 @@ async function recoverCheckpointedToolLoop(
       ? deps.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
       : null;
     const rawMcpDiscovery = run.normalizedRequest.mcpDiscovery;
+    const toolBudgets = toolRunBudgetsForRequest(run.normalizedRequest);
     const decodedMcpDiscovery = rawMcpDiscovery === undefined
       ? undefined
-      : decodeMcpDiscoveryState(rawMcpDiscovery);
+      : decodeMcpDiscoveryState(rawMcpDiscovery, toolBudgets.maxMcpToolsPerDiscovery);
     if (rawMcpDiscovery !== undefined && !decodedMcpDiscovery) {
       throw new ToolLoopRecoveryError(
         "mcp_discovery_state_invalid",
@@ -1249,6 +1337,7 @@ async function recoverCheckpointedToolLoop(
       activeMcpDiscovery,
       activeMcpSnapshot: run.normalizedRequest.mcp,
       deps,
+      mcpDiscoveryBatches: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
       persistedUsageRecordedAt,
       providerRequest,
@@ -1522,6 +1611,7 @@ async function recoverCheckpointedToolLoop(
         );
       }
       for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
+      registerRecoveredMcpDiscoveryBatch(persisted.calls, context);
       return persisted.calls;
     }
 
@@ -1714,7 +1804,8 @@ async function recoverCheckpointedToolLoop(
       bridge,
       budgets: {
         maxConcurrency: 4,
-        ...toolRunBudgetsForRequest(run.normalizedRequest)
+        maxToolCalls: toolBudgets.maxToolCalls,
+        maxToolRounds: toolBudgets.maxToolRounds
       },
       executeTool: async (call, executionContext) => {
         const persisted = persistedCalls.get(call.id);
@@ -1794,11 +1885,14 @@ async function recoverCheckpointedToolLoop(
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
         await persistToolBatch(calls, nextContinuation, round);
       },
-      prepareRequest: async (roundRequest) => {
+      prepareRequest: async (roundRequest, round) => {
         const budgeted = applyProviderRequestContextBudget({
           bridge,
           request: {
             ...roundRequest,
+            ...(context.activeMcpDiscovery && round === 1
+              ? { parallelToolCalls: false }
+              : {}),
             ...(context.activeMcpSnapshot ? { mcp: context.activeMcpSnapshot } : {}),
             ...(context.activeMcpDiscovery
               ? { mcpDiscovery: context.activeMcpDiscovery }

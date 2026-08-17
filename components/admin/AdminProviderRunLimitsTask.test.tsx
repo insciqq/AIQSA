@@ -6,6 +6,8 @@ const catalog = {
   candidates: [],
   policy: {
     defaultModel: null,
+    mcpAutoDiscoveryTimeoutSeconds: 60,
+    maxMcpToolsPerDiscovery: 10,
     maxToolCalls: 20,
     maxToolRounds: 8,
     updatedAt: "2026-08-17T00:00:00.000Z",
@@ -41,6 +43,8 @@ describe("administrator tool limits task", () => {
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
       expectedVersion: 3,
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200
     });

@@ -51,6 +51,8 @@ export function updateAdminModelPolicy(input: Readonly<{
 
 export function updateAdminToolBudgets(input: Readonly<{
   expectedVersion: number;
+  mcpAutoDiscoveryTimeoutSeconds: number;
+  maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
 }>, fetcher: Fetcher = fetch) {

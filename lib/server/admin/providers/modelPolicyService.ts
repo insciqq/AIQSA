@@ -113,6 +113,8 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
                 )
               }
             : null,
+          mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
+          maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
           maxToolCalls: Number(policy.maxToolCalls),
           maxToolRounds: Number(policy.maxToolRounds),
           updatedAt: policy.updatedAt.toISOString(),
@@ -187,6 +189,8 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
 
     async updateToolBudgets(input: Readonly<{
       expectedVersion: number;
+      mcpAutoDiscoveryTimeoutSeconds: number;
+      maxMcpToolsPerDiscovery: number;
       maxToolCalls: number;
       maxToolRounds: number;
       userId: string;
@@ -206,6 +210,8 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
 
           await tx.modelPolicy.update({
             data: {
+              mcpAutoDiscoveryTimeoutSeconds: BigInt(input.mcpAutoDiscoveryTimeoutSeconds),
+              maxMcpToolsPerDiscovery: BigInt(input.maxMcpToolsPerDiscovery),
               maxToolCalls: BigInt(input.maxToolCalls),
               maxToolRounds: BigInt(input.maxToolRounds),
               updatedByUserId: input.userId,

@@ -1,3 +1,8 @@
+import {
+  MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  MCP_RUN_PLAN_LIMITS
+} from "./mcp";
+
 export type AdminModelDefaultCandidate = {
   connectionDisplayName: string;
   connectionId: string;
@@ -9,6 +14,8 @@ export type AdminModelPolicyCatalog = {
   candidates: AdminModelDefaultCandidate[];
   policy: {
     defaultModel: (AdminModelDefaultCandidate & { available: boolean }) | null;
+    mcpAutoDiscoveryTimeoutSeconds: number;
+    maxMcpToolsPerDiscovery: number;
     maxToolCalls: number;
     maxToolRounds: number;
     updatedAt: string;
@@ -50,6 +57,14 @@ export function decodeAdminModelPolicyResponse(
       typeof (defaultModel as Record<string, unknown>).available !== "boolean")) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
+    !Number.isSafeInteger(policy.mcpAutoDiscoveryTimeoutSeconds) ||
+    Number(policy.mcpAutoDiscoveryTimeoutSeconds) <
+      MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
+    Number(policy.mcpAutoDiscoveryTimeoutSeconds) >
+      MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
+    !Number.isSafeInteger(policy.maxMcpToolsPerDiscovery) ||
+    Number(policy.maxMcpToolsPerDiscovery) < 1 ||
+    Number(policy.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
     !Number.isSafeInteger(policy.maxToolCalls) || Number(policy.maxToolCalls) < 1 ||
     !Number.isSafeInteger(policy.maxToolRounds) || Number(policy.maxToolRounds) < 1 ||
     typeof policy.updatedAt !== "string" || !Number.isFinite(Date.parse(policy.updatedAt)) ||
@@ -61,6 +76,8 @@ export function decodeAdminModelPolicyResponse(
       candidates: catalog.candidates,
       policy: {
         defaultModel: defaultModel as (AdminModelDefaultCandidate & { available: boolean }) | null,
+        mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
+        maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
         maxToolCalls: Number(policy.maxToolCalls),
         maxToolRounds: Number(policy.maxToolRounds),
         updatedAt: policy.updatedAt,

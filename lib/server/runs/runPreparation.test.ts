@@ -946,7 +946,12 @@ describe("run preparation", () => {
 
   it("freezes the installation tool budgets into the accepted request", async () => {
     const harness = createHarness();
-    const load = vi.fn().mockResolvedValue({ maxToolCalls: 200, maxToolRounds: 17 });
+    const load = vi.fn().mockResolvedValue({
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
+      maxToolCalls: 200,
+      maxToolRounds: 17
+    });
     const prepared = preparedFrom(await prepareRun({
       ...harness.deps,
       runPolicy: { load }
@@ -954,10 +959,14 @@ describe("run preparation", () => {
 
     expect(load).toHaveBeenCalledOnce();
     expect(prepared.normalizedRequest.toolBudgets).toEqual({
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17
     });
     expect(prepared.providerRequest.toolBudgets).toEqual({
+      mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17
     });

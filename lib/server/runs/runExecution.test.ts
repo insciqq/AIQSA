@@ -3029,11 +3029,13 @@ describe("run execution", () => {
 
     expect(providerRequests).toHaveLength(3);
     expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["find_tools"]);
+    expect(providerRequests[0]?.parallelToolCalls).toBe(false);
     expect(JSON.stringify(providerRequests[0]?.mcpDiscovery?.catalog)).not.toContain("inputSchema");
     expect(providerRequests[1]?.tools?.map((tool) => tool.name)).toEqual([
       "find_tools",
       namespacedName
     ]);
+    expect(providerRequests[1]?.parallelToolCalls).toBe(true);
     expect(providerRequests[1]?.tools?.find((tool) => tool.name === namespacedName)?.inputSchema)
       .toEqual(snapshot.tools[0]?.inputSchema);
     expect(materialize).toHaveBeenCalledWith("user-1", [{
@@ -3041,6 +3043,7 @@ describe("run execution", () => {
       revisionId: "revision-jira",
       serverId: "server-jira"
     }]);
+    expect(route).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
     expect(appendMcpDiscoveryEpoch).toHaveBeenCalledOnce();
     expect(callTool).toHaveBeenCalledWith(expect.objectContaining({
       generationId: `generation-${fingerprint}`,

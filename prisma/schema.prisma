@@ -834,16 +834,18 @@ model KnowledgePolicy {
 }
 
 model ModelPolicy {
-  id                     String         @id
-  defaultProviderModelId String?
-  maxToolCalls           BigInt         @default(20)
-  maxToolRounds          BigInt         @default(8)
-  version                Int            @default(1)
-  updatedByUserId        String?
-  createdAt              DateTime       @default(now())
-  updatedAt              DateTime       @updatedAt
-  defaultProviderModel   ProviderModel? @relation("InstallationDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
-  updatedBy              User?          @relation("ModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  id                              String         @id
+  defaultProviderModelId          String?
+  maxToolCalls                    BigInt         @default(20)
+  maxToolRounds                   BigInt         @default(8)
+  maxMcpToolsPerDiscovery         BigInt         @default(10)
+  mcpAutoDiscoveryTimeoutSeconds BigInt         @default(60)
+  version                         Int            @default(1)
+  updatedByUserId                 String?
+  createdAt                       DateTime       @default(now())
+  updatedAt                       DateTime       @updatedAt
+  defaultProviderModel            ProviderModel? @relation("InstallationDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  updatedBy                       User?          @relation("ModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([defaultProviderModelId])
   @@index([updatedByUserId])

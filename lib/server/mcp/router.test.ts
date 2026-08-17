@@ -166,14 +166,23 @@ describe("semantic MCP router", () => {
       options?.onUsage?.({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 });
       expect(structuredRequest.schema).toMatchObject({
         properties: {
-          tool_ids: {
-            items: { enum: [jiraTool, githubTool, calendarTool] },
-            maxItems: 5,
-            uniqueItems: true
+          requirements: {
+            items: {
+              properties: {
+                tool_ids: {
+                  items: { enum: [jiraTool, githubTool, calendarTool] },
+                  maxItems: 5,
+                  uniqueItems: true
+                }
+              }
+            }
           }
         }
       });
-      return { tool_ids: [selected] };
+      return {
+        mcp_needed: true,
+        requirements: [{ outcome: goal, status: "covered", tool_ids: [selected] }]
+      };
     });
     const router = createMcpSemanticRouter({
       executeStructuredOutput,
@@ -199,7 +208,7 @@ describe("semantic MCP router", () => {
   it("excludes loaded tools and supports an exact empty selection", async () => {
     const executeStructuredOutput = vi.fn(async (_role, structuredRequest) => {
       expect(JSON.stringify(structuredRequest.schema)).not.toContain(jiraTool);
-      return { tool_ids: [] };
+      return { mcp_needed: false, requirements: [] };
     });
     const router = createMcpSemanticRouter({
       executeStructuredOutput,
@@ -237,8 +246,22 @@ describe("semantic MCP router", () => {
 
   it("rejects unknown IDs and duplicate output with a stable reason", async () => {
     const executeStructuredOutput = vi.fn()
-      .mockResolvedValueOnce({ tool_ids: ["unknown-tool"] })
-      .mockResolvedValueOnce({ tool_ids: [jiraTool, jiraTool] });
+      .mockResolvedValueOnce({
+        mcp_needed: true,
+        requirements: [{
+          outcome: "Create an issue",
+          status: "covered",
+          tool_ids: ["unknown-tool"]
+        }]
+      })
+      .mockResolvedValueOnce({
+        mcp_needed: true,
+        requirements: [{
+          outcome: "Create an issue",
+          status: "covered",
+          tool_ids: [jiraTool, jiraTool]
+        }]
+      });
     const router = createMcpSemanticRouter({
       executeStructuredOutput,
       resolveSystemModel: async () => resolution()

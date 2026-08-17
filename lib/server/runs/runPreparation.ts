@@ -1456,6 +1456,8 @@ export async function prepareRun(
       }))
     },
     toolBudgets: {
+      mcpAutoDiscoveryTimeoutSeconds: toolBudgets.mcpAutoDiscoveryTimeoutSeconds,
+      maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
       maxToolCalls: toolBudgets.maxToolCalls,
       maxToolRounds: toolBudgets.maxToolRounds
     },
