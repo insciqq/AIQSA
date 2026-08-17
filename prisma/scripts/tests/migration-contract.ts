@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "23f4876e042bd58033f32bd0acd3e9c407121d0dbb7b38e40ee7b3bbfcd77459";
+  "42b8e6333350611e45009ed2d095bc3ef963eecf2e1d40ee3886e68c9ff845d2";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";

@@ -87,6 +87,7 @@ describe("chat wire decoding", () => {
       id: "chat-1",
       messageCount: 1,
       pinned: true,
+      projectId: null,
       title: "Summary boundary",
       updatedAt: "2026-07-12T08:01:00.000Z"
     });

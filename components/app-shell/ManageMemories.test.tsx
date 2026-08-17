@@ -257,6 +257,7 @@ describe("ManageMemories", () => {
             memoryMode: "NORMAL",
             messageCount: 1,
             pinned: false,
+            projectId: null,
             sourceRevision: 2,
             title: "Archived chat",
             updatedAt: "2026-08-10T08:00:00.000Z"

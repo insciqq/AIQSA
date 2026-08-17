@@ -15,13 +15,16 @@ import { namespacedMcpToolName } from "../mcp/runPlan";
 import { createPrismaMcpRuntimeRepository } from "../mcp/runtimeRepository";
 import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
+import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AssistantRunConflictError,
   AttachmentLinkConflictError,
   McpRunPlanConflictError,
   type AcceptedRunDefaults,
+  type ProjectRunAdmission,
   type RunRepository
 } from "./runRepositoryContract";
 import { parseToolLoopCheckpoint } from "./toolLoopPersistence";
@@ -156,9 +159,11 @@ async function deleteMcpFixture(serverId: string): Promise<void> {
 }
 
 function createRunInput(input: {
+  assistant?: { assistantId: string; revisionId: string };
   attachmentIds?: string[];
   chatId: string;
   defaults?: Partial<AcceptedRunDefaults>;
+  project?: ProjectRunAdmission;
   question: string;
   userId: string;
 }): Parameters<RunRepository["createRun"]>[0] {
@@ -173,6 +178,7 @@ function createRunInput(input: {
   };
 
   return {
+    ...(input.assistant ? { assistant: input.assistant } : {}),
     chatId: input.chatId,
     content,
     defaults,
@@ -202,6 +208,7 @@ function createRunInput(input: {
     },
     provider: "fake",
     providerRequestPreview: {},
+    ...(input.project ? { project: input.project } : {}),
     userId: input.userId
   };
 }
@@ -423,6 +430,276 @@ const cancelPayload = {
 describe("Prisma-backed run repository", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("admits a Project run with an exact normalized request and no personal Memory binding", async () => {
+    await withRunUser(async ({ userId }) => {
+      const projectRepository = createPrismaProjectRepository(prisma);
+      const createdProject = await projectRepository.create({
+        actorDisplayName: "Run Repository Test User",
+        description: "Project run admission regression",
+        name: `Run project ${randomUUID()}`,
+        userId
+      });
+      if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
+      const project = createdProject.value;
+      const chat = await prisma.chat.create({
+        data: {
+          createdByDisplayName: "Run Repository Test User",
+          createdByUserId: userId,
+          memoryMode: "EXCLUDED",
+          projectId: project.id,
+          title: "Project normalized request",
+          userId: null
+        }
+      });
+
+      try {
+        const input = createRunInput({
+          chatId: chat.id,
+          project: {
+            accessRevision: project.accessRevision,
+            assistantBindings: [],
+            defaults: project.defaults,
+            instructions: project.instructions,
+            instructionsRevision: project.instructionsRevision,
+            knowledgeBaseIds: [],
+            mcpServerIds: [],
+            memoryEnabled: false,
+            memoryItems: [],
+            memoryRevision: project.memoryRevision,
+            modelIds: ["fake-qsa"],
+            policy: project.policy,
+            policyRevision: project.policyRevision,
+            projectId: project.id,
+            role: "OWNER",
+            searchOptionIds: []
+          },
+          question: "Keep this request outside Personal Memory",
+          userId
+        });
+        const created = await createPrismaRunRepository(prisma).createRun(input);
+
+        await expect(prisma.modelRun.findUnique({
+          select: { normalizedRequest: true, status: true },
+          where: { id: created.runId }
+        })).resolves.toEqual({
+          normalizedRequest: input.normalizedRequest,
+          status: "streaming"
+        });
+        await expect(prisma.projectRunBinding.findUnique({
+          where: { modelRunId: created.runId }
+        })).resolves.toMatchObject({
+          personalMemoryDisabled: true,
+          projectId: project.id
+        });
+        await expect(prisma.modelRunMemoryBinding.findUnique({
+          where: { modelRunId: created.runId }
+        })).resolves.toBeNull();
+      } finally {
+        await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
+        await prisma.project.deleteMany({ where: { id: project.id } });
+      }
+    });
+  });
+
+  it("excludes expired Project Memory and rejects it if stale preparation still submits it", async () => {
+    await withRunUser(async ({ userId }) => {
+      const projectRepository = createPrismaProjectRepository(prisma);
+      const createdProject = await projectRepository.create({
+        actorDisplayName: "Run Repository Test User",
+        description: "Project Memory admission fence",
+        name: `Memory-fenced project ${randomUUID()}`,
+        userId
+      });
+      if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
+      const projectId = createdProject.value.id;
+
+      try {
+        const project = await prisma.project.update({
+          data: { memoryEnabled: true, memoryRevision: { increment: 1 } },
+          where: { id: projectId }
+        });
+        const chat = await prisma.chat.create({
+          data: {
+            createdByDisplayName: "Run Repository Test User",
+            createdByUserId: userId,
+            memoryMode: "EXCLUDED",
+            projectId: project.id,
+            title: "Project stale Memory item",
+            userId: null
+          }
+        });
+        const factId = randomUUID();
+        const versionId = randomUUID();
+        await prisma.$transaction(async (tx) => {
+          await tx.projectMemoryFact.create({
+            data: {
+              createdByDisplayName: "Run Repository Test User",
+              createdByUserId: userId,
+              id: factId,
+              projectId: project.id
+            }
+          });
+          await tx.projectMemoryFactVersion.create({
+            data: {
+              createdByDisplayName: "Run Repository Test User",
+              createdByUserId: userId,
+              factId,
+              id: versionId,
+              normalizedText: "expired project fact",
+              projectId: project.id,
+              text: "Expired Project fact",
+              validUntil: new Date(0),
+              versionNumber: 1
+            }
+          });
+          await tx.projectMemoryFact.update({
+            data: { currentVersionId: versionId },
+            where: { projectId_id: { id: factId, projectId: project.id } }
+          });
+        });
+        const repository = createPrismaRunRepository(prisma);
+        await expect(repository.findOwnedChat(chat.id, userId)).resolves.toMatchObject({
+          project: { memoryItems: [] }
+        });
+        await expect(repository.createRun(createRunInput({
+          chatId: chat.id,
+          project: {
+            accessRevision: project.accessRevision,
+            assistantBindings: [],
+            defaults: createdProject.value.defaults,
+            instructions: project.instructions,
+            instructionsRevision: project.instructionsRevision,
+            knowledgeBaseIds: [],
+            mcpServerIds: [],
+            memoryEnabled: true,
+            memoryItems: [{
+              factId,
+              factVersionId: versionId,
+              includedText: "Expired Project fact",
+              ordinal: 0
+            }],
+            memoryRevision: project.memoryRevision,
+            modelIds: ["fake-qsa"],
+            policy: createdProject.value.policy,
+            policyRevision: project.policyRevision,
+            projectId: project.id,
+            role: "OWNER",
+            searchOptionIds: []
+          },
+          question: "Do not admit stale Project Memory",
+          userId
+        }))).rejects.toBeInstanceOf(ActiveLeafConflictError);
+        await expect(chatGraph(chat.id)).resolves.toMatchObject({
+          _count: { messages: 0, modelRuns: 0 },
+          activeLeafMessageId: null
+        });
+      } finally {
+        await projectRepository.delete({
+          actorDisplayName: "Run Repository Test User",
+          projectId,
+          userId
+        });
+      }
+    });
+  });
+
+  it("rechecks exact Assistant provenance inside Project admission", async () => {
+    await withRunUser(async ({ userId }) => {
+      const projectRepository = createPrismaProjectRepository(prisma);
+      const createdProject = await projectRepository.create({
+        actorDisplayName: "Run Repository Test User",
+        description: "Project Assistant admission fence",
+        name: `Assistant-fenced project ${randomUUID()}`,
+        userId
+      });
+      if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
+      const definition = await prisma.assistantDefinition.create({ data: { ownerUserId: userId } });
+      const revision = await prisma.assistantRevision.create({
+        data: {
+          assistantId: definition.id,
+          authorUserId: userId,
+          avatar: {
+            accents: [0, 4],
+            backgroundShape: "circle",
+            foregroundShape: "diamond",
+            kind: "generated",
+            paletteId: "ocean",
+            recipeVersion: 1,
+            rotations: [0, 2]
+          },
+          name: "Project admission Assistant",
+          providerModelId: providerTemplateIds.fakeModel,
+          revisionNumber: 1,
+          runControls: {},
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          systemPrompt: "Use only Project context."
+        }
+      });
+      await prisma.assistantDefinition.update({
+        data: { archivedAt: new Date(), currentRevisionId: revision.id },
+        where: { id: definition.id }
+      });
+      await prisma.projectAssistantBinding.create({
+        data: {
+          addedByUserId: userId,
+          assistantId: definition.id,
+          projectId: createdProject.value.id,
+          revisionId: revision.id
+        }
+      });
+      const project = await prisma.project.findUniqueOrThrow({ where: { id: createdProject.value.id } });
+      const chat = await prisma.chat.create({
+        data: {
+          createdByDisplayName: "Run Repository Test User",
+          createdByUserId: userId,
+          memoryMode: "EXCLUDED",
+          projectId: project.id,
+          title: "Project archived Assistant",
+          userId: null
+        }
+      });
+
+      try {
+        await expect(createPrismaRunRepository(prisma).createRun(createRunInput({
+          assistant: { assistantId: definition.id, revisionId: revision.id },
+          chatId: chat.id,
+          project: {
+            accessRevision: project.accessRevision,
+            assistantBindings: [{ assistantId: definition.id, revisionId: revision.id }],
+            defaults: createdProject.value.defaults,
+            instructions: project.instructions,
+            instructionsRevision: project.instructionsRevision,
+            knowledgeBaseIds: [],
+            mcpServerIds: [],
+            memoryEnabled: false,
+            memoryItems: [],
+            memoryRevision: project.memoryRevision,
+            modelIds: ["fake-qsa"],
+            policy: createdProject.value.policy,
+            policyRevision: project.policyRevision,
+            projectId: project.id,
+            role: "OWNER",
+            searchOptionIds: []
+          },
+          question: "Do not admit an archived Assistant",
+          userId
+        }))).rejects.toBeInstanceOf(AssistantRunConflictError);
+        await expect(chatGraph(chat.id)).resolves.toMatchObject({
+          _count: { messages: 0, modelRuns: 0 },
+          activeLeafMessageId: null
+        });
+      } finally {
+        await prisma.project.deleteMany({ where: { id: project.id } });
+        await prisma.assistantDefinition.updateMany({
+          data: { currentRevisionId: null },
+          where: { id: definition.id }
+        });
+        await prisma.assistantRevision.deleteMany({ where: { assistantId: definition.id } });
+        await prisma.assistantDefinition.deleteMany({ where: { id: definition.id } });
+      }
+    });
   });
 
   it("serializes a missing chat default as a paired null run update", async () => {

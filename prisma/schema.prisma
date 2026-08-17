@@ -36,6 +36,30 @@ enum UserStatus {
   denied
 }
 
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+  DELETING
+}
+
+enum ProjectRole {
+  VIEWER
+  CONTRIBUTOR
+  MANAGER
+  OWNER
+}
+
+enum ProjectMemoryFactState {
+  ACTIVE
+  FORGOTTEN
+}
+
+enum ProjectMemoryProposalState {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum MessageStatus {
   queued
   streaming
@@ -502,50 +526,66 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
-  id                            String                             @id @default(uuid())
-  email                         String?                            @unique
-  displayName                   String
-  role                          UserRole                           @default(user)
-  status                        UserStatus                         @default(pending)
-  createdAt                     DateTime                           @default(now())
-  updatedAt                     DateTime                           @updatedAt
-  accessGrants                  AccessGrant[]
-  attachments                   Attachment[]
-  authAccessRulesCreated        AuthAccessRule[]                   @relation("AuthAccessRuleCreator")
-  authFlowTokens                AuthFlowToken[]
-  authIdentities                AuthIdentity[]
-  authInvitesAccepted           AuthInvite[]                       @relation("AuthInviteAcceptedUser")
-  authInvitesCreated            AuthInvite[]                       @relation("AuthInviteCreator")
-  authSessions                  AuthSession[]
-  authSessionsRevoked           AuthSession[]                      @relation("AuthSessionRevoker")
-  assistantDefinitions          AssistantDefinition[]              @relation("AssistantDefinitionOwner")
-  assistantPins                 AssistantPin[]
-  assistantPublications         AssistantPublication[]             @relation("AssistantPublicationPublisher")
-  assistantRevisionsAuthored    AssistantRevision[]                @relation("AssistantRevisionAuthor")
-  chats                         Chat[]
-  folders                       Folder[]
-  groups                        UserGroup[]
-  knowledgeBasePublications     KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
-  knowledgeBases                KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
-  knowledgePolicyUpdates        KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
-  memoryEgressPolicyUpdates     MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
-  mcpGrants                     McpGrant[]
-  mcpActivationJobs             McpActivationJob[]
-  mcpOAuthConnections           McpOAuthConnection[]
-  mcpUserServers                McpUserServer[]
-  modelPolicyUpdates            ModelPolicy[]                      @relation("ModelPolicyUpdater")
-  modelRuns                     ModelRun[]
-  providerCredentialAssignments ProviderUserCredentialAssignment[]
-  searchPolicyUpdates           SearchPolicy[]                     @relation("SearchPolicyUpdater")
-  settings                      UserSettings?
-  sharedSnapshots               SharedChatSnapshot[]
-  skillDefinitions              SkillDefinition[]                  @relation("SkillDefinitionOwner")
-  skillPublications             SkillPublication[]                 @relation("SkillPublicationPublisher")
-  skillRevisionsAuthored        SkillRevision[]                    @relation("SkillRevisionAuthor")
-  smtpActivations               SmtpControl[]                      @relation("SmtpControlActivator")
-  smtpConfigurationEdits        SmtpControl[]                      @relation("SmtpControlUpdater")
-  systemModelPolicyUpdates      SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
-  usageEvents                   UsageEvent[]
+  id                             String                             @id @default(uuid())
+  email                          String?                            @unique
+  displayName                    String
+  role                           UserRole                           @default(user)
+  status                         UserStatus                         @default(pending)
+  createdAt                      DateTime                           @default(now())
+  updatedAt                      DateTime                           @updatedAt
+  accessGrants                   AccessGrant[]
+  attachments                    Attachment[]
+  authAccessRulesCreated         AuthAccessRule[]                   @relation("AuthAccessRuleCreator")
+  authFlowTokens                 AuthFlowToken[]
+  authIdentities                 AuthIdentity[]
+  authInvitesAccepted            AuthInvite[]                       @relation("AuthInviteAcceptedUser")
+  authInvitesCreated             AuthInvite[]                       @relation("AuthInviteCreator")
+  authSessions                   AuthSession[]
+  authSessionsRevoked            AuthSession[]                      @relation("AuthSessionRevoker")
+  assistantDefinitions           AssistantDefinition[]              @relation("AssistantDefinitionOwner")
+  assistantPins                  AssistantPin[]
+  assistantPublications          AssistantPublication[]             @relation("AssistantPublicationPublisher")
+  assistantRevisionsAuthored     AssistantRevision[]                @relation("AssistantRevisionAuthor")
+  chats                          Chat[]
+  folders                        Folder[]
+  groups                         UserGroup[]
+  knowledgeBasePublications      KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
+  knowledgeBases                 KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
+  knowledgePolicyUpdates         KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
+  memoryEgressPolicyUpdates      MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
+  mcpGrants                      McpGrant[]
+  mcpActivationJobs              McpActivationJob[]
+  mcpOAuthConnections            McpOAuthConnection[]
+  mcpUserServers                 McpUserServer[]
+  modelPolicyUpdates             ModelPolicy[]                      @relation("ModelPolicyUpdater")
+  providerCredentialAssignments  ProviderUserCredentialAssignment[]
+  projectAssistantBindingsAdded  ProjectAssistantBinding[]          @relation("ProjectAssistantBindingAdder")
+  projectAttachmentsUploaded     Attachment[]                       @relation("ProjectAttachmentUploader")
+  projectAuditEvents             ProjectAuditEvent[]                @relation("ProjectAuditActor")
+  projectChatsCreated            Chat[]                             @relation("ProjectChatCreator")
+  projectFoldersCreated          ProjectFolder[]                    @relation("ProjectFolderCreator")
+  projectGrants                  ProjectGrant[]
+  projectGrantsCreated           ProjectGrant[]                     @relation("ProjectGrantCreator")
+  projectKnowledgeBindingsAdded  ProjectKnowledgeBaseBinding[]      @relation("ProjectKnowledgeBindingAdder")
+  projectMcpBindingsAdded        ProjectMcpBinding[]                @relation("ProjectMcpBindingAdder")
+  projectMemoryFactsCreated      ProjectMemoryFact[]                @relation("ProjectMemoryFactCreator")
+  projectMemoryProposals         ProjectMemoryProposal[]            @relation("ProjectMemoryProposalAuthor")
+  projectMemoryProposalsReviewed ProjectMemoryProposal[]            @relation("ProjectMemoryProposalReviewer")
+  projectMemoryVersionsAuthored  ProjectMemoryFactVersion[]         @relation("ProjectMemoryVersionAuthor")
+  projectMessagesAuthored        Message[]                          @relation("ProjectMessageAuthor")
+  projectModelBindingsAdded      ProjectModelBinding[]              @relation("ProjectModelBindingAdder")
+  projectSearchBindingsAdded     ProjectSearchBinding[]             @relation("ProjectSearchBindingAdder")
+  projectsCreated                Project[]                          @relation("ProjectCreator")
+  searchPolicyUpdates            SearchPolicy[]                     @relation("SearchPolicyUpdater")
+  settings                       UserSettings?
+  sharedSnapshots                SharedChatSnapshot[]
+  skillDefinitions               SkillDefinition[]                  @relation("SkillDefinitionOwner")
+  skillPublications              SkillPublication[]                 @relation("SkillPublicationPublisher")
+  skillRevisionsAuthored         SkillRevision[]                    @relation("SkillRevisionAuthor")
+  smtpActivations                SmtpControl[]                      @relation("SmtpControlActivator")
+  smtpConfigurationEdits         SmtpControl[]                      @relation("SmtpControlUpdater")
+  systemModelPolicyUpdates       SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
+  usageEvents                    UsageEvent[]
 }
 
 model SmtpControl {
@@ -728,6 +768,7 @@ model Group {
   mcpGrants                     McpGrant[]
   skillPublications             SkillPublication[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
+  projectGrants                 ProjectGrant[]
   users                         UserGroup[]
 
   @@index([archivedAt])
@@ -915,19 +956,20 @@ enum KnowledgeIndexGenerationStatus {
 }
 
 model AssistantDefinition {
-  id                String                 @id @default(uuid())
+  id                String                    @id @default(uuid())
   ownerUserId       String
-  currentRevisionId String?                @unique
-  version           Int                    @default(1)
+  currentRevisionId String?                   @unique
+  version           Int                       @default(1)
   archivedAt        DateTime?
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @updatedAt
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
   /// The composite relation proves the current pointer targets a revision of this definition.
-  currentRevision   AssistantRevision?     @relation("AssistantCurrentRevision", fields: [id, currentRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "AssistantDefinition_currentRevision_fkey")
-  owner             User                   @relation("AssistantDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  currentRevision   AssistantRevision?        @relation("AssistantCurrentRevision", fields: [id, currentRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "AssistantDefinition_currentRevision_fkey")
+  owner             User                      @relation("AssistantDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   pins              AssistantPin[]
+  projectBindings   ProjectAssistantBinding[]
   publications      AssistantPublication[]
-  revisions         AssistantRevision[]    @relation("AssistantRevisions")
+  revisions         AssistantRevision[]       @relation("AssistantRevisions")
 
   @@unique([id, currentRevisionId])
   @@unique([ownerUserId, id])
@@ -935,30 +977,31 @@ model AssistantDefinition {
 }
 
 model AssistantRevision {
-  id               String                 @id @default(uuid())
+  id               String                    @id @default(uuid())
   assistantId      String
   revisionNumber   Int
-  schemaVersion    Int                    @default(1)
+  schemaVersion    Int                       @default(1)
   name             String
-  description      String                 @default("")
+  description      String                    @default("")
   category         String?
   avatar           Json
   providerModelId  String
   systemPrompt     String
   developerPrompt  String?
-  runControls      Json                   @default("{}")
+  runControls      Json                      @default("{}")
   searchPlan       Json
-  mcpServerIds     String[]               @default([])
-  knowledgeBaseIds String[]               @default([])
-  starterPrompts   String[]               @default([])
+  mcpServerIds     String[]                  @default([])
+  knowledgeBaseIds String[]                  @default([])
+  starterPrompts   String[]                  @default([])
   authorUserId     String?
-  createdAt        DateTime               @default(now())
-  assistant        AssistantDefinition    @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
-  author           User?                  @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  currentFor       AssistantDefinition?   @relation("AssistantCurrentRevision")
-  modelRuns        ModelRun[]             @relation("ModelRunAssistantRevision")
-  providerModel    ProviderModel          @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  publications     AssistantPublication[] @relation("AssistantPublicationRevision")
+  createdAt        DateTime                  @default(now())
+  assistant        AssistantDefinition       @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
+  author           User?                     @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  currentFor       AssistantDefinition?      @relation("AssistantCurrentRevision")
+  modelRuns        ModelRun[]                @relation("ModelRunAssistantRevision")
+  projectBindings  ProjectAssistantBinding[] @relation("ProjectAssistantBindingRevision")
+  providerModel    ProviderModel             @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  publications     AssistantPublication[]    @relation("AssistantPublicationRevision")
   skillLinks       AssistantRevisionSkill[]
 
   @@unique([assistantId, revisionNumber])
@@ -1000,20 +1043,20 @@ model AssistantPin {
 }
 
 model SkillDefinition {
-  id                String             @id @default(uuid())
-  ownerUserId       String
-  currentRevisionId String?            @unique
-  version           Int                @default(1)
-  archivedAt        DateTime?
-  deletedAt         DateTime?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  id                     String                   @id @default(uuid())
+  ownerUserId            String
+  currentRevisionId      String?                  @unique
+  version                Int                      @default(1)
+  archivedAt             DateTime?
+  deletedAt              DateTime?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
   /// The composite relation proves the current pointer targets a revision of this definition.
-  currentRevision   SkillRevision?     @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
-  owner             User               @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  currentRevision        SkillRevision?           @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
+  owner                  User                     @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   assistantRevisionLinks AssistantRevisionSkill[]
-  publications      SkillPublication[]
-  revisions         SkillRevision[]    @relation("SkillRevisions")
+  publications           SkillPublication[]
+  revisions              SkillRevision[]          @relation("SkillRevisions")
 
   @@unique([id, currentRevisionId])
   @@unique([ownerUserId, id])
@@ -1089,6 +1132,7 @@ model KnowledgeBase {
   indexGenerations        KnowledgeIndexGeneration[]    @relation("KnowledgeBaseIndexGenerations")
   runBindings             KnowledgeRunBinding[]
   owner                   User                          @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  projectBindings         ProjectKnowledgeBaseBinding[]
   publications            KnowledgeBasePublication[]
   usageEvents             UsageEvent[]                  @relation("KnowledgeUsageBase")
 
@@ -1295,6 +1339,7 @@ model ProviderModel {
   connection                ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   draftChecks               ProviderDraftCheck[]
   providerRunBindings       ProviderRunBinding[]
+  projectBindings           ProjectModelBinding[]
   searchStrategies          SearchStrategy[]
   searchRevisions           SearchIntegrationRevision[]
   chatDefaults              Chat[]                         @relation("ChatDefaultProviderModel")
@@ -1336,18 +1381,19 @@ model ProviderConnection {
 }
 
 model SearchOption {
-  id                 String              @id @default(uuid())
-  optionId           String              @unique
+  id                 String                 @id @default(uuid())
+  optionId           String                 @unique
   displayName        String
   description        String
   kind               String
-  templateKey        String?             @unique
+  templateKey        String?                @unique
   sourceConnectionId String?
-  enabled            Boolean             @default(true)
+  enabled            Boolean                @default(true)
   archivedAt         DateTime?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  sourceConnection   ProviderConnection? @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  sourceConnection   ProviderConnection?    @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  projectBindings    ProjectSearchBinding[]
   strategies         SearchStrategy[]
 
   @@unique([sourceConnectionId, kind])
@@ -1595,7 +1641,11 @@ model SearchIntegrationRevision {
 
 model Chat {
   id                              String               @id @default(uuid())
-  userId                          String
+  userId                          String?
+  projectId                       String?
+  projectFolderId                 String?
+  createdByUserId                 String?
+  createdByDisplayName            String               @default("")
   folderId                        String?
   title                           String
   activeLeafMessageId             String?
@@ -1618,17 +1668,22 @@ model Chat {
   /// The migration uses PostgreSQL's column-scoped SET NULL so deleting the leaf clears only activeLeafMessageId, never Chat.id.
   activeLeafMessage               Message?             @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
   attachments                     Attachment[]
+  createdBy                       User?                @relation("ProjectChatCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   folder                          Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
   defaultProviderModel            ProviderModel?       @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
   messages                        Message[]            @relation("ChatMessages")
   modelRuns                       ModelRun[]
+  project                         Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectFolder                   ProjectFolder?       @relation(fields: [projectId, projectFolderId], references: [projectId, id], onDelete: Restrict, onUpdate: Restrict)
   sharedSnapshots                 SharedChatSnapshot[]
-  user                            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
   @@index([defaultProviderModelId])
   @@index([memoryMode, temporaryRetentionDeadline])
+  @@index([projectId, archived, updatedAt])
+  @@index([projectFolderId])
   @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
 }
@@ -1649,9 +1704,13 @@ model Message {
   outputTokens       Int           @default(0)
   reasoningTokens    Int           @default(0)
   errorMessage       String?
+  authorUserId       String?
+  authorDisplayName  String?
+  authorProjectRole  ProjectRole?
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
   assistantModelRuns ModelRun[]    @relation("AssistantMessageRun")
+  author             User?         @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
   activeLeafForChats Chat[]        @relation("ChatActiveLeaf")
   chat               Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
   children           Message[]     @relation("MessageBranches")
@@ -1661,6 +1720,7 @@ model Message {
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
   @@index([chatId, createdAt])
+  @@index([authorUserId])
   @@index([groundingProvider, groundedAt])
 }
 
@@ -1699,10 +1759,10 @@ model ModelRun {
   memoryHistoryRuns        MemoryHistoryRun[]
   memoryToolEgressReceipts MemoryToolEgressReceipt[]
   providerRunBindings      ProviderRunBinding[]
+  projectRunBinding        ProjectRunBinding?
   searchRuns               SearchRun[]
   skillRunBindings         ModelRunSkillBinding[]
   toolCalls                ModelRunToolCall[]
-  user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   userMessage              Message                   @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents              UsageEvent[]
 
@@ -1759,6 +1819,7 @@ model McpServer {
   activationJob        McpActivationJob?
   grants               McpGrant[]
   oauthConnections     McpOAuthConnection[]
+  projectBindings      ProjectMcpBinding[]
   revisions            McpRevision[]        @relation("McpServerRevisions")
   userServers          McpUserServer[]
 
@@ -2013,7 +2074,10 @@ model DocumentProcessingFairnessCursor {
 
 model Attachment {
   id                  String                   @id @default(uuid())
-  userId              String
+  userId              String?
+  projectId           String?
+  uploaderUserId      String?
+  uploaderDisplayName String?
   chatId              String?
   messageId           String?
   kind                String
@@ -2030,10 +2094,14 @@ model Attachment {
   updatedAt           DateTime                 @default(now()) @updatedAt
   chat                Chat?                    @relation(fields: [chatId], references: [id], onDelete: SetNull)
   processingJob       AttachmentProcessingJob?
-  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project             Project?                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploader            User?                    @relation("ProjectAttachmentUploader", fields: [uploaderUserId], references: [id], onDelete: SetNull)
+  user                User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([id, userId])
   @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([uploaderUserId])
   @@index([messageId])
   @@index([storageKey])
 }
@@ -2050,8 +2118,8 @@ model AttachmentProcessingJob {
   lastErrorCode String?    @db.VarChar(64)
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
-  /// The composite relation makes the denormalized queue owner immutable and proves it matches the attachment owner.
-  attachment    Attachment @relation(fields: [attachmentId, ownerUserId], references: [id, userId], onDelete: Cascade, onUpdate: Restrict, map: "AttachmentProcessingJob_attachment_owner_fkey")
+  /// The queue owner is processing/fairness attribution; Attachment itself owns the personal-or-Project boundary.
+  attachment    Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 
   @@unique([attachmentId, ownerUserId])
   @@index([ownerUserId, nextAttemptAt, createdAt, id], map: "AttachmentProcessingJob_owner_due_idx")
@@ -2074,20 +2142,24 @@ model AttachmentDeletionJob {
 }
 
 model SharedChatSnapshot {
-  id          String    @id @default(uuid())
-  ownerUserId String
-  chatId      String?
-  slugHash    String    @unique
-  title       String
-  snapshot    Json
-  expiresAt   DateTime?
-  revokedAt   DateTime?
-  createdAt   DateTime  @default(now())
-  chat        Chat?     @relation(fields: [chatId], references: [id], onDelete: SetNull)
-  owner       User      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  id                   String    @id @default(uuid())
+  ownerUserId          String?
+  projectId            String?
+  createdByDisplayName String?
+  chatId               String?
+  slugHash             String    @unique
+  title                String
+  snapshot             Json
+  expiresAt            DateTime?
+  revokedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  chat                 Chat?     @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  owner                User?     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  project              Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([chatId, createdAt])
   @@index([ownerUserId, createdAt])
+  @@index([projectId, createdAt])
 }
 
 model UsageEvent {
@@ -2095,6 +2167,7 @@ model UsageEvent {
   userId                     String
   chatId                     String?
   modelRunId                 String?
+  projectId                  String?
   provider                   String
   modelId                    String
   providerModelId            String?
@@ -2115,12 +2188,300 @@ model UsageEvent {
   knowledgeDocumentVersion   KnowledgeDocumentVersion? @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")
   knowledgeIndexGeneration   KnowledgeIndexGeneration? @relation("KnowledgeUsageGeneration", fields: [knowledgeBaseId, knowledgeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeIndexGeneration_fkey")
   modelRun                   ModelRun?                 @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
+  project                    Project?                  @relation(fields: [projectId], references: [id], onDelete: SetNull)
   user                       User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
   @@index([userId, createdAt])
   @@index([provider, modelId])
+  @@index([projectId, createdAt])
   @@index([knowledgeBaseId, createdAt])
+}
+
+model Project {
+  id                    String                        @id @default(uuid())
+  name                  String
+  description           String                        @default("")
+  status                ProjectStatus                 @default(ACTIVE)
+  instructions          String                        @default("")
+  instructionsRevision  Int                           @default(1)
+  policy                Json                          @default("{}")
+  policyRevision        Int                           @default(1)
+  defaults              Json                          @default("{}")
+  accessRevision        Int                           @default(1)
+  memoryEnabled         Boolean                       @default(true)
+  memoryPolicy          Json                          @default("{\"automatic\":\"OFF\"}")
+  memoryRevision        Int                           @default(0)
+  publicSharingEnabled  Boolean                       @default(false)
+  createdByUserId       String?
+  createdByDisplayName  String
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
+  archivedAt            DateTime?
+  deletionRequestedAt   DateTime?
+  assistantBindings     ProjectAssistantBinding[]
+  attachments           Attachment[]
+  auditEvents           ProjectAuditEvent[]
+  chats                 Chat[]
+  createdBy             User?                         @relation("ProjectCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  folders               ProjectFolder[]
+  grants                ProjectGrant[]
+  knowledgeBaseBindings ProjectKnowledgeBaseBinding[]
+  mcpBindings           ProjectMcpBinding[]
+  memoryFacts           ProjectMemoryFact[]
+  memoryFactVersions    ProjectMemoryFactVersion[]
+  memoryProposals       ProjectMemoryProposal[]
+  memoryRunItems        ProjectMemoryRunItem[]
+  modelBindings         ProjectModelBinding[]
+  runBindings           ProjectRunBinding[]
+  searchBindings        ProjectSearchBinding[]
+  sharedSnapshots       SharedChatSnapshot[]
+  usageEvents           UsageEvent[]
+
+  @@index([createdByUserId])
+  @@index([status, updatedAt])
+}
+
+model ProjectGrant {
+  id              String      @id @default(uuid())
+  projectId       String
+  userId          String?
+  groupId         String?
+  role            ProjectRole
+  createdByUserId String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  createdBy       User?       @relation("ProjectGrantCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  group           Group?      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user            User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@unique([projectId, groupId])
+  @@index([createdByUserId])
+  @@index([groupId, projectId])
+  @@index([userId, projectId])
+}
+
+model ProjectFolder {
+  id              String          @default(uuid())
+  projectId       String
+  parentId        String?
+  name            String
+  sortOrder       Int             @default(0)
+  createdByUserId String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  chats           Chat[]
+  children        ProjectFolder[] @relation("ProjectFolderHierarchy")
+  createdBy       User?           @relation("ProjectFolderCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  parent          ProjectFolder?  @relation("ProjectFolderHierarchy", fields: [projectId, parentId], references: [projectId, id], onDelete: Restrict, onUpdate: Restrict)
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, id])
+  @@unique([projectId, parentId, name])
+  @@index([createdByUserId])
+  @@index([projectId, parentId, sortOrder])
+}
+
+model ProjectModelBinding {
+  projectId       String
+  providerModelId String
+  addedByUserId   String?
+  createdAt       DateTime      @default(now())
+  addedBy         User?         @relation("ProjectModelBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  providerModel   ProviderModel @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+
+  @@id([projectId, providerModelId])
+  @@index([addedByUserId])
+  @@index([providerModelId])
+}
+
+model ProjectSearchBinding {
+  projectId      String
+  searchOptionId String
+  addedByUserId  String?
+  createdAt      DateTime     @default(now())
+  addedBy        User?        @relation("ProjectSearchBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  searchOption   SearchOption @relation(fields: [searchOptionId], references: [id], onDelete: Restrict)
+
+  @@id([projectId, searchOptionId])
+  @@index([addedByUserId])
+  @@index([searchOptionId])
+}
+
+model ProjectMcpBinding {
+  projectId     String
+  serverId      String
+  addedByUserId String?
+  createdAt     DateTime  @default(now())
+  addedBy       User?     @relation("ProjectMcpBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  server        McpServer @relation(fields: [serverId], references: [id], onDelete: Restrict)
+
+  @@id([projectId, serverId])
+  @@index([addedByUserId])
+  @@index([serverId])
+}
+
+model ProjectKnowledgeBaseBinding {
+  id              String        @id @default(uuid())
+  projectId       String
+  knowledgeBaseId String
+  addedByUserId   String?
+  createdAt       DateTime      @default(now())
+  addedBy         User?         @relation("ProjectKnowledgeBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  knowledgeBase   KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, knowledgeBaseId])
+  @@index([addedByUserId])
+  @@index([knowledgeBaseId])
+}
+
+model ProjectAssistantBinding {
+  id            String              @id @default(uuid())
+  projectId     String
+  assistantId   String
+  revisionId    String
+  addedByUserId String?
+  createdAt     DateTime            @default(now())
+  addedBy       User?               @relation("ProjectAssistantBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  assistant     AssistantDefinition @relation(fields: [assistantId], references: [id], onDelete: Restrict)
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  revision      AssistantRevision   @relation("ProjectAssistantBindingRevision", fields: [assistantId, revisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([projectId, assistantId])
+  @@index([addedByUserId])
+  @@index([assistantId, revisionId])
+}
+
+model ProjectAuditEvent {
+  id               String   @id @default(uuid())
+  projectId        String
+  actorUserId      String?
+  actorDisplayName String
+  eventType        String
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now())
+  actor            User?    @relation("ProjectAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([actorUserId])
+  @@index([projectId, createdAt, id])
+}
+
+model ProjectMemoryFact {
+  id                   String                     @default(uuid())
+  projectId            String
+  currentVersionId     String?                    @unique
+  state                ProjectMemoryFactState     @default(ACTIVE)
+  createdByUserId      String?
+  createdByDisplayName String
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  createdBy            User?                      @relation("ProjectMemoryFactCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  currentVersion       ProjectMemoryFactVersion?  @relation("ProjectMemoryCurrentVersion", fields: [projectId, id, currentVersionId], references: [projectId, factId, id], onDelete: Restrict, onUpdate: Restrict)
+  project              Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  proposals            ProjectMemoryProposal[]
+  runItems             ProjectMemoryRunItem[]
+  versions             ProjectMemoryFactVersion[] @relation("ProjectMemoryFactVersions")
+
+  @@id([projectId, id])
+  @@unique([projectId, id, currentVersionId])
+  @@index([createdByUserId])
+  @@index([projectId, state, updatedAt])
+}
+
+model ProjectMemoryFactVersion {
+  id                   String                 @default(uuid())
+  projectId            String
+  factId               String
+  versionNumber        Int
+  text                 String
+  normalizedText       String
+  validUntil           DateTime?
+  sourceMessageId      String?
+  sourceSnapshot       Json                   @default("{}")
+  createdByUserId      String?
+  createdByDisplayName String
+  createdAt            DateTime               @default(now())
+  createdBy            User?                  @relation("ProjectMemoryVersionAuthor", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  currentFor           ProjectMemoryFact?     @relation("ProjectMemoryCurrentVersion")
+  fact                 ProjectMemoryFact      @relation("ProjectMemoryFactVersions", fields: [projectId, factId], references: [projectId, id], onDelete: Cascade, onUpdate: Restrict)
+  project              Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  runItems             ProjectMemoryRunItem[]
+
+  @@id([projectId, factId, id])
+  @@unique([projectId, factId, versionNumber])
+  @@index([createdByUserId])
+  @@index([projectId, createdAt])
+}
+
+model ProjectMemoryProposal {
+  id                    String                     @id @default(uuid())
+  projectId             String
+  proposedText          String
+  normalizedText        String
+  sourceMessageId       String?
+  sourceSnapshot        Json                       @default("{}")
+  state                 ProjectMemoryProposalState @default(PENDING)
+  proposedByUserId      String?
+  proposedByDisplayName String
+  reviewedByUserId      String?
+  reviewedByDisplayName String?
+  reviewedAt            DateTime?
+  resultingFactId       String?
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
+  project               Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  proposedBy            User?                      @relation("ProjectMemoryProposalAuthor", fields: [proposedByUserId], references: [id], onDelete: SetNull)
+  reviewedBy            User?                      @relation("ProjectMemoryProposalReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  resultingFact         ProjectMemoryFact?         @relation(fields: [projectId, resultingFactId], references: [projectId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([projectId, state, createdAt])
+  @@index([proposedByUserId])
+  @@index([reviewedByUserId])
+}
+
+model ProjectRunBinding {
+  modelRunId             String                 @id
+  projectId              String
+  initiatorUserId        String
+  acceptedRole           ProjectRole
+  accessRevision         Int
+  policyRevision         Int
+  instructionsRevision   Int
+  memoryRevision         Int
+  personalMemoryDisabled Boolean                @default(true)
+  createdAt              DateTime               @default(now())
+  memoryItems            ProjectMemoryRunItem[]
+  modelRun               ModelRun               @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  project                Project                @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, modelRunId])
+  @@index([initiatorUserId])
+  @@index([projectId, createdAt])
+}
+
+model ProjectMemoryRunItem {
+  projectId           String
+  projectRunBindingId String
+  factId              String
+  factVersionId       String
+  ordinal             Int
+  includedText        String
+  createdAt           DateTime                 @default(now())
+  binding             ProjectRunBinding        @relation(fields: [projectId, projectRunBindingId], references: [projectId, modelRunId], onDelete: Cascade, onUpdate: Restrict)
+  fact                ProjectMemoryFact        @relation(fields: [projectId, factId], references: [projectId, id], onDelete: Restrict, onUpdate: Restrict)
+  factVersion         ProjectMemoryFactVersion @relation(fields: [projectId, factId, factVersionId], references: [projectId, factId, id], onDelete: Restrict, onUpdate: Restrict)
+  project             Project                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@id([projectRunBindingId, factId])
+  @@unique([projectRunBindingId, ordinal])
+  @@index([projectId, factId, factVersionId])
 }
 
 model UserMemorySettings {

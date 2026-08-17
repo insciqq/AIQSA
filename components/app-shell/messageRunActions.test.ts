@@ -825,6 +825,35 @@ describe("message run actions", () => {
     }
   );
 
+  it("does not send personal Search preference state for a Project run", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) =>
+      new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: { ...chat(), projectId: "project-1" },
+      attachments: [],
+      model: mixedSearchModel
+    });
+    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+    useComposerControlStore.setState({
+      selectedSearchOptionIds: [clientSearchOptionId],
+      searchPlanMode: "all_selected"
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(requestInit.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      }
+    });
+    expect(body).not.toHaveProperty("searchPreferencePlan");
+    expect(body).not.toHaveProperty("searchPreferenceSource");
+  });
+
   it.each([
     {
       expectedMode: "all_selected" as const,

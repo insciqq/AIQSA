@@ -15,6 +15,7 @@ import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
 import type { ProviderConversationMessage } from "../providers/types";
 import {
+  type ProjectRunAdmission,
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
@@ -59,6 +60,11 @@ import {
   recoveredRunErrorPayload
 } from "./prismaRepositoryToolLoop";
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
+import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
+import {
+  decodeProjectDefaults,
+  decodeProjectPolicy
+} from "../../contracts/projects";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -149,6 +155,11 @@ export function createPrismaRunRepository(
     userId: string,
     selector: ConversationPathSelector
   ): Promise<{ chatMatched: boolean; messages: ProviderConversationMessage[] }> {
+    const access = await resolveChatAccess(prismaClient, {
+      chatId,
+      userId
+    });
+    if (!access) return { chatMatched: false, messages: [] };
     const selectedLeaf =
       selector.kind === "active"
         ? Prisma.sql`chat."activeLeafMessageId"`
@@ -164,7 +175,26 @@ export function createPrismaRunRepository(
           ${selectedLeaf} AS "selectedLeafMessageId"
         FROM "Chat" AS chat
         WHERE chat."id" = ${chatId}
-          AND chat."userId" = ${userId}
+          AND (
+            chat."userId" = ${userId}
+            OR EXISTS (
+              SELECT 1
+              FROM "ProjectGrant" AS project_grant
+              WHERE project_grant."projectId" = chat."projectId"
+                AND (
+                  project_grant."userId" = ${userId}
+                  OR EXISTS (
+                    SELECT 1
+                    FROM "UserGroup" AS membership
+                    INNER JOIN "Group" AS member_group
+                      ON member_group."id" = membership."groupId"
+                    WHERE membership."userId" = ${userId}
+                      AND membership."groupId" = project_grant."groupId"
+                      AND member_group."archivedAt" IS NULL
+                  )
+                )
+            )
+          )
           AND chat."archived" = false
           AND chat."permanentDeletionAt" IS NULL
           ${expectedLeafPredicate}
@@ -219,6 +249,73 @@ export function createPrismaRunRepository(
     return {
       chatMatched: rows.length > 0,
       messages: conversationMessagesFromPathRows(rows)
+    };
+  }
+
+  async function loadProjectRunAdmission(
+    projectId: string,
+    userId: string
+  ): Promise<ProjectRunAdmission | null> {
+    const access = await resolveProjectAccess(prismaClient, {
+      minimumRole: "CONTRIBUTOR",
+      projectId,
+      requireActive: true,
+      userId
+    });
+    if (!access) return null;
+    const project = await prismaClient.project.findUnique({
+      include: {
+        assistantBindings: { select: { assistantId: true, revisionId: true } },
+        knowledgeBaseBindings: { select: { knowledgeBaseId: true } },
+        mcpBindings: { select: { serverId: true } },
+        memoryFacts: {
+          include: { currentVersion: { select: { id: true, text: true } } },
+          orderBy: { updatedAt: "asc" },
+          take: 64,
+          where: {
+            currentVersion: {
+              is: { OR: [{ validUntil: null }, { validUntil: { gt: new Date() } }] }
+            },
+            state: "ACTIVE"
+          }
+        },
+        modelBindings: { select: { providerModelId: true } },
+        searchBindings: { include: { searchOption: { select: { id: true, optionId: true } } } }
+      },
+      where: { id: projectId }
+    });
+    if (!project || project.status !== "ACTIVE") return null;
+    const defaults = decodeProjectDefaults(project.defaults);
+    const policy = decodeProjectPolicy(project.policy);
+    if (!defaults.ok || !policy.ok) return null;
+    return {
+      accessRevision: access.accessRevision,
+      assistantBindings: project.assistantBindings,
+      defaults: defaults.defaults,
+      instructions: project.instructions,
+      instructionsRevision: access.instructionsRevision,
+      knowledgeBaseIds: project.knowledgeBaseBindings.map(({ knowledgeBaseId }) => knowledgeBaseId),
+      mcpServerIds: project.mcpBindings.map(({ serverId }) => serverId),
+      memoryEnabled: project.memoryEnabled,
+      memoryItems: project.memoryFacts.flatMap((fact, ordinal) =>
+        fact.currentVersion
+          ? [{
+              factId: fact.id,
+              factVersionId: fact.currentVersion.id,
+              includedText: fact.currentVersion.text,
+              ordinal
+            }]
+          : []
+      ),
+      memoryRevision: access.memoryRevision,
+      modelIds: project.modelBindings.map(({ providerModelId }) => providerModelId),
+      policy: policy.policy,
+      policyRevision: access.policyRevision,
+      projectId,
+      role: access.effectiveRole,
+      searchOptionIds: project.searchBindings.flatMap(({ searchOption }) =>
+        [searchOption.id, searchOption.optionId]
+      )
     };
   }
 
@@ -452,6 +549,7 @@ export function createPrismaRunRepository(
           Array<{
             assistantMessageId: string | null;
             chatId: string;
+            projectId: string | null;
             errorPayload: Prisma.JsonValue | null;
             modelId: string;
             provider: string;
@@ -461,18 +559,20 @@ export function createPrismaRunRepository(
           }>
         >(Prisma.sql`
           SELECT
-            "assistantMessageId",
-            "chatId",
-            "errorPayload",
-            "modelId",
-            "provider",
-            "providerResponseId",
-            "status",
-            "userId"
-          FROM "ModelRun"
-          WHERE "id" = ${input.runId}
-            AND "userId" = ${input.userId}
-          FOR UPDATE
+            run."assistantMessageId",
+            run."chatId",
+            chat."projectId" AS "projectId",
+            run."errorPayload",
+            run."modelId",
+            run."provider",
+            run."providerResponseId",
+            run."status",
+            run."userId"
+          FROM "ModelRun" AS run
+          INNER JOIN "Chat" AS chat ON chat."id" = run."chatId"
+          WHERE run."id" = ${input.runId}
+            AND run."userId" = ${input.userId}
+          FOR UPDATE OF run
         `);
         const activeCompletion = Boolean(
           existingRun && dispatchableModelRunStatuses.includes(existingRun.status)
@@ -567,6 +667,7 @@ export function createPrismaRunRepository(
             provider: attribution.provider,
             reasoningTokens: attribution.usage.reasoningTokens,
             totalTokens: attribution.usage.totalTokens,
+            ...(existingRun.projectId ? { projectId: existingRun.projectId } : {}),
             userId: input.userId
           }))
         });
@@ -756,79 +857,67 @@ export function createPrismaRunRepository(
         return true;
       });
     },
-    findOwnedChat: (chatId, userId) =>
-	      prismaClient.chat.findFirst({
-	        select: {
-	          _count: {
-	            select: {
-	              messages: true
-	            }
-	          },
-	          activeLeafMessageId: true,
-	          defaultKnowledgePlan: true,
-	          defaultProviderModel: {
-	            select: {
-	              connectionId: true,
-	              id: true
-	            }
-	          },
-	          folder: {
-	            select: {
-	              defaultKnowledgePlan: true,
-	              projectMemory: true
-	            }
-	          },
-	          id: true,
-	          memoryMode: true,
-	          title: true
-	        },
+    findOwnedChat: async (chatId, userId) => {
+      const chat = await prismaClient.chat.findFirst({
+        select: {
+          _count: { select: { messages: true } },
+          activeLeafMessageId: true,
+          defaultKnowledgePlan: true,
+          defaultProviderModel: { select: { connectionId: true, id: true } },
+          folder: { select: { defaultKnowledgePlan: true, projectMemory: true } },
+          id: true,
+          memoryMode: true,
+          projectId: true,
+          title: true
+        },
         where: {
           archived: false,
           id: chatId,
           permanentDeletionAt: null,
-          userId
+          OR: [
+            { userId },
+            { projectId: { not: null } }
+          ]
         }
-      }).then((chat) =>
-        chat
-	          ? {
-	              activeLeafMessageId: chat.activeLeafMessageId,
-	              defaultKnowledgePlan: chat.defaultKnowledgePlan,
-	              defaultModelId: chat.defaultProviderModel?.id ?? "",
-	              defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
-	              folderDefaultKnowledgePlan: chat.folder?.defaultKnowledgePlan ?? null,
-	              id: chat.id,
-	              memoryMode: chat.memoryMode,
-	              messageCount: chat._count.messages,
-	              projectMemory: chat.folder?.projectMemory ?? null,
-	              title: chat.title
-	            }
-          : null
-      ),
-    findRecentActiveRunForChat: ({ chatId, since, userId }) =>
-      prismaClient.modelRun.findFirst({
+      });
+      if (!chat) return null;
+      const project = chat.projectId
+        ? await loadProjectRunAdmission(chat.projectId, userId)
+        : null;
+      if (chat.projectId && !project) return null;
+      return {
+        activeLeafMessageId: chat.activeLeafMessageId,
+        defaultKnowledgePlan: chat.defaultKnowledgePlan,
+        defaultModelId: chat.defaultProviderModel?.id ?? "",
+        defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
+        folderDefaultKnowledgePlan: chat.folder?.defaultKnowledgePlan ?? null,
+        id: chat.id,
+        memoryMode: chat.memoryMode,
+        messageCount: chat._count.messages,
+        projectMemory: chat.folder?.projectMemory ?? null,
+        ...(project ? { project } : {}),
+        title: chat.title
+      };
+    },
+    findRecentActiveRunForChat: async ({ chatId, since, userId }) => {
+      const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: chatId } });
+      const access = chat?.projectId
+        ? await resolveProjectAccess(prismaClient, {
+            projectId: chat.projectId,
+            requireActive: true,
+            userId
+          })
+        : null;
+      if (!chat || (chat.userId !== userId && (!chat.projectId || !access))) return null;
+      return prismaClient.modelRun.findFirst({
         select: {
-          assistantMessageId: true,
-          chatId: true,
-          id: true,
-          modelId: true,
-          provider: true,
-          providerResponseId: true,
-          status: true
+          assistantMessageId: true, chatId: true, id: true, modelId: true,
+          provider: true, providerResponseId: true, status: true
         },
-        orderBy: {
-          updatedAt: "desc"
-        },
-        where: {
-          chatId,
-          userId,
-          status: {
-            in: activeModelRunStatuses
-          },
-          updatedAt: {
-            gt: since
-          }
-        }
-      }),
+        orderBy: { updatedAt: "desc" },
+        where: { chatId, status: { in: activeModelRunStatuses }, updatedAt: { gt: since } }
+      });
+    },
     findStaleActiveRunsForUser: (input) =>
       prismaClient.modelRun.findMany({
         select: {
@@ -901,7 +990,8 @@ export function createPrismaRunRepository(
                 }
               },
               id: true,
-              memoryMode: true
+              memoryMode: true,
+              projectId: true
             }
           },
           parent: {
@@ -912,11 +1002,10 @@ export function createPrismaRunRepository(
             }
           }
         },
-        where: {
-          chat: {
-            archived: false,
-            permanentDeletionAt: null,
-            userId
+          where: {
+            chat: {
+              archived: false,
+              permanentDeletionAt: null
           },
           id: sourceMessageId,
           role: { in: ["assistant", "user"] }
@@ -927,6 +1016,18 @@ export function createPrismaRunRepository(
         return null;
       }
 
+      const access = await resolveChatAccess(prismaClient, {
+        chatId: sourceMessage.chat.id,
+        minimumProjectRole: "CONTRIBUTOR",
+        requireMutable: true,
+        userId
+      });
+      if (!access) return null;
+      const project = sourceMessage.chat.projectId
+        ? await loadProjectRunAdmission(sourceMessage.chat.projectId, userId)
+        : null;
+      if (sourceMessage.chat.projectId && !project) return null;
+
       const chat = {
         defaultKnowledgePlan: sourceMessage.chat.defaultKnowledgePlan,
         defaultModelId: sourceMessage.chat.defaultProviderModel?.id ?? "",
@@ -934,7 +1035,8 @@ export function createPrismaRunRepository(
         folderDefaultKnowledgePlan: sourceMessage.chat.folder?.defaultKnowledgePlan ?? null,
         id: sourceMessage.chat.id,
         memoryMode: sourceMessage.chat.memoryMode,
-        projectMemory: sourceMessage.chat.folder?.projectMemory ?? null
+        projectMemory: sourceMessage.chat.folder?.projectMemory ?? null,
+        ...(project ? { project } : {})
       };
 
       if (sourceMessage.role === "user") {
@@ -965,7 +1067,7 @@ export function createPrismaRunRepository(
         },
         where: {
           assistantMessageId: sourceMessage.id,
-          userId
+          ...(sourceMessage.chat.projectId ? {} : { userId })
         }
       });
       const answerBinding = sourceRun?.providerRunBindings[0];
@@ -995,11 +1097,15 @@ export function createPrismaRunRepository(
           providerResponseId: true,
           status: true
         },
-        where: {
-          id: runId,
-          userId
-        }
+        where: { id: runId }
       });
+      if (run) {
+        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: run.chatId } });
+        const projectAccess = chat?.projectId
+          ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId })
+          : null;
+        if (chat?.userId !== userId && !projectAccess) return null;
+      }
 
       return run
         ? {
@@ -1014,17 +1120,41 @@ export function createPrismaRunRepository(
           }
         : null;
     },
+    isProjectRunAccessCurrent: async ({
+      accessRevision,
+      instructionsRevision,
+      memoryRevision,
+      policyRevision,
+      projectId,
+      userId
+    }) => {
+      const access = await resolveProjectAccess(prismaClient, {
+        minimumRole: "CONTRIBUTOR",
+        projectId,
+        requireActive: true,
+        userId
+      });
+      return access?.accessRevision === accessRevision &&
+        access.instructionsRevision === instructionsRevision &&
+        access.memoryRevision === memoryRevision &&
+        access.policyRevision === policyRevision;
+    },
     getRunOutcomeForUser: async (runId, userId) => {
       const run = await prismaClient.modelRun.findFirst({
         select: {
+          chatId: true,
           id: true,
           status: true
         },
-        where: {
-          id: runId,
-          userId
-        }
+        where: { id: runId }
       });
+      if (run) {
+        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: run.chatId } });
+        const projectAccess = chat?.projectId
+          ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId })
+          : null;
+        if (chat?.userId !== userId && !projectAccess) return null;
+      }
 
       return run
         ? {
@@ -1035,6 +1165,8 @@ export function createPrismaRunRepository(
     },
     getChatUpdateForRun: async ({ assistantMessageId, chatId, userId, userMessageId }) => {
       return prismaClient.$transaction(async (tx) => {
+        const access = await resolveChatAccess(tx, { chatId, userId });
+        if (!access) return null;
         const chat = await tx.chat.findFirst({
         select: {
           _count: {
@@ -1054,6 +1186,8 @@ export function createPrismaRunRepository(
           folderId: true,
           id: true,
           memoryMode: true,
+          projectFolderId: true,
+          projectId: true,
           messages: {
             include: {
               assistantModelRuns: {
@@ -1131,8 +1265,7 @@ export function createPrismaRunRepository(
         where: {
           archived: false,
           id: chatId,
-          permanentDeletionAt: null,
-          userId
+          permanentDeletionAt: null
         }
         });
 
@@ -1147,7 +1280,7 @@ export function createPrismaRunRepository(
             activeLeafMessageId: chat.activeLeafMessageId,
             chatId
           }),
-          loadMemoryRunActions(tx, { runIds, userId })
+          chat.projectId ? Promise.resolve(new Map<string, never>()) : loadMemoryRunActions(tx, { runIds, userId })
         ]);
 
         return {
@@ -1158,10 +1291,11 @@ export function createPrismaRunRepository(
             defaultKnowledgePlan: knowledgeDefaultFromJson(chat.defaultKnowledgePlan),
             defaultModelId: chat.defaultProviderModel?.id ?? null,
             defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
-            folderId: chat.folderId,
+            folderId: chat.projectFolderId ?? chat.folderId,
             id: chat.id,
             messageCount: chat._count.messages,
             pinned: chat.pinned,
+            projectId: chat.projectId,
             title: chat.title,
             updatedAt: chat.updatedAt,
             usageStats
@@ -1178,6 +1312,13 @@ export function createPrismaRunRepository(
                   )
                 : null,
               assistantIdentity: serializeRunAssistantIdentity(modelRun),
+              author: message.authorDisplayName && message.authorProjectRole
+                ? {
+                    displayName: message.authorDisplayName,
+                    role: message.authorProjectRole,
+                    userId: message.authorUserId
+                  }
+                : null,
               content: message.content,
               createdAt: message.createdAt,
               errorMessage: message.errorMessage,
@@ -1235,7 +1376,7 @@ export function createPrismaRunRepository(
       });
       return context.messages;
     },
-    loadAttachments: async (userId, attachmentIds) => {
+    loadAttachments: async (userId, attachmentIds, projectId) => {
       if (attachmentIds.length === 0) {
         return [];
       }
@@ -1245,7 +1386,7 @@ export function createPrismaRunRepository(
           id: {
             in: attachmentIds
           },
-          userId
+          ...(projectId ? { projectId } : { userId })
         }
       });
 

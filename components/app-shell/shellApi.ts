@@ -188,6 +188,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
   return {
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
+    author: message.author ?? null,
     content:
       message.status === "error"
         ? persistedText || message.errorMessage || ""
@@ -216,6 +217,7 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     id: chat.id,
     messageCount: chat.messageCount,
     pinned: chat.pinned,
+    projectId: chat.projectId ?? null,
     title: chat.title,
     updatedAt: chat.updatedAt
   };

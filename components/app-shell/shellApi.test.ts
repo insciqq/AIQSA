@@ -205,6 +205,7 @@ describe("chat wire mapping", () => {
       id: "chat-1",
       messageCount: 2,
       pinned: false,
+      projectId: null,
       title: "Mapped chat",
       updatedAt: "2026-07-12T00:01:00.000Z"
     });

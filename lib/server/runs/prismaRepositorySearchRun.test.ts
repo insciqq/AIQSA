@@ -132,7 +132,15 @@ describe("Prisma run repository search evidence", () => {
     ]);
     const tx = {
       $queryRaw: transactionRawRead,
-      chat: { findFirst: transactionChatRead },
+      chat: {
+        findFirst: transactionChatRead,
+        findUnique: vi.fn().mockResolvedValue({
+          archived: false,
+          permanentDeletionAt: null,
+          projectId: null,
+          userId: "user-1"
+        })
+      },
       message: { findMany: transactionMessagesRead }
     };
     const transaction = vi.fn(async (run: (client: typeof tx) => Promise<unknown>) => run(tx));

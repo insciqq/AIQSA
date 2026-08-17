@@ -37,6 +37,7 @@ export type {
 export type ChatMessageRecord = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
+  author?: ChatMessageWire["author"];
   content: unknown;
   createdAt: Date | string;
   errorMessage?: string | null;
@@ -60,6 +61,7 @@ export type ChatSummaryRecord = {
   id: string;
   messageCount: number;
   pinned: boolean;
+  projectId?: string | null;
   title: string;
   updatedAt: Date | string;
 };
@@ -245,6 +247,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   return {
     artifactSummary: message.artifactSummary ?? null,
     assistantIdentity: message.assistantIdentity ?? null,
+    author: message.author ?? null,
     content: message.content,
     createdAt: iso(message.createdAt),
     errorMessage: message.errorMessage ?? null,
@@ -270,6 +273,7 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     id: chat.id,
     messageCount: chat.messageCount,
     pinned: chat.pinned,
+    projectId: chat.projectId ?? null,
     title: chat.title,
     updatedAt: iso(chat.updatedAt)
   };

@@ -423,6 +423,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
+        ...(preparedData.project ? { project: preparedData.project } : {}),
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
           preparedData,
@@ -571,6 +572,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
+        ...(preparedData.project ? { project: preparedData.project } : {}),
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
           preparedData,

@@ -310,6 +310,7 @@ async function countUserOwnedAppData(
     }),
     tx.modelRun.count({
       where: {
+        chat: { projectId: null },
         userId
       }
     }),

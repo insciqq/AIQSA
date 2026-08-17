@@ -4,9 +4,11 @@ import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
+  ThreadKnowledgeCitation,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
-import { useMemo, type ReactNode } from "react";
+import type { ProjectKnowledgeCitationWire } from "@/lib/contracts/projects";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
 import { MemoryActionConfirmationV2 } from "./MemoryActionConfirmationV2";
 import { presentSearchSourcesV2 } from "./sourcePresentation";
@@ -41,7 +43,86 @@ function answerWebSources(artifact: ThreadArtifactSummary): readonly ThreadSearc
   return [...artifact.sources, ...citationSources];
 }
 
-export function SourcesV2({ artifact }: Readonly<{ artifact: ThreadArtifactSummary }>) {
+type KnowledgeCitationLoader = (
+  citation: ThreadKnowledgeCitation
+) => Promise<ProjectKnowledgeCitationWire>;
+
+function KnowledgeSourceV2({
+  citation,
+  index,
+  loadCitation
+}: Readonly<{
+  citation: ThreadKnowledgeCitation;
+  index: number;
+  loadCitation?: KnowledgeCitationLoader;
+}>) {
+  const detailId = useId();
+  const [detail, setDetail] = useState<ProjectKnowledgeCitationWire | null>(null);
+  const [status, setStatus] = useState<"error" | "idle" | "loading" | "open">("idle");
+
+  const toggle = async () => {
+    if (!loadCitation || status === "loading") return;
+    if (status === "open") {
+      setStatus("idle");
+      return;
+    }
+    if (detail) {
+      setStatus("open");
+      return;
+    }
+    setStatus("loading");
+    try {
+      const loaded = await loadCitation(citation);
+      if (loaded.handle !== citation.handle) throw new Error("project_citation_malformed");
+      setDetail(loaded);
+      setStatus("open");
+    } catch {
+      setDetail(null);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <li>
+      <span className="v2-answer-source-index">{index}</span>
+      <div>
+        {loadCitation ? (
+          <button
+            aria-controls={detailId}
+            aria-expanded={status === "open"}
+            className="v2-answer-knowledge-link"
+            disabled={status === "loading"}
+            type="button"
+            onClick={() => void toggle()}
+          >
+            {citation.fileName}
+          </button>
+        ) : <strong>{citation.fileName}</strong>}
+        <small>{citation.baseName} · page {citation.page}</small>
+        {status === "loading" ? (
+          <small id={detailId} role="status">Checking Project access…</small>
+        ) : null}
+        {status === "error" ? (
+          <small className="v2-answer-output-error" id={detailId} role="status">
+            This source is no longer available in the Project.
+          </small>
+        ) : null}
+        {status === "open" && detail ? (
+          <div className="v2-answer-knowledge-detail" id={detailId}>
+            <small>Accepted passage · stored with this answer</small>
+            <blockquote>{detail.text}</blockquote>
+            {detail.textTruncated ? <small>Passage truncated at run time.</small> : null}
+          </div>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+export function SourcesV2({ artifact, loadKnowledgeCitation }: Readonly<{
+  artifact: ThreadArtifactSummary;
+  loadKnowledgeCitation?: KnowledgeCitationLoader;
+}>) {
   const presented = useMemo(
     () => presentSearchSourcesV2(answerWebSources(artifact)),
     [artifact]
@@ -83,13 +164,12 @@ export function SourcesV2({ artifact }: Readonly<{ artifact: ThreadArtifactSumma
         {knowledge.length > 0 ? (
           <ol className="v2-answer-knowledge-sources" aria-label="Knowledge sources">
             {knowledge.map((citation, index) => (
-              <li key={`${citation.handle}:${index}`}>
-                <span className="v2-answer-source-index">{presented.sources.length + index + 1}</span>
-                <span>
-                  <strong>{citation.fileName}</strong>
-                  <small>{citation.baseName} · page {citation.page}</small>
-                </span>
-              </li>
+              <KnowledgeSourceV2
+                citation={citation}
+                index={presented.sources.length + index + 1}
+                key={`${citation.handle}:${index}`}
+                loadCitation={loadKnowledgeCitation}
+              />
             ))}
           </ol>
         ) : null}
@@ -114,10 +194,12 @@ export function ReasoningV2({ texts }: Readonly<{ texts: readonly string[] }>) {
 export function AnswerOutputsV2({
   artifact,
   identitySlot = null,
+  loadKnowledgeCitation,
   showReasoning
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   identitySlot?: ReactNode;
+  loadKnowledgeCitation?: KnowledgeCitationLoader;
   showReasoning: boolean;
 }>) {
   const hasSources = Boolean(
@@ -139,7 +221,9 @@ export function AnswerOutputsV2({
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
       {identitySlot ? <div className="v2-answer-identity">{identitySlot}</div> : null}
-      {artifact && hasSources ? <SourcesV2 artifact={artifact} /> : null}
+      {artifact && hasSources ? (
+        <SourcesV2 artifact={artifact} loadKnowledgeCitation={loadKnowledgeCitation} />
+      ) : null}
       {artifact?.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
       ) : null}

@@ -31,6 +31,7 @@ export type BranchChatRecord = {
   id: string;
   messageCount: number;
   pinned: boolean;
+  projectId?: string | null;
   title: string;
   updatedAt: Date | string;
 };
@@ -120,6 +121,7 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
     id: chat.id,
     messageCount: chat.messageCount,
     pinned: chat.pinned,
+    ...(chat.projectId !== undefined ? { projectId: chat.projectId } : {}),
     title: chat.title,
     updatedAt: chat.updatedAt instanceof Date ? chat.updatedAt.toISOString() : chat.updatedAt
   };

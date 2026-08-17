@@ -33,6 +33,7 @@ const summary = {
   id: "chat-1",
   messageCount: 1,
   pinned: false,
+  projectId: null,
   title: "Exact boundary",
   updatedAt: "2026-07-14T08:01:00.000Z"
 };

@@ -23,6 +23,7 @@ import type {
 import type { RefObject } from "react";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
+import type { ProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 
 export type ShellSessionView = {
   accountId: string;
@@ -89,6 +90,7 @@ export type ShellWorkspaceView = {
     open: boolean;
   };
   pane: ShellWorkspacePaneView;
+  projects: ProjectWorkspaceController;
   projectSettings: {
     changeDraft(value: string): void;
     changeKnowledgeBaseIds(value: string[]): void;

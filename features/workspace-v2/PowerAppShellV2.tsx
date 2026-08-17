@@ -129,6 +129,7 @@ import {
   useThreadStore
 } from "@/components/app-shell/threadStore";
 import type {
+  Catalog,
   CatalogModel,
   ChatDetail,
   WorkspaceChatSummary,
@@ -141,11 +142,64 @@ import {
 } from "@/components/app-shell/powerAppShellData";
 import { useBranchGraphController } from "./useBranchGraphController";
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
+import { useProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
+import type { ProjectDetailWire } from "@/lib/contracts/projects";
 
 export {
   runCatalogLoadDeduped,
   workspaceDefaultControlsFingerprint
 } from "./useWorkspaceBootstrapController";
+
+/** Narrow the entitled catalog to the resources placed on a Project worktable. */
+export function effectiveProjectCatalog(
+  catalog: Catalog | null,
+  project: ProjectDetailWire | null
+): Catalog | null {
+  if (!catalog || !project) return catalog;
+
+  const modelIds = new Set(project.resources.flatMap((resource) =>
+    resource.type === "model" && resource.available ? [resource.resourceId] : []
+  ));
+  const linkedSearchIds = new Set(project.resources.flatMap((resource) =>
+    resource.type === "search" && resource.available ? [resource.resourceId] : []
+  ));
+  const searchIds = new Set(catalog.searchStrategies.flatMap((strategy) =>
+    strategy.kind === "none" || linkedSearchIds.has(strategy.strategyId)
+      ? [strategy.strategyId]
+      : []
+  ));
+  const models = catalog.models
+    .filter((model) => modelIds.has(model.modelId))
+    .map((model) => ({
+      ...model,
+      searchOptionCompatibility: model.searchOptionCompatibility
+        ? Object.fromEntries(Object.entries(model.searchOptionCompatibility).filter(([strategyId]) =>
+            searchIds.has(strategyId)))
+        : undefined,
+      searchStrategyIds: model.searchStrategyIds.filter((strategyId) => searchIds.has(strategyId))
+    }));
+  const modelsByProvider = new Map<string, Set<string>>();
+  for (const model of models) {
+    const providerModels = modelsByProvider.get(model.provider) ?? new Set<string>();
+    providerModels.add(model.modelId);
+    modelsByProvider.set(model.provider, providerModels);
+  }
+
+  return {
+    ...catalog,
+    models,
+    providers: catalog.providers.flatMap((provider) => {
+      const providerModels = modelsByProvider.get(provider.id);
+      return providerModels
+        ? [{
+            ...provider,
+            models: provider.models.filter((modelId) => providerModels.has(modelId))
+          }]
+        : [];
+    }),
+    searchStrategies: catalog.searchStrategies.filter((strategy) => searchIds.has(strategy.strategyId))
+  };
+}
 
 export function PowerAppShellV2({
   accountId,
@@ -654,6 +708,64 @@ export function PowerAppShellV2({
       : skillSnapshot.loadState === "ready" ? "ready" : "loading",
     skills: skillSnapshot.data?.skills ?? []
   });
+
+  const applyProjectDefaults = useEventCallback((
+    project: ProjectDetailWire,
+    chat: WorkspaceChatSummary
+  ) => {
+    const model = catalog?.models.find((candidate) =>
+      candidate.provider === chat.defaultProvider && candidate.modelId === chat.defaultModelId
+    );
+    setSelectedProvider(model?.provider ?? chat.defaultProvider, "system");
+    setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
+    setSelectedSearchPlan(
+      project.defaults.searchPlan.optionIds,
+      project.defaults.searchPlan.mode,
+      "system"
+    );
+    setSelectedKnowledgePlan(
+      chat.defaultKnowledgePlan?.baseIds ?? project.defaults.knowledgePlan.baseIds,
+      "project",
+      "system"
+    );
+    applyModelControlDefaults(model, model ? {
+      [`${model.provider}:${model.modelId}`]: project.defaults.controlValues
+    } : {});
+    useComposerControlStore.getState().setSelectedSkills([]);
+    useComposerControlStore.getState().setMcpSelection({
+      mode: project.policy.externalToolsEnabled ? project.defaults.mcpMode : "off"
+    });
+    if (project.defaults.assistantId) {
+      void assistantLibraryActions.useAssistant(project.defaults.assistantId, { navigate: false });
+    } else {
+      removeAssistantFromComposer();
+    }
+  });
+
+  const onProjectAccessLost = useEventCallback((chatIds: readonly string[]) => {
+    for (const chatId of chatIds) {
+      activeStreamAbortRef.current.get(chatId)?.abort();
+      activeStreamAbortRef.current.delete(chatId);
+      chatDetailRequestsRef.current.delete(chatId);
+      useRunLifecycleStore.getState().streamFinished({ chatId });
+      useRunLifecycleStore.getState().ambiguityCleared({ chatId });
+      useThreadStore.getState().removeThread(chatId);
+      useRunSurfaceStore.getState().removeSurface(chatId);
+      useComposerSessionStore.getState().removeSession(composerSessionKey(chatId));
+    }
+  });
+
+  const projectWorkspace = useProjectWorkspaceController({
+    accountId,
+    activeChatId,
+    activateBlankWorkspace,
+    activateChat,
+    applyProjectDefaults,
+    isLocallyStreaming: (chatId) => Boolean(useRunLifecycleStore.getState().activeStreams[chatId]),
+    onProjectAccessLost,
+    refreshActiveChat,
+    setNotice
+  });
   const openAssistantLibrary = () => {
     closeMemoryWorkspace();
     closeGeneralSettings();
@@ -727,6 +839,9 @@ export function PowerAppShellV2({
     activeChatIdRef,
     activeStreamAbortRef,
     notifyAnswerReady,
+    projectIdForChat: (chatId) => chatId
+      ? useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId)?.projectId ?? null
+      : null,
     refreshActiveChat,
     setNotice
   });
@@ -955,6 +1070,7 @@ export function PowerAppShellV2({
       open: archivedChatsOpen
     },
     pane: workspacePaneView,
+    projects: projectWorkspace,
     projectSettings: {
       changeDraft: workspaceInteraction.projectSettings.changeDraft,
       changeKnowledgeBaseIds: workspaceInteraction.projectSettings.changeKnowledgeBaseIds,
@@ -1037,10 +1153,45 @@ export function PowerAppShellV2({
     visibleMessages
   } satisfies ShellThreadView;
 
+  const activeProject = activeChat?.projectId && projectWorkspace.detail?.id === activeChat.projectId
+    ? projectWorkspace.detail
+    : null;
+  const activeProjectChat = activeProject && activeChat
+    ? projectWorkspace.workspace?.chats.find((chat) => chat.id === activeChat.id) ?? null
+    : null;
+  const activeProjectModels = activeProject?.resources.filter((resource) =>
+    resource.type === "model" && resource.available
+  ) ?? [];
+  const projectCatalog = effectiveProjectCatalog(catalog, activeProject);
+  const linkedProjectKnowledgeBaseIds = new Set(activeProject?.resources.flatMap((resource) =>
+    resource.type === "knowledge" && resource.available ? [resource.resourceId] : []
+  ) ?? []);
+  const linkedProjectAssistantIds = new Set(activeProject?.resources.flatMap((resource) =>
+    resource.type === "assistant" && resource.available ? [resource.resourceId] : []
+  ) ?? []);
+  const activeModelLinkedToProject = !activeProject || Boolean(currentModel && activeProjectModels.some(
+    (resource) => resource.provider === currentModel.provider && resource.resourceId === currentModel.modelId
+  ));
+  const projectComposerDisabledHint = projectWorkspace.selectedProjectId && !activeChat
+    ? "Start or choose a shared chat before sending a message."
+    : activeChat?.projectId && !activeProject
+      ? "Project access is being revalidated."
+    : activeProject && activeProject.status !== "ACTIVE"
+        ? "This project is archived and read-only."
+        : activeProjectChat?.archived
+          ? "This shared chat is archived and read-only."
+        : activeProject && !activeProject.capabilities.mutateChats
+          ? "Viewer access is read-only. Ask a project manager for Contributor access."
+          : activeProject && activeProjectModels.length === 0
+            ? "No model is linked to this project. Ask a project manager to link one."
+            : activeProject && !activeModelLinkedToProject
+              ? "Choose a model linked to this project."
+              : null;
+
   const composerView = {
     attachments,
     backgroundMode,
-    catalog,
+    catalog: projectCatalog,
     catalogError,
     changeBackgroundMode,
     changeMaxOutputTokens,
@@ -1051,9 +1202,11 @@ export function PowerAppShellV2({
     composerActions,
     assistant: {
       clearRemovedNotice: () => useComposerControlStore.getState().clearAssistantRemovedNotice(),
-      openLibrary: openAssistantLibrary,
+      openLibrary: activeProject ? projectWorkspace.actions.openSettings : openAssistantLibrary,
       openPicker: assistantPickerOpen,
-      pickerItems: librarySnapshot.data?.assistants ?? [],
+      pickerItems: (librarySnapshot.data?.assistants ?? []).filter((assistant) =>
+        !activeProject || linkedProjectAssistantIds.has(assistant.id)
+      ),
       pickerLoading: librarySnapshot.dataState === "loading" && !librarySnapshot.data,
       recentIds: recentAssistantIds,
       remove: removeAssistantFromComposer,
@@ -1071,13 +1224,15 @@ export function PowerAppShellV2({
       }
     },
     composerContextStats,
-    composerDisabledHint,
+    composerDisabledHint: projectComposerDisabledHint ?? composerDisabledHint,
     composerUsageStats,
     currentModel,
     currentParameterControls,
     draft,
     knowledge: {
-      bases: knowledgeSnapshot.data?.knowledgeBases ?? [],
+      bases: (knowledgeSnapshot.data?.knowledgeBases ?? []).filter((base) =>
+        !activeProject || linkedProjectKnowledgeBaseIds.has(base.id)
+      ),
       select: (baseIds) => setSelectedKnowledgePlan(baseIds, "explicit", "user"),
       selectedBaseIds: selectedKnowledgeBaseIds
     },
@@ -1092,7 +1247,7 @@ export function PowerAppShellV2({
       retentionDeadline: activeChat?.temporaryRetentionDeadline ?? null,
       toggleTemporary: toggleTemporaryComposer
     },
-    makeModelDefault,
+    makeModelDefault: activeProject ? undefined : makeModelDefault,
     notificationSoundEnabled,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,

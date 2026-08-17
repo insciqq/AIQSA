@@ -1,0 +1,192 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { ProjectDetailWire, ProjectWorkspaceResponseWire } from "@/lib/contracts/projects";
+import {
+  CreateProjectDialogV2,
+  ProjectContextRailV2,
+  ProjectSettingsDialogV2
+} from "./ProjectWorkspaceSurfacesV2";
+import type { ProjectWorkspaceController } from "./useProjectWorkspaceController";
+
+const activeChat: ProjectWorkspaceResponseWire["chats"][number] = {
+  activeRun: true,
+  activeLeafMessageId: "message-1",
+  archived: false,
+  createdAt: "2026-08-17T00:00:00.000Z",
+  createdByDisplayName: "Mira",
+  createdByUserId: "user-2",
+  defaultKnowledgePlan: { baseIds: ["knowledge-1"] },
+  defaultModelId: "model-1",
+  defaultProvider: "openai",
+  folderId: null,
+  id: "chat-1",
+  messageCount: 3,
+  pinned: false,
+  projectId: "project-1",
+  title: "Shared launch plan",
+  updatedAt: "2026-08-17T00:02:00.000Z"
+};
+
+const archivedChat: ProjectWorkspaceResponseWire["chats"][number] = {
+  ...activeChat,
+  activeRun: false,
+  archived: true,
+  id: "chat-archived",
+  title: "Earlier decision"
+};
+
+function projectDetail(role: "OWNER" | "VIEWER" = "OWNER"): ProjectDetailWire {
+  const owner = role === "OWNER";
+  return {
+    accessRevision: 3,
+    audienceCount: 4,
+    capabilities: {
+      archiveChats: owner,
+      manageMembers: owner,
+      manageMemory: owner,
+      manageOwners: owner,
+      manageProject: owner,
+      mutateChats: owner
+    },
+    chatCount: 2,
+    createdAt: "2026-08-17T00:00:00.000Z",
+    defaults: {
+      assistantId: null,
+      controlValues: { maxOutputTokens: "2048", reasoningEffort: "medium" },
+      knowledgePlan: { baseIds: ["knowledge-1"] },
+      mcpMode: "auto",
+      providerModelId: "model-1",
+      searchPlan: { mode: "all_selected", optionIds: ["search-1"] }
+    },
+    description: "A real shared working table",
+    directRole: role,
+    effectiveRole: role,
+    grantedThrough: [],
+    grants: [{
+      createdAt: "2026-08-17T00:00:00.000Z",
+      group: null,
+      id: "grant-1",
+      role: "OWNER",
+      user: { displayName: "Dana", email: "dana@example.test", id: "user-1", status: "active" }
+    }],
+    id: "project-1",
+    instructions: "Keep decisions explicit.",
+    instructionsRevision: 2,
+    memoryEnabled: true,
+    memoryRevision: 4,
+    name: "Launch room",
+    policy: { externalToolsEnabled: true },
+    policyRevision: 5,
+    publicSharingEnabled: false,
+    resources: [
+      { available: true, id: "model:model-1", label: "GPT shared", reason: null, resourceId: "model-1", type: "model" },
+      { available: true, id: "knowledge-binding-1", label: "Launch notes", reason: null, resourceId: "knowledge-1", type: "knowledge" },
+      { available: true, id: "search:search-db-1", label: "Web", reason: null, resourceId: "search-1", type: "search" },
+      { available: true, id: "mcp:mcp-1", label: "Shared tools", reason: null, resourceId: "mcp-1", type: "mcp" }
+    ],
+    status: "ACTIVE",
+    updatedAt: "2026-08-17T00:03:00.000Z"
+  };
+}
+
+function controller(role: "OWNER" | "VIEWER" = "OWNER"): ProjectWorkspaceController {
+  const actions: ProjectWorkspaceController["actions"] = {
+    addGrant: vi.fn().mockResolvedValue(true),
+    addResource: vi.fn().mockResolvedValue(true),
+    archiveChat: vi.fn().mockResolvedValue(true),
+    closeCreate: vi.fn(),
+    closeSettings: vi.fn(),
+    create: vi.fn().mockResolvedValue(true),
+    createChat: vi.fn().mockResolvedValue(true),
+    createFolder: vi.fn().mockResolvedValue(true),
+    deleteFolder: vi.fn().mockResolvedValue(true),
+    deleteProject: vi.fn().mockResolvedValue(true),
+    editMemoryFact: vi.fn().mockResolvedValue(true),
+    forgetMemoryFact: vi.fn().mockResolvedValue(true),
+    leave: vi.fn(),
+    openCreate: vi.fn(),
+    openSettings: vi.fn(),
+    refresh: vi.fn().mockResolvedValue(true),
+    refreshList: vi.fn().mockResolvedValue(true),
+    removeGrant: vi.fn().mockResolvedValue(true),
+    removeResource: vi.fn().mockResolvedValue(true),
+    moveChat: vi.fn().mockResolvedValue(true),
+    reviewMemoryProposal: vi.fn().mockResolvedValue(true),
+    saveMemory: vi.fn().mockResolvedValue(true),
+    selectChat: vi.fn().mockResolvedValue(true),
+    selectProject: vi.fn().mockResolvedValue(true),
+    updateGrant: vi.fn().mockResolvedValue(true),
+    updateFolder: vi.fn().mockResolvedValue(true),
+    updateProject: vi.fn().mockResolvedValue(true)
+  };
+  const detail = projectDetail(role);
+  return {
+    actionError: null,
+    activity: { events: [], nextCursor: null },
+    actions,
+    busy: false,
+    createOpen: false,
+    detail,
+    lastSyncedAt: Date.parse("2026-08-17T00:03:00.000Z"),
+    listError: null,
+    listLoading: false,
+    memory: { enabled: true, facts: [], proposals: [], revision: 4 },
+    projects: [detail],
+    selectedProjectId: detail.id,
+    settingsOpen: true,
+    syncState: "idle",
+    workspace: { chats: [activeChat, archivedChat], folders: [] }
+  };
+}
+
+describe("Project workspace surfaces", () => {
+  it("keeps the application interactive while the create dialog is closed", () => {
+    const application = document.createElement("main");
+    document.body.appendChild(application);
+    const view = render(<CreateProjectDialogV2 controller={controller()} />);
+
+    expect(screen.queryByRole("dialog", { name: "Create project" })).toBeNull();
+    expect(application.inert).not.toBe(true);
+    expect(application).not.toHaveAttribute("aria-hidden");
+    expect(document.body.style.overflow).toBe("");
+
+    view.unmount();
+    application.remove();
+  });
+
+  it("keeps shared audience, role, Memory isolation, defaults, and live state permanently visible", () => {
+    render(<ProjectContextRailV2 activeChatProjectId="project-1" controller={controller()} />);
+
+    const rail = screen.getByRole("complementary", { name: "Shared project context" });
+    expect(within(rail).getByText("Launch room")).toBeVisible();
+    expect(within(rail).getByText("Shared with all project members · Personal Memory is off")).toBeVisible();
+    expect(within(rail).getByText("owner")).toBeVisible();
+    expect(within(rail).getByText("Project Memory on")).toBeVisible();
+    expect(within(rail).getByText("Search 1 · Knowledge 1")).toBeVisible();
+    expect(within(rail).getByText("Shared desk live")).toBeVisible();
+  });
+
+  it("lets an owner restore shared history while keeping lifecycle controls absent for a viewer", async () => {
+    const ownerController = controller();
+    const { unmount } = render(<ProjectSettingsDialogV2 controller={ownerController} />);
+    const ownerDialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+
+    expect(within(ownerDialog).getByRole("heading", { name: "Archived chats" })).toBeVisible();
+    fireEvent.click(within(ownerDialog).getByRole("button", { name: "Members" }));
+    expect(within(ownerDialog).getByText("Your owner access comes from direct owner.")).toBeVisible();
+    fireEvent.click(within(ownerDialog).getByRole("button", { name: "Project" }));
+    fireEvent.click(within(ownerDialog).getByRole("button", { name: "Restore" }));
+    expect(ownerController.actions.archiveChat).toHaveBeenCalledWith("chat-archived", false);
+    expect(within(ownerDialog).getByRole("button", { name: "Archive project" })).toBeVisible();
+    expect(within(ownerDialog).getByRole("button", { name: "Delete project" })).toBeVisible();
+    unmount();
+
+    const viewerController = controller("VIEWER");
+    render(<ProjectSettingsDialogV2 controller={viewerController} />);
+    const viewerDialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    expect(within(viewerDialog).getByRole("heading", { name: "Archived chats" })).toBeVisible();
+    expect(within(viewerDialog).queryByRole("button", { name: "Restore" })).toBeNull();
+    expect(within(viewerDialog).queryByRole("button", { name: "Save changes" })).toBeNull();
+    expect(within(viewerDialog).queryByRole("button", { name: "Delete project" })).toBeNull();
+  });
+});

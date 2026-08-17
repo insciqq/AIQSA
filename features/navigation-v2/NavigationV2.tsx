@@ -98,6 +98,8 @@ export type NavigationSidebarProps = Readonly<{
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSettings?(): void;
   onSearch(value: string): void;
+  /** Shared-workspace navigation rendered before the personal chat tree. */
+  projectsSlot?: ReactNode | ((onNavigate: () => void) => ReactNode);
   ready: boolean;
   searchError: string | null;
   searchLoading: boolean;
@@ -630,6 +632,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       </div>
 
       <div className="v2-navigation-scroll" aria-live="polite">
+        {typeof props.projectsSlot === "function"
+          ? props.projectsSlot(props.onClose)
+          : props.projectsSlot}
         {!props.ready && props.loading ? (
           <div className="v2-navigation-skeletons" aria-label="Loading chats">
             {[0, 1, 2, 3, 4].map((index) => (
@@ -991,9 +996,16 @@ export function ReadingRoomShellV2({
     else if (composition === "compact") setCompactExpanded(false);
     else setDesktopCollapsed(true);
   };
+  const projectSlot = navigationOwnerProps.projectsSlot;
+  const navigationProjectsSlot = typeof projectSlot === "function"
+    ? () => projectSlot(() => {
+        if (composition !== "desktop") closeSidebar();
+      })
+    : projectSlot;
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
+      projectsSlot={navigationProjectsSlot}
       onClose={closeSidebar}
       onSelectChat={(chat) => { navigationOwnerProps.onSelectChat(chat); setMobileOpen(false); }}
     />
