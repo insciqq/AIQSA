@@ -159,17 +159,25 @@ export async function executeDurableMcpDiscovery(input: Readonly<{
   let addedSnapshot = emptySnapshot();
   let bindings: readonly McpRunPlanBinding[] = [];
   if (selected.length > 0) {
-    const plan = await input.materialize(
-      input.userId,
-      selected.map((tool) => ({
-        namespacedName: tool.namespacedName,
-        revisionId: tool.revisionId,
-        serverId: tool.serverId
-      }))
-    );
-    if (!plan.ok) throw new Error(plan.code);
+    let plan: McpRunPlanResult;
+    try {
+      plan = await input.materialize(
+        input.userId,
+        selected.map((tool) => ({
+          namespacedName: tool.namespacedName,
+          revisionId: tool.revisionId,
+          serverId: tool.serverId
+        }))
+      );
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      throw new McpAutoDiscoveryUnavailableError("mcp_materialization_failed");
+    }
+    if (!plan.ok) {
+      throw new McpAutoDiscoveryUnavailableError(`mcp_materialization_${plan.code}`);
+    }
     if (!materializedSelectionMatches(plan, routed.toolNames)) {
-      throw new Error("mcp_discovery_materialization_mismatch");
+      throw new McpAutoDiscoveryUnavailableError("mcp_materialization_mismatch");
     }
     addedSnapshot = plan.snapshot;
     bindings = plan.bindings;

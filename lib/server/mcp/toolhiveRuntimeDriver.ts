@@ -14,8 +14,19 @@ import { isToolHiveGeneratedImage } from "./localArtifact";
 
 const DEFAULT_LIFECYCLE_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
+const RESTART_TRANSITION_POLL_LIMIT = 4;
 const OWNER_TOKEN_PATTERN = /^[a-z0-9]{16,24}$/u;
 const GENERATION_TOKEN_PATTERN = /^[a-z0-9]{24,64}$/u;
+const RESTARTABLE_WORKLOAD_STATUSES: ReadonlySet<ToolHiveWorkloadStatus> = new Set([
+  "error",
+  "stopped",
+  "unhealthy",
+  "unknown"
+]);
+const WAITING_WORKLOAD_STATUSES: ReadonlySet<ToolHiveWorkloadStatus> = new Set([
+  "auth_retrying",
+  "starting"
+]);
 const TERMINAL_MCP_RESPONSE_ERROR_CODES: ReadonlySet<string> = new Set<McpFatalResponseErrorCode>([
   "mcp_call_result_too_large",
   "mcp_initialize_response_too_large",
@@ -28,7 +39,8 @@ export type ToolHiveRuntimeErrorCode =
   | "toolhive_lifecycle_timed_out"
   | "toolhive_ownership_invalid"
   | "toolhive_proxy_unavailable"
-  | "toolhive_workload_conflict";
+  | "toolhive_workload_conflict"
+  | "toolhive_workload_failed";
 
 export class ToolHiveRuntimeError extends Error {
   readonly code: ToolHiveRuntimeErrorCode;
@@ -155,9 +167,59 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+type LifecycleGateWaiter = {
+  resolve: (release: () => void) => void;
+};
+
+class ToolHiveLifecycleGate {
+  #active = false;
+  readonly #waiters: LifecycleGateWaiter[] = [];
+
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) {
+      return Promise.reject(runtimeError("toolhive_lifecycle_aborted"));
+    }
+    if (!this.#active) {
+      this.#active = true;
+      return Promise.resolve(this.#release());
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      let waiter: LifecycleGateWaiter;
+      const abort = () => {
+        const index = this.#waiters.indexOf(waiter);
+        if (index >= 0) this.#waiters.splice(index, 1);
+        reject(runtimeError("toolhive_lifecycle_aborted"));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      waiter = {
+        resolve: (release) => {
+          signal?.removeEventListener("abort", abort);
+          resolve(release);
+        }
+      };
+      this.#waiters.push(waiter);
+    });
+  }
+
+  #release(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.#waiters.shift();
+      if (next) {
+        next.resolve(this.#release());
+        return;
+      }
+      this.#active = false;
+    };
+  }
+}
+
 export class ToolHiveMcpRuntimeDriver {
   readonly #client: ToolHiveClient;
   readonly #groupName: string;
+  readonly #lifecycleGate = new ToolHiveLifecycleGate();
   readonly #lifecycleTimeoutMs: number;
   readonly #now: () => number;
   readonly #ownerToken: string;
@@ -198,6 +260,10 @@ export class ToolHiveMcpRuntimeDriver {
   }
 
   async initialize(signal?: AbortSignal): Promise<void> {
+    await this.#withLifecycle(signal, () => this.#initialize(signal));
+  }
+
+  async #initialize(signal?: AbortSignal): Promise<void> {
     await this.#client.checkHealth(signal);
     await this.#client.assertCompatibleVersion(signal);
     await this.#client.ensureGroup(this.#groupName, signal);
@@ -217,42 +283,38 @@ export class ToolHiveMcpRuntimeDriver {
     spec: ToolHiveOwnedWorkloadSpec,
     input: PollOptions & { probe: ToolHiveProxyProbe }
   ): Promise<ToolHiveReadyWorkload> {
-    const request = this.#requestFor(spec);
-    await this.initialize(input.signal);
-    let workload = await this.#findExact(request.name, input.signal);
+    return this.#withLifecycle(input.signal, async () => {
+      const request = this.#requestFor(spec);
+      await this.#initialize(input.signal);
+      let workload = await this.#findExact(request.name, input.signal);
+      let restartAttempted = false;
 
-    if (!workload) {
-      try {
-        await this.#client.createLocalWorkload(request, input.signal);
-      } catch (error) {
-        if (!(error instanceof ToolHiveClientError) || error.status !== 409) throw error;
-      }
-      workload = await this.#findExact(request.name, input.signal);
-    }
-
-    if (workload) {
-      this.#assertLocalWorkload(workload);
-      const detail = await this.#client.getWorkload(request.name, input.signal);
-      if (!exactLocalConfiguration(detail, request) || detail.proxyPort !== workload.port) {
-        throw runtimeError("toolhive_workload_conflict");
+      if (!workload) {
+        try {
+          await this.#client.createLocalWorkload(request, input.signal);
+        } catch (error) {
+          if (!(error instanceof ToolHiveClientError) || error.status !== 409) throw error;
+        }
+        workload = await this.#findExact(request.name, input.signal);
       }
 
-      if (workload.status === "running") {
-        const ready = await this.#probeOnce(workload, input.probe, input.signal);
-        if (ready) return ready;
-        await this.#client.restartWorkload(request.name, {
-          expectedImage: detail.image,
-          ...(input.signal ? { signal: input.signal } : {})
-        });
-      } else if (workload.status !== "starting") {
-        await this.#client.restartWorkload(request.name, {
-          expectedImage: detail.image,
-          ...(input.signal ? { signal: input.signal } : {})
-        });
+      if (workload) {
+        const detail = await this.#getExactDetail(workload, request, input.signal);
+        if (workload.status === "running") {
+          const ready = await this.#probeOnce(workload, input.probe, input.signal);
+          if (ready) return ready;
+          await this.#restartExact(request.name, detail.image, input.signal);
+          restartAttempted = true;
+        } else if (RESTARTABLE_WORKLOAD_STATUSES.has(workload.status)) {
+          await this.#restartExact(request.name, detail.image, input.signal);
+          restartAttempted = true;
+        } else if (!WAITING_WORKLOAD_STATUSES.has(workload.status)) {
+          throw runtimeError("toolhive_workload_failed");
+        }
       }
-    }
 
-    return this.#waitUntilReady(request, input.probe, input);
+      return this.#waitUntilReady(request, input.probe, input, restartAttempted);
+    });
   }
 
   async restartOwnedWorkload(
@@ -260,51 +322,54 @@ export class ToolHiveMcpRuntimeDriver {
     probe: ToolHiveProxyProbe,
     input: PollOptions = {}
   ): Promise<ToolHiveReadyWorkload | null> {
-    const name = this.workloadName(generationToken);
-    const workload = await this.#findExact(name, input.signal);
-    if (!workload) return null;
-    this.#assertLocalWorkload(workload);
-    const detail = await this.#client.getWorkload(name, input.signal);
-    await this.#client.restartWorkload(name, {
-      expectedImage: detail.image,
-      ...(input.signal ? { signal: input.signal } : {})
+    return this.#withLifecycle(input.signal, async () => {
+      const name = this.workloadName(generationToken);
+      const workload = await this.#findExact(name, input.signal);
+      if (!workload) return null;
+      this.#assertLocalWorkload(workload);
+      const detail = await this.#client.getWorkload(name, input.signal);
+      await this.#restartExact(name, detail.image, input.signal);
+      const request: ToolHiveLocalWorkloadRequest = {
+        cmdArguments: detail.cmdArguments,
+        envVars: detail.envVars,
+        group: this.#groupName,
+        image: detail.image,
+        name
+      };
+      return this.#waitUntilReady(request, probe, input, true);
     });
-    const request: ToolHiveLocalWorkloadRequest = {
-      cmdArguments: detail.cmdArguments,
-      envVars: detail.envVars,
-      group: this.#groupName,
-      image: detail.image,
-      name
-    };
-    return this.#waitUntilReady(request, probe, input);
   }
 
   async stopOwnedWorkload(
     generationToken: string,
     input: PollOptions = {}
   ): Promise<boolean> {
-    const name = this.workloadName(generationToken);
-    const workload = await this.#findExact(name, input.signal);
-    if (!workload) return false;
-    this.#assertOwnership(workload);
-    if (workload.status !== "stopped") {
-      await this.#client.stopWorkload(name, input.signal);
-      await this.#waitForStatus(name, ["stopped"], input, true);
-    }
-    return true;
+    return this.#withLifecycle(input.signal, async () => {
+      const name = this.workloadName(generationToken);
+      const workload = await this.#findExact(name, input.signal);
+      if (!workload) return false;
+      this.#assertOwnership(workload);
+      if (workload.status !== "stopped") {
+        await this.#client.stopWorkload(name, input.signal);
+        await this.#waitForStatus(name, ["stopped"], input, true);
+      }
+      return true;
+    });
   }
 
   async deleteOwnedWorkload(
     generationToken: string,
     input: PollOptions = {}
   ): Promise<boolean> {
-    const name = this.workloadName(generationToken);
-    const workload = await this.#findExact(name, input.signal);
-    if (!workload) return false;
-    this.#assertOwnership(workload);
-    await this.#client.deleteWorkload(name, input.signal);
-    await this.#waitUntilMissing(name, input);
-    return true;
+    return this.#withLifecycle(input.signal, async () => {
+      const name = this.workloadName(generationToken);
+      const workload = await this.#findExact(name, input.signal);
+      if (!workload) return false;
+      this.#assertOwnership(workload);
+      await this.#client.deleteWorkload(name, input.signal);
+      await this.#waitUntilMissing(name, input);
+      return true;
+    });
   }
 
   async cleanupOwnedWorkloads(input: Readonly<{
@@ -312,6 +377,14 @@ export class ToolHiveMcpRuntimeDriver {
     signal?: AbortSignal;
     timeoutMs?: number;
   }> = {}): Promise<readonly string[]> {
+    return this.#withLifecycle(input.signal, () => this.#cleanupOwnedWorkloads(input));
+  }
+
+  async #cleanupOwnedWorkloads(input: Readonly<{
+    keepGenerationTokens?: readonly string[];
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }>): Promise<readonly string[]> {
     const keep = new Set((input.keepGenerationTokens ?? []).map((token) => this.workloadName(token)));
     const deleted: string[] = [];
     for (const workload of await this.listOwnedWorkloads(input.signal)) {
@@ -328,14 +401,54 @@ export class ToolHiveMcpRuntimeDriver {
     deletedWorkloads: readonly string[];
     groupDeleted: boolean;
   }>> {
-    const deletedWorkloads = await this.cleanupOwnedWorkloads(input);
-    const remaining = await this.#client.listWorkloads({
-      group: this.#groupName,
-      ...(input.signal ? { signal: input.signal } : {})
+    return this.#withLifecycle(input.signal, async () => {
+      const deletedWorkloads = await this.#cleanupOwnedWorkloads(input);
+      const remaining = await this.#client.listWorkloads({
+        group: this.#groupName,
+        ...(input.signal ? { signal: input.signal } : {})
+      });
+      if (remaining.length > 0) return { deletedWorkloads, groupDeleted: false };
+      await this.#client.deleteGroup(this.#groupName, {
+        ...(input.signal ? { signal: input.signal } : {})
+      });
+      return { deletedWorkloads, groupDeleted: true };
     });
-    if (remaining.length > 0) return { deletedWorkloads, groupDeleted: false };
-    await this.#client.deleteGroup(this.#groupName, { ...(input.signal ? { signal: input.signal } : {}) });
-    return { deletedWorkloads, groupDeleted: true };
+  }
+
+  async #withLifecycle<Result>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<Result>
+  ): Promise<Result> {
+    const release = await this.#lifecycleGate.acquire(signal);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async #getExactDetail(
+    workload: ToolHiveWorkloadSummary,
+    request: ToolHiveLocalWorkloadRequest,
+    signal?: AbortSignal
+  ): Promise<ToolHiveWorkloadDetail> {
+    this.#assertLocalWorkload(workload);
+    const detail = await this.#client.getWorkload(request.name, signal);
+    if (!exactLocalConfiguration(detail, request) || detail.proxyPort !== workload.port) {
+      throw runtimeError("toolhive_workload_conflict");
+    }
+    return detail;
+  }
+
+  async #restartExact(
+    name: string,
+    expectedImage: string,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await this.#client.restartWorkload(name, {
+      expectedImage,
+      ...(signal ? { signal } : {})
+    });
   }
 
   #requestFor(spec: ToolHiveOwnedWorkloadSpec): ToolHiveLocalWorkloadRequest {
@@ -404,23 +517,40 @@ export class ToolHiveMcpRuntimeDriver {
   async #waitUntilReady(
     request: ToolHiveLocalWorkloadRequest,
     probe: ToolHiveProxyProbe,
-    input: PollOptions
+    input: PollOptions,
+    restartAttempted: boolean
   ): Promise<ToolHiveReadyWorkload> {
     const deadline = this.#deadline(input.timeoutMs);
     let observedRunning = false;
+    let restartTransitionPolls = restartAttempted ? RESTART_TRANSITION_POLL_LIMIT : 0;
     while (this.#now() <= deadline) {
       if (input.signal?.aborted) throw runtimeError("toolhive_lifecycle_aborted");
       const workload = await this.#findExact(request.name, input.signal);
       if (workload) {
-        this.#assertLocalWorkload(workload);
+        const detail = await this.#getExactDetail(workload, request, input.signal);
         if (workload.status === "running") {
-          const detail = await this.#client.getWorkload(request.name, input.signal);
-          if (!exactLocalConfiguration(detail, request) || detail.proxyPort !== workload.port) {
-            throw runtimeError("toolhive_workload_conflict");
-          }
           observedRunning = true;
           const ready = await this.#probeOnce(workload, probe, input.signal);
           if (ready) return ready;
+        } else if (RESTARTABLE_WORKLOAD_STATUSES.has(workload.status)) {
+          if (restartAttempted) {
+            if (restartTransitionPolls <= 0) {
+              throw runtimeError("toolhive_workload_failed");
+            }
+            restartTransitionPolls -= 1;
+          } else {
+            await this.#restartExact(request.name, detail.image, input.signal);
+            restartAttempted = true;
+            restartTransitionPolls = RESTART_TRANSITION_POLL_LIMIT;
+          }
+        } else if (
+          workload.status === "stopping" &&
+          restartAttempted &&
+          restartTransitionPolls > 0
+        ) {
+          restartTransitionPolls -= 1;
+        } else if (!WAITING_WORKLOAD_STATUSES.has(workload.status)) {
+          throw runtimeError("toolhive_workload_failed");
         }
       }
       await this.#sleep(this.#pollIntervalMs, input.signal);
