@@ -1,4 +1,5 @@
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
+import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
@@ -20,6 +21,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       knowledgeExecutor: knowledgeToolExecutor,
       memoryEgress: defaultMemoryToolEgressReceiptService,
       mcp: defaultMcpRunPlan,
+      providerAdmission: providerAdmissionService,
       providerRuntime: providerRuntimeResolver,
       providers: {},
       registry: activeRunControllerRegistry,

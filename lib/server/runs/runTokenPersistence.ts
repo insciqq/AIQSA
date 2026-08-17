@@ -9,6 +9,7 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
   allowErroredAssistant?: boolean;
   assistantMessageId: string;
   initialText?: string;
+  onPersist?(): void;
   repository: TokenPersistenceRepository;
   runId: string;
 }>) {
@@ -50,6 +51,7 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
         runId: input.runId
       }
     );
+    input.onPersist?.();
   }
 
   function flush(): Promise<void> {

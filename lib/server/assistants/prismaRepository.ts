@@ -17,6 +17,7 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { prisma } from "../prisma";
+import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 import {
   validateAssistantConfigurationAgainstCatalog,
   type AssistantCatalogView
@@ -53,7 +54,7 @@ export type AssistantPublicationRow = {
   groupName: string | null;
   id: string;
   revisionNumber: number;
-  scope: "group" | "installation";
+  scope: "group" | "installation" | "project";
   updatedAt: Date;
 };
 
@@ -546,7 +547,8 @@ export function createPrismaAssistantRepository(
               group: { select: { archivedAt: true, name: true } },
               revision: { select: revisionSelect }
             }
-          }
+          },
+          projectBindings: { select: { id: true } }
         },
         where: { id: assistantId }
       }),
@@ -601,7 +603,7 @@ export function createPrismaAssistantRepository(
       owned,
       ownerDisplayName: definition.owner.displayName,
       pinned: Boolean(pin),
-      published: definition.publications.length > 0,
+      published: definition.publications.length > 0 || (owned && definition.projectBindings.length > 0),
       revision: revisionRow(accessibleRevision),
       updatedAt: definition.updatedAt,
       version: definition.version
@@ -763,7 +765,7 @@ export function createPrismaAssistantRepository(
       if (!entry.owned) {
         return { ...entry, publications: null, revisionCount: null };
       }
-      const [publications, revisionCount] = await Promise.all([
+      const [publications, projectBindings, revisionCount] = await Promise.all([
         client.assistantPublication.findMany({
           include: {
             group: { select: { name: true } },
@@ -772,11 +774,26 @@ export function createPrismaAssistantRepository(
           orderBy: { createdAt: "asc" },
           where: { assistantId }
         }),
+        client.projectAssistantBinding.findMany({
+          include: { revision: { select: { revisionNumber: true } } },
+          orderBy: { createdAt: "asc" },
+          where: { assistantId }
+        }),
         client.assistantRevision.count({ where: { assistantId } })
       ]);
       return {
         ...entry,
-        publications: publications.map(publicationRow),
+        publications: [
+          ...publications.map(publicationRow),
+          ...projectBindings.map((binding) => ({
+            groupId: null,
+            groupName: null,
+            id: `project:${binding.id}`,
+            revisionNumber: binding.revision.revisionNumber,
+            scope: "project" as const,
+            updatedAt: binding.createdAt
+          }))
+        ],
         revisionCount
       };
     },
@@ -788,6 +805,7 @@ export function createPrismaAssistantRepository(
           include: {
             currentRevision: { select: revisionSelect },
             owner: { select: { displayName: true } },
+            projectBindings: { select: { id: true } },
             publications: { select: { groupId: true, id: true, scope: true } }
           },
           where: { ownerUserId: userId }
@@ -833,7 +851,7 @@ export function createPrismaAssistantRepository(
                 owned: true,
                 ownerDisplayName: definition.owner.displayName,
                 pinned: pinned.has(definition.id),
-                published: definition.publications.length > 0,
+                published: definition.publications.length > 0 || definition.projectBindings.length > 0,
                 revision: revisionRow(definition.currentRevision),
                 updatedAt: definition.updatedAt,
                 version: definition.version
@@ -1129,6 +1147,16 @@ export function createPrismaAssistantRepository(
       publicationId: string;
       userId: string;
     }): Promise<"not_found" | "revoked"> {
+      if (input.publicationId.startsWith("project:")) {
+        const bindingId = input.publicationId.slice("project:".length);
+        if (!bindingId) return "not_found";
+        return await revokeOwnedProjectResourcePublication(client, {
+          bindingId,
+          resourceId: input.assistantId,
+          type: "assistant",
+          userId: input.userId
+        }) ? "revoked" : "not_found";
+      }
       return client.$transaction(async (tx) => {
         const publication = await tx.assistantPublication.findFirst({
           select: {
@@ -1221,6 +1249,46 @@ export function createPrismaAssistantRepository(
   };
 
   const runResolver: AssistantRunResolver = {
+    async resolveForProject(projectId, assistantId): Promise<AssistantRunResolution> {
+      const binding = await client.projectAssistantBinding.findUnique({
+        include: {
+          assistant: { select: { archivedAt: true } },
+          revision: {
+            include: {
+              providerModel: { select: { connectionId: true, id: true, modelClass: true } },
+              skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true } }
+            }
+          }
+        },
+        where: { projectId_assistantId: { assistantId, projectId } }
+      });
+      if (!binding || binding.assistant.archivedAt || binding.revision.providerModel.modelClass !== "answer") {
+        return { code: "assistant_not_available", ok: false, status: 404 };
+      }
+      const revision = binding.revision;
+      const runControls = decodeAssistantRunControls(revision.runControls ?? {});
+      const searchPlan = decodeSearchPlan(revision.searchPlan);
+      const avatar = decodeAssistantAvatarRecipe(revision.avatar);
+      if (!runControls || !searchPlan.ok || !avatar) throw new Error("assistant_revision_integrity_invalid");
+      return {
+        assistant: {
+          assistantId,
+          developerPrompt: revision.developerPrompt,
+          knowledgeBaseIds: [...revision.knowledgeBaseIds],
+          mcpServerIds: [...revision.mcpServerIds],
+          name: revision.name,
+          provider: revision.providerModel.connectionId,
+          providerModelId: revision.providerModel.id,
+          revisionId: revision.id,
+          revisionNumber: revision.revisionNumber,
+          runControls,
+          searchPlan: searchPlan.plan,
+          skillIds: revision.skillLinks.map(({ skillId }) => skillId),
+          systemPrompt: revision.systemPrompt
+        },
+        ok: true
+      };
+    },
     async resolveForRun(userId, assistantId): Promise<AssistantRunResolution> {
       const entry = await loadAccessEntry(userId, assistantId);
       if (!entry || entry.archived) {

@@ -23,6 +23,7 @@ type ModelSpec = Readonly<{
     | "openai_responses_native"
     | "openrouter_chat_completions";
   answerSelectable?: boolean;
+  availableInProjects?: boolean;
   connectionResponseTimeoutMs?: number;
   connectionId: string;
   contextWindow?: number;
@@ -49,6 +50,7 @@ type RouteSpec = Readonly<{
 }>;
 
 type OptionSpec = Readonly<{
+  availableInProjects?: boolean;
   displayName: string;
   kind: "gemini_google_search" | "none" | "perplexity_search" | "web_search";
   optionId: string;
@@ -88,6 +90,7 @@ function providerModel(
       upstreamModelId: spec.upstreamModelId
     },
     activeVersion: 1,
+    availableInProjects: spec.availableInProjects ?? true,
     connection: {
       activeConfig: {
         allowPrivateNetwork: false,
@@ -168,6 +171,7 @@ function physicalRoute(spec: RouteSpec) {
 function logicalOption(spec: OptionSpec) {
   return {
     archivedAt: null,
+    availableInProjects: spec.availableInProjects ?? true,
     displayName: spec.displayName,
     enabled: true,
     id: `option-row:${spec.optionId}`,
@@ -420,6 +424,75 @@ function expectSearch(plan: ProviderAdmissionPlan) {
 }
 
 describe("provider admission", () => {
+  it("uses an explicit Project model with the installation default credential, never personal grants", async () => {
+    const defaultCredentialId = `credential:${officialOpenAiModel.connectionId}`;
+    const { accessGrantCount, db } = admissionDb({
+      answer: officialOpenAiModel,
+      defaultCredentialIdByConnection: {
+        [officialOpenAiModel.connectionId]: defaultCredentialId
+      },
+      directCredential: true,
+      fullAccess: false,
+      options: [off],
+      unassignedPolicy: "require_assignment",
+      userRole: "user"
+    });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      executionScope: "project",
+      providerConnectionId: officialOpenAiModel.connectionId,
+      providerModelId: officialOpenAiModel.id,
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      userId: "contributor-without-model-grant"
+    });
+
+    expect(plan.answer).toMatchObject({
+      authority: { credentialId: defaultCredentialId },
+      credentialSource: "default",
+      snapshot: { providerModelId: officialOpenAiModel.id }
+    });
+    expect(accessGrantCount).not.toHaveBeenCalled();
+    expect(db.providerGroupCredentialAssignment.findMany).not.toHaveBeenCalled();
+    expect(db.providerUserCredentialAssignment.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("rejects a model or Search option that was not explicitly made available to Projects", async () => {
+    const unavailableModel = admissionDb({
+      answer: { ...officialOpenAiModel, availableInProjects: false },
+      options: [off]
+    });
+    await expect(loadProviderAdmissionPlan(
+      unavailableModel.db as unknown as Prisma.TransactionClient,
+      {
+        executionScope: "project",
+        providerConnectionId: officialOpenAiModel.connectionId,
+        providerModelId: officialOpenAiModel.id,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        userId: "user-1"
+      }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+
+    const option = { ...openAiOption(), availableInProjects: false };
+    const unavailableSearch = admissionDb({
+      answer: officialOpenAiModel,
+      defaultCredentialIdByConnection: {
+        [officialOpenAiModel.connectionId]: `credential:${officialOpenAiModel.connectionId}`
+      },
+      options: [option],
+      technicalModels: [officialOpenAiSearchModel]
+    });
+    await expect(loadProviderAdmissionPlan(
+      unavailableSearch.db as unknown as Prisma.TransactionClient,
+      {
+        executionScope: "project",
+        providerConnectionId: officialOpenAiModel.connectionId,
+        providerModelId: officialOpenAiModel.id,
+        searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
+        userId: "user-1"
+      }
+    )).rejects.toEqual(new ProviderAdmissionError("search_strategy_not_available"));
+  });
+
   it("resolves installation answer work through only the explicit default credential", async () => {
     const credentialId = `credential:${officialOpenAiModel.connectionId}`;
     const { db } = admissionDb({

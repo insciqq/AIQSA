@@ -21,9 +21,9 @@ export type ComposerConfigMcpServer = Readonly<{
 }>;
 
 export type ComposerConfig = Readonly<{
-  assistants: AssistantSummary[];
+  assistants: readonly AssistantSummary[];
   catalog: Catalog;
-  knowledgeBases: ComposerConfigKnowledgeBase[];
-  mcpServers: ComposerConfigMcpServer[];
-  skills?: SkillSummary[];
+  knowledgeBases: readonly ComposerConfigKnowledgeBase[];
+  mcpServers: readonly ComposerConfigMcpServer[];
+  skills?: readonly SkillSummary[];
 }>;

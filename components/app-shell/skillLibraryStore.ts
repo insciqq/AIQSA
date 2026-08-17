@@ -97,6 +97,9 @@ function parseAudience(value: unknown): SkillAudience | null {
   if (value.kind === "everyone" && value.name === "Everyone") {
     return { id: value.id, kind: "everyone", name: "Everyone" };
   }
+  if (value.kind === "project" && value.name === "Project publication") {
+    return { id: value.id, kind: "project", name: "Project publication" };
+  }
   return value.kind === "workspace" && typeof value.workspaceId === "string"
     ? {
         id: value.id,

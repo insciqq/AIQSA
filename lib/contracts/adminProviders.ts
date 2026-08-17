@@ -156,6 +156,8 @@ export type AdminProviderModel = {
   activatedAt: string | null;
   activeConfig: AdminProviderModelConfiguration | null;
   activeVersion: number;
+  /** Installation opt-in for Project-scoped shared execution. */
+  availableInProjects?: boolean;
   connectionId: string;
   createdAt: string;
   displayName: string;

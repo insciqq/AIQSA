@@ -869,6 +869,62 @@ describe("run preparation", () => {
     expect(prepared.defaults).toBeNull();
   });
 
+  it("keeps Project provider and Knowledge scope on hosted Search coexistence re-admission", async () => {
+    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
+      "gemini_interactions_native"
+    );
+    const admissionLoad = vi.fn(async (input: {
+      executionScope?: "project";
+      requiresClientToolCoexistence?: boolean;
+    }) => input.requiresClientToolCoexistence ? client : hosted);
+    const knowledgeLoad = vi.fn<
+      NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
+    >(async ({ knowledgePlan, userId }) => ({
+        bindings: [],
+        fingerprint: "c".repeat(64),
+        knowledgePlan,
+        userId
+      }));
+    const result = await prepareRun(
+      {
+        ...createHarness().deps,
+        allowFakeProvider: false,
+        knowledgeAdmission: { load: knowledgeLoad },
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        modelId: hosted.selection.providerModelId,
+        params: {},
+        provider: hosted.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      }), {
+        project: projectAdmission({
+          defaults: {
+            ...projectAdmission().defaults,
+            knowledgePlan: { baseIds: ["knowledge-base-1"] },
+            providerModelId: hosted.selection.providerModelId,
+            searchPlan: { mode: "model_choice", optionIds: [optionId] }
+          },
+          knowledgeBaseIds: ["knowledge-base-1"],
+          modelIds: [hosted.selection.providerModelId],
+          searchOptionIds: [optionId]
+        })
+      })
+    );
+
+    expect(result).toMatchObject({ code: "context_too_large", ok: false });
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
+    expect(admissionLoad.mock.calls.map(([input]) => input.executionScope)).toEqual([
+      "project",
+      "project"
+    ]);
+    expect(knowledgeLoad).toHaveBeenCalledWith(expect.objectContaining({
+      executionScope: "project",
+      projectId: "project-1"
+    }));
+  });
+
   it("admits exact shared Project MCP bindings", async () => {
     const harness = createHarness({
       capabilities: { ...baseCapabilities, toolCalling: true },

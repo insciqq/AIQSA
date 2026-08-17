@@ -467,6 +467,7 @@ function serializeAdminServer(
       : [],
     activeRevision: record.activeRevision ? serializeRevision(record.activeRevision) : null,
     archivedAt: record.archivedAt?.toISOString() ?? null,
+    availableInProjects: record.availableInProjects,
     description: record.description,
     draft,
     draftTest,
@@ -1020,7 +1021,15 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    createServer: async ({ activate, description, draft, name, sharedValues, validationUserId }) => {
+    createServer: async ({
+      activate,
+      availableInProjects,
+      description,
+      draft,
+      name,
+      sharedValues,
+      validationUserId
+    }) => {
       const issues = valueIssues(draft.slots, sharedValues, (slot) => slot.policy.kind === "shared");
       if (issues.length) return { issues, kind: "invalid_values" };
       const key = encryptionKey();
@@ -1059,6 +1068,7 @@ export function createPrismaMcpRepository(input: {
         }
         const server = await tx.mcpServer.create({
           data: {
+            availableInProjects: availableInProjects ?? false,
             description,
             displayName: name,
             draft: draft as Prisma.InputJsonValue,
@@ -1659,7 +1669,15 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    updateServer: async ({ description, draft, enabled, name, serverId, sharedValues }) => {
+    updateServer: async ({
+      availableInProjects,
+      description,
+      draft,
+      enabled,
+      name,
+      serverId,
+      sharedValues
+    }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
@@ -1680,6 +1698,7 @@ export function createPrismaMcpRepository(input: {
           draftChanged && draft && draftDefinitionHash(draft) === draftDefinitionHash(storedDraft)
         );
         const sharedConfigChanged = Boolean(sharedValues && Object.keys(sharedValues).length);
+        if (availableInProjects !== undefined) data.availableInProjects = availableInProjects;
         if (description !== undefined) data.description = description;
         if (name !== undefined) data.displayName = name;
         if (enabled !== undefined) data.enabled = enabled;

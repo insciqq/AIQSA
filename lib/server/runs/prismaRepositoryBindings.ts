@@ -173,6 +173,34 @@ export async function assertAssistantRunProvenance(
   }
 }
 
+/** Project publication is its own Assistant authority. The exact pinned
+ * binding and revision must still exist and the definition must be active,
+ * but the initiating member never needs a matching personal publication. */
+export async function assertProjectAssistantRunProvenance(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  input: Readonly<{
+    assistantId: string;
+    projectId: string;
+    revisionId: string;
+  }>
+): Promise<void> {
+  const bindings = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT project_binding."id"
+    FROM "ProjectAssistantBinding" AS project_binding
+    INNER JOIN "AssistantDefinition" AS definition
+      ON definition."id" = project_binding."assistantId"
+     AND definition."archivedAt" IS NULL
+    INNER JOIN "AssistantRevision" AS revision
+      ON revision."id" = project_binding."revisionId"
+     AND revision."assistantId" = definition."id"
+    WHERE project_binding."projectId" = ${input.projectId}
+      AND project_binding."assistantId" = ${input.assistantId}
+      AND project_binding."revisionId" = ${input.revisionId}
+    FOR SHARE OF project_binding, definition, revision
+  `;
+  if (!bindings[0]) throw new AssistantRunConflictError();
+}
+
 export function serializeRunAssistantIdentity(modelRun: {
   assistantRevision?: { avatar: unknown; name: string; revisionNumber: number } | null;
 } | undefined): { avatar: AssistantAvatarRecipe; name: string; revisionNumber: number } | null {
@@ -191,6 +219,7 @@ export async function insertAcceptedMcpRunBindings(
   tx: Pick<Prisma.TransactionClient, "$executeRaw">,
   input: {
     bindings: McpRunPlanBinding[] | undefined;
+    projectId?: string;
     runId: string;
     userId: string;
   }
@@ -211,7 +240,51 @@ export async function insertAcceptedMcpRunBindings(
   }
 
   for (const binding of bindings) {
-    const inserted = await tx.$executeRaw`
+    const inserted = input.projectId
+      ? await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "McpRunBinding" (
+        "id",
+        "modelRunId",
+        "runtimeGenerationId",
+        "runtimeGenerationFingerprint"
+      )
+      SELECT
+        ${randomUUID()},
+        ${input.runId},
+        generation."id",
+        generation."fingerprint"
+      FROM "McpRuntimeGeneration" AS generation
+      INNER JOIN "McpUserServer" AS preference
+        ON preference."id" = generation."userServerId"
+      INNER JOIN "McpServer" AS server
+        ON server."id" = preference."serverId"
+      INNER JOIN "McpRevision" AS revision
+        ON revision."id" = generation."revisionId"
+      INNER JOIN "ProjectMcpBinding" AS project_binding
+        ON project_binding."serverId" = server."id"
+       AND project_binding."projectId" = ${input.projectId}
+      WHERE server."id" = ${binding.serverId}
+        AND server."enabled" = true
+        AND server."archivedAt" IS NULL
+        AND server."availableInProjects" = true
+        AND server."activeRevisionId" = generation."revisionId"
+        AND (
+          server."sharedConfigEnvelope" IS NOT NULL
+          OR revision."configuration" #>> '{auth,mode}' = 'none'
+        )
+        AND preference."enabled" = true
+        AND preference."desiredRuntimeGenerationId" = generation."id"
+        AND preference."personalConfigEnvelope" IS NULL
+        AND generation."oauthConnectionId" IS NULL
+        AND generation."id" = ${binding.runtimeGenerationId}
+        AND generation."fingerprint" = ${binding.fingerprint}
+        AND generation."state" = 'ready'
+        AND generation."inventory" IS NOT NULL
+        AND generation."inventoryUpdatedAt" IS NOT NULL
+        AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+        AND NOT (generation."credentialSources" && ARRAY['oauth', 'personal']::TEXT[])
+      `)
+      : await tx.$executeRaw`
       INSERT INTO "McpRunBinding" (
         "id",
         "modelRunId",
@@ -270,6 +343,7 @@ export async function insertAcceptedSkillRunBindings(
   tx: Pick<Prisma.TransactionClient, "$executeRaw" | "$queryRaw">,
   input: {
     bindings: readonly AcceptedSkillRun[] | undefined;
+    projectId?: string;
     runId: string;
     userId: string;
   }
@@ -283,6 +357,28 @@ export async function insertAcceptedSkillRunBindings(
   }
   for (const binding of [...bindings].sort((left, right) =>
     left.skillId.localeCompare(right.skillId))) {
+    if (input.projectId) {
+      const inserted = await tx.$executeRaw`
+        INSERT INTO "ModelRunSkillBinding" ("modelRunId", "skillId", "revisionId")
+        SELECT run."id", revision."skillId", revision."id"
+        FROM "ModelRun" AS run
+        INNER JOIN "ProjectSkillBinding" AS project_binding
+          ON project_binding."projectId" = ${input.projectId}
+         AND project_binding."skillId" = ${binding.skillId}
+        INNER JOIN "SkillDefinition" AS definition
+          ON definition."id" = project_binding."skillId"
+         AND definition."archivedAt" IS NULL
+         AND definition."deletedAt" IS NULL
+         AND definition."currentRevisionId" = ${binding.revisionId}
+        INNER JOIN "SkillRevision" AS revision
+          ON revision."skillId" = definition."id"
+         AND revision."id" = definition."currentRevisionId"
+        WHERE run."id" = ${input.runId}
+          AND run."userId" = ${input.userId}
+      `;
+      if (inserted !== 1) throw new SkillRunConflictError();
+      continue;
+    }
     await assertSkillRunProvenance(tx, {
       revisionId: binding.revisionId,
       skillId: binding.skillId,
@@ -461,6 +557,24 @@ export async function lockKnowledgeRunAdmissionSources(
   input: Readonly<{ plan: KnowledgeRunAdmissionPlan; userId: string }>
 ): Promise<void> {
   for (const knowledgeBaseId of input.plan.knowledgePlan.baseIds) {
+    if (input.plan.projectId) {
+      const projectBindings = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT project_binding."id"
+        FROM "ProjectKnowledgeBaseBinding" AS project_binding
+        INNER JOIN "KnowledgeBase" AS base
+          ON base."id" = project_binding."knowledgeBaseId"
+         AND base."archivedAt" IS NULL
+        INNER JOIN "KnowledgeIndexGeneration" AS generation
+          ON generation."knowledgeBaseId" = base."id"
+         AND generation."id" = base."activeIndexGenerationId"
+         AND generation."status" = 'active'
+        WHERE project_binding."projectId" = ${input.plan.projectId}
+          AND project_binding."knowledgeBaseId" = ${knowledgeBaseId}
+        FOR SHARE OF project_binding, base, generation
+      `;
+      if (!projectBindings[0]) throw new KnowledgeRunPlanConflictError();
+      continue;
+    }
     const bases = await tx.$queryRaw<Array<{
       indexGenerationId: string;
       ownerUserId: string;
@@ -524,7 +638,9 @@ export async function insertAcceptedKnowledgeRunBindings(
   let current: KnowledgeRunAdmissionPlan;
   try {
     current = await loadKnowledgeRunAdmissionPlan(tx, {
+      ...(input.plan.executionScope ? { executionScope: input.plan.executionScope } : {}),
       knowledgePlan: input.plan.knowledgePlan,
+      ...(input.plan.projectId ? { projectId: input.plan.projectId } : {}),
       userId: input.userId
     });
   } catch (error) {
@@ -590,6 +706,7 @@ export async function insertAcceptedProviderRunBindings(
     current = await loadProviderAdmissionPlan(tx, {
       providerConnectionId: input.plan.selection.providerConnectionId,
       providerModelId: input.plan.selection.providerModelId,
+      ...(input.plan.executionScope ? { executionScope: input.plan.executionScope } : {}),
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),

@@ -5,10 +5,15 @@ import {
   type ProjectFolderWire,
   type ProjectWorkspaceResponseWire
 } from "../../contracts/projects";
-import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import { defaultChatTitle } from "../chats/titlePolicy";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveProjectAccess } from "./access";
+import {
+  loadProjectChatDefaultAuthority,
+  projectChatDefaultsProjection,
+  type ProjectChatDefaultAuthority
+} from "./chatDefaults";
+import { notifyProjectEvent } from "./events";
 import type { ProjectRepositoryResult } from "./prismaRepository";
 
 const projectChatSelect = {
@@ -46,14 +51,15 @@ const projectChatSelect = {
 
 type ProjectChatRow = Prisma.ChatGetPayload<{ select: typeof projectChatSelect }>;
 
-function storedKnowledge(value: Prisma.JsonValue | null) {
-  if (value === null) return null;
-  const decoded = decodeKnowledgePlan(value);
-  return decoded.ok ? decoded.plan : null;
-}
-
-function chatWire(chat: ProjectChatRow): ProjectChatSummaryWire {
+function chatWire(
+  chat: ProjectChatRow,
+  authority: ProjectChatDefaultAuthority
+): ProjectChatSummaryWire {
   if (!chat.projectId) throw new Error("project_chat_integrity_invalid");
+  const defaults = projectChatDefaultsProjection(authority, {
+    defaultKnowledgePlan: chat.defaultKnowledgePlan,
+    defaultModelId: chat.defaultProviderModel?.id ?? null
+  });
   return {
     activeRun: chat._count.modelRuns > 0,
     activeLeafMessageId: chat.activeLeafMessageId,
@@ -61,9 +67,9 @@ function chatWire(chat: ProjectChatRow): ProjectChatSummaryWire {
     createdAt: chat.createdAt.toISOString(),
     createdByDisplayName: chat.createdByDisplayName,
     createdByUserId: chat.createdByUserId,
-    defaultKnowledgePlan: storedKnowledge(chat.defaultKnowledgePlan),
-    defaultModelId: chat.defaultProviderModel?.id ?? null,
-    defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
+    defaultKnowledgePlan: defaults.defaultKnowledgePlan,
+    defaultModelId: defaults.defaultModelId,
+    defaultProvider: defaults.defaultProvider,
     folderId: chat.projectFolderId,
     id: chat.id,
     messageCount: chat._count.messages,
@@ -103,24 +109,41 @@ function knownConflict(error: unknown): boolean {
     ["P2002", "P2003", "P2004", "P2025", "P2034"].includes(error.code);
 }
 
+async function publishProjectResult<Value>(
+  projectId: string,
+  operation: Promise<ProjectRepositoryResult<Value | undefined>>
+): Promise<ProjectRepositoryResult<Value>> {
+  const result = await operation;
+  if (result.kind === "ok") {
+    if (result.value === undefined) return { kind: "not_found" };
+    notifyProjectEvent(projectId);
+    return { kind: "ok", value: result.value };
+  }
+  return result;
+}
+
 export function createPrismaProjectContentRepository(prisma: PrismaClient) {
   return {
     async listWorkspace(userId: string, projectId: string): Promise<ProjectWorkspaceResponseWire | null> {
       const access = await resolveProjectAccess(prisma, { projectId, userId });
       if (!access) return null;
-      const [chats, folders] = await prisma.$transaction([
-        prisma.chat.findMany({
+      const [chats, folders, authority] = await prisma.$transaction(async (tx) => Promise.all([
+        tx.chat.findMany({
           orderBy: [{ archived: "asc" }, { updatedAt: "desc" }, { id: "asc" }],
           select: projectChatSelect,
           where: { permanentDeletionAt: null, projectId }
         }),
-        prisma.projectFolder.findMany({
+        tx.projectFolder.findMany({
           orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
           select: { id: true, name: true, parentId: true, sortOrder: true },
           where: { projectId }
-        })
-      ]);
-      return { chats: chats.map(chatWire), folders: folders.map(folderWire) };
+        }),
+        loadProjectChatDefaultAuthority(tx, projectId)
+      ]), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      return {
+        chats: chats.map((chat) => chatWire(chat, authority)),
+        folders: folders.map(folderWire)
+      };
     },
 
     async createChat(input: {
@@ -131,7 +154,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectChatSummaryWire>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "CONTRIBUTOR",
@@ -149,19 +172,24 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             const folder = await tx.projectFolder.findUnique({
               where: { projectId_id: { id: input.folderId, projectId: input.projectId } }
             });
-            if (!folder) return { kind: "not_found" as const };
+            if (!folder) return { kind: "target_not_found" as const, reason: "project_folder_not_found" };
           }
           const decoded = decodeProjectDefaults(project.defaults);
           if (!decoded.ok) {
             return { kind: "conflict" as const, reason: "project_configuration_unavailable" };
           }
           const defaults = decoded.defaults;
+          const authority = await loadProjectChatDefaultAuthority(tx, input.projectId);
+          const safeDefaults = projectChatDefaultsProjection(authority, {
+            defaultKnowledgePlan: defaults.knowledgePlan,
+            defaultModelId: defaults.providerModelId
+          });
           const chat = await tx.chat.create({
             data: {
               createdByDisplayName: input.actorDisplayName,
               createdByUserId: input.userId,
-              defaultKnowledgePlan: defaults.knowledgePlan as unknown as Prisma.InputJsonValue,
-              defaultProviderModelId: defaults.providerModelId,
+              defaultKnowledgePlan: safeDefaults.defaultKnowledgePlan as Prisma.InputJsonValue,
+              defaultProviderModelId: safeDefaults.defaultModelId,
               memoryMode: "EXCLUDED",
               projectFolderId: input.folderId ?? null,
               projectId: input.projectId,
@@ -179,8 +207,8 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
               projectId: input.projectId
             })
           });
-          return { kind: "ok" as const, value: chatWire(chat) };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+          return { kind: "ok" as const, value: chatWire(chat, authority) };
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_chat_create_conflict" };
         throw error;
@@ -195,7 +223,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectFolderWire>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "CONTRIBUTOR",
@@ -208,7 +236,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             const parent = await tx.projectFolder.findUnique({
               where: { projectId_id: { id: input.parentId, projectId: input.projectId } }
             });
-            if (!parent) return { kind: "not_found" as const };
+            if (!parent) return { kind: "target_not_found" as const, reason: "project_folder_not_found" };
           }
           const aggregate = await tx.projectFolder.aggregate({
             _max: { sortOrder: true },
@@ -234,7 +262,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             })
           });
           return { kind: "ok" as const, value: folderWire(folder) };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_folder_conflict" };
         throw error;
@@ -250,7 +278,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectFolderWire>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -262,7 +290,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
           const current = await tx.projectFolder.findUnique({
             where: { projectId_id: { id: input.folderId, projectId: input.projectId } }
           });
-          if (!current) return { kind: "not_found" as const };
+          if (!current) return { kind: "target_not_found" as const, reason: "project_folder_not_found" };
           if (input.parentId === input.folderId) {
             return { kind: "conflict" as const, reason: "project_folder_cycle" };
           }
@@ -281,7 +309,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             const parent = await tx.projectFolder.findUnique({
               where: { projectId_id: { id: input.parentId, projectId: input.projectId } }
             });
-            if (!parent) return { kind: "not_found" as const };
+            if (!parent) return { kind: "target_not_found" as const, reason: "project_folder_not_found" };
             if (descendants[0]) return { kind: "conflict" as const, reason: "project_folder_cycle" };
           }
           const folder = await tx.projectFolder.update({
@@ -302,7 +330,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             })
           });
           return { kind: "ok" as const, value: folderWire(folder) };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_folder_conflict" };
         throw error;
@@ -316,7 +344,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<{ id: string }>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -328,13 +356,15 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
           const folder = await tx.projectFolder.findUnique({
             where: { projectId_id: { id: input.folderId, projectId: input.projectId } }
           });
-          if (!folder) return { kind: "not_found" as const };
-          const childCount = await tx.projectFolder.count({
+          if (!folder) return { kind: "target_not_found" as const, reason: "project_folder_not_found" };
+          // Deleting a folder is an atomic move, never a destructive subtree
+          // delete. Children and chats inherit the deleted folder's parent.
+          await tx.projectFolder.updateMany({
+            data: { parentId: folder.parentId },
             where: { parentId: input.folderId, projectId: input.projectId }
           });
-          if (childCount > 0) return { kind: "conflict" as const, reason: "project_folder_not_empty" };
           await tx.chat.updateMany({
-            data: { projectFolderId: null },
+            data: { projectFolderId: folder.parentId },
             where: { projectFolderId: input.folderId, projectId: input.projectId }
           });
           await tx.projectFolder.delete({
@@ -350,7 +380,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             })
           });
           return { kind: "ok" as const, value: { id: input.folderId } };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_folder_conflict" };
         throw error;
@@ -365,7 +395,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectChatSummaryWire>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -380,7 +410,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
               AND "permanentDeletionAt" IS NULL
             FOR UPDATE
           `);
-          if (!chatRows[0]) return { kind: "not_found" as const };
+          if (!chatRows[0]) return { kind: "target_not_found" as const, reason: "project_chat_not_found" };
           const activeRun = await tx.modelRun.findFirst({
             where: {
               chatId: input.chatId,
@@ -402,8 +432,9 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
               projectId: input.projectId
             })
           });
-          return { kind: "ok" as const, value: chatWire(chat) };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+          const authority = await loadProjectChatDefaultAuthority(tx, input.projectId);
+          return { kind: "ok" as const, value: chatWire(chat, authority) };
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (error instanceof ActiveRunConflictError) {
           return { kind: "conflict", reason: "active_run_in_progress" };

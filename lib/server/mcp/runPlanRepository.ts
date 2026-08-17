@@ -219,6 +219,101 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   };
 }
 
+const projectRunGenerationSelect = {
+  credentialSources: true,
+  errorCode: true,
+  externalAccountLabel: true,
+  fingerprint: true,
+  id: true,
+  inventory: true,
+  inventoryUpdatedAt: true,
+  oauthConnectionId: true,
+  revision: {
+    select: {
+      configuration: true,
+      id: true,
+      server: {
+        select: {
+          activeRevisionId: true,
+          archivedAt: true,
+          availableInProjects: true,
+          description: true,
+          displayName: true,
+          enabled: true,
+          id: true,
+          namespace: true,
+          sharedConfigEnvelope: true
+        }
+      },
+      validationEvidence: true
+    }
+  },
+  state: true,
+  userServer: {
+    select: {
+      desiredRuntimeGenerationId: true,
+      enabled: true,
+      personalConfigEnvelope: true,
+      serverId: true
+    }
+  }
+} satisfies Prisma.McpRuntimeGenerationSelect;
+
+type ProjectRunGenerationRecord = Prisma.McpRuntimeGenerationGetPayload<{
+  select: typeof projectRunGenerationSelect;
+}>;
+
+function authMode(configuration: unknown): string | null {
+  if (!isRecord(configuration) || !isRecord(configuration.auth) ||
+    typeof configuration.auth.mode !== "string") return null;
+  return configuration.auth.mode;
+}
+
+/**
+ * Resolve a Project MCP plan without joining through McpGrant or
+ * McpUserServer personal configuration.  Runtime generations are installation
+ * workers, so only a ready generation whose effective credential sources are
+ * shared/no-auth can cross this boundary.
+ */
+function serializeProjectRunGeneration(
+  generation: ProjectRunGenerationRecord
+): McpRunPlanRecord {
+  const server = generation.revision.server;
+  const sharedSafe = server.availableInProjects &&
+    (Boolean(server.sharedConfigEnvelope) || authMode(generation.revision.configuration) === "none");
+  const credentialSources = generation.credentialSources.filter(
+    (source): source is "shared" => source === "shared"
+  );
+  const credentialsSafe = generation.oauthConnectionId === null &&
+    generation.userServer.personalConfigEnvelope === null &&
+    generation.credentialSources.every((source) => source === "shared" || source === "none");
+  const runtime = runtimeReadiness(generation.state, generation.errorCode);
+  const runnable = sharedSafe && credentialsSafe &&
+    generation.userServer.enabled &&
+    generation.userServer.desiredRuntimeGenerationId === generation.id &&
+    generation.revision.id === server.activeRevisionId;
+  return {
+    catalogTools: revisionCatalogTools(
+      generation.revision.validationEvidence,
+      generation.revision.configuration
+    ),
+    credentialSources: runnable ? credentialSources : [],
+    enabled: runnable,
+    errorCode: runnable ? runtime.errorCode : "mcp_project_credentials_unavailable",
+    externalAccountLabel: null,
+    fingerprint: runnable ? generation.fingerprint : null,
+    generationId: runnable ? generation.id : null,
+    inventory: runnable ? generation.inventory : null,
+    inventoryUpdatedAt: runnable ? generation.inventoryUpdatedAt : null,
+    namespace: server.namespace,
+    readiness: runnable ? runtime.readiness : "unavailable",
+    revisionId: generation.revision.id,
+    serverDescription: server.description,
+    serverId: server.id,
+    serverName: server.displayName
+  };
+}
+
 export async function loadMcpRunPlanRecords(
   userId: string,
   client: PrismaClient = prisma
@@ -260,11 +355,43 @@ export async function loadMcpRunPlanRecordsForServers(
     .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
 }
 
+export async function loadMcpRunPlanRecordsForProjectServers(
+  serverIds: readonly string[],
+  client: PrismaClient = prisma
+): Promise<McpRunPlanRecord[]> {
+  const uniqueServerIds = [...new Set(serverIds)];
+  if (uniqueServerIds.length === 0) return [];
+  const generations = await client.mcpRuntimeGeneration.findMany({
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    select: projectRunGenerationSelect,
+    where: {
+      oauthConnectionId: null,
+      revision: { server: { id: { in: uniqueServerIds } } },
+      state: "ready",
+      userServer: { personalConfigEnvelope: null }
+    }
+  });
+  const selected = new Map<string, ProjectRunGenerationRecord>();
+  for (const generation of generations) {
+    if (!selected.has(generation.userServer.serverId)) {
+      selected.set(generation.userServer.serverId, generation);
+    }
+  }
+  return uniqueServerIds.map((serverId) => selected.get(serverId))
+    .filter((generation): generation is ProjectRunGenerationRecord => Boolean(generation))
+    .map(serializeProjectRunGeneration)
+    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
+}
+
 export function createPrismaMcpRunPlanLoader(client: PrismaClient = prisma) {
   return (userId: string, serverIds?: readonly string[]) =>
     serverIds
       ? loadMcpRunPlanRecordsForServers(userId, serverIds, client)
       : loadMcpRunPlanRecords(userId, client);
+}
+
+export function createPrismaMcpProjectRunPlanLoader(client: PrismaClient = prisma) {
+  return (serverIds: readonly string[]) => loadMcpRunPlanRecordsForProjectServers(serverIds, client);
 }
 
 export function createPrismaMcpCapabilityCatalogLoader(client: PrismaClient = prisma) {

@@ -245,7 +245,6 @@ describe("Workspace header v2", () => {
       folders,
       onArchive: vi.fn(),
       onBranches: vi.fn(),
-      onCommands: vi.fn(),
       onCopyThread: vi.fn(),
       onDelete: vi.fn(),
       onExport: vi.fn(),
@@ -374,7 +373,7 @@ describe("Workspace header v2", () => {
     expect(screen.queryByRole("heading")).toBeNull();
     expect(screen.queryByTestId("header-more-trigger")).toBeNull();
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Commands" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Commands" })).toBeNull();
 
     // The sidebar «Archived chats» row is the single archive entry.
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
+import { createPrismaProjectContentRepository } from "./contentRepository";
 import { createPrismaProjectMemoryRepository } from "./memoryRepository";
 import { createPrismaProjectRepository } from "./prismaRepository";
 
@@ -13,7 +15,8 @@ type ProjectFixture = Readonly<{
 
 async function withProjectFixture<T>(
   run: (fixture: ProjectFixture) => Promise<T>,
-  additionalUsers = 0
+  additionalUsers = 0,
+  preferredModelId?: string
 ): Promise<T> {
   const suffix = randomUUID();
   const ownerId = `project-owner-${suffix}`;
@@ -33,6 +36,7 @@ async function withProjectFixture<T>(
     actorDisplayName: "Project Owner",
     description: "Disposable Project integration fixture",
     name: `Project ${suffix}`,
+    ...(preferredModelId ? { preferredModelId } : {}),
     userId: ownerId
   });
   if (created.kind !== "ok") throw new Error(`project_fixture_create_${created.kind}`);
@@ -41,7 +45,7 @@ async function withProjectFixture<T>(
   try {
     return await run({ ownerId, projectId, userIds });
   } finally {
-    await prisma.projectRunBinding.deleteMany({ where: { projectId } });
+    await prisma.modelRun.deleteMany({ where: { chat: { projectId } } });
     await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   }
@@ -50,6 +54,297 @@ async function withProjectFixture<T>(
 describe("Prisma-backed Project repository", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("atomically bootstraps the Owner, preferred eligible model, default, and outbox event", async () => {
+    const original = await prisma.providerModel.findUniqueOrThrow({
+      select: { availableInProjects: true },
+      where: { id: providerTemplateIds.fakeModel }
+    });
+    await prisma.providerModel.update({
+      data: { availableInProjects: true },
+      where: { id: providerTemplateIds.fakeModel }
+    });
+    try {
+      await withProjectFixture(async ({ ownerId, projectId }) => {
+        const detail = await createPrismaProjectRepository(prisma).getDetail(ownerId, projectId);
+        expect(detail).toMatchObject({
+          defaults: { providerModelId: providerTemplateIds.fakeModel },
+          directRole: "OWNER",
+          effectiveRole: "OWNER",
+          readiness: "READY"
+        });
+        await expect(prisma.projectGrant.count({
+          where: { projectId, role: "OWNER", userId: ownerId }
+        })).resolves.toBe(1);
+        await expect(prisma.projectModelBinding.count({
+          where: { projectId, providerModelId: providerTemplateIds.fakeModel }
+        })).resolves.toBe(1);
+        await expect(prisma.projectEvent.findMany({
+          select: { eventType: true },
+          where: { projectId }
+        })).resolves.toContainEqual({ eventType: "project_created" });
+      }, 0, providerTemplateIds.fakeModel);
+    } finally {
+      await prisma.providerModel.update({
+        data: { availableInProjects: original.availableInProjects },
+        where: { id: providerTemplateIds.fakeModel }
+      });
+    }
+  });
+
+  it("writes durable Project outbox rows for run artifacts and tool checkpoints", async () => {
+    await withProjectFixture(async ({ ownerId, projectId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          createdByDisplayName: "Project Owner",
+          createdByUserId: ownerId,
+          memoryMode: "EXCLUDED",
+          projectId,
+          title: "Run outbox",
+          userId: null
+        }
+      });
+      const message = await prisma.message.create({
+        data: {
+          authorDisplayName: "Project Owner",
+          authorProjectRole: "OWNER",
+          authorUserId: ownerId,
+          chatId: chat.id,
+          content: { blocks: [{ text: "Shared question", type: "text" }] },
+          role: "user"
+        }
+      });
+      const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+      const run = await prisma.$transaction(async (tx) => {
+        const created = await tx.modelRun.create({
+          data: {
+            chatId: chat.id,
+            modelId: "fake-qsa",
+            normalizedRequest: {},
+            provider: "fake",
+            status: "streaming",
+            userId: ownerId,
+            userMessageId: message.id
+          }
+        });
+        await tx.projectRunBinding.create({
+          data: {
+            acceptedRole: "OWNER",
+            accessRevision: project.accessRevision,
+            initiatorUserId: ownerId,
+            instructionsRevision: project.instructionsRevision,
+            memoryRevision: project.memoryRevision,
+            modelRunId: created.id,
+            personalMemoryDisabled: true,
+            policyRevision: project.policyRevision,
+            projectId,
+            providerAdmissionFingerprint: "a".repeat(64),
+            providerConnectionId: providerTemplateIds.fakeConnection,
+            providerModelId: providerTemplateIds.fakeModel,
+            providerRequiresClientTools: false,
+            providerSearchPlan: { mode: "all_selected", optionIds: [] }
+          }
+        });
+        return created;
+      });
+      const before = await prisma.projectEvent.count({ where: { projectId } });
+
+      await prisma.modelRunEvent.create({
+        data: {
+          eventType: "artifact",
+          modelRunId: run.id,
+          payload: { artifactType: "search", payload: { action: { sources: [] } } },
+          sequence: 0
+        }
+      });
+      const toolCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: {},
+          modelRunId: run.id,
+          ordinal: 0,
+          providerCallId: "call-1",
+          roundIndex: 0,
+          toolName: "safe_tool"
+        }
+      });
+      await prisma.modelRunToolCall.update({
+        data: { result: { status: "complete" }, state: "complete" },
+        where: { id: toolCall.id }
+      });
+
+      const events = await prisma.projectEvent.findMany({
+        orderBy: { sequence: "asc" },
+        select: { entityId: true, entityType: true, eventType: true },
+        skip: before,
+        where: { projectId }
+      });
+      expect(events).toEqual([
+        { entityId: run.id, entityType: "run", eventType: "run_output_changed" },
+        { entityId: run.id, entityType: "run", eventType: "run_tool_changed" },
+        { entityId: run.id, entityType: "run", eventType: "run_tool_changed" }
+      ]);
+    });
+  });
+
+  it("omits globally ineligible resource identity and clears it from the safe defaults projection", async () => {
+    const original = await prisma.providerModel.findUniqueOrThrow({
+      select: { availableInProjects: true },
+      where: { id: providerTemplateIds.fakeModel }
+    });
+    await prisma.providerModel.update({
+      data: { availableInProjects: true },
+      where: { id: providerTemplateIds.fakeModel }
+    });
+    try {
+      await withProjectFixture(async ({ ownerId, projectId }) => {
+        await prisma.providerModel.update({
+          data: { availableInProjects: false },
+          where: { id: providerTemplateIds.fakeModel }
+        });
+        const detail = await createPrismaProjectRepository(prisma).getDetail(ownerId, projectId);
+
+        expect(detail).toMatchObject({
+          defaults: { providerModelId: null },
+          readiness: "SETUP_REQUIRED"
+        });
+        expect(detail?.resources).toEqual([]);
+        expect(JSON.stringify(detail)).not.toContain(providerTemplateIds.fakeModel);
+        expect(JSON.stringify(detail)).not.toContain("Fake QSA");
+      }, 0, providerTemplateIds.fakeModel);
+    } finally {
+      await prisma.providerModel.update({
+        data: { availableInProjects: original.availableInProjects },
+        where: { id: providerTemplateIds.fakeModel }
+      });
+    }
+  });
+
+  it("does not treat installation can-use publication as Project delegation authority", async () => {
+    await withProjectFixture(async ({ ownerId, projectId, userIds }) => {
+      const foreignOwnerId = userIds[1]!;
+      const skill = await prisma.skillDefinition.create({
+        data: { ownerUserId: foreignOwnerId }
+      });
+      const revision = await prisma.skillRevision.create({
+        data: {
+          authorUserId: foreignOwnerId,
+          instructions: "Private owner instructions",
+          name: "Foreign installation skill",
+          revisionNumber: 1,
+          skillId: skill.id
+        }
+      });
+      await prisma.skillDefinition.update({
+        data: { currentRevisionId: revision.id },
+        where: { id: skill.id }
+      });
+      await prisma.skillPublication.create({
+        data: {
+          publishedByUserId: foreignOwnerId,
+          scope: "installation",
+          skillId: skill.id
+        }
+      });
+
+      try {
+        const repository = createPrismaProjectRepository(prisma);
+        const detail = await repository.getDetail(ownerId, projectId);
+        if (!detail) throw new Error("project_fixture_detail_missing");
+        const candidates = await repository.candidates({
+          limit: 20,
+          projectId,
+          query: "Foreign",
+          type: "skill",
+          userId: ownerId
+        });
+        expect(candidates?.items).toEqual([]);
+        await expect(repository.addResource({
+          actorDisplayName: "Project Owner",
+          expectedPolicyRevision: detail.policyRevision,
+          projectId,
+          resourceId: skill.id,
+          type: "skill",
+          userId: ownerId
+        })).resolves.toEqual({ kind: "unavailable", reason: "project_skill_unavailable" });
+        await expect(prisma.projectSkillBinding.count({
+          where: { projectId, skillId: skill.id }
+        })).resolves.toBe(0);
+      } finally {
+        await prisma.skillPublication.deleteMany({ where: { skillId: skill.id } });
+        await prisma.skillDefinition.update({
+          data: { currentRevisionId: null },
+          where: { id: skill.id }
+        });
+        await prisma.skillRevision.deleteMany({ where: { skillId: skill.id } });
+        await prisma.skillDefinition.delete({ where: { id: skill.id } });
+      }
+    }, 1);
+  });
+
+  it("rolls back stale unlink and atomically clears Project and chat defaults on commit", async () => {
+    const original = await prisma.providerModel.findUniqueOrThrow({
+      select: { availableInProjects: true },
+      where: { id: providerTemplateIds.fakeModel }
+    });
+    await prisma.providerModel.update({
+      data: { availableInProjects: true },
+      where: { id: providerTemplateIds.fakeModel }
+    });
+    try {
+      await withProjectFixture(async ({ ownerId, projectId }) => {
+        const repository = createPrismaProjectRepository(prisma);
+        const content = createPrismaProjectContentRepository(prisma);
+        const detail = await repository.getDetail(ownerId, projectId);
+        if (!detail) throw new Error("project_fixture_detail_missing");
+        const model = detail.resources.find((resource) =>
+          resource.type === "model" && resource.resourceId === providerTemplateIds.fakeModel
+        );
+        if (!model) throw new Error("project_fixture_model_missing");
+        const createdChat = await content.createChat({
+          actorDisplayName: "Project Owner",
+          projectId,
+          title: "Default cleanup",
+          userId: ownerId
+        });
+        if (createdChat.kind !== "ok") throw new Error(`project_chat_${createdChat.kind}`);
+        const eventsBefore = await prisma.projectEvent.count({ where: { projectId } });
+
+        await expect(repository.removeResource({
+          actorDisplayName: "Project Owner",
+          bindingId: model.id,
+          expectedPolicyRevision: detail.policyRevision - 1,
+          projectId,
+          userId: ownerId
+        })).resolves.toEqual({ kind: "conflict", reason: "policy_revision_conflict" });
+        await expect(prisma.projectEvent.count({ where: { projectId } })).resolves.toBe(eventsBefore);
+
+        await expect(repository.removeResource({
+          actorDisplayName: "Project Owner",
+          bindingId: model.id,
+          expectedPolicyRevision: detail.policyRevision,
+          projectId,
+          userId: ownerId
+        })).resolves.toEqual({ kind: "ok", value: { id: model.id } });
+        const stored = await prisma.project.findUniqueOrThrow({
+          select: { defaults: true },
+          where: { id: projectId }
+        });
+        expect(stored.defaults).toMatchObject({ providerModelId: null });
+        await expect(prisma.chat.findUniqueOrThrow({
+          select: { defaultProviderModelId: true },
+          where: { id: createdChat.value.id }
+        })).resolves.toEqual({ defaultProviderModelId: null });
+        await expect(prisma.projectEvent.count({ where: { projectId } })).resolves.toBeGreaterThan(eventsBefore);
+        const activity = await repository.activity({ limit: 20, projectId, userId: ownerId });
+        expect(JSON.stringify(activity)).not.toContain(providerTemplateIds.fakeModel);
+      }, 0, providerTemplateIds.fakeModel);
+    } finally {
+      await prisma.providerModel.update({
+        data: { availableInProjects: original.availableInProjects },
+        where: { id: providerTemplateIds.fakeModel }
+      });
+    }
   });
 
   it("counts only active direct Owners when protecting the last Owner", async () => {
@@ -112,7 +407,76 @@ describe("Prisma-backed Project repository", () => {
         targetUserId: userIds[1],
         userId: ownerId
       });
-      expect(added.kind).toBe("ok");
+      if (added.kind !== "ok") throw new Error(`project_fixture_grant_${added.kind}`);
+      const afterAdd = await repository.getDetail(ownerId, projectId);
+      if (!afterAdd) throw new Error("project_fixture_detail_missing_after_add");
+      expect(afterAdd.accessRevision).toBe(initial.accessRevision + 1);
+
+      await expect(repository.updateGrant({
+        actorDisplayName: "Project Owner",
+        expectedAccessRevision: initial.accessRevision,
+        grantId: added.value.id,
+        projectId,
+        role: "VIEWER",
+        userId: ownerId
+      })).resolves.toEqual({ kind: "conflict", reason: "access_revision_conflict" });
+
+      const updated = await repository.updateGrant({
+        actorDisplayName: "Project Owner",
+        expectedAccessRevision: afterAdd.accessRevision,
+        grantId: added.value.id,
+        projectId,
+        role: "VIEWER",
+        userId: ownerId
+      });
+      expect(updated.kind).toBe("ok");
+      const afterUpdate = await repository.getDetail(ownerId, projectId);
+      if (!afterUpdate) throw new Error("project_fixture_detail_missing_after_update");
+      expect(afterUpdate.accessRevision).toBe(afterAdd.accessRevision + 1);
+
+      const removed = await repository.removeGrant({
+        actorDisplayName: "Project Owner",
+        expectedAccessRevision: afterUpdate.accessRevision,
+        grantId: added.value.id,
+        projectId,
+        userId: ownerId
+      });
+      expect(removed.kind).toBe("ok");
+      const afterRemove = await repository.getDetail(ownerId, projectId);
+      if (!afterRemove) throw new Error("project_fixture_detail_missing_after_remove");
+      expect(afterRemove.accessRevision).toBe(afterUpdate.accessRevision + 1);
+
+      const readded = await repository.addGrant({
+        actorDisplayName: "Project Owner",
+        expectedAccessRevision: afterRemove.accessRevision,
+        projectId,
+        role: "CONTRIBUTOR",
+        targetUserId: userIds[1],
+        userId: ownerId
+      });
+      expect(readded.kind).toBe("ok");
+      const memberDetail = await repository.getDetail(userIds[1]!, projectId);
+      if (!memberDetail) throw new Error("project_fixture_member_detail_missing");
+      const left = await repository.leave({
+        actorDisplayName: "Project Member 1",
+        expectedAccessRevision: memberDetail.accessRevision,
+        projectId,
+        userId: userIds[1]!
+      });
+      expect(left).toEqual({ kind: "ok", value: { accessRemaining: false } });
+      const afterLeave = await prisma.project.findUniqueOrThrow({
+        select: { accessRevision: true },
+        where: { id: projectId }
+      });
+      expect(afterLeave.accessRevision).toBe(memberDetail.accessRevision + 1);
+      await expect(prisma.projectEvent.findFirstOrThrow({
+        orderBy: { sequence: "desc" },
+        select: { accessRevision: true, eventType: true },
+        where: { projectId }
+      })).resolves.toEqual({
+        accessRevision: afterLeave.accessRevision,
+        eventType: "user_left_project"
+      });
 
       const policyUpdate = await repository.update({
         actorDisplayName: "Project Owner",

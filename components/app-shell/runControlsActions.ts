@@ -37,8 +37,10 @@ type MutableRef<T> = {
 type RunControlsActionsInput = {
   catalog: Catalog | null;
   currentModel: CatalogModel | undefined;
+  allowPersonalPersistence?(): boolean;
   pendingControlDefaultsRef: MutableRef<PendingControlDefaults | null>;
   pendingControlDefaultsTimerRef: MutableRef<number | null>;
+  resolveCatalog?(): Catalog | null;
   settingsMutationCoordinatorRef: MutableRef<SettingsMutationCoordinator | null>;
   setCatalog(update: (current: Catalog | null) => Catalog | null): void;
   setNotice(notice: Notice): void;
@@ -46,17 +48,21 @@ type RunControlsActionsInput = {
 };
 
 export function useRunControlsActions({
+  allowPersonalPersistence,
   catalog,
   currentModel,
   pendingControlDefaultsRef,
   pendingControlDefaultsTimerRef,
+  resolveCatalog,
   settingsMutationCoordinatorRef,
   setCatalog,
   setNotice,
   setSettingsNotice
 }: RunControlsActionsInput) {
   function currentCatalogFromStore() {
-    return useWorkspaceStore.getState().catalog ?? catalog;
+    return resolveCatalog
+      ? resolveCatalog()
+      : useWorkspaceStore.getState().catalog ?? catalog;
   }
 
   function selectedModelFromStore() {
@@ -346,6 +352,9 @@ export function useRunControlsActions({
     update: SettingsDefaultsPatch,
     options: { noticeScope?: SettingsNoticeScope } = {}
   ) {
+    if (allowPersonalPersistence?.() === false) {
+      return Promise.resolve(true);
+    }
     if (update.searchPlan !== null) {
       updateLocalCatalogDefaults(update as Partial<Catalog["defaults"]>);
     }

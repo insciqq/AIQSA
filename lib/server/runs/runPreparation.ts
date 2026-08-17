@@ -114,7 +114,12 @@ export type RunPreparationDeps = Readonly<{
   assistants?: AssistantRunResolver;
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeAdmission?: Readonly<{
-    load(input: { knowledgePlan: KnowledgePlan; userId: string }): Promise<KnowledgeRunAdmissionPlan>;
+    load(input: {
+      executionScope?: "project";
+      knowledgePlan: KnowledgePlan;
+      projectId?: string;
+      userId: string;
+    }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   mcp?: Readonly<{
     catalog?(userId: string): Promise<McpCapabilityCatalog>;
@@ -130,11 +135,15 @@ export type RunPreparationDeps = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
+    /** Project MCP admission is intentionally independent of the initiating
+     * user's grants, personal slots, and OAuth connections. */
+    prepareProject?(serverIds: readonly string[]): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
   }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
   providerAdmission?: Readonly<{
     load(input: {
+      executionScope?: "project";
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
@@ -165,6 +174,7 @@ export type SendRunPreparationSource = Readonly<{
     projectMemory: string | null;
     project?: ProjectRunAdmission;
   }>;
+  draftProjectChat?: boolean;
   kind: "send";
 }>;
 
@@ -862,6 +872,8 @@ export async function prepareRun(
   const toolBudgets = deps.runPolicy
     ? await deps.runPolicy.load()
     : DEFAULT_TOOL_RUN_BUDGETS;
+  const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  const project = chat.project;
 
   let assistantRun: AssistantRunMaterialization | null = null;
   if (body && "assistantId" in body && body.assistantId !== undefined && body.assistantId !== null) {
@@ -883,13 +895,25 @@ export async function prepareRun(
     if (!deps.assistants) {
       return failure("assistant_not_available", 404);
     }
-    const resolution = await deps.assistants.resolveForRun(
-      input.userId,
-      body.assistantId.trim()
-    );
+    const resolution = project
+      ? deps.assistants.resolveForProject
+        ? await deps.assistants.resolveForProject(project.projectId, body.assistantId.trim())
+        : { code: "assistant_not_available" as const, ok: false as const, status: 404 as const }
+      : await deps.assistants.resolveForRun(input.userId, body.assistantId.trim());
     if (!resolution.ok) {
       return failure(resolution.code, resolution.status);
     }
+    assistantRun = resolution.assistant;
+  }
+
+  if (!assistantRun && project?.defaults.assistantId &&
+    !assistantGovernedBodyKeys.some((key) => Object.hasOwn(body ?? {}, key))) {
+    if (!deps.assistants?.resolveForProject) return failure("assistant_not_available", 503);
+    const resolution = await deps.assistants.resolveForProject(
+      project.projectId,
+      project.defaults.assistantId
+    );
+    if (!resolution.ok) return failure(resolution.code, resolution.status);
     assistantRun = resolution.assistant;
   }
 
@@ -907,22 +931,18 @@ export async function prepareRun(
   let skillRuns: SkillRunMaterialization[] = [];
   if (effectiveSkillIds.length > 0) {
     if (!deps.skills) return failure("skill_not_available", 404);
-    const resolution = await deps.skills.resolveForRun(input.userId, effectiveSkillIds);
+    if (project && effectiveSkillIds.some((skillId) => !project.skillIds?.includes(skillId))) {
+      return failure("skill_not_available", 404);
+    }
+    const resolution = project
+      ? deps.skills.resolveForProject
+        ? await deps.skills.resolveForProject(project.projectId, effectiveSkillIds)
+        : { code: "skill_not_available" as const, ok: false as const, status: 404 as const }
+      : await deps.skills.resolveForRun(input.userId, effectiveSkillIds);
     if (!resolution.ok) return failure(resolution.code, resolution.status);
     skillRuns = resolution.skills;
   }
 
-  const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
-  const project = chat.project;
-  if (!assistantRun && project?.defaults.assistantId && !assistantGovernedBodyKeys.some((key) => Object.hasOwn(body ?? {}, key))) {
-    if (!deps.assistants) return failure("assistant_not_available", 503);
-    const resolution = await deps.assistants.resolveForRun(input.userId, project.defaults.assistantId);
-    if (!resolution.ok) return failure(resolution.code, resolution.status);
-    assistantRun = resolution.assistant;
-  }
-  if (project && (effectiveSkillIds.length > 0 || Boolean(assistantRun?.skillIds.length))) {
-    return failure("skill_not_available", 404);
-  }
   if (project && (
     Object.hasOwn(body ?? {}, "chatMode") ||
     Object.hasOwn(body ?? {}, "temporaryRetentionPolicyVersion")
@@ -954,7 +974,9 @@ export async function prepareRun(
     }
     try {
       knowledgeAdmissionPlan = await deps.knowledgeAdmission.load({
+        ...(project ? { executionScope: "project" as const } : {}),
         knowledgePlan: decodedKnowledgePlan.plan,
+        ...(project ? { projectId: project.projectId } : {}),
         userId: input.userId
       });
     } catch (error) {
@@ -1037,10 +1059,11 @@ export async function prepareRun(
   let modelConfiguration: RunModelConfiguration;
   try {
     admissionPlan = await providerAdmission.load({
+      ...(project ? { executionScope: "project" as const } : {}),
       providerConnectionId: selectedProvider,
       providerModelId: selectedModelId,
       searchPlan: requestedSearchPlan,
-      ...(requestedSearchPreference
+      ...(requestedSearchPreference && !project
         ? {
             searchPreferencePlan: requestedSearchPreference.plan,
             searchPreferenceSource: requestedSearchPreference.source
@@ -1131,7 +1154,11 @@ export async function prepareRun(
   const projectMcpUnavailable = Boolean(projectMcpServerIds.length > 0 && !deps.mcp);
   const mcpPlan = project
     ? projectMcpServerIds.length > 0 && deps.mcp
-      ? await deps.mcp.prepare(input.userId, { allowedServerIds: projectMcpServerIds })
+      ? deps.mcp.prepareProject
+        ? await deps.mcp.prepareProject(projectMcpServerIds)
+        : process.env.NODE_ENV === "production"
+          ? null
+          : await deps.mcp.prepare(input.userId, { allowedServerIds: projectMcpServerIds })
       : null
     : assistantRun
     ? assistantRun.mcpServerIds.length > 0 && deps.mcp
@@ -1145,6 +1172,13 @@ export async function prepareRun(
   const mcpCatalog = ordinaryMcpSelection?.mode === "auto" && deps.mcp?.catalog
     ? await deps.mcp.catalog(input.userId)
     : null;
+  if (project && projectMcpServerIds.length > 0 && !mcpPlan) {
+    return failure(
+      "project_mcp_not_configured",
+      503,
+      "Project shared MCP execution is not configured."
+    );
+  }
   const mcpDiscoveryEnabled = !project && Boolean(mcpCatalog?.servers.length);
   if (project && mcpPlan?.ok && mcpPlan.snapshot.servers.some((server) =>
     server.credentialSources?.some((source) => source === "oauth" || source === "personal")
@@ -1180,11 +1214,12 @@ export async function prepareRun(
   ) {
     try {
       admissionPlan = await providerAdmission.load({
+        ...(project ? { executionScope: "project" as const } : {}),
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
         requiresClientToolCoexistence: true,
         searchPlan: requestedSearchPlan,
-        ...(requestedSearchPreference
+        ...(requestedSearchPreference && !project
           ? {
               searchPreferencePlan: requestedSearchPreference.plan,
               searchPreferenceSource: requestedSearchPreference.source
@@ -1265,11 +1300,13 @@ export async function prepareRun(
       );
   const sendContext =
     input.source.kind === "send"
-      ? await deps.repository.loadConversationContextForExpectedLeaf(
-          chat.id,
-          input.userId,
-          input.source.chat.activeLeafMessageId
-        )
+      ? input.source.draftProjectChat
+        ? []
+        : await deps.repository.loadConversationContextForExpectedLeaf(
+            chat.id,
+            input.userId,
+            input.source.chat.activeLeafMessageId
+          )
       : null;
   if (input.source.kind === "send" && !sendContext) {
     return failure("active_leaf_changed", 409);

@@ -802,9 +802,28 @@
   border-bottom: 0;
 }
 
-.v2-project-activity span {
+.v2-project-activity-copy {
+  display: grid;
+  gap: 0.125rem;
   color: var(--v2-color-text);
-  text-transform: capitalize;
+}
+
+.v2-project-activity-copy small {
+  color: var(--v2-color-text3);
+  font-weight: 400;
+}
+
+.v2-project-activity-state,
+.v2-project-activity-end {
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
+.v2-project-activity > .v2-project-activity-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .v2-project-activity time {

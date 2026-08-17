@@ -10,5 +10,9 @@ export type SkillRunResolution =
   | { code: "skill_not_available"; ok: false; status: 404 };
 
 export type SkillRunResolver = Readonly<{
+  resolveForProject?(
+    projectId: string,
+    skillIds: readonly string[]
+  ): Promise<SkillRunResolution>;
   resolveForRun(userId: string, skillIds: readonly string[]): Promise<SkillRunResolution>;
 }>;

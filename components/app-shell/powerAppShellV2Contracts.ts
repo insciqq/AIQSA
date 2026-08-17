@@ -1,10 +1,10 @@
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
-import type { CommandItem } from "@/components/command-palette/commandItems";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
 import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
 import type { ComposerAssistantSelection } from "@/components/app-shell/composerControlStore";
+import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
 import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
@@ -31,6 +31,7 @@ export type ShellSessionView = {
   activeChatId: string | null;
   activeChatTitle: string;
   adminEntryVisible: boolean;
+  copyProjectChatLink(): Promise<void> | void;
   dismissNotice(): void;
   notice: Notice | null;
   shareActiveBranch(): Promise<void> | void;
@@ -193,7 +194,7 @@ export type ShellComposerView = {
   currentParameterControls: ModelParameterControls;
   draft: string;
   knowledge: {
-    bases: KnowledgeBaseSummary[];
+    bases: readonly ComposerConfigKnowledgeBase[];
     select(baseIds: readonly string[]): void;
     selectedBaseIds: string[];
   };
@@ -282,13 +283,6 @@ export type ShellOverlaysView = {
     confirmMessage(): void;
     folder: FolderSummary | null;
     message: string | null;
-  };
-  palette: {
-    close(): void;
-    items: CommandItem[];
-    open: boolean;
-    run(item: CommandItem): void;
-    show(): void;
   };
   share: {
     close(): void;

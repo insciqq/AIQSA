@@ -36,6 +36,8 @@ async function auth(deps: ProjectContentHandlerDeps, request: Request) {
 
 function result<T>(value: ProjectRepositoryResult<T>, success: (value: T) => Response): Response {
   if (value.kind === "not_found") return error("project_not_found", 404);
+  if (value.kind === "target_not_found") return error(value.reason, 404);
+  if (value.kind === "unavailable") return error(value.reason, 422);
   if (value.kind === "conflict") return error(value.reason, 409);
   return success(value.value);
 }

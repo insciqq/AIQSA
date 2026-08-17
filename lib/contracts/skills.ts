@@ -36,6 +36,7 @@ export type SkillListResponse = {
 
 export type SkillAudience =
   | { id: string; kind: "everyone"; name: "Everyone" }
+  | { id: string; kind: "project"; name: "Project publication" }
   | { id: string; kind: "workspace"; name: string; workspaceId: string };
 
 export type SkillDetail = SkillSummary & {

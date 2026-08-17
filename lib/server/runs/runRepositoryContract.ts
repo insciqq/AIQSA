@@ -33,6 +33,7 @@ import type {
   PersistedAnswerRoundUsage,
   PersistToolLoopCallBatchInput,
   PersistToolLoopCallBatchResult,
+  ProjectRunRecoveryAuthority,
   SettleToolLoopCallResult,
   ToolLoopJsonValue
 } from "./toolLoopPersistence";
@@ -76,8 +77,11 @@ export type ProjectRunAdmission = Readonly<{
   policy: ProjectPolicyWire;
   policyRevision: number;
   projectId: string;
+  /** Project runs always resolve installation/shared provider authority. */
+  executionScope?: "project";
   role: "CONTRIBUTOR" | "MANAGER" | "OWNER" | "VIEWER";
   searchOptionIds: readonly string[];
+  skillIds?: readonly string[];
 }>;
 
 export type RunAttachmentRecord = ProviderAttachment & {
@@ -112,6 +116,7 @@ export type RunControlRecord = {
   chatId: string;
   id: string;
   modelId: string;
+  project?: ProjectRunRecoveryAuthority;
   provider: string;
   providerResponseId: string | null;
   recoverySettled?: boolean;
@@ -285,6 +290,9 @@ export type CreateRunInput = {
   provider: string;
   providerRequestPreview: Record<string, unknown>;
   project?: ProjectRunAdmission;
+  /** First Project send only: the chat row is committed with messages/run in
+   * the same transaction, so a rejected admission cannot leave an empty chat. */
+  projectChat?: Readonly<{ folderId: string | null }>;
   signal?: AbortSignal;
   userId: string;
 };
@@ -349,6 +357,7 @@ export type PreparingRunFinalizationInput = Readonly<{
   attemptId: string;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: readonly McpRunPlanBinding[];
+  project?: ProjectRunAdmission;
   skillBindings?: readonly AcceptedSkillRun[];
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan?: ProviderAdmissionPlan;
@@ -361,6 +370,20 @@ export type PreparingRunRecoveryResult =
   | "finalized"
   | "not_preparing"
   | "settled";
+
+export type RunOwnedChatRecord = Readonly<{
+  activeLeafMessageId: string | null;
+  defaultKnowledgePlan?: unknown;
+  defaultModelId: string;
+  defaultProvider: string;
+  folderDefaultKnowledgePlan?: unknown;
+  id: string;
+  memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+  messageCount: number;
+  projectMemory: string | null;
+  project?: ProjectRunAdmission;
+  title: string;
+}>;
 
 export type RunRepository = {
   admitPreparingRun(input: PreparingRunAdmissionInput): Promise<PreparingRunAdmissionResult>;
@@ -451,19 +474,13 @@ export type RunRepository = {
     error: { code: string; message: string },
     options?: Readonly<{ recoveryTerminal?: boolean }>
   ): Promise<boolean>;
-  findOwnedChat(chatId: string, userId: string): Promise<{
-    activeLeafMessageId: string | null;
-    defaultKnowledgePlan?: unknown;
-    defaultModelId: string;
-    defaultProvider: string;
-    folderDefaultKnowledgePlan?: unknown;
-    id: string;
-    memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
-    messageCount: number;
-    projectMemory: string | null;
-    project?: ProjectRunAdmission;
-    title: string;
-  } | null>;
+  findOwnedChat(chatId: string, userId: string): Promise<RunOwnedChatRecord | null>;
+  loadProjectFirstSend?(input: Readonly<{
+    chatId: string;
+    folderId: string | null;
+    projectId: string;
+    userId: string;
+  }>): Promise<RunOwnedChatRecord | null>;
   findRecentActiveRunForChat(input: { chatId: string; since: Date; userId: string }): Promise<RunControlRecord | null>;
   findStaleActiveRunsForUser(input: {
     chatId?: string;

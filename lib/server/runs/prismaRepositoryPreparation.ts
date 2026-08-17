@@ -87,8 +87,10 @@ import {
   type ProjectRunAdmission
 } from "./runRepositoryContract";
 import { resolveProjectAccess } from "../projects/access";
+import { notifyProjectEvent } from "../projects/events";
 import {
   assertAssistantRunProvenance,
+  assertProjectAssistantRunProvenance,
   assertCurrentSkillRunBindings,
   insertAcceptedKnowledgeRunBindings,
   insertAcceptedMcpRunBindings,
@@ -362,7 +364,7 @@ export async function admitProjectRunWithClient(
   if (!input.project) throw new Error("project_admission_context_required");
   assertPreparingAdmissionInput(input);
   const project = input.project;
-  return mapActiveRunConflict(() =>
+  const result = await mapActiveRunConflict(() =>
     repeatableReadTransaction(prismaClient, async (tx) => {
       await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "Project"
@@ -396,10 +398,58 @@ export async function admitProjectRunWithClient(
         throw new ActiveLeafConflictError();
       }
       if (input.assistant) {
-        await assertAssistantRunProvenance(tx, {
+        await assertProjectAssistantRunProvenance(tx, {
           assistantId: input.assistant.assistantId,
+          projectId: project.projectId,
           revisionId: input.assistant.revisionId,
-          userId: input.userId
+        });
+      }
+      const firstProjectSend = input.admissionKind === "NORMAL_SEND"
+        ? input.projectChat
+        : undefined;
+      if (firstProjectSend && input.admissionKind === "NORMAL_SEND") {
+        if (input.expectedActiveLeafId !== null ||
+          (firstProjectSend.folderId && !(await tx.projectFolder.findUnique({
+            select: { id: true },
+            where: {
+              projectId_id: {
+                id: firstProjectSend.folderId,
+                projectId: project.projectId
+              }
+            }
+          })))) {
+          throw new ActiveLeafConflictError();
+        }
+        const creator = await tx.user.findUnique({
+          select: { displayName: true },
+          where: { id: input.userId }
+        });
+        if (!creator || !project.defaults.providerModelId ||
+          !project.modelIds.includes(project.defaults.providerModelId)) {
+          throw new ActiveLeafConflictError();
+        }
+        await tx.chat.create({
+          data: {
+            createdByDisplayName: creator.displayName,
+            createdByUserId: input.userId,
+            defaultKnowledgePlan: json(project.defaults.knowledgePlan),
+            defaultProviderModelId: project.defaults.providerModelId,
+            id: input.chatId,
+            memoryMode: "EXCLUDED",
+            projectFolderId: firstProjectSend.folderId,
+            projectId: project.projectId,
+            title: "New Chat",
+            userId: null
+          }
+        });
+        await tx.projectAuditEvent.create({
+          data: {
+            actorDisplayName: creator.displayName,
+            actorUserId: input.userId,
+            eventType: "project_chat_created",
+            metadata: { chatId: input.chatId },
+            projectId: project.projectId
+          }
         });
       }
       const lockedChats = await tx.$queryRaw<Array<{
@@ -523,13 +573,22 @@ export async function admitProjectRunWithClient(
       if (input.mcpBindings?.length) {
         const forbiddenCredentials = await tx.mcpRuntimeGeneration.count({
           where: {
-            credentialSources: { hasSome: ["oauth", "personal"] },
-            id: { in: input.mcpBindings.map((binding) => binding.runtimeGenerationId) }
+            id: { in: input.mcpBindings.map((binding) => binding.runtimeGenerationId) },
+            OR: [
+              { credentialSources: { hasSome: ["oauth", "personal"] } },
+              { oauthConnectionId: { not: null } },
+              { userServer: { personalConfigEnvelope: { not: null } } }
+            ]
           }
         });
         if (forbiddenCredentials > 0) throw new McpRunPlanConflictError();
       }
-      if (input.skillBindings?.length) throw new SkillRunConflictError();
+      if (input.skillBindings?.some((binding) => !project.skillIds?.includes(binding.skillId))) {
+        throw new SkillRunConflictError();
+      }
+      if (!input.providerAdmissionPlan) {
+        throw new ProviderAdmissionConflictError();
+      }
       const run = await tx.modelRun.create({
         data: {
           assistantMessageId,
@@ -552,12 +611,19 @@ export async function admitProjectRunWithClient(
       });
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
+        projectId: project.projectId,
         runId: run.id,
         userId: input.userId
       });
       await insertAcceptedProviderRunBindings(tx, {
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
+        runId: run.id,
+        userId: input.userId
+      });
+      await insertAcceptedSkillRunBindings(tx, {
+        bindings: input.skillBindings,
+        projectId: project.projectId,
         runId: run.id,
         userId: input.userId
       });
@@ -571,7 +637,22 @@ export async function admitProjectRunWithClient(
           modelRunId: run.id,
           personalMemoryDisabled: true,
           policyRevision: project.policyRevision,
-          projectId: project.projectId
+          projectId: project.projectId,
+          providerAdmissionFingerprint: input.providerAdmissionPlan.fingerprint,
+          providerConnectionId: input.providerAdmissionPlan.selection.providerConnectionId,
+          providerModelId: input.providerAdmissionPlan.selection.providerModelId,
+          providerRequiresClientTools:
+            input.providerAdmissionPlan.requiresClientToolCoexistence === true,
+          providerSearchPlan: json(input.providerAdmissionPlan.requestedSearchPlan),
+          sharedCredentialVersionIds: [...new Set([
+            input.providerAdmissionPlan?.answer.snapshot.credentialVersionId,
+            ...(input.providerAdmissionPlan?.searches.flatMap((search) =>
+              search.role?.snapshot.credentialVersionId ? [search.role.snapshot.credentialVersionId] : []) ?? []),
+            ...(input.knowledgeAdmissionPlan?.bindings.flatMap((binding) =>
+              binding.embeddingExecutionSnapshot.credentialVersionId
+                ? [binding.embeddingExecutionSnapshot.credentialVersionId]
+                : []) ?? [])
+          ].filter((value): value is string => Boolean(value)))]
         }
       });
       if (project.memoryEnabled && project.memoryItems.length > 0) {
@@ -628,6 +709,8 @@ export async function admitProjectRunWithClient(
       };
     })
   );
+  notifyProjectEvent(project.projectId);
+  return result;
 }
 
 export async function admitPreparingRunWithClient(
@@ -1351,6 +1434,7 @@ async function assertCurrentProviderAdmission(
     current = await loadProviderAdmissionPlan(tx, {
       providerConnectionId: input.plan.selection.providerConnectionId,
       providerModelId: input.plan.selection.providerModelId,
+      ...(input.plan.executionScope ? { executionScope: input.plan.executionScope } : {}),
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),
@@ -1389,7 +1473,9 @@ async function assertCurrentKnowledgeAdmission(
   let current: KnowledgeRunAdmissionPlan;
   try {
     current = await loadKnowledgeRunAdmissionPlan(tx, {
+      ...(input.plan.executionScope ? { executionScope: input.plan.executionScope } : {}),
       knowledgePlan: input.plan.knowledgePlan,
+      ...(input.plan.projectId ? { projectId: input.plan.projectId } : {}),
       userId: input.userId
     });
   } catch (error) {
@@ -1407,6 +1493,7 @@ async function assertCurrentMcpAdmission(
   tx: Prisma.TransactionClient,
   input: Readonly<{
     bindings: readonly McpRunPlanBinding[] | undefined;
+    projectId?: string;
     runId: string;
     userId: string;
   }>
@@ -1428,7 +1515,43 @@ async function assertCurrentMcpAdmission(
     throw new McpRunPlanConflictError();
   }
   for (const binding of expected) {
-    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(input.projectId
+      ? Prisma.sql`
+      SELECT generation."id"
+      FROM "McpRuntimeGeneration" AS generation
+      INNER JOIN "McpUserServer" AS preference
+        ON preference."id" = generation."userServerId"
+      INNER JOIN "McpServer" AS server
+        ON server."id" = preference."serverId"
+      INNER JOIN "McpRevision" AS revision
+        ON revision."id" = generation."revisionId"
+      INNER JOIN "ProjectMcpBinding" AS project_binding
+        ON project_binding."serverId" = server."id"
+       AND project_binding."projectId" = ${input.projectId}
+      WHERE server."id" = ${binding.serverId}
+        AND server."enabled" = true
+        AND server."archivedAt" IS NULL
+        AND server."availableInProjects" = true
+        AND server."activeRevisionId" = generation."revisionId"
+        AND revision."id" = generation."revisionId"
+        AND (
+          server."sharedConfigEnvelope" IS NOT NULL
+          OR revision."configuration" #>> '{auth,mode}' = 'none'
+        )
+        AND preference."enabled" = true
+        AND preference."desiredRuntimeGenerationId" = generation."id"
+        AND preference."personalConfigEnvelope" IS NULL
+        AND generation."oauthConnectionId" IS NULL
+        AND generation."id" = ${binding.runtimeGenerationId}
+        AND generation."fingerprint" = ${binding.fingerprint}
+        AND generation."state" = 'ready'
+        AND generation."inventory" IS NOT NULL
+        AND generation."inventoryUpdatedAt" IS NOT NULL
+        AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+        AND NOT (generation."credentialSources" && ARRAY['oauth', 'personal']::TEXT[])
+      FOR SHARE OF generation, preference, server
+    `
+      : Prisma.sql`
       SELECT generation."id"
       FROM "McpRuntimeGeneration" AS generation
       INNER JOIN "McpUserServer" AS preference
@@ -1853,6 +1976,7 @@ export async function finalizePreparingRunWithClient(
     });
     await assertCurrentMcpAdmission(tx, {
       bindings: input.mcpBindings,
+      ...(input.project?.projectId ? { projectId: input.project.projectId } : {}),
       runId: input.runId,
       userId: input.userId
     });
@@ -2477,6 +2601,7 @@ export async function createDormantPreparingRun(
             ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
             : {}),
           ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
+          ...(admission.project ? { project: admission.project } : {}),
           ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
           normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
           providerAdmissionPlan: admission.providerAdmissionPlan,

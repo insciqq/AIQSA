@@ -14,6 +14,7 @@ import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 import { prepareMcpRunPlan } from "./runPlan";
 import {
   createPrismaMcpCapabilityCatalogLoader,
+  createPrismaMcpProjectRunPlanLoader,
   createPrismaMcpRunPlanLoader
 } from "./runPlanRepository";
 import { prisma } from "../prisma";
@@ -81,6 +82,7 @@ export function kickDefaultMcpRuntime(userId?: string): void {
 }
 
 const loadRunPlan = createPrismaMcpRunPlanLoader();
+const loadProjectRunPlan = createPrismaMcpProjectRunPlanLoader();
 const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();
 const systemModelRole = createSystemModelRoleResolver(prisma);
 const defaultMcpSemanticRouter = createMcpSemanticRouter({
@@ -105,6 +107,22 @@ async function prepareExactMcpRunPlan(
     isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
     load: () => loadRunPlan(userId, serverIds),
     reconcile: () => currentCoordinator().reconcileNow(userId)
+  });
+}
+
+async function prepareExactProjectMcpRunPlan(serverIds: readonly string[]) {
+  let coordinator: McpRuntimeCoordinator | null = null;
+  const currentCoordinator = () => {
+    coordinator ??= getDefaultMcpRuntimeCoordinator();
+    return coordinator;
+  };
+  // Project execution never calls ensureUserServersReady: that operation can
+  // create or reconcile a member's personal McpUserServer row.  The loader
+  // below selects an already-running installation/shared generation instead.
+  return prepareMcpRunPlan({
+    allowedServerIds: serverIds,
+    isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
+    load: () => loadProjectRunPlan(serverIds)
   });
 }
 
@@ -145,6 +163,9 @@ export const defaultMcpRunPlan = {
     const serverIds = options?.allowedServerIds ??
       (await loadCapabilityCatalog(userId)).servers.map((server) => server.serverId);
     return prepareExactMcpRunPlan(userId, serverIds);
+  },
+  async prepareProject(serverIds: readonly string[]) {
+    return prepareExactProjectMcpRunPlan(serverIds);
   },
   router: defaultMcpSemanticRouter
 };

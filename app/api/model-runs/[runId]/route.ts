@@ -5,6 +5,7 @@ import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
 import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
 import { defaultMemoryToolEgressReceiptService } from "@/lib/server/memory/egress/receipts";
 import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
+import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAdmission";
 import { createGetModelRunHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
@@ -19,6 +20,7 @@ export const GET = createGetModelRunHandler({
   knowledgeExecutor: knowledgeToolExecutor,
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
+  providerAdmission: providerAdmissionService,
   providerRuntime: providerRuntimeResolver,
   providers: {},
   repository,

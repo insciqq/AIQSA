@@ -5,7 +5,7 @@ Scope: Provider admission, transport, adapter identity, Search/embedding boundar
 
 ## Common Admission And Transport
 
-Provider configuration is mutable draft plus immutable tested/active revision. Catalog rows are untrusted availability evidence, not execution authority. Admission resolves the current user's exact model entitlement and credential precedence, validates answer versus embedding role and capabilities, then atomically binds the non-secret connection/model/revision/credential evidence. Later changes affect future runs; revocation is rechecked under the same lock before every outbound request.
+Provider configuration is mutable draft plus immutable tested/active revision. Catalog rows are untrusted availability evidence, not execution authority. Ordinary admission resolves the current user's exact model entitlement and credential precedence, validates answer versus embedding role and capabilities, then atomically binds the non-secret connection/model/revision/credential evidence. Project admission instead resolves one explicitly Project-eligible answer model from the canonical Project set and an active installation/shared credential; it never consults or imports the initiating member's provider credential assignment. Later changes affect future runs; revocation is rechecked under the same lock before every outbound request.
 
 Direct-user credentials precede identical group grants, which precede an explicitly configured installation default. Missing or unusable authority fails closed; no tier, model, endpoint, or provider substitution is allowed. The internal system-model role uses only the selected deployment's installation credential and does not grant entitlement.
 
@@ -26,7 +26,7 @@ Custom compatible roots require an explicit protocol and canonical base root; do
 
 ## Search And Embeddings
 
-A user selects logical Search sources; admission alone assigns exact hosted or query-only physical routes. Client Search receives one normalized bounded generated query and server-owned execution controls—never the conversation, prompts, attachments, filenames, bytes, or extracted text. Findings are bounded safe URL/text projections; raw bodies and recursively discovered URLs are not retained. Partial fan-out is explicit and no unselected fallback runs.
+A user selects logical Search sources; admission alone assigns exact hosted or query-only physical routes. In a Project, only explicitly Project-eligible options from the canonical Project set are selectable and every physical route uses installation/shared authority rather than personal Search or provider credentials. Client Search receives one normalized bounded generated query and server-owned execution controls—never the conversation, prompts, attachments, filenames, bytes, or extracted text. Findings are bounded safe URL/text projections; raw bodies and recursively discovered URLs are not retained. Partial fan-out is explicit and no unselected fallback runs.
 
 Embedding deployments are a separate model class and cannot answer chats or become answer defaults. An accepted embedding request pins exact connection/model/credential, vector-space identity, dimension, and document/query mode. Batched results must match count/model/dimension and contain finite values; configured shortening is local and followed by L2 normalization. Vector spaces never mix and failures never fall back to a different embedding target.
 

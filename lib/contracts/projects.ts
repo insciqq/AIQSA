@@ -1,6 +1,17 @@
 import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import type { KnowledgePlan as StoredKnowledgePlan } from "./knowledge";
+import {
+  decodeAssistantRevisionContent,
+  decodeAssistantSummary,
+  type AssistantRevisionContent,
+  type AssistantSummary
+} from "./assistants";
+import { decodeCatalogResponse, type Catalog } from "./catalog";
+import type {
+  ComposerConfigKnowledgeBase,
+  ComposerConfigMcpServer
+} from "./composerConfig";
 
 export const PROJECT_ROLES = ["VIEWER", "CONTRIBUTOR", "MANAGER", "OWNER"] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
@@ -27,6 +38,11 @@ export type ProjectDefaultsWire = Readonly<{
 
 export type ProjectPolicyWire = Readonly<{
   externalToolsEnabled: boolean;
+}>;
+
+export type ProjectReadinessWire = Readonly<{
+  readiness: "READY" | "SETUP_REQUIRED";
+  setupReasons: readonly ("default_model_required" | "shared_model_unavailable")[];
 }>;
 
 export const EMPTY_PROJECT_DEFAULTS: ProjectDefaultsWire = Object.freeze({
@@ -154,14 +170,33 @@ export type ProjectGrantWire = Readonly<{
 
 export type ProjectResourceWire = Readonly<{
   available: boolean;
+  description?: string;
   id: string;
   label: string;
   modelId?: string;
+  promptCharacterCount?: number;
   provider?: string;
   reason: string | null;
   resourceId: string;
   revisionId?: string;
-  type: "assistant" | "knowledge" | "mcp" | "model" | "search";
+  type: "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill";
+}>;
+
+/**
+ * Client-safe Project run controls. This projection is intentionally separate
+ * from every personal catalog: a member can compose with resources published
+ * to the Project without receiving a matching personal grant. Assistant prompt
+ * text and provider/MCP credentials never enter this contract.
+ */
+export type ProjectComposerWire = Readonly<{
+  assistants: readonly Readonly<{
+    promptCharacterCount: number;
+    revision: AssistantRevisionContent;
+    summary: AssistantSummary;
+  }>[];
+  catalog: Catalog;
+  knowledgeBases: readonly ComposerConfigKnowledgeBase[];
+  mcpServers: readonly ComposerConfigMcpServer[];
 }>;
 
 export type ProjectDetailWire = ProjectSummaryWire & Readonly<{
@@ -174,7 +209,11 @@ export type ProjectDetailWire = ProjectSummaryWire & Readonly<{
     mutateChats: boolean;
   }>;
   createdAt: string;
+  /** Present on v2 responses; optional keeps older cached/test projections readable. */
+  composer?: ProjectComposerWire;
   defaults: ProjectDefaultsWire;
+  /** Exact Project-owned attachment count for proportional lifecycle confirmation. */
+  fileCount?: number;
   grants: readonly ProjectGrantWire[];
   instructions: string;
   instructionsRevision: number;
@@ -183,7 +222,11 @@ export type ProjectDetailWire = ProjectSummaryWire & Readonly<{
   policy: ProjectPolicyWire;
   policyRevision: number;
   publicSharingEnabled: boolean;
+  /** Present on v2 responses; optional keeps older in-memory clients
+   * readable while the server always emits the explicit readiness state. */
+  readiness?: ProjectReadinessWire["readiness"];
   resources: readonly ProjectResourceWire[];
+  setupReasons?: ProjectReadinessWire["setupReasons"];
 }>;
 
 export type ProjectsResponseWire = Readonly<{ projects: readonly ProjectSummaryWire[] }>;
@@ -192,6 +235,7 @@ export type ProjectResponseWire = Readonly<{ project: ProjectDetailWire }>;
 export type CreateProjectRequestWire = Readonly<{
   description?: string;
   name: string;
+  preferredModelId?: string;
 }>;
 
 export type UpdateProjectRequestWire = Readonly<{
@@ -229,6 +273,24 @@ export type ProjectResourcesResponseWire = Readonly<{
   resources: readonly ProjectResourceWire[];
 }>;
 
+export const PROJECT_CANDIDATE_TYPES = [
+  "user", "group", "model", "search", "knowledge", "assistant", "skill", "mcp"
+] as const;
+export type ProjectCandidateTypeWire = (typeof PROJECT_CANDIDATE_TYPES)[number];
+
+export type ProjectCandidateWire = Readonly<{
+  description: string | null;
+  disabledReason: string | null;
+  id: string;
+  label: string;
+  type: ProjectCandidateTypeWire;
+}>;
+
+export type ProjectCandidatesResponseWire = Readonly<{
+  items: readonly ProjectCandidateWire[];
+  nextCursor: string | null;
+}>;
+
 export type ProjectResourceTypeWire = ProjectResourceWire["type"];
 
 export type CreateProjectResourceRequestWire = Readonly<{
@@ -236,6 +298,47 @@ export type CreateProjectResourceRequestWire = Readonly<{
   resourceId: string;
   revisionId?: string;
   type: ProjectResourceTypeWire;
+}>;
+
+export type ProjectResourceDependencyPreviewWire = Readonly<{
+  label: string;
+  reason: string | null;
+  state: "active" | "ineligible" | "will_add";
+  type: Exclude<ProjectResourceTypeWire, "assistant">;
+}>;
+
+export type ProjectResourceChangePreviewWire = Readonly<{
+  action: "add" | "remove";
+  canCommit: boolean;
+  consequences: Readonly<{
+    affectedChatCount: number;
+    clearedDefaults: readonly string[];
+    dependentAssistants: readonly string[];
+  }>;
+  dependencies: readonly ProjectResourceDependencyPreviewWire[];
+  policyRevision: number;
+  resource: Readonly<{
+    label: string;
+    type: ProjectResourceTypeWire;
+  }>;
+  revisionId: string | null;
+}>;
+
+export type ProjectGrantRemovalPreviewWire = Readonly<{
+  accessRevision: number;
+  canCommit: boolean;
+  grant: Readonly<{
+    label: string;
+    role: ProjectRole;
+    type: "group" | "user";
+  }>;
+  losesAccessCount: number;
+  reason: string | null;
+  roleChangeCount: number;
+}>;
+
+export type ProjectLeaveResponseWire = Readonly<{
+  accessRemaining: boolean;
 }>;
 
 export type ProjectAuditEventWire = Readonly<{
@@ -410,9 +513,51 @@ function decodeProjectResource(value: unknown): ProjectResourceWire | null {
     !(value.modelId === undefined || typeof value.modelId === "string") ||
     !(value.provider === undefined || typeof value.provider === "string") ||
     !nullableString(value.reason) || typeof value.resourceId !== "string" ||
-    !["assistant", "knowledge", "mcp", "model", "search"].includes(String(value.type)) ||
+    !["assistant", "knowledge", "mcp", "model", "search", "skill"].includes(String(value.type)) ||
     !(value.revisionId === undefined || typeof value.revisionId === "string")) return null;
   return value as ProjectResourceWire;
+}
+
+function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
+  if (!isRecord(value) || !Array.isArray(value.assistants) ||
+    !Array.isArray(value.knowledgeBases) || !Array.isArray(value.mcpServers)) return null;
+  const catalog = decodeCatalogResponse({ catalog: value.catalog });
+  if (!catalog) return null;
+  const assistants = value.assistants.map((entry) => {
+    if (!isRecord(entry) || !Number.isSafeInteger(entry.promptCharacterCount) ||
+      (entry.promptCharacterCount as number) < 0) return null;
+    const revision = decodeAssistantRevisionContent(entry.revision);
+    const summary = decodeAssistantSummary(entry.summary);
+    return revision && summary && revision.providerModelId && revision.name === summary.name
+      ? { promptCharacterCount: entry.promptCharacterCount as number, revision, summary }
+      : null;
+  });
+  const knowledgeBases = value.knowledgeBases.filter((base): base is ComposerConfigKnowledgeBase =>
+    isRecord(base) && typeof base.archived === "boolean" &&
+    typeof base.description === "string" && typeof base.id === "string" &&
+    typeof base.name === "string" && typeof base.owned === "boolean"
+  );
+  const readiness = new Set([
+    "authorizing", "disabled", "idle", "needs_authorization", "needs_setup", "queued",
+    "ready", "reauthorization_required", "restarting", "starting", "unavailable"
+  ]);
+  const mcpServers = value.mcpServers.filter((server): server is ComposerConfigMcpServer =>
+    isRecord(server) && typeof server.description === "string" &&
+    typeof server.enabled === "boolean" && typeof server.id === "string" &&
+    Number.isSafeInteger(server.knownToolCount) && (server.knownToolCount as number) >= 0 &&
+    typeof server.name === "string" && typeof server.readiness === "string" &&
+    readiness.has(server.readiness)
+  );
+  return assistants.some((entry) => entry === null) ||
+    knowledgeBases.length !== value.knowledgeBases.length ||
+    mcpServers.length !== value.mcpServers.length
+    ? null
+    : {
+        assistants: assistants as ProjectComposerWire["assistants"],
+        catalog,
+        knowledgeBases,
+        mcpServers
+      };
 }
 
 export function decodeProjectResponse(value: unknown): ProjectResponseWire | null {
@@ -421,13 +566,18 @@ export function decodeProjectResponse(value: unknown): ProjectResponseWire | nul
   const summary = decodeProjectSummary(project);
   const defaults = decodeProjectDefaults(project.defaults);
   const policy = decodeProjectPolicy(project.policy);
+  const composer = project.composer === undefined ? undefined : decodeProjectComposer(project.composer);
   const capabilities = isRecord(project.capabilities) ? project.capabilities : null;
-  if (!summary || !defaults.ok || !policy.ok || !capabilities ||
+  if (!summary || !defaults.ok || !policy.ok || composer === null || !capabilities ||
     !Array.isArray(project.grants) || !Array.isArray(project.resources) ||
     typeof project.createdAt !== "string" || typeof project.instructions !== "string" ||
     !finiteRevision(project.instructionsRevision) || typeof project.memoryEnabled !== "boolean" ||
     !finiteRevision(project.memoryRevision) || !finiteRevision(project.policyRevision) ||
-    typeof project.publicSharingEnabled !== "boolean") return null;
+    (project.fileCount !== undefined && !finiteRevision(project.fileCount)) ||
+    typeof project.publicSharingEnabled !== "boolean" ||
+    (project.readiness !== undefined && project.readiness !== "READY" && project.readiness !== "SETUP_REQUIRED") ||
+    (project.setupReasons !== undefined && (!Array.isArray(project.setupReasons) ||
+      project.setupReasons.some((reason) => reason !== "default_model_required" && reason !== "shared_model_unavailable")))) return null;
   const capabilityKeys = [
     "archiveChats", "manageMembers", "manageMemory", "manageOwners", "manageProject", "mutateChats"
   ] as const;
@@ -441,8 +591,10 @@ export function decodeProjectResponse(value: unknown): ProjectResponseWire | nul
     project: {
       ...summary,
       capabilities: Object.fromEntries(capabilityKeys.map((key) => [key, capabilities[key]])) as ProjectDetailWire["capabilities"],
+      ...(composer ? { composer } : {}),
       createdAt: project.createdAt,
       defaults: defaults.defaults,
+      ...(project.fileCount !== undefined ? { fileCount: project.fileCount } : {}),
       grants: grants as ProjectGrantWire[],
       instructions: project.instructions,
       instructionsRevision: project.instructionsRevision,
@@ -451,9 +603,65 @@ export function decodeProjectResponse(value: unknown): ProjectResponseWire | nul
       policy: policy.policy,
       policyRevision: project.policyRevision,
       publicSharingEnabled: project.publicSharingEnabled,
-      resources: resources as ProjectResourceWire[]
+      readiness: project.readiness ?? "READY",
+      resources: resources as ProjectResourceWire[],
+      setupReasons: (project.setupReasons ?? []) as ProjectDetailWire["setupReasons"]
     }
   };
+}
+
+export function decodeProjectResourceChangePreview(
+  value: unknown
+): ProjectResourceChangePreviewWire | null {
+  if (!isRecord(value) || !isRecord(value.preview)) return null;
+  const preview = value.preview;
+  if ((preview.action !== "add" && preview.action !== "remove") ||
+    typeof preview.canCommit !== "boolean" || !isRecord(preview.consequences) ||
+    !Array.isArray(preview.dependencies) || !finiteRevision(preview.policyRevision) ||
+    !isRecord(preview.resource) || typeof preview.resource.label !== "string" ||
+    !["assistant", "knowledge", "mcp", "model", "search", "skill"].includes(
+      String(preview.resource.type)
+    ) || !nullableString(preview.revisionId)) return null;
+  const consequences = preview.consequences;
+  if (!finiteRevision(consequences.affectedChatCount) ||
+    !Array.isArray(consequences.clearedDefaults) ||
+    consequences.clearedDefaults.some((entry) => typeof entry !== "string") ||
+    !Array.isArray(consequences.dependentAssistants) ||
+    consequences.dependentAssistants.some((entry) => typeof entry !== "string")) return null;
+  const dependencies = preview.dependencies.map((entry) => {
+    if (!isRecord(entry) || typeof entry.label !== "string" || !nullableString(entry.reason) ||
+      !["active", "ineligible", "will_add"].includes(String(entry.state)) ||
+      !["knowledge", "mcp", "model", "search", "skill"].includes(String(entry.type))) return null;
+    return entry as ProjectResourceDependencyPreviewWire;
+  });
+  if (dependencies.some((entry) => entry === null)) return null;
+  return {
+    action: preview.action,
+    canCommit: preview.canCommit,
+    consequences: {
+      affectedChatCount: consequences.affectedChatCount,
+      clearedDefaults: consequences.clearedDefaults as string[],
+      dependentAssistants: consequences.dependentAssistants as string[]
+    },
+    dependencies: dependencies as ProjectResourceDependencyPreviewWire[],
+    policyRevision: preview.policyRevision,
+    resource: preview.resource as ProjectResourceChangePreviewWire["resource"],
+    revisionId: preview.revisionId
+  };
+}
+
+export function decodeProjectGrantRemovalPreview(
+  value: unknown
+): ProjectGrantRemovalPreviewWire | null {
+  if (!isRecord(value) || !isRecord(value.preview)) return null;
+  const preview = value.preview;
+  if (!finiteRevision(preview.accessRevision) || typeof preview.canCommit !== "boolean" ||
+    !isRecord(preview.grant) || typeof preview.grant.label !== "string" ||
+    !isProjectRole(preview.grant.role) ||
+    (preview.grant.type !== "group" && preview.grant.type !== "user") ||
+    !finiteRevision(preview.losesAccessCount) || !nullableString(preview.reason) ||
+    !finiteRevision(preview.roleChangeCount)) return null;
+  return preview as ProjectGrantRemovalPreviewWire;
 }
 
 function decodeProjectFolder(value: unknown): ProjectFolderWire | null {
@@ -463,7 +671,7 @@ function decodeProjectFolder(value: unknown): ProjectFolderWire | null {
     : null;
 }
 
-function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null {
+export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null {
   if (!isRecord(value) || typeof value.activeRun !== "boolean" ||
     !nullableString(value.activeLeafMessageId) || typeof value.archived !== "boolean" ||
     typeof value.createdAt !== "string" || typeof value.createdByDisplayName !== "string" ||

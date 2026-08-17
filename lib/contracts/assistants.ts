@@ -475,7 +475,7 @@ export type AssistantPublicationView = {
   groupName: string | null;
   id: string;
   revisionNumber: number;
-  scope: "group" | "installation";
+  scope: "group" | "installation" | "project";
   updatedAt: string;
 };
 
@@ -689,11 +689,16 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
     !stringOrNull(value.groupName) ||
     !nonEmptyString(value.id) ||
     typeof value.revisionNumber !== "number" ||
-    (value.scope !== "group" && value.scope !== "installation") ||
+    (value.scope !== "group" && value.scope !== "installation" && value.scope !== "project") ||
     !nonEmptyString(value.updatedAt)
   ) {
     return null;
   }
+  if (value.scope === "group" && (!nonEmptyString(value.groupId) || !nonEmptyString(value.groupName))) {
+    return null;
+  }
+  if ((value.scope === "installation" || value.scope === "project") &&
+    (value.groupId !== null || value.groupName !== null)) return null;
   return {
     groupId: value.groupId,
     groupName: value.groupName,

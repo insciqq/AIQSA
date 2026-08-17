@@ -30,6 +30,10 @@ export type AssistantRunResolution =
   | { code: "assistant_not_available"; ok: false; status: 404 };
 
 export type AssistantRunResolver = {
+  resolveForProject?(
+    projectId: string,
+    assistantId: string
+  ): Promise<AssistantRunResolution>;
   /**
    * Resolves the revision the runner is currently authorized to execute: the
    * owner's current revision, or the highest revision pinned by an active

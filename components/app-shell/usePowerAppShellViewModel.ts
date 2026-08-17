@@ -4,12 +4,10 @@ import {
   summarizeThreadArtifacts,
   textFromThreadContent
 } from "@/components/app-shell/threadContent";
-import { buildChatGroups } from "@/components/app-shell/workspaceGroups";
 import { pdfProcessingForAttachment } from "@/components/app-shell/attachmentCapabilities";
 import type { RunSurfaceSnapshot } from "@/components/app-shell/runSurfaceStore";
 import type {
   Catalog,
-  CatalogSearchStrategy,
   ChatContextStats,
   ChatUsageStats,
   WorkspaceChatSummary,
@@ -21,7 +19,6 @@ import type { ComposerAttachment } from "@/components/app-shell/attachmentContra
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { useMemo } from "react";
-import { workspaceNavigationChats } from "@/components/app-shell/workspaceStore";
 
 type PowerAppShellViewModelInput = {
   activeChatId: string | null;
@@ -170,17 +167,10 @@ export function usePowerAppShellViewModel({
     return userTurnStart?.id ?? tail.id;
   }, [visibleMessages]);
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [activeChatId, chats]);
-  const commandChatGroups = useMemo(
-    () => buildChatGroups(folders, workspaceNavigationChats(chats), "", new Set()),
-    [chats, folders]
-  );
   const liveArtifactSummary = useMemo(
     () => summarizeThreadArtifacts(runEvents),
     [runEvents]
   );
-  const searchOptions = useMemo<CatalogSearchStrategy[]>(() => {
-    return catalog?.searchStrategies ?? [];
-  }, [catalog]);
   const projectSettingsFolder = folders.find((folder) => folder.id === projectSettingsFolderId) ?? null;
   const activeChatTitle = activeChat?.title ?? "New Chat";
   const activeChatFolderId = activeChat?.folderId ?? pendingChatFolderId ?? "";
@@ -261,7 +251,6 @@ export function usePowerAppShellViewModel({
     activeChat,
     activeChatStreaming,
     activeChatTitle,
-    commandChatGroups,
     composerDisabledHint,
     composerContextStats,
     composerUsageStats,
@@ -270,7 +259,6 @@ export function usePowerAppShellViewModel({
     liveArtifactSummary,
     projectSettingsFolder,
     renderActiveLeafId,
-    searchOptions,
     threadFollowKey,
     threadReadingAnchorKey,
     visibleMessages

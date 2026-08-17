@@ -95,6 +95,7 @@ type MessageRunActionsInput = {
     chatId: string | null,
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ): Promise<ChatDetail | null>;
+  resolveCatalog?(): Catalog | null;
   resetThreadToLatest(): void;
   setNotice(input: Notice): void;
   activeChatStreaming: boolean;
@@ -107,15 +108,14 @@ function toolsOverride(model: CatalogModel | undefined): { tools: "none" } | Rec
 function modelForCurrentSelection(
   renderedModel: CatalogModel | undefined,
   provider: string,
-  modelId: string
+  modelId: string,
+  catalog: Catalog | null = useWorkspaceStore.getState().catalog
 ): CatalogModel | undefined {
   if (renderedModel?.provider === provider && renderedModel.modelId === modelId) {
     return renderedModel;
   }
 
-  return useWorkspaceStore
-    .getState()
-    .catalog?.models.find((model) => model.provider === provider && model.modelId === modelId);
+  return catalog?.models.find((model) => model.provider === provider && model.modelId === modelId);
 }
 
 export function useMessageRunActions({
@@ -137,6 +137,7 @@ export function useMessageRunActions({
   persistActiveLeaf,
   primeAnswerSound,
   refreshActiveChat,
+  resolveCatalog,
   resetThreadToLatest,
   setNotice
 }: MessageRunActionsInput) {
@@ -169,11 +170,14 @@ export function useMessageRunActions({
       mcpSelection,
       selectedSkills
     } = useComposerControlStore.getState();
-    const catalog = useWorkspaceStore.getState().catalog;
+    const catalog = resolveCatalog
+      ? resolveCatalog()
+      : useWorkspaceStore.getState().catalog;
     const selectedModel = modelForCurrentSelection(
       currentModel,
       selectedProvider,
-      selectedModelId
+      selectedModelId,
+      catalog
     );
     const model = selectedModel
       ? {
@@ -599,7 +603,7 @@ export function useMessageRunActions({
     const attachmentLimitUsage = calculateAttachmentLimitUsage(
       sourceSession.attachments,
       modelForSend,
-      useWorkspaceStore.getState().catalog?.attachmentLimits
+      (resolveCatalog ? resolveCatalog() : useWorkspaceStore.getState().catalog)?.attachmentLimits
     );
     if (attachmentLimitUsage.blocking && attachmentLimitUsage.feedback) {
       setNotice({
@@ -618,7 +622,7 @@ export function useMessageRunActions({
         (chat) => chat.id === sourceComposerChatId
       )?.memoryMode === "TEMPORARY"
     );
-    const startedFromBlankWorkspace = sourceComposerChatId === null;
+    let startedFromBlankWorkspace = sourceComposerChatId === null;
     if (sourceComposerChatId !== activeChatId) {
       return;
     }
@@ -680,6 +684,8 @@ export function useMessageRunActions({
         currentChatSummary = chat;
         parentLeafForSend = chat.activeLeafMessageId;
       }
+      const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
+      startedFromBlankWorkspace = startedFromBlankWorkspace || Boolean(projectDraftForSend);
       const sendControlPayload = runControlPayload(
         runControlSnapshot,
         Boolean(currentChatSummary?.projectId)
@@ -784,6 +790,7 @@ export function useMessageRunActions({
                 blocks: contentBlocks
               },
               expectedActiveLeafId: parentLeafForSend,
+              ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
               ...sendControlPayload
             }),

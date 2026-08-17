@@ -1008,6 +1008,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
               SELECT 1 FROM "Chat" AS target
               WHERE target."userId" = fact."userId"
                 AND target."id" = scope."chatId"
+                AND target."projectId" IS NULL
                 AND target."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
             )
           )

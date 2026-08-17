@@ -116,6 +116,7 @@ function projectAdmission(): ProjectRunAdmission {
     policy: { externalToolsEnabled: true },
     policyRevision: 4,
     projectId: "project-1",
+    executionScope: "project",
     role: "CONTRIBUTOR",
     searchOptionIds: []
   };
@@ -704,6 +705,7 @@ function executionInput(input: Readonly<{
   mcp?: RunExecutionInput["mcp"];
   mcpRuntime?: RunExecutionInput["mcpRuntime"];
   prepared?: MaterializedPreparedRunData;
+  providerAdmission?: RunExecutionInput["providerAdmission"];
   repository: RunExecutionRepository;
   runId?: string;
   searchAdapter?: ProviderSearchAdapter;
@@ -735,6 +737,7 @@ function executionInput(input: Readonly<{
     ...(input.memoryEgress ? { memoryEgress: input.memoryEgress } : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
+    ...(input.providerAdmission ? { providerAdmission: input.providerAdmission } : {}),
     ...(searchRuntimes ? { searchRuntimes } : {}),
     userId: "user-1"
   };
@@ -918,6 +921,41 @@ describe("run execution", () => {
     expect(repository.failedRuns.at(-1)?.error.code).toBe("project_access_changed");
     expect(events.at(-1)).toMatchObject({
       data: { code: "project_access_changed" },
+      type: "error"
+    });
+  });
+
+  it("fails Project provider authority drift before outbound provider I/O", async () => {
+    const repository = createRepository();
+    const prepared = preparedData({ project: projectAdmission() });
+    const load = vi.fn(async () => ({
+      ...prepared.providerAdmissionPlan,
+      fingerprint: "0".repeat(64)
+    }));
+    let providerCalls = 0;
+    const adapter = createAdapter(async function* () {
+      providerCalls += 1;
+      return providerResult();
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared,
+      providerAdmission: { load },
+      repository: repository.repository
+    })).text());
+
+    expect(load).toHaveBeenCalledWith({
+      executionScope: "project",
+      providerConnectionId: "fake",
+      providerModelId: "fake-qsa",
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      userId: "user-1"
+    });
+    expect(providerCalls).toBe(0);
+    expect(repository.failedRuns.at(-1)?.error.code).toBe("model_not_available");
+    expect(events.at(-1)).toMatchObject({
+      data: { code: "model_not_available" },
       type: "error"
     });
   });

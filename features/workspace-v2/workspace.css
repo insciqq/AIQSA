@@ -603,7 +603,7 @@
 
   /*
    * The Share text button collapses into the "⋯" menu; the Temporary
-   * indicator, palette, and account stay directly visible.
+   * indicator and account stay directly visible.
    */
   .v2-live-header-actions > .v2-button {
     display: none;

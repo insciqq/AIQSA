@@ -25,6 +25,11 @@ import {
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveChatAccess } from "../projects/access";
+import {
+  loadProjectChatDefaultAuthority,
+  projectChatDefaultsProjection,
+  type ProjectChatDefaultAuthority
+} from "../projects/chatDefaults";
 import { projectRoleAtLeast } from "../../domain/projects";
 import type {
   ChatBranchGraphRecord,
@@ -576,14 +581,27 @@ function serializeChatDetail(input: {
   hasOlder: boolean;
   lightweightMessages: LightweightMessageRow[];
   messages: HydratedMessagePath;
+  projectDefaultAuthority?: ProjectChatDefaultAuthority;
 }): ChatDetailRecord {
   const chat = input.chat;
+  const projectDefaults = input.projectDefaultAuthority
+    ? projectChatDefaultsProjection(input.projectDefaultAuthority, {
+        defaultKnowledgePlan: chat.defaultKnowledgePlan,
+        defaultModelId: chat.defaultProviderModel?.id ?? null
+      })
+    : null;
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
-    defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
-    defaultModelId: chat.defaultProviderModel?.id ?? null,
-    defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
+    defaultKnowledgePlan: projectDefaults
+      ? projectDefaults.defaultKnowledgePlan
+      : storedKnowledgeDefault(chat.defaultKnowledgePlan),
+    defaultModelId: projectDefaults
+      ? projectDefaults.defaultModelId
+      : chat.defaultProviderModel?.id ?? null,
+    defaultProvider: projectDefaults
+      ? projectDefaults.defaultProvider
+      : chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.projectFolderId ?? chat.folderId,
     id: chat.id,
     contextStats: {
@@ -1148,6 +1166,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "projectId" IS NULL
             AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
@@ -1192,6 +1211,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "projectId" IS NULL
             AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
@@ -1365,6 +1385,7 @@ export function createPrismaChatRepository(
             id: chatId,
             memoryMode: { not: "TEMPORARY" },
             permanentDeletionAt: null,
+            projectId: null,
             userId
           }
         });
@@ -1401,6 +1422,7 @@ export function createPrismaChatRepository(
             id: chatId,
             memoryMode: { not: "TEMPORARY" },
             permanentDeletionAt: null,
+            projectId: null,
             userId
           }
         });
@@ -1469,12 +1491,16 @@ export function createPrismaChatRepository(
           hydrateMessagePath(tx, chatId, pageMessages, userId),
           approximateActiveBranchInputTokens(tx, activeMessages)
         ]);
+        const projectDefaultAuthority = access.kind === "project"
+          ? await loadProjectChatDefaultAuthority(tx, access.project.projectId)
+          : undefined;
         return serializeChatDetail({
           chat,
           contextInputTokens,
           hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
           lightweightMessages,
-          messages
+          messages,
+          ...(projectDefaultAuthority ? { projectDefaultAuthority } : {})
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
@@ -1637,6 +1663,7 @@ export function createPrismaChatRepository(
           AND c."archived" = false
           AND c."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
           AND c."permanentDeletionAt" IS NULL
+          AND c."projectId" IS NULL
           AND m."content"::text ILIKE ${pattern}
         GROUP BY m."chatId", c."updatedAt"
         ORDER BY c."updatedAt" DESC
@@ -1742,6 +1769,7 @@ export function createPrismaChatRepository(
           archived: true,
           memoryMode: { not: "TEMPORARY" },
           permanentDeletionAt: null,
+          projectId: null,
           userId,
           ...(cursor
             ? {
@@ -1818,6 +1846,7 @@ export function createPrismaChatRepository(
             archived: false,
             memoryMode: { not: "TEMPORARY" },
             permanentDeletionAt: null,
+            projectId: null,
             userId
           }
         })
@@ -1844,6 +1873,7 @@ export function createPrismaChatRepository(
           id: chatId,
           memoryMode: { not: "TEMPORARY" },
           permanentDeletionAt: null,
+          projectId: null,
           userId
         }
       });
@@ -1880,6 +1910,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "projectId" IS NULL
             AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;

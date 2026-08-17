@@ -64,12 +64,14 @@ function detail(entry: SkillDetailEntry, actorIsAdmin: boolean): SkillDetail {
     assistantUsageCount: entry.assistantUsageCount,
     audiences: entry.audiences.map((audience) => audience.kind === "installation"
       ? { id: audience.id, kind: "everyone", name: "Everyone" }
-      : {
-          id: audience.id,
-          kind: "workspace",
-          name: audience.name,
-          workspaceId: audience.workspaceId
-        }),
+      : audience.kind === "project"
+        ? { id: audience.id, kind: "project", name: "Project publication" }
+        : {
+            id: audience.id,
+            kind: "workspace",
+            name: audience.name,
+            workspaceId: audience.workspaceId
+          }),
     canDelete: entry.owned,
     canEdit: entry.owned && !entry.archived,
     canPublish: entry.owned && !entry.archived,

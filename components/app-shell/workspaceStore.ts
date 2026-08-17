@@ -280,6 +280,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
 
 export function workspaceNavigationChats(chats: readonly WorkspaceChatSummary[]): WorkspaceChatSummary[] {
   return chats.filter(
-    (chat) => chat.memoryMode !== "TEMPORARY" && chat.pendingInitialMemoryMode !== "TEMPORARY"
+    (chat) => !chat.projectId &&
+      chat.memoryMode !== "TEMPORARY" &&
+      chat.pendingInitialMemoryMode !== "TEMPORARY"
   );
 }

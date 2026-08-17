@@ -235,15 +235,11 @@ describe("Navigation v2", () => {
       .toEqual(["root-a", "root-b", "orphan"]);
   });
 
-  it("opens the shell palette from the quiet Search ⌘K row without an inline field", () => {
-    const onOpenSearch = vi.fn();
-    sidebar({ onOpenSearch });
+  it("does not render a global search or command trigger", () => {
+    sidebar();
 
     expect(screen.queryByRole("searchbox")).toBeNull();
-    const row = screen.getByRole("button", { name: /Search/ });
-    expect(row).toHaveTextContent("⌘K");
-    fireEvent.click(row);
-    expect(onOpenSearch).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /Search|Commands/ })).toBeNull();
   });
 
   it("resets the search query when a result is selected", () => {
@@ -366,7 +362,7 @@ describe("Navigation v2", () => {
     expect(source).toHaveFocus();
   });
 
-  it("leaves Ctrl/Cmd+K to the single shell command-palette owner", () => {
+  it("does not install a Ctrl/Cmd+K navigation surface", () => {
     render(
       <ReadingRoomShellV2
         onNewChat={vi.fn()}
@@ -387,9 +383,9 @@ describe("Navigation v2", () => {
   });
 
   it("dismisses the chat-row menu on Escape, outside press, and focus-out", () => {
-    sidebar({ onOpenSearch: vi.fn() });
+    sidebar();
     const trigger = screen.getByRole("button", { name: "Actions: Selected brief" });
-    const searchRow = screen.getByRole("button", { name: /Search/ });
+    const outsideTarget = screen.getByRole("button", { name: "New chat" });
 
     fireEvent.click(trigger);
     fireEvent.keyDown(
@@ -401,11 +397,11 @@ describe("Navigation v2", () => {
 
     fireEvent.click(trigger);
     expect(screen.getByRole("menu", { name: "Chat actions: Selected brief" })).toBeVisible();
-    fireEvent.pointerDown(searchRow);
+    fireEvent.pointerDown(outsideTarget);
     expect(screen.queryByRole("menu", { name: "Chat actions: Selected brief" })).toBeNull();
 
     fireEvent.click(trigger);
-    fireEvent.focusIn(searchRow);
+    fireEvent.focusIn(outsideTarget);
     expect(screen.queryByRole("menu", { name: "Chat actions: Selected brief" })).toBeNull();
   });
 

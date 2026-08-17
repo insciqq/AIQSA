@@ -9,13 +9,15 @@ Scope: Durable HTTP/API, service-boundary, upload, and control-plane principles.
 
 All private operations recheck authentication, ownership, entitlement, and lifecycle at the operation boundary. Browser filtering is presentation, not authority. State-changing browser requests pass the shared same-origin and bounded-body boundary. Stable error codes and privacy-neutral unavailable responses replace raw exceptions and existence leaks.
 
+Authenticated Project SSE uses the same cookie/session boundary and reauthorizes membership while delivering current client-safe projections. An event cursor orders retained invalidations but grants no authority; stale history requires canonical resync, and final access loss closes delivery without disclosing whether later Project state exists. Client-to-server Project changes remain ordinary bounded HTTP mutations.
+
 Skill collection responses are metadata-only. Full Skill instructions cross the browser boundary only through an individually authorized detail response, while search and pagination remain server-side so library discovery does not disclose or eagerly transfer instruction bodies.
 
 Keep route handlers thin. Domain rules belong in `lib/domain/`, client-safe wire contracts in `lib/contracts/`, and server policy, repositories, adapters, and orchestration in `lib/server/`. Server modules may depend inward; browser code never imports Prisma, secrets, storage, or provider transports.
 
 ## Control Planes
 
-Mutable drafts use optimistic versions; activation creates immutable revisions. Accepted runs bind exact non-secret revisions and credentials, so later configuration affects future work only. Provider, Search, Knowledge, Assistant, MCP, team, and policy APIs validate complete transitions transactionally and never silently clamp, substitute, or partially apply a multi-resource change.
+Mutable drafts use optimistic versions; activation creates immutable revisions. Accepted runs bind exact non-secret revisions and credentials, so later configuration affects future work only. Provider, Search, Knowledge, Assistant, MCP, team, and policy APIs validate complete transitions transactionally and never silently clamp, substitute, or partially apply a multi-resource change. Project Assistant publication adds its complete eligible dependency plan atomically; Project unlink/unpublish atomically clears affected defaults, chat plans, and dependent Assistant authorities and returns a safe consequence summary.
 
 Authentication keeps one identity/session transition owner. Password, OAuth, invite, verification, reset, bootstrap, and administrator actions retain generic enumeration-safe public outcomes and transactional one-winner token/session changes. [Security](SECURITY.md) owns the threat model.
 

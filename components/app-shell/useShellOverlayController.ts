@@ -1,42 +1,7 @@
 "use client";
 
 import type { WorkspaceChatSummary, FolderSummary } from "@/components/app-shell/types";
-import { useCallback, useEffect, useRef, useState } from "react";
-
-const nonTextInputTypes = new Set([
-  "button",
-  "checkbox",
-  "color",
-  "file",
-  "hidden",
-  "image",
-  "radio",
-  "range",
-  "reset",
-  "submit"
-]);
-
-export function isShellShortcutTextEntryTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-
-  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
-    return true;
-  }
-
-  if (target instanceof HTMLInputElement) {
-    return !nonTextInputTypes.has(target.type);
-  }
-
-  for (let element: HTMLElement | null = target; element; element = element.parentElement) {
-    if (element.isContentEditable || element.getAttribute("contenteditable") === "true") {
-      return true;
-    }
-  }
-
-  return false;
-}
+import { useCallback, useRef, useState } from "react";
 
 type ConfirmationController<Target> = {
   cancel(): void;
@@ -75,83 +40,20 @@ function useConfirmationController<Target>(): ConfirmationController<Target> {
   };
 }
 
-export type ShellOverlayControllerInput = Readonly<{
-  blockers: Readonly<{
-    projectSettingsOpen: boolean;
-    settingsOpen: boolean;
-  }>;
-}>;
-
-export function useShellOverlayController({
-  blockers
-}: ShellOverlayControllerInput) {
-  const { projectSettingsOpen, settingsOpen } = blockers;
+export function useShellOverlayController() {
   const [branchesOpen, setBranchesOpen] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
   const chatConfirmation = useConfirmationController<WorkspaceChatSummary>();
   const folderConfirmation = useConfirmationController<FolderSummary>();
   const messageConfirmation = useConfirmationController<string>();
 
-  const closePalette = useCallback(() => setPaletteOpen(false), []);
-  const showPalette = useCallback(() => setPaletteOpen(true), []);
   const closeBranches = useCallback(() => setBranchesOpen(false), []);
   const showBranches = useCallback(() => setBranchesOpen(true), []);
-  const toggleBranches = useCallback(() => setBranchesOpen((open) => !open), []);
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        if (isShellShortcutTextEntryTarget(event.target)) {
-          return;
-        }
-
-        const blockingModalOpen =
-          projectSettingsOpen ||
-          settingsOpen ||
-          Boolean(chatConfirmation.target) ||
-          Boolean(folderConfirmation.target) ||
-          Boolean(messageConfirmation.target) ||
-          false;
-        if (blockingModalOpen) {
-          return;
-        }
-
-        event.preventDefault();
-        if (branchesOpen) {
-          closeBranches();
-          window.setTimeout(showPalette, 0);
-          return;
-        }
-        showPalette();
-      }
-
-      if (event.key === "Escape" && paletteOpen) {
-        event.preventDefault();
-        closePalette();
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    branchesOpen,
-    chatConfirmation.target,
-    closeBranches,
-    closePalette,
-    folderConfirmation.target,
-    messageConfirmation.target,
-    paletteOpen,
-    projectSettingsOpen,
-    settingsOpen,
-    showPalette
-  ]);
 
   return {
     branches: {
       close: closeBranches,
       open: branchesOpen,
-      show: showBranches,
-      toggle: toggleBranches
+      show: showBranches
     },
     confirmations: {
       chat: {
@@ -167,11 +69,6 @@ export function useShellOverlayController({
         target: folderConfirmation.target
       },
       message: messageConfirmation
-    },
-    palette: {
-      close: closePalette,
-      open: paletteOpen,
-      show: showPalette
     }
   };
 }

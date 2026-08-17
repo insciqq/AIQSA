@@ -98,7 +98,11 @@ type CatalogCredentialCheckRow = Pick<
   | "status"
 >;
 
-export type CatalogProviderModelRow = ProviderModel & {
+// Project eligibility is an installation policy consumed at Project admission;
+// the personal catalog projection deliberately omits it. Keeping the row type
+// independent also lets catalog fixtures model the public catalog contract
+// without manufacturing an internal Project-only flag.
+export type CatalogProviderModelRow = Omit<ProviderModel, "availableInProjects"> & {
   activeCredentialChecks: CatalogCredentialCheckRow[];
   connection: CatalogConnectionRow;
 };

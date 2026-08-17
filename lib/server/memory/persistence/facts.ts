@@ -620,7 +620,7 @@ async function requireAutomaticEvidenceAfterSourceCutoff(
       where: {
         chatId: input.evidence.chatId,
         id: input.evidence.messageId,
-        chat: { userId }
+        chat: { projectId: null, userId }
       }
     }),
     tx.memorySourceBarrier.findFirst({

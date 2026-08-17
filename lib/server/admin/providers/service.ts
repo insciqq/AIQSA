@@ -550,6 +550,7 @@ export function createAdminProviderService(input: Readonly<{
     },
 
     async createModelDraft(value: {
+      availableInProjects?: boolean;
       configuration: AdminProviderModelConfiguration;
       connectionId: string;
       displayName: string;
@@ -557,6 +558,7 @@ export function createAdminProviderService(input: Readonly<{
       const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const id = idFactory();
       const result = await input.repository.createModel({
+        availableInProjects: value.availableInProjects ?? false,
         configuration,
         connectionId: value.connectionId,
         displayName: name(value.displayName),
@@ -573,6 +575,7 @@ export function createAdminProviderService(input: Readonly<{
     },
 
     async updateModelDraft(value: {
+      availableInProjects?: boolean;
       configuration: AdminProviderModelConfiguration;
       displayName: string;
       expectedDraftVersion: number;
@@ -580,6 +583,9 @@ export function createAdminProviderService(input: Readonly<{
     }) {
       const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const result = await input.repository.updateModelDraft({
+        ...(value.availableInProjects !== undefined
+          ? { availableInProjects: value.availableInProjects }
+          : {}),
         configuration,
         displayName: name(value.displayName),
         expectedDraftVersion: value.expectedDraftVersion,

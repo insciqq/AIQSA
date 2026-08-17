@@ -167,12 +167,15 @@ export function createAdminMcpCreateHandler(deps: McpHandlerDeps) {
     const draft = validateMcpDraft(body?.draft);
     const sharedValues = slotValues(body?.sharedValues);
     if (!name || description === null || !draft.ok ||
-      (typeof body?.activate !== "undefined" && typeof body.activate !== "boolean")) {
+      (typeof body?.activate !== "undefined" && typeof body.activate !== "boolean") ||
+      (typeof body?.availableInProjects !== "undefined" &&
+        typeof body.availableInProjects !== "boolean")) {
       return errorJson("invalid_draft", 400, draft.ok ? undefined : draft.issues);
     }
     if (!sharedValues) return errorJson("invalid_mcp_values", 400);
     const result = await safely(() => deps.repository.createServer({
       activate: body?.activate === true,
+      availableInProjects: body?.availableInProjects === true,
       description,
       draft: draft.value,
       name,
@@ -200,6 +203,8 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const name = optionalText(body.name, 120);
     const description = optionalDescriptionText(body.description, 4_000);
     if (name === null || description === null ||
+      (typeof body.availableInProjects !== "undefined" &&
+        typeof body.availableInProjects !== "boolean") ||
       (typeof body.enabled !== "undefined" && typeof body.enabled !== "boolean")) {
       return errorJson("invalid_draft", 400);
     }
@@ -212,11 +217,15 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const sharedValues = typeof body.sharedValues === "undefined" ? undefined : slotValues(body.sharedValues);
     if (sharedValues === null) return errorJson("invalid_mcp_values", 400);
     if (typeof name === "undefined" && typeof description === "undefined" &&
+      typeof body.availableInProjects === "undefined" &&
       typeof body.enabled === "undefined" && !draft && typeof sharedValues === "undefined") {
       return errorJson("invalid_draft", 400);
     }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.updateServer({
+      ...(typeof body.availableInProjects === "boolean"
+        ? { availableInProjects: body.availableInProjects }
+        : {}),
       ...(description !== undefined ? { description } : {}),
       ...(draft ? { draft } : {}),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),

@@ -27,6 +27,10 @@ import type {
   ProviderRunResult
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import {
+  sameProviderAdmissionPlan,
+  type ProviderAdmissionPlan
+} from "../providerRuntime/admission";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
@@ -110,6 +114,7 @@ import {
 } from "./toolLoopPersistence";
 import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
+import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
@@ -202,13 +207,25 @@ export type RunExecutionInput = Readonly<{
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeAdmission?: Readonly<{
     load(input: {
+      executionScope?: "project";
       knowledgePlan: ProviderRunRequest["knowledgePlan"];
+      projectId?: string;
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   memoryActionExecutor?: MemoryActionExecutor;
   memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
   memoryEgress?: MemoryToolEgressReceiptService;
+  providerAdmission?: Readonly<{
+    load(input: {
+      executionScope?: "project";
+      providerConnectionId: string;
+      providerModelId: string;
+      requiresClientToolCoexistence?: boolean;
+      searchPlan: ProviderAdmissionPlan["requestedSearchPlan"];
+      userId: string;
+    }): Promise<ProviderAdmissionPlan>;
+  }>;
   mcp?: Readonly<{
     materialize?(
       userId: string,
@@ -222,6 +239,7 @@ export type RunExecutionInput = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
+    prepareProject?(serverIds: readonly string[]): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     router?: McpSemanticRouter;
   }>;
   mcpRuntime?: Readonly<{
@@ -526,6 +544,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       const signal = abortController.signal;
       const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
+        ...(input.prepared.project
+          ? { onPersist: () => notifyProjectEvent(input.prepared.project!.projectId) }
+          : {}),
         repository: input.repository,
         runId
       });
@@ -725,6 +746,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function currentSearchDispatchAllowed(): Promise<boolean> {
         const optionIds = normalizedRequest.searchPlan.options.map((option) => option.optionId);
+        if (input.prepared.project?.executionScope === "project") {
+          return currentProjectProviderDispatchAllowed();
+        }
         const selection = input.prepared.providerAdmissionPlan.selection;
         const [entitlements, enabled] = await Promise.all([
           input.repository.loadEntitlements(input.userId),
@@ -744,6 +768,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function currentAnswerDispatchAllowed(): Promise<boolean> {
+        if (input.prepared.project?.executionScope === "project") {
+          return currentProjectProviderDispatchAllowed();
+        }
         const entitlements = await input.repository.loadEntitlements(input.userId);
         const selection = input.prepared.providerAdmissionPlan.selection;
         return validateRunAccess(entitlements, {
@@ -752,13 +779,37 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }).ok;
       }
 
+      async function currentProjectProviderDispatchAllowed(): Promise<boolean> {
+        const project = input.prepared.project;
+        if (project?.executionScope !== "project") return true;
+        if (!input.providerAdmission) return process.env.NODE_ENV !== "production";
+        const expected = input.prepared.providerAdmissionPlan;
+        try {
+          const current = await input.providerAdmission.load({
+            executionScope: "project",
+            providerConnectionId: expected.selection.providerConnectionId,
+            providerModelId: expected.selection.providerModelId,
+            ...(expected.requiresClientToolCoexistence
+              ? { requiresClientToolCoexistence: true }
+              : {}),
+            searchPlan: expected.requestedSearchPlan,
+            userId: input.userId
+          });
+          return sameProviderAdmissionPlan(current, expected);
+        } catch {
+          return false;
+        }
+      }
+
       async function currentKnowledgeDispatchAllowed(): Promise<boolean> {
         if (!input.knowledgeAdmission || !input.prepared.knowledgeAdmissionPlan) {
           return process.env.NODE_ENV !== "production";
         }
         try {
           const current = await input.knowledgeAdmission.load({
+            ...(input.prepared.project ? { executionScope: "project" as const } : {}),
             knowledgePlan: normalizedRequest.knowledgePlan,
+            ...(input.prepared.project ? { projectId: input.prepared.project.projectId } : {}),
             userId: input.userId
           });
           return sameKnowledgeRunAdmissionPlan(
@@ -778,10 +829,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       }>, generationId: string): Promise<boolean> {
         if (!input.mcp) return process.env.NODE_ENV !== "production";
         try {
-          const current = await input.mcp.prepare(input.userId, {
-            allowedServerIds: [inputRoute.serverId]
-          });
-          if (!current.ok) return false;
+          const current = input.prepared.project?.executionScope === "project" && input.mcp.prepareProject
+            ? await input.mcp.prepareProject([inputRoute.serverId])
+            : input.prepared.project?.executionScope === "project"
+              ? null
+              : await input.mcp.prepare(input.userId, { allowedServerIds: [inputRoute.serverId] });
+          if (!current || !current.ok) return false;
           const binding = current.bindings.find((candidate) =>
             candidate.serverId === inputRoute.serverId);
           const tool = current.snapshot.tools.find((candidate) =>
@@ -1773,6 +1826,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           });
         }
       } finally {
+        if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);
         }

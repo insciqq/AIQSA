@@ -184,7 +184,7 @@ export function WorkspaceHeaderV2({
   moveDisabled = false,
   onArchive,
   onBranches,
-  onCommands,
+  onCopyLink = null,
   onCopyThread,
   onDelete = null,
   onExport,
@@ -212,7 +212,7 @@ export function WorkspaceHeaderV2({
   moveDisabled?: boolean;
   onArchive(): void;
   onBranches(): void;
-  onCommands(): void;
+  onCopyLink?: (() => void) | null;
   onCopyThread(): void;
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
@@ -274,6 +274,7 @@ export function WorkspaceHeaderV2({
       : []),
     { label: "Export", onSelect: () => onExport("markdown") },
     { label: "Export as JSON", onSelect: () => onExport("json") },
+    ...(onCopyLink ? [{ label: "Copy link to chat", onSelect: onCopyLink }] : []),
     { label: "Copy entire thread", onSelect: onCopyThread },
     { label: "Branches", onSelect: onBranches }
   ];
@@ -331,7 +332,6 @@ export function WorkspaceHeaderV2({
             <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions} />
           </>
         ) : null}
-        <UiV2IconButton icon="search" label="Commands" onClick={onCommands} />
         <span className="v2-live-account">
           <button
             aria-expanded={accountOpen}

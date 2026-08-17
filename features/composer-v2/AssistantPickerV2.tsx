@@ -37,7 +37,7 @@ export function AssistantPickerV2({
   recentIds,
   selectedAssistantId
 }: Readonly<{
-  assistants: AssistantSummary[];
+  assistants: readonly AssistantSummary[];
   loading: boolean;
   onClose(): void;
   onCreateFromCurrentSetup(): void;

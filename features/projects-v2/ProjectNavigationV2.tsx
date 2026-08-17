@@ -1,6 +1,7 @@
 "use client";
 
 import { UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { useState } from "react";
 import type { ProjectWorkspaceController } from "./useProjectWorkspaceController";
 
 export function ProjectNavigationV2({
@@ -16,6 +17,9 @@ export function ProjectNavigationV2({
   const chats = (controller.workspace?.chats ?? []).filter((chat) => !chat.archived);
   const projectFolders = controller.workspace?.folders ?? [];
   const folders = new Map(projectFolders.map((folder) => [folder.id, folder.name]));
+  const [folderDialog, setFolderDialog] = useState<null | { mode: "create" | "rename"; folderId?: string; initial: string }>(null);
+  const [folderName, setFolderName] = useState("");
+  const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
   const unfiledChats = chats.filter((chat) => !chat.folderId);
   const renderChat = (chat: (typeof chats)[number]) => (
     <div className="v2-project-chat-row-wrap" key={chat.id}>
@@ -71,7 +75,7 @@ export function ProjectNavigationV2({
         <p className="v2-project-navigation-note">Create a project for shared chats and files.</p>
       ) : (
         <div className="v2-project-list">
-          {controller.projects.map((project) => (
+          {[...controller.projects.filter((project) => project.status === "ACTIVE"), ...controller.projects.filter((project) => project.status !== "ACTIVE")].map((project) => (
             <button
               aria-current={project.id === controller.selectedProjectId ? "page" : undefined}
               className="v2-project-row v2-focusable"
@@ -80,13 +84,12 @@ export function ProjectNavigationV2({
               type="button"
               onClick={() => {
                 void controller.actions.selectProject(project.id);
-                onNavigate();
               }}
             >
               <span className="v2-project-mark" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
               <span className="v2-project-row-copy">
                 <span className="v2-chat-title">{project.name}</span>
-                <span>{project.audienceCount} grants · {project.effectiveRole.toLowerCase()}</span>
+                <span>{project.audienceCount} active members · {project.effectiveRole.toLowerCase()}</span>
               </span>
               {project.status !== "ACTIVE" ? <span className="v2-project-state">Archived</span> : null}
             </button>
@@ -102,7 +105,7 @@ export function ProjectNavigationV2({
               <UiV2IconButton
                 icon="settings"
                 label={`Open ${selected.name} details`}
-                onClick={controller.actions.openSettings}
+                onClick={() => controller.actions.openSettings()}
               />
             ) : null}
           </div>
@@ -115,7 +118,6 @@ export function ProjectNavigationV2({
                 type="button"
                 onClick={() => {
                   void controller.actions.createChat();
-                  onNavigate();
                 }}
               >
                 <UiV2Icon name="plus" /> New shared chat
@@ -124,10 +126,7 @@ export function ProjectNavigationV2({
                 className="v2-project-folder-create v2-focusable"
                 disabled={controller.busy}
                 type="button"
-                onClick={() => {
-                  const name = window.prompt("Folder name");
-                  if (name?.trim()) void controller.actions.createFolder(name.trim());
-                }}
+                onClick={() => { setFolderDialog({ mode: "create", initial: "" }); setFolderName(""); }}
               >
                 New folder
               </button>
@@ -153,13 +152,8 @@ export function ProjectNavigationV2({
                     <div className="v2-project-folder-heading">
                       <span>{folder.name}</span>
                       {selected?.status === "ACTIVE" && selected.capabilities.mutateChats ? <button disabled={controller.busy} type="button" onClick={() => void controller.actions.createChat(folder.id)}>+ chat</button> : null}
-                      {selected?.status === "ACTIVE" && selected.capabilities.manageProject ? <button disabled={controller.busy} type="button" onClick={() => {
-                        const name = window.prompt("Rename folder", folder.name);
-                        if (name?.trim() && name.trim() !== folder.name) void controller.actions.updateFolder(folder.id, { name: name.trim() });
-                      }}>rename</button> : null}
-                      {selected?.status === "ACTIVE" && selected.capabilities.manageProject ? <button disabled={controller.busy} type="button" onClick={() => {
-                        if (window.confirm(`Delete folder ${folder.name}? Its chats will move to the project root.`)) void controller.actions.deleteFolder(folder.id);
-                      }}>delete</button> : null}
+                      {selected?.status === "ACTIVE" && selected.capabilities.manageProject ? <button disabled={controller.busy} type="button" onClick={() => { setFolderDialog({ mode: "rename", folderId: folder.id, initial: folder.name }); setFolderName(folder.name); }}>rename</button> : null}
+                      {selected?.status === "ACTIVE" && selected.capabilities.manageProject ? <button disabled={controller.busy} type="button" onClick={() => setDeleteFolderId(folder.id)}>delete</button> : null}
                     </div>
                     {folderChats.length > 0 ? folderChats.map(renderChat) : <p className="v2-project-folder-empty">No chats</p>}
                   </section>
@@ -168,6 +162,30 @@ export function ProjectNavigationV2({
               {unfiledChats.map(renderChat)}
             </div>
           )}
+        </div>
+      ) : null}
+      {folderDialog ? (
+        <div className="v2-project-inline-dialog" role="dialog" aria-label={folderDialog.mode === "create" ? "Create folder" : "Rename folder"}>
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            const value = folderName.trim();
+            if (!value) return;
+            const action = folderDialog.mode === "create"
+              ? controller.actions.createFolder(value)
+              : controller.actions.updateFolder(folderDialog.folderId!, { name: value });
+            void Promise.resolve(action).then((saved) => { if (saved !== false) setFolderDialog(null); });
+          }}>
+            <label>{folderDialog.mode === "create" ? "Folder name" : "New folder name"}<input autoFocus maxLength={80} value={folderName} onChange={(event) => setFolderName(event.target.value)} /></label>
+            <button type="submit" disabled={controller.busy || !folderName.trim()}>Save</button>
+            <button type="button" onClick={() => setFolderDialog(null)}>Cancel</button>
+          </form>
+        </div>
+      ) : null}
+      {deleteFolderId ? (
+        <div className="v2-project-inline-dialog" role="alertdialog" aria-label="Delete folder">
+          <p>Delete this folder? Its chats and child folders move to the parent.</p>
+          <button type="button" onClick={() => setDeleteFolderId(null)}>Cancel</button>
+          <button type="button" disabled={controller.busy} onClick={() => { const id = deleteFolderId; setDeleteFolderId(null); void controller.actions.deleteFolder(id); }}>Delete folder</button>
         </div>
       ) : null}
     </section>
