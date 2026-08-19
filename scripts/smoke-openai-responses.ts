@@ -67,7 +67,7 @@ const request: ProviderRunRequest = {
       }
     ]
   },
-  knowledgePlan: { baseIds: [] },
+  knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
   toolMode: "auto",
   modelCapabilities: {
     nativePdfInput: false,

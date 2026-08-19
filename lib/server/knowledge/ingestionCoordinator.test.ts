@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
-import { KnowledgeIngestionError, type KnowledgeDocumentWorkClaim } from "./ingestionTypes";
+import { KnowledgeIngestionError, type KnowledgeSourceWorkClaim } from "./ingestionTypes";
 
-function claim(id: string, attemptCount: number): KnowledgeDocumentWorkClaim {
+function claim(id: string, attemptCount: number): KnowledgeSourceWorkClaim {
   return {
     attemptCount,
     byteSize: 4,
     checksum: "a".repeat(64),
     claimToken: `claim-${id}`,
-    documentId: `document-${id}`,
-    documentVersionId: `version-${id}`,
+    sourceId: `document-${id}`,
+    sourceVersionId: `version-${id}`,
     fileName: `${id}.txt`,
-    generation: {
+    artifact: {
       chunkingProfileVersion: 1,
       embeddingConfiguration: {
         adapterKind: "openai_embeddings_compatible",
@@ -25,12 +25,13 @@ function claim(id: string, attemptCount: number): KnowledgeDocumentWorkClaim {
         upstreamModelId: "embed-1"
       },
       embeddingProviderModelId: "embedding-1",
-      id: "generation-1",
+      id: "artifact-1",
+      profileExecutionAuthority: "legacy_user",
+      profileRevisionId: null,
       targetDimension: 1024,
       vectorSpaceFingerprint: "b".repeat(64)
     },
     ingestChunkCount: null,
-    kind: "document",
     knowledgeBaseId: "base-1",
     mimeType: "text/plain",
     normalizedTextByteSize: null,
@@ -51,11 +52,11 @@ describe("Knowledge ingestion coordinator", () => {
     const coordinator = new KnowledgeIngestionCoordinator({
       maxParallel: 1,
       process: async (work) => {
-        processed.push(work.documentVersionId);
-        if (work.documentVersionId === "version-retry") {
+        processed.push(work.sourceVersionId);
+        if (work.sourceVersionId === "version-retry") {
           throw new KnowledgeIngestionError("parser_unavailable", true);
         }
-        if (work.documentVersionId === "version-terminal") {
+        if (work.sourceVersionId === "version-terminal") {
           throw new KnowledgeIngestionError("parser_rejected", false);
         }
       },
@@ -72,11 +73,11 @@ describe("Knowledge ingestion coordinator", () => {
 
     expect(processed).toEqual(["version-retry", "version-terminal", "version-healthy"]);
     expect(retryLater).toHaveBeenCalledWith(expect.objectContaining({
-      documentVersionId: "version-retry",
+      sourceVersionId: "version-retry",
       errorCode: "parser_unavailable"
     }));
     expect(settleFailed).toHaveBeenCalledWith(expect.objectContaining({
-      documentVersionId: "version-terminal",
+      sourceVersionId: "version-terminal",
       errorCode: "parser_rejected"
     }));
   });

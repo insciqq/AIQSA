@@ -1,6 +1,12 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { AssistantsPanelV2, FilesPanelV2, LibraryV2, MemoryPanelV2 } from "./LibraryV2";
+import {
+  AssistantsPanelV2,
+  FilesPanelV2,
+  KnowledgePanelV2,
+  LibraryV2,
+  MemoryPanelV2
+} from "./LibraryV2";
 import type { LibraryNavigationGuardV2 } from "./contracts";
 
 describe("LibraryV2", () => {
@@ -56,6 +62,24 @@ describe("LibraryV2", () => {
 });
 
 describe("Library resource panels", () => {
+  it("opens the reusable Source catalog separately from Base creation", () => {
+    const onBrowseSources = vi.fn();
+    const onCreate = vi.fn();
+    render(
+      <KnowledgePanelV2
+        bases={[]}
+        onBrowseSources={onBrowseSources}
+        onCreate={onCreate}
+      />
+    );
+
+    expect(screen.getByText(/Bases group reusable Sources/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Browse Sources" }));
+    fireEvent.click(screen.getByRole("button", { name: "New base" }));
+    expect(onBrowseSources).toHaveBeenCalledOnce();
+    expect(onCreate).toHaveBeenCalledOnce();
+  });
+
   it("keeps assistant selection and owned management actions explicit", () => {
     const onOpen = vi.fn();
     const onPinToggle = vi.fn();

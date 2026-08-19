@@ -18,7 +18,7 @@ function revision(overrides: Partial<AssistantRevisionContent> = {}): AssistantR
     createdAt: "2026-08-06T00:00:00.000Z",
     description: "Reviews changes.",
     developerPrompt: null,
-    knowledgeBaseIds: [],
+    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: ["a", "b"],
     name: "Code Reviewer",
     providerModelId: "model-1",

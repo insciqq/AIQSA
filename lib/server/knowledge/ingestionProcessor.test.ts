@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError, type ParsedDocument } from "../parsing";
+import { finalizeParsedDocument } from "../parsing/assessment";
 import type { EmbeddingRuntimeBinding } from "../providerRuntime/embeddingRuntime";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
-import {
-  createKnowledgeIngestionProcessor,
-  type KnowledgeIngestionProcessorRepository
-} from "./ingestionProcessor";
+import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
+import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
-import type { KnowledgeDocumentWorkClaim, KnowledgeReindexWorkClaim } from "./ingestionTypes";
+import type { KnowledgeSourceWorkClaim } from "./ingestionTypes";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 
 const config: KnowledgeExtractionConfig = {
@@ -56,27 +55,28 @@ function digest(body: Buffer): string {
 }
 
 function claim(
-  state: KnowledgeDocumentWorkClaim["state"],
-  overrides: Partial<KnowledgeDocumentWorkClaim> = {}
-): KnowledgeDocumentWorkClaim {
+  state: KnowledgeSourceWorkClaim["state"],
+  overrides: Partial<KnowledgeSourceWorkClaim> = {}
+): KnowledgeSourceWorkClaim {
   return {
     attemptCount: 1,
     byteSize: 5,
     checksum: digest(Buffer.from("hello")),
     claimToken: "claim-1",
-    documentId: "document-1",
-    documentVersionId: "version-1",
+    sourceId: "document-1",
+    sourceVersionId: "version-1",
     fileName: "document.txt",
-    generation: {
+    artifact: {
       chunkingProfileVersion: 1,
       embeddingConfiguration: pin.configuration,
       embeddingProviderModelId: "embedding-1",
-      id: "generation-1",
+      id: "artifact-1",
+      profileExecutionAuthority: "legacy_user",
+      profileRevisionId: null,
       targetDimension: pin.targetDimension,
       vectorSpaceFingerprint: pin.fingerprint
     },
     ingestChunkCount: null,
-    kind: "document",
     knowledgeBaseId: "base-1",
     mimeType: "text/plain",
     normalizedTextByteSize: null,
@@ -91,46 +91,14 @@ function claim(
 
 function repository() {
   return {
-    activateDocumentVersion: vi.fn(async () => "activated" as const),
-    advanceDocumentToParsing: vi.fn(async () => true),
-    advanceReindexToEmbedding: vi.fn(async () => true),
+    activateSourceVersion: vi.fn(async () => "activated" as const),
+    advanceSourceToParsing: vi.fn(async () => true),
     completedBatchIndexes: vi.fn(async () => [] as number[]),
     completeChunking: vi.fn(async () => true),
     completeParsing: vi.fn(async () => true),
     persistEmbeddingBatch: vi.fn(async () => true),
-    recoverReindexChunkPlan: vi.fn<
-      KnowledgeIngestionProcessorRepository["recoverReindexChunkPlan"]
-    >(async () => null),
-    settleReindexReady: vi.fn(async () => true)
-  };
-}
-
-function reindexClaim(
-  state: KnowledgeReindexWorkClaim["state"],
-  overrides: Partial<KnowledgeReindexWorkClaim> = {}
-): KnowledgeReindexWorkClaim {
-  return {
-    attemptCount: 1,
-    chunkCount: null,
-    claimToken: "reindex-claim-1",
-    documentId: "document-1",
-    documentVersionId: "version-1",
-    generation: {
-      chunkingProfileVersion: 1,
-      embeddingConfiguration: pin.configuration,
-      embeddingProviderModelId: "embedding-1",
-      id: "generation-2",
-      targetDimension: pin.targetDimension,
-      vectorSpaceFingerprint: pin.fingerprint
-    },
-    kind: "reindex",
-    knowledgeBaseId: "base-1",
-    normalizedTextByteSize: null,
-    normalizedTextChecksum: null,
-    normalizedTextStorageKey: "normalized.json",
-    ownerUserId: "owner-1",
-    state,
-    ...overrides
+    persistHierarchicalIndex: vi.fn(async () => true),
+    reuseEmbeddingChunks: vi.fn(async () => [] as number[])
   };
 }
 
@@ -168,20 +136,27 @@ function binding(embed: EmbeddingRuntimeBinding["adapter"]["embed"]): EmbeddingR
 
 function parsed(blockCount = 1): ParsedDocument {
   const blocks = Array.from({ length: blockCount }, (_, index) => ({
+    assetIds: [],
+    boundingBoxes: [],
     headingPath: [`Section ${index}`],
     index,
     isTable: false,
+    languageHints: ["und-Latn"],
     page: index + 1,
-    text: `document block ${index}`
+    pageEnd: index + 1,
+    readingOrder: index,
+    table: null,
+    text: `document block ${index}`,
+    type: "paragraph" as const
   }));
-  return {
+  return finalizeParsedDocument({
     blocks,
     engine: "inline",
     mediaType: "text/plain",
     pageCount: blockCount,
     status: "complete",
     text: blocks.map((block) => block.text).join("\n")
-  };
+  });
 }
 
 describe("Knowledge ingestion processor", () => {
@@ -189,7 +164,7 @@ describe("Knowledge ingestion processor", () => {
     const repo = repository();
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn() },
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
       parser: { parse: vi.fn() },
       repository: repo,
       storage: createMemoryStorageAdapter()
@@ -197,7 +172,7 @@ describe("Knowledge ingestion processor", () => {
 
     await process(claim("queued"));
 
-    expect(repo.advanceDocumentToParsing).toHaveBeenCalledOnce();
+    expect(repo.advanceSourceToParsing).toHaveBeenCalledOnce();
     expect(repo.completeParsing).not.toHaveBeenCalled();
   });
 
@@ -207,7 +182,7 @@ describe("Knowledge ingestion processor", () => {
     const repo = repository();
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn() },
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
       parser: { parse: vi.fn(async () => parsed()) },
       repository: repo,
       storage
@@ -216,12 +191,76 @@ describe("Knowledge ingestion processor", () => {
     await process(claim("parsing"));
 
     const normalized = storage.objects.get("normalized.json")!;
-    expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({ schemaVersion: 1 });
+    expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({ schemaVersion: 3 });
     expect(repo.completeParsing).toHaveBeenCalledWith(expect.objectContaining({
       normalizedTextByteSize: normalized.body.byteLength,
       normalizedTextChecksum: digest(normalized.body),
       pageCount: 1
     }));
+  });
+
+  it("settles the immutable hierarchical shadow index before advancing chunked work", async () => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(2), config, {
+      sourceDisplayName: "document.txt",
+      sourceMediaType: "text/plain"
+    });
+    await storage.putObject({
+      body: encoded.body,
+      contentType: "application/json",
+      storageKey: "normalized.json"
+    });
+    const repo = repository();
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      repository: repo,
+      storage
+    });
+
+    await process(claim("chunking", {
+      normalizedTextByteSize: encoded.body.byteLength,
+      normalizedTextChecksum: encoded.checksum
+    }));
+
+    expect(repo.persistHierarchicalIndex).toHaveBeenCalledWith(expect.objectContaining({
+      chunks: expect.arrayContaining([expect.objectContaining({ text: "document block 0" })]),
+      document: expect.objectContaining({ schemaVersion: 3 })
+    }));
+    expect(repo.completeChunking).toHaveBeenCalledWith(expect.objectContaining({
+      chunkCount: 2
+    }));
+    expect(repo.persistHierarchicalIndex.mock.invocationCallOrder[0])
+      .toBeLessThan(repo.completeChunking.mock.invocationCallOrder[0]!);
+  });
+
+  it("maps shadow-index settlement conflicts to a stable terminal ingestion failure", async () => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(), config);
+    await storage.putObject({
+      body: encoded.body,
+      contentType: "application/json",
+      storageKey: "normalized.json"
+    });
+    const repo = repository();
+    repo.persistHierarchicalIndex.mockRejectedValue(
+      new KnowledgeHierarchicalIndexPersistenceError("knowledge_hierarchical_index_conflict")
+    );
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      repository: repo,
+      storage
+    });
+
+    await expect(process(claim("chunking", {
+      normalizedTextByteSize: encoded.body.byteLength,
+      normalizedTextChecksum: encoded.checksum
+    }))).rejects.toMatchObject({
+      code: "knowledge_hierarchical_index_failed",
+      retryable: false
+    });
+    expect(repo.completeChunking).not.toHaveBeenCalled();
   });
 
   it("preserves extracted Cyrillic text through normalization, chunking, and embedding input", async () => {
@@ -241,13 +280,20 @@ describe("Knowledge ingestion processor", () => {
     }));
     const repo = repository();
     const parser = {
-      parse: vi.fn(async (): Promise<ParsedDocument> => ({
+      parse: vi.fn(async (): Promise<ParsedDocument> => finalizeParsedDocument({
         blocks: [{
+          assetIds: [],
+          boundingBoxes: [],
           headingPath: ["Скан"],
           index: 0,
           isTable: false,
+          languageHints: ["und-Cyrl", "und-Latn"],
           page: 1,
-          text: cyrillicText
+          pageEnd: 1,
+          readingOrder: 0,
+          table: null,
+          text: cyrillicText,
+          type: "paragraph"
         }],
         engine: "docling",
         mediaType: "application/pdf",
@@ -258,7 +304,10 @@ describe("Knowledge ingestion processor", () => {
     };
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn(async () => binding(embed)) },
+      embeddingRuntime: {
+        resolveForInstallation: vi.fn(),
+        resolveForUser: vi.fn(async () => binding(embed))
+      },
       parser,
       repository: repo,
       storage
@@ -280,8 +329,12 @@ describe("Knowledge ingestion processor", () => {
       mimeType: "application/pdf"
     }));
     expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({
-      blocks: [{ headingPath: ["Скан"], page: 1, text: cyrillicText }],
-      parserEngine: "docling"
+      blocks: [{
+        headingPath: ["Скан"],
+        locator: { pageEnd: 1, pageStart: 1 },
+        text: cyrillicText
+      }],
+      parser: { engine: "docling" }
     });
 
     await process(claim("embedding", {
@@ -300,7 +353,7 @@ describe("Knowledge ingestion processor", () => {
         chunks: [expect.objectContaining({ page: 1, text: cyrillicText })]
       })
     }));
-    expect(repo.activateDocumentVersion).toHaveBeenCalledWith(expect.objectContaining({
+    expect(repo.activateSourceVersion).toHaveBeenCalledWith(expect.objectContaining({
       expectedChunkCount: 1
     }));
   });
@@ -317,9 +370,9 @@ describe("Knowledge ingestion processor", () => {
     const resolveForUser = vi.fn();
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser },
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser },
       parser: {
-        parse: vi.fn(async (): Promise<ParsedDocument> => ({
+        parse: vi.fn(async (): Promise<ParsedDocument> => finalizeParsedDocument({
           blocks: [],
           engine: "docling",
           mediaType: "application/pdf",
@@ -346,7 +399,7 @@ describe("Knowledge ingestion processor", () => {
     expect(resolveForUser).not.toHaveBeenCalled();
   });
 
-  it("resumes from the durable batch marker and embeds documents without a query instruction", async () => {
+  it("resumes from the durable batch marker through installation profile authority", async () => {
     const storage = createMemoryStorageAdapter();
     const encoded = encodeKnowledgeNormalizedDocument(parsed(65), config);
     await storage.putObject({
@@ -362,20 +415,32 @@ describe("Knowledge ingestion processor", () => {
     }));
     const repo = repository();
     repo.completedBatchIndexes.mockResolvedValue([0]);
+    const resolveForInstallation = vi.fn(async () => binding(embed));
+    const resolveForUser = vi.fn();
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn(async () => binding(embed)) },
+      embeddingRuntime: {
+        resolveForInstallation,
+        resolveForUser
+      },
       repository: repo,
       storage
     });
 
     await process(claim("embedding", {
+      artifact: {
+        ...claim("embedding").artifact,
+        profileExecutionAuthority: "installation",
+        profileRevisionId: "profile-revision-1"
+      },
       ingestChunkCount: 65,
       normalizedTextByteSize: encoded.body.byteLength,
       normalizedTextChecksum: encoded.checksum
     }));
 
     expect(embed).toHaveBeenCalledOnce();
+    expect(resolveForInstallation).toHaveBeenCalledWith({ providerModelId: "embedding-1" });
+    expect(resolveForUser).not.toHaveBeenCalled();
     expect(embed).toHaveBeenCalledWith(expect.objectContaining({
       mode: "document",
       texts: ["document block 64"]
@@ -383,66 +448,92 @@ describe("Knowledge ingestion processor", () => {
     expect(repo.persistEmbeddingBatch).toHaveBeenCalledWith(expect.objectContaining({
       batch: expect.objectContaining({ batchIndex: 1, providerModelId: "embedding-1" })
     }));
-    expect(repo.activateDocumentVersion).toHaveBeenCalledWith(expect.objectContaining({
+    expect(repo.activateSourceVersion).toHaveBeenCalledWith(expect.objectContaining({
       expectedChunkCount: 65
     }));
   });
 
-  it("reindexes from fenced source chunks when the stored normalized object is rejected", async () => {
+  it("activates a replacement without provider access when every embedding is reusable", async () => {
     const storage = createMemoryStorageAdapter();
-    const invalid = Buffer.from('{"schemaVersion":0,"blocks":[]}');
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(2), config);
     await storage.putObject({
-      body: invalid,
+      body: encoded.body,
       contentType: "application/json",
       storageKey: "normalized.json"
     });
-    const recovered = [{ headingPath: ["Recovered"], index: 0, page: 2, text: "settled source passage" }];
+    const repo = repository();
+    repo.reuseEmbeddingChunks.mockResolvedValue([0, 1]);
+    const resolveForInstallation = vi.fn();
+    const resolveForUser = vi.fn();
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForInstallation, resolveForUser },
+      repository: repo,
+      storage
+    });
+
+    await process(claim("embedding", {
+      ingestChunkCount: 2,
+      normalizedTextByteSize: encoded.body.byteLength,
+      normalizedTextChecksum: encoded.checksum
+    }));
+
+    expect(repo.reuseEmbeddingChunks).toHaveBeenCalledWith(expect.objectContaining({
+      chunks: [expect.objectContaining({ index: 0 }), expect.objectContaining({ index: 1 })],
+      targetDimension: 1024
+    }));
+    expect(resolveForInstallation).not.toHaveBeenCalled();
+    expect(resolveForUser).not.toHaveBeenCalled();
+    expect(repo.persistEmbeddingBatch).not.toHaveBeenCalled();
+    expect(repo.activateSourceVersion).toHaveBeenCalledWith(expect.objectContaining({
+      expectedChunkCount: 2
+    }));
+  });
+
+  it("embeds only the changed passages when a replacement is partially reusable", async () => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(2), config);
+    await storage.putObject({
+      body: encoded.body,
+      contentType: "application/json",
+      storageKey: "normalized.json"
+    });
     const embed = vi.fn<EmbeddingRuntimeBinding["adapter"]["embed"]>(async (request) => ({
       model: "embed-v1",
-      requestId: "request-reindex",
+      requestId: "request-partial-reuse",
       usage: { inputTokens: 3, totalTokens: 3 },
       vectors: request.texts.map(() => Array.from({ length: 1024 }, () => 0.01))
     }));
     const repo = repository();
-    repo.recoverReindexChunkPlan.mockResolvedValue(recovered);
+    repo.reuseEmbeddingChunks.mockResolvedValue([0]);
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn(async () => binding(embed)) },
+      embeddingRuntime: {
+        resolveForInstallation: vi.fn(),
+        resolveForUser: vi.fn(async () => binding(embed))
+      },
       repository: repo,
       storage
     });
-    const normalized = {
-      normalizedTextByteSize: invalid.byteLength,
-      normalizedTextChecksum: digest(invalid)
-    };
 
-    await process(reindexClaim("queued", normalized));
-    expect(repo.advanceReindexToEmbedding).toHaveBeenCalledWith(expect.objectContaining({
-      chunkCount: 1
+    await process(claim("embedding", {
+      ingestChunkCount: 2,
+      normalizedTextByteSize: encoded.body.byteLength,
+      normalizedTextChecksum: encoded.checksum
     }));
 
-    await process(reindexClaim("embedding", { ...normalized, chunkCount: 1 }));
-    expect(embed).toHaveBeenCalledWith(expect.objectContaining({
+    expect(embed).toHaveBeenCalledWith({
       mode: "document",
-      texts: ["settled source passage"]
-    }));
-    expect(repo.settleReindexReady).toHaveBeenCalledWith(expect.objectContaining({
-      expectedChunkCount: 1
-    }));
-  });
-
-  it("reports a reindex-specific failure when neither normalized text nor source chunks are usable", async () => {
-    const process = createKnowledgeIngestionProcessor({
-      config,
-      embeddingRuntime: { resolveForUser: vi.fn() },
-      repository: repository(),
-      storage: createMemoryStorageAdapter()
+      texts: ["document block 1"]
     });
-
-    await expect(process(reindexClaim("queued"))).rejects.toMatchObject({
-      code: "reindex_source_unavailable",
-      retryable: false
-    });
+    expect(repo.persistEmbeddingBatch).toHaveBeenCalledWith(expect.objectContaining({
+      batch: expect.objectContaining({
+        chunks: [expect.objectContaining({ index: 1, text: "document block 1" })]
+      })
+    }));
+    expect(repo.activateSourceVersion).toHaveBeenCalledWith(expect.objectContaining({
+      expectedChunkCount: 2
+    }));
   });
 
   it("maps primary parser unavailability to an explicit retryable failure", async () => {
@@ -450,7 +541,7 @@ describe("Knowledge ingestion processor", () => {
     await storage.putObject({ body: Buffer.from("hello"), contentType: "text/plain", storageKey: "original.txt" });
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn() },
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
       parser: { parse: vi.fn(async () => { throw new DocumentParserError("parser_unavailable", "docling"); }) },
       repository: repository(),
       storage
@@ -462,20 +553,29 @@ describe("Knowledge ingestion processor", () => {
     });
   });
 
-  it("reports a partial parser result as a text-limit failure instead of indexing truncation", async () => {
+  it("persists and advances a usable partial parser result with truthful warnings", async () => {
     const storage = createMemoryStorageAdapter();
     await storage.putObject({ body: Buffer.from("hello"), contentType: "text/plain", storageKey: "original.txt" });
+    const repo = repository();
     const process = createKnowledgeIngestionProcessor({
       config,
-      embeddingRuntime: { resolveForUser: vi.fn() },
-      parser: { parse: vi.fn(async () => ({ ...parsed(), status: "partial" as const })) },
-      repository: repository(),
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      parser: {
+        parse: vi.fn(async () => finalizeParsedDocument({
+          ...parsed(),
+          status: "partial"
+        }))
+      },
+      repository: repo,
       storage
     });
 
-    await expect(process(claim("parsing"))).rejects.toMatchObject({
-      code: "knowledge_text_limit_exceeded",
-      retryable: false
+    await expect(process(claim("parsing"))).resolves.toBeUndefined();
+    const normalized = JSON.parse(storage.objects.get("normalized.json")!.body.toString("utf8"));
+    expect(normalized).toMatchObject({
+      status: "partial",
+      warnings: expect.arrayContaining(["partial_parse"])
     });
+    expect(repo.completeParsing).toHaveBeenCalledOnce();
   });
 });

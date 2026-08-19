@@ -66,6 +66,10 @@ import {
   decodeProjectDefaults,
   decodeProjectPolicy
 } from "../../contracts/projects";
+import {
+  groundKnowledgeRunAnswer,
+  settleKnowledgeGrounding
+} from "../knowledge/evidenceRepository";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -324,6 +328,8 @@ export function createPrismaRunRepository(
   }
 
   return {
+    groundKnowledgeAnswer: (input) =>
+      groundKnowledgeRunAnswer(prismaClient, input),
     admitPreparingRun: (input) =>
       admitPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     beginPreparingRunAttempt: (input) =>
@@ -621,6 +627,10 @@ export function createPrismaRunRepository(
             id: input.runId
           }
         });
+
+        if (input.knowledgeGrounding) {
+          await settleKnowledgeGrounding(tx, input.knowledgeGrounding);
+        }
 
         await tx.message.updateMany({
           data: {

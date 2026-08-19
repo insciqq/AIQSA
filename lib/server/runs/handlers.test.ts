@@ -790,7 +790,7 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
       attachmentIds: [],
       chatId: "chat-1",
       content: { blocks: [] },
-      knowledgePlan: { baseIds: [] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
@@ -3395,7 +3395,7 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
-        knowledgePlan: { baseIds: [] },
+        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
@@ -3828,7 +3828,7 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
-        knowledgePlan: { baseIds: [] },
+        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
@@ -4781,7 +4781,7 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
-        knowledgePlan: { baseIds: [] },
+        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,

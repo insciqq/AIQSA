@@ -138,6 +138,11 @@ export function createPrismaEmbeddingRuntime(
   };
 
   return {
+    async resolveForInstallation(input: Readonly<{
+      providerModelId: string;
+    }>): Promise<EmbeddingRuntimeBinding> {
+      return resolveAdmission(await loadProjectEmbeddingProviderRole(prisma, input));
+    },
     async resolveForUser(input: Readonly<{
       providerModelId: string;
       userId: string;

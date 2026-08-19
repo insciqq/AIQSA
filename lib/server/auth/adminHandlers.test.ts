@@ -433,6 +433,21 @@ describe("admin route handlers", () => {
     }
   });
 
+  it("acknowledges durable account deletion while private cleanup is pending", async () => {
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({
+        deleteStaleUser: async () => "deletion_pending"
+      }),
+      resolveAuth: admin.resolveAuth
+    });
+
+    const response = await POST(jsonRequest({ action: "delete_user", userId: "user-1" }));
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
   it("approves users with selected groups", async () => {
     const calls: unknown[] = [];
     const POST = createAdminActionHandler({

@@ -24,7 +24,10 @@ import {
   type AssistantCategory,
   type AssistantSummary
 } from "@/lib/contracts/assistants";
-import { KNOWLEDGE_PLAN_MAX_BASES } from "@/lib/contracts/knowledge";
+import {
+  explicitKnowledgeSelection,
+  KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES
+} from "@/lib/contracts/knowledge";
 import { SKILL_MAX_SELECTED, type SkillSummary } from "@/lib/contracts/skills";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { ArrowLeft, ChevronDown, LoaderCircle, Plus, RotateCcw, Search } from "lucide-react";
@@ -895,7 +898,10 @@ function EditorTask({
   const saveDisabled = mutationLocked || !draft.name.trim() || draft.providerModelId === null;
   const title = draft.name.trim() || "New assistant";
   const searchLimitReached = draft.searchOptionIds.length >= MAX_SEARCH_PLAN_OPTIONS;
-  const knowledgeLimitReached = draft.knowledgeBaseIds.length >= KNOWLEDGE_PLAN_MAX_BASES;
+  const selectedKnowledgeBaseIds = draft.knowledgeSelection.baseIds;
+  const selectedKnowledgeSourceIds = draft.knowledgeSelection.sourceIds;
+  const knowledgeLimitReached = selectedKnowledgeBaseIds.length +
+    selectedKnowledgeSourceIds.length >= KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES;
   const skillLimitReached = draft.skillIds.length >= SKILL_MAX_SELECTED;
   const toolsCaution = selectedModel !== null && !selectedModel.supportsTools && draft.mcpServerIds.length > 0;
 
@@ -928,9 +934,22 @@ function EditorTask({
 
   const toggleKnowledgeBase = (baseId: string, checked: boolean) =>
     editor.onChange({
-      knowledgeBaseIds: checked
-        ? [...draft.knowledgeBaseIds, baseId]
-        : draft.knowledgeBaseIds.filter((id) => id !== baseId)
+      knowledgeSelection: explicitKnowledgeSelection({
+        baseIds: checked
+          ? [...selectedKnowledgeBaseIds, baseId]
+          : selectedKnowledgeBaseIds.filter((id) => id !== baseId),
+        sourceIds: draft.knowledgeSelection.sourceIds
+      })
+    });
+
+  const toggleKnowledgeSource = (sourceId: string, checked: boolean) =>
+    editor.onChange({
+      knowledgeSelection: explicitKnowledgeSelection({
+        baseIds: selectedKnowledgeBaseIds,
+        sourceIds: checked
+          ? [...selectedKnowledgeSourceIds, sourceId]
+          : selectedKnowledgeSourceIds.filter((id) => id !== sourceId)
+      })
     });
 
   const toggleSkill = (skillId: string, checked: boolean) =>
@@ -1248,15 +1267,15 @@ function EditorTask({
               title="Knowledge"
             >
               <p className="text-metadata leading-5 text-ink-muted">
-                This ordered list is exact. Chat and project defaults are not merged into Assistant runs.
+                This ordered Base list is exact, and each Base contributes its current ready Sources. Chat and project defaults are not merged into Assistant runs.
               </p>
               <fieldset>
                 <legend className="mb-1.5 text-xs font-medium text-ink-secondary">Knowledge bases</legend>
                 <div className="space-y-2">
-                  {draft.knowledgeBaseIds
+                  {selectedKnowledgeBaseIds
                     .filter((baseId) => !editor.options.knowledgeBases.some((base) => base.id === baseId))
                     .map((baseId) => {
-                      const order = draft.knowledgeBaseIds.indexOf(baseId) + 1;
+                      const order = selectedKnowledgeBaseIds.indexOf(baseId) + 1;
                       return (
                         <label className={checkboxRow} key={baseId}>
                           <input
@@ -1273,19 +1292,59 @@ function EditorTask({
                       );
                     })}
                   {editor.options.knowledgeBases.map((base) => {
-                    const checked = draft.knowledgeBaseIds.includes(base.id);
+                    const checked = selectedKnowledgeBaseIds.includes(base.id);
                     return (
                       <label className={checkboxRow} key={base.id}>
                         <input
                           checked={checked}
                           className="size-4 shrink-0 accent-proof"
-                          disabled={mutationLocked || (!checked && (!base.available || knowledgeLimitReached))}
+                          disabled={mutationLocked || (!checked &&
+                            (!base.available || knowledgeLimitReached))}
                           type="checkbox"
                           onChange={(event) => toggleKnowledgeBase(base.id, event.currentTarget.checked)}
                         />
                         <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${base.available ? "" : "text-caution"}`}>
                           {base.name}{base.available ? "" : checked ? " · unavailable, retained" : " · unavailable"}
-                          {checked ? ` · order ${draft.knowledgeBaseIds.indexOf(base.id) + 1}` : ""}
+                          {checked ? ` · order ${selectedKnowledgeBaseIds.indexOf(base.id) + 1}` : ""}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend className="mb-1.5 text-xs font-medium text-ink-secondary">Individual Sources</legend>
+                <div className="space-y-2">
+                  {selectedKnowledgeSourceIds
+                    .filter((sourceId) => !editor.options.knowledgeSources.some((source) => source.id === sourceId))
+                    .map((sourceId) => (
+                      <label className={checkboxRow} key={sourceId}>
+                        <input
+                          checked
+                          className="size-4 shrink-0 accent-proof"
+                          disabled={mutationLocked}
+                          type="checkbox"
+                          onChange={(event) => toggleKnowledgeSource(sourceId, event.currentTarget.checked)}
+                        />
+                        <span className="min-w-0 break-words text-caution [overflow-wrap:anywhere]">
+                          Unavailable Source · selection retained
+                        </span>
+                      </label>
+                    ))}
+                  {editor.options.knowledgeSources.map((source) => {
+                    const checked = selectedKnowledgeSourceIds.includes(source.id);
+                    return (
+                      <label className={checkboxRow} key={source.id}>
+                        <input
+                          checked={checked}
+                          className="size-4 shrink-0 accent-proof"
+                          disabled={mutationLocked || (!checked &&
+                            (!source.available || knowledgeLimitReached))}
+                          type="checkbox"
+                          onChange={(event) => toggleKnowledgeSource(source.id, event.currentTarget.checked)}
+                        />
+                        <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${source.available ? "" : "text-caution"}`}>
+                          {source.name}{source.available ? "" : checked ? " · unavailable, retained" : " · unavailable"}
                         </span>
                       </label>
                     );
@@ -1308,10 +1367,12 @@ function EditorTask({
                   </button>
                 </div>
               ) : null}
-              {editor.options.knowledgeDataState === "ready" && editor.options.knowledgeBases.length === 0 && draft.knowledgeBaseIds.length === 0 ? (
-                <p className="text-metadata text-ink-muted">No Knowledge bases are available.</p>
+              {editor.options.knowledgeDataState === "ready" && editor.options.knowledgeBases.length === 0 &&
+                editor.options.knowledgeSources.length === 0 && selectedKnowledgeBaseIds.length === 0 &&
+                selectedKnowledgeSourceIds.length === 0 ? (
+                <p className="text-metadata text-ink-muted">No Knowledge resources are available.</p>
               ) : null}
-              <p className="text-metadata text-ink-muted">Up to {KNOWLEDGE_PLAN_MAX_BASES} bases per Assistant.</p>
+              <p className="text-metadata text-ink-muted">Select the exact Bases and Sources this Assistant may use.</p>
             </EditorGroup>
 
             <EditorGroup
@@ -1754,7 +1815,7 @@ function HistoryTask({
                   )}
                 </div>
                 <p className="text-metadata text-ink-muted">
-                  Search sources: {viewed.searchPlan.optionIds.length} · Knowledge bases: {viewed.knowledgeBaseIds.length} · MCP servers: {viewed.mcpServerIds.length}
+                  Search sources: {viewed.searchPlan.optionIds.length} · Knowledge: {viewed.knowledgeSelection.mode === "inherited" ? "managed" : viewed.knowledgeSelection.baseIds.length + viewed.knowledgeSelection.sourceIds.length} · MCP servers: {viewed.mcpServerIds.length}
                 </p>
               </div>
             </section>

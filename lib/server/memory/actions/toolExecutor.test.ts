@@ -8,7 +8,7 @@ const request: ProviderRunRequest = {
   attachments: [],
   chatId: "chat-1",
   content: { blocks: [{ text: "Remember that I like tea", type: "text" }] },
-  knowledgePlan: { baseIds: [] },
+  knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
   toolMode: "auto",
   modelCapabilities: {
     nativePdfInput: false,

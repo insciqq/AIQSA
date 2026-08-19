@@ -102,7 +102,7 @@ function request(): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "Hello", type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

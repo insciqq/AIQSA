@@ -50,6 +50,7 @@ import {
   KNOWLEDGE_TOOL_NAME,
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import {
@@ -187,6 +188,7 @@ function createHarness(options: Readonly<{
   completeRun?: boolean;
   controls?: readonly (RunControlRecord | null)[];
   failRun?: boolean;
+  groundKnowledgeAnswer?: RunRecoveryRepository["groundKnowledgeAnswer"];
   liveRunIds?: readonly string[];
   knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
   knowledgeAdmission?: RunRecoveryDeps["knowledgeAdmission"];
@@ -309,6 +311,9 @@ function createHarness(options: Readonly<{
       controlIndex += 1;
       return value;
     },
+    ...(options.groundKnowledgeAnswer
+      ? { groundKnowledgeAnswer: options.groundKnowledgeAnswer }
+      : {}),
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
     isSearchStrategyEnabled: async () => options.searchStrategyEnabled ?? true,
@@ -460,7 +465,7 @@ function normalizedToolRequest(): NormalizedRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "remember this", type: "text" }] },
     context: { messages: [], mode: "branch_path" },
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     mcp: {
       servers: [{
@@ -540,12 +545,32 @@ function normalizedKnowledgeRequest(): NormalizedRunRequest {
   const { mcp: _mcp, ...request } = normalizedToolRequest();
   return {
     ...request,
-    knowledgePlan: { baseIds: ["knowledge-base-1"] },
+    knowledgePlan: {
+      baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1
+    },
     modelCapabilities: {
       ...request.modelCapabilities,
       toolCalling: true
     },
     toolMode: "auto"
+  };
+}
+
+function knowledgeRecoveryScope(
+  request: NormalizedRunRequest = normalizedKnowledgeRequest()
+): NonNullable<CheckpointedToolLoopRun["knowledgeScope"]> {
+  return {
+    bindings: [{
+      includeWholeBase: true,
+      indexGenerationId: "knowledge-generation-1",
+      knowledgeBaseId: "knowledge-base-1",
+      ordinal: 0,
+      selectedSourceIds: [],
+      vectorSpaceFingerprint: "c".repeat(64)
+    }],
+    budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+    exclusions: [],
+    knowledgePlan: request.knowledgePlan
   };
 }
 
@@ -2906,6 +2931,72 @@ describe("run recovery", () => {
     ]);
   });
 
+  it("preserves unavailable Knowledge qualification while recovering another tool", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const runtimeCall = vi.fn(async () => ({
+      isError: false,
+      structuredContent: null,
+      text: ["remembered"],
+      unsupportedContentTypes: []
+    }));
+    const normalizedRequest: NormalizedRunRequest = {
+      ...normalizedToolRequest(),
+      knowledgePlan: {
+        baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1
+      },
+      knowledgePlanner: {
+        automaticRetrieval: false,
+        coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
+        evidenceMode: "compact",
+        intent: "fact_lookup",
+        originalQuery: "remember this",
+        rewrite: { exactTerms: [], query: "remember this" },
+        status: "ready",
+        strategy: "none",
+        subqueries: [],
+        version: 1
+      }
+    };
+    const harness = createHarness({
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered with an explicit Knowledge limitation",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }),
+      knowledgeScope: {
+        bindings: [],
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [{ count: 1, reason: "not_ready", resourceType: "base" }],
+        knowledgePlan: normalizedRequest.knowledgePlan
+      },
+      normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.context)).toContain(
+      "No ready private Knowledge evidence"
+    );
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
   it("recovers pending Knowledge with personal context and ordinary tool-loop receipts", async () => {
     const canaries = {
       assistant: "RECOVERY_ASSISTANT_MEMORY_CANARY_731",
@@ -2984,13 +3075,18 @@ describe("run recovery", () => {
           embeddingProviderModelId: "embedding-deployment-1",
           indexedContentRevision: 1,
           indexGenerationId: "knowledge-generation-1",
+          includeWholeBase: true,
           knowledgeBaseId: "knowledge-base-1",
           ordinal: 0,
+          selectedSourceIds: [],
           targetDimension: 1024,
           vectorSpaceFingerprint: "c".repeat(64)
         }],
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
         fingerprint: "d".repeat(64),
         knowledgePlan,
+        resolvedSourceCount: 0,
         userId: admissionUserId
       })
     );
@@ -3037,6 +3133,7 @@ describe("run recovery", () => {
           type: "function_call"
         }]
       }),
+      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
       normalizedRequest
     });
 
@@ -3385,6 +3482,7 @@ describe("run recovery", () => {
         }
       }
     });
+    const normalizedRequest = normalizedKnowledgeRequest();
     installCheckpointState(harness, {
       ...checkpointedRun({
         calls: [settledCall],
@@ -3396,7 +3494,8 @@ describe("run recovery", () => {
           type: "function_call"
         }]
       }),
-      normalizedRequest: normalizedKnowledgeRequest()
+      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
+      normalizedRequest
     });
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
@@ -3413,6 +3512,153 @@ describe("run recovery", () => {
         usage: expect.objectContaining({ inputTokens: 3, totalTokens: 3 })
       })])
     });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("reinjects settled automatic Knowledge evidence when resuming a later tool round", async () => {
+    const evidence = recoveryKnowledgeEvidence("AUTO_RECOVERY_EVIDENCE");
+    const automaticResult = snapshotToolExecutionResult({
+      callId: "knowledge-planner-v1-1",
+      content: knowledgeToolResultContent(evidence),
+      name: KNOWLEDGE_TOOL_NAME,
+      rawPreview: {
+        knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+        knowledgeRetrieval: evidence,
+        providerCall: true
+      },
+      status: "complete",
+      usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+    }, 32_000);
+    const followUpResult = snapshotToolExecutionResult({
+      callId: "provider-call-1",
+      content: [{ text: "No additional passage was needed.", type: "text" }],
+      name: KNOWLEDGE_TOOL_NAME,
+      status: "error",
+      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+    }, 32_000);
+    if (!automaticResult || !followUpResult) throw new Error("invalid_automatic_knowledge_fixture");
+    const automaticCall: PersistedToolLoopCall = {
+      arguments: { query: "direct recovery query" },
+      completedAt: "2026-07-12T08:59:00.000Z",
+      id: "automatic-call-1",
+      mcpBinding: null,
+      ordinal: 0,
+      providerCallId: "knowledge-planner-v1-1",
+      result: automaticResult,
+      roundIndex: 0,
+      startedAt: "2026-07-12T08:58:59.000Z",
+      state: "complete",
+      toolName: KNOWLEDGE_TOOL_NAME
+    };
+    const followUpCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("error"),
+      arguments: { query: "follow-up query" },
+      mcpBinding: null,
+      result: followUpResult,
+      toolName: KNOWLEDGE_TOOL_NAME
+    };
+    const requests: ProviderRunRequest[] = [];
+    const groundKnowledgeAnswer = vi.fn(async () => ({
+      diagnostics: {
+        citationCoverage: 1,
+        citationPrecision: 1,
+        citedClaimCount: 1,
+        issueCodes: ["unsupported_claim" as const],
+        sourceClaimCount: 1,
+        unsupportedClaimCount: 1
+      },
+      finalAnswerHash: "a".repeat(64),
+      finalText: "Recovered grounded answer [K1].",
+      originalAnswerHash: "b".repeat(64),
+      outcome: "repaired" as const,
+      receiptHash: "c".repeat(64),
+      repairCount: 1 as const,
+      sessionId: "knowledge-evidence-session-1",
+      version: 3 as const
+    }));
+    const harness = createHarness({
+      groundKnowledgeAnswer,
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async execute() {
+          throw new Error("settled calls must not repeat");
+        },
+        tool: knowledgeRetrievalTool
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            yield {
+              data: { delta: "UNSUPPORTED_RECOVERY_DRAFT" },
+              type: "token" as const
+            };
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "UNSUPPORTED_RECOVERY_DRAFT",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const normalizedRequest: NormalizedRunRequest = {
+      ...normalizedKnowledgeRequest(),
+      knowledgePlanner: {
+        automaticRetrieval: true,
+        coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
+        evidenceMode: "compact",
+        intent: "fact_lookup",
+        originalQuery: "remember this",
+        rewrite: { exactTerms: [], query: "remember this" },
+        status: "ready",
+        strategy: "focused",
+        subqueries: [{
+          exactTerms: [],
+          lanes: ["semantic", "lexical", "exact", "metadata"],
+          ordinal: 0,
+          purpose: "answer",
+          query: "direct recovery query",
+          targetNames: []
+        }],
+        version: 1
+      }
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [automaticCall, followUpCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify({ query: "follow-up query" }),
+          call_id: "provider-call-1",
+          name: KNOWLEDGE_TOOL_NAME,
+          type: "function_call"
+        }]
+      }),
+      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
+      normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.context?.messages.at(-2)).toMatchObject({
+      id: "knowledge-evidence:v2",
+      purpose: "knowledge_evidence"
+    });
+    expect(JSON.stringify(requests[0]?.context)).toContain("AUTO_RECOVERY_EVIDENCE");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered grounded answer [K1].",
+      knowledgeGrounding: { outcome: "repaired", repairCount: 1 },
+      usageAttributions: expect.arrayContaining([expect.objectContaining({
+        modelId: "embedding-v1",
+        provider: "openai_compatible"
+      })])
+    });
+    expect(harness.state.assistantTexts.join("\n")).not.toContain("UNSUPPORTED_RECOVERY_DRAFT");
+    expect(groundKnowledgeAnswer).toHaveBeenCalledOnce();
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
@@ -3460,6 +3706,7 @@ describe("run recovery", () => {
         }
       }
     });
+    const normalizedRequest = normalizedKnowledgeRequest();
     installCheckpointState(harness, {
       ...checkpointedRun({
         calls: [settledCall],
@@ -3471,7 +3718,8 @@ describe("run recovery", () => {
           type: "function_call"
         }]
       }),
-      normalizedRequest: normalizedKnowledgeRequest()
+      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
+      normalizedRequest
     });
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);

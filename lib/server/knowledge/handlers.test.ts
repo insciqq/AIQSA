@@ -28,29 +28,27 @@ function session(role: "admin" | "user" = "user"): AuthenticatedSession {
 
 function accessEntry(overrides: Partial<KnowledgeBaseAccessEntry> = {}): KnowledgeBaseAccessEntry {
   return {
-    activeGeneration: {
-      chunkingProfileVersion: 1,
-      embeddingDeployment: {
-        connectionDisplayName: "OpenRouter",
-        id: "embedding-1",
-        modelDisplayName: "Qwen3 Embedding",
-        provider: "openrouter",
-        targetDimension: 1536
-      },
-      id: "generation-1",
-      indexedContentRevision: 2,
-      vectorSpaceFingerprint: "a".repeat(64)
-    },
     archived: false,
-    contentRevision: 2,
+    deletionPending: false,
     description: "Team references",
+    sourceCount: 3,
     id: "base-1",
     installationScope: false,
     memberGroupNames: ["Design"],
     name: "Product docs",
     owned: false,
     ownerDisplayName: "Owner",
-    published: true,
+    purgeScheduledAt: null,
+    readiness: {
+      attentionSources: 0,
+      processingSources: 0,
+      readySources: 3,
+      state: "ready",
+      supportReference: null,
+      totalSources: 3
+    },
+    trashed: false,
+    trashedAt: null,
     updatedAt: new Date("2026-08-08T10:00:00.000Z"),
     version: 3,
     ...overrides
@@ -60,7 +58,6 @@ function accessEntry(overrides: Partial<KnowledgeBaseAccessEntry> = {}): Knowled
 function detail(overrides: Partial<KnowledgeBaseDetailData> = {}): KnowledgeBaseDetailData {
   return {
     ...accessEntry({ owned: true }),
-    documentCount: 0,
     publications: [],
     ...overrides
   };
@@ -68,16 +65,9 @@ function detail(overrides: Partial<KnowledgeBaseDetailData> = {}): KnowledgeBase
 
 function repository(overrides: Partial<KnowledgeHandlerDeps["repository"]> = {}) {
   return {
+    canCreate: vi.fn(async () => true),
     create: vi.fn(async () => ({ id: "base-1", kind: "ok" as const })),
     getDetail: vi.fn(async () => detail()),
-    listEmbeddingDeployments: vi.fn(async () => [{
-      connectionDisplayName: "OpenRouter",
-      id: "embedding-1",
-      indexSupported: true,
-      modelDisplayName: "Qwen3 Embedding",
-      provider: "openrouter",
-      targetDimension: 1536
-    }]),
     listForUser: vi.fn(async () => []),
     listPublishableGroups: vi.fn(async () => []),
     publish: vi.fn(async () => ({ kind: "not_found" as const })),
@@ -92,6 +82,7 @@ function deps(
   auth: AuthenticatedSession | null = session()
 ): KnowledgeHandlerDeps {
   return {
+    getExtractionConfig: () => ({ maxFileBytes: 50_000_000 }),
     repository: repo,
     resolveAuth: vi.fn(async () => auth)
   };
@@ -115,59 +106,69 @@ describe("Knowledge Base handlers", () => {
     expect(repo.listForUser).not.toHaveBeenCalled();
   });
 
-  it("lists accessible bases while censoring a hidden embedding deployment", async () => {
+  it("lists only the user-safe Base projection and creation availability", async () => {
+    const unsafeEntry = {
+      ...accessEntry(),
+      readiness: { ...accessEntry().readiness, errorCode: "provider_payload_private" }
+    } as unknown as KnowledgeBaseAccessEntry;
     const repo = repository({
-      listEmbeddingDeployments: vi.fn(async () => []),
-      listForUser: vi.fn(async () => [accessEntry()]),
-      listPublishableGroups: vi.fn(async () => [{ id: "group-1", name: "Design" }])
+      listForUser: vi.fn(async () => [unsafeEntry]),
+      listPublishableGroups: vi.fn(async () => [{
+        id: "group-1",
+        name: "Design",
+        provider: "private"
+      }])
     });
     const response = await createListKnowledgeBasesHandler(deps(repo))(
       new Request("http://localhost/api/me/knowledge-bases")
     );
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    const body = await response.json();
+    expect(body).toMatchObject({
       knowledgeBases: [{
-        activeGeneration: {
-          embeddingDeployment: null,
-          embeddingDeploymentId: null,
-          targetDimension: 1536
-        },
+        sourceCount: 3,
+        readiness: { state: "ready", totalSources: 3 },
         scope: { groupNames: ["Design"], kind: "group" }
       }],
       publishableGroups: [{ id: "group-1", name: "Design" }],
-      viewer: { canPublishInstallation: false }
+      viewer: {
+        canCreate: true,
+        canPublishInstallation: false,
+        maxUploadBytes: 50_000_000
+      }
     });
+    expect(JSON.stringify(body)).not.toMatch(
+      /activeGeneration|embedding|fingerprint|generation|targetDimension|chunk|errorCode/u
+    );
+    expect(body.publishableGroups[0]).toEqual({ id: "group-1", name: "Design" });
   });
 
-  it("creates only from valid input and maps embedding admission failures", async () => {
+  it("creates without client deployment authority and maps profile availability safely", async () => {
     const repo = repository();
     const handler = createCreateKnowledgeBaseHandler(deps(repo));
     const created = await handler(jsonRequest("POST", {
       description: "References",
-      embeddingDeploymentId: "embedding-1",
       name: "Docs"
     }));
     expect(created.status).toBe(201);
     expect(repo.create).toHaveBeenCalledWith("user-1", {
       description: "References",
-      embeddingDeploymentId: "embedding-1",
       name: "Docs"
     });
 
     const invalid = await handler(jsonRequest("POST", {
       embeddingDeploymentId: "embedding-1",
-      name: ""
+      name: "Docs"
     }));
     expect(invalid.status).toBe(400);
 
     const unavailable = await createCreateKnowledgeBaseHandler(deps(repository({
-      create: vi.fn(async () => ({ kind: "embedding_not_available" as const }))
+      create: vi.fn(async () => ({ kind: "profile_unavailable" as const }))
     })))(jsonRequest("POST", {
-      embeddingDeploymentId: "embedding-1",
       name: "Docs"
     }));
-    expect(unavailable.status).toBe(400);
-    await expect(unavailable.json()).resolves.toEqual({ error: "knowledge_embedding_not_available" });
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toEqual({ error: "knowledge_temporarily_unavailable" });
   });
 
   it("uses one privacy-neutral not-found response even for an admin", async () => {

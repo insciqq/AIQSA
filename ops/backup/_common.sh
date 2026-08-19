@@ -135,6 +135,8 @@ SELECT CASE
     AND to_regclass('public."MemoryDeletionOutbox"') IS NOT NULL
     AND to_regclass('public."MemoryJob"') IS NOT NULL
     AND to_regclass('public."MemoryExecutionBinding"') IS NOT NULL
+    AND to_regclass('public."KnowledgeDeletionJob"') IS NOT NULL
+    AND to_regclass('public."KnowledgeDeletionObject"') IS NOT NULL
   THEN '$AIQSA_BACKUP_SCHEMA'
   ELSE 'incompatible'
 END;
@@ -152,6 +154,8 @@ validate_current_schema_archive_listing() {
     MemoryDeletionOutbox
     MemoryJob
     MemoryExecutionBinding
+    KnowledgeDeletionJob
+    KnowledgeDeletionObject
   )
 
   for required in "${required_relations[@]}"; do

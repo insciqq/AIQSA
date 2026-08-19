@@ -423,6 +423,10 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
         return json({ ok: true });
       }
 
+      if (result === "deletion_pending") {
+        return json({ ok: true }, { status: 202 });
+      }
+
       const status = result === "not_found" ? 404 : result === "self_delete_forbidden" ? 403 : 400;
 
       return json({ error: result === "not_found" ? "user_not_found" : result }, { status });

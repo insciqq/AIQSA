@@ -6,14 +6,18 @@ import type {
 import type {
   KnowledgeBaseDetail,
   KnowledgeBaseListResponse,
-  KnowledgeIngestionStatusResponse
+  KnowledgeSourceDetail,
+  KnowledgeSourceFilter,
+  KnowledgeSourceListResponse
 } from "@/lib/contracts/knowledge";
+import type { KnowledgeUploadBatch } from "@/lib/contracts/knowledgeUploads";
 import { create } from "zustand";
 
 export type KnowledgeCreateState = {
   baseline: string;
   draft: KnowledgeCreateDraft;
   error: { code: string; text: string } | null;
+  progress: { current: number; fileName: string; total: number } | null;
   saving: boolean;
 };
 
@@ -24,17 +28,33 @@ export type KnowledgeDetailState = {
   baseline: string;
   dataError: string | null;
   dataState: "error" | "loading" | "ready";
-  documentPage: number;
-  documentQuery: string;
+  sourcePage: number;
+  sourceQuery: string;
   draft: { description: string; name: string };
   error: { code: string; text: string } | null;
-  ingestion: KnowledgeIngestionStatusResponse | null;
   requestId: number;
-  upload: { current: number; fileName: string; total: number } | null;
+  sources: KnowledgeSourceListResponse | null;
+  uploadBatches: KnowledgeUploadBatch[];
+  uploadErrors: Record<string, string>;
+  uploadProgress: Record<string, number>;
+};
+
+export type KnowledgeSourceDetailState = {
+  actionId: string | null;
+  baseline: string;
+  dataError: string | null;
+  dataState: "error" | "loading" | "ready";
+  draft: { description: string; name: string; tags: string };
+  error: { code: string; text: string } | null;
+  requestId: number;
+  returnBaseId: string | null;
+  source: KnowledgeSourceDetail | null;
+  sourceId: string;
 };
 
 export type KnowledgeLibrarySnapshot = {
   busy: boolean;
+  catalog: "bases" | "sources";
   data: KnowledgeBaseListResponse | null;
   dataError: string | null;
   dataState: "error" | "loading" | "ready";
@@ -46,17 +66,27 @@ export type KnowledgeLibrarySnapshot = {
   open: boolean;
   operationRequestId: number;
   query: string;
-  task: "create" | "detail" | "list";
+  sourceData: KnowledgeSourceListResponse | null;
+  sourceDataError: string | null;
+  sourceDataState: "error" | "loading" | "ready";
+  sourceDetail: KnowledgeSourceDetailState | null;
+  sourceFilter: KnowledgeSourceFilter;
+  sourceListRequestId: number;
+  sourcePage: number;
+  sourceQuery: string;
+  task: "create" | "detail" | "list" | "source-detail";
 };
 
 export type KnowledgeLibraryStore = KnowledgeLibrarySnapshot & {
   patch(update: Partial<KnowledgeLibrarySnapshot>): void;
   patchCreate(update: Partial<KnowledgeCreateState>): void;
   patchDetail(update: Partial<KnowledgeDetailState>): void;
+  patchSourceDetail(update: Partial<KnowledgeSourceDetailState>): void;
 };
 
 export const initialKnowledgeLibrarySnapshot: KnowledgeLibrarySnapshot = {
   busy: false,
+  catalog: "bases",
   create: null,
   data: null,
   dataError: null,
@@ -68,6 +98,14 @@ export const initialKnowledgeLibrarySnapshot: KnowledgeLibrarySnapshot = {
   open: false,
   operationRequestId: 0,
   query: "",
+  sourceData: null,
+  sourceDataError: null,
+  sourceDataState: "loading",
+  sourceDetail: null,
+  sourceFilter: "all",
+  sourceListRequestId: 0,
+  sourcePage: 1,
+  sourceQuery: "",
   task: "list"
 };
 
@@ -81,5 +119,10 @@ export const useKnowledgeLibraryStore = create<KnowledgeLibraryStore>((set) => (
   },
   patchDetail(update) {
     set((state) => (state.detail ? { detail: { ...state.detail, ...update } } : {}));
+  },
+  patchSourceDetail(update) {
+    set((state) => (
+      state.sourceDetail ? { sourceDetail: { ...state.sourceDetail, ...update } } : {}
+    ));
   }
 }));

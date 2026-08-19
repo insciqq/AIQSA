@@ -1,6 +1,6 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import type { FolderSummary } from "@/components/app-shell/types";
-import { KNOWLEDGE_PLAN_MAX_BASES, type KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
+import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
 import { X } from "lucide-react";
 import { useState } from "react";
 import { useDialogFocus } from "./useDialogFocus";
@@ -111,7 +111,7 @@ export function ProjectSettingsDialog({
           <fieldset className="mt-6 border-t border-trace-subtle pt-5">
             <legend className="text-xs font-semibold text-ink">Default Knowledge plan</legend>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              Used for future runs in this project unless a chat or explicit next-run plan overrides it. Choose up to three bases.
+              Used for future runs in this project unless a chat or explicit next-run plan overrides it. Each selected Base contributes its current ready Sources.
             </p>
             <div className="mt-3 space-y-2">
               {knowledgeBaseIds
@@ -139,7 +139,7 @@ export function ProjectSettingsDialog({
                     <input
                       checked={checked}
                       className="size-4 shrink-0 accent-proof"
-                      disabled={saving || (!checked && (unavailable || knowledgeBaseIds.length >= KNOWLEDGE_PLAN_MAX_BASES))}
+                      disabled={saving || (!checked && unavailable)}
                       type="checkbox"
                       onChange={(event) => onKnowledgeBaseIdsChange(
                         event.currentTarget.checked

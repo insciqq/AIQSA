@@ -39,9 +39,16 @@ const vectorPin = createKnowledgeVectorSpacePin({
 
 type StoreOptions = Readonly<{
   baseAvailable?: boolean;
+  baseReady?: boolean;
   checkAvailable?: boolean;
   fullAccess?: boolean;
   grantCount?: number;
+  profileAuthority?: "installation";
+  sourceSummary?: Readonly<{
+    normalizedTextByteSize: number;
+    passageCount: number;
+    sourceCount: number;
+  }>;
   userActive?: boolean;
   vectorFingerprint?: string;
 }>;
@@ -56,6 +63,15 @@ function store(options: StoreOptions = {}) {
       count: vi.fn(async () => options.grantCount ?? 0)
     },
     knowledgeBase: {
+      findMany: vi.fn(async (input: { where?: { id?: { in?: string[] } } }) =>
+        options.baseAvailable === false
+          ? []
+          : (input.where?.id?.in ?? []).map((id) => ({
+              activeIndexGeneration: options.baseReady === false
+                ? null
+                : { status: "active" },
+              id
+            }))),
       findFirst: vi.fn(async (input: { where: { id: string } }) =>
         options.baseAvailable === false
           ? null
@@ -65,13 +81,35 @@ function store(options: StoreOptions = {}) {
                 embeddingProviderModelId: "embedding-model-1",
                 id: `generation:${input.where.id}`,
                 indexedContentRevision: 4,
+                profileRevisionId: "profile-revision-1",
+                profileRevision: options.profileAuthority
+                  ? { executionAuthority: options.profileAuthority }
+                  : null,
                 status: "active",
                 targetDimension: 1_536,
                 vectorSpaceFingerprint:
                   options.vectorFingerprint ?? vectorPin.fingerprint
               },
               contentRevision: 5,
-              id: input.where.id
+              id: input.where.id,
+              sourceMemberships: options.sourceSummary
+                ? Array.from({ length: options.sourceSummary.sourceCount }, () => ({
+                    source: {
+                      currentVersion: {
+                        artifacts: [{
+                          hierarchicalIndexes: [{
+                            passageCount: options.sourceSummary!.passageCount,
+                            state: "ready"
+                          }],
+                          normalizedTextByteSize: options.sourceSummary!.normalizedTextByteSize,
+                          profileRevisionId: "profile-revision-1",
+                          state: "ready"
+                        }],
+                        byteSize: options.sourceSummary!.normalizedTextByteSize
+                      }
+                    }
+                  }))
+                : []
             })
     },
     providerCredentialVersion: {
@@ -114,7 +152,10 @@ function store(options: StoreOptions = {}) {
         id: "embedding-model-1",
         provider: "openai_compatible"
       })),
-      findUnique: vi.fn(async () => ({ connectionId: "embedding-connection-1" }))
+      findUnique: vi.fn(async () => ({
+        connection: { family: "openai_compatible" },
+        connectionId: "embedding-connection-1"
+      }))
     },
     providerModelCredentialCheck: {
       findFirst: vi.fn(async () =>
@@ -142,13 +183,13 @@ describe("Knowledge run admission", () => {
     const client = store();
     const plan = await loadKnowledgeRunAdmissionPlan(
       client as unknown as KnowledgeRunAdmissionStore,
-      { knowledgePlan: { baseIds: [] }, userId: "user-1" }
+      { knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }, userId: "user-1" }
     );
 
     expect(plan).toMatchObject({
       bindings: [],
       fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      knowledgePlan: { baseIds: [] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       userId: "user-1"
     });
     expect(client.knowledgeBase.findFirst).not.toHaveBeenCalled();
@@ -156,15 +197,20 @@ describe("Knowledge run admission", () => {
   });
 
   it.each([
-    { baseIds: ["same", "same"] },
-    { baseIds: ["a", "b", "c", "d"] },
-    { baseIds: [" "] }
+    { baseIds: ["same", "same"], mode: "explicit", sourceIds: [], version: 1 },
+    {
+      baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`),
+      mode: "explicit",
+      sourceIds: [],
+      version: 1
+    },
+    { baseIds: [" "], mode: "explicit", sourceIds: [], version: 1 }
   ])("rejects a malformed or unbounded internal plan before state lookup", async (knowledgePlan) => {
     const client = store();
 
     await expect(loadKnowledgeRunAdmissionPlan(
       client as unknown as KnowledgeRunAdmissionStore,
-      { knowledgePlan, userId: "user-1" }
+      { knowledgePlan: knowledgePlan as never, userId: "user-1" }
     )).rejects.toBeInstanceOf(KnowledgeRunAdmissionError);
     expect(client.user.findFirst).not.toHaveBeenCalled();
     expect(client.knowledgeBase.findFirst).not.toHaveBeenCalled();
@@ -173,7 +219,12 @@ describe("Knowledge run admission", () => {
   it("pins the exact ordered generations, vector space, and embedding execution snapshot", async () => {
     const client = store();
     const input = {
-      knowledgePlan: { baseIds: ["base-a", "base-b"] },
+      knowledgePlan: {
+        baseIds: ["base-a", "base-b"],
+        mode: "explicit" as const,
+        sourceIds: [],
+        version: 1 as const
+      },
       userId: "user-1"
     };
     const first = await loadKnowledgeRunAdmissionPlan(
@@ -223,6 +274,75 @@ describe("Knowledge run admission", () => {
     );
   });
 
+  it("uses installation credential authority for a profile-owned generation", async () => {
+    const client = store({ fullAccess: false, grantCount: 0, profileAuthority: "installation" });
+    const plan = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-a"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.bindings[0]).toMatchObject({
+      embeddingCredentialSource: "default",
+      embeddingProviderModelId: "embedding-model-1"
+    });
+    expect(client.accessGrant.count).not.toHaveBeenCalled();
+  });
+
+  it("pins conservative ready-source size evidence for bounded full-context planning", async () => {
+    const plan = await loadKnowledgeRunAdmissionPlan(admissionStore({
+      sourceSummary: {
+        normalizedTextByteSize: 4_000,
+        passageCount: 3,
+        sourceCount: 1
+      }
+    }), {
+      knowledgePlan: {
+        baseIds: ["base-a"], mode: "explicit", sourceIds: [], version: 1
+      },
+      userId: "user-1"
+    });
+
+    expect(plan.bindings[0]).toMatchObject({
+      approxTokens: 1_000,
+      passageCount: 3,
+      readySourceCount: 1,
+      sourceCount: 1
+    });
+  });
+
+  it("admits remaining ready Bases and records stale processing Bases as partial readiness", async () => {
+    const client = store();
+    client.knowledgeBase.findMany.mockResolvedValueOnce([
+      { activeIndexGeneration: { status: "active" }, id: "base-ready" },
+      { activeIndexGeneration: null, id: "base-processing" }
+    ]);
+    const plan = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-ready", "base-processing"],
+          mode: "explicit",
+          sourceIds: [],
+          version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.bindings).toHaveLength(1);
+    expect(plan.bindings[0]?.knowledgeBaseId).toBe("base-ready");
+    expect(plan.exclusions).toEqual([{
+      count: 1,
+      reason: "not_ready",
+      resourceType: "base"
+    }]);
+  });
+
   it.each([
     ["inactive user", { userActive: false }],
     ["unknown, archived, or unentitled base", { baseAvailable: false }],
@@ -231,7 +351,9 @@ describe("Knowledge run admission", () => {
     ["changed vector space", { vectorFingerprint: "f".repeat(64) }]
   ] as const)("returns the same privacy-neutral failure for %s", async (_label, options) => {
     await expect(loadKnowledgeRunAdmissionPlan(admissionStore(options), {
-      knowledgePlan: { baseIds: ["base-a"] },
+      knowledgePlan: {
+        baseIds: ["base-a"], mode: "explicit", sourceIds: [], version: 1
+      },
       userId: "user-1"
     })).rejects.toMatchObject({
       code: "knowledge_base_not_available",

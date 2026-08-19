@@ -3,6 +3,7 @@ import {
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
+import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   normalizeTokenUsage,
   subtractTokenUsage,
@@ -54,7 +55,10 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
-import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
+import {
+  knowledgeRunAdmissionStillAuthorizes,
+  type KnowledgeRunAdmissionPlan
+} from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
 import { memoryActionTools } from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
@@ -62,6 +66,14 @@ import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defau
 import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { memorySha256 } from "../memory/persistence/lexical";
+import {
+  automaticKnowledgeBranchesFromPersistedCalls,
+  automaticKnowledgeEvidenceMessage,
+  isAutomaticKnowledgeCall,
+  unavailableKnowledgeEvidenceMessage,
+  withAutomaticKnowledgeEvidence
+} from "../knowledge/automaticEvidence";
+import { decodeKnowledgePlannerPlan } from "../knowledge/planner";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -162,7 +174,10 @@ export type RunRecoveryRepository = Pick<
   | "updateRunProviderResponseId"
 > & Partial<Pick<
   RunRepository,
-  "isProjectRunAccessCurrent" | "isSearchStrategyEnabled" | "loadEntitlements"
+  | "groundKnowledgeAnswer"
+  | "isProjectRunAccessCurrent"
+  | "isSearchStrategyEnabled"
+  | "loadEntitlements"
 >>;
 
 export type RunRecoveryMcpRuntime = Readonly<{
@@ -657,17 +672,19 @@ async function currentRecoveryKnowledgeDispatchAllowed(
     context.run.userId
   ))) return false;
   if (!context.deps.knowledgeAdmission) return process.env.NODE_ENV !== "production";
+  if (!context.run.knowledgeScope) return false;
   try {
-    const expected = context.run.normalizedRequest.knowledgePlan.baseIds;
+    const expected = context.run.normalizedRequest.knowledgePlan;
     const current = await context.deps.knowledgeAdmission.load({
       ...(context.run.project ? { executionScope: "project" as const } : {}),
-      knowledgePlan: { baseIds: expected },
+      knowledgePlan: expected,
       ...(context.run.project ? { projectId: context.run.project.projectId } : {}),
       userId: context.run.userId
     });
-    return current.bindings.length === expected.length &&
-      current.bindings.every((binding, ordinal) =>
-        binding.knowledgeBaseId === expected[ordinal]);
+    return current.bindings.length > 0 && knowledgeRunAdmissionStillAuthorizes(
+      current,
+      context.run.knowledgeScope
+    );
   } catch {
     return false;
   }
@@ -964,6 +981,8 @@ async function executePersistedToolCall(
           ? {
             baseIds: context.run.normalizedRequest.knowledgePlan.baseIds,
             kind: "knowledge",
+            mode: context.run.normalizedRequest.knowledgePlan.mode,
+            sourceIds: context.run.normalizedRequest.knowledgePlan.sourceIds,
             toolName: call.name,
             version: 1
           }
@@ -1280,10 +1299,89 @@ async function recoverCheckpointedToolLoop(
         "A run attachment is no longer available for tool-loop recovery."
       );
     }
-    const providerRequest: ProviderRunRequest = {
+    let providerRequest: ProviderRunRequest = {
       ...run.normalizedRequest,
       attachments
     };
+    const expectsKnowledgeScope = run.normalizedRequest.knowledgePlan.mode !== "none";
+    if (expectsKnowledgeScope !== Boolean(run.knowledgeScope) ||
+      run.knowledgeScope && JSON.stringify(run.knowledgeScope.knowledgePlan) !==
+        JSON.stringify(run.normalizedRequest.knowledgePlan)) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_run_scope_invalid",
+        "The saved Knowledge scope does not match the run request."
+      );
+    }
+    let automaticKnowledgeContextTruncation: ContextTruncationSummary | null = null;
+    let groundedKnowledgeAnswer = false;
+    if (run.normalizedRequest.knowledgePlanner !== undefined) {
+      const decodedPlanner = decodeKnowledgePlannerPlan(run.normalizedRequest.knowledgePlanner);
+      if (!decodedPlanner.ok) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_planner_invalid",
+          "The saved Knowledge planner decision is invalid."
+        );
+      }
+      groundedKnowledgeAnswer = decodedPlanner.plan.intent !== "no_knowledge_needed" &&
+        Boolean(run.knowledgeScope);
+      if (decodedPlanner.plan.automaticRetrieval) {
+        if (!run.knowledgeScope || decodedPlanner.plan.subqueries.length < 1 ||
+          decodedPlanner.plan.subqueries.length >
+            run.knowledgeScope.budgetPolicy.maxSubqueriesPerPhase) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_planner_budget_invalid",
+            "The saved Knowledge planner decision exceeds the admitted run budget."
+          );
+        }
+        const branches = automaticKnowledgeBranchesFromPersistedCalls({
+          calls: run.calls,
+          plan: decodedPlanner.plan
+        });
+        if (!branches) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_automatic_checkpoint_invalid",
+            "Saved automatic Knowledge evidence is incomplete or invalid."
+          );
+        }
+        for (const call of run.calls.filter(isAutomaticKnowledgeCall)) {
+          if (!settledSearchUsageNeedsRecovery(call, persistedUsageRecordedAt)) continue;
+          const result = parsePersistedToolExecutionResult({
+            id: call.providerCallId,
+            name: call.toolName
+          }, call.result);
+          if (result) usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
+        }
+        const message = automaticKnowledgeEvidenceMessage({
+          branches,
+          exclusions: run.knowledgeScope?.exclusions ?? [],
+          plan: decodedPlanner.plan,
+          request: providerRequest
+        });
+        const budgeted = applyProviderRequestContextBudget({
+          bridge,
+          request: withAutomaticKnowledgeEvidence(providerRequest, message)
+        });
+        if (!budgeted.ok) {
+          throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
+        }
+        providerRequest = budgeted.request;
+        automaticKnowledgeContextTruncation = budgeted.contextTruncation;
+      } else if (decodedPlanner.plan.intent !== "no_knowledge_needed" &&
+        run.knowledgeScope?.bindings.length === 0) {
+        const message = unavailableKnowledgeEvidenceMessage({
+          exclusions: run.knowledgeScope.exclusions
+        });
+        const budgeted = applyProviderRequestContextBudget({
+          bridge,
+          request: withAutomaticKnowledgeEvidence(providerRequest, message)
+        });
+        if (!budgeted.ok) {
+          throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
+        }
+        providerRequest = budgeted.request;
+        automaticKnowledgeContextTruncation = budgeted.contextTruncation;
+      }
+    }
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
     const memoryActionsRequested =
       run.normalizedRequest.memoryActionTools?.version === "model-driven-v2";
@@ -1341,7 +1439,7 @@ async function recoverCheckpointedToolLoop(
       : null;
     const knowledgeEnabled = clientToolsEnabled &&
       run.normalizedRequest.modelCapabilities.toolCalling === true &&
-      run.normalizedRequest.knowledgePlan.baseIds.length > 0;
+      Boolean(run.knowledgeScope?.bindings.length);
     if (knowledgeEnabled && !deps.knowledgeExecutor) {
       throw new ToolLoopRecoveryError(
         "knowledge_policy_not_available",
@@ -1382,7 +1480,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const tools: RunTool[] = [
-      ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
+      ...(knowledgeExecutor ? knowledgeExecutor.tools ?? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
       ...(memoryActionExecutor ? memoryActionTools : []),
       ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
@@ -1436,6 +1534,16 @@ async function recoverCheckpointedToolLoop(
       repository: deps.repository,
       runId: run.id
     });
+    if (groundedKnowledgeAnswer) await tokenBuffer.disablePersistence();
+    if (automaticKnowledgeContextTruncation) {
+      await appendEvent({
+        data: {
+          artifactType: "context_truncated",
+          payload: automaticKnowledgeContextTruncation
+        },
+        type: "artifact"
+      });
+    }
 
     async function* streamRecoveredProviderRequest(
       request: ProviderRunRequest,
@@ -1647,7 +1755,8 @@ async function recoverCheckpointedToolLoop(
     }
 
     const persistedCalls = new Map<string, PersistedToolLoopCall>(
-      run.calls.map((call) => [call.providerCallId, call])
+      run.calls.filter((call) => !isAutomaticKnowledgeCall(call))
+        .map((call) => [call.providerCallId, call])
     );
 
     async function persistToolBatch(
@@ -2004,7 +2113,7 @@ async function recoverCheckpointedToolLoop(
         previousToolResults,
         progress: {
           providerRounds: run.checkpoint.roundIndex,
-          toolCalls: run.calls.length +
+          toolCalls: run.calls.filter((call) => !isAutomaticKnowledgeCall(call)).length +
             (run.checkpoint.phase === "provider_running" ? currentCalls.length : 0),
           toolRounds: run.checkpoint.roundIndex
         },

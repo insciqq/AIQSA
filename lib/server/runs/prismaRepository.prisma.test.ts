@@ -17,6 +17,7 @@ import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
 import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
   ActiveLeafConflictError,
@@ -200,7 +201,7 @@ function createRunInput(input: {
       attachmentIds: input.attachmentIds ?? [],
       chatId: input.chatId,
       content,
-      knowledgePlan: { baseIds: [] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
@@ -804,6 +805,90 @@ describe("Prisma-backed run repository", () => {
       const assistantUpdate = update?.messages.find(({ id }) => id === assistantMessage.id);
       expect(assistantUpdate).toMatchObject({ id: assistantMessage.id });
       expect(assistantUpdate).not.toHaveProperty("runUsage");
+    });
+  });
+
+  it("persists idempotent round-zero automatic Knowledge calls before the provider tool loop", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Automatic Knowledge checkpoint");
+      const prepare = repository.prepareAutomaticKnowledgeCallBatch;
+      const claim = repository.claimAutomaticKnowledgeCall;
+      if (!prepare || !claim) throw new Error("automatic Knowledge persistence unavailable");
+      const input = {
+        calls: [{
+          ordinal: 0,
+          providerCallId: "knowledge-planner-v1-1",
+          query: "accepted automatic query"
+        }],
+        runId: created.runId,
+        userId
+      };
+
+      await prisma.knowledgeRunScope.create({
+        data: {
+          budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+          exclusions: [],
+          modelRunId: created.runId,
+          resolvedBaseCount: 1,
+          resolvedSourceCount: 0,
+          selection: {
+            baseIds: ["automatic-knowledge-base"],
+            mode: "explicit",
+            sourceIds: [],
+            version: 1
+          }
+        }
+      });
+
+      const prepared = await prepare(input);
+      expect(prepared).toMatchObject({ kind: "prepared" });
+      if (prepared.kind !== "prepared") throw new Error("automatic Knowledge call not prepared");
+      await expect(prepare(input)).resolves.toMatchObject({ kind: "reused" });
+      await expect(prepare({
+        ...input,
+        calls: [{ ...input.calls[0]!, query: "different query" }]
+      })).resolves.toEqual({ kind: "conflict" });
+
+      const claimed = await claim({
+        callId: prepared.calls[0]!.id,
+        runId: created.runId,
+        userId
+      });
+      expect(claimed).toMatchObject({ kind: "claimed" });
+      await expect(claim({
+        callId: prepared.calls[0]!.id,
+        runId: created.runId,
+        userId
+      })).resolves.toMatchObject({ kind: "ambiguous" });
+      await expect(repository.settleToolLoopCall({
+        callId: prepared.calls[0]!.id,
+        result: { status: "complete" },
+        runId: created.runId,
+        state: "complete",
+        userId
+      })).resolves.toBe("settled");
+      await expect(claim({
+        callId: prepared.calls[0]!.id,
+        runId: created.runId,
+        userId
+      })).resolves.toMatchObject({ kind: "settled" });
+
+      await expect(repository.beginToolLoopProviderRound({
+        providerContinuation: null,
+        roundIndex: 1,
+        runId: created.runId,
+        userId
+      })).resolves.toBe("started");
+      await expect(prisma.modelRunToolCall.findMany({
+        select: { providerCallId: true, roundIndex: true, state: true, toolName: true },
+        where: { modelRunId: created.runId }
+      })).resolves.toEqual([{
+        providerCallId: "knowledge-planner-v1-1",
+        roundIndex: 0,
+        state: "complete",
+        toolName: "retrieve_knowledge"
+      }]);
     });
   });
 

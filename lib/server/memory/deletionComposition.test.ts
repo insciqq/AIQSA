@@ -31,6 +31,7 @@ function composition(
     createAccountHook: ({ admissionEnabled, kick }) => ({
       advance: vi.fn(async () => ({
         admitted: admissionEnabled(),
+        deletionPending: admissionEnabled(),
         readyForUserDeletion: false
       })),
       kick
@@ -114,7 +115,11 @@ describe("Memory deletion composition", () => {
     await expect(fixture.created.accountDeletionHook()!.advance({} as never, {
       now: new Date("2026-08-12T12:00:00.000Z"),
       userId: "owner-1"
-    })).resolves.toEqual({ admitted: false, readyForUserDeletion: false });
+    })).resolves.toEqual({
+      admitted: false,
+      deletionPending: false,
+      readyForUserDeletion: false
+    });
   });
 
   it("keeps the direct permanent-delete API zero-mutation until composition", async () => {

@@ -45,6 +45,7 @@ import type {
   ComposerMcpSelection
 } from "@/components/app-shell/composerControlStore";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
+import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
 type MutableRef<T> = { current: T };
 
@@ -53,7 +54,7 @@ type MessageRunControlSnapshot = {
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
   modelId: string;
-  knowledgeBaseIds: string[];
+  knowledgeSelection: KnowledgeSelection;
   knowledgePlanSource: ComposerKnowledgePlanSource;
   mcpSelection: ComposerMcpSelection;
   params: Record<string, unknown>;
@@ -161,7 +162,7 @@ export function useMessageRunActions({
   function captureRunControlSnapshot(): MessageRunControlSnapshot {
     const {
       selectedAssistant,
-      selectedKnowledgeBaseIds,
+      knowledgeSelection,
       selectedModelId,
       selectedProvider,
       selectedSearchOptionIds,
@@ -203,7 +204,11 @@ export function useMessageRunActions({
     return {
       assistantId: selectedAssistant?.id ?? null,
       controlDefaults: { ...buildControlDraft() },
-      knowledgeBaseIds: [...selectedKnowledgeBaseIds],
+      knowledgeSelection: {
+        ...knowledgeSelection,
+        baseIds: [...knowledgeSelection.baseIds],
+        sourceIds: [...knowledgeSelection.sourceIds]
+      },
       knowledgePlanSource,
       mcpSelection: { ...mcpSelection },
       model,
@@ -298,7 +303,7 @@ export function useMessageRunActions({
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
       ...(snapshot.knowledgePlanSource === "explicit"
-        ? { knowledgePlan: { baseIds: [...snapshot.knowledgeBaseIds] } }
+        ? { knowledgePlan: snapshot.knowledgeSelection }
         : {}),
       params: snapshot.params,
       ...(snapshot.mcpSelection.mode === "auto" ? {} : { mcp: snapshot.mcpSelection }),

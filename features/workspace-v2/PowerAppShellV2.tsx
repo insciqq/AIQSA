@@ -34,6 +34,7 @@ import {
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
 import { PowerAppShellV2View } from "@/features/workspace-v2/PowerAppShellV2View";
+import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import type {
   ShellComposerView,
   ShellBranchesView,
@@ -55,6 +56,7 @@ import {
   createKnowledgeLibraryActions
 } from "@/components/app-shell/knowledgeLibraryController";
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
+import { fetchKnowledgeSources } from "@/components/knowledge/knowledgeApi";
 import {
   refreshSkillLibrary,
   useSkillLibraryStore
@@ -239,6 +241,7 @@ export function PowerAppShellV2({
   const reasoningEffort = useComposerControlStore((state) => state.reasoningEffort);
   const reasoningMode = useComposerControlStore((state) => state.reasoningMode);
   const selectedAssistant = useComposerControlStore((state) => state.selectedAssistant);
+  const knowledgeSelection = useComposerControlStore((state) => state.knowledgeSelection);
   const selectedKnowledgeBaseIds = useComposerControlStore((state) => state.selectedKnowledgeBaseIds);
   const assistantRemovedNotice = useComposerControlStore((state) => state.assistantRemovedNotice);
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
@@ -649,6 +652,22 @@ export function PowerAppShellV2({
   });
 
   const knowledgeLibraryActions = useMemo(() => createKnowledgeLibraryActions(), []);
+  useEffect(() => {
+    if (!knowledgeSnapshot.sourceData) {
+      void knowledgeLibraryActions.refreshSources();
+    }
+  }, [knowledgeLibraryActions, knowledgeSnapshot.sourceData]);
+  const searchComposerKnowledgeSources = useEventCallback(async (query: string) => {
+    const result = await fetchKnowledgeSources({ filter: "all", page: 1, pageSize: 100, query });
+    if (!result.ok) return [];
+    return result.data.sources.map((source) => ({
+      description: source.description,
+      id: source.id,
+      name: source.name,
+      owned: source.owned,
+      readiness: source.readiness.state
+    }));
+  });
   const assistantLibraryActions = createAssistantLibraryActions({
     activateBlankWorkspace: () => activateBlankWorkspaceEvent(),
     applyAssistantToComposer,
@@ -658,6 +677,11 @@ export function PowerAppShellV2({
       available: !base.archived,
       id: base.id,
       name: base.name
+    })),
+    knowledgeSources: (knowledgeSnapshot.sourceData?.sources ?? []).map((source) => ({
+      available: source.readiness.state === "ready",
+      id: source.id,
+      name: source.name
     })),
     knowledgeDataError: knowledgeSnapshot.dataError,
     knowledgeDataState: knowledgeSnapshot.dataState,
@@ -724,7 +748,7 @@ export function PowerAppShellV2({
       "system"
     );
     setSelectedKnowledgePlan(
-      chat.defaultKnowledgePlan?.baseIds ?? project.defaults.knowledgePlan.baseIds,
+      chat.defaultKnowledgePlan ?? project.defaults.knowledgePlan,
       "project",
       "system"
     );
@@ -1265,7 +1289,7 @@ export function PowerAppShellV2({
       activeProject.defaults.searchPlan.mode,
       "system"
     );
-    setSelectedKnowledgePlan(activeProject.defaults.knowledgePlan.baseIds, "project", "system");
+    setSelectedKnowledgePlan(activeProject.defaults.knowledgePlan, "project", "system");
     useComposerControlStore.getState().setSelectedSkills([]);
     useComposerControlStore.getState().setMcpSelection({
       mode: activeProject.policy.externalToolsEnabled ? activeProject.defaults.mcpMode : "off"
@@ -1365,8 +1389,18 @@ export function PowerAppShellV2({
       bases: projectContext
         ? activeProject?.composer?.knowledgeBases ?? []
         : knowledgeSnapshot.data?.knowledgeBases ?? [],
-      select: (baseIds) => setSelectedKnowledgePlan(baseIds, "explicit", "user"),
-      selectedBaseIds: selectedKnowledgeBaseIds
+      searchSources: projectContext ? undefined : searchComposerKnowledgeSources,
+      select: (selection) => setSelectedKnowledgePlan(selection, "explicit", "user"),
+      selection: knowledgeSelection,
+      sources: projectContext
+        ? activeProject?.composer?.knowledgeSources ?? []
+        : (knowledgeSnapshot.sourceData?.sources ?? []).map((source) => ({
+            description: source.description,
+            id: source.id,
+            name: source.name,
+            owned: source.owned,
+            readiness: source.readiness.state
+          }))
     },
     // Project Skills are a separate publication boundary.  The personal
     // library remains available only after leaving Project context.
@@ -1437,6 +1471,11 @@ export function PowerAppShellV2({
           id: base.id,
           name: base.name
         })),
+        knowledgeSources: (knowledgeSnapshot.sourceData?.sources ?? []).map((source) => ({
+          available: source.readiness.state === "ready",
+          id: source.id,
+          name: source.name
+        })),
         knowledgeDataError: knowledgeSnapshot.dataError,
         knowledgeDataState: knowledgeSnapshot.dataState,
         retryCatalog: () => void retryCatalog(),
@@ -1489,14 +1528,16 @@ export function PowerAppShellV2({
   } satisfies ShellOverlaysView;
 
   return (
-    <PowerAppShellV2View
-      branches={branchesView}
-      composer={composerView}
-      overlays={overlaysView}
-      session={sessionView}
-      settings={settingsView}
-      thread={threadView}
-      workspace={workspaceView}
-    />
+    <KnowledgeCitationViewerProvider>
+      <PowerAppShellV2View
+        branches={branchesView}
+        composer={composerView}
+        overlays={overlaysView}
+        session={sessionView}
+        settings={settingsView}
+        thread={threadView}
+        workspace={workspaceView}
+      />
+    </KnowledgeCitationViewerProvider>
   );
 }

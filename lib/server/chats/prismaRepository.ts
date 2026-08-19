@@ -16,7 +16,13 @@ import {
   boundedChatBranchPreview,
   type ChatContextStats
 } from "../../contracts/chats";
-import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+import {
+  decodeKnowledgeCitationHandle,
+  decodeKnowledgePlan,
+  knowledgeCitationHandlesFromText,
+  KNOWLEDGE_CITATION_INVOCATION_MAX,
+  type KnowledgePlan
+} from "../../contracts/knowledge";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
@@ -91,6 +97,14 @@ const assistantRunDetailSelect = {
     select: {
       invocationOrdinal: true,
       results: true
+    }
+  },
+  knowledgeRetrievalSession: {
+    select: {
+      evidenceItems: {
+        orderBy: { ordinal: "asc" },
+        select: { handle: true, state: true }
+      }
     }
   },
   searchRuns: {
@@ -199,6 +213,9 @@ type HydratedMessagePath = Readonly<{
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
   events: { payload: unknown }[];
+  knowledgeRetrievalSession?: {
+    evidenceItems: { handle: string; state: string }[];
+  } | null;
   knowledgeRuns?: {
     invocationOrdinal: number;
     results: unknown;
@@ -246,7 +263,11 @@ function storedKnowledgeDefault(value: unknown): KnowledgePlan | null {
 function knowledgeDefaultJson(
   value: KnowledgePlan | null
 ): Prisma.InputJsonValue | typeof Prisma.DbNull {
-  return value === null ? Prisma.DbNull : { baseIds: [...value.baseIds] };
+  return value === null ? Prisma.DbNull : {
+    ...value,
+    baseIds: [...value.baseIds],
+    sourceIds: [...value.sourceIds]
+  } as Prisma.InputJsonValue;
 }
 
 function activeBranchPath<TMessage extends { id: string; parentMessageId: string | null }>(
@@ -847,7 +868,10 @@ export function summarizeMessageRunToolActivity(
       : "running";
     return {
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
-      round: call.roundIndex,
+      // Automatic Knowledge retrieval is persisted before the provider loop at
+      // round index 0. The browser contract is intentionally user-facing and
+      // one-based, so project that preflight activity as the first round.
+      round: call.roundIndex === 0 ? 1 : call.roundIndex,
       ...(descriptor.serverName ? { serverName: descriptor.serverName } : {}),
       status,
       toolName: descriptor.toolName
@@ -951,28 +975,10 @@ function knowledgeCitation(
   value: unknown
 ): NonNullable<ThreadArtifactSummary["knowledgeCitations"]>[number] | null {
   if (!isRecord(value)) return null;
-  const baseName = optionalString(value.baseName);
-  const fileName = optionalString(value.fileName);
   const handle = optionalString(value.handle);
-  const page = typeof value.page === "number" && Number.isSafeInteger(value.page) &&
-    value.page >= 1
-    ? value.page
-    : null;
-  if (
-    !baseName ||
-    !fileName ||
-    !handle ||
-    !/^K[1-3]\.[1-8]$/u.test(handle) ||
-    page === null
-  ) {
-    return null;
-  }
-  return {
-    baseName,
-    fileName,
-    handle,
-    page
-  };
+  if (!handle || !decodeKnowledgeCitationHandle(handle)) return null;
+  if (value.deleted === true) return { deleted: true, handle };
+  return { handle };
 }
 
 function sourceValuesFromSearchRun(artifacts: unknown): unknown[] {
@@ -1021,22 +1027,24 @@ export function summarizeMessageRunArtifacts(
     .filter((knowledgeRun) =>
       Number.isSafeInteger(knowledgeRun.invocationOrdinal) &&
       knowledgeRun.invocationOrdinal >= 1 &&
-      knowledgeRun.invocationOrdinal <= 3
+      knowledgeRun.invocationOrdinal <= KNOWLEDGE_CITATION_INVOCATION_MAX
     )
-    .sort((left, right) => left.invocationOrdinal - right.invocationOrdinal)
-    .slice(0, 3);
+    .sort((left, right) => left.invocationOrdinal - right.invocationOrdinal);
   const answerText = isRecord(answerContent)
     ? textFromContentBlocks(answerContent as { blocks?: unknown[] })
     : "";
-  const citedHandles = new Set(
-    [...answerText.matchAll(/\[(K[1-3]\.[1-8])\]/gu)].map((match) => match[1]!)
-  );
-  const knowledgeCitations = knowledgeRuns.flatMap((knowledgeRun) =>
+  const citedHandles = new Set(knowledgeCitationHandlesFromText(answerText));
+  const currentEvidence = run.knowledgeRetrievalSession?.evidenceItems.map((item) => ({
+    ...(item.state === "deleted" ? { deleted: true as const } : {}),
+    handle: item.handle
+  })) ?? null;
+  const legacyEvidence = knowledgeRuns.flatMap((knowledgeRun) =>
     (Array.isArray(knowledgeRun.results) ? knowledgeRun.results : [])
       .map(knowledgeCitation)
-      .filter((citation): citation is NonNullable<typeof citation> =>
-        citation !== null && citedHandles.has(citation.handle))
-  )
+      .filter((citation): citation is NonNullable<typeof citation> => citation !== null)
+  );
+  const knowledgeCitations = (currentEvidence ?? legacyEvidence)
+    .filter((citation) => citedHandles.has(citation.handle))
     .filter((citation, index, all) =>
       all.findIndex((candidate) => candidate.handle === citation.handle) === index)
     .slice(0, 24);

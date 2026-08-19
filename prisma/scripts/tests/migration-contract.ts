@@ -19,8 +19,12 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "42b8e6333350611e45009ed2d095bc3ef963eecf2e1d40ee3886e68c9ff845d2";
+  "5747d8b1ee26b191bca516ba483be20333dd4f8e2fc05843277db28a39e2288a";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
+const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
+const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
+const KNOWLEDGE_SNAPSHOT_TRIGGER_FIX =
+  "20260818044500_knowledge_snapshot_count_trigger_fix";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -297,6 +301,13 @@ function deployAndVerify(
     "--script",
   ]);
   const schemaDatamodelDiffSha256 = sha256(schemaDatamodelDiff);
+  if (
+    schemaDatamodelDiffSha256 !== EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 &&
+    process.env.AIQSA_PRINT_SCHEMA_DATAMODEL_DIFF === "1"
+  ) {
+    process.stderr.write("Reviewed SQL-only schema/datamodel delta:\n" +
+      schemaDatamodelDiff + "\n");
+  }
   assert.equal(
     schemaDatamodelDiffSha256,
     EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256,
@@ -458,6 +469,253 @@ function runAppendOnlyMigrationProbe(
   }
 }
 
+function runKnowledgeProfileBackfillProof(
+  database: string,
+  committed: readonly string[],
+): void {
+  const profileIndex = committed.indexOf(KNOWLEDGE_PROFILE_MIGRATION);
+  assert.ok(profileIndex > 0, "Knowledge profile migration is missing from ordered history");
+  const probeParent = join(repositoryRoot, ".aiqsa");
+  const parentExisted = existsSync(probeParent);
+  mkdirSync(probeParent, { recursive: true, mode: 0o700 });
+  const probeRoot = mkdtempSync(join(probeParent, "knowledge-profile-backfill-"));
+  const probeSchema = join(probeRoot, "schema.prisma");
+  const probeMigrations = join(probeRoot, "migrations");
+
+  try {
+    dropDatabase(database);
+    createDatabase(database);
+    cpSync(join(repositoryRoot, "prisma/schema.prisma"), probeSchema);
+    mkdirSync(probeMigrations);
+    for (const migration of committed.slice(0, profileIndex)) {
+      cpSync(join(migrationsRoot, migration), join(probeMigrations, migration), { recursive: true });
+    }
+    const containerSchema = `/app/${probeSchema.slice(repositoryRoot.length + 1)}`;
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+
+    const fingerprint = "a".repeat(64);
+    psqlScalar(database, `
+      INSERT INTO "User" (id, "displayName", role, status, "updatedAt")
+      VALUES ('knowledge-profile-owner', 'Fixture owner', 'user', 'active', CURRENT_TIMESTAMP);
+      INSERT INTO "ProviderConnection" (
+        id, "displayName", family, enabled, "activeConfig", "activeVersion", "activatedAt", "updatedAt"
+      ) VALUES (
+        'knowledge-profile-connection', 'Fixture embeddings', 'openai_compatible', true,
+        '{}'::jsonb, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+      INSERT INTO "ProviderModel" (
+        id, "connectionId", provider, "modelId", "displayName", "modelClass",
+        "activeConfig", "activeVersion", "activatedAt", capabilities, "defaultParams", "updatedAt"
+      ) VALUES (
+        'knowledge-profile-model', 'knowledge-profile-connection', 'openai_compatible',
+        'fixture-embed', 'Fixture embed', 'embedding',
+        '{"schemaVersion":1}'::jsonb, 1, CURRENT_TIMESTAMP, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+      INSERT INTO "KnowledgeBase" (
+        id, "ownerUserId", name, "updatedAt"
+      ) VALUES (
+        'knowledge-profile-base', 'knowledge-profile-owner', 'Fixture base', CURRENT_TIMESTAMP
+      );
+      INSERT INTO "KnowledgeIndexGeneration" (
+        id, "knowledgeBaseId", "embeddingProviderModelId", "embeddingConfiguration",
+        "vectorSpaceFingerprint", "targetDimension", "chunkingProfileVersion",
+        "indexedContentRevision", status, "readyAt", "activatedAt", "updatedAt"
+      ) VALUES (
+        'knowledge-profile-generation', 'knowledge-profile-base', 'knowledge-profile-model',
+        '{"schemaVersion":1}'::jsonb, '${fingerprint}', 1024, 1, 0, 'active',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+      UPDATE "KnowledgeBase"
+      SET "activeIndexGenerationId" = 'knowledge-profile-generation'
+      WHERE id = 'knowledge-profile-base';
+      SELECT 'fixture-ready';
+    `);
+
+    cpSync(
+      join(migrationsRoot, KNOWLEDGE_PROFILE_MIGRATION),
+      join(probeMigrations, KNOWLEDGE_PROFILE_MIGRATION),
+      { recursive: true },
+    );
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*)
+        FROM "KnowledgeIndexGeneration" AS generation
+        INNER JOIN "KnowledgeIndexProfileRevision" AS revision
+          ON revision.id = generation."profileRevisionId"
+        INNER JOIN "KnowledgeIndexProfile" AS profile
+          ON profile."activeRevisionId" = revision.id
+        WHERE generation.id = 'knowledge-profile-generation'
+          AND generation."knowledgeBaseId" = 'knowledge-profile-base'
+          AND revision."executionAuthority" = 'legacy_user'
+          AND revision."embeddingProviderModelId" = generation."embeddingProviderModelId"
+          AND btrim(revision."vectorSpaceFingerprint") = btrim(generation."vectorSpaceFingerprint")
+          AND revision."targetDimension" = generation."targetDimension"
+          AND revision."chunkingProfileVersion" = generation."chunkingProfileVersion";
+      `),
+      "1",
+      "Knowledge profile migration did not preserve and identify the active legacy generation",
+    );
+    const mutation = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `UPDATE "KnowledgeIndexProfileRevision" SET "targetDimension" = 1536;`,
+    ]);
+    assert.notEqual(mutation.status, 0, "activated Knowledge profile revision was mutable");
+    assert.match(
+      `${mutation.stdout}\n${mutation.stderr}`,
+      /knowledge_index_profile_revision_immutable/u,
+      "profile immutability failure was not stable",
+    );
+  } finally {
+    rmSync(probeRoot, { recursive: true, force: true });
+    if (!parentExisted) {
+      try {
+        rmdirSync(probeParent);
+      } catch {
+        // Preserve concurrently created operator-local state.
+      }
+    }
+  }
+}
+
+function runKnowledgeSourceMigrationProof(
+  database: string,
+  committed: readonly string[],
+): void {
+  const sourceIndex = committed.indexOf(KNOWLEDGE_SOURCES_MIGRATION);
+  const triggerFixIndex = committed.indexOf(KNOWLEDGE_SNAPSHOT_TRIGGER_FIX);
+  assert.ok(sourceIndex > 0, "Knowledge Source migration is missing from ordered history");
+  assert.equal(
+    triggerFixIndex,
+    sourceIndex + 1,
+    "Knowledge snapshot trigger fix must immediately follow the Source migration",
+  );
+  const probeParent = join(repositoryRoot, ".aiqsa");
+  const parentExisted = existsSync(probeParent);
+  mkdirSync(probeParent, { recursive: true, mode: 0o700 });
+  const probeRoot = mkdtempSync(join(probeParent, "knowledge-source-migration-"));
+  const probeSchema = join(probeRoot, "schema.prisma");
+  const probeMigrations = join(probeRoot, "migrations");
+
+  try {
+    dropDatabase(database);
+    createDatabase(database);
+    cpSync(join(repositoryRoot, "prisma/schema.prisma"), probeSchema);
+    mkdirSync(probeMigrations);
+    for (const migration of committed.slice(0, sourceIndex)) {
+      cpSync(join(migrationsRoot, migration), join(probeMigrations, migration), {
+        recursive: true,
+      });
+    }
+    const containerSchema = `/app/${probeSchema.slice(repositoryRoot.length + 1)}`;
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+
+    psqlScalar(database, `
+      INSERT INTO "User" (id, "displayName", role, status, "updatedAt")
+      VALUES ('knowledge-source-owner', 'Source fixture owner', 'user', 'active', CURRENT_TIMESTAMP);
+      INSERT INTO "KnowledgeBase" (id, "ownerUserId", name, "updatedAt")
+      VALUES ('knowledge-source-base', 'knowledge-source-owner', 'Source fixture', CURRENT_TIMESTAMP);
+      INSERT INTO "KnowledgeDocument" (id, "knowledgeBaseId", "updatedAt")
+      VALUES ('knowledge-source-document', 'knowledge-source-base', CURRENT_TIMESTAMP);
+      INSERT INTO "KnowledgeDocumentVersion" (
+        id, "knowledgeBaseId", "documentId", "ownerUserId", "versionNumber",
+        "fileName", "mimeType", "byteSize", checksum, "ingestState", "updatedAt"
+      ) VALUES (
+        'knowledge-source-document-version', 'knowledge-source-base',
+        'knowledge-source-document', 'knowledge-source-owner', 1,
+        'source.md', 'text/markdown', 16, '${"a".repeat(64)}', 'ready', CURRENT_TIMESTAMP
+      );
+      UPDATE "KnowledgeDocument"
+      SET "currentVersionId" = 'knowledge-source-document-version'
+      WHERE id = 'knowledge-source-document';
+      SELECT 'fixture-ready';
+    `);
+
+    for (const migration of committed.slice(sourceIndex)) {
+      cpSync(join(migrationsRoot, migration), join(probeMigrations, migration), {
+        recursive: true,
+      });
+    }
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*)
+        FROM "KnowledgeDocument" AS document
+        INNER JOIN "KnowledgeDocumentVersion" AS version
+          ON version.id = document."currentVersionId"
+        WHERE document.id = 'knowledge-source-document'
+          AND version.id = 'knowledge-source-document-version';
+      `),
+      "1",
+      "Knowledge Source migration changed existing V1 document identity",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT
+          (SELECT count(*) FROM "KnowledgeSource") +
+          (SELECT count(*) FROM "KnowledgeV1DocumentSourceMap") +
+          (SELECT count(*) FROM "KnowledgeBaseSnapshot");
+      `),
+      "0",
+      "Knowledge Source migration must remain content-free and resumable in application code",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'KnowledgeRunBinding'
+          AND column_name = 'knowledgeBaseSnapshotId'
+          AND is_nullable = 'YES';
+      `),
+      "1",
+      "V1 accepted run bindings did not retain a nullable snapshot bridge",
+    );
+
+    psqlScalar(database, `
+      INSERT INTO "KnowledgeSource" (
+        id, "ownerUserId", name, "updatedAt"
+      ) VALUES (
+        'knowledge-source-proof', 'knowledge-source-owner', 'Immutable proof', CURRENT_TIMESTAMP
+      );
+      INSERT INTO "KnowledgeSourceVersion" (
+        id, "sourceId", "ownerUserId", "versionNumber", "fileName", "mimeType",
+        "byteSize", checksum
+      ) VALUES (
+        'knowledge-source-version-proof', 'knowledge-source-proof', 'knowledge-source-owner',
+        1, 'proof.md', 'text/markdown', 16, '${"b".repeat(64)}'
+      );
+      UPDATE "KnowledgeSource"
+      SET "currentVersionId" = 'knowledge-source-version-proof'
+      WHERE id = 'knowledge-source-proof';
+      SELECT 'source-ready';
+    `);
+    const mutation = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `UPDATE "KnowledgeSourceVersion" SET "fileName" = 'changed.md';`,
+    ]);
+    assert.notEqual(mutation.status, 0, "Knowledge Source Version was mutable");
+    assert.match(
+      `${mutation.stdout}\n${mutation.stderr}`,
+      /knowledge_source_version_immutable/u,
+      "Source Version immutability failure was not stable",
+    );
+  } finally {
+    rmSync(probeRoot, { recursive: true, force: true });
+    if (!parentExisted) {
+      try {
+        rmdirSync(probeParent);
+      } catch {
+        // Preserve concurrently created operator-local state.
+      }
+    }
+  }
+}
+
 function main(
   mode: Mode,
   databases: readonly string[],
@@ -484,6 +742,8 @@ function main(
       "independent clean installs produced different schema catalogs",
     );
   }
+  runKnowledgeProfileBackfillProof(shadowDatabase, migrations);
+  runKnowledgeSourceMigrationProof(shadowDatabase, migrations);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -499,7 +759,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

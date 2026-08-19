@@ -81,7 +81,7 @@ function compatibleRequest(): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "hello", type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -536,7 +536,7 @@ describe("provider runtime factory", () => {
       attachments: [],
       chatId: "chat-1",
       content: { blocks: [{ text: "hello", type: "text" }] },
-      knowledgePlan: { baseIds: [] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,

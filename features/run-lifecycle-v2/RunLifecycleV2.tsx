@@ -3,6 +3,7 @@
 import { UiV2Button, UiV2IconButton } from "@/components/ui-v2";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import type { MarkdownCitationRenderer } from "@/components/chat/MarkdownMessage";
 import {
   ConversationTurnV2,
   type ConversationMessageActionsV2
@@ -235,6 +236,7 @@ export type RunAnswerV2Props = Readonly<{
   onSelectModel?(): void;
   onUseLoadAll?(): void;
   presentation: RunPresentationV2;
+  renderCitation?: MarkdownCitationRenderer;
   toolActivity?: ThreadToolActivity | null;
 }>;
 
@@ -249,6 +251,7 @@ export function RunAnswerV2({
   onSelectModel,
   onUseLoadAll,
   presentation,
+  renderCitation,
   toolActivity = null
 }: RunAnswerV2Props) {
   const runActive = presentation.kind === "activity" || presentation.kind === "streaming";
@@ -295,6 +298,7 @@ export function RunAnswerV2({
       content={content}
       hideEmptyContent={!content.trim() && presentation.kind !== "idle"}
       role="assistant"
+      renderCitation={renderCitation}
       streaming={presentation.kind === "streaming"}
     />
   );

@@ -26,9 +26,11 @@ import {
   KnowledgeIngestionError,
   knowledgeWorkIdentity,
   type KnowledgeEmbeddingBatchWrite,
+  type KnowledgeIngestionWarningCode,
   type KnowledgeWorkClaim,
   type KnowledgeWorkIdentity
 } from "./ingestionTypes";
+import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import {
   decodeKnowledgeNormalizedDocument,
@@ -38,16 +40,12 @@ import {
 } from "./normalizedDocument";
 
 export type KnowledgeIngestionProcessorRepository = Readonly<{
-  activateDocumentVersion(input: KnowledgeWorkIdentity & {
+  activateSourceVersion(input: KnowledgeWorkIdentity & {
     expectedChunkCount: number;
     now: Date;
   }): Promise<"activated" | "deferred" | "lease_lost" | "retargeted">;
-  advanceDocumentToParsing(input: KnowledgeWorkIdentity & { now: Date }): Promise<boolean>;
-  advanceReindexToEmbedding(input: KnowledgeWorkIdentity & {
-    chunkCount: number;
-    now: Date;
-  }): Promise<boolean>;
-  completedBatchIndexes(generationId: string, documentVersionId: string): Promise<number[]>;
+  advanceSourceToParsing(input: KnowledgeWorkIdentity & { now: Date }): Promise<boolean>;
+  completedBatchIndexes(artifactId: string, sourceVersionId: string): Promise<number[]>;
   completeChunking(input: KnowledgeWorkIdentity & {
     chunkCount: number;
     now: Date;
@@ -58,6 +56,7 @@ export type KnowledgeIngestionProcessorRepository = Readonly<{
     normalizedTextStorageKey: string;
     now: Date;
     pageCount: number;
+    warningCodes: readonly KnowledgeIngestionWarningCode[];
   }): Promise<boolean>;
   persistEmbeddingBatch(input: KnowledgeWorkIdentity & {
     batch: KnowledgeEmbeddingBatchWrite;
@@ -65,17 +64,22 @@ export type KnowledgeIngestionProcessorRepository = Readonly<{
     ownerUserId: string;
     targetDimension: number;
   }): Promise<boolean>;
-  recoverReindexChunkPlan(input: KnowledgeWorkIdentity & {
-    chunkingProfileVersion: number;
-    maxChunks: number;
-  }): Promise<readonly KnowledgeChunkPlanEntry[] | null>;
-  settleReindexReady(input: KnowledgeWorkIdentity & {
-    expectedChunkCount: number;
+  persistHierarchicalIndex(input: KnowledgeWorkIdentity & {
+    chunks: readonly KnowledgeChunkPlanEntry[];
+    document: StoredKnowledgeNormalizedDocument | null;
     now: Date;
   }): Promise<boolean>;
+  reuseEmbeddingChunks(input: KnowledgeWorkIdentity & {
+    chunks: readonly KnowledgeChunkPlanEntry[];
+    now: Date;
+    targetDimension: number;
+  }): Promise<number[]>;
 }>;
 
 export type KnowledgeEmbeddingRuntime = Readonly<{
+  resolveForInstallation(input: {
+    providerModelId: string;
+  }): Promise<EmbeddingRuntimeBinding>;
   resolveForUser(input: {
     providerModelId: string;
     userId: string;
@@ -122,6 +126,12 @@ function embeddingFailure(error: unknown): KnowledgeIngestionError {
   return new KnowledgeIngestionError("embedding_failed", true);
 }
 
+function hierarchicalIndexFailure(error: unknown): unknown {
+  return error instanceof KnowledgeHierarchicalIndexPersistenceError
+    ? new KnowledgeIngestionError("knowledge_hierarchical_index_failed")
+    : error;
+}
+
 async function readExactObject(input: Readonly<{
   checksum: string;
   maxBytes: number;
@@ -164,8 +174,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     config: getDocumentParserConfig(process.env, {
       requestMaxBytesDefault: config.maxFileBytes
     }),
-    inlineMaxChars: config.maxNormalizedChars + 1,
-    sidecarFallback: false
+    inlineMaxChars: config.maxNormalizedChars + 1
   });
   const now = input.now ?? (() => new Date());
 
@@ -198,47 +207,32 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
   async function chunkPlan(claim: KnowledgeWorkClaim, signal?: AbortSignal) {
     try {
       const normalized = await normalizedDocument(claim, signal);
-      return chunkKnowledgeDocument({
-        blocks: normalized.blocks,
-        maxChunks: config.maxChunksPerDocument,
-        profileVersion: claim.generation.chunkingProfileVersion
-      });
+      return {
+        chunks: chunkKnowledgeDocument({
+          document: normalized,
+          maxChunks: config.maxChunksPerDocument,
+          profileVersion: claim.artifact.chunkingProfileVersion
+        }),
+        document: normalized
+      };
     } catch (error) {
-      const normalizedError = error instanceof KnowledgeChunkingError
+      throw error instanceof KnowledgeChunkingError
         ? chunkingFailure(error)
         : error;
-      if (claim.kind !== "reindex" || !(normalizedError instanceof KnowledgeIngestionError)) {
-        throw normalizedError;
-      }
-      const recovered = await input.repository.recoverReindexChunkPlan({
-        ...knowledgeWorkIdentity(claim),
-        chunkingProfileVersion: claim.generation.chunkingProfileVersion,
-        maxChunks: config.maxChunksPerDocument
-      });
-      if (
-        !recovered ||
-        recovered.length === 0 ||
-        recovered.length > config.maxChunksPerDocument ||
-        recovered.some((chunk, index) =>
-          chunk.index !== index ||
-          !Number.isSafeInteger(chunk.page) ||
-          chunk.page < 1 ||
-          !chunk.text.trim() ||
-          chunk.headingPath.length > 16)
-      ) {
-        throw new KnowledgeIngestionError("reindex_source_unavailable");
-      }
-      return [...recovered];
     }
   }
 
   async function resolveEmbedding(claim: KnowledgeWorkClaim): Promise<EmbeddingRuntimeBinding> {
     let binding: EmbeddingRuntimeBinding;
     try {
-      binding = await input.embeddingRuntime.resolveForUser({
-        providerModelId: claim.generation.embeddingProviderModelId,
-        userId: claim.ownerUserId
-      });
+      binding = claim.artifact.profileExecutionAuthority === "installation"
+        ? await input.embeddingRuntime.resolveForInstallation({
+            providerModelId: claim.artifact.embeddingProviderModelId
+          })
+        : await input.embeddingRuntime.resolveForUser({
+            providerModelId: claim.artifact.embeddingProviderModelId,
+            userId: claim.ownerUserId
+          });
     } catch (error) {
       throw embeddingFailure(error);
     }
@@ -249,8 +243,8 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     if (
       !pin ||
       !pin.indexSupported ||
-      pin.fingerprint !== claim.generation.vectorSpaceFingerprint ||
-      pin.targetDimension !== claim.generation.targetDimension
+      pin.fingerprint !== claim.artifact.vectorSpaceFingerprint ||
+      pin.targetDimension !== claim.artifact.targetDimension
     ) {
       throw new KnowledgeIngestionError("embedding_unavailable", true);
     }
@@ -262,36 +256,45 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     expectedChunkCount: number,
     signal?: AbortSignal
   ): Promise<void> {
-    const chunks = await chunkPlan(claim, signal);
+    const { chunks } = await chunkPlan(claim, signal);
     if (chunks.length !== expectedChunkCount) {
       throw new KnowledgeIngestionError("chunking_failed");
     }
     const completed = new Set(await input.repository.completedBatchIndexes(
-      claim.generation.id,
-      claim.documentVersionId
+      claim.artifact.id,
+      claim.sourceVersionId
     ));
     const pending = knowledgeEmbeddingBatches(chunks).filter(
       (batch) => !completed.has(batch.batchIndex)
     );
-    const binding = pending.length > 0 ? await resolveEmbedding(claim) : null;
+    let binding: EmbeddingRuntimeBinding | null = null;
 
     for (const batch of pending) {
+      const reused = new Set(await input.repository.reuseEmbeddingChunks({
+        ...knowledgeWorkIdentity(claim),
+        chunks: batch.chunks,
+        now: now(),
+        targetDimension: claim.artifact.targetDimension
+      }));
+      const remaining = batch.chunks.filter((chunk) => !reused.has(chunk.index));
+      if (remaining.length === 0) continue;
+      binding ??= await resolveEmbedding(claim);
       let result: Awaited<ReturnType<EmbeddingRuntimeBinding["adapter"]["embed"]>>;
       try {
-        result = await binding!.adapter.embed({
+        result = await binding.adapter.embed({
           mode: "document",
           ...(signal ? { signal } : {}),
-          texts: batch.chunks.map((chunk) => chunk.text)
+          texts: remaining.map((chunk) => chunk.embeddingText)
         });
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? error;
         throw embeddingFailure(error);
       }
-      if (result.vectors.length !== batch.chunks.length) {
+      if (result.vectors.length !== remaining.length) {
         throw new KnowledgeIngestionError("embedding_failed", true);
       }
       if (result.vectors.some((vector) =>
-        vector.length !== claim.generation.targetDimension ||
+        vector.length !== claim.artifact.targetDimension ||
         vector.some((value) => !Number.isFinite(value)))) {
         throw new KnowledgeIngestionError("embedding_failed", true);
       }
@@ -299,35 +302,27 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         ...knowledgeWorkIdentity(claim),
         batch: {
           batchIndex: batch.batchIndex,
-          chunks: batch.chunks.map((chunk, index) => ({
+          chunks: remaining.map((chunk, index) => ({
             ...chunk,
             vector: result.vectors[index] ?? []
           })),
-          modelId: binding!.configuration.upstreamModelId,
-          provider: binding!.provider,
-          providerModelId: binding!.providerModelId,
+          modelId: binding.configuration.upstreamModelId,
+          provider: binding.provider,
+          providerModelId: binding.providerModelId,
           usage: result.usage
         },
         now: now(),
         ownerUserId: claim.ownerUserId,
-        targetDimension: claim.generation.targetDimension
+        targetDimension: claim.artifact.targetDimension
       });
       if (!accepted) return;
     }
 
-    if (claim.kind === "document") {
-      await input.repository.activateDocumentVersion({
-        ...knowledgeWorkIdentity(claim),
-        expectedChunkCount,
-        now: now()
-      });
-    } else {
-      await input.repository.settleReindexReady({
-        ...knowledgeWorkIdentity(claim),
-        expectedChunkCount,
-        now: now()
-      });
-    }
+    await input.repository.activateSourceVersion({
+      ...knowledgeWorkIdentity(claim),
+      expectedChunkCount,
+      now: now()
+    });
   }
 
   return async function processKnowledgeWork(
@@ -335,11 +330,11 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     signal?: AbortSignal
   ): Promise<void> {
     const identity = knowledgeWorkIdentity(claim);
-    if (claim.kind === "document" && claim.state === "queued") {
-      await input.repository.advanceDocumentToParsing({ ...identity, now: now() });
+    if (claim.state === "queued") {
+      await input.repository.advanceSourceToParsing({ ...identity, now: now() });
       return;
     }
-    if (claim.kind === "document" && claim.state === "parsing") {
+    if (claim.state === "parsing") {
       if (!claim.originalStorageKey || claim.byteSize > config.maxFileBytes) {
         throw new KnowledgeIngestionError("knowledge_file_limit_exceeded");
       }
@@ -362,12 +357,12 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         if (signal?.aborted) throw signal.reason ?? error;
         throw parserFailure(error);
       }
-      if (parsed.status !== "complete") {
-        throw new KnowledgeIngestionError("knowledge_text_limit_exceeded");
-      }
       let encoded;
       try {
-        encoded = encodeKnowledgeNormalizedDocument(parsed, config);
+        encoded = encodeKnowledgeNormalizedDocument(parsed, config, {
+          sourceDisplayName: claim.fileName,
+          sourceMediaType: claim.mimeType
+        });
       } catch (error) {
         if (error instanceof KnowledgeNormalizedDocumentError) throw normalizedFailure(error);
         throw error;
@@ -390,12 +385,25 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         normalizedTextChecksum: encoded.checksum,
         normalizedTextStorageKey: claim.normalizedTextStorageKey,
         now: now(),
-        pageCount: encoded.document.pageCount
+        pageCount: encoded.document.pageCount,
+        warningCodes: encoded.document.warnings
       });
       return;
     }
-    if (claim.kind === "document" && claim.state === "chunking") {
-      const chunks = await chunkPlan(claim, signal);
+    if (claim.state === "chunking") {
+      const { chunks, document } = await chunkPlan(claim, signal);
+      let indexed: boolean;
+      try {
+        indexed = await input.repository.persistHierarchicalIndex({
+          ...identity,
+          chunks,
+          document,
+          now: now()
+        });
+      } catch (error) {
+        throw hierarchicalIndexFailure(error);
+      }
+      if (!indexed) return;
       await input.repository.completeChunking({
         ...identity,
         chunkCount: chunks.length,
@@ -403,19 +411,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       });
       return;
     }
-    if (claim.kind === "reindex" && claim.state === "queued") {
-      const chunks = await chunkPlan(claim, signal);
-      await input.repository.advanceReindexToEmbedding({
-        ...identity,
-        chunkCount: chunks.length,
-        now: now()
-      });
-      return;
-    }
-
-    const expectedChunkCount = claim.kind === "document"
-      ? claim.ingestChunkCount
-      : claim.chunkCount;
+    const expectedChunkCount = claim.ingestChunkCount;
     if (expectedChunkCount === null) {
       throw new KnowledgeIngestionError("chunking_failed");
     }

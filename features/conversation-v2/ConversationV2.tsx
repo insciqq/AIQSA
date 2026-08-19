@@ -1,6 +1,9 @@
 "use client";
 
-import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import {
+  MarkdownMessage,
+  type MarkdownCitationRenderer
+} from "@/components/chat/MarkdownMessage";
 import {
   UiV2Button,
   UiV2IconButton,
@@ -27,6 +30,7 @@ export type ConversationMessageV2 = Readonly<{
   id: string;
   optimistic?: boolean;
   role: "assistant" | "user";
+  renderCitation?: MarkdownCitationRenderer;
   streaming?: boolean;
 }>;
 
@@ -48,6 +52,7 @@ export type ConversationMessageActionsV2 = Readonly<{
 export type ConversationMessagePresentationV2 = Readonly<{
   afterContent?: ReactNode;
   beforeContent?: ReactNode;
+  renderCitation?: MarkdownCitationRenderer;
 }>;
 
 type ConversationTurnV2Props = Readonly<{
@@ -62,6 +67,7 @@ type ConversationTurnV2Props = Readonly<{
   expandForReadingAnchor?: boolean;
   hideEmptyContent?: boolean;
   role: "assistant" | "user";
+  renderCitation?: MarkdownCitationRenderer;
   streaming?: boolean;
 }>;
 
@@ -101,6 +107,7 @@ export function ConversationTurnV2({
   expandForReadingAnchor = false,
   hideEmptyContent = false,
   role,
+  renderCitation,
   streaming = false
 }: ConversationTurnV2Props) {
   const [controlsOpen, setControlsOpen] = useState(false);
@@ -248,7 +255,11 @@ export function ConversationTurnV2({
         {beforeContent}
         <div className="v2-conversation-markdown">
           {content.trim() ? (
-            <MarkdownMessage content={content} streaming={streaming} />
+            <MarkdownMessage
+              content={content}
+              renderCitation={role === "assistant" && !streaming ? renderCitation : undefined}
+              streaming={streaming}
+            />
           ) : !hideEmptyContent ? (
             <p className="v2-conversation-empty-turn">{emptyText}</p>
           ) : null}
@@ -559,6 +570,7 @@ export function ConversationV2({
                       anchorId={message.id}
                       beforeContent={getMessagePresentation?.(message)?.beforeContent}
                       content={message.content}
+                      renderCitation={getMessagePresentation?.(message)?.renderCitation}
                       role={message.role}
                       streaming={message.streaming}
                     />

@@ -14,6 +14,10 @@ function fakeRepository(input: {
   orphanMatched?: number;
   orphanShared?: number;
   stageJobs?: number;
+  uploadItemsMatched?: number;
+  uploadItemsReleased?: number;
+  uploadJobsStaged?: number;
+  uploadMultipartSessions?: number;
 } = {}) {
   const mutations: string[] = [];
   const repository: RetentionRepository = {
@@ -61,6 +65,23 @@ function fakeRepository(input: {
         objects: input.knowledgeObjects ?? 0
       };
     },
+    async inspectExpiredKnowledgeTrash() {
+      return { bases: 0, sources: 0 };
+    },
+    async inspectExpiredKnowledgeUploadSessions() {
+      return {
+        items: input.uploadItemsMatched ?? 0,
+        multipartSessions: input.uploadMultipartSessions ?? 0
+      };
+    },
+    async drainKnowledgeDeletionJobs() {
+      mutations.push("drain-knowledge-deletions");
+      return { blocked: 0, claimed: 0, completed: 0, failed: 0, waitingForObjects: 0 };
+    },
+    async finalizeKnowledgeDeletionJobs() {
+      mutations.push("finalize-knowledge-deletions");
+      return 0;
+    },
     async releaseAttachmentDeletionJob({ id }) {
       mutations.push(`release-job:${id}`);
       return true;
@@ -83,6 +104,20 @@ function fakeRepository(input: {
         sharedObjects: 0,
         versionsPurged: input.knowledgeVersionsPurged ?? 0
       };
+    },
+    async stageExpiredKnowledgeTrash() {
+      mutations.push("stage-knowledge-trash");
+      return { bases: 0, jobsStaged: 0, sources: 0 };
+    },
+    async stageExpiredKnowledgeUploadSessions() {
+      mutations.push("stage-knowledge-upload-sessions");
+      return {
+        items: input.uploadItemsMatched ?? 0,
+        itemsReleased: input.uploadItemsReleased ?? input.uploadItemsMatched ?? 0,
+        jobsStaged: input.uploadJobsStaged ?? 0,
+        multipartSessions: input.uploadMultipartSessions ?? 0,
+        multipartSessionsReleased: input.uploadMultipartSessions ?? 0
+      };
     }
   };
 
@@ -100,7 +135,9 @@ describe("retention prune rules", () => {
       knowledgeMatched: 1,
       knowledgeObjects: 2,
       orphanMatched: 2,
-      orphanShared: 1
+      orphanShared: 1,
+      uploadItemsMatched: 2,
+      uploadMultipartSessions: 1
     });
     const deletedObjects: string[] = [];
 
@@ -127,6 +164,13 @@ describe("retention prune rules", () => {
         objectsReleased: 0,
         versionsPurged: 0
       },
+      knowledgeUploadSessions: {
+        itemsMatched: 2,
+        itemsReleased: 0,
+        jobsStaged: 0,
+        multipartSessionsMatched: 1,
+        multipartSessionsReleased: 0
+      },
       modelRunEvents: { deleted: 0, matched: 2 },
       orphanedAttachments: { jobsStaged: 0, matched: 2, rowsDeleted: 0, shared: 1 }
     });
@@ -139,8 +183,18 @@ describe("retention prune rules", () => {
       authFlowTokenIds: ["flow-1"],
       authSessionIds: ["session-1"],
       claims: [
-        { claimToken: "claim", id: "job-ok", storageKey: "private/user/object-ok" },
-        { claimToken: "claim", id: "job-fail", storageKey: "private/user/object-fail" }
+        {
+          claimToken: "claim",
+          id: "job-ok",
+          multipartUploadId: "multipart-1",
+          storageKey: "private/user/object-ok"
+        },
+        {
+          claimToken: "claim",
+          id: "job-fail",
+          multipartUploadId: null,
+          storageKey: "private/user/object-fail"
+        }
       ],
       deletionJobIds: ["job-ok", "job-fail"],
       eventIds: ["event-1"],
@@ -149,9 +203,14 @@ describe("retention prune rules", () => {
       knowledgeStageJobs: 2,
       knowledgeVersionsPurged: 1,
       orphanMatched: 2,
-      stageJobs: 2
+      stageJobs: 2,
+      uploadItemsMatched: 2,
+      uploadItemsReleased: 2,
+      uploadJobsStaged: 2,
+      uploadMultipartSessions: 1
     });
 
+    const abortedUploads: Array<{ storageKey: string; uploadId: string }> = [];
     const summary = await pruneRetention({
       dryRun: false,
       now: new Date("2026-06-11T00:00:00.000Z"),
@@ -160,6 +219,18 @@ describe("retention prune rules", () => {
         async deleteObject(storageKey) {
           if (storageKey.endsWith("object-fail")) {
             throw new Error(`storage failed for ${storageKey}`);
+          }
+        },
+        directMultipartUpload: {
+          async abortMultipartUpload(input) {
+            abortedUploads.push(input);
+          },
+          async completeMultipartUpload() {},
+          async createMultipartUpload() {
+            return { uploadId: "unused" };
+          },
+          async presignMultipartPart() {
+            return "https://storage.example.test/unused";
           }
         }
       }
@@ -183,11 +254,22 @@ describe("retention prune rules", () => {
         objectsReleased: 2,
         versionsPurged: 1
       },
+      knowledgeUploadSessions: {
+        itemsMatched: 2,
+        itemsReleased: 2,
+        jobsStaged: 2,
+        multipartSessionsMatched: 1,
+        multipartSessionsReleased: 1
+      },
       orphanedAttachments: { jobsStaged: 2, matched: 2, rowsDeleted: 2 }
     });
     expect(JSON.stringify(summary)).not.toContain("private/user");
     expect(JSON.stringify(summary)).not.toContain("storage failed");
     expect(state.mutations).toContain("complete-job:job-ok");
     expect(state.mutations).toContain("release-job:job-fail");
+    expect(abortedUploads).toEqual([{
+      storageKey: "private/user/object-ok",
+      uploadId: "multipart-1"
+    }]);
   });
 });

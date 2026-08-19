@@ -73,7 +73,6 @@ describe("document parser routing", () => {
   it.each([
     ["notes.txt", "text/plain", "text"],
     ["notes.md", "text/plain; charset=utf-8", "markdown"],
-    ["rows.csv", "text/csv", "csv"],
     ["data.json", "application/json", "json"]
   ])("keeps %s in process", (fileName, mimeType, format) => {
     expect(resolveDocumentParserRoute(fileName, mimeType)).toMatchObject({
@@ -83,9 +82,20 @@ describe("document parser routing", () => {
   });
 
   it.each([
+    ["rows.csv", "text/csv", "csv"],
+    ["legacy.xls", "application/vnd.ms-excel", "xls"],
+    ["sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"],
+    ["sheet.ods", "application/vnd.oasis.opendocument.spreadsheet", "ods"]
+  ])("routes %s to the bounded spreadsheet parser", (fileName, mimeType, format) => {
+    expect(resolveDocumentParserRoute(fileName, mimeType)).toMatchObject({
+      format,
+      kind: "spreadsheet"
+    });
+  });
+
+  it.each([
     ["paper.pdf", "application/pdf"],
     ["report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-    ["sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
     ["deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
     ["page.html", "text/html"],
     ["scan.png", "image/png"]

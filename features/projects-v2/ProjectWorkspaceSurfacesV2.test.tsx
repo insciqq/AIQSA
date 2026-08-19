@@ -22,7 +22,9 @@ const activeChat: ProjectWorkspaceResponseWire["chats"][number] = {
   createdAt: "2026-08-17T00:00:00.000Z",
   createdByDisplayName: "Mira",
   createdByUserId: "user-2",
-  defaultKnowledgePlan: { baseIds: ["knowledge-1"] },
+  defaultKnowledgePlan: {
+    baseIds: ["knowledge-1"], mode: "explicit", sourceIds: [], version: 1
+  },
   defaultModelId: "model-1",
   defaultProvider: "openai",
   folderId: null,
@@ -60,7 +62,9 @@ function projectDetail(role: "OWNER" | "VIEWER" = "OWNER"): ProjectDetailWire {
     defaults: {
       assistantId: null,
       controlValues: { maxOutputTokens: "2048", reasoningEffort: "medium" },
-      knowledgePlan: { baseIds: ["knowledge-1"] },
+      knowledgePlan: {
+        baseIds: ["knowledge-1"], mode: "explicit", sourceIds: [], version: 1
+      },
       mcpMode: "auto",
       providerModelId: "model-1",
       searchPlan: { mode: "all_selected", optionIds: ["search-1"] }

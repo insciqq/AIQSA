@@ -57,7 +57,7 @@ const projectDetail: ProjectDetailWire = {
   defaults: {
     assistantId: null,
     controlValues: {},
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpMode: "off",
     providerModelId: "model-1",
     searchPlan: { mode: "all_selected", optionIds: [] }

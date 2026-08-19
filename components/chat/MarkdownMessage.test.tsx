@@ -86,6 +86,39 @@ describe("MarkdownMessage", () => {
     expect(screen.queryByText("## Answer")).not.toBeInTheDocument();
   });
 
+  it("activates only known citations after safe Markdown parsing", () => {
+    const renderCitation = vi.fn((handle: string, key: string) =>
+      handle === "K1" || handle === "K12.1"
+        ? <button key={key} type="button">[{handle}]</button>
+        : null);
+    const { container } = render(
+      <MarkdownMessage
+        content={[
+          "Claim [K1] and **another [K12.1]**, but unknown [K2].",
+          "",
+          "Keep `[K1]` in code, [K1](https://example.com) as a link, and [[K1]](https://invalid.example) literal.",
+          "",
+          "```text",
+          "[K1]",
+          "```"
+        ].join("\n")}
+        renderCitation={renderCitation}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "[K1]" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "[K12.1]" })).toBeVisible();
+    expect(screen.getByText("[K2]", { exact: false })).toBeVisible();
+    expect(screen.getAllByText("[K1]", { selector: "code" })).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "K1" })).toHaveAttribute(
+      "href",
+      "https://example.com"
+    );
+    expect(screen.queryByRole("button", { name: "[K2]" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll("button")).toHaveLength(3);
+    expect(renderCitation).toHaveBeenCalledWith("K2", expect.any(String));
+  });
+
   it("renders the reported MAD answer with inline and display LaTeX math", async () => {
     const content = String.raw`Множитель 1.48 (точнее, 1.4826) применяют к MAD — медиане абсолютных отклонений от медианы:
 

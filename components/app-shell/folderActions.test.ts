@@ -227,7 +227,12 @@ describe("folder actions", () => {
       projectMemoryDraft: "Prefer the current release policy."
     });
     const updated = folder({
-      defaultKnowledgePlan: { baseIds: ["base-policies", "base-release"] },
+      defaultKnowledgePlan: {
+        baseIds: ["base-policies", "base-release"],
+        mode: "explicit",
+        sourceIds: [],
+        version: 1
+      },
       id: state.folder.id,
       name: state.folder.name,
       projectMemory: "Prefer the current release policy."

@@ -17,6 +17,7 @@ import type {
   McpRunPlanSnapshot
 } from "../mcp/runPlan";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
+import type { KnowledgeGroundingResult } from "../knowledge/grounding";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   SearchAdapterKind,
@@ -31,6 +32,8 @@ import type {
   CheckpointedToolLoopRun,
   ClaimToolLoopCallResult,
   PersistedAnswerRoundUsage,
+  PrepareAutomaticKnowledgeCallBatchInput,
+  PrepareAutomaticKnowledgeCallBatchResult,
   PersistToolLoopCallBatchInput,
   PersistToolLoopCallBatchResult,
   ProjectRunRecoveryAuthority,
@@ -430,6 +433,11 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<ClaimToolLoopCallResult>;
+  claimAutomaticKnowledgeCall?(input: {
+    callId: string;
+    runId: string;
+    userId: string;
+  }): Promise<ClaimToolLoopCallResult>;
   sweepBootOrphanedRuns(input: { createdBefore: Date; liveRunIds: string[] }): Promise<number>;
   cancelRun(input: {
     payload: { code: string; message: string };
@@ -447,6 +455,7 @@ export type RunRepository = {
     chatId: string;
     estimatedCostMicros: number | null;
     finalText: string;
+    knowledgeGrounding?: KnowledgeGroundingResult;
     modelId: string;
     provider: string;
     providerResponseId?: string;
@@ -456,6 +465,11 @@ export type RunRepository = {
     usageAttributions?: RunUsageAttribution[];
     userId: string;
   }): Promise<boolean>;
+  groundKnowledgeAnswer?(input: Readonly<{
+    answer: string;
+    runId: string;
+    userId: string;
+  }>): Promise<KnowledgeGroundingResult | null>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -565,6 +579,9 @@ export type RunRepository = {
     strategy: string;
   }): Promise<boolean>;
   persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
+  prepareAutomaticKnowledgeCallBatch?(
+    input: PrepareAutomaticKnowledgeCallBatchInput
+  ): Promise<PrepareAutomaticKnowledgeCallBatchResult>;
   recordRunUsageEvents(input: {
     answerRoundUsage?: PersistedAnswerRoundUsage;
     chatId: string;

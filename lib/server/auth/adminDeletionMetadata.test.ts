@@ -57,6 +57,18 @@ describe("admin deletion metadata", () => {
     expect(
       adminUserDeletionInfo({
         ownedDataCount: 0,
+        purgeableOwnedDataCount: 2,
+        status: "disabled"
+      })
+    ).toEqual({
+      canDelete: true,
+      reason: null,
+      summary: "2 private Memory or Knowledge records will be fenced and durably purged before the account is removed."
+    });
+
+    expect(
+      adminUserDeletionInfo({
+        ownedDataCount: 0,
         status: "pending"
       })
     ).toEqual({

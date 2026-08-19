@@ -1,0 +1,11 @@
+[Unit]
+Description=Run AIQSA retention and deletion reconciliation every day
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=aiqsa-prune.service
+
+[Install]
+WantedBy=timers.target

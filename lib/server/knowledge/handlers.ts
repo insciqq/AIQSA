@@ -7,11 +7,14 @@ import {
   type KnowledgeBaseListResponse,
   type KnowledgeBasePublication,
   type KnowledgeBasePublicationResponse,
-  type KnowledgeBaseSummary,
-  type KnowledgeEmbeddingDeployment
+  type KnowledgeBaseSummary
 } from "../../contracts/knowledge";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import {
+  getKnowledgeExtractionConfig,
+  type KnowledgeExtractionConfig
+} from "./knowledgeExtractionConfig";
 import type {
   KnowledgeBaseAccessEntry,
   KnowledgeBaseDetailData,
@@ -20,11 +23,12 @@ import type {
 } from "./prismaRepository";
 
 export type KnowledgeHandlerDeps = Readonly<{
+  getExtractionConfig?: () => Pick<KnowledgeExtractionConfig, "maxFileBytes">;
   repository: Pick<
     PrismaKnowledgeRepository,
+    | "canCreate"
     | "create"
     | "getDetail"
-    | "listEmbeddingDeployments"
     | "listForUser"
     | "listPublishableGroups"
     | "publish"
@@ -77,80 +81,64 @@ function publicationFromRow(row: KnowledgeBasePublicationRow): KnowledgeBasePubl
 }
 
 function summaryFromEntry(
-  entry: KnowledgeBaseAccessEntry,
-  deployments: ReadonlyMap<string, KnowledgeEmbeddingDeployment>
+  entry: KnowledgeBaseAccessEntry
 ): KnowledgeBaseSummary {
-  const visibleDeployment = deployments.get(entry.activeGeneration.embeddingDeployment.id) ?? null;
-  const embeddingDeployment = entry.owned
-    ? visibleDeployment ?? {
-        ...entry.activeGeneration.embeddingDeployment,
-        indexSupported: true
-      }
-    : visibleDeployment;
   return {
-    activeGeneration: {
-      chunkingProfileVersion: entry.activeGeneration.chunkingProfileVersion,
-      embeddingDeployment,
-      embeddingDeploymentId: entry.owned || visibleDeployment
-        ? entry.activeGeneration.embeddingDeployment.id
-        : null,
-      id: entry.activeGeneration.id,
-      indexedContentRevision: entry.activeGeneration.indexedContentRevision,
-      targetDimension: entry.activeGeneration.embeddingDeployment.targetDimension,
-      vectorSpaceFingerprint: entry.activeGeneration.vectorSpaceFingerprint
-    },
     archived: entry.archived,
-    contentRevision: entry.contentRevision,
+    deletionPending: entry.deletionPending,
     description: entry.description,
+    sourceCount: entry.sourceCount,
     id: entry.id,
     name: entry.name,
     owned: entry.owned,
     ownerDisplayName: entry.ownerDisplayName,
-    published: entry.published,
+    purgeScheduledAt: entry.purgeScheduledAt?.toISOString() ?? null,
+    readiness: {
+      attentionSources: entry.readiness.attentionSources,
+      processingSources: entry.readiness.processingSources,
+      readySources: entry.readiness.readySources,
+      state: entry.readiness.state,
+      supportReference: entry.readiness.supportReference,
+      totalSources: entry.readiness.totalSources
+    },
     scope: entry.owned
       ? { kind: "owner" }
       : entry.memberGroupNames.length > 0
         ? { groupNames: entry.memberGroupNames, kind: "group" }
         : { kind: "installation" },
+    trashed: entry.trashed,
+    trashedAt: entry.trashedAt?.toISOString() ?? null,
     updatedAt: entry.updatedAt.toISOString(),
     version: entry.version
   };
 }
 
 function detailFromEntry(
-  entry: KnowledgeBaseDetailData,
-  deployments: ReadonlyMap<string, KnowledgeEmbeddingDeployment>
+  entry: KnowledgeBaseDetailData
 ): KnowledgeBaseDetail {
   return {
-    ...summaryFromEntry(entry, deployments),
-    documentCount: entry.documentCount,
+    ...summaryFromEntry(entry),
     publications: entry.publications?.map(publicationFromRow) ?? null
   };
-}
-
-async function deploymentMap(
-  deps: KnowledgeHandlerDeps,
-  userId: string
-): Promise<ReadonlyMap<string, KnowledgeEmbeddingDeployment>> {
-  const deployments = await deps.repository.listEmbeddingDeployments(userId);
-  return new Map(deployments.map((deployment) => [deployment.id, deployment]));
 }
 
 export function createListKnowledgeBasesHandler(deps: KnowledgeHandlerDeps) {
   return async function GET(request: Request): Promise<Response> {
     const viewer = await authenticate(deps, request);
     if (viewer instanceof Response) return viewer;
-    const [entries, deployments, publishableGroups] = await Promise.all([
+    const [entries, canCreate, publishableGroups] = await Promise.all([
       deps.repository.listForUser(viewer.userId),
-      deps.repository.listEmbeddingDeployments(viewer.userId),
+      deps.repository.canCreate(viewer.userId),
       deps.repository.listPublishableGroups(viewer.userId)
     ]);
-    const byId = new Map(deployments.map((deployment) => [deployment.id, deployment]));
     return Response.json({
-      embeddingDeployments: deployments,
-      knowledgeBases: entries.map((entry) => summaryFromEntry(entry, byId)),
-      publishableGroups,
-      viewer: { canPublishInstallation: viewer.isAdmin }
+      knowledgeBases: entries.map(summaryFromEntry),
+      publishableGroups: publishableGroups.map(({ id, name }) => ({ id, name })),
+      viewer: {
+        canCreate,
+        canPublishInstallation: viewer.isAdmin,
+        maxUploadBytes: (deps.getExtractionConfig?.() ?? getKnowledgeExtractionConfig()).maxFileBytes
+      }
     } satisfies KnowledgeBaseListResponse);
   };
 }
@@ -164,19 +152,13 @@ export function createCreateKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
     const decoded = decodeKnowledgeBaseCreate(body);
     if (!decoded.ok) return errorJson(decoded.code, 400);
     const created = await deps.repository.create(viewer.userId, decoded.value);
-    if (created.kind === "embedding_not_available") {
-      return errorJson("knowledge_embedding_not_available", 400);
+    if (created.kind === "profile_unavailable") {
+      return errorJson("knowledge_temporarily_unavailable", 503);
     }
-    if (created.kind === "embedding_dimension_not_supported") {
-      return errorJson("knowledge_embedding_dimension_not_supported", 400);
-    }
-    const [detail, deployments] = await Promise.all([
-      deps.repository.getDetail(viewer.userId, created.id),
-      deploymentMap(deps, viewer.userId)
-    ]);
+    const detail = await deps.repository.getDetail(viewer.userId, created.id);
     if (!detail) return errorJson("knowledge_base_not_available", 404);
     return Response.json(
-      { knowledgeBase: detailFromEntry(detail, deployments) } satisfies KnowledgeBaseDetailResponse,
+      { knowledgeBase: detailFromEntry(detail) } satisfies KnowledgeBaseDetailResponse,
       { status: 201 }
     );
   };
@@ -190,13 +172,10 @@ export function createGetKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
     const viewer = await authenticate(deps, request);
     if (viewer instanceof Response) return viewer;
     const baseId = await routeParam(context, "baseId");
-    const [detail, deployments] = await Promise.all([
-      deps.repository.getDetail(viewer.userId, baseId),
-      deploymentMap(deps, viewer.userId)
-    ]);
+    const detail = await deps.repository.getDetail(viewer.userId, baseId);
     if (!detail) return errorJson("knowledge_base_not_available", 404);
     return Response.json({
-      knowledgeBase: detailFromEntry(detail, deployments)
+      knowledgeBase: detailFromEntry(detail)
     } satisfies KnowledgeBaseDetailResponse);
   };
 }
@@ -218,13 +197,10 @@ export function createUpdateKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
     if (updated.kind === "version_conflict") {
       return errorJson("knowledge_base_version_conflict", 409);
     }
-    const [detail, deployments] = await Promise.all([
-      deps.repository.getDetail(viewer.userId, baseId),
-      deploymentMap(deps, viewer.userId)
-    ]);
+    const detail = await deps.repository.getDetail(viewer.userId, baseId);
     if (!detail) return errorJson("knowledge_base_not_available", 404);
     return Response.json({
-      knowledgeBase: detailFromEntry(detail, deployments)
+      knowledgeBase: detailFromEntry(detail)
     } satisfies KnowledgeBaseDetailResponse);
   };
 }

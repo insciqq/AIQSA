@@ -18,8 +18,29 @@ import {
   ToolApprovalCardV2,
   type ToolApprovalStatusV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import {
+  KnowledgeCitationControl,
+  KnowledgeCitationViewerProvider
+} from "@/features/citations-v2/KnowledgeCitationViewer";
 
-export type AnswerOutputsGalleryState = "approval" | "complete" | "empty" | "reasoning";
+export type AnswerOutputsGalleryState =
+  | "approval"
+  | "citation-assistant"
+  | "citation-personal"
+  | "citation-project"
+  | "citation-visual"
+  | "complete"
+  | "empty"
+  | "reasoning";
+
+function citationSurface(state: AnswerOutputsGalleryState) {
+  if (state === "citation-personal") return "personal";
+  if (state === "citation-project") return "project";
+  if (state === "citation-assistant" || state === "citation-visual" || state === "complete") {
+    return "assistant";
+  }
+  return null;
+}
 
 const navigationChats: ChatNavigationSummaryWire[] = [{
   activeRun: false,
@@ -36,7 +57,20 @@ const messages: ConversationMessageV2[] = [
     role: "user"
   },
   {
-    content: "## Проверяемый вывод\n\nМультиязычный поиск устойчивее, когда lexical и vector lanes остаются независимыми до финального отбора.",
+    content: "## Проверяемый вывод\n\nМультиязычный поиск устойчивее, когда lexical и vector lanes остаются независимыми до финального отбора [K1.1].",
+    id: "answer-outputs-answer",
+    role: "assistant"
+  }
+];
+
+const visualMessages: ConversationMessageV2[] = [
+  {
+    content: "Что показывает график выручки по регионам?",
+    id: "answer-outputs-question",
+    role: "user"
+  },
+  {
+    content: "Северный регион растёт, а южный остаётся на прежнем уровне [K1.1].",
     id: "answer-outputs-answer",
     role: "assistant"
   }
@@ -58,10 +92,7 @@ const completeArtifact: ThreadArtifactSummary = {
     }
   ],
   knowledgeCitations: [{
-    baseName: "Engineering handbook",
-    fileName: "retrieval-policy.pdf",
-    handle: "K1.1",
-    page: 18
+    handle: "K1.1"
   }],
   reasoningText: [],
   sources: [
@@ -86,6 +117,13 @@ const reasoningArtifact: ThreadArtifactSummary = {
   sources: []
 };
 
+const visualArtifact: ThreadArtifactSummary = {
+  citations: [],
+  knowledgeCitations: [{ handle: "K1.1" }],
+  reasoningText: [],
+  sources: []
+};
+
 function ApprovalOutput() {
   const [status, setStatus] = useState<ToolApprovalStatusV2>("pending");
   return (
@@ -103,11 +141,19 @@ function ApprovalOutput() {
 function AnswerOutput({ state }: { state: AnswerOutputsGalleryState }) {
   if (state === "approval") return <ApprovalOutput />;
   if (state === "empty") return null;
-  const artifact = state === "reasoning" ? reasoningArtifact : completeArtifact;
+  const artifact = state === "reasoning"
+    ? reasoningArtifact
+    : state === "citation-visual"
+      ? visualArtifact
+      : completeArtifact;
+  const surface = citationSurface(state);
   return (
     <AnswerOutputsV2
       artifact={artifact}
-      identitySlot={state === "complete" ? <span>Research assistant · revision 4</span> : null}
+      identitySlot={surface === "assistant" ? <span>Research assistant · revision 4</span> : null}
+      knowledgeReference={surface
+        ? { messageId: "answer-outputs-answer", runId: "answer-outputs-run" }
+        : undefined}
       showReasoning
     />
   );
@@ -118,6 +164,7 @@ export function AnswerOutputsV2Gallery({
 }: {
   state?: AnswerOutputsGalleryState;
 }) {
+  const surface = citationSurface(state);
   const sidebar = (onClose: () => void) => (
     <NavigationSidebar
       activeChatId="answer-outputs-fixture"
@@ -141,30 +188,48 @@ export function AnswerOutputsV2Gallery({
   );
 
   return (
-    <div data-testid="ui-v2-answer-outputs-gallery" data-state={state}>
-      <ReadingRoomShellV2
-        onNewChat={() => undefined}
-        onSelectChat={() => undefined}
-        sidebar={sidebar}
+    <KnowledgeCitationViewerProvider>
+      <div
+        data-citation-surface={surface ?? undefined}
+        data-testid="ui-v2-answer-outputs-gallery"
+        data-state={state}
       >
-        <main className="v2-conversation-gallery-main">
-          <ConversationV2
-            getMessageActions={(message) => message.role === "assistant" ? {
-              onCopy: () => undefined,
-              onMore: () => undefined,
-              onRegenerate: () => undefined
-            } : {
-              onCopy: () => undefined,
-              onEdit: () => undefined,
-              onMore: () => undefined
-            }}
-            getMessagePresentation={(message) => message.role === "assistant" ? {
-              afterContent: <AnswerOutput state={state} />
-            } : undefined}
-            messages={messages}
-          />
-        </main>
-      </ReadingRoomShellV2>
-    </div>
+        <ReadingRoomShellV2
+          onNewChat={() => undefined}
+          onSelectChat={() => undefined}
+          sidebar={sidebar}
+        >
+          <main className="v2-conversation-gallery-main">
+            <ConversationV2
+              getMessageActions={(message) => message.role === "assistant" ? {
+                onCopy: () => undefined,
+                onMore: () => undefined,
+                onRegenerate: () => undefined
+              } : {
+                onCopy: () => undefined,
+                onEdit: () => undefined,
+                onMore: () => undefined
+              }}
+              getMessagePresentation={(message) => message.role === "assistant" ? {
+                afterContent: <AnswerOutput state={state} />,
+                renderCitation: surface
+                  ? (handle, key) => handle === "K1.1" ? (
+                      <KnowledgeCitationControl
+                        key={key}
+                        reference={{
+                          handle,
+                          messageId: "answer-outputs-answer",
+                          runId: "answer-outputs-run"
+                        }}
+                      />
+                    ) : null
+                  : undefined
+              } : undefined}
+              messages={state === "citation-visual" ? visualMessages : messages}
+            />
+          </main>
+        </ReadingRoomShellV2>
+      </div>
+    </KnowledgeCitationViewerProvider>
   );
 }

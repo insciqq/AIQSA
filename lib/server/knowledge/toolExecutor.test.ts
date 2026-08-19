@@ -3,10 +3,13 @@ import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import {
   createKnowledgeToolExecutor,
   type KnowledgeEmbeddingRuntimeResolver,
-  type KnowledgeRetrievalStore
+  type KnowledgeRetrievalStore,
+  type KnowledgeScopeAlias
 } from "./toolExecutor";
 import {
+  KNOWLEDGE_EXACT_TOOL_NAME,
   KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
   type KnowledgeAcceptedBinding,
   type KnowledgeHybridPassage
 } from "./retrievalTypes";
@@ -21,6 +24,12 @@ import {
   snapshotToolExecutionResult
 } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+import {
+  DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+  type KnowledgeBudgetStopReason
+} from "./knowledgeBudget";
+import type { StructuredKnowledgeSearchResult } from "./structuredRetrieval";
+import type { KnowledgeVisualSearchResult } from "./visualEvidence";
 
 const configuration = {
   adapterKind: "openai_embeddings_compatible",
@@ -80,10 +89,13 @@ function binding(overrides: Partial<KnowledgeAcceptedBinding> = {}): KnowledgeAc
     embeddingCredentialVersionId: snapshot.credentialVersionId,
     embeddingExecutionSnapshot: snapshot,
     embeddingProviderModelId: snapshot.providerModelId,
+    includeWholeBase: true,
     indexedContentRevision: 2,
     indexGenerationId: "generation-private-sentinel",
     knowledgeBaseId: "base-id-private-sentinel",
+    knowledgeBaseSnapshotId: "snapshot-private-sentinel",
     ordinal: 0,
+    selectedSourceIds: [],
     targetDimension: 1024,
     vectorSpaceFingerprint: pin.fingerprint,
     ...overrides
@@ -112,13 +124,139 @@ function passage(text = "The retained private passage."): KnowledgeHybridPassage
   };
 }
 
+function structuredPassage(): KnowledgeHybridPassage {
+  return {
+    annRank: null,
+    baseName: "BASE-NAME-PRIVATE-SENTINEL",
+    bindingOrdinal: 0,
+    chunkId: "structured-passage-private-sentinel",
+    chunkIndex: 0,
+    contentHash: "c".repeat(64),
+    documentId: "document-id-private-sentinel",
+    documentVersionId: "version-id-private-sentinel",
+    documentVersionNumber: 3,
+    fileName: "sales.xlsx",
+    ftsRank: null,
+    ftsScore: null,
+    fusedScore: 0,
+    headingPath: ["Sales", "B2:B3"],
+    knowledgeBaseId: "base-id-private-sentinel",
+    page: 1,
+    rerankScore: null,
+    sectionId: "section-private-sentinel",
+    sourceArtifactId: "artifact-private-sentinel",
+    sourceName: "Sales workbook",
+    structuredAnalysis: {
+      columns: ["sum Revenue"],
+      receipt: {
+        formulaCellsUsed: 0,
+        hiddenRowsExcluded: 0,
+        inputRanges: [{
+          range: "B2:B3",
+          role: "value",
+          sheet: "Sales",
+          sheetIndex: 0
+        }],
+        operation: "aggregate",
+        operationSummary: "sum Revenue",
+        outputRows: 1,
+        plan: {
+          aggregate: "sum",
+          filters: [],
+          groupBy: [],
+          includeHidden: false,
+          limit: 50,
+          operation: "aggregate",
+          select: [],
+          target: { range: "A1:B3", sheet: "Sales" },
+          valueColumn: "Revenue",
+          version: 1
+        },
+        rowsMatched: 2,
+        rowsScanned: 2,
+        warnings: []
+      },
+      rows: [[300]]
+    },
+    text: "Operation: sum Revenue\nInput ranges: Sales!B2:B3 (value)\n\n| sum Revenue |\n| --- |\n| 300 |",
+    vectorDistance: null,
+    vectorScore: null
+  };
+}
+
+function visualPassage(): KnowledgeHybridPassage {
+  return {
+    annRank: null,
+    baseName: "BASE-NAME-PRIVATE-SENTINEL",
+    bindingOrdinal: 0,
+    chunkId: "visual:block-1:asset-1",
+    chunkIndex: 2,
+    contentHash: "d".repeat(64),
+    documentId: "document-id-private-sentinel",
+    documentVersionId: "version-id-private-sentinel",
+    documentVersionNumber: 3,
+    fileName: "report.pdf",
+    ftsRank: null,
+    ftsScore: null,
+    fusedScore: 0,
+    headingPath: ["Results"],
+    knowledgeBaseId: "base-id-private-sentinel",
+    page: 2,
+    rerankScore: null,
+    sectionId: null,
+    sourceArtifactId: "artifact-private-sentinel",
+    sourceName: "Quarterly report",
+    text: "Visual evidence: Quarterly revenue\nOriginal region: page 2.\nBounded visual analysis: North increased.",
+    vectorDistance: null,
+    vectorScore: null,
+    visualAnalysis: {
+      assetId: "asset-1",
+      blockId: "block-1",
+      boundingBoxes: [{
+        bottom: 80,
+        coordinateOrigin: "top_left",
+        left: 10,
+        page: 2,
+        right: 90,
+        top: 20
+      }],
+      caption: "Quarterly revenue",
+      description: "North increased.",
+      headingPath: ["Results"],
+      kind: "chart",
+      label: "Quarterly revenue",
+      page: 2,
+      provider: {
+        modelId: "vision-upstream-1",
+        profileRevisionId: "profile-revision-1",
+        provider: "openai",
+        providerModelId: "vision-model-1",
+        usage: {
+          cachedInputTokens: 2,
+          inputTokens: 20,
+          outputTokens: 8,
+          reasoningTokens: 0,
+          totalTokens: 28
+        }
+      },
+      status: "available",
+      version: 1,
+      warnings: []
+    }
+  };
+}
+
 function harness(input: Readonly<{
+  aliases?: KnowledgeScopeAlias[];
   bindings?: KnowledgeAcceptedBinding[];
+  budgetStopReason?: KnowledgeBudgetStopReason;
   candidateCount?: number;
   invocationOrdinal?: number;
   passages?: KnowledgeHybridPassage[];
   policy?: { candidateLimit: number; resultLimit: number; scoreThreshold: number };
   runtimeFailure?: Error;
+  structuredResult?: StructuredKnowledgeSearchResult;
+  visualResult?: KnowledgeVisualSearchResult;
 }> = {}) {
   const embed = vi.fn(async (_request: { mode: "document" | "query"; texts: readonly string[] }) => ({
     model: "embedding-v1",
@@ -139,6 +277,27 @@ function harness(input: Readonly<{
   };
   const receipts: unknown[] = [];
   const store: KnowledgeRetrievalStore = {
+    ...(input.budgetStopReason ? {
+      budgetState: vi.fn(async () => ({
+        invocationOrdinal: input.invocationOrdinal ?? 1,
+        policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        priorContentHashes: [],
+        stopReason: input.budgetStopReason!,
+        usage: {
+          cumulativeCandidates: 1_400,
+          estimatedCostMicros: 0,
+          followUpOperations: 1,
+          latencyMs: 0,
+          lowNoveltyStreak: 0,
+          operations: 1,
+          queryEmbeddingCalls: 0,
+          rerankerCalls: 0,
+          retrievedTokens: 0,
+          searchPhases: 1,
+          subqueriesInCurrentPhase: 1
+        }
+      }))
+    } : {}),
     hybridSearch: vi.fn(async () => ({
       bindingCount: (input.bindings ?? [binding()]).length,
       candidateCount: input.candidateCount ?? 1,
@@ -147,9 +306,16 @@ function harness(input: Readonly<{
     })),
     invocationOrdinal: vi.fn(async () => input.invocationOrdinal ?? 1),
     loadBindings: vi.fn(async () => input.bindings ?? [binding()]),
+    ...(input.aliases ? { loadScopeAliases: vi.fn(async () => input.aliases!) } : {}),
     persistReceipt: vi.fn(async (receipt) => {
       receipts.push(receipt);
-    })
+    }),
+    ...(input.structuredResult ? {
+      structuredSearch: vi.fn(async () => input.structuredResult!)
+    } : {}),
+    ...(input.visualResult ? {
+      visualSearch: vi.fn(async () => input.visualResult!)
+    } : {})
   };
   return {
     embed,
@@ -192,7 +358,7 @@ describe("Knowledge retrieval tool executor", () => {
       vectors: [expect.objectContaining({ bindingOrdinal: 0, targetDimension: 1024 })]
     }));
     expect(result.status).toBe("complete");
-    expect(text).toContain("[K1.1] page 7\nThe retained private passage.");
+    expect(text).toContain("[K1] page 7\nThe retained private passage.");
     for (const sentinel of [
       "BASE-NAME-PRIVATE-SENTINEL",
       "FILE-NAME-PRIVATE-SENTINEL",
@@ -208,7 +374,7 @@ describe("Knowledge retrieval tool executor", () => {
         baseName: "BASE-NAME-PRIVATE-SENTINEL",
         documentVersionId: "version-id-private-sentinel",
         documentVersionNumber: 3,
-        handle: "K1.1",
+        handle: "K1",
         page: 7
       }]
     });
@@ -252,16 +418,170 @@ describe("Knowledge retrieval tool executor", () => {
     });
   });
 
-  it("rejects canonical evidence whose opaque handle disagrees with its invocation", async () => {
+  it("executes structured requests without embeddings and persists the calculation receipt", async () => {
+    const value = harness({
+      aliases: [{
+        alias: "S1",
+        bindingOrdinal: 0,
+        kind: "source",
+        label: "Sales workbook",
+        sourceArtifactId: "artifact-private-sentinel",
+        sourceId: "source-private-sentinel"
+      }],
+      structuredResult: { kind: "complete", passage: structuredPassage() }
+    });
+    const result = await execute(value, "Sum Revenue in Sales");
+    const evidence = knowledgeEvidenceFromToolResult(result);
+
+    expect(value.store.structuredSearch).toHaveBeenCalledWith(expect.objectContaining({
+      query: "Sum Revenue in Sales",
+      sourceArtifactIds: ["artifact-private-sentinel"]
+    }));
+    expect(value.embed).not.toHaveBeenCalled();
+    expect(value.store.hybridSearch).not.toHaveBeenCalled();
+    expect(evidence).toMatchObject({
+      candidateCount: 1,
+      embeddingExecutions: [],
+      outcome: "complete",
+      results: [{
+        handle: "K1",
+        structuredAnalysis: {
+          receipt: { operation: "aggregate", operationSummary: "sum Revenue" },
+          rows: [[300]]
+        }
+      }],
+      structured: { status: "complete", version: 1 }
+    });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("Structured Knowledge calculation evidence")
+    });
+    expect(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)).not.toBeNull();
+  });
+
+  it("returns a durable clarification instead of guessing a structured target", async () => {
+    const value = harness({
+      structuredResult: {
+        kind: "needs_clarification",
+        question: "Уточните лист Sales или Forecast."
+      }
+    });
+    const result = await execute(value, "Show this spreadsheet table");
+
+    expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
+      candidateCount: 0,
+      embeddingExecutions: [],
+      outcome: "structured_clarification_required",
+      results: [],
+      structured: {
+        question: "Уточните лист Sales или Forecast.",
+        status: "needs_clarification"
+      }
+    });
+    expect(value.embed).not.toHaveBeenCalled();
+    expect(value.store.hybridSearch).not.toHaveBeenCalled();
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("Do not guess")
+    });
+  });
+
+  it("persists bounded visual evidence and attributes exact vision usage without embeddings", async () => {
+    const visual = visualPassage();
+    const value = harness({
+      aliases: [{
+        alias: "S1",
+        bindingOrdinal: 0,
+        kind: "source",
+        label: "Quarterly report",
+        sourceArtifactId: "artifact-private-sentinel",
+        sourceId: "source-private-sentinel"
+      }],
+      visualResult: { kind: "complete", passage: visual }
+    });
+    const result = await execute(value, "What does the revenue chart show?");
+    const evidence = knowledgeEvidenceFromToolResult(result);
+
+    expect(value.store.visualSearch).toHaveBeenCalledWith(expect.objectContaining({
+      query: "What does the revenue chart show?",
+      sourceArtifactIds: ["artifact-private-sentinel"]
+    }));
+    expect(value.embed).not.toHaveBeenCalled();
+    expect(value.store.hybridSearch).not.toHaveBeenCalled();
+    expect(evidence).toMatchObject({
+      candidateCount: 1,
+      embeddingExecutions: [],
+      outcome: "complete",
+      results: [{
+        handle: "K1",
+        visualAnalysis: {
+          description: "North increased.",
+          status: "available"
+        }
+      }],
+      visual: { status: "available", version: 1 }
+    });
+    expect(knowledgeUsageAttributionsFromToolResult(result)).toEqual([{
+      modelId: "vision-upstream-1",
+      provider: "openai",
+      usage: visual.visualAnalysis?.provider?.usage
+    }]);
+    expect(result.usage).toMatchObject({
+      cachedInputTokens: 2,
+      inputTokens: 20,
+      outputTokens: 8,
+      totalTokens: 28
+    });
+    expect(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)).not.toBeNull();
+  });
+
+  it("falls through to ordinary retrieval when no structured artifact applies", async () => {
+    const value = harness({ structuredResult: { kind: "not_applicable" } });
+    await execute(value, "Show the retention table");
+    expect(value.store.structuredSearch).toHaveBeenCalledOnce();
+    expect(value.embed).toHaveBeenCalledOnce();
+    expect(value.store.hybridSearch).toHaveBeenCalledOnce();
+  });
+
+  it("accepts invocation-independent handles and rejects malformed handles", async () => {
     const evidence = knowledgeEvidenceFromToolResult(await execute(harness()))!;
-    const malformed = {
+    const independent = {
       ...evidence,
-      results: [{ ...evidence.results[0]!, handle: "K2.1" }]
+      results: [{ ...evidence.results[0]!, handle: "K42" }]
     };
 
     expect(decodeKnowledgeRetrievalEvidence({
+      ...independent,
+      providerText: knowledgeToolResultText(independent)
+    })).not.toBeNull();
+    const malformed = {
+      ...evidence,
+      results: [{ ...evidence.results[0]!, handle: "K0" }]
+    };
+    expect(decodeKnowledgeRetrievalEvidence({
       ...malformed,
       providerText: knowledgeToolResultText(malformed)
+    })).toBeNull();
+  });
+
+  it("rejects duplicate or unbound embedding execution ordinals", async () => {
+    const evidence = knowledgeEvidenceFromToolResult(await execute(harness()))!;
+    const execution = evidence.embeddingExecutions[0]!;
+
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      embeddingExecutions: [execution, execution]
+    })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      embeddingExecutions: [{ ...execution, bindingOrdinals: [1] }]
+    })).toBeNull();
+  });
+
+  it("requires complete embedding coverage unless an explicit lexical fallback is recorded", async () => {
+    const evidence = knowledgeEvidenceFromToolResult(await execute(harness()))!;
+
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      embeddingExecutions: []
     })).toBeNull();
   });
 
@@ -294,49 +614,137 @@ describe("Knowledge retrieval tool executor", () => {
     expect(value.receipts).toHaveLength(1);
   });
 
-  it("records indexing lag without embedding or retrieval", async () => {
+  it("keeps ready evidence available while a bound base has indexing lag", async () => {
     const value = harness({ bindings: [binding({ indexedContentRevision: 1 })] });
     const result = await execute(value);
     expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
       bases: [{ state: "indexing" }],
-      outcome: "base_indexing"
+      outcome: "complete"
     });
-    expect(value.embeddingRuntime.resolve).not.toHaveBeenCalled();
-    expect(value.store.hybridSearch).not.toHaveBeenCalled();
+    expect(value.embeddingRuntime.resolve).toHaveBeenCalledOnce();
+    expect(value.store.hybridSearch).toHaveBeenCalledOnce();
   });
 
-  it("records unavailable accepted embedding evidence before retrieval", async () => {
+  it("continues with lexical evidence when query embedding is unavailable", async () => {
     const error = Object.assign(new Error("credential_revoked"), { code: "credential_revoked" });
     const value = harness({ runtimeFailure: error });
     const result = await execute(value);
     expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
       embeddingExecutions: [{ status: "error" }],
       failureCode: "credential_revoked",
-      outcome: "embedding_model_unavailable"
+      outcome: "complete"
     });
-    expect(value.store.hybridSearch).not.toHaveBeenCalled();
+    expect(value.store.hybridSearch).toHaveBeenCalledWith(expect.objectContaining({ vectors: [] }));
   });
 
-  it("settles an invalid accepted snapshot without inventing an embedding call", async () => {
+  it("uses lexical evidence for an invalid embedding snapshot without inventing a call", async () => {
     const value = harness({ bindings: [binding({ embeddingExecutionSnapshot: {} })] });
     const result = await execute(value);
     expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
       embeddingExecutions: [],
       failureCode: "provider_execution_snapshot_invalid",
-      outcome: "embedding_model_unavailable"
+      outcome: "complete"
+    });
+    expect(value.embeddingRuntime.resolve).not.toHaveBeenCalled();
+    expect(value.store.hybridSearch).toHaveBeenCalledWith(expect.objectContaining({ vectors: [] }));
+    expect(value.receipts).toHaveLength(1);
+  });
+
+  it("reports embedding unavailability only when lexical retrieval also has no evidence", async () => {
+    const error = Object.assign(new Error("credential_revoked"), { code: "credential_revoked" });
+    const value = harness({ candidateCount: 0, passages: [], runtimeFailure: error });
+    const result = await execute(value);
+    expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
+      failureCode: "credential_revoked",
+      outcome: "embedding_model_unavailable",
+      results: []
+    });
+  });
+
+  it("returns a qualified result when the persisted dynamic budget is exhausted", async () => {
+    const value = harness({ budgetStopReason: "candidate_budget", invocationOrdinal: 7 });
+    const result = await execute(value);
+
+    expect(result).toMatchObject({ status: "complete" });
+    expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
+      budget: { stopReason: "candidate_budget" },
+      invocationOrdinal: 7,
+      outcome: "budget_exhausted",
+      results: []
     });
     expect(value.embeddingRuntime.resolve).not.toHaveBeenCalled();
     expect(value.store.hybridSearch).not.toHaveBeenCalled();
     expect(value.receipts).toHaveLength(1);
   });
 
-  it("enforces the persisted-call invocation rank before external I/O", async () => {
-    const value = harness({ invocationOrdinal: 4 });
-    const result = await execute(value);
-    expect(result).toMatchObject({ status: "error" });
-    expect(result.rawPreview).toEqual({ providerCall: false });
-    expect(value.store.loadBindings).not.toHaveBeenCalled();
-    expect(value.embeddingRuntime.resolve).not.toHaveBeenCalled();
-    expect(value.receipts).toHaveLength(0);
+  it("resolves model-facing Source aliases only inside the admitted run scope", async () => {
+    const scopedPassage = {
+      ...passage(),
+      contentHash: "a".repeat(64),
+      sourceArtifactId: "artifact-private-sentinel",
+      sourceName: "Source label"
+    };
+    const value = harness({
+      aliases: [{
+        alias: "S1",
+        bindingOrdinal: 0,
+        kind: "source",
+        label: "Source label",
+        sourceArtifactId: "artifact-private-sentinel",
+        sourceId: "source-private-sentinel"
+      }],
+      bindings: [binding({ includeWholeBase: false, selectedSourceIds: ["source-private-sentinel"] })],
+      passages: [scopedPassage]
+    });
+    const result = await value.executor.execute({
+      arguments: { query: "retained passage", sourceAliases: ["S1"] },
+      id: "provider-call-1",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-row-1",
+      request: {} as never,
+      runId: "run-1",
+      userId: "user-1"
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+    expect(value.store.hybridSearch).toHaveBeenCalledWith(expect.objectContaining({
+      bindingOrdinals: [0],
+      sourceIds: ["source-private-sentinel"]
+    }));
+    expect(text).toContain("S1 — Source label");
+    expect(text).not.toContain("source-private-sentinel");
+    expect(text).not.toContain("artifact-private-sentinel");
+  });
+
+  it("keeps exact follow-up retrieval local and rejects unknown aliases before search", async () => {
+    const exact = harness({ aliases: [] });
+    await exact.executor.execute({
+      arguments: { match: "phrase", value: "exact value" },
+      id: "provider-call-1",
+      name: KNOWLEDGE_EXACT_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-row-1",
+      request: {} as never,
+      runId: "run-1",
+      userId: "user-1"
+    });
+    expect(exact.embeddingRuntime.resolve).not.toHaveBeenCalled();
+    expect(exact.store.hybridSearch).toHaveBeenCalledWith(expect.objectContaining({ vectors: [] }));
+
+    const unknown = harness({ aliases: [] });
+    const rejected = await unknown.executor.execute({
+      arguments: { query: "query", sourceAliases: ["S1"] },
+      id: "provider-call-1",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-row-1",
+      request: {} as never,
+      runId: "run-1",
+      userId: "user-1"
+    });
+    expect(rejected).toMatchObject({ status: "error" });
+    expect(unknown.store.hybridSearch).not.toHaveBeenCalled();
+    expect(unknown.embeddingRuntime.resolve).not.toHaveBeenCalled();
   });
 });

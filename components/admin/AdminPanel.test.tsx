@@ -2,6 +2,10 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminEmailState } from "@/lib/contracts/email";
+import {
+  adminKnowledgeOperationsFixture,
+  adminKnowledgeProfileFixture
+} from "@/tests/support/knowledgeProfile";
 import { StrictMode } from "react";
 import { AdminPanel } from "./AdminPanel";
 
@@ -973,6 +977,7 @@ describe("AdminPanel", () => {
         maxNormalizedChars: 5_000_000,
         maxPages: 2_000
       },
+      operations: adminKnowledgeOperationsFixture(),
       policy: {
         candidateLimit: 40,
         resultLimit: 8,
@@ -981,6 +986,7 @@ describe("AdminPanel", () => {
         updatedBy: null,
         version: 1
       },
+      profile: adminKnowledgeProfileFixture(),
       retrievalBounds: {
         candidateLimit: { max: 100, min: 1 },
         resultLimit: { max: 8, min: 1 },

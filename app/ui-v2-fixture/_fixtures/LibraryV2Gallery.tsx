@@ -57,7 +57,7 @@ const assistants = [
 const bases = [
   {
     description: "Утверждённые продуктовые решения и критерии готовности.",
-    documentCount: 18,
+    sourceCount: 18,
     id: "product",
     name: "Product decisions",
     owned: true,
@@ -65,7 +65,7 @@ const bases = [
   },
   {
     description: "Материалы квартального исследования, индекс строится.",
-    documentCount: 9,
+    sourceCount: 9,
     id: "research",
     name: "Research 2026",
     owned: true,
@@ -73,7 +73,7 @@ const bases = [
   },
   {
     description: "Общая база команды поддержки.",
-    documentCount: 42,
+    sourceCount: 42,
     id: "support",
     name: "Support handbook",
     owned: false,

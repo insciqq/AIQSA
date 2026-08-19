@@ -545,7 +545,7 @@ export function useRunControlsActions({
     useComposerControlStore.getState().applyAssistantSelection({
       assistant: input.assistant,
       controlDefaults,
-      knowledgeBaseIds: input.revision.knowledgeBaseIds,
+      knowledgeSelection: input.revision.knowledgeSelection,
       modelId: model.modelId,
       provider: model.provider,
       searchOptionIds: input.revision.searchPlan.optionIds,

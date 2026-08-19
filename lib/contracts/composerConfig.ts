@@ -11,6 +11,14 @@ export type ComposerConfigKnowledgeBase = Readonly<{
   owned: boolean;
 }>;
 
+export type ComposerConfigKnowledgeSource = Readonly<{
+  description: string;
+  id: string;
+  name: string;
+  owned: boolean;
+  readiness: "needs_attention" | "processing" | "ready";
+}>;
+
 export type ComposerConfigMcpServer = Readonly<{
   description: string;
   enabled: boolean;
@@ -24,6 +32,7 @@ export type ComposerConfig = Readonly<{
   assistants: readonly AssistantSummary[];
   catalog: Catalog;
   knowledgeBases: readonly ComposerConfigKnowledgeBase[];
+  knowledgeSources?: readonly ComposerConfigKnowledgeSource[];
   mcpServers: readonly ComposerConfigMcpServer[];
   skills?: readonly SkillSummary[];
 }>;

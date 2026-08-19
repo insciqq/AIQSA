@@ -36,7 +36,7 @@ export type AssistantSummaryV2 = Readonly<{
 
 export type KnowledgeSummaryV2 = Readonly<{
   description: string;
-  documentCount: number;
+  sourceCount: number;
   id: string;
   name: string;
   owned: boolean;

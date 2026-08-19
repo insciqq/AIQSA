@@ -255,6 +255,9 @@ function ProjectSettingsDialogContentV2({
   const [defaultModelId, setDefaultModelId] = useState(project.defaults.providerModelId ?? "");
   const [defaultAssistantId, setDefaultAssistantId] = useState(project.defaults.assistantId ?? "");
   const [defaultKnowledgeIds, setDefaultKnowledgeIds] = useState<string[]>([...project.defaults.knowledgePlan.baseIds]);
+  const [defaultKnowledgeSourceIds, setDefaultKnowledgeSourceIds] = useState<string[]>([
+    ...project.defaults.knowledgePlan.sourceIds
+  ]);
   const [defaultSearchIds, setDefaultSearchIds] = useState<string[]>([...project.defaults.searchPlan.optionIds]);
   const [mcpMode, setMcpMode] = useState<"auto" | "load_all" | "off">(project.defaults.mcpMode);
   const [externalToolsEnabled, setExternalToolsEnabled] = useState(project.policy.externalToolsEnabled);
@@ -321,6 +324,7 @@ function ProjectSettingsDialogContentV2({
     defaultModelId !== (project.defaults.providerModelId ?? "") ||
     defaultAssistantId !== (project.defaults.assistantId ?? "") ||
     JSON.stringify(defaultKnowledgeIds) !== JSON.stringify(project.defaults.knowledgePlan.baseIds) ||
+    JSON.stringify(defaultKnowledgeSourceIds) !== JSON.stringify(project.defaults.knowledgePlan.sourceIds) ||
     JSON.stringify(defaultSearchIds) !== JSON.stringify(project.defaults.searchPlan.optionIds) ||
     mcpMode !== project.defaults.mcpMode ||
     externalToolsEnabled !== project.policy.externalToolsEnabled ||
@@ -367,6 +371,10 @@ function ProjectSettingsDialogContentV2({
     }
     if (JSON.stringify(defaultKnowledgeIds) === JSON.stringify(previous.defaults.knowledgePlan.baseIds)) {
       setDefaultKnowledgeIds([...nextProject.defaults.knowledgePlan.baseIds]);
+    }
+    if (JSON.stringify(defaultKnowledgeSourceIds) ===
+      JSON.stringify(previous.defaults.knowledgePlan.sourceIds)) {
+      setDefaultKnowledgeSourceIds([...nextProject.defaults.knowledgePlan.sourceIds]);
     }
     if (JSON.stringify(defaultSearchIds) === JSON.stringify(previous.defaults.searchPlan.optionIds)) {
       setDefaultSearchIds([...nextProject.defaults.searchPlan.optionIds]);
@@ -445,6 +453,7 @@ function ProjectSettingsDialogContentV2({
   const modelResources = project.resources.filter((resource) => resource.type === "model");
   const assistantResources = project.resources.filter((resource) => resource.type === "assistant");
   const knowledgeResources = project.resources.filter((resource) => resource.type === "knowledge");
+  const knowledgeSourceResources = project.composer?.knowledgeSources ?? [];
   const searchResources = project.resources.filter((resource) => resource.type === "search");
   const mcpResources = project.resources.filter((resource) => resource.type === "mcp");
   const skillResources = project.resources.filter((resource) => resource.type === "skill");
@@ -472,6 +481,7 @@ function ProjectSettingsDialogContentV2({
     setDefaultModelId(project.defaults.providerModelId ?? "");
     setDefaultAssistantId(project.defaults.assistantId ?? "");
     setDefaultKnowledgeIds([...project.defaults.knowledgePlan.baseIds]);
+    setDefaultKnowledgeSourceIds([...project.defaults.knowledgePlan.sourceIds]);
     setDefaultSearchIds([...project.defaults.searchPlan.optionIds]);
     setMcpMode(project.defaults.mcpMode);
     setExternalToolsEnabled(project.policy.externalToolsEnabled);
@@ -677,7 +687,14 @@ function ProjectSettingsDialogContentV2({
                   ...project.defaults,
                   assistantId: defaultAssistantId || null,
                   controlValues,
-                  knowledgePlan: { baseIds: defaultKnowledgeIds },
+                  knowledgePlan: {
+                    baseIds: defaultKnowledgeIds,
+                    mode: defaultKnowledgeIds.length > 0 || defaultKnowledgeSourceIds.length > 0
+                      ? "explicit"
+                      : "none",
+                    sourceIds: defaultKnowledgeSourceIds,
+                    version: 1
+                  },
                   mcpMode,
                   providerModelId: defaultModelId || null,
                   searchPlan: {
@@ -722,6 +739,25 @@ function ProjectSettingsDialogContentV2({
                 <legend>Default Knowledge</legend>
                 {knowledgeResources.length === 0 ? <small>Link a Knowledge Base to make it available.</small> : knowledgeResources.map((resource) => (
                   <label className="v2-project-check" key={resource.id}><input checked={defaultKnowledgeIds.includes(resource.resourceId)} disabled={!resource.available} type="checkbox" onChange={(event) => setDefaultKnowledgeIds((current) => event.target.checked ? [...new Set([...current, resource.resourceId])] : current.filter((id) => id !== resource.resourceId))} /><span><strong>{resource.label}</strong><small>{resource.available ? "Included in new chats" : resource.reason ?? "Unavailable"}</small></span></label>
+                ))}
+                {knowledgeSourceResources.map((source) => (
+                  <label className="v2-project-check" key={`source:${source.id}`}>
+                    <input
+                      checked={defaultKnowledgeSourceIds.includes(source.id)}
+                      disabled={source.readiness !== "ready"}
+                      type="checkbox"
+                      onChange={(event) => setDefaultKnowledgeSourceIds((current) =>
+                        event.target.checked
+                          ? [...new Set([...current, source.id])]
+                          : current.filter((id) => id !== source.id))}
+                    />
+                    <span>
+                      <strong>{source.name}</strong>
+                      <small>{source.readiness === "ready"
+                        ? "Source only — included in new chats"
+                        : source.readiness === "processing" ? "Still processing" : "Needs attention"}</small>
+                    </span>
+                  </label>
                 ))}
               </fieldset>
               <fieldset className="v2-project-options" disabled={!manager || !externalToolsEnabled}>

@@ -1,4 +1,5 @@
 import type { AssistantRunControls } from "../../contracts/assistants";
+import type { KnowledgeSelection } from "../../contracts/knowledge";
 import type { SearchPlan } from "../../contracts/search";
 
 /**
@@ -10,7 +11,7 @@ import type { SearchPlan } from "../../contracts/search";
 export type AssistantRunMaterialization = {
   assistantId: string;
   developerPrompt: string | null;
-  knowledgeBaseIds: string[];
+  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
   /** The value the run request would carry as `provider` (connection id). */

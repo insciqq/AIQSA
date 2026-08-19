@@ -3,6 +3,7 @@ import {
   adminUserDeletionInfo,
   adminUserOwnedDataCountWithMemory
 } from "./adminDeletionMetadata";
+import { loadAccountKnowledgeOwnedCounts } from "../knowledge/accountDeletion";
 import { loadAccountMemoryOwnedCounts } from "../memory/accountDeletion/inventory";
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
@@ -155,6 +156,7 @@ export async function listAdminDashboard(
     mcpServer,
     smtpConfiguration,
     memoryOwnedCounts,
+    knowledgeOwnedCounts,
     personalModelRunCounts
   ] = await Promise.all([
     prisma.user.findMany({
@@ -253,6 +255,7 @@ export async function listAdminDashboard(
       }
     }),
     loadAccountMemoryOwnedCounts(prisma),
+    loadAccountKnowledgeOwnedCounts(prisma),
     prisma.modelRun.groupBy({
       _count: { _all: true },
       by: ["userId"],
@@ -278,19 +281,23 @@ export async function listAdminDashboard(
       (membership) => !membership.group.archivedAt
     );
     const activeGroupIds = activeMemberships.map((membership) => membership.groupId);
+    const memoryOwnedCount = memoryOwnedCounts.get(user.id) ?? 0;
+    const knowledgeOwnedCount = knowledgeOwnedCounts.get(user.id) ?? 0;
+    const totalCount = adminUserOwnedDataCountWithMemory(
+      {
+        ...user,
+        _count: {
+          ...user._count,
+          modelRuns: personalModelRunCountByUserId.get(user.id) ?? 0
+        }
+      },
+      memoryOwnedCount
+    );
 
     return {
       deletion: adminUserDeletionInfo({
-        ownedDataCount: adminUserOwnedDataCountWithMemory(
-          {
-            ...user,
-            _count: {
-              ...user._count,
-              modelRuns: personalModelRunCountByUserId.get(user.id) ?? 0
-            }
-          },
-          memoryOwnedCounts.get(user.id) ?? 0
-        ),
+        ownedDataCount: Math.max(0, totalCount - user._count.knowledgeBases - memoryOwnedCount),
+        purgeableOwnedDataCount: knowledgeOwnedCount + memoryOwnedCount,
         status: user.status
       }),
       displayName: user.displayName,

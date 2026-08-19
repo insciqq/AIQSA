@@ -14,6 +14,7 @@ import type {
 } from "@/components/app-shell/powerAppShellV2Contracts";
 import { AssistantLibrary } from "@/components/assistants/AssistantLibrary";
 import { KnowledgeLibrary } from "@/components/knowledge/KnowledgeLibrary";
+import { useKnowledgeSourceViewer } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   AssistantsPanelV2,
   FilesPanelV2,
@@ -50,6 +51,7 @@ function LibrarySurfaceV2({
   const memoryBusy = useMemorySettingsStore((state) => state.busy);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
+  const openKnowledgeSourceViewer = useKnowledgeSourceViewer();
   const initialTab: LibraryTabIdV2 = settings.memory.open
     ? "memory"
     : knowledgeView
@@ -73,7 +75,9 @@ function LibrarySurfaceV2({
   const knowledge: KnowledgeSummaryV2[] = (knowledgeView?.list.knowledgeBases ?? composer.knowledge.bases)
     .map((base) => ({
       description: base.description,
-      documentCount: 0,
+      sourceCount: "sourceCount" in base && typeof base.sourceCount === "number"
+        ? base.sourceCount
+        : 0,
       id: base.id,
       name: base.name,
       owned: base.owned,
@@ -143,6 +147,7 @@ function LibrarySurfaceV2({
       content: (
         <KnowledgePanelV2
           bases={knowledge}
+          onBrowseSources={() => knowledgeView?.list.onCatalogChange("sources")}
           onCreate={() => knowledgeView?.list.onNewBase()}
           onOpen={(id) => knowledgeView?.list.onOpenBase(id)}
         />
@@ -196,8 +201,11 @@ function LibrarySurfaceV2({
       {assistantView && assistantView.task !== "list" ? (
         <AssistantLibrary view={assistantView} />
       ) : null}
-      {knowledgeView && knowledgeView.task !== "list" ? (
-        <KnowledgeLibrary view={knowledgeView} />
+      {knowledgeView && (knowledgeView.task !== "list" || knowledgeView.list.catalog === "sources") ? (
+        <KnowledgeLibrary
+          onPreviewSource={openKnowledgeSourceViewer}
+          view={knowledgeView}
+        />
       ) : null}
       <span className="v2-sr-only">Account {session.accountId}</span>
     </>

@@ -1,7 +1,6 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import {
-  decodeProjectKnowledgeCitationResponse,
   decodeProjectGrantRemovalPreview,
   decodeProjectResourceChangePreview,
   decodeProjectResponse,
@@ -14,7 +13,6 @@ import {
   type ProjectDetailWire,
   type ProjectFolderWire,
   type ProjectGrantRemovalPreviewWire,
-  type ProjectKnowledgeCitationWire,
   type ProjectMemoryResponseWire,
   type ProjectResourceChangePreviewWire,
   type ProjectSummaryWire,
@@ -108,29 +106,6 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
     throw new Error("project_workspace_malformed");
   }
   return decoded;
-}
-
-export async function loadProjectKnowledgeCitation(input: Readonly<{
-  chatId: string;
-  handle: string;
-  messageId: string;
-  projectId: string;
-}>): Promise<ProjectKnowledgeCitationWire> {
-  const path = [
-    "/api/projects",
-    encodeURIComponent(input.projectId),
-    "chats",
-    encodeURIComponent(input.chatId),
-    "messages",
-    encodeURIComponent(input.messageId),
-    "citations",
-    encodeURIComponent(input.handle)
-  ].join("/");
-  const decoded = decodeProjectKnowledgeCitationResponse(await jsonRequest(path));
-  if (!decoded || decoded.citation.handle !== input.handle) {
-    throw new Error("project_citation_malformed");
-  }
-  return decoded.citation;
 }
 
 export async function createProject(input: { description?: string; name: string; preferredModelId?: string }): Promise<ProjectDetailWire> {

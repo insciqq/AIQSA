@@ -25,7 +25,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       }],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -91,7 +91,7 @@ describe("provider-neutral personal context", () => {
       }
     }))).not.toThrow();
     expect(() => assertPersonalContextEgressSafe(request({
-      knowledgePlan: { baseIds: ["base-1"] }
+      knowledgePlan: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 }
     }))).not.toThrow();
     expect(() => assertPersonalContextEgressSafe(request({
       tools: [{

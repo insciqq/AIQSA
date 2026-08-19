@@ -16,7 +16,7 @@ const chat: WorkspaceChatSummary = {
 };
 
 const folder: FolderSummary = {
-  defaultKnowledgePlan: { baseIds: ["kb-1"] },
+  defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
   id: "folder-1",
   name: "Workspace folder",
   parentId: null,

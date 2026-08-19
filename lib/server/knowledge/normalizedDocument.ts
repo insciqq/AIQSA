@@ -1,13 +1,88 @@
 import { createHash } from "node:crypto";
-import type { ParsedDocument } from "../parsing";
+import { KNOWLEDGE_PROCESSING_WARNING_CODES } from "../../domain/knowledgeProcessingWarnings";
+import type {
+  DocumentParserEngine,
+  ParsedBoundingBox,
+  ParsedDocument,
+  ParsedDocumentAsset,
+  ParsedDocumentBlock,
+  ParsedDocumentBlockType,
+  ParsedDocumentParserAttempt,
+  ParsedDocumentQuality,
+  ParsedDocumentWarningCode,
+  ParsedTable,
+  ParsedTableCell,
+  ParsedWorkbook,
+  ParsedWorkbookCell,
+  ParsedWorkbookRange,
+  ParsedWorkbookRegion,
+  ParsedWorkbookSheet,
+  ParsedWorkbookWarningCode
+} from "../parsing";
+import { finalizeParsedDocument, parsedLanguageHints } from "../parsing/assessment";
+import {
+  SPREADSHEET_MAX_CELL_TEXT,
+  SPREADSHEET_MAX_COLUMNS_PER_SHEET,
+  SPREADSHEET_MAX_FORMULA_TEXT,
+  SPREADSHEET_MAX_MERGES_PER_SHEET,
+  SPREADSHEET_MAX_POPULATED_CELLS,
+  SPREADSHEET_MAX_REGIONS_PER_SHEET,
+  SPREADSHEET_MAX_ROWS_PER_SHEET,
+  SPREADSHEET_MAX_SHEETS
+} from "../parsing/spreadsheetLimits";
+import { isSpreadsheetDateValue } from "../parsing/spreadsheetDate";
+import { utils as spreadsheetUtils } from "xlsx";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
-import type { KnowledgeNormalizedBlock } from "./chunking";
+
+export type KnowledgeNormalizedLocator = Readonly<{
+  kind: "page";
+  pageEnd: number;
+  pageStart: number;
+}>;
+
+export type KnowledgeNormalizedAsset = Readonly<{
+  boundingBoxes: readonly ParsedBoundingBox[];
+  caption: string | null;
+  contentHash: string;
+  id: string;
+  kind: ParsedDocumentAsset["kind"];
+  locator: KnowledgeNormalizedLocator;
+}>;
+
+export type KnowledgeNormalizedBlock = Readonly<{
+  assetIds: readonly string[];
+  boundingBoxes: readonly ParsedBoundingBox[];
+  contentHash: string;
+  headingPath: readonly string[];
+  id: string;
+  languageHints: readonly string[];
+  locator: KnowledgeNormalizedLocator;
+  order: number;
+  table: ParsedTable | null;
+  text: string;
+  type: ParsedDocumentBlockType;
+}>;
 
 export type StoredKnowledgeNormalizedDocument = Readonly<{
+  assets: readonly KnowledgeNormalizedAsset[];
   blocks: readonly KnowledgeNormalizedBlock[];
+  contentHash: string;
+  languages: readonly string[];
   pageCount: number;
-  parserEngine: "docling" | "inline" | "tika";
-  schemaVersion: 1;
+  parser: Readonly<{
+    attempts: readonly ParsedDocumentParserAttempt[];
+    engine: DocumentParserEngine;
+  }>;
+  quality: ParsedDocumentQuality;
+  schemaVersion: 3;
+  source: Readonly<{
+    displayName: string | null;
+    mediaType: string;
+  }>;
+  status: "complete" | "partial";
+  title: string | null;
+  warnings: readonly ParsedDocumentWarningCode[];
+  workbook: ParsedWorkbook | null;
 }>;
 
 export type EncodedKnowledgeNormalizedDocument = Readonly<{
@@ -28,37 +103,480 @@ export class KnowledgeNormalizedDocumentError extends Error {
   }
 }
 
-function normalizedHeadingPath(values: readonly string[]): readonly string[] {
-  return Object.freeze(values.slice(0, 16).map((value) =>
-    value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 256)
-  ).filter(Boolean));
+const BLOCK_TYPES: readonly ParsedDocumentBlockType[] = [
+  "caption",
+  "code",
+  "footnote",
+  "heading",
+  "image",
+  "list_item",
+  "paragraph",
+  "table",
+  "title"
+];
+const WARNING_CODES: readonly ParsedDocumentWarningCode[] = KNOWLEDGE_PROCESSING_WARNING_CODES;
+const ATTEMPT_OUTCOMES = [
+  "complete",
+  "partial",
+  "quality_failure",
+  "rejected",
+  "retryable_failure"
+] as const;
+const PARSER_ERROR_CODES = [
+  "parser_invalid_output",
+  "parser_output_too_large",
+  "parser_rejected",
+  "parser_timeout",
+  "parser_unavailable"
+] as const;
+const WORKBOOK_WARNING_CODES: readonly ParsedWorkbookWarningCode[] = [
+  "duplicate_headers",
+  "external_links_ignored",
+  "formula_like_text",
+  "formula_without_cached_value",
+  "hidden_data_present",
+  "macros_ignored",
+  "spreadsheet_cells_truncated",
+  "spreadsheet_rows_truncated",
+  "unsupported_cell_type"
+];
+
+function sha256(value: Buffer | string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
-function checksum(body: Buffer): string {
-  return createHash("sha256").update(body).digest("hex");
+function canonicalHash(value: unknown): string {
+  return sha256(JSON.stringify(value));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizedBlock(value: unknown): KnowledgeNormalizedBlock | null {
+function normalizedText(value: string, maxLength = Number.MAX_SAFE_INTEGER): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .replace(/\u0000/gu, "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function normalizedHeadingPath(values: readonly string[]): readonly string[] {
+  return Object.freeze(values.slice(0, 16).map((value) =>
+    normalizedText(value.replace(/[\u0000-\u001f\u007f]/gu, " "), 256).replace(/\s+/gu, " ")
+  ).filter(Boolean));
+}
+
+function normalizedLanguages(values: readonly string[]): readonly string[] {
+  return Object.freeze([...new Set(values.map((value) => value.trim()).filter((value) =>
+    /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,2}$/u.test(value)
+  ))].slice(0, 16).sort());
+}
+
+function normalizedBoundingBox(value: ParsedBoundingBox): ParsedBoundingBox | null {
   if (
-    !isRecord(value) ||
-    !Array.isArray(value.headingPath) ||
-    value.headingPath.some((item) => typeof item !== "string") ||
-    !Number.isSafeInteger(value.page) ||
-    Number(value.page) < 1 ||
-    typeof value.text !== "string"
-  ) {
-    return null;
-  }
-  const text = value.text.replace(/\r\n?/gu, "\n").trim();
-  if (!text || /\u0000/u.test(text)) return null;
+    !Number.isSafeInteger(value.page) || value.page < 1 ||
+    ![value.bottom, value.left, value.right, value.top].every(Number.isFinite) ||
+    value.left > value.right ||
+    !["bottom_left", "top_left"].includes(value.coordinateOrigin) ||
+    (value.coordinateOrigin === "top_left" && value.bottom < value.top) ||
+    (value.coordinateOrigin === "bottom_left" && value.bottom > value.top)
+  ) return null;
   return Object.freeze({
-    headingPath: normalizedHeadingPath(value.headingPath as string[]),
-    page: Number(value.page),
-    text
+    bottom: value.bottom,
+    coordinateOrigin: value.coordinateOrigin,
+    left: value.left,
+    page: value.page,
+    right: value.right,
+    top: value.top
+  });
+}
+
+function normalizedBoundingBoxes(values: readonly ParsedBoundingBox[]): readonly ParsedBoundingBox[] {
+  if (values.length > 256) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const boxes = values.map(normalizedBoundingBox);
+  if (boxes.some((box) => box === null)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return Object.freeze(boxes as ParsedBoundingBox[]);
+}
+
+function normalizedTable(table: ParsedTable | null): ParsedTable | null {
+  if (!table) return null;
+  if (
+    !Number.isSafeInteger(table.rowCount) || table.rowCount < 1 || table.rowCount > 2_000 ||
+    !Number.isSafeInteger(table.columnCount) || table.columnCount < 1 || table.columnCount > 200 ||
+    table.cells.length > 10_000
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const cells: ParsedTableCell[] = [];
+  for (const cell of table.cells) {
+    const text = normalizedText(cell.text);
+    if (
+      !Number.isSafeInteger(cell.row) || cell.row < 0 || cell.row >= table.rowCount ||
+      !Number.isSafeInteger(cell.column) || cell.column < 0 || cell.column >= table.columnCount ||
+      !Number.isSafeInteger(cell.rowSpan) || cell.rowSpan < 1 || cell.row + cell.rowSpan > table.rowCount ||
+      !Number.isSafeInteger(cell.columnSpan) || cell.columnSpan < 1 ||
+      cell.column + cell.columnSpan > table.columnCount
+    ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    cells.push(Object.freeze({
+      column: cell.column,
+      columnSpan: cell.columnSpan,
+      row: cell.row,
+      rowSpan: cell.rowSpan,
+      text
+    }));
+  }
+  return Object.freeze({
+    cells: Object.freeze(cells),
+    columnCount: table.columnCount,
+    rowCount: table.rowCount
+  });
+}
+
+function normalizedWorkbookRange(value: ParsedWorkbookRange): ParsedWorkbookRange {
+  if (
+    !Number.isSafeInteger(value.rowStart) || value.rowStart < 0 ||
+    !Number.isSafeInteger(value.rowEnd) || value.rowEnd < value.rowStart ||
+    value.rowEnd >= SPREADSHEET_MAX_ROWS_PER_SHEET ||
+    !Number.isSafeInteger(value.columnStart) || value.columnStart < 0 ||
+    !Number.isSafeInteger(value.columnEnd) || value.columnEnd < value.columnStart ||
+    value.columnEnd >= SPREADSHEET_MAX_COLUMNS_PER_SHEET
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const a1 = spreadsheetUtils.encode_range({
+    e: { c: value.columnEnd, r: value.rowEnd },
+    s: { c: value.columnStart, r: value.rowStart }
+  });
+  if (value.a1 !== a1) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze({
+    a1,
+    columnEnd: value.columnEnd,
+    columnStart: value.columnStart,
+    rowEnd: value.rowEnd,
+    rowStart: value.rowStart
+  });
+}
+
+function normalizedWorkbookCell(value: ParsedWorkbookCell): ParsedWorkbookCell {
+  if (
+    !Number.isSafeInteger(value.row) || value.row < 0 ||
+    value.row >= SPREADSHEET_MAX_ROWS_PER_SHEET ||
+    !Number.isSafeInteger(value.column) || value.column < 0 ||
+    value.column >= SPREADSHEET_MAX_COLUMNS_PER_SHEET ||
+    value.address !== spreadsheetUtils.encode_cell({ c: value.column, r: value.row }) ||
+    typeof value.display !== "string" || value.display.length > SPREADSHEET_MAX_CELL_TEXT ||
+    /\u0000/u.test(value.display) ||
+    (value.formula !== null && (
+      typeof value.formula !== "string" || value.formula.length < 1 ||
+      value.formula.length > SPREADSHEET_MAX_FORMULA_TEXT || /\u0000/u.test(value.formula)
+    )) ||
+    (value.numberFormat !== null && (
+      typeof value.numberFormat !== "string" || value.numberFormat.length < 1 ||
+      value.numberFormat.length > 256 || /\u0000/u.test(value.numberFormat)
+    ))
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  let normalizedValue: ParsedWorkbookCell["value"] = value.value;
+  if (value.type === "blank") {
+    if (value.value !== null) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  } else if (value.type === "boolean") {
+    if (typeof value.value !== "boolean") throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  } else if (value.type === "number") {
+    if (typeof value.value !== "number" || !Number.isFinite(value.value)) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+  } else if (value.type === "date") {
+    if (typeof value.value !== "string" || !isSpreadsheetDateValue(value.value)) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+  } else if (value.type === "error" || value.type === "string") {
+    if (typeof value.value !== "string" || value.value.length > SPREADSHEET_MAX_CELL_TEXT ||
+      /\u0000/u.test(value.value)) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+    normalizedValue = value.value.replace(/\r\n?/gu, "\n");
+  } else {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return Object.freeze({
+    address: value.address,
+    column: value.column,
+    display: value.display.replace(/\r\n?/gu, "\n"),
+    formula: value.formula?.replace(/\r\n?/gu, "\n") ?? null,
+    numberFormat: value.numberFormat,
+    row: value.row,
+    type: value.type,
+    value: normalizedValue
+  });
+}
+
+function normalizedWorkbookRegion(value: ParsedWorkbookRegion): ParsedWorkbookRegion {
+  const range = normalizedWorkbookRange(value);
+  const width = range.columnEnd - range.columnStart + 1;
+  if (
+    !Array.isArray(value.columnLabels) || value.columnLabels.length !== width ||
+    value.columnLabels.some((label) => typeof label !== "string" || !label.trim() ||
+      label.length > 256 || /\u0000/u.test(label)) ||
+    (value.headerRow !== null && (
+      !Number.isSafeInteger(value.headerRow) || value.headerRow < range.rowStart ||
+      value.headerRow > range.rowEnd
+    )) ||
+    !Array.isArray(value.rowLabelColumns) || value.rowLabelColumns.length > 3 ||
+    value.rowLabelColumns.some((column) => !Number.isSafeInteger(column) ||
+      column < range.columnStart || column > range.columnEnd) ||
+    new Set(value.rowLabelColumns).size !== value.rowLabelColumns.length
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze({
+    ...range,
+    columnLabels: Object.freeze(value.columnLabels.map((label) => label.trim())),
+    headerRow: value.headerRow,
+    rowLabelColumns: Object.freeze([...value.rowLabelColumns])
+  });
+}
+
+function sortedUniqueIndexes(values: readonly number[], maximum: number): readonly number[] {
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0 || value >= maximum) ||
+    new Set(values).size !== values.length ||
+    values.some((value, index) => index > 0 && value <= values[index - 1]!)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return Object.freeze([...values]);
+}
+
+function normalizedWorkbookSheet(value: ParsedWorkbookSheet, index: number): ParsedWorkbookSheet {
+  if (
+    value.index !== index || !Number.isSafeInteger(value.rowCount) || value.rowCount < 0 ||
+    value.rowCount > SPREADSHEET_MAX_ROWS_PER_SHEET ||
+    !Number.isSafeInteger(value.columnCount) || value.columnCount < 0 ||
+    value.columnCount > SPREADSHEET_MAX_COLUMNS_PER_SHEET ||
+    typeof value.name !== "string" || !value.name.trim() || value.name.length > 256 ||
+    /\u0000/u.test(value.name) ||
+    (value.hidden !== "visible" && value.hidden !== "hidden" && value.hidden !== "very_hidden") ||
+    typeof value.truncated !== "boolean" || !Array.isArray(value.cells) ||
+    value.cells.length > SPREADSHEET_MAX_POPULATED_CELLS ||
+    !Array.isArray(value.merges) || value.merges.length > SPREADSHEET_MAX_MERGES_PER_SHEET ||
+    !Array.isArray(value.regions) || value.regions.length > SPREADSHEET_MAX_REGIONS_PER_SHEET
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const cells = value.cells.map(normalizedWorkbookCell);
+  if (cells.some((cell, cellIndex) => {
+    const previous = cells[cellIndex - 1];
+    return cell.row >= value.rowCount || cell.column >= value.columnCount ||
+      Boolean(previous && (cell.row < previous.row ||
+        cell.row === previous.row && cell.column <= previous.column));
+  })) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const expectedRows = cells.reduce((maximum, cell) => Math.max(maximum, cell.row + 1), 0);
+  const expectedColumns = cells.reduce((maximum, cell) => Math.max(maximum, cell.column + 1), 0);
+  if (expectedRows !== value.rowCount || expectedColumns !== value.columnCount) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return Object.freeze({
+    cells: Object.freeze(cells),
+    columnCount: value.columnCount,
+    hidden: value.hidden,
+    hiddenColumns: sortedUniqueIndexes(value.hiddenColumns, value.columnCount),
+    hiddenRows: sortedUniqueIndexes(value.hiddenRows, value.rowCount),
+    index,
+    merges: Object.freeze(value.merges.map(normalizedWorkbookRange)),
+    name: value.name.trim(),
+    regions: Object.freeze(value.regions.map(normalizedWorkbookRegion)),
+    rowCount: value.rowCount,
+    truncated: value.truncated
+  });
+}
+
+function normalizedWorkbook(value: ParsedWorkbook | null): ParsedWorkbook | null {
+  if (value === null) return null;
+  if (
+    (value.dateSystem !== "1900" && value.dateSystem !== "1904") ||
+    !Array.isArray(value.sheets) || value.sheets.length < 1 ||
+    value.sheets.length > SPREADSHEET_MAX_SHEETS ||
+    !Array.isArray(value.warnings) || value.warnings.length > WORKBOOK_WARNING_CODES.length ||
+    value.warnings.some((warning) => !WORKBOOK_WARNING_CODES.includes(warning)) ||
+    new Set(value.warnings).size !== value.warnings.length
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const sheets = value.sheets.map(normalizedWorkbookSheet);
+  if (sheets.reduce((total, sheet) => total + sheet.cells.length, 0) >
+    SPREADSHEET_MAX_POPULATED_CELLS) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return Object.freeze({
+    dateSystem: value.dateSystem,
+    sheets: Object.freeze(sheets),
+    warnings: Object.freeze(WORKBOOK_WARNING_CODES.filter((warning) =>
+      value.warnings.includes(warning)))
+  });
+}
+
+function normalizedAttempt(value: ParsedDocumentParserAttempt): ParsedDocumentParserAttempt {
+  if (
+    !["docling", "inline", "spreadsheet", "tika"].includes(value.engine) ||
+    !ATTEMPT_OUTCOMES.includes(value.outcome) ||
+    (value.errorCode !== null && !PARSER_ERROR_CODES.includes(value.errorCode))
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze({
+    engine: value.engine,
+    errorCode: value.errorCode,
+    outcome: value.outcome
+  });
+}
+
+function attemptEvidence(parsed: ParsedDocument): readonly ParsedDocumentParserAttempt[] {
+  const attempts = parsed.attempts.length > 0
+    ? parsed.attempts
+    : [{ engine: parsed.engine, errorCode: null, outcome: parsed.status } as const];
+  if (attempts.length > 4) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze(attempts.map(normalizedAttempt));
+}
+
+function assetContent(asset: ParsedDocumentAsset): Omit<KnowledgeNormalizedAsset, "contentHash" | "id"> {
+  if (!Number.isSafeInteger(asset.page) || asset.page < 1) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return {
+    boundingBoxes: normalizedBoundingBoxes(asset.boundingBoxes),
+    caption: asset.caption ? normalizedText(asset.caption, 2_000) || null : null,
+    kind: asset.kind,
+    locator: Object.freeze({ kind: "page", pageEnd: asset.page, pageStart: asset.page })
+  };
+}
+
+function normalizedAssets(input: readonly ParsedDocumentAsset[]): Readonly<{
+  assets: readonly KnowledgeNormalizedAsset[];
+  idMap: ReadonlyMap<string, string>;
+}> {
+  if (input.length > 10_000) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const occurrences = new Map<string, number>();
+  const idMap = new Map<string, string>();
+  const assets = input.map((asset) => {
+    if (!asset.id || idMap.has(asset.id)) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    const content = assetContent(asset);
+    const contentHash = canonicalHash(content);
+    const occurrence = occurrences.get(contentHash) ?? 0;
+    occurrences.set(contentHash, occurrence + 1);
+    const id = `a_${contentHash.slice(0, 24)}_${occurrence}`;
+    idMap.set(asset.id, id);
+    return Object.freeze({ ...content, contentHash, id });
+  });
+  return Object.freeze({ assets: Object.freeze(assets), idMap });
+}
+
+function blockContent(
+  block: ParsedDocumentBlock,
+  assetIdMap: ReadonlyMap<string, string>
+): Omit<KnowledgeNormalizedBlock, "contentHash" | "id" | "order"> {
+  if (
+    !Number.isSafeInteger(block.page) || block.page < 1 ||
+    !Number.isSafeInteger(block.pageEnd) || block.pageEnd < block.page ||
+    !BLOCK_TYPES.includes(block.type)
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const text = normalizedText(block.text);
+  const assetIds = block.assetIds.map((id) => assetIdMap.get(id));
+  if (assetIds.some((id) => !id) || new Set(assetIds).size !== assetIds.length) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  if (!text && !(block.type === "image" && assetIds.length > 0)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  const table = normalizedTable(block.table);
+  if ((block.type === "table") !== block.isTable || (table && block.type !== "table")) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return {
+    assetIds: Object.freeze(assetIds as string[]),
+    boundingBoxes: normalizedBoundingBoxes(block.boundingBoxes),
+    headingPath: normalizedHeadingPath(block.headingPath),
+    languageHints: normalizedLanguages(block.languageHints.length > 0
+      ? block.languageHints
+      : parsedLanguageHints(text)),
+    locator: Object.freeze({ kind: "page", pageEnd: block.pageEnd, pageStart: block.page }),
+    table,
+    text,
+    type: block.type
+  };
+}
+
+function normalizedBlocks(
+  input: readonly ParsedDocumentBlock[],
+  assetIdMap: ReadonlyMap<string, string>
+): readonly KnowledgeNormalizedBlock[] {
+  const occurrences = new Map<string, number>();
+  return Object.freeze(input.map((block, order) => {
+    if (block.index !== order || block.readingOrder !== order) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+    const content = blockContent(block, assetIdMap);
+    const contentHash = canonicalHash(content);
+    const occurrence = occurrences.get(contentHash) ?? 0;
+    occurrences.set(contentHash, occurrence + 1);
+    return Object.freeze({
+      ...content,
+      contentHash,
+      id: `b_${contentHash.slice(0, 24)}_${occurrence}`,
+      order
+    });
+  }));
+}
+
+function normalizedQuality(value: ParsedDocumentQuality): ParsedDocumentQuality {
+  const ratios = [
+    value.duplicateFurnitureRatio,
+    value.emptyPageRatio,
+    value.pageCoverage,
+    ...(value.ocrConfidence === null ? [] : [value.ocrConfidence])
+  ];
+  if (
+    ![value.characterCount, value.coveredPageCount, value.headingCount, value.tableCount, value.usableBlockCount]
+      .every((item) => Number.isSafeInteger(item) && item >= 0) ||
+    ratios.some((item) => !Number.isFinite(item) || item < 0 || item > 1) ||
+    typeof value.encodingValid !== "boolean"
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze({ ...value });
+}
+
+function buildStoredDocument(
+  parsed: ParsedDocument,
+  metadata: Readonly<{ sourceDisplayName?: string | null; sourceMediaType?: string }> = {}
+): StoredKnowledgeNormalizedDocument {
+  if (
+    !Number.isSafeInteger(parsed.pageCount) || parsed.pageCount < 1 ||
+    parsed.quality.usableBlockCount < 1 || !parsed.quality.encodingValid
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const { assets, idMap } = normalizedAssets(parsed.assets);
+  const blocks = normalizedBlocks(parsed.blocks, idMap);
+  if (blocks.some((block) => block.locator.pageEnd > parsed.pageCount) ||
+    assets.some((asset) => asset.locator.pageEnd > parsed.pageCount)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  const warnings = Object.freeze(WARNING_CODES.filter((warning) => parsed.warnings.includes(warning)));
+  const workbook = normalizedWorkbook(parsed.workbook);
+  if ((parsed.engine === "spreadsheet") !== (workbook !== null)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  const title = blocks.find((block) => block.type === "title")?.text ?? null;
+  const sourceDisplayName = metadata.sourceDisplayName
+    ? normalizedText(metadata.sourceDisplayName.replace(/[\u0000-\u001f\u007f]/gu, " "), 512)
+    : null;
+  const contentHash = canonicalHash({
+    assets: assets.map((asset) => asset.contentHash),
+    blocks: blocks.map((block) => block.contentHash),
+    status: parsed.status,
+    workbook
+  });
+  return Object.freeze({
+    assets,
+    blocks,
+    contentHash,
+    languages: normalizedLanguages(parsed.languages),
+    pageCount: parsed.pageCount,
+    parser: Object.freeze({ attempts: attemptEvidence(parsed), engine: parsed.engine }),
+    quality: normalizedQuality(parsed.quality),
+    schemaVersion: 3 as const,
+    source: Object.freeze({
+      displayName: sourceDisplayName || null,
+      mediaType: metadata.sourceMediaType ?? parsed.mediaType
+    }),
+    status: parsed.status,
+    title,
+    warnings,
+    workbook
   });
 }
 
@@ -69,44 +587,223 @@ function assertWithinLimits(
   if (document.pageCount > config.maxPages) {
     throw new KnowledgeNormalizedDocumentError("knowledge_page_limit_exceeded");
   }
-  if (document.blocks.length === 0) {
-    throw new KnowledgeNormalizedDocumentError("parser_rejected");
-  }
-  if (document.blocks.some((block) => block.page > document.pageCount)) {
+  if (document.blocks.length === 0 || document.quality.usableBlockCount === 0) {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
   const characterCount = document.blocks.reduce((total, block) => total + block.text.length, 0);
   if (
     characterCount > config.maxNormalizedChars ||
     document.blocks.length > config.maxChunksPerDocument * 4
-  ) {
-    throw new KnowledgeNormalizedDocumentError("knowledge_text_limit_exceeded");
-  }
+  ) throw new KnowledgeNormalizedDocumentError("knowledge_text_limit_exceeded");
 }
 
 export function encodeKnowledgeNormalizedDocument(
   parsed: ParsedDocument,
-  config: KnowledgeExtractionConfig
+  config: KnowledgeExtractionConfig,
+  metadata: Readonly<{ sourceDisplayName?: string | null; sourceMediaType?: string }> = {}
 ): EncodedKnowledgeNormalizedDocument {
-  if (parsed.status !== "complete" || !Number.isSafeInteger(parsed.pageCount) || parsed.pageCount < 1) {
-    throw new KnowledgeNormalizedDocumentError("parser_rejected");
-  }
-  const blocks = parsed.blocks.map((block) => normalizedBlock(block));
-  if (blocks.some((block) => block === null)) {
-    throw new KnowledgeNormalizedDocumentError("parser_rejected");
-  }
-  const document = Object.freeze({
-    blocks: Object.freeze(blocks as KnowledgeNormalizedBlock[]),
-    pageCount: parsed.pageCount,
-    parserEngine: parsed.engine,
-    schemaVersion: 1 as const
-  });
+  const document = buildStoredDocument(parsed, metadata);
   assertWithinLimits(document, config);
   const body = Buffer.from(JSON.stringify(document), "utf8");
   if (body.byteLength > config.maxNormalizedObjectBytes) {
     throw new KnowledgeNormalizedDocumentError("knowledge_text_limit_exceeded");
   }
-  return { body, checksum: checksum(body), document };
+  return { body, checksum: sha256(body), document };
+}
+
+function parsedBox(value: unknown): ParsedBoundingBox | null {
+  if (!isRecord(value)) return null;
+  return normalizedBoundingBox(value as ParsedBoundingBox);
+}
+
+function parsedTable(value: unknown): ParsedTable | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value) || !Array.isArray(value.cells)) return undefined;
+  try {
+    return normalizedTable({
+      cells: value.cells as ParsedTableCell[],
+      columnCount: Number(value.columnCount),
+      rowCount: Number(value.rowCount)
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function parsedV2Block(value: unknown, index: number): ParsedDocumentBlock | null {
+  if (
+    !isRecord(value) || value.order !== index || typeof value.id !== "string" ||
+    typeof value.contentHash !== "string" || !isRecord(value.locator) ||
+    value.locator.kind !== "page" || !Array.isArray(value.headingPath) ||
+    value.headingPath.some((item) => typeof item !== "string") ||
+    !Array.isArray(value.assetIds) || value.assetIds.some((item) => typeof item !== "string") ||
+    !Array.isArray(value.languageHints) || value.languageHints.some((item) => typeof item !== "string") ||
+    !Array.isArray(value.boundingBoxes) || typeof value.text !== "string" ||
+    !BLOCK_TYPES.includes(value.type as ParsedDocumentBlockType)
+  ) return null;
+  const boxes = value.boundingBoxes.map(parsedBox);
+  const table = parsedTable(value.table);
+  if (boxes.some((box) => box === null) || table === undefined) return null;
+  const page = Number(value.locator.pageStart);
+  const pageEnd = Number(value.locator.pageEnd);
+  if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(pageEnd) || pageEnd < page) return null;
+  return Object.freeze({
+    assetIds: Object.freeze(value.assetIds as string[]),
+    boundingBoxes: Object.freeze(boxes as ParsedBoundingBox[]),
+    headingPath: Object.freeze(value.headingPath as string[]),
+    index,
+    isTable: value.type === "table",
+    languageHints: Object.freeze(value.languageHints as string[]),
+    page,
+    pageEnd,
+    readingOrder: index,
+    table,
+    text: value.text,
+    type: value.type as ParsedDocumentBlockType
+  });
+}
+
+function parsedV2Asset(value: unknown): ParsedDocumentAsset | null {
+  if (
+    !isRecord(value) || typeof value.id !== "string" || typeof value.contentHash !== "string" ||
+    !["chart", "diagram", "image"].includes(String(value.kind)) ||
+    !isRecord(value.locator) || value.locator.kind !== "page" ||
+    value.locator.pageStart !== value.locator.pageEnd ||
+    !Array.isArray(value.boundingBoxes) ||
+    (value.caption !== null && typeof value.caption !== "string")
+  ) return null;
+  const page = Number(value.locator.pageStart);
+  const boxes = value.boundingBoxes.map(parsedBox);
+  if (!Number.isSafeInteger(page) || page < 1 || boxes.some((box) => box === null)) return null;
+  return Object.freeze({
+    boundingBoxes: Object.freeze(boxes as ParsedBoundingBox[]),
+    caption: value.caption as string | null,
+    id: value.id,
+    kind: value.kind as ParsedDocumentAsset["kind"],
+    page
+  });
+}
+
+function parsedAttempt(value: unknown): ParsedDocumentParserAttempt | null {
+  if (!isRecord(value)) return null;
+  try {
+    return normalizedAttempt(value as ParsedDocumentParserAttempt);
+  } catch {
+    return null;
+  }
+}
+
+function parsedWorkbook(value: unknown): ParsedWorkbook | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  try {
+    return normalizedWorkbook(value as unknown as ParsedWorkbook);
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeV2OrV3(
+  value: Record<string, unknown>,
+  schemaVersion: 2 | 3
+): StoredKnowledgeNormalizedDocument {
+  if (
+    !Array.isArray(value.blocks) || !Array.isArray(value.assets) ||
+    !Array.isArray(value.languages) || value.languages.some((item) => typeof item !== "string") ||
+    !Array.isArray(value.warnings) || value.warnings.some((item) => !WARNING_CODES.includes(item as ParsedDocumentWarningCode)) ||
+    !isRecord(value.parser) || !Array.isArray(value.parser.attempts) ||
+    !["docling", "inline", "spreadsheet", "tika"].includes(String(value.parser.engine)) ||
+    !isRecord(value.source) || (value.source.displayName !== null && typeof value.source.displayName !== "string") ||
+    typeof value.source.mediaType !== "string" || !isRecord(value.quality) ||
+    (value.status !== "complete" && value.status !== "partial") ||
+    !Number.isSafeInteger(value.pageCount) || Number(value.pageCount) < 1 ||
+    typeof value.contentHash !== "string"
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const blocks = value.blocks.map(parsedV2Block);
+  const assets = value.assets.map(parsedV2Asset);
+  const attempts = value.parser.attempts.map(parsedAttempt);
+  const workbook = schemaVersion === 3 ? parsedWorkbook(value.workbook) : null;
+  if (blocks.some((block) => block === null) || assets.some((asset) => asset === null) ||
+    attempts.some((attempt) => attempt === null) || workbook === undefined) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  const parsed = finalizeParsedDocument({
+    assets: assets as ParsedDocumentAsset[],
+    attempts: attempts as ParsedDocumentParserAttempt[],
+    blocks: blocks as ParsedDocumentBlock[],
+    engine: value.parser.engine as DocumentParserEngine,
+    languages: value.languages as string[],
+    mediaType: value.source.mediaType,
+    ocrConfidence: typeof value.quality.ocrConfidence === "number"
+      ? value.quality.ocrConfidence
+      : null,
+    pageCount: Number(value.pageCount),
+    status: value.status,
+    warnings: value.warnings as ParsedDocumentWarningCode[],
+    workbook
+  });
+  const rebuilt = buildStoredDocument(parsed, {
+    sourceDisplayName: value.source.displayName as string | null,
+    sourceMediaType: value.source.mediaType
+  });
+  const storedBlockEvidence = value.blocks as Array<Record<string, unknown>>;
+  const storedAssetEvidence = value.assets as Array<Record<string, unknown>>;
+  const expectedContentHash = schemaVersion === 3
+    ? rebuilt.contentHash
+    : canonicalHash({
+        assets: rebuilt.assets.map((asset) => asset.contentHash),
+        blocks: rebuilt.blocks.map((block) => block.contentHash),
+        status: rebuilt.status
+      });
+  if (
+    expectedContentHash !== value.contentHash ||
+    rebuilt.blocks.some((block, index) =>
+      block.id !== storedBlockEvidence[index]?.id ||
+      block.contentHash !== storedBlockEvidence[index]?.contentHash) ||
+    rebuilt.assets.some((asset, index) =>
+      asset.id !== storedAssetEvidence[index]?.id ||
+      asset.contentHash !== storedAssetEvidence[index]?.contentHash)
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return rebuilt;
+}
+
+function decodeLegacyV1(value: Record<string, unknown>): StoredKnowledgeNormalizedDocument {
+  if (
+    !["docling", "inline", "tika"].includes(String(value.parserEngine)) ||
+    !Number.isSafeInteger(value.pageCount) || Number(value.pageCount) < 1 ||
+    !Array.isArray(value.blocks)
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const blocks: ParsedDocumentBlock[] = value.blocks.map((candidate, index) => {
+    if (
+      !isRecord(candidate) || !Array.isArray(candidate.headingPath) ||
+      candidate.headingPath.some((item) => typeof item !== "string") ||
+      !Number.isSafeInteger(candidate.page) || Number(candidate.page) < 1 ||
+      typeof candidate.text !== "string"
+    ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    const text = normalizedText(candidate.text);
+    if (!text) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    return Object.freeze({
+      assetIds: Object.freeze([]),
+      boundingBoxes: Object.freeze([]),
+      headingPath: normalizedHeadingPath(candidate.headingPath as string[]),
+      index,
+      isTable: false,
+      languageHints: parsedLanguageHints(text),
+      page: Number(candidate.page),
+      pageEnd: Number(candidate.page),
+      readingOrder: index,
+      table: null,
+      text,
+      type: "paragraph" as const
+    });
+  });
+  return buildStoredDocument(finalizeParsedDocument({
+    blocks,
+    engine: value.parserEngine as DocumentParserEngine,
+    mediaType: "application/octet-stream",
+    pageCount: Number(value.pageCount),
+    status: "complete"
+  }));
 }
 
 export function decodeKnowledgeNormalizedDocument(
@@ -122,26 +819,15 @@ export function decodeKnowledgeNormalizedDocument(
   } catch {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
-  if (
-    !isRecord(value) ||
-    value.schemaVersion !== 1 ||
-    !["docling", "inline", "tika"].includes(String(value.parserEngine)) ||
-    !Number.isSafeInteger(value.pageCount) ||
-    Number(value.pageCount) < 1 ||
-    !Array.isArray(value.blocks)
-  ) {
-    throw new KnowledgeNormalizedDocumentError("parser_rejected");
-  }
-  const blocks = value.blocks.map(normalizedBlock);
-  if (blocks.some((block) => block === null)) {
-    throw new KnowledgeNormalizedDocumentError("parser_rejected");
-  }
-  const document = Object.freeze({
-    blocks: Object.freeze(blocks as KnowledgeNormalizedBlock[]),
-    pageCount: Number(value.pageCount),
-    parserEngine: value.parserEngine as StoredKnowledgeNormalizedDocument["parserEngine"],
-    schemaVersion: 1 as const
-  });
+  if (!isRecord(value)) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const document = value.schemaVersion === 3
+    ? decodeV2OrV3(value, 3)
+    : value.schemaVersion === 2
+      ? decodeV2OrV3(value, 2)
+    : value.schemaVersion === 1
+      ? decodeLegacyV1(value)
+      : null;
+  if (!document) throw new KnowledgeNormalizedDocumentError("parser_rejected");
   assertWithinLimits(document, config);
   return document;
 }

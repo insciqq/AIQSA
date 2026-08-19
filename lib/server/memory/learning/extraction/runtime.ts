@@ -63,7 +63,7 @@ function providerRequest(
       blocks: [{ text: memoryFactExtractionPromptPayload(input), type: "text" }]
     },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,

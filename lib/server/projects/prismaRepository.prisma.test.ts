@@ -739,6 +739,42 @@ describe("Prisma-backed Project repository", () => {
 
   it("erases restrictive run evidence as part of owner-authorized Project deletion", async () => {
     await withProjectFixture(async ({ ownerId, projectId }) => {
+      const knowledgeBase = await prisma.knowledgeBase.create({
+        data: { name: "Durable Project Knowledge", ownerUserId: ownerId },
+        select: { id: true }
+      });
+      const source = await prisma.knowledgeSource.create({
+        data: { name: "Durable Project Source", ownerUserId: ownerId },
+        select: { id: true }
+      });
+      const sourceVersion = await prisma.knowledgeSourceVersion.create({
+        data: {
+          byteSize: 128,
+          checksum: "f".repeat(64),
+          fileName: "durable-project-source.md",
+          mimeType: "text/markdown",
+          ownerUserId: ownerId,
+          sourceId: source.id,
+          versionNumber: 1
+        },
+        select: { id: true }
+      });
+      await prisma.knowledgeSource.update({
+        data: { currentVersionId: sourceVersion.id },
+        where: { id: source.id }
+      });
+      await prisma.knowledgeBaseSource.create({
+        data: { knowledgeBaseId: knowledgeBase.id, ownerUserId: ownerId, sourceId: source.id }
+      });
+      await prisma.projectKnowledgeBaseBinding.create({
+        data: {
+          addedByUserId: ownerId,
+          knowledgeBaseId: knowledgeBase.id,
+          projectId
+        }
+      });
+
+      try {
       const parentFolder = await prisma.projectFolder.create({
         data: { name: "Parent", projectId }
       });
@@ -873,6 +909,41 @@ describe("Prisma-backed Project repository", () => {
       await expect(prisma.projectRunBinding.findUnique({
         where: { modelRunId: run.id }
       })).resolves.toBeNull();
+      await expect(prisma.projectKnowledgeBaseBinding.count({
+        where: { knowledgeBaseId: knowledgeBase.id, projectId }
+      })).resolves.toBe(0);
+      await expect(prisma.knowledgeBase.findUnique({
+        where: { id: knowledgeBase.id }
+      })).resolves.not.toBeNull();
+      await expect(prisma.knowledgeSource.findUnique({
+        where: { id: source.id }
+      })).resolves.not.toBeNull();
+      await expect(prisma.knowledgeBaseSource.findUnique({
+        where: {
+          knowledgeBaseId_sourceId: {
+            knowledgeBaseId: knowledgeBase.id,
+            sourceId: source.id
+          }
+        }
+      })).resolves.not.toBeNull();
+      } finally {
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe("SET LOCAL aiqsa.knowledge_purge = 'on'");
+          await tx.projectKnowledgeBaseBinding.deleteMany({
+            where: { knowledgeBaseId: knowledgeBase.id }
+          });
+          await tx.knowledgeBaseSource.deleteMany({
+            where: { knowledgeBaseId: knowledgeBase.id }
+          });
+          await tx.knowledgeSource.update({
+            data: { currentVersionId: null, pendingVersionId: null },
+            where: { id: source.id }
+          });
+          await tx.knowledgeSourceVersion.deleteMany({ where: { sourceId: source.id } });
+          await tx.knowledgeSource.delete({ where: { id: source.id } });
+          await tx.knowledgeBase.delete({ where: { id: knowledgeBase.id } });
+        });
+      }
     });
   });
 });

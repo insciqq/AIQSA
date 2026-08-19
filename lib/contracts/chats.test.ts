@@ -176,6 +176,9 @@ describe("chat wire contracts", () => {
 
   it("decodes bounded chat/folder Knowledge defaults and rejects malformed persisted plans", () => {
     const knowledgePlan = { baseIds: ["base-a", "base-b"] };
+    const canonicalKnowledgePlan = {
+      baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
+    };
     const folder = {
       defaultKnowledgePlan: knowledgePlan,
       id: "folder-1",
@@ -189,9 +192,9 @@ describe("chat wire contracts", () => {
       contentMatches: [],
       folders: [folder]
     })).toEqual({
-      chats: [{ ...summary, defaultKnowledgePlan: knowledgePlan }],
+      chats: [{ ...summary, defaultKnowledgePlan: canonicalKnowledgePlan }],
       contentMatches: [],
-      folders: [folder]
+      folders: [{ ...folder, defaultKnowledgePlan: canonicalKnowledgePlan }]
     });
     expect(decodeWorkspaceChatsResponse({
       chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["same", "same"] } }],
@@ -201,7 +204,12 @@ describe("chat wire contracts", () => {
     expect(decodeWorkspaceChatsResponse({
       chats: [summary],
       contentMatches: [],
-      folders: [{ ...folder, defaultKnowledgePlan: { baseIds: ["a", "b", "c", "d"] } }]
+      folders: [{
+        ...folder,
+        defaultKnowledgePlan: {
+          baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`)
+        }
+      }]
     })).toBeNull();
   });
 
@@ -279,10 +287,7 @@ describe("chat wire contracts", () => {
         url: "https://example.com/citation"
       }],
       knowledgeCitations: [{
-        baseName: "Policies",
-        fileName: "handbook.pdf",
-        handle: "K1.1",
-        page: 12
+        handle: "K1.1"
       }],
       reasoningText: ["Checked reasoning"],
       sources: [{
@@ -293,7 +298,7 @@ describe("chat wire contracts", () => {
       }]
     });
     expect(JSON.stringify(decoded)).not.toMatch(
-      /private-base-id|private generated query|private-route|receipt|toolCall|contextTruncation/
+      /private-base-id|private generated query|private-route|receipt|toolCall|contextTruncation|handbook\.pdf|Policies/
     );
   });
 

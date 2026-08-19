@@ -9,6 +9,8 @@ import {
   KNOWLEDGE_RETRIEVAL_BOUNDS,
   type KnowledgeRetrievalPolicy
 } from "../../knowledge/knowledgePolicy";
+import { createAdminKnowledgeOperationsService } from "./operationsService";
+import { createAdminKnowledgeProfileService } from "./profileService";
 
 export type AdminKnowledgePolicyServiceErrorCode = "knowledge_policy_stale";
 
@@ -23,15 +25,26 @@ export function createAdminKnowledgePolicyService(
   prisma: PrismaClient,
   options: Readonly<{
     extractionConfig?: () => KnowledgeExtractionConfig;
+    operationsService?: ReturnType<typeof createAdminKnowledgeOperationsService>;
+    profileService?: ReturnType<typeof createAdminKnowledgeProfileService>;
   }> = {}
 ) {
   const extractionConfig = options.extractionConfig ?? getKnowledgeExtractionConfig;
+  const operationsService = options.operationsService ??
+    createAdminKnowledgeOperationsService(prisma);
+  const profileService = options.profileService ?? createAdminKnowledgeProfileService(prisma);
   return {
+    activateProfile: profileService.activate,
+
     async list(): Promise<AdminKnowledgeSettings> {
-      const policy = await prisma.knowledgePolicy.findUnique({
-        include: { updatedBy: { select: { displayName: true, id: true } } },
-        where: { id: "installation" }
-      });
+      const [policy, profile, operations] = await Promise.all([
+        prisma.knowledgePolicy.findUnique({
+          include: { updatedBy: { select: { displayName: true, id: true } } },
+          where: { id: "installation" }
+        }),
+        profileService.list(),
+        operationsService.read()
+      ]);
       if (!policy) throw new Error("installation_knowledge_policy_missing");
       const retrievalPolicy: KnowledgeRetrievalPolicy = policy;
       if (!isKnowledgeRetrievalPolicy(retrievalPolicy)) {
@@ -45,6 +58,7 @@ export function createAdminKnowledgePolicyService(
           maxNormalizedChars: ingestion.maxNormalizedChars,
           maxPages: ingestion.maxPages
         },
+        operations,
         policy: {
           candidateLimit: policy.candidateLimit,
           resultLimit: policy.resultLimit,
@@ -53,9 +67,12 @@ export function createAdminKnowledgePolicyService(
           updatedBy: policy.updatedBy,
           version: policy.version
         },
+        profile,
         retrievalBounds: KNOWLEDGE_RETRIEVAL_BOUNDS
       };
     },
+
+    rollbackProfile: profileService.rollback,
 
     async update(input: KnowledgeRetrievalPolicy & Readonly<{
       expectedVersion: number;

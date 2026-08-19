@@ -18,7 +18,8 @@ export const vitestHermeticTests = [
   "lib/**/*.test.{ts,tsx}",
   "ops/**/*.test.{ts,tsx}",
   "prisma/**/*.test.{ts,tsx}",
-  "scripts/**/*.test.{ts,tsx}"
+  "scripts/**/*.test.{ts,tsx}",
+  "tests/knowledge-evals/**/*.test.{ts,tsx}"
 ];
 
 export const vitestResolveConfig = {

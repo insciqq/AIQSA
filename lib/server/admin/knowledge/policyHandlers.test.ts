@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AdminKnowledgePolicyServiceError } from "./policyService";
+import { AdminKnowledgeProfileServiceError } from "./profileService";
 import { createAdminKnowledgePolicyHandlers } from "./policyHandlers";
 
 function session(role: "admin" | "user" = "admin") {
@@ -68,5 +69,37 @@ describe("administrator Knowledge policy handlers", () => {
       expect(response.status).toBe(400);
     }
     expect(service.update).not.toHaveBeenCalled();
+  });
+
+  it("admits profile activation only as a strict administrator action", async () => {
+    const service = {
+      activateProfile: vi.fn().mockRejectedValue(
+        new AdminKnowledgeProfileServiceError("knowledge_profile_destination_unavailable")
+      ),
+      list: vi.fn(),
+      update: vi.fn()
+    };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/knowledge", {
+      body: JSON.stringify({
+        action: "activate_profile",
+        deploymentId: "embedding-1",
+        expectedVersion: 2,
+        visionDeploymentId: null
+      }),
+      headers: { "content-type": "application/json" },
+      method: "PATCH"
+    }));
+
+    expect(response.status).toBe(409);
+    expect(service.activateProfile).toHaveBeenCalledWith({
+      deploymentId: "embedding-1",
+      expectedVersion: 2,
+      userId: "user-1",
+      visionDeploymentId: null
+    });
   });
 });

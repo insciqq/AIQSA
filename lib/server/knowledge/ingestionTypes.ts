@@ -1,13 +1,14 @@
 import type { EmbeddingUsage } from "../providers/embeddings";
+import type { ParsedDocumentWarningCode } from "../parsing";
 import type { KnowledgeVectorSpaceConfiguration } from "./indexProfile";
 
 export type KnowledgeIngestionFailureCode =
   | "chunking_failed"
   | "embedding_failed"
   | "embedding_unavailable"
-  | "generation_superseded"
   | "knowledge_chunk_limit_exceeded"
   | "knowledge_file_limit_exceeded"
+  | "knowledge_hierarchical_index_failed"
   | "knowledge_ingestion_failed"
   | "knowledge_object_checksum_mismatch"
   | "knowledge_object_read_failed"
@@ -16,8 +17,7 @@ export type KnowledgeIngestionFailureCode =
   | "knowledge_text_limit_exceeded"
   | "normalized_text_unavailable"
   | "parser_rejected"
-  | "parser_unavailable"
-  | "reindex_source_unavailable";
+  | "parser_unavailable";
 
 export class KnowledgeIngestionError extends Error {
   constructor(
@@ -29,11 +29,13 @@ export class KnowledgeIngestionError extends Error {
   }
 }
 
-export type KnowledgeGenerationPinRecord = Readonly<{
+export type KnowledgeSourceArtifactPinRecord = Readonly<{
   chunkingProfileVersion: number;
   embeddingConfiguration: KnowledgeVectorSpaceConfiguration;
   embeddingProviderModelId: string;
   id: string;
+  profileExecutionAuthority: "installation" | "legacy_user";
+  profileRevisionId: string | null;
   targetDimension: number;
   vectorSpaceFingerprint: string;
 }>;
@@ -41,9 +43,9 @@ export type KnowledgeGenerationPinRecord = Readonly<{
 type KnowledgeWorkClaimBase = Readonly<{
   attemptCount: number;
   claimToken: string;
-  documentId: string;
-  documentVersionId: string;
-  generation: KnowledgeGenerationPinRecord;
+  sourceId: string;
+  sourceVersionId: string;
+  artifact: KnowledgeSourceArtifactPinRecord;
   knowledgeBaseId: string;
   normalizedTextByteSize: number | null;
   normalizedTextChecksum: string | null;
@@ -51,32 +53,35 @@ type KnowledgeWorkClaimBase = Readonly<{
   ownerUserId: string;
 }>;
 
-export type KnowledgeDocumentWorkClaim = KnowledgeWorkClaimBase & Readonly<{
+export type KnowledgeSourceWorkClaim = KnowledgeWorkClaimBase & Readonly<{
   byteSize: number;
   checksum: string;
   fileName: string;
   ingestChunkCount: number | null;
-  kind: "document";
   mimeType: string;
   originalStorageKey: string | null;
   state: "chunking" | "embedding" | "parsing" | "queued";
 }>;
 
-export type KnowledgeReindexWorkClaim = KnowledgeWorkClaimBase & Readonly<{
-  chunkCount: number | null;
-  kind: "reindex";
-  state: "embedding" | "queued";
-}>;
-
-export type KnowledgeWorkClaim = KnowledgeDocumentWorkClaim | KnowledgeReindexWorkClaim;
+export type KnowledgeWorkClaim = KnowledgeSourceWorkClaim;
 
 export type KnowledgeEmbeddingChunkWrite = Readonly<{
+  contentHash: string;
+  contextPrefix: string;
+  embeddingTextHash: string;
   headingPath: readonly string[];
   index: number;
   page: number;
+  pageEnd: number;
+  sourceBlockEnd: number;
+  sourceBlockIds: readonly string[];
+  sourceBlockStart: number;
   text: string;
+  tokenCount: number;
   vector: readonly number[];
 }>;
+
+export type KnowledgeIngestionWarningCode = ParsedDocumentWarningCode;
 
 export type KnowledgeEmbeddingBatchWrite = Readonly<{
   batchIndex: number;
@@ -89,16 +94,14 @@ export type KnowledgeEmbeddingBatchWrite = Readonly<{
 
 export type KnowledgeWorkIdentity = Readonly<{
   claimToken: string;
-  documentVersionId: string;
-  generationId: string;
-  kind: "document" | "reindex";
+  sourceVersionId: string;
+  artifactId: string;
 }>;
 
 export function knowledgeWorkIdentity(claim: KnowledgeWorkClaim): KnowledgeWorkIdentity {
   return {
     claimToken: claim.claimToken,
-    documentVersionId: claim.documentVersionId,
-    generationId: claim.generation.id,
-    kind: claim.kind
+    sourceVersionId: claim.sourceVersionId,
+    artifactId: claim.artifact.id
   };
 }

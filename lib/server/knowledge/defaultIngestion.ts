@@ -3,9 +3,10 @@ import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
 import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
-import { createPrismaKnowledgeIngestionRepository } from "./prismaIngestionRepository";
+import { createPrismaKnowledgeSourceIngestionRepository } from "./prismaSourceIngestionRepository";
 
-export const defaultKnowledgeIngestionRepository = createPrismaKnowledgeIngestionRepository(prisma);
+export const defaultKnowledgeIngestionRepository =
+  createPrismaKnowledgeSourceIngestionRepository(prisma);
 export const defaultKnowledgeStorage = createS3StorageAdapter();
 
 type KnowledgeIngestionGlobal = typeof globalThis & {

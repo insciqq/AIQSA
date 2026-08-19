@@ -1,5 +1,11 @@
 import { textMessageContent } from "../../domain/content";
-import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import {
+  decodeKnowledgePlan,
+  decodeKnowledgeSelection,
+  EMPTY_KNOWLEDGE_SELECTION,
+  type KnowledgePlan
+} from "../../contracts/knowledge";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
 import { decodeSkillIds, SKILL_MAX_SELECTED } from "../../contracts/skills";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
@@ -59,7 +65,15 @@ import type {
 } from "../skills/runMaterialization";
 import { withSelectedSkillContext } from "../skills/userContext";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
-import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
+import { knowledgeFollowUpTools } from "../knowledge/knowledgeTools";
+import {
+  decodeKnowledgePlannerPlan,
+  KNOWLEDGE_PLANNER_VERSION,
+  planKnowledgeRequest,
+  plannerConversation,
+  type KnowledgePlannerInput,
+  type KnowledgePlannerPlan
+} from "../knowledge/planner";
 import { memoryActionTools } from "../memory/actions/tools";
 import { memoryHistorySearchTool } from "../memory/history/search/tool";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
@@ -120,6 +134,9 @@ export type RunPreparationDeps = Readonly<{
       projectId?: string;
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
+  }>;
+  knowledgePlanner?: Readonly<{
+    plan(input: KnowledgePlannerInput): Promise<KnowledgePlannerPlan>;
   }>;
   mcp?: Readonly<{
     catalog?(userId: string): Promise<McpCapabilityCatalog>;
@@ -713,7 +730,7 @@ function resolvedOrdinaryKnowledgePlan(
   }>
 ): ReturnType<typeof decodeKnowledgePlan> {
   if (body && "knowledgePlan" in body) {
-    return decodeKnowledgePlan(body.knowledgePlan);
+    return decodeKnowledgeSelection(body.knowledgePlan);
   }
   if (chat.defaultKnowledgePlan !== null && chat.defaultKnowledgePlan !== undefined) {
     return decodeKnowledgePlan(chat.defaultKnowledgePlan);
@@ -724,7 +741,7 @@ function resolvedOrdinaryKnowledgePlan(
   ) {
     return decodeKnowledgePlan(chat.folderDefaultKnowledgePlan);
   }
-  return decodeKnowledgePlan({ baseIds: [] });
+  return decodeKnowledgeSelection(EMPTY_KNOWLEDGE_SELECTION);
 }
 
 function promptWithProjectMemory(
@@ -956,10 +973,21 @@ export async function prepareRun(
     return resolvedChatMode;
   }
   const decodedKnowledgePlan = assistantRun
-    ? { ok: true as const, plan: { baseIds: [...assistantRun.knowledgeBaseIds] } }
+    ? { ok: true as const, plan: assistantRun.knowledgeSelection }
     : resolvedOrdinaryKnowledgePlan(body, chat);
   if (!decodedKnowledgePlan.ok) {
     return failure(decodedKnowledgePlan.code, 400);
+  }
+  if (body && Object.hasOwn(body, "knowledgePlan") &&
+    decodedKnowledgePlan.plan.mode === "inherited") {
+    return failure("knowledge_plan_invalid", 400);
+  }
+  if (decodedKnowledgePlan.plan.mode === "inherited" &&
+    (!project || decodedKnowledgePlan.plan.inheritedFrom !== "project")) {
+    return failure("knowledge_plan_invalid", 400);
+  }
+  if (project && decodedKnowledgePlan.plan.mode === "all_my_knowledge") {
+    return failure("knowledge_base_not_available", 404);
   }
   if (project && (
     decodedKnowledgePlan.plan.baseIds.some((id) => !project.knowledgeBaseIds.includes(id)) ||
@@ -968,7 +996,7 @@ export async function prepareRun(
     return failure("knowledge_base_not_available", 404);
   }
   let knowledgeAdmissionPlan: KnowledgeRunAdmissionPlan | undefined;
-  if (decodedKnowledgePlan.plan.baseIds.length > 0) {
+  if (decodedKnowledgePlan.plan.mode !== "none") {
     if (!deps.knowledgeAdmission) {
       return failure("knowledge_base_not_available", 503);
     }
@@ -1287,7 +1315,7 @@ export async function prepareRun(
   const knowledgeToolsEnabled =
     body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
-    Boolean(knowledgeAdmissionPlan);
+    Boolean(knowledgeAdmissionPlan?.bindings.length);
   const executionAdapterKind = modelConfiguration.adapterKind;
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
@@ -1327,6 +1355,46 @@ export async function prepareRun(
           input.source.source.userMessage.id
         );
   const contextMessages = withSelectedSkillContext(conversationMessages, skillRuns);
+  const currentKnowledgeQuery = textFromContentBlocks(
+    conversationMessages.at(-1)?.content ?? content
+  ).trim();
+  const plannerInput: KnowledgePlannerInput = {
+    bases: (knowledgeAdmissionPlan?.bindings ?? []).map((binding) => ({
+      approxTokens: binding.approxTokens ?? null,
+      knowledgeBaseId: binding.knowledgeBaseId,
+      passageCount: binding.passageCount ?? null,
+      readySourceCount: binding.readySourceCount ?? 0,
+      sourceCount: binding.sourceCount ?? 0
+    })),
+    ...(knowledgeAdmissionPlan
+      ? { budgetPolicy: knowledgeAdmissionPlan.budgetPolicy }
+      : {}),
+    conversation: plannerConversation(conversationMessages.slice(0, -1)),
+    modelCapabilities,
+    originalQuery: currentKnowledgeQuery,
+    scopeRequested: decodedKnowledgePlan.plan.mode !== "none",
+    version: KNOWLEDGE_PLANNER_VERSION
+  };
+  let knowledgePlanner: KnowledgePlannerPlan;
+  if (knowledgeAdmissionPlan && deps.knowledgePlanner) {
+    try {
+      const planned = await deps.knowledgePlanner.plan(plannerInput);
+      const decoded = decodeKnowledgePlannerPlan(planned);
+      if (!decoded.ok) throw new Error("knowledge_planner_result_invalid");
+      knowledgePlanner = decoded.plan;
+    } catch (error) {
+      const fallback = await planKnowledgeRequest(plannerInput);
+      knowledgePlanner = {
+        ...fallback,
+        failureCode: error instanceof Error && error.message === "knowledge_planner_result_invalid"
+          ? "classifier_invalid"
+          : "classifier_unavailable",
+        status: "degraded"
+      };
+    }
+  } else {
+    knowledgePlanner = await planKnowledgeRequest(plannerInput);
+  }
   const parameterControls = parameterControlsForModel({
     adapterKind: executionAdapterKind,
     defaultParams,
@@ -1444,7 +1512,8 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    knowledgePlan: { baseIds: [...decodedKnowledgePlan.plan.baseIds] },
+    knowledgePlanner,
+    knowledgePlan: decodedKnowledgePlan.plan,
     ...(memoryActionToolsEnabled
       ? { memoryActionTools: { version: "model-driven-v2" } as const }
       : {}),
@@ -1509,7 +1578,7 @@ export async function prepareRun(
     : [
         ...(
           knowledgeToolsEnabled
-            ? [knowledgeRetrievalTool]
+            ? knowledgeFollowUpTools
             : []
         ),
         ...plannedSearchTools,

@@ -1,16 +1,33 @@
 import {
-  archiveKnowledgeDocument,
+  addKnowledgeSourceMemberships,
+  cancelKnowledgeUploadItem,
+  checkpointKnowledgeUploadPart,
   createKnowledgeBase,
+  createKnowledgeUploadBatch,
   fetchKnowledgeBaseDetail,
   fetchKnowledgeBaseList,
-  fetchKnowledgeDocuments,
+  fetchKnowledgeSourceDetail,
+  fetchKnowledgeSources,
+  fetchKnowledgeUploadBatches,
+  moveKnowledgeSource,
+  permanentlyDeleteKnowledgeBase,
+  permanentlyDeleteKnowledgeSource,
   publishKnowledgeBase,
-  replaceKnowledgeDocument,
-  retryKnowledgeDocumentVersion,
+  reprocessKnowledgeSource,
+  replaceKnowledgeSource,
+  retryKnowledgeUploadItem,
+  restoreKnowledgeBase,
+  restoreKnowledgeSource,
+  removeKnowledgeSourceMembership,
   revokeKnowledgeBasePublication,
-  startKnowledgeReindex,
+  settleKnowledgeUploadItem,
+  startKnowledgeUploadItem,
+  trashKnowledgeBase,
+  trashKnowledgeSource,
   updateKnowledgeBase,
-  uploadKnowledgeDocument
+  updateKnowledgeSource,
+  uploadKnowledgeMultipartPart,
+  uploadKnowledgeProxyContent
 } from "@/components/knowledge/knowledgeApi";
 import type {
   KnowledgeCreateDraft,
@@ -19,27 +36,58 @@ import type {
 import {
   useKnowledgeLibraryStore,
   type KnowledgeDetailState,
-  type KnowledgeLibraryStore
+  type KnowledgeLibraryStore,
+  type KnowledgeSourceDetailState
 } from "@/components/app-shell/knowledgeLibraryStore";
 import {
-  KNOWLEDGE_DOCUMENT_PAGE_SIZE,
-  KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH,
+  KNOWLEDGE_SOURCE_PAGE_SIZE,
+  KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH,
   type KnowledgeBaseDetail,
   type KnowledgeBaseSummary,
-  type KnowledgeDocumentStatus,
-  type KnowledgeIngestionStatusResponse
+  type KnowledgeSourceDetail,
+  type KnowledgeSourceSummary
 } from "@/lib/contracts/knowledge";
+import type {
+  KnowledgeUploadBatch,
+  KnowledgeUploadItem
+} from "@/lib/contracts/knowledgeUploads";
 
 function createBaseline(draft: KnowledgeCreateDraft): string {
-  return JSON.stringify([draft.description, draft.embeddingDeploymentId, draft.name]);
+  return JSON.stringify([
+    draft.description,
+    draft.files.map(({ lastModified, name, size, type }) => [name, size, type, lastModified]),
+    draft.name
+  ]);
 }
 
 function detailBaseline(draft: { description: string; name: string }): string {
   return JSON.stringify([draft.description, draft.name]);
 }
 
+function sourceDraft(source: KnowledgeSourceDetail | null) {
+  return {
+    description: source?.description ?? "",
+    name: source?.name ?? "",
+    tags: source?.tags.join(", ") ?? ""
+  };
+}
+
+function sourceBaseline(draft: ReturnType<typeof sourceDraft>): string {
+  return JSON.stringify([draft.description, draft.name, draft.tags]);
+}
+
 function summaryFromDetail(detail: KnowledgeBaseDetail): KnowledgeBaseSummary {
-  const { documentCount: _documentCount, publications: _publications, ...summary } = detail;
+  const { publications: _publications, ...summary } = detail;
+  return summary;
+}
+
+function sourceSummaryFromDetail(detail: KnowledgeSourceDetail): KnowledgeSourceSummary {
+  const {
+    eligibleBases: _eligibleBases,
+    memberships: _memberships,
+    versions: _versions,
+    ...summary
+  } = detail;
   return summary;
 }
 
@@ -49,25 +97,48 @@ function errorText(code: string): string {
     knowledge_base_archived: "Restore this base before sharing it.",
     knowledge_base_input_invalid: "Check the highlighted Knowledge fields and try again.",
     knowledge_base_not_available: "This Knowledge base is no longer available to you.",
+    knowledge_base_lifecycle_conflict: "This base cannot be changed from its current lifecycle state.",
+    knowledge_base_must_be_trashed: "Move this base to Trash before deleting it permanently.",
     knowledge_base_version_conflict:
       "This base changed in another session. Reload it and reapply your edits.",
     knowledge_document_ingest_in_progress:
       "Wait for the current document version to finish before replacing it.",
     knowledge_document_retry_not_available: "Only a failed current document version can be retried.",
-    knowledge_embedding_dimension_not_supported:
-      "That embedding deployment does not use a supported Knowledge vector size.",
-    knowledge_embedding_not_available:
-      "That embedding deployment is not currently available to your account.",
+    knowledge_document_reprocess_unavailable:
+      "This file cannot be reprocessed. Replace it with the original file and try again.",
     knowledge_file_limit_exceeded: "The document is larger than the Knowledge upload limit.",
-    knowledge_normalized_text_unavailable:
-      "Reindex cannot start because one current document no longer has normalized text.",
     knowledge_publication_forbidden: "You are not allowed to publish to that audience.",
-    knowledge_reindex_in_progress: "A reindex is already in progress for this base.",
+    knowledge_reprocess_in_progress: "This base is already being reprocessed.",
+    knowledge_reprocess_unavailable:
+      "This base cannot be reprocessed yet. Replace any affected files and try again.",
     knowledge_response_invalid: "The Knowledge response could not be read. Refresh and try again.",
+    knowledge_source_input_invalid: "Check the Source fields and try again.",
+    knowledge_source_ingest_in_progress:
+      "Wait for the current Source replacement to finish before starting another one.",
+    knowledge_source_not_available: "This Source is no longer available to you.",
+    knowledge_source_lifecycle_conflict: "This Source cannot be changed from its current lifecycle state.",
+    knowledge_source_must_be_trashed: "Move this Source to Trash before deleting it permanently.",
+    knowledge_source_query_invalid: "Check the Source search and filters and try again.",
+    knowledge_source_profile_unavailable:
+      "This Source cannot be processed until one of its bases has an active Knowledge profile.",
+    knowledge_source_reprocess_not_available:
+      "There is no failed Source version to reprocess. Replace the file instead.",
+    knowledge_source_version_conflict:
+      "This Source changed in another session. Reload it and reapply your edits.",
     knowledge_storage_unavailable: "Private document storage is temporarily unavailable.",
+    knowledge_temporarily_unavailable:
+      "Knowledge is temporarily unavailable. Contact your administrator.",
+    knowledge_checksum_mismatch: "The selected file no longer matches the original upload.",
+    knowledge_processing_failed: "This file needs attention before it can be used.",
+    knowledge_upload_conflict: "This upload changed in another session. Refresh and try again.",
+    knowledge_upload_etag_unavailable:
+      "Object storage did not expose a resumable checkpoint. Check its CORS configuration.",
+    knowledge_upload_input_invalid: "Check the selected files and try again.",
+    knowledge_upload_not_available: "This upload is no longer available.",
+    knowledge_upload_session_expired: "The upload session expired. Select the file to retry.",
     network_unavailable: "The Knowledge request could not reach the server.",
     unauthorized: "Your session is no longer available.",
-    unsupported_type: "That document type is not supported for Knowledge indexing.",
+    unsupported_type: "That file type is not supported for Knowledge processing.",
     upload_busy: "Document uploads are busy. Try again in a moment."
   };
   return messages[code] ?? "The Knowledge request could not be completed.";
@@ -85,13 +156,35 @@ function blankDetail(baseId: string, base: KnowledgeBaseDetail | null = null): K
     baseline: detailBaseline(draft),
     dataError: null,
     dataState: base ? "ready" : "loading",
-    documentPage: 1,
-    documentQuery: "",
     draft,
     error: null,
-    ingestion: null,
     requestId: 0,
-    upload: null
+    sourcePage: 1,
+    sourceQuery: "",
+    sources: null,
+    uploadBatches: [],
+    uploadErrors: {},
+    uploadProgress: {}
+  };
+}
+
+function blankSourceDetail(
+  sourceId: string,
+  returnBaseId: string | null = null,
+  source: KnowledgeSourceDetail | null = null
+): KnowledgeSourceDetailState {
+  const draft = sourceDraft(source);
+  return {
+    actionId: null,
+    baseline: sourceBaseline(draft),
+    dataError: null,
+    dataState: source ? "ready" : "loading",
+    draft,
+    error: null,
+    requestId: 0,
+    returnBaseId,
+    source,
+    sourceId
   };
 }
 
@@ -112,22 +205,156 @@ function upsertSummary(
   });
 }
 
-function replaceDocumentInStatus(
-  status: KnowledgeIngestionStatusResponse | null,
-  document: KnowledgeDocumentStatus
-): KnowledgeIngestionStatusResponse | null {
-  if (!status) return null;
-  const exists = status.documents.some((candidate) => candidate.id === document.id);
-  if (!exists) return status;
+function upsertSourceSummary(
+  snapshot: KnowledgeLibraryStore,
+  detail: KnowledgeSourceDetail
+): void {
+  if (!snapshot.sourceData) return;
+  const summary = sourceSummaryFromDetail(detail);
+  const exists = snapshot.sourceData.sources.some((source) => source.id === detail.id);
+  snapshot.patch({
+    sourceData: {
+      ...snapshot.sourceData,
+      sources: exists
+        ? snapshot.sourceData.sources.map((source) => source.id === detail.id ? summary : source)
+        : [summary, ...snapshot.sourceData.sources]
+    }
+  });
+}
+
+const KNOWLEDGE_UPLOAD_CONCURRENCY = 4;
+
+function newKnowledgeUploadClientId(prefix: "batch" | "file"): string {
+  const randomId = globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${randomId}`;
+}
+
+async function mapUploadsBounded<T>(
+  values: readonly T[],
+  operation: (value: T) => Promise<void>
+): Promise<void> {
+  let cursor = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(KNOWLEDGE_UPLOAD_CONCURRENCY, values.length) },
+    async () => {
+      while (cursor < values.length) {
+        const index = cursor;
+        cursor += 1;
+        await operation(values[index]!);
+      }
+    }
+  ));
+}
+
+function uploadItemInBatch(
+  batch: KnowledgeUploadBatch,
+  itemId: string
+): KnowledgeUploadItem | null {
+  return batch.items.find((item) => item.id === itemId) ?? null;
+}
+
+function uploadItemSettled(item: KnowledgeUploadItem): boolean {
+  return item.state === "processing" || item.state === "ready" ||
+    item.state === "ready_with_warnings" || item.state === "reused";
+}
+
+const uploadStateOrder: Record<KnowledgeUploadItem["state"], number> = {
+  cancelled: 5,
+  needs_attention: 5,
+  processing: 4,
+  queued: 0,
+  ready: 5,
+  ready_with_warnings: 5,
+  reused: 5,
+  upload_complete: 3,
+  uploading: 2
+};
+
+function fresherUploadItem(
+  current: KnowledgeUploadItem,
+  incoming: KnowledgeUploadItem
+): KnowledgeUploadItem {
+  if (incoming.attemptNumber !== current.attemptNumber) {
+    return incoming.attemptNumber > current.attemptNumber ? incoming : current;
+  }
+  const timeDifference = Date.parse(incoming.updatedAt) - Date.parse(current.updatedAt);
+  if (timeDifference !== 0) return timeDifference > 0 ? incoming : current;
+  return uploadStateOrder[incoming.state] >= uploadStateOrder[current.state]
+    ? incoming
+    : current;
+}
+
+export function mergeKnowledgeUploadBatch(
+  current: KnowledgeUploadBatch,
+  incoming: KnowledgeUploadBatch
+): KnowledgeUploadBatch {
+  if (current.id !== incoming.id) return incoming;
+  const incomingBatchTime = Date.parse(incoming.updatedAt);
+  const currentBatchTime = Date.parse(current.updatedAt);
+  const incomingBatchIsOlder = incomingBatchTime < currentBatchTime;
+  const currentItems = new Map(current.items.map((item) => [item.id, item]));
+  const incomingIds = new Set(incoming.items.map((item) => item.id));
+  const items = incoming.items.flatMap((item) => {
+    const existing = currentItems.get(item.id);
+    if (existing) return [fresherUploadItem(existing, item)];
+    return incomingBatchIsOlder ? [] : [item];
+  });
+  if (incomingBatchIsOlder) {
+    for (const item of current.items) {
+      if (!incomingIds.has(item.id)) items.push(item);
+    }
+  }
   return {
-    ...status,
-    documents: status.documents.map((candidate) =>
-      candidate.id === document.id ? document : candidate)
+    createdAt: current.createdAt,
+    id: current.id,
+    items,
+    updatedAt: incomingBatchTime >= currentBatchTime
+      ? incoming.updatedAt
+      : current.updatedAt
   };
 }
 
 export function createKnowledgeLibraryActions() {
   const store = () => useKnowledgeLibraryStore.getState();
+  const activeTransfers = new Set<string>();
+  const cancellingTransfers = new Set<string>();
+  const transferControllers = new Map<string, AbortController>();
+
+  function transferKey(baseId: string, batchId: string, itemId: string): string {
+    return `${baseId}:${batchId}:${itemId}`;
+  }
+
+  function patchUploadBatch(baseId: string, batch: KnowledgeUploadBatch): void {
+    const detail = store().detail;
+    if (detail?.baseId !== baseId) return;
+    const exists = detail.uploadBatches.some((candidate) => candidate.id === batch.id);
+    store().patchDetail({
+      uploadBatches: exists
+        ? detail.uploadBatches.map((candidate) => candidate.id === batch.id
+            ? mergeKnowledgeUploadBatch(candidate, batch)
+            : candidate)
+        : [batch, ...detail.uploadBatches]
+    });
+  }
+
+  function patchUploadProgress(baseId: string, itemId: string, uploadedBytes: number | null): void {
+    const detail = store().detail;
+    if (detail?.baseId !== baseId) return;
+    const uploadProgress = { ...detail.uploadProgress };
+    if (uploadedBytes === null) delete uploadProgress[itemId];
+    else uploadProgress[itemId] = uploadedBytes;
+    store().patchDetail({ uploadProgress });
+  }
+
+  function patchUploadError(baseId: string, itemId: string, message: string | null): void {
+    const detail = store().detail;
+    if (detail?.baseId !== baseId) return;
+    const uploadErrors = { ...detail.uploadErrors };
+    if (message === null) delete uploadErrors[itemId];
+    else uploadErrors[itemId] = message;
+    store().patchDetail({ uploadErrors });
+  }
 
   function beginOperation(actionId: string): number | null {
     const snapshot = store();
@@ -135,6 +362,7 @@ export function createKnowledgeLibraryActions() {
     const requestId = snapshot.operationRequestId + 1;
     snapshot.patch({ busy: true, operationRequestId: requestId });
     if (snapshot.detail) snapshot.patchDetail({ actionId, error: null });
+    if (snapshot.sourceDetail) snapshot.patchSourceDetail({ actionId, error: null });
     if (snapshot.create) snapshot.patchCreate({ error: null, saving: true });
     return requestId;
   }
@@ -148,8 +376,9 @@ export function createKnowledgeLibraryActions() {
     if (!ownsOperation(requestId)) return false;
     const snapshot = store();
     snapshot.patch({ busy: false });
-    snapshot.patchCreate({ saving: false });
-    snapshot.patchDetail({ actionId: null, upload: null });
+    snapshot.patchCreate({ progress: null, saving: false });
+    snapshot.patchDetail({ actionId: null });
+    snapshot.patchSourceDetail({ actionId: null });
     return true;
   }
 
@@ -175,6 +404,40 @@ export function createKnowledgeLibraryActions() {
     store().patch({ data: result.data, dataError: null, dataState: "ready" });
   }
 
+  async function refreshSources() {
+    const snapshot = store();
+    const requestId = snapshot.sourceListRequestId + 1;
+    snapshot.patch({
+      sourceDataError: null,
+      sourceDataState: snapshot.sourceData ? "ready" : "loading",
+      sourceListRequestId: requestId
+    });
+    const result = await fetchKnowledgeSources({
+      filter: snapshot.sourceFilter,
+      page: snapshot.sourcePage,
+      query: snapshot.sourceQuery
+    });
+    if (store().sourceListRequestId !== requestId) return;
+    if (!result.ok) {
+      const current = store();
+      if (current.sourceData) {
+        current.patch({ notice: { kind: "error", text: errorText(result.code) } });
+      } else {
+        current.patch({
+          sourceDataError: errorText(result.code),
+          sourceDataState: "error"
+        });
+      }
+      return;
+    }
+    store().patch({
+      sourceData: result.data,
+      sourceDataError: null,
+      sourceDataState: "ready",
+      sourcePage: result.data.pagination.page
+    });
+  }
+
   function openLibrary() {
     if (store().busy) return;
     store().patch({
@@ -182,6 +445,7 @@ export function createKnowledgeLibraryActions() {
       detail: null,
       notice: null,
       open: true,
+      sourceDetail: null,
       task: "list"
     });
     void refreshList();
@@ -189,27 +453,52 @@ export function createKnowledgeLibraryActions() {
 
   function closeLibrary() {
     if (store().busy) return;
-    store().patch({ create: null, detail: null, notice: null, open: false, task: "list" });
+    store().patch({
+      create: null,
+      detail: null,
+      notice: null,
+      open: false,
+      sourceDetail: null,
+      task: "list"
+    });
+  }
+
+  function setCatalog(catalog: "bases" | "sources") {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.catalog === catalog) return;
+    snapshot.patch({ catalog, notice: null });
+    if (catalog === "sources" && !snapshot.sourceData) void refreshSources();
   }
 
   function openCreate() {
     const snapshot = store();
     if (snapshot.busy) return;
+    if (!snapshot.data?.viewer.canCreate) {
+      snapshot.patch({
+        notice: {
+          kind: "error",
+          text: "Knowledge is temporarily unavailable. Contact your administrator."
+        }
+      });
+      return;
+    }
     const draft: KnowledgeCreateDraft = {
       description: "",
-      embeddingDeploymentId:
-        snapshot.data?.embeddingDeployments.find((deployment) => deployment.indexSupported)?.id ?? "",
+      files: [],
       name: ""
     };
     snapshot.patch({
+      catalog: "bases",
       create: {
         baseline: createBaseline(draft),
         draft,
         error: null,
+        progress: null,
         saving: false
       },
       detail: null,
       notice: null,
+      sourceDetail: null,
       task: "create"
     });
   }
@@ -224,11 +513,12 @@ export function createKnowledgeLibraryActions() {
     if (!current) return;
     const name = current.draft.name.trim();
     const description = current.draft.description.trim();
-    if (!name || !current.draft.embeddingDeploymentId) {
+    const files = [...current.draft.files];
+    if (!name) {
       store().patchCreate({
         error: {
           code: "knowledge_base_input_invalid",
-          text: !name ? "Give this base a name." : "Choose an embedding deployment."
+          text: "Give this base a name."
         }
       });
       return;
@@ -237,7 +527,6 @@ export function createKnowledgeLibraryActions() {
     if (requestId === null) return;
     const result = await createKnowledgeBase({
       description,
-      embeddingDeploymentId: current.draft.embeddingDeploymentId,
       name
     });
     if (!ownsOperation(requestId)) return;
@@ -252,12 +541,16 @@ export function createKnowledgeLibraryActions() {
       detail: blankDetail(result.data.id, result.data),
       notice: {
         kind: "success",
-        text: "Knowledge base created. Add documents when you are ready to index them."
+        text: files.length > 0
+          ? `Knowledge base created. Preparing ${files.length} file${files.length === 1 ? "" : "s"} in the intake queue.`
+          : "Knowledge base created. Add files whenever you are ready."
       },
       task: "detail"
     });
     finishOperation(requestId);
     void refreshDetail(result.data.id, true);
+    void refreshList();
+    if (files.length > 0) void beginUploadBatch(result.data.id, files);
   }
 
   function ownsDetailRequest(baseId: string, requestId: number): boolean {
@@ -276,26 +569,31 @@ export function createKnowledgeLibraryActions() {
     const requestId = current.requestId + 1;
     store().patchDetail({
       dataError: null,
-      dataState: current.base && current.ingestion ? "ready" : "loading",
+      dataState: current.base && current.sources ? "ready" : "loading",
       requestId
     });
-    const [detailResult, ingestionResult] = await Promise.all([
+    const [detailResult, sourcesResult, uploadResult] = await Promise.all([
       fetchKnowledgeBaseDetail(baseId),
-      fetchKnowledgeDocuments(baseId, {
-        page: current.documentPage,
-        pageSize: KNOWLEDGE_DOCUMENT_PAGE_SIZE,
-        query: current.documentQuery
-      })
+      fetchKnowledgeSources({
+        baseId,
+        filter: "all",
+        page: current.sourcePage,
+        pageSize: KNOWLEDGE_SOURCE_PAGE_SIZE,
+        query: current.sourceQuery
+      }),
+      fetchKnowledgeUploadBatches(baseId)
     ]);
     if (!ownsDetailRequest(baseId, requestId)) return;
-    if (!detailResult.ok || !ingestionResult.ok || detailResult.data.owned !== ingestionResult.data.owned) {
+    if (!detailResult.ok || !sourcesResult.ok || !uploadResult.ok) {
       const code = !detailResult.ok
         ? detailResult.code
-        : !ingestionResult.ok
-          ? ingestionResult.code
+        : !sourcesResult.ok
+          ? sourcesResult.code
+          : !uploadResult.ok
+            ? uploadResult.code
           : "knowledge_response_invalid";
       const latest = store().detail;
-      if (latest?.base && latest.ingestion) {
+      if (latest?.base && latest.sources) {
         if (!quiet) store().patch({ notice: { kind: "error", text: errorText(code) } });
         store().patchDetail({ dataState: "ready" });
       } else {
@@ -315,11 +613,22 @@ export function createKnowledgeLibraryActions() {
       baseline: dirty ? latest.baseline : detailBaseline(nextDraft),
       dataError: null,
       dataState: "ready",
-      documentPage: ingestionResult.data.pagination.page,
-      documentQuery: ingestionResult.data.pagination.query,
       draft: dirty ? latest.draft : nextDraft,
-      ingestion: ingestionResult.data
+      sourcePage: sourcesResult.data.pagination.page,
+      sourceQuery: sourcesResult.data.pagination.query,
+      sources: sourcesResult.data,
+      uploadBatches: uploadResult.data.batches.map((batch) => {
+        const currentBatch = latest.uploadBatches.find(({ id }) => id === batch.id);
+        return currentBatch ? mergeKnowledgeUploadBatch(currentBatch, batch) : batch;
+      })
     });
+    for (const batch of uploadResult.data.batches) {
+      for (const item of batch.items) {
+        if (item.state === "upload_complete") {
+          void transferUploadItem(baseId, batch, item, null);
+        }
+      }
+    }
     if (!dirty) upsertSummary(store(), detailResult.data);
   }
 
@@ -329,6 +638,7 @@ export function createKnowledgeLibraryActions() {
       create: null,
       detail: blankDetail(baseId),
       notice: null,
+      sourceDetail: null,
       task: "detail"
     });
     void refreshDetail(baseId);
@@ -344,6 +654,304 @@ export function createKnowledgeLibraryActions() {
   function closeDetail() {
     if (store().busy) return;
     store().patch({ detail: null, notice: null, task: "list" });
+  }
+
+  function ownsSourceDetailRequest(sourceId: string, requestId: number): boolean {
+    const detail = store().sourceDetail;
+    return Boolean(
+      store().open &&
+      store().task === "source-detail" &&
+      detail?.sourceId === sourceId &&
+      detail.requestId === requestId
+    );
+  }
+
+  async function refreshSourceDetail(sourceId = store().sourceDetail?.sourceId ?? "", quiet = false) {
+    const current = store().sourceDetail;
+    if (!sourceId || !current || current.sourceId !== sourceId) return;
+    const requestId = current.requestId + 1;
+    store().patchSourceDetail({
+      dataError: null,
+      dataState: current.source ? "ready" : "loading",
+      requestId
+    });
+    const result = await fetchKnowledgeSourceDetail(sourceId);
+    if (!ownsSourceDetailRequest(sourceId, requestId)) return;
+    if (!result.ok) {
+      const latest = store().sourceDetail;
+      if (latest?.source) {
+        if (!quiet) store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+        store().patchSourceDetail({ dataState: "ready" });
+      } else {
+        store().patchSourceDetail({ dataError: errorText(result.code), dataState: "error" });
+      }
+      return;
+    }
+    const latest = store().sourceDetail;
+    if (!latest) return;
+    const dirty = sourceBaseline(latest.draft) !== latest.baseline;
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: dirty ? latest.baseline : sourceBaseline(draft),
+      dataError: null,
+      dataState: "ready",
+      draft: dirty ? latest.draft : draft,
+      source: dirty && latest.source ? latest.source : result.data
+    });
+    if (!dirty) upsertSourceSummary(store(), result.data);
+  }
+
+  function openSourceDetail(sourceId: string, returnBaseId: string | null = null) {
+    if (store().busy) return;
+    const retainedDetail = returnBaseId && store().detail?.baseId === returnBaseId
+      ? store().detail
+      : null;
+    store().patch({
+      catalog: returnBaseId ? "bases" : "sources",
+      create: null,
+      detail: retainedDetail,
+      notice: null,
+      sourceDetail: blankSourceDetail(sourceId, returnBaseId),
+      task: "source-detail"
+    });
+    void refreshSourceDetail(sourceId);
+  }
+
+  function closeSourceDetail() {
+    if (store().busy) return;
+    const returnBaseId = store().sourceDetail?.returnBaseId;
+    if (returnBaseId && store().detail?.baseId === returnBaseId) {
+      store().patch({
+        catalog: "bases",
+        notice: null,
+        sourceDetail: null,
+        task: "detail"
+      });
+      void refreshDetail(returnBaseId, true);
+      return;
+    }
+    store().patch({
+      catalog: "sources",
+      notice: null,
+      sourceDetail: null,
+      task: "list"
+    });
+  }
+
+  async function saveSourceDetail() {
+    const detail = store().sourceDetail;
+    if (!detail?.source?.owned) return;
+    const name = detail.draft.name.trim();
+    const description = detail.draft.description.trim();
+    const tags = detail.draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
+    if (!name) {
+      store().patchSourceDetail({
+        error: { code: "knowledge_source_input_invalid", text: "Give this Source a name." }
+      });
+      return;
+    }
+    const requestId = beginOperation("source:settings");
+    if (requestId === null) return;
+    const result = await updateKnowledgeSource(detail.source.id, {
+      description,
+      expectedVersion: detail.source.version,
+      name,
+      tags
+    });
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patchSourceDetail({ error: { code: result.code, text: errorText(result.code) } });
+      return;
+    }
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: sourceBaseline(draft),
+      draft,
+      error: null,
+      source: result.data
+    });
+    upsertSourceSummary(store(), result.data);
+    finishOperation(requestId);
+    store().patch({ notice: { kind: "success", text: "Source details saved." } });
+  }
+
+  function sourceMembershipActionAllowed(): KnowledgeSourceDetailState | null {
+    const detail = store().sourceDetail;
+    if (!detail?.source?.owned) return null;
+    if (sourceBaseline(detail.draft) !== detail.baseline) {
+      store().patch({ notice: { kind: "error", text: "Save or discard Source changes first." } });
+      return null;
+    }
+    return detail;
+  }
+
+  async function replaceSource(file: File) {
+    const detail = sourceMembershipActionAllowed();
+    if (!detail?.source || detail.source.trashed || detail.source.deletionPending) return;
+    const requestId = beginOperation("source:replace");
+    if (requestId === null) return;
+    const result = await replaceKnowledgeSource(detail.source.id, file);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: sourceBaseline(draft),
+      draft,
+      source: result.data
+    });
+    upsertSourceSummary(store(), result.data);
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: "Replacement uploaded. The current ready version stays available while it processes."
+      }
+    });
+    void refreshList();
+  }
+
+  async function reprocessSource() {
+    const detail = sourceMembershipActionAllowed();
+    if (!detail?.source || detail.source.trashed || detail.source.deletionPending) return;
+    const requestId = beginOperation("source:reprocess");
+    if (requestId === null) return;
+    const result = await reprocessKnowledgeSource(detail.source.id);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: sourceBaseline(draft),
+      draft,
+      source: result.data
+    });
+    upsertSourceSummary(store(), result.data);
+    finishOperation(requestId);
+    store().patch({
+      notice: { kind: "success", text: "Source processing restarted." }
+    });
+  }
+
+  async function addSourceToBases(baseIds: readonly string[]) {
+    const detail = sourceMembershipActionAllowed();
+    if (!detail || baseIds.length === 0) return;
+    const requestId = beginOperation("source:add");
+    if (requestId === null) return;
+    const result = await addKnowledgeSourceMemberships(detail.source!.id, baseIds);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: sourceBaseline(draft),
+      draft,
+      source: result.data
+    });
+    upsertSourceSummary(store(), result.data);
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: `Source added to ${baseIds.length} base${baseIds.length === 1 ? "" : "s"}.`
+      }
+    });
+    void refreshList();
+  }
+
+  async function removeSourceFromBase(baseId: string) {
+    const detail = sourceMembershipActionAllowed();
+    if (!detail) return;
+    const requestId = beginOperation(`source:remove:${baseId}`);
+    if (requestId === null) return;
+    const result = await removeKnowledgeSourceMembership(detail.source!.id, baseId);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: sourceBaseline(draft),
+      draft,
+      source: result.data
+    });
+    upsertSourceSummary(store(), result.data);
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: "Source removed from the base. The Source and accepted chat history are unchanged."
+      }
+    });
+    void refreshList();
+  }
+
+  async function moveSourceMembership(fromBaseId: string, toBaseId: string) {
+    const detail = sourceMembershipActionAllowed();
+    if (!detail || fromBaseId === toBaseId) return;
+    const requestId = beginOperation(`source:move:${fromBaseId}`);
+    if (requestId === null) return;
+    const result = await moveKnowledgeSource(detail.source!.id, { fromBaseId, toBaseId });
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    const draft = sourceDraft(result.data);
+    store().patchSourceDetail({
+      baseline: sourceBaseline(draft),
+      draft,
+      source: result.data
+    });
+    upsertSourceSummary(store(), result.data);
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: "Source moved. Future chats use the new Base membership; accepted chats are unchanged."
+      }
+    });
+    void refreshList();
+  }
+
+  function setSourceQuery(query: string) {
+    const snapshot = store();
+    if (snapshot.busy) return;
+    snapshot.patch({
+      sourcePage: 1,
+      sourceQuery: query.slice(0, KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH)
+    });
+    void refreshSources();
+  }
+
+  function setSourceFilter(filter: "all" | "shared" | "trash" | "yours") {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.sourceFilter === filter) return;
+    snapshot.patch({ sourceFilter: filter, sourcePage: 1 });
+    void refreshSources();
+  }
+
+  function setSourcePage(page: number) {
+    const snapshot = store();
+    if (snapshot.busy || !Number.isSafeInteger(page) || page < 1) return;
+    const maximum = Math.max(1, snapshot.sourceData?.pagination.totalPages ?? 1);
+    const next = Math.min(page, maximum);
+    if (next === snapshot.sourcePage) return;
+    snapshot.patch({ sourcePage: next });
+    void refreshSources();
   }
 
   async function saveDetail() {
@@ -380,6 +988,133 @@ export function createKnowledgeLibraryActions() {
     upsertSummary(store(), result.data);
     store().patch({ notice: { kind: "success", text: "Base settings saved." } });
     finishOperation(requestId);
+  }
+
+  function lifecycleBase() {
+    const snapshot = store();
+    const detail = snapshot.detail;
+    if (!detail?.base?.owned || detail.base.deletionPending) return null;
+    if (detailBaseline(detail.draft) !== detail.baseline) {
+      snapshot.patch({ notice: { kind: "error", text: "Save or discard base setting changes first." } });
+      return null;
+    }
+    return detail;
+  }
+
+  async function setBaseTrashed(trashed: boolean) {
+    const detail = lifecycleBase();
+    if (!detail || detail.base!.trashed === trashed) return;
+    const requestId = beginOperation(trashed ? "base:trash" : "base:restore");
+    if (requestId === null) return;
+    const result = trashed
+      ? await trashKnowledgeBase(detail.base!.id, detail.base!.version)
+      : await restoreKnowledgeBase(detail.base!.id, detail.base!.version);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: trashed
+          ? "Knowledge base moved to Trash. Future runs can no longer use it."
+          : "Knowledge base restored with its Sources and sharing settings."
+      }
+    });
+    void refreshDetail(detail.base!.id, true);
+    void refreshList();
+  }
+
+  async function permanentlyDeleteBase() {
+    const detail = lifecycleBase();
+    if (!detail?.base?.trashed) return;
+    const requestId = beginOperation("base:delete");
+    if (requestId === null) return;
+    const result = await permanentlyDeleteKnowledgeBase(detail.base.id, detail.base.version);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    finishOperation(requestId);
+    store().patch({
+      detail: null,
+      notice: {
+        kind: "success",
+        text: "Permanent base deletion started. Its canonical Sources remain in your library."
+      },
+      task: "list"
+    });
+    void refreshList();
+    if (store().sourceData) void refreshSources();
+  }
+
+  function lifecycleSource() {
+    const snapshot = store();
+    const detail = snapshot.sourceDetail;
+    if (!detail?.source?.owned || detail.source.deletionPending) return null;
+    if (sourceBaseline(detail.draft) !== detail.baseline) {
+      snapshot.patch({ notice: { kind: "error", text: "Save or discard Source changes first." } });
+      return null;
+    }
+    return detail;
+  }
+
+  async function setSourceTrashed(trashed: boolean) {
+    const detail = lifecycleSource();
+    if (!detail || detail.source!.trashed === trashed) return;
+    const requestId = beginOperation(trashed ? "source:trash" : "source:restore");
+    if (requestId === null) return;
+    const result = trashed
+      ? await trashKnowledgeSource(detail.source!.id, detail.source!.version)
+      : await restoreKnowledgeSource(detail.source!.id, detail.source!.version);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: trashed
+          ? "Source moved to Trash. Future runs exclude it from every base."
+          : "Source restored to its previous Base memberships."
+      }
+    });
+    void refreshSourceDetail(detail.source!.id, true);
+    void refreshSources();
+    void refreshList();
+  }
+
+  async function permanentlyDeleteSource() {
+    const detail = lifecycleSource();
+    if (!detail?.source?.trashed) return;
+    const requestId = beginOperation("source:delete");
+    if (requestId === null) return;
+    const result = await permanentlyDeleteKnowledgeSource(detail.source.id, detail.source.version);
+    if (!ownsOperation(requestId)) return;
+    if (!result.ok) {
+      finishOperation(requestId);
+      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+      return;
+    }
+    finishOperation(requestId);
+    store().patch({
+      notice: {
+        kind: "success",
+        text: "Permanent Source deletion started. Past answers keep only generic citation handles."
+      },
+      sourceDetail: null,
+      task: "list"
+    });
+    void refreshSources();
+    void refreshList();
   }
 
   async function setArchived(baseId: string, archived: boolean) {
@@ -423,69 +1158,283 @@ export function createKnowledgeLibraryActions() {
     finishOperation(requestId);
   }
 
-  async function uploadFiles(files: readonly File[]) {
-    const detail = store().detail;
-    if (!detail?.base?.owned || files.length === 0) return;
-    const requestId = beginOperation("upload");
-    if (requestId === null) return;
-    let completed = 0;
-    const failures: string[] = [];
-    for (let index = 0; index < files.length; index += 1) {
-      if (!ownsOperation(requestId)) return;
-      const file = files[index];
-      store().patchDetail({ upload: { current: index + 1, fileName: file.name, total: files.length } });
-      const result = await uploadKnowledgeDocument(detail.base.id, file);
-      if (!ownsOperation(requestId)) return;
-      if (result.ok) {
-        completed += 1;
-      } else {
-        failures.push(result.code);
-      }
+  async function transferUploadItem(
+    baseId: string,
+    initialBatch: KnowledgeUploadBatch,
+    initialItem: KnowledgeUploadItem,
+    file: File | null
+  ): Promise<string | null> {
+    const key = transferKey(baseId, initialBatch.id, initialItem.id);
+    if (activeTransfers.has(key)) return null;
+    if (initialItem.state !== "upload_complete" &&
+      (!file || file.name !== initialItem.fileName || file.size !== initialItem.byteSize)) {
+      patchUploadError(
+        baseId,
+        initialItem.id,
+        `Select the original “${initialItem.fileName}” file (${initialItem.byteSize} bytes).`
+      );
+      return "knowledge_upload_file_mismatch";
     }
-    finishOperation(requestId);
-    store().patch({
-      notice: failures.length > 0
-        ? {
-            kind: "error",
-            text: completed > 0
-              ? `${completed} document${completed === 1 ? "" : "s"} queued; ${failures.length} could not be uploaded. ${errorText(failures[0])}`
-              : errorText(failures[0])
+    activeTransfers.add(key);
+    const controller = new AbortController();
+    transferControllers.set(key, controller);
+    patchUploadError(baseId, initialItem.id, null);
+    patchUploadProgress(baseId, initialItem.id, initialItem.uploadedBytes);
+
+    const fail = (code: string): string | null => {
+      if (code !== "knowledge_upload_cancelled" && !cancellingTransfers.has(key)) {
+        patchUploadError(baseId, initialItem.id, errorText(code));
+        return code;
+      }
+      return "knowledge_upload_cancelled";
+    };
+
+    try {
+      let batch = initialBatch;
+      let item = initialItem;
+      if (item.state === "cancelled" || uploadItemSettled(item)) return null;
+      const restartInterruptedProxy = item.state === "uploading" &&
+        item.transport?.kind === "proxy";
+      if (item.state === "needs_attention" || restartInterruptedProxy) {
+        if (item.state === "needs_attention" && item.sourceId) {
+          return fail("knowledge_processing_failed");
+        }
+        const retried = await retryKnowledgeUploadItem(
+          baseId,
+          batch.id,
+          item.id,
+          item.attemptNumber
+        );
+        if (!retried.ok) return fail(retried.code);
+        batch = retried.data;
+        patchUploadBatch(baseId, batch);
+        item = uploadItemInBatch(batch, item.id)!;
+      }
+
+      if (item.state !== "upload_complete") {
+        let started = await startKnowledgeUploadItem(
+          baseId,
+          batch.id,
+          item.id,
+          item.attemptNumber
+        );
+        if (!started.ok && started.code === "knowledge_upload_session_expired") {
+          const retried = await retryKnowledgeUploadItem(
+            baseId,
+            batch.id,
+            item.id,
+            item.attemptNumber
+          );
+          if (!retried.ok) return fail(retried.code);
+          batch = retried.data;
+          patchUploadBatch(baseId, batch);
+          item = uploadItemInBatch(batch, item.id)!;
+          started = await startKnowledgeUploadItem(
+            baseId,
+            batch.id,
+            item.id,
+            item.attemptNumber
+          );
+        }
+        if (!started.ok) return fail(started.code);
+        batch = started.data;
+        patchUploadBatch(baseId, batch);
+        item = uploadItemInBatch(batch, item.id)!;
+        if (!item.transport) return fail("knowledge_upload_conflict");
+        if (!file) return fail("knowledge_upload_not_available");
+
+        if (item.transport.kind === "proxy") {
+          const uploaded = await uploadKnowledgeProxyContent(item.transport.uploadUrl, file, {
+            onProgress(uploadedBytes) {
+              patchUploadProgress(baseId, item.id, uploadedBytes);
+            },
+            signal: controller.signal
+          });
+          if (!uploaded.ok) return fail(uploaded.code);
+          batch = uploaded.data;
+          patchUploadBatch(baseId, batch);
+          item = uploadItemInBatch(batch, item.id)!;
+        } else {
+          const parts = item.transport.parts;
+          let completedBytes = parts.reduce(
+            (total, part) => total + (part.complete ? part.byteSize : 0),
+            0
+          );
+          patchUploadProgress(baseId, item.id, completedBytes);
+          for (const part of parts) {
+            if (part.complete) continue;
+            if (!part.uploadUrl) return fail("knowledge_upload_conflict");
+            const body = file.slice(
+              part.byteOffset,
+              part.byteOffset + part.byteSize,
+              file.type || "application/octet-stream"
+            );
+            const uploaded = await uploadKnowledgeMultipartPart(part.uploadUrl, body, {
+              onProgress(uploadedBytes) {
+                patchUploadProgress(baseId, item.id, completedBytes + uploadedBytes);
+              },
+              signal: controller.signal
+            });
+            if (!uploaded.ok) return fail(uploaded.code);
+            const checkpointed = await checkpointKnowledgeUploadPart(
+              baseId,
+              batch.id,
+              item.id,
+              part.partNumber,
+              {
+                attemptNumber: item.attemptNumber,
+                byteSize: part.byteSize,
+                etag: uploaded.data
+              }
+            );
+            if (!checkpointed.ok) return fail(checkpointed.code);
+            completedBytes += part.byteSize;
+            batch = checkpointed.data;
+            patchUploadBatch(baseId, batch);
+            patchUploadProgress(baseId, item.id, completedBytes);
           }
-        : {
-            kind: "success",
-            text: `${completed} document${completed === 1 ? "" : "s"} queued for indexing.`
-          }
-    });
-    void refreshDetail(detail.base.id, true);
-    void refreshList();
+        }
+      }
+
+      const settled = await settleKnowledgeUploadItem(
+        baseId,
+        batch.id,
+        item.id,
+        item.attemptNumber
+      );
+      if (!settled.ok) return fail(settled.code);
+      patchUploadBatch(baseId, settled.data);
+      patchUploadError(baseId, item.id, null);
+      return null;
+    } catch {
+      return fail("network_unavailable");
+    } finally {
+      activeTransfers.delete(key);
+      transferControllers.delete(key);
+      patchUploadProgress(baseId, initialItem.id, null);
+    }
   }
 
-  async function replaceDocument(documentId: string, file: File) {
-    const detail = store().detail;
-    if (!detail?.base?.owned) return;
-    const requestId = beginOperation(`document:${documentId}:replace`);
-    if (requestId === null) return;
-    const result = await replaceKnowledgeDocument(detail.base.id, documentId, file);
-    if (!ownsOperation(requestId)) return;
-    if (!result.ok) {
-      finishOperation(requestId);
-      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
+  async function beginUploadBatch(baseId: string, files: readonly File[]): Promise<void> {
+    if (files.length === 0) return;
+    const filesByClientId = new Map<string, File>();
+    const admissionFiles = files.map((file) => {
+      const clientFileId = newKnowledgeUploadClientId("file");
+      filesByClientId.set(clientFileId, file);
+      return {
+        byteSize: file.size,
+        clientFileId,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream"
+      };
+    });
+    const created = await createKnowledgeUploadBatch(baseId, {
+      clientBatchId: newKnowledgeUploadClientId("batch"),
+      files: admissionFiles
+    });
+    if (!created.ok) {
+      if (store().detail?.baseId === baseId) {
+        store().patch({ notice: { kind: "error", text: errorText(created.code) } });
+      }
       return;
     }
-    store().patchDetail({
-      ingestion: replaceDocumentInStatus(store().detail?.ingestion ?? null, result.data)
+    patchUploadBatch(baseId, created.data);
+    if (store().detail?.baseId === baseId) {
+      store().patch({
+        notice: {
+          kind: "success",
+          text: `${files.length} file${files.length === 1 ? "" : "s"} added. Uploads continue independently.`
+        }
+      });
+    }
+
+    const failures: string[] = [];
+    await mapUploadsBounded(created.data.items, async (item) => {
+      const file = filesByClientId.get(item.clientFileId);
+      if (!file) {
+        failures.push("knowledge_upload_not_available");
+        return;
+      }
+      const failure = await transferUploadItem(baseId, created.data, item, file);
+      if (failure) failures.push(failure);
     });
-    finishOperation(requestId);
-    store().patch({ notice: { kind: "success", text: "New document version queued for indexing." } });
-    void refreshDetail(detail.base.id, true);
+    const cancelled = failures.filter((code) => code === "knowledge_upload_cancelled").length;
+    const actionableFailures = failures.filter((code) => code !== "knowledge_upload_cancelled");
+    if (store().detail?.baseId === baseId) {
+      store().patch({
+        notice: actionableFailures.length > 0
+          ? {
+              kind: "error",
+              text: `${actionableFailures.length} file${actionableFailures.length === 1 ? " needs" : "s need"} attention. Other files continue independently.`
+            }
+          : cancelled > 0
+            ? {
+                kind: "success",
+                text: `${cancelled} file${cancelled === 1 ? "" : "s"} cancelled. Other files continue independently.`
+              }
+          : {
+              kind: "success",
+              text: `${files.length} file${files.length === 1 ? "" : "s"} uploaded. Processing continues independently.`
+            }
+      });
+      void refreshDetail(baseId, true);
+    }
+    void refreshList();
+    void refreshSources();
   }
 
-  async function removeDocument(documentId: string) {
+  async function uploadFiles(files: readonly File[]) {
+    const detail = store().detail;
+    if (!detail?.base?.owned || detail.base.archived || files.length === 0) return;
+    await beginUploadBatch(detail.base.id, files);
+  }
+
+  async function resumeUpload(batchId: string, itemId: string, file: File): Promise<void> {
+    const detail = store().detail;
+    const batch = detail?.uploadBatches.find((candidate) => candidate.id === batchId);
+    const item = batch ? uploadItemInBatch(batch, itemId) : null;
+    if (!detail?.base?.owned || !batch || !item) return;
+    await transferUploadItem(detail.baseId, batch, item, file);
+    if (store().detail?.baseId === detail.baseId) void refreshDetail(detail.baseId, true);
+  }
+
+  async function cancelUpload(batchId: string, itemId: string): Promise<void> {
     const detail = store().detail;
     if (!detail?.base?.owned) return;
-    const requestId = beginOperation(`document:${documentId}:remove`);
+    const item = detail.uploadBatches
+      .find((candidate) => candidate.id === batchId)
+      ?.items.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    const key = transferKey(detail.baseId, batchId, itemId);
+    if (cancellingTransfers.has(key)) return;
+    cancellingTransfers.add(key);
+    transferControllers.get(key)?.abort();
+    try {
+      const cancelled = await cancelKnowledgeUploadItem(
+        detail.baseId,
+        batchId,
+        itemId,
+        item.attemptNumber
+      );
+      if (!cancelled.ok) {
+        patchUploadError(detail.baseId, itemId, errorText(cancelled.code));
+        void refreshDetail(detail.baseId, true);
+        return;
+      }
+      patchUploadBatch(detail.baseId, cancelled.data);
+      patchUploadError(detail.baseId, itemId, null);
+      patchUploadProgress(detail.baseId, itemId, null);
+    } finally {
+      cancellingTransfers.delete(key);
+    }
+  }
+
+  async function removeSourceFromDetail(sourceId: string) {
+    const detail = store().detail;
+    if (!detail?.base?.owned) return;
+    const requestId = beginOperation(`base-source:${sourceId}:remove`);
     if (requestId === null) return;
-    const result = await archiveKnowledgeDocument(detail.base.id, documentId);
+    const result = await removeKnowledgeSourceMembership(sourceId, detail.base.id);
     if (!ownsOperation(requestId)) return;
     if (!result.ok) {
       finishOperation(requestId);
@@ -496,71 +1445,29 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: "Document removed from the current base. Historical version identity is retained."
+        text: "Source removed from this Knowledge base. It remains in your Source library."
       }
     });
     void refreshDetail(detail.base.id, true);
     void refreshList();
   }
 
-  async function retryDocument(documentId: string, versionId: string) {
-    const detail = store().detail;
-    if (!detail?.base?.owned) return;
-    const requestId = beginOperation(`document:${documentId}:retry`);
-    if (requestId === null) return;
-    const result = await retryKnowledgeDocumentVersion(detail.base.id, documentId, versionId);
-    if (!ownsOperation(requestId)) return;
-    if (!result.ok) {
-      finishOperation(requestId);
-      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
-      return;
-    }
-    store().patchDetail({
-      ingestion: replaceDocumentInStatus(store().detail?.ingestion ?? null, result.data)
-    });
-    finishOperation(requestId);
-    store().patch({ notice: { kind: "success", text: "Document retry queued." } });
-    void refreshDetail(detail.base.id, true);
-  }
-
-  function setDocumentQuery(query: string) {
+  function setDetailSourceQuery(query: string) {
     const detail = store().detail;
     if (!detail || store().busy) return;
-    const normalized = query.slice(0, KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH);
-    store().patchDetail({ documentPage: 1, documentQuery: normalized });
+    const normalized = query.slice(0, KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH);
+    store().patchDetail({ sourcePage: 1, sourceQuery: normalized });
     void refreshDetail(detail.baseId, true);
   }
 
-  function setDocumentPage(page: number) {
+  function setDetailSourcePage(page: number) {
     const detail = store().detail;
     if (!detail || store().busy || !Number.isSafeInteger(page) || page < 1) return;
-    const maximum = Math.max(1, detail.ingestion?.pagination.totalPages ?? 1);
+    const maximum = Math.max(1, detail.sources?.pagination.totalPages ?? 1);
     const next = Math.min(page, maximum);
-    if (next === detail.documentPage) return;
-    store().patchDetail({ documentPage: next });
+    if (next === detail.sourcePage) return;
+    store().patchDetail({ sourcePage: next });
     void refreshDetail(detail.baseId, true);
-  }
-
-  async function reindex(embeddingDeploymentId: string) {
-    const detail = store().detail;
-    if (!detail?.base?.owned || !embeddingDeploymentId) return;
-    const requestId = beginOperation("reindex");
-    if (requestId === null) return;
-    const result = await startKnowledgeReindex(detail.base.id, embeddingDeploymentId);
-    if (!ownsOperation(requestId)) return;
-    if (!result.ok) {
-      finishOperation(requestId);
-      store().patch({ notice: { kind: "error", text: errorText(result.code) } });
-      return;
-    }
-    if (store().detail?.ingestion) {
-      store().patchDetail({
-        ingestion: { ...store().detail!.ingestion!, reindex: result.data }
-      });
-    }
-    finishOperation(requestId);
-    store().patch({ notice: { kind: "success", text: "Reindex started." } });
-    void refreshDetail(detail.base.id, true);
   }
 
   async function publish(input: Parameters<typeof publishKnowledgeBase>[1]) {
@@ -579,7 +1486,7 @@ export function createKnowledgeLibraryActions() {
     const next = publications.some((publication) => publication.id === result.data.id)
       ? publications.map((publication) => publication.id === result.data.id ? result.data : publication)
       : [...publications, result.data];
-    const base = { ...detail.base, publications: next, published: true };
+    const base = { ...detail.base, publications: next };
     store().patchDetail({ base });
     upsertSummary(store(), base);
     finishOperation(requestId);
@@ -601,39 +1508,56 @@ export function createKnowledgeLibraryActions() {
     const publications = (detail.base.publications ?? []).filter(
       (publication) => publication.id !== publicationId
     );
-    const base = { ...detail.base, publications, published: publications.length > 0 };
+    const base = { ...detail.base, publications };
     store().patchDetail({ base });
     upsertSummary(store(), base);
     finishOperation(requestId);
     store().patch({
       notice: {
         kind: "success",
-        text: "Publication revoked. Future runs lose access; accepted runs keep their admitted revision."
+        text: "Publication revoked. Future runs lose access; already accepted runs are unchanged."
       }
     });
   }
 
   return {
+    addSourceToBases,
+    cancelUpload,
     closeCreate,
     closeDetail,
     closeLibrary,
+    closeSourceDetail,
     openCreate,
     openDetail,
     openEvidence,
     openLibrary,
+    openSourceDetail,
+    permanentlyDeleteBase,
+    permanentlyDeleteSource,
     publish,
     refreshDetail,
     refreshList,
-    reindex,
-    removeDocument,
-    replaceDocument,
-    retryDocument,
+    refreshSourceDetail,
+    refreshSources,
+    reprocessSource,
+    removeSourceFromDetail,
+    removeSourceFromBase,
+    replaceSource,
+    resumeUpload,
     revokePublication,
     saveCreate,
     saveDetail,
-    setDocumentPage,
-    setDocumentQuery,
+    saveSourceDetail,
+    setCatalog,
+    setBaseTrashed,
+    setDetailSourcePage,
+    setDetailSourceQuery,
+    setSourceFilter,
+    setSourcePage,
+    setSourceQuery,
+    setSourceTrashed,
     setArchived,
+    moveSourceMembership,
     uploadFiles
   };
 }
@@ -647,15 +1571,15 @@ export function buildKnowledgeLibraryView(
   if (!snapshot.open) return null;
   const creation = snapshot.create;
   const detail = snapshot.detail;
+  const sourceDetail = snapshot.sourceDetail;
   return {
     busy: snapshot.busy,
     create: creation
       ? {
           dirty: createBaseline(creation.draft) !== creation.baseline,
           draft: creation.draft,
-          embeddingDeployments:
-            snapshot.data?.embeddingDeployments.filter((deployment) => deployment.indexSupported) ?? [],
           error: creation.error,
+          maxUploadBytes: snapshot.data?.viewer.maxUploadBytes ?? 0,
           onCancel: actions.closeCreate,
           onChange(update) {
             const current = useKnowledgeLibraryStore.getState();
@@ -665,6 +1589,7 @@ export function buildKnowledgeLibraryView(
           onSave() {
             void actions.saveCreate();
           },
+          progress: creation.progress,
           saving: creation.saving
         }
       : null,
@@ -679,24 +1604,22 @@ export function buildKnowledgeLibraryView(
           dataState: detail.dataState,
           dirty: detailBaseline(detail.draft) !== detail.baseline,
           draft: detail.draft,
-          embeddingDeployments:
-            snapshot.data?.embeddingDeployments.filter((deployment) => deployment.indexSupported) ?? [],
           error: detail.error,
-          ingestion: detail.ingestion,
+          maxUploadBytes: snapshot.data?.viewer.maxUploadBytes ?? 0,
           onArchiveToggle(archived) {
             void actions.setArchived(detail.baseId, archived);
           },
           onBack: actions.closeDetail,
+          onCancelUpload(batchId, itemId) {
+            void actions.cancelUpload(batchId, itemId);
+          },
           onChange(update) {
             const current = useKnowledgeLibraryStore.getState();
             if (current.busy || !current.detail) return;
             current.patchDetail({ draft: { ...current.detail.draft, ...update }, error: null });
           },
-          onDocumentPageChange(page) {
-            actions.setDocumentPage(page);
-          },
-          onDocumentQueryChange(query) {
-            actions.setDocumentQuery(query);
+          onDeletePermanently() {
+            void actions.permanentlyDeleteBase();
           },
           onPublish(input) {
             void actions.publish(input);
@@ -704,17 +1627,14 @@ export function buildKnowledgeLibraryView(
           onRefresh() {
             void actions.refreshDetail(detail.baseId, true);
           },
-          onReindex(embeddingDeploymentId) {
-            void actions.reindex(embeddingDeploymentId);
+          onOpenSource(sourceId) {
+            actions.openSourceDetail(sourceId, detail.baseId);
           },
-          onRemoveDocument(documentId) {
-            void actions.removeDocument(documentId);
+          onRemoveSource(sourceId) {
+            void actions.removeSourceFromDetail(sourceId);
           },
-          onReplaceDocument(documentId, file) {
-            void actions.replaceDocument(documentId, file);
-          },
-          onRetryDocument(documentId, versionId) {
-            void actions.retryDocument(documentId, versionId);
+          onResumeUpload(batchId, itemId, file) {
+            void actions.resumeUpload(batchId, itemId, file);
           },
           onRevokePublication(publicationId) {
             void actions.revokePublication(publicationId);
@@ -722,16 +1642,33 @@ export function buildKnowledgeLibraryView(
           onSave() {
             void actions.saveDetail();
           },
+          onRestore() {
+            void actions.setBaseTrashed(false);
+          },
+          onTrash() {
+            void actions.setBaseTrashed(true);
+          },
           onUpload(files) {
             void actions.uploadFiles(files);
           },
           publishableGroups: snapshot.data?.publishableGroups ?? [],
-          documentPage: detail.documentPage,
-          documentQuery: detail.documentQuery,
-          upload: detail.upload
+          sourcePage: detail.sourcePage,
+          sourceQuery: detail.sourceQuery,
+          sources: detail.sources,
+          onSourcePageChange(page) {
+            actions.setDetailSourcePage(page);
+          },
+          onSourceQueryChange(query) {
+            actions.setDetailSourceQuery(query);
+          },
+          uploadBatches: detail.uploadBatches,
+          uploadErrors: detail.uploadErrors,
+          uploadProgress: detail.uploadProgress
         }
       : null,
     list: {
+      catalog: snapshot.catalog,
+      canCreate: snapshot.data?.viewer.canCreate ?? false,
       filter: snapshot.filter,
       knowledgeBases: snapshot.data?.knowledgeBases ?? [],
       onArchiveToggle(baseId, archived) {
@@ -741,13 +1678,31 @@ export function buildKnowledgeLibraryView(
         const current = useKnowledgeLibraryStore.getState();
         if (!current.busy) current.patch({ filter });
       },
+      onCatalogChange(catalog) {
+        actions.setCatalog(catalog);
+      },
       onNewBase: actions.openCreate,
       onOpenBase: actions.openDetail,
+      onOpenSource: actions.openSourceDetail,
       onQueryChange(query) {
         const current = useKnowledgeLibraryStore.getState();
         if (!current.busy) current.patch({ query });
       },
-      query: snapshot.query
+      query: snapshot.query,
+      sourceData: snapshot.sourceData,
+      sourceDataError: snapshot.sourceDataError,
+      sourceDataState: snapshot.sourceDataState,
+      sourceFilter: snapshot.sourceFilter,
+      sourceQuery: snapshot.sourceQuery,
+      onSourceFilterChange(filter) {
+        actions.setSourceFilter(filter);
+      },
+      onSourcePageChange(page) {
+        actions.setSourcePage(page);
+      },
+      onSourceQueryChange(query) {
+        actions.setSourceQuery(query);
+      }
     },
     notice: snapshot.notice,
     onBackToChat: actions.closeLibrary,
@@ -755,12 +1710,67 @@ export function buildKnowledgeLibraryView(
       useKnowledgeLibraryStore.getState().patch({ notice: null });
     },
     onRetry() {
-      if (snapshot.task === "detail" && detail) {
+      if (snapshot.task === "source-detail" && sourceDetail) {
+        void actions.refreshSourceDetail(sourceDetail.sourceId);
+      } else if (snapshot.task === "detail" && detail) {
         void actions.refreshDetail(detail.baseId);
+      } else if (snapshot.catalog === "sources") {
+        void actions.refreshSources();
       } else {
         void actions.refreshList();
       }
     },
+    sourceDetail: sourceDetail
+      ? {
+          actionId: sourceDetail.actionId,
+          backLabel: sourceDetail.returnBaseId ? "Back to base" : "Back to Sources",
+          dataError: sourceDetail.dataError,
+          dataState: sourceDetail.dataState,
+          dirty: sourceBaseline(sourceDetail.draft) !== sourceDetail.baseline,
+          draft: sourceDetail.draft,
+          error: sourceDetail.error,
+          onAddToBases(baseIds) {
+            void actions.addSourceToBases(baseIds);
+          },
+          onBack: actions.closeSourceDetail,
+          onChange(update) {
+            const current = useKnowledgeLibraryStore.getState();
+            if (current.busy || !current.sourceDetail) return;
+            current.patchSourceDetail({
+              draft: { ...current.sourceDetail.draft, ...update },
+              error: null
+            });
+          },
+          onDeletePermanently() {
+            void actions.permanentlyDeleteSource();
+          },
+          onMove(fromBaseId, toBaseId) {
+            void actions.moveSourceMembership(fromBaseId, toBaseId);
+          },
+          onRefresh() {
+            void actions.refreshSourceDetail(sourceDetail.sourceId, true);
+          },
+          onRemoveFromBase(baseId) {
+            void actions.removeSourceFromBase(baseId);
+          },
+          onReplace(file) {
+            void actions.replaceSource(file);
+          },
+          onReprocess() {
+            void actions.reprocessSource();
+          },
+          onSave() {
+            void actions.saveSourceDetail();
+          },
+          onRestore() {
+            void actions.setSourceTrashed(false);
+          },
+          onTrash() {
+            void actions.setSourceTrashed(true);
+          },
+          source: sourceDetail.source
+        }
+      : null,
     task: snapshot.task
   };
 }

@@ -4,7 +4,7 @@ import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_INSTRUCTIONS_MAX_LENGTH,
   PROJECT_NAME_MAX_LENGTH,
-  decodeProjectDefaults,
+  decodeProjectDefaultsInput,
   decodeProjectPolicy,
   type ProjectResponseWire,
   type ProjectsResponseWire
@@ -150,7 +150,9 @@ export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
     const expectedInstructionsRevision = optionalRevision(body.expectedInstructionsRevision);
     const expectedMemoryRevision = optionalRevision(body.expectedMemoryRevision);
     const expectedPolicyRevision = optionalRevision(body.expectedPolicyRevision);
-    const defaults = body.defaults === undefined ? undefined : decodeProjectDefaults(body.defaults);
+    const defaults = body.defaults === undefined
+      ? undefined
+      : decodeProjectDefaultsInput(body.defaults);
     const policy = body.policy === undefined ? undefined : decodeProjectPolicy(body.policy);
     const status = body.status === undefined
       ? undefined

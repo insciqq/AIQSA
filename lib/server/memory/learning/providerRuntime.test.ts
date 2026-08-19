@@ -45,7 +45,7 @@ function request(runtime: ProviderExecutionSnapshot): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "Extract facts.", type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: runtime.model.capabilities,
     modelId: runtime.model.upstreamModelId,
     params: { stream: false },

@@ -1,310 +1,443 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeKnowledgeBaseDetailResponse,
-  decodeKnowledgeBaseListResponse,
   decodeKnowledgeBaseCreate,
+  decodeKnowledgeBaseDetail,
+  decodeKnowledgeBaseDetailResponse,
+  decodeKnowledgeBaseLifecycle,
+  decodeKnowledgeBaseListResponse,
   decodeKnowledgeBasePublication,
+  decodeKnowledgeBasePublicationResponse,
+  decodeKnowledgeBaseSummary,
   decodeKnowledgeBaseUpdate,
-  decodeKnowledgeDocumentMutationResponse,
-  decodeKnowledgeIngestionStatusResponse,
+  decodeKnowledgeDeletionResponse,
+  decodeKnowledgeCitationHandle,
   decodeKnowledgePlan,
-  decodeKnowledgeReindex,
-  decodeKnowledgeReindexResponse
+  decodeKnowledgeSelection,
+  decodeKnowledgeSourceDetail,
+  decodeKnowledgeSourceDetailResponse,
+  decodeKnowledgeSourceDuplicate,
+  decodeKnowledgeSourceDuplicateResponse,
+  decodeKnowledgeSourceListResponse,
+  decodeKnowledgeSourceLifecycle,
+  decodeKnowledgeSourceMembership,
+  decodeKnowledgeSourceMove,
+  decodeKnowledgeSourceSummary,
+  decodeKnowledgeSourceUpdate,
+  knowledgeCitationHandlesFromText
 } from "./knowledge";
 
-function baseSummary() {
+const ready = {
+  attentionSources: 0,
+  processingSources: 0,
+  readySources: 2,
+  state: "ready",
+  supportReference: null,
+  totalSources: 2
+} as const;
+
+function summary() {
   return {
-    activeGeneration: {
-      chunkingProfileVersion: 1,
-      embeddingDeployment: {
-        connectionDisplayName: "Embedding connection",
-        id: "embedding-1",
-        indexSupported: true,
-        modelDisplayName: "Embed model",
-        provider: "openai",
-        targetDimension: 1536
-      },
-      embeddingDeploymentId: "embedding-1",
-      id: "generation-1",
-      indexedContentRevision: 2,
-      targetDimension: 1536,
-      vectorSpaceFingerprint: "vector-space-1"
-    },
     archived: false,
-    contentRevision: 2,
-    description: "Product references",
+    deletionPending: false,
+    description: "Team references",
+    sourceCount: 2,
     id: "base-1",
     name: "Product docs",
     owned: true,
     ownerDisplayName: "Owner",
-    published: false,
-    scope: { kind: "owner" },
-    updatedAt: "2026-08-08T00:00:00.000Z",
-    version: 1
+    purgeScheduledAt: null,
+    readiness: ready,
+    scope: { kind: "owner" as const },
+    trashed: false,
+    trashedAt: null,
+    updatedAt: "2026-08-18T10:00:00.000Z",
+    version: 3
   };
 }
 
-function documentStatus() {
+function sourceVersion(overrides: Record<string, unknown> = {}) {
   return {
-    archived: false,
-    currentVersionId: "version-1",
-    id: "document-1",
-    versions: [{
-      byteSize: 12,
-      completedAt: "2026-08-08T00:01:00.000Z",
-      createdAt: "2026-08-08T00:00:00.000Z",
-      current: true,
-      embeddedChunks: 2,
-      errorCode: null,
-      fileName: "guide.md",
-      id: "version-1",
-      mimeType: "text/markdown",
-      pageCount: null,
-      payloadAvailable: true,
-      state: "ready",
-      totalChunks: 2,
-      updatedAt: "2026-08-08T00:01:00.000Z",
-      versionNumber: 1,
-      visibleFromRevision: 2,
-      visibleUntilRevision: null
-    }]
+    byteSize: 2_048,
+    createdAt: "2026-08-18T10:00:00.000Z",
+    fileName: "guide.md",
+    isCurrent: true,
+    isPending: false,
+    pageCount: 4,
+    readiness: { state: "ready", supportReference: null, warningCodes: [] },
+    versionNumber: 2,
+    ...overrides
   };
 }
 
-describe("Knowledge Base contracts", () => {
-  it("decodes an ordered three-base plan", () => {
-    expect(decodeKnowledgePlan({ baseIds: [" base-1 ", "base-2", "base-3"] })).toEqual({
+function sourceSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    currentVersion: sourceVersion(),
+    deletionPending: false,
+    description: "Canonical product guide",
+    id: "source-1",
+    membershipCount: 2,
+    name: "Product guide",
+    owned: true,
+    ownerDisplayName: "Owner",
+    purgeScheduledAt: null,
+    readiness: { state: "ready", supportReference: null, warningCodes: [] },
+    replacement: { state: "none", supportReference: null },
+    tags: ["product", "guide"],
+    trashed: false,
+    trashedAt: null,
+    updatedAt: "2026-08-18T10:00:00.000Z",
+    version: 3,
+    ...overrides
+  };
+}
+
+describe("Knowledge client-safe contracts", () => {
+  it("normalizes legacy Base plans into the canonical mixed selection", () => {
+    expect(decodeKnowledgePlan({ baseIds: ["base-1", "base-2"] })).toEqual({
       ok: true,
-      plan: { baseIds: ["base-1", "base-2", "base-3"] }
+      plan: {
+        baseIds: ["base-1", "base-2"],
+        mode: "explicit",
+        sourceIds: [],
+        version: 1
+      }
+    });
+    expect(decodeKnowledgePlan({ baseIds: [] })).toEqual({
+      ok: true,
+      plan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }
+    });
+    expect(decodeKnowledgePlan({ baseIds: ["base-1", "base-1"] })).toEqual({
+      code: "knowledge_plan_invalid",
+      ok: false
+    });
+    expect(decodeKnowledgePlan({ baseIds: [], generationId: "private" })).toMatchObject({
+      ok: false
     });
   });
 
-  it("rejects malformed, duplicate, over-limit, and expanded Knowledge plans", () => {
+  it("keeps legacy Base plans read-only", () => {
+    expect(decodeKnowledgeSelection({ baseIds: ["base-1"] })).toEqual({
+      code: "knowledge_plan_invalid",
+      ok: false
+    });
+    expect(decodeKnowledgeSelection({
+      baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+    })).toMatchObject({ ok: true });
+  });
+
+  it("accepts invocation-independent v2 handles and legacy historical handles", () => {
+    expect(decodeKnowledgeCitationHandle("K1")).toEqual({ evidenceOrdinal: 1, handle: "K1" });
+    expect(decodeKnowledgeCitationHandle("K2048")).toEqual({
+      evidenceOrdinal: 2048,
+      handle: "K2048"
+    });
+    expect(decodeKnowledgeCitationHandle("K4.1")).toMatchObject({ invocationOrdinal: 4 });
+    expect(decodeKnowledgeCitationHandle("K256.8")).toEqual({
+      handle: "K256.8",
+      invocationOrdinal: 256,
+      resultOrdinal: 8
+    });
+    for (const value of [
+      "K0", "K01", "K2049", "K0.1", "K01.1", "K257.1", "K1.9", "K1.0", "K1.01"
+    ]) {
+      expect(decodeKnowledgeCitationHandle(value)).toBeNull();
+    }
+    expect(knowledgeCitationHandlesFromText(
+      "Supported [K1], repeated [K1], legacy [K4.1], bare K5, and [K2048]."
+    )).toEqual(["K1", "K1", "K4.1", "K2048"]);
+  });
+
+  it("accepts explicit Sources and constant-size All/inherited selections", () => {
+    expect(decodeKnowledgePlan({
+      baseIds: ["base-1"],
+      mode: "explicit",
+      sourceIds: ["source-1", "source-2"],
+      version: 1
+    })).toEqual({
+      ok: true,
+      plan: {
+        baseIds: ["base-1"],
+        mode: "explicit",
+        sourceIds: ["source-1", "source-2"],
+        version: 1
+      }
+    });
+    expect(decodeKnowledgePlan({
+      baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1
+    })).toMatchObject({ ok: true, plan: { mode: "all_my_knowledge" } });
+    expect(decodeKnowledgePlan({
+      baseIds: [], inheritedFrom: "assistant", mode: "inherited", sourceIds: [], version: 1
+    })).toMatchObject({ ok: true, plan: { inheritedFrom: "assistant", mode: "inherited" } });
+  });
+
+  it("rejects malformed, oversized, contradictory, and unbounded selections", () => {
     for (const value of [
       null,
       undefined,
       {},
       { baseIds: "base-1" },
-      { baseIds: ["base-1", "base-1"] },
-      { baseIds: ["base-1", "base-2", "base-3", "base-4"] },
+      { baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`) },
       { baseIds: ["base 1"] },
-      { baseIds: [], ownerUserId: "attacker" }
+      { baseIds: [], ownerUserId: "attacker" },
+      { baseIds: [], mode: "explicit", sourceIds: [], version: 1 },
+      { baseIds: ["base-1"], mode: "all_my_knowledge", sourceIds: [], version: 1 },
+      { baseIds: [], inheritedFrom: "project", mode: "none", sourceIds: [], version: 1 },
+      { baseIds: [], inheritedFrom: "personal", mode: "inherited", sourceIds: [], version: 1 },
+      { baseIds: [], mode: "all_my_knowledge", ownerUserId: "attacker", sourceIds: [], version: 1 }
     ]) {
       expect(decodeKnowledgePlan(value)).toEqual({ code: "knowledge_plan_invalid", ok: false });
     }
   });
 
-  it("normalizes bounded create and update inputs", () => {
+  it("creates without accepting provider or index authority", () => {
     expect(decodeKnowledgeBaseCreate({
-      description: "  Team references  ",
+      description: " References ",
+      name: " Product docs "
+    })).toEqual({
+      ok: true,
+      value: { description: "References", name: "Product docs" }
+    });
+    expect(decodeKnowledgeBaseCreate({
       embeddingDeploymentId: "embedding-1",
-      name: "  Product docs  "
-    })).toEqual({
-      ok: true,
-      value: {
-        description: "Team references",
-        embeddingDeploymentId: "embedding-1",
-        name: "Product docs"
-      }
-    });
-    expect(decodeKnowledgeBaseUpdate({
-      archived: false,
-      description: " Updated ",
-      expectedVersion: 2
-    })).toEqual({
-      ok: true,
-      value: { archived: false, description: "Updated", expectedVersion: 2 }
-    });
+      name: "Product docs"
+    })).toMatchObject({ ok: false });
   });
 
-  it("rejects extra keys, empty updates, malformed ids, and over-bounds text", () => {
-    expect(decodeKnowledgeBaseCreate({
-      description: "",
-      embeddingDeploymentId: "embedding 1",
+  it("keeps optimistic updates and publication inputs strict", () => {
+    expect(decodeKnowledgeBaseUpdate({
+      description: "Updated",
+      expectedVersion: 3,
       name: "Docs"
-    })).toMatchObject({ ok: false });
+    })).toEqual({
+      ok: true,
+      value: { description: "Updated", expectedVersion: 3, name: "Docs" }
+    });
+    expect(decodeKnowledgeBaseUpdate({ expectedVersion: 3 })).toMatchObject({ ok: false });
+    expect(decodeKnowledgeBasePublication({ groupId: "group-1", scope: "group" }))
+      .toEqual({ ok: true, value: { groupId: "group-1", scope: "group" } });
+    expect(decodeKnowledgeBasePublication({ groupId: null, scope: "installation" }))
+      .toEqual({ ok: true, value: { groupId: null, scope: "installation" } });
+  });
+
+  it("keeps Trash, restore, and permanent-deletion contracts strict", () => {
+    expect(decodeKnowledgeBaseLifecycle({ expectedVersion: 3 })).toEqual({
+      ok: true,
+      value: { expectedVersion: 3 }
+    });
+    expect(decodeKnowledgeSourceLifecycle({ expectedVersion: 7 })).toEqual({
+      ok: true,
+      value: { expectedVersion: 7 }
+    });
+    for (const value of [
+      {},
+      { expectedVersion: 0 },
+      { expectedVersion: 1.5 },
+      { expectedVersion: 3, force: true }
+    ]) {
+      expect(decodeKnowledgeBaseLifecycle(value)).toMatchObject({ ok: false });
+      expect(decodeKnowledgeSourceLifecycle(value)).toMatchObject({ ok: false });
+    }
+    expect(decodeKnowledgeDeletionResponse({ status: "pending" })).toEqual({
+      status: "pending"
+    });
+    expect(decodeKnowledgeDeletionResponse({ status: "pending", jobId: "private" })).toBeNull();
+    expect(decodeKnowledgeDeletionResponse({ status: "complete" })).toBeNull();
+
+    const trashedSummary = {
+      ...summary(),
+      purgeScheduledAt: "2026-09-17T10:00:00.000Z",
+      readiness: { ...ready, state: "trashed" as const },
+      trashed: true,
+      trashedAt: "2026-08-18T10:00:00.000Z"
+    };
+    expect(decodeKnowledgeBaseSummary(trashedSummary)).toEqual(trashedSummary);
+    expect(decodeKnowledgeBaseSummary({ ...trashedSummary, purgeScheduledAt: null })).toBeNull();
+    expect(decodeKnowledgeSourceSummary(sourceSummary({
+      purgeScheduledAt: "2026-09-17T10:00:00.000Z",
+      trashed: true,
+      trashedAt: "2026-08-18T10:00:00.000Z"
+    }))).not.toBeNull();
+    expect(decodeKnowledgeSourceSummary(sourceSummary({
+      purgeScheduledAt: "2026-08-17T10:00:00.000Z",
+      trashed: true,
+      trashedAt: "2026-08-18T10:00:00.000Z"
+    }))).toBeNull();
+  });
+
+  it("rejects extra create authority, empty updates, and mismatched publication scope", () => {
     expect(decodeKnowledgeBaseCreate({
       description: "",
-      embeddingDeploymentId: "embedding-1",
       name: "Docs",
       ownerUserId: "attacker"
     })).toMatchObject({ ok: false });
+    expect(decodeKnowledgeBaseCreate({
+      description: "x".repeat(2_001),
+      name: "Docs"
+    })).toMatchObject({ ok: false });
     expect(decodeKnowledgeBaseUpdate({ expectedVersion: 1 })).toMatchObject({ ok: false });
-    expect(decodeKnowledgeBaseUpdate({ expectedVersion: 0, name: "Docs" })).toMatchObject({ ok: false });
-  });
-
-  it("enforces the publication scope/group pair", () => {
-    expect(decodeKnowledgeBasePublication({ groupId: "group-1", scope: "group" })).toEqual({
-      ok: true,
-      value: { groupId: "group-1", scope: "group" }
-    });
-    expect(decodeKnowledgeBasePublication({ scope: "installation" })).toEqual({
-      ok: true,
-      value: { groupId: null, scope: "installation" }
-    });
+    expect(decodeKnowledgeBaseUpdate({ expectedVersion: 0, name: "Docs" }))
+      .toMatchObject({ ok: false });
     expect(decodeKnowledgeBasePublication({ groupId: "group-1", scope: "installation" }))
       .toMatchObject({ ok: false });
     expect(decodeKnowledgeBasePublication({ groupId: null, scope: "group" }))
       .toMatchObject({ ok: false });
   });
 
-  it("accepts only an exact bounded embedding deployment for reindex", () => {
-    expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding-2" })).toEqual({
-      ok: true,
-      value: { embeddingDeploymentId: "embedding-2" }
-    });
-    expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding 2" })).toMatchObject({ ok: false });
-    expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding-2", userId: "other" }))
-      .toMatchObject({ ok: false });
-  });
+  it("decodes only the Base fields the ordinary product consumes", () => {
+    expect(decodeKnowledgeBaseSummary(summary())).toEqual(summary());
+    expect(decodeKnowledgeBaseSummary({
+      ...summary(),
+      activeGeneration: { id: "generation-private" }
+    })).toBeNull();
+    expect(decodeKnowledgeBaseSummary({
+      ...summary(),
+      sourceCount: 1
+    })).toBeNull();
 
-  it("decodes list and owner detail projections for the browser", () => {
-    const summary = baseSummary();
-    expect(decodeKnowledgeBaseListResponse({
-      embeddingDeployments: [summary.activeGeneration.embeddingDeployment],
-      knowledgeBases: [summary],
-      publishableGroups: [{ id: "group-1", name: "Product" }],
-      viewer: { canPublishInstallation: true }
-    })).toMatchObject({
-      knowledgeBases: [{ id: "base-1", name: "Product docs" }],
-      viewer: { canPublishInstallation: true }
+    const detail = { ...summary(), publications: [] };
+    expect(decodeKnowledgeBaseDetail(detail)).toEqual(detail);
+    expect(decodeKnowledgeBaseDetail({ ...detail, publications: null })).toBeNull();
+    expect(decodeKnowledgeBaseDetailResponse({ knowledgeBase: detail })).toEqual({
+      knowledgeBase: detail
     });
     expect(decodeKnowledgeBaseDetailResponse({
-      knowledgeBase: {
-        ...summary,
-        documentCount: 1,
-        published: true,
-        publications: [{
-          groupId: "group-1",
-          groupName: "Product",
-          id: "publication-1",
-          scope: "group",
-          updatedAt: "2026-08-08T00:02:00.000Z"
-        }]
-      }
-    })).toMatchObject({ knowledgeBase: { documentCount: 1, id: "base-1" } });
+      knowledgeBase: detail,
+      runtimeProfile: { id: "private" }
+    })).toBeNull();
   });
 
-  it("decodes document lifecycle and reindex projections", () => {
-    const document = documentStatus();
-    expect(decodeKnowledgeIngestionStatusResponse({
-      documents: [document],
-      owned: true,
-      pagination: {
-        page: 1,
-        pageSize: 25,
-        query: "guide",
-        totalItems: 1,
-        totalPages: 1
-      },
-      reindex: {
-        completedDocuments: 1,
-        createdAt: "2026-08-08T00:00:00.000Z",
-        errorCode: null,
-        failedDocuments: 0,
-        generationId: "generation-2",
-        status: "building",
-        targetContentRevision: 2,
-        totalDocuments: 1
+  it("decodes a strict content-safe list and rejects legacy technical expansion", () => {
+    const response = {
+      knowledgeBases: [summary()],
+      publishableGroups: [{ id: "group-1", name: "Research" }],
+      viewer: { canCreate: true, canPublishInstallation: false, maxUploadBytes: 50_000_000 }
+    };
+    expect(decodeKnowledgeBaseListResponse(response)).toEqual(response);
+    expect(decodeKnowledgeBaseListResponse({
+      ...response,
+      viewer: { ...response.viewer, maxUploadBytes: 0 }
+    })).toBeNull();
+    expect(decodeKnowledgeBaseListResponse({
+      ...response,
+      embeddingDeployments: [{ id: "embedding-private" }]
+    })).toBeNull();
+  });
+
+  it("keeps publication projections free of internal admission state", () => {
+    const publication = {
+      groupId: "group-1",
+      groupName: "Research",
+      id: "publication-1",
+      scope: "group" as const,
+      updatedAt: "2026-08-18T10:00:00.000Z"
+    };
+    expect(decodeKnowledgeBasePublicationResponse({ publication })).toEqual({ publication });
+    expect(decodeKnowledgeBasePublicationResponse({
+      publication: { ...publication, admittedGenerationId: "private" }
+    })).toBeNull();
+  });
+
+  it("keeps Source metadata, membership, move, and duplicate inputs strict", () => {
+    expect(decodeKnowledgeSourceUpdate({
+      description: " Updated ",
+      expectedVersion: 3,
+      name: " Guide ",
+      tags: [" product ", "runbook"]
+    })).toEqual({
+      ok: true,
+      value: {
+        description: "Updated",
+        expectedVersion: 3,
+        name: "Guide",
+        tags: ["product", "runbook"]
       }
-    })).toMatchObject({ documents: [{ id: "document-1" }], owned: true });
-    expect(decodeKnowledgeDocumentMutationResponse({ document })).toMatchObject({
-      document: { currentVersionId: "version-1" }
     });
-    expect(decodeKnowledgeReindexResponse({
-      reindex: {
-        completedDocuments: 0,
-        createdAt: "2026-08-08T00:00:00.000Z",
-        errorCode: null,
-        failedDocuments: 0,
-        generationId: "generation-2",
-        status: "building",
-        targetContentRevision: 2,
-        totalDocuments: 1
-      }
-    })).toMatchObject({ reindex: { generationId: "generation-2" } });
+    expect(decodeKnowledgeSourceUpdate({ expectedVersion: 3 })).toMatchObject({ ok: false });
+    expect(decodeKnowledgeSourceUpdate({
+      expectedVersion: 3,
+      tags: ["Product", "product"]
+    })).toMatchObject({ ok: false });
+    expect(decodeKnowledgeSourceMembership({ baseIds: ["base-1", "base-2"] }))
+      .toEqual({ ok: true, value: { baseIds: ["base-1", "base-2"] } });
+    expect(decodeKnowledgeSourceMembership({ baseIds: ["base-1", "base-1"] }))
+      .toMatchObject({ ok: false });
+    expect(decodeKnowledgeSourceMove({ fromBaseId: "base-1", toBaseId: "base-2" }))
+      .toEqual({ ok: true, value: { fromBaseId: "base-1", toBaseId: "base-2" } });
+    expect(decodeKnowledgeSourceMove({ fromBaseId: "base-1", toBaseId: "base-1" }))
+      .toMatchObject({ ok: false });
+    expect(decodeKnowledgeSourceDuplicate({
+      byteSize: 2_048,
+      checksum: "a".repeat(64)
+    })).toEqual({
+      ok: true,
+      value: { byteSize: 2_048, checksum: "a".repeat(64) }
+    });
+    expect(decodeKnowledgeSourceDuplicate({
+      byteSize: 2_048,
+      checksum: "A".repeat(64)
+    })).toMatchObject({ ok: false });
   });
 
-  it("rejects inconsistent browser projections instead of trusting server-shaped JSON", () => {
-    const summary = baseSummary();
-    expect(decodeKnowledgeBaseListResponse({
-      embeddingDeployments: [],
-      knowledgeBases: [{
-        ...summary,
-        activeGeneration: {
-          ...summary.activeGeneration,
-          embeddingDeploymentId: "different-deployment"
-        }
-      }],
-      publishableGroups: [],
-      viewer: { canPublishInstallation: false }
+  it("decodes only user-safe Source list and progressive detail fields", () => {
+    const summary = sourceSummary();
+    expect(decodeKnowledgeSourceSummary(summary)).toEqual(summary);
+    expect(decodeKnowledgeSourceSummary({
+      ...summary,
+      profileRevisionId: "profile-private"
     })).toBeNull();
-    expect(decodeKnowledgeIngestionStatusResponse({
-      documents: [{
-        ...documentStatus(),
-        versions: [{
-          ...documentStatus().versions[0],
-          embeddedChunks: 3,
-          totalChunks: 2
-        }]
-      }],
-      owned: true,
-      pagination: {
-        page: 1,
-        pageSize: 25,
-        query: "",
-        totalItems: 1,
-        totalPages: 1
-      },
-      reindex: null
+    const response = {
+      pagination: { page: 1, pageSize: 25, query: "guide", totalItems: 1, totalPages: 1 },
+      sources: [summary]
+    };
+    expect(decodeKnowledgeSourceListResponse(response)).toEqual(response);
+    const detail = {
+      ...summary,
+      eligibleBases: [{ archived: false, id: "base-3", name: "Support" }],
+      memberships: [
+        { archived: false, id: "base-1", name: "Product" },
+        { archived: false, id: "base-2", name: "Operations" }
+      ],
+      versions: [
+        sourceVersion(),
+        sourceVersion({
+          createdAt: "2026-08-17T10:00:00.000Z",
+          isCurrent: false,
+          pageCount: null,
+          readiness: {
+            state: "needs_attention",
+            supportReference: "K-0123456789AB",
+            warningCodes: []
+          },
+          versionNumber: 1
+        })
+      ]
+    };
+    expect(decodeKnowledgeSourceDetail(detail)).toEqual(detail);
+    expect(decodeKnowledgeSourceDetailResponse({ source: detail })).toEqual({ source: detail });
+    expect(decodeKnowledgeSourceDetail({
+      ...detail,
+      versions: [{ ...sourceVersion(), normalizedTextStorageKey: "private" }]
     })).toBeNull();
-    expect(decodeKnowledgeIngestionStatusResponse({
-      documents: [documentStatus()],
-      owned: true,
-      pagination: {
-        page: 1,
-        pageSize: 25,
-        query: "",
-        totalItems: 26,
-        totalPages: 1
-      },
-      reindex: null
+    expect(decodeKnowledgeSourceDuplicateResponse({ source: summary })).toEqual({ source: summary });
+    expect(decodeKnowledgeSourceDuplicateResponse({ source: null })).toEqual({ source: null });
+  });
+
+  it("keeps shared Source details read-only and current-version only", () => {
+    const shared = sourceSummary({ membershipCount: 1, owned: false });
+    const detail = {
+      ...shared,
+      eligibleBases: [],
+      memberships: [{ archived: false, id: "base-1", name: "Shared product" }],
+      versions: [sourceVersion()]
+    };
+    expect(decodeKnowledgeSourceDetail(detail)).toEqual(detail);
+    expect(decodeKnowledgeSourceDetail({
+      ...detail,
+      eligibleBases: [{ archived: false, id: "base-2", name: "Private target" }]
     })).toBeNull();
-    expect(decodeKnowledgeIngestionStatusResponse({
-      documents: [{
-        ...documentStatus(),
-        currentVersionId: "missing-version"
-      }],
-      owned: true,
-      pagination: {
-        page: 1,
-        pageSize: 25,
-        query: "",
-        totalItems: 1,
-        totalPages: 1
-      },
-      reindex: null
-    })).toBeNull();
-    expect(decodeKnowledgeBaseListResponse({
-      embeddingDeployments: [summary.activeGeneration.embeddingDeployment],
-      knowledgeBases: [{
-        ...summary,
-        owned: false
-      }],
-      publishableGroups: [],
-      viewer: { canPublishInstallation: false }
-    })).toBeNull();
-    expect(decodeKnowledgeReindexResponse({
-      reindex: {
-        completedDocuments: 2,
-        createdAt: "now",
-        errorCode: null,
-        failedDocuments: 1,
-        generationId: "generation-2",
-        status: "building",
-        targetContentRevision: 2,
-        totalDocuments: 2
-      }
+    expect(decodeKnowledgeSourceDetail({
+      ...detail,
+      versions: [sourceVersion(), sourceVersion({ isCurrent: false, versionNumber: 1 })]
     })).toBeNull();
   });
 });

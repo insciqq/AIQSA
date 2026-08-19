@@ -120,7 +120,7 @@ function smokeRequest(provider: string, streamUsage = false): ProviderRunRequest
     content: {
       blocks: [{ text: "Return the deterministic fixture marker.", type: "text" }]
     },
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

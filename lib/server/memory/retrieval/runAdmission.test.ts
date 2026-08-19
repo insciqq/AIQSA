@@ -47,7 +47,7 @@ function request(text: string): NormalizedRunRequest {
   return {
     attachmentIds: [], chatId: "chat-current", content,
     context: { messages: [{ content, id: "current", role: "user" }], mode: "branch_path" },
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: false, toolCalling: true, vision: false },
     modelId: "model-1", params: {}, prompt: { developer: null, system: null },

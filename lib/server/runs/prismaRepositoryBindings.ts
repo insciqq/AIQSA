@@ -27,6 +27,10 @@ import {
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import {
+  KnowledgeSourceSnapshotConflictError,
+  materializeKnowledgeBaseSnapshot
+} from "../knowledge/sourcePersistence";
+import {
   AssistantRunConflictError,
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
@@ -555,7 +559,7 @@ export async function lockKnowledgeRunAdmissionSources(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   input: Readonly<{ plan: KnowledgeRunAdmissionPlan; userId: string }>
 ): Promise<void> {
-  for (const knowledgeBaseId of input.plan.knowledgePlan.baseIds) {
+  for (const { knowledgeBaseId } of input.plan.bindings) {
     if (input.plan.projectId) {
       const projectBindings = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT project_binding."id"
@@ -563,6 +567,8 @@ export async function lockKnowledgeRunAdmissionSources(
         INNER JOIN "KnowledgeBase" AS base
           ON base."id" = project_binding."knowledgeBaseId"
          AND base."archivedAt" IS NULL
+         AND base."trashedAt" IS NULL
+         AND base."deletionRequestedAt" IS NULL
         INNER JOIN "KnowledgeIndexGeneration" AS generation
           ON generation."knowledgeBaseId" = base."id"
          AND generation."id" = base."activeIndexGenerationId"
@@ -588,6 +594,8 @@ export async function lockKnowledgeRunAdmissionSources(
        AND generation."status" = 'active'
       WHERE base."id" = ${knowledgeBaseId}
         AND base."archivedAt" IS NULL
+        AND base."trashedAt" IS NULL
+        AND base."deletionRequestedAt" IS NULL
       FOR SHARE OF base, generation
     `;
     const base = bases[0];
@@ -651,10 +659,32 @@ export async function insertAcceptedKnowledgeRunBindings(
   if (!sameKnowledgeRunAdmissionPlan(input.plan, current)) {
     throw new KnowledgeRunPlanConflictError();
   }
+  await tx.knowledgeRunScope.create({
+    data: {
+      budgetPolicy: json(current.budgetPolicy),
+      exclusions: json(current.exclusions),
+      modelRunId: input.runId,
+      resolvedBaseCount: current.bindings.length,
+      resolvedSourceCount: current.resolvedSourceCount,
+      selection: json(current.knowledgePlan)
+    }
+  });
   for (const binding of current.bindings) {
     const snapshot = binding.embeddingExecutionSnapshot;
     if (!snapshot.credentialId || !snapshot.credentialVersionId) {
       throw new KnowledgeRunPlanConflictError();
+    }
+    let sourceSnapshot: Awaited<ReturnType<typeof materializeKnowledgeBaseSnapshot>>;
+    try {
+      sourceSnapshot = await materializeKnowledgeBaseSnapshot(tx, {
+        indexGenerationId: binding.indexGenerationId,
+        knowledgeBaseId: binding.knowledgeBaseId
+      });
+    } catch (error) {
+      if (error instanceof KnowledgeSourceSnapshotConflictError) {
+        throw new KnowledgeRunPlanConflictError();
+      }
+      throw error;
     }
     await tx.knowledgeRunBinding.create({
       data: {
@@ -667,9 +697,12 @@ export async function insertAcceptedKnowledgeRunBindings(
         embeddingProviderModelId: binding.embeddingProviderModelId,
         indexedContentRevision: binding.indexedContentRevision,
         indexGenerationId: binding.indexGenerationId,
+        includeWholeBase: binding.includeWholeBase,
         knowledgeBaseId: binding.knowledgeBaseId,
+        knowledgeBaseSnapshotId: sourceSnapshot.snapshotId,
         modelRunId: input.runId,
         ordinal: binding.ordinal,
+        selectedSourceIds: [...binding.selectedSourceIds],
         targetDimension: binding.targetDimension,
         vectorSpaceFingerprint: binding.vectorSpaceFingerprint
       }

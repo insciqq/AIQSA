@@ -1,8 +1,13 @@
 import { parse, type DefaultTreeAdapterMap } from "parse5";
+import { finalizeParsedDocument, parsedLanguageHints } from "./assessment";
 import { DocumentParserError } from "./errors";
 import type {
+  ParsedBoundingBox,
   ParsedDocument,
+  ParsedDocumentAsset,
   ParsedDocumentBlock,
+  ParsedDocumentBlockType,
+  ParsedTable,
   SidecarParserEngine
 } from "./types";
 
@@ -11,10 +16,15 @@ type HtmlParentNode = DefaultTreeAdapterMap["parentNode"];
 type HtmlElement = DefaultTreeAdapterMap["element"];
 
 type MutableBlock = {
+  assetIds?: string[];
+  boundingBoxes?: ParsedBoundingBox[];
   headingPath: string[];
   isTable: boolean;
   page: number;
+  pageEnd?: number;
+  table?: ParsedTable | null;
   text: string;
+  type?: ParsedDocumentBlockType;
 };
 
 const MAX_NORMALIZED_BLOCKS = 100_000;
@@ -50,19 +60,53 @@ function pageOf(item: Record<string, unknown>): number {
   return 1;
 }
 
+function boundingBoxesOf(item: Record<string, unknown>): ParsedBoundingBox[] {
+  if (!Array.isArray(item.prov)) return [];
+  const result: ParsedBoundingBox[] = [];
+  for (const provenance of item.prov) {
+    if (!isRecord(provenance) || !isRecord(provenance.bbox)) continue;
+    const page = positivePage(provenance.page_no);
+    const { b, l, r, t } = provenance.bbox;
+    const coordinateOrigin = provenance.bbox.coord_origin === "TOPLEFT"
+      ? "top_left"
+      : "bottom_left";
+    if (
+      !page ||
+      ![b, l, r, t].every((value) => typeof value === "number" && Number.isFinite(value)) ||
+      Number(l) > Number(r) ||
+      (coordinateOrigin === "top_left" ? Number(b) < Number(t) : Number(b) > Number(t))
+    ) continue;
+    result.push(Object.freeze({
+      bottom: Number(b),
+      coordinateOrigin,
+      left: Number(l),
+      page,
+      right: Number(r),
+      top: Number(t)
+    }));
+  }
+  return result;
+}
+
 function addBlock(blocks: MutableBlock[], block: MutableBlock, engine: SidecarParserEngine): void {
   const text = normalizedText(block.text);
-  if (!text) return;
+  if (!text && !(block.type === "image" && (block.assetIds?.length ?? 0) > 0)) return;
   if (blocks.length >= MAX_NORMALIZED_BLOCKS) invalid(engine);
   blocks.push({
     headingPath: [...block.headingPath],
     isTable: block.isTable,
     page: block.page,
+    ...(block.assetIds ? { assetIds: [...block.assetIds] } : {}),
+    ...(block.boundingBoxes ? { boundingBoxes: [...block.boundingBoxes] } : {}),
+    ...(block.pageEnd ? { pageEnd: block.pageEnd } : {}),
+    ...(block.table !== undefined ? { table: block.table } : {}),
+    ...(block.type ? { type: block.type } : {}),
     text
   });
 }
 
 function finalizedDocument(input: Readonly<{
+  assets?: ParsedDocumentAsset[];
   blocks: MutableBlock[];
   engine: SidecarParserEngine;
   mediaType: string;
@@ -70,33 +114,46 @@ function finalizedDocument(input: Readonly<{
   status: "complete" | "partial";
 }>): ParsedDocument {
   const blocks: ParsedDocumentBlock[] = input.blocks.map((block, index) => Object.freeze({
+    assetIds: Object.freeze([...(block.assetIds ?? [])]),
+    boundingBoxes: Object.freeze([...(block.boundingBoxes ?? [])]),
     headingPath: Object.freeze([...block.headingPath]),
     index,
     isTable: block.isTable,
+    languageHints: parsedLanguageHints(block.text),
     page: block.page,
-    text: block.text
+    pageEnd: block.pageEnd ?? block.page,
+    readingOrder: index,
+    table: block.table ?? null,
+    text: block.text,
+    type: block.type ?? (block.isTable ? "table" : "paragraph")
   }));
   let pageCount = Math.max(1, input.pageCount);
   for (const block of blocks) pageCount = Math.max(pageCount, block.page);
 
-  return Object.freeze({
-    blocks: Object.freeze(blocks),
+  return finalizeParsedDocument({
+    assets: input.assets ?? [],
+    blocks,
     engine: input.engine,
     mediaType: input.mediaType,
     pageCount,
-    status: input.status,
-    text: blocks.map((block) => block.text).join("\n\n")
+    status: input.status
   });
 }
 
-function doclingTableText(item: Record<string, unknown>): string {
-  if (!isRecord(item.data) || !Array.isArray(item.data.table_cells)) return "";
+function doclingTable(item: Record<string, unknown>): ParsedTable | null {
+  if (!isRecord(item.data) || !Array.isArray(item.data.table_cells)) return null;
   const cells = item.data.table_cells;
   if (cells.length > MAX_TABLE_CELLS) invalid("docling");
 
   let rowCount = 0;
   let columnCount = 0;
-  const values: Array<{ column: number; row: number; text: string }> = [];
+  const values: Array<{
+    column: number;
+    columnSpan: number;
+    row: number;
+    rowSpan: number;
+    text: string;
+  }> = [];
 
   for (const candidate of cells) {
     if (!isRecord(candidate)) continue;
@@ -122,17 +179,42 @@ function doclingTableText(item: Record<string, unknown>): string {
     rowCount = Math.max(rowCount, endRow as number);
     columnCount = Math.max(columnCount, endColumn as number);
     const text = normalizedText(candidate.text);
-    if (text) values.push({ column: column as number, row: row as number, text });
+    if (text) values.push({
+      column: column as number,
+      columnSpan: (endColumn as number) - (column as number),
+      row: row as number,
+      rowSpan: (endRow as number) - (row as number),
+      text
+    });
   }
 
   if (rowCount * columnCount > MAX_TABLE_CELLS * 4) invalid("docling");
-  if (rowCount === 0 || columnCount === 0) return "";
+  if (rowCount === 0 || columnCount === 0) return null;
+  return Object.freeze({
+    cells: Object.freeze(values.map((value) => Object.freeze(value))),
+    columnCount,
+    rowCount
+  });
+}
 
-  const rows = Array.from({ length: rowCount }, () => Array<string>(columnCount).fill(""));
-  for (const value of values) {
-    rows[value.row][value.column] = value.text;
-  }
+function tableText(table: ParsedTable | null): string {
+  if (!table) return "";
+  const rows = Array.from({ length: table.rowCount }, () => Array<string>(table.columnCount).fill(""));
+  for (const cell of table.cells) rows[cell.row]![cell.column] = cell.text;
   return rows.map((row) => row.join("\t").trimEnd()).filter(Boolean).join("\n");
+}
+
+function doclingBlockType(item: Record<string, unknown>): ParsedDocumentBlockType {
+  switch (item.label) {
+    case "title": return "title";
+    case "section_header": return "heading";
+    case "list_item": return "list_item";
+    case "code": return "code";
+    case "caption": return "caption";
+    case "footnote":
+    case "page_footer": return "footnote";
+    default: return "paragraph";
+  }
 }
 
 function doclingPageCount(document: Record<string, unknown>): number {
@@ -171,6 +253,7 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     texts: Array.isArray(document.texts) ? document.texts : []
   };
   const blocks: MutableBlock[] = [];
+  const assets: ParsedDocumentAsset[] = [];
   const headingPath: string[] = [];
   let hasTitle = false;
   const visitedContainers = new Set<string>();
@@ -212,7 +295,28 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
       return;
     }
 
-    if (collectionName === "pictures") return;
+    if (collectionName === "pictures") {
+      const assetId = `docling-picture-${index}`;
+      const boxes = boundingBoxesOf(item);
+      const page = pageOf(item);
+      assets.push(Object.freeze({
+        boundingBoxes: Object.freeze(boxes),
+        caption: null,
+        id: assetId,
+        kind: item.label === "chart" ? "chart" : item.label === "diagram" ? "diagram" : "image",
+        page
+      }));
+      addBlock(blocks, {
+        assetIds: [assetId],
+        boundingBoxes: boxes,
+        headingPath,
+        isTable: false,
+        page,
+        text: "",
+        type: "image"
+      }, "docling");
+      return;
+    }
 
     if (collectionName === "form_items" || collectionName === "key_value_items") {
       // Docling graph regions are valid body nodes but do not define a stable
@@ -229,11 +333,15 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     }
 
     if (collectionName === "tables") {
+      const table = doclingTable(item);
       addBlock(blocks, {
+        boundingBoxes: boundingBoxesOf(item),
         headingPath,
         isTable: true,
         page: pageOf(item),
-        text: doclingTableText(item)
+        table,
+        text: tableText(table),
+        type: "table"
       }, "docling");
       return;
     }
@@ -242,16 +350,19 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     if (!text) return;
     updateHeading(item, text);
     addBlock(blocks, {
+      boundingBoxes: boundingBoxesOf(item),
       headingPath,
       isTable: false,
       page: pageOf(item),
-      text
+      text,
+      type: doclingBlockType(item)
     }, "docling");
   }
 
   for (const child of document.body.children) visit(child);
 
   return finalizedDocument({
+    assets,
     blocks,
     engine: "docling",
     mediaType,
@@ -312,25 +423,59 @@ function descendants(element: HtmlElement, tagName: string): HtmlElement[] {
   return result;
 }
 
-function tikaTableText(table: HtmlElement): string {
+function tikaTable(table: HtmlElement): ParsedTable | null {
   const rows = descendants(table, "tr").slice(0, MAX_TABLE_ROWS);
-  if (rows.length === 0) return normalizedText(htmlText(table));
+  if (rows.length === 0) return null;
   let cellCount = 0;
-  return rows.map((row) => {
+  let columnCount = 0;
+  const values: Array<{
+    column: number;
+    columnSpan: number;
+    row: number;
+    rowSpan: number;
+    text: string;
+  }> = [];
+  rows.forEach((row, rowIndex) => {
     const cells = childNodes(row).filter((node): node is HtmlElement =>
       isElement(node) && (node.tagName === "td" || node.tagName === "th")
     );
     cellCount += cells.length;
     if (cellCount > MAX_TABLE_CELLS || cells.length > MAX_TABLE_COLUMNS) invalid("tika");
-    return cells.map((cell) => normalizedText(htmlText(cell))).join("\t").trimEnd();
-  }).filter(Boolean).join("\n");
+    let column = 0;
+    for (const cell of cells) {
+      const parsedColumnSpan = Number(attribute(cell, "colspan") ?? "1");
+      const parsedRowSpan = Number(attribute(cell, "rowspan") ?? "1");
+      const columnSpan = Number.isSafeInteger(parsedColumnSpan) && parsedColumnSpan >= 1 && parsedColumnSpan <= MAX_TABLE_COLUMNS
+        ? parsedColumnSpan
+        : 1;
+      const rowSpan = Number.isSafeInteger(parsedRowSpan) && parsedRowSpan >= 1 && parsedRowSpan <= MAX_TABLE_ROWS
+        ? parsedRowSpan
+        : 1;
+      values.push({
+        column,
+        columnSpan,
+        row: rowIndex,
+        rowSpan,
+        text: normalizedText(htmlText(cell))
+      });
+      column += columnSpan;
+    }
+    columnCount = Math.max(columnCount, column);
+  });
+  if (columnCount === 0) return null;
+  return Object.freeze({
+    cells: Object.freeze(values.map((value) => Object.freeze(value))),
+    columnCount,
+    rowCount: rows.length
+  });
 }
 
 function tikaBlocksForPage(
   root: HtmlParentNode | HtmlElement,
   page: number,
   headingPath: string[],
-  blocks: MutableBlock[]
+  blocks: MutableBlock[],
+  assets: ParsedDocumentAsset[]
 ): void {
   let emitted = false;
 
@@ -346,25 +491,60 @@ function tikaBlocksForPage(
       if (text) {
         const index = Number(heading[1]) - 1;
         headingPath.splice(index, headingPath.length - index, text);
-        addBlock(blocks, { headingPath, isTable: false, page, text }, "tika");
+        addBlock(blocks, { headingPath, isTable: false, page, text, type: "heading" }, "tika");
         emitted = true;
       }
       return;
     }
 
     if (node.tagName === "table") {
-      const text = tikaTableText(node);
+      const table = tikaTable(node);
+      const text = tableText(table);
       if (text) {
-        addBlock(blocks, { headingPath, isTable: true, page, text }, "tika");
+        addBlock(blocks, { headingPath, isTable: true, page, table, text, type: "table" }, "tika");
         emitted = true;
       }
       return;
     }
 
-    if (["blockquote", "li", "p", "pre"].includes(node.tagName)) {
+    if (node.tagName === "img") {
+      const id = `tika-image-${assets.length}`;
+      const caption = normalizedText(attribute(node, "alt"));
+      assets.push(Object.freeze({
+        boundingBoxes: Object.freeze([]),
+        caption: caption || null,
+        id,
+        kind: "image",
+        page
+      }));
+      addBlock(blocks, {
+        assetIds: [id],
+        headingPath,
+        isTable: false,
+        page,
+        text: caption,
+        type: "image"
+      }, "tika");
+      emitted = true;
+      return;
+    }
+
+    if (["blockquote", "figcaption", "li", "p", "pre"].includes(node.tagName)) {
       const text = normalizedText(htmlText(node));
       if (text) {
-        addBlock(blocks, { headingPath, isTable: false, page, text }, "tika");
+        addBlock(blocks, {
+          headingPath,
+          isTable: false,
+          page,
+          text,
+          type: node.tagName === "li"
+            ? "list_item"
+            : node.tagName === "pre"
+              ? "code"
+              : node.tagName === "figcaption"
+                ? "caption"
+                : "paragraph"
+        }, "tika");
         emitted = true;
       }
       return;
@@ -395,11 +575,19 @@ export function normalizeTikaResponse(value: unknown, mediaType: string): Parsed
     ? pages
     : [findFirstElement(document, "body") ?? document];
   const blocks: MutableBlock[] = [];
+  const assets: ParsedDocumentAsset[] = [];
   const headingPath: string[] = [];
 
-  roots.forEach((root, index) => tikaBlocksForPage(root, index + 1, headingPath, blocks));
+  roots.forEach((root, index) => tikaBlocksForPage(
+    root,
+    index + 1,
+    headingPath,
+    blocks,
+    assets
+  ));
 
   return finalizedDocument({
+    assets,
     blocks,
     engine: "tika",
     mediaType,

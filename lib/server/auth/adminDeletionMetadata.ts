@@ -2,6 +2,7 @@ import type { AdminDeletionInfo, AdminUserRecord } from "@/lib/contracts/admin";
 
 export type AdminUserDeletionSource = Readonly<{
   ownedDataCount: number;
+  purgeableOwnedDataCount?: number;
   status: AdminUserRecord["status"];
 }>;
 
@@ -117,6 +118,15 @@ export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDele
       canDelete: false,
       reason: "user_has_owned_data",
       summary: `${input.ownedDataCount} owned app record${input.ownedDataCount === 1 ? "" : "s"} keep this account as disabled history.`
+    };
+  }
+
+  const purgeableOwnedDataCount = input.purgeableOwnedDataCount ?? 0;
+  if (purgeableOwnedDataCount > 0) {
+    return {
+      canDelete: true,
+      reason: null,
+      summary: `${purgeableOwnedDataCount} private Memory or Knowledge record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
     };
   }
 

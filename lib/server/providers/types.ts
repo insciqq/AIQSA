@@ -12,6 +12,7 @@ import type {
   ValidatedSearchQuery
 } from "../../domain/search";
 import type { KnowledgePlan } from "../../contracts/knowledge";
+import type { KnowledgePlannerPlan } from "../knowledge/planner";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -84,6 +85,9 @@ export type NormalizedRunRequest = {
       truncation?: ContextTruncationSummary;
     };
   };
+  /** Immutable intent/strategy decision used for automatic private Knowledge
+   * retrieval before the first answer-provider round. */
+  knowledgePlanner?: KnowledgePlannerPlan;
   knowledgePlan: KnowledgePlan;
   /** Model-driven tools. Mutation authority is minted at execution from the
    * exact accepted USER message and exact owned target/version. */
@@ -183,7 +187,7 @@ export type ProviderConversationMessage = {
   };
   id: string;
   /** Internal provider-facing context that is never rendered as a chat message. */
-  purpose?: "skill_context";
+  purpose?: "knowledge_evidence" | "skill_context";
   role: "assistant" | "user";
 };
 

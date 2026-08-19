@@ -7,10 +7,19 @@ import {
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
+import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
+import {
+  KNOWLEDGE_QUERY_MAX_CHARACTERS,
+  KNOWLEDGE_SCOPE_MAX_BINDINGS,
+  KNOWLEDGE_TOOL_NAME
+} from "../knowledge/retrievalTypes";
+import { decodeKnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
+import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import {
   parseToolLoopCheckpoint,
+  AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
   snapshotToolLoopJson,
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
@@ -71,6 +80,26 @@ function toolLoopArguments(value: unknown): Readonly<Record<string, ToolLoopJson
   return snapshot && isRecord(snapshot)
     ? snapshot as Readonly<Record<string, ToolLoopJsonValue>>
     : null;
+}
+
+function recoveryKnowledgeExclusions(
+  value: unknown
+): readonly KnowledgeRunAdmissionExclusion[] | null {
+  if (!Array.isArray(value)) return null;
+  const exclusions: Array<KnowledgeRunAdmissionExclusion | null> = value.map((entry) => {
+    if (!isRecord(entry) || !Number.isSafeInteger(entry.count) || Number(entry.count) < 1 ||
+      entry.reason !== "binding_budget" && entry.reason !== "not_ready" &&
+        entry.reason !== "unattached" ||
+      entry.resourceType !== "base" && entry.resourceType !== "source") return null;
+    return {
+      count: Number(entry.count),
+      reason: entry.reason,
+      resourceType: entry.resourceType
+    } as const;
+  });
+  return exclusions.some((entry) => entry === null)
+    ? null
+    : exclusions.filter((entry): entry is KnowledgeRunAdmissionExclusion => entry !== null);
 }
 
 type ToolLoopCallRecord = {
@@ -184,9 +213,11 @@ export type PrismaRunToolLoopOperations = Pick<
   | "appendRunOutputEvent"
   | "beginToolLoopProviderRound"
   | "cancelPendingToolLoopCalls"
+  | "claimAutomaticKnowledgeCall"
   | "claimToolLoopCall"
   | "loadCheckpointedToolLoopRun"
   | "persistToolLoopCallBatch"
+  | "prepareAutomaticKnowledgeCallBatch"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleRecoveredRunError"
@@ -305,6 +336,113 @@ export function createPrismaRunToolLoopOperations(
       });
       return cancelled.count;
     },
+    prepareAutomaticKnowledgeCallBatch: async (input) => {
+      if (input.calls.length < 1 || input.calls.length > KNOWLEDGE_SCOPE_MAX_BINDINGS) {
+        return { kind: "conflict" as const };
+      }
+      const providerCallIds = new Set<string>();
+      for (const [index, call] of input.calls.entries()) {
+        if (call.ordinal !== index ||
+          call.providerCallId !== `${AUTOMATIC_KNOWLEDGE_CALL_PREFIX}${index + 1}` ||
+          call.providerCallId.length > toolLoopPersistenceLimits.providerCallIdLength ||
+          providerCallIds.has(call.providerCallId) || !call.query.trim() ||
+          call.query.length > KNOWLEDGE_QUERY_MAX_CHARACTERS) {
+          return { kind: "conflict" as const };
+        }
+        providerCallIds.add(call.providerCallId);
+      }
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return { kind: "not_found" as const };
+        if (run.status === "cancelled") return { kind: "cancelled" as const };
+        if (!activeToolLoopRun(run) || run.toolLoopState !== null) {
+          return { kind: "conflict" as const };
+        }
+        const scope = await tx.knowledgeRunScope.findUnique({
+          select: { budgetPolicy: true },
+          where: { modelRunId: input.runId }
+        });
+        const budgetPolicy = decodeKnowledgeBudgetPolicy(scope?.budgetPolicy);
+        if (!budgetPolicy || input.calls.length > budgetPolicy.maxSubqueriesPerPhase ||
+          input.calls.length > budgetPolicy.maxOperations) {
+          return { kind: "conflict" as const };
+        }
+        const existing = await tx.modelRunToolCall.findMany({
+          include: toolLoopCallInclude,
+          orderBy: { ordinal: "asc" },
+          where: { modelRunId: input.runId, roundIndex: 0 }
+        });
+        if (existing.length > 0) {
+          const same = existing.length === input.calls.length && existing.every((call, index) => {
+            const expected = input.calls[index];
+            const args = toolLoopArguments(call.arguments);
+            return Boolean(expected && call.ordinal === expected.ordinal &&
+              call.providerCallId === expected.providerCallId && call.toolName === KNOWLEDGE_TOOL_NAME &&
+              args && Object.keys(args).length === 1 && args.query === expected.query);
+          });
+          return same
+            ? { calls: existing.map(persistedToolLoopCall), kind: "reused" as const }
+            : { kind: "conflict" as const };
+        }
+        for (const call of input.calls) {
+          await tx.modelRunToolCall.create({
+            data: {
+              arguments: json({ query: call.query }),
+              modelRunId: input.runId,
+              ordinal: call.ordinal,
+              providerCallId: call.providerCallId,
+              roundIndex: 0,
+              state: "pending",
+              toolName: KNOWLEDGE_TOOL_NAME
+            }
+          });
+        }
+        const prepared = await tx.modelRunToolCall.findMany({
+          include: toolLoopCallInclude,
+          orderBy: { ordinal: "asc" },
+          where: { modelRunId: input.runId, roundIndex: 0 }
+        });
+        return { calls: prepared.map(persistedToolLoopCall), kind: "prepared" as const };
+      });
+    },
+    claimAutomaticKnowledgeCall: async (input) => prismaClient.$transaction(async (tx) => {
+      const run = await lockToolLoopRun(tx, input);
+      if (!run) return { kind: "not_found" as const };
+      let call = await tx.modelRunToolCall.findFirst({
+        include: toolLoopCallInclude,
+        where: {
+          id: input.callId,
+          modelRunId: input.runId,
+          providerCallId: { startsWith: AUTOMATIC_KNOWLEDGE_CALL_PREFIX },
+          roundIndex: 0,
+          toolName: KNOWLEDGE_TOOL_NAME
+        }
+      });
+      if (!call) return { kind: "not_found" as const };
+      if (call.state === "complete" || call.state === "error") {
+        return { call: persistedToolLoopCall(call), kind: "settled" as const };
+      }
+      if (call.state === "running") {
+        return { call: persistedToolLoopCall(call), kind: "ambiguous" as const };
+      }
+      if (call.state === "cancelled") {
+        return { call: persistedToolLoopCall(call), kind: "cancelled" as const };
+      }
+      if (!activeToolLoopRun(run)) {
+        call = await tx.modelRunToolCall.update({
+          data: { completedAt: new Date(), state: "cancelled" },
+          include: toolLoopCallInclude,
+          where: { id: call.id }
+        });
+        return { call: persistedToolLoopCall(call), kind: "cancelled" as const };
+      }
+      call = await tx.modelRunToolCall.update({
+        data: { startedAt: new Date(), state: "running" },
+        include: toolLoopCallInclude,
+        where: { id: call.id }
+      });
+      return { call: persistedToolLoopCall(call), kind: "claimed" as const };
+    }),
     claimToolLoopCall: async (input) => prismaClient.$transaction(async (tx) => {
       const run = await lockToolLoopRun(tx, input);
       if (!run) return { kind: "not_found" as const };
@@ -410,6 +548,24 @@ export function createPrismaRunToolLoopOperations(
               groundedAt: true
             }
           },
+          knowledgeRunBindings: {
+            orderBy: { ordinal: "asc" },
+            select: {
+              includeWholeBase: true,
+              indexGenerationId: true,
+              knowledgeBaseId: true,
+              ordinal: true,
+              selectedSourceIds: true,
+              vectorSpaceFingerprint: true
+            }
+          },
+          knowledgeRunScope: {
+            select: {
+              budgetPolicy: true,
+              exclusions: true,
+              selection: true
+            }
+          },
           projectRunBinding: {
             select: {
               accessRevision: true,
@@ -434,6 +590,23 @@ export function createPrismaRunToolLoopOperations(
       if (!run || run.toolLoopState === null) return null;
       const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
       if (!checkpoint) throw new Error("tool_loop_checkpoint_invalid_in_storage");
+      const selection = run.knowledgeRunScope
+        ? decodeKnowledgePlan(run.knowledgeRunScope.selection)
+        : null;
+      const budgetPolicy = run.knowledgeRunScope
+        ? decodeKnowledgeBudgetPolicy(run.knowledgeRunScope.budgetPolicy)
+        : null;
+      const exclusions = run.knowledgeRunScope
+        ? recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions)
+        : null;
+      if (run.knowledgeRunScope && (!selection?.ok || !budgetPolicy || !exclusions ||
+        run.knowledgeRunBindings.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+        run.knowledgeRunBindings.some((binding, index) =>
+          binding.ordinal !== index || !/^[0-9a-f]{64}$/u.test(
+            binding.vectorSpaceFingerprint.trim()
+          )))) {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
       return {
         assistantMessageId: run.assistantMessageId,
         assistantText: run.assistantMessage && !run.assistantMessage.groundedAt
@@ -445,6 +618,23 @@ export function createPrismaRunToolLoopOperations(
         chatId: run.chatId,
         checkpoint,
         id: run.id,
+        ...(run.knowledgeRunScope && selection?.ok && budgetPolicy && exclusions
+          ? {
+              knowledgeScope: {
+                bindings: run.knowledgeRunBindings.map((binding) => ({
+                  includeWholeBase: binding.includeWholeBase,
+                  indexGenerationId: binding.indexGenerationId,
+                  knowledgeBaseId: binding.knowledgeBaseId,
+                  ordinal: binding.ordinal,
+                  selectedSourceIds: [...binding.selectedSourceIds],
+                  vectorSpaceFingerprint: binding.vectorSpaceFingerprint.trim()
+                })),
+                budgetPolicy,
+                exclusions,
+                knowledgePlan: selection.plan
+              }
+            }
+          : {}),
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest as unknown as CheckpointedToolLoopRun["normalizedRequest"],
         ...(run.projectRunBinding

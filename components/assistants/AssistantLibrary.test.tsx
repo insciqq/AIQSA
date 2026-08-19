@@ -64,7 +64,7 @@ function makeDraft(overrides: Partial<AssistantEditorDraftState> = {}): Assistan
     category: null,
     description: "",
     developerPrompt: "",
-    knowledgeBaseIds: [],
+    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     maxOutputTokens: "4096",
     mcpServerIds: [],
     name: "Focused helper",
@@ -98,6 +98,7 @@ function makeEditor(overrides: Partial<AssistantEditorView> = {}): AssistantEdit
     onUseInChat: null,
     options: {
       knowledgeBases: [],
+      knowledgeSources: [],
       knowledgeDataError: null,
       knowledgeDataState: "ready",
       mcpServers: [],
@@ -304,10 +305,17 @@ describe("AssistantLibrary", () => {
     expect(clean.defaultPrevented).toBe(false);
   });
 
-  it("edits the Assistant exact Knowledge allowlist with retained order and a hard ceiling", () => {
+  it("edits the Assistant Knowledge selection without a fixed three-resource ceiling", () => {
     const onChange = vi.fn();
     const editor = makeEditor({
-      draft: makeDraft({ knowledgeBaseIds: ["missing", "archived", "active"] }),
+      draft: makeDraft({
+        knowledgeSelection: {
+          baseIds: ["missing", "archived", "active"],
+          mode: "explicit",
+          sourceIds: [],
+          version: 1
+        }
+      }),
       onChange,
       options: {
         ...makeEditor().options,
@@ -326,9 +334,22 @@ describe("AssistantLibrary", () => {
     const activeLabel = screen.getByText(/Active base.*order 3/).closest("label");
     expect(activeLabel).not.toBeNull();
     fireEvent.click(within(activeLabel!).getByRole("checkbox"));
-    expect(onChange).toHaveBeenCalledWith({ knowledgeBaseIds: ["missing", "archived"] });
+    expect(onChange).toHaveBeenCalledWith({
+      knowledgeSelection: {
+        baseIds: ["missing", "archived"], mode: "explicit", sourceIds: [], version: 1
+      }
+    });
     const extraLabel = screen.getByText("Extra base").closest("label");
-    expect(within(extraLabel!).getByRole("checkbox")).toBeDisabled();
+    expect(within(extraLabel!).getByRole("checkbox")).toBeEnabled();
+    fireEvent.click(within(extraLabel!).getByRole("checkbox"));
+    expect(onChange).toHaveBeenLastCalledWith({
+      knowledgeSelection: {
+        baseIds: ["missing", "archived", "active", "extra"],
+        mode: "explicit",
+        sourceIds: [],
+        version: 1
+      }
+    });
   });
 
   it("keeps an Assistant Knowledge load failure distinct from an empty catalog", () => {
