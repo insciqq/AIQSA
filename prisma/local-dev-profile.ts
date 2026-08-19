@@ -59,7 +59,7 @@ export async function ensureLocalDevProfileDefaultCredentials(
 
   for (const connection of connections) {
     if (
-      connection.family === "fake" ||
+      connection.family === "fake" || connection.family === "test" ||
       connection.credentials.length === 0 ||
       connection.credentials.some(({ id }) => id === connection.defaultCredentialId)
     ) {

@@ -85,6 +85,12 @@ describe("optional local development profile", () => {
             defaultCredentialId: null,
             family: "fake",
             id: "connection-fake"
+          },
+          {
+            credentials: [{ id: "credential-test-a" }, { id: "credential-test-b" }],
+            defaultCredentialId: null,
+            family: "test",
+            id: "connection-stateful-test"
           }
         ]),
         update
