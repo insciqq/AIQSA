@@ -170,6 +170,11 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."sectionId",
       passage."page",
       passage."headingPath",
+      CASE split_part(passage."contextPrefix", E'\n', 1)
+        WHEN 'Evidence layout: table_ambiguous_v1' THEN 'table_ambiguous'::text
+        WHEN 'Evidence layout: table_row_v1' THEN 'table_row'::text
+        ELSE 'body'::text
+      END AS "layoutKind",
       passage."contentHash",
       passage."sourceName",
       passage."text",
@@ -374,6 +379,7 @@ export function knowledgeAdaptiveVectorSearchSql(input: Readonly<{
       passage."documentVersionNumber",
       passage."fileName",
       passage."headingPath",
+      passage."layoutKind",
       binding."knowledgeBaseId",
       passage."page",
       passage."sectionId",
@@ -552,6 +558,7 @@ export function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       ranked."documentVersionNumber",
       ranked."fileName",
       ranked."headingPath",
+      ranked."layoutKind",
       ranked."knowledgeBaseId",
       ranked."page",
       ranked."sectionId",
@@ -601,6 +608,7 @@ function knowledgeNeighborExpansionSql(input: Readonly<{
         neighbor."documentVersionNumber",
         neighbor."fileName",
         neighbor."headingPath",
+        neighbor."layoutKind",
         neighbor."knowledgeBaseId",
         neighbor."page",
         neighbor."sectionId",
@@ -663,6 +671,8 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     typeof value.documentId !== "string" || !value.documentId ||
     typeof value.documentVersionId !== "string" || !value.documentVersionId ||
     typeof value.fileName !== "string" || !value.fileName ||
+    value.layoutKind !== "body" && value.layoutKind !== "table_ambiguous" &&
+      value.layoutKind !== "table_row" ||
     typeof value.knowledgeBaseId !== "string" || !value.knowledgeBaseId ||
     typeof value.sourceName !== "string" || !value.sourceName ||
     typeof value.text !== "string" || !value.text ||
@@ -686,6 +696,7 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     fileName: value.fileName,
     headingPath: value.headingPath as string[],
     knowledgeBaseId: value.knowledgeBaseId,
+    layoutKind: value.layoutKind,
     lane: value.lane as KnowledgeRetrievalLane,
     laneRank,
     page,

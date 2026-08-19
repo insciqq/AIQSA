@@ -17,6 +17,12 @@ const EXACT_TERM_LIMIT = 16;
 export type KnowledgeSemanticToolRequest = Readonly<{
   operation: KnowledgeOperationKind;
   query: string;
+  read?: Readonly<{
+    direction: "after" | "around" | "before";
+    locator: string;
+    sourceAlias: string;
+    window: number;
+  }>;
   sourceAliases: readonly string[];
 }>;
 
@@ -104,7 +110,7 @@ export const knowledgeReadSourceTool: RunTool = Object.freeze({
   capability: "knowledge",
   description:
     "Read a bounded area of one source already returned under an admitted S-number alias. " +
-    "The locator may be a heading, page, section, or evidence handle.",
+    "The locator must be an exact displayed heading path, a labeled page number, or an evidence handle.",
   inputSchema: {
     additionalProperties: false,
     properties: {
@@ -239,7 +245,19 @@ export function parseKnowledgeSemanticToolRequest(
         Number(value.window) < 1 || Number(value.window) > 8)) return null;
     const query = boundedString(value.locator, KNOWLEDGE_QUERY_MAX_CHARACTERS);
     return query
-      ? { operation: "read_source", query, sourceAliases: [value.sourceAlias] }
+      ? {
+          operation: "read_source",
+          query,
+          read: {
+            direction: value.direction ?? "around",
+            locator: query,
+            sourceAlias: value.sourceAlias,
+            window: value.window === undefined || value.window === null
+              ? 3
+              : Number(value.window)
+          },
+          sourceAliases: [value.sourceAlias]
+        }
       : null;
   }
   if (call.name === KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME) {

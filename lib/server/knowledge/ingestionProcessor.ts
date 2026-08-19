@@ -31,7 +31,10 @@ import {
   type KnowledgeWorkIdentity
 } from "./ingestionTypes";
 import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
-import { createKnowledgeVectorSpacePin } from "./indexProfile";
+import {
+  createKnowledgeVectorSpacePin,
+  KNOWLEDGE_CHUNKING_PROFILE_VERSION
+} from "./indexProfile";
 import {
   decodeKnowledgeNormalizedDocument,
   encodeKnowledgeNormalizedDocument,
@@ -360,6 +363,8 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       let encoded;
       try {
         encoded = encodeKnowledgeNormalizedDocument(parsed, config, {
+          layoutAwareTables:
+            claim.artifact.chunkingProfileVersion >= KNOWLEDGE_CHUNKING_PROFILE_VERSION,
           sourceDisplayName: claim.fileName,
           sourceMediaType: claim.mimeType
         });

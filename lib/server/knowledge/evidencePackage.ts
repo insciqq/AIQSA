@@ -5,6 +5,7 @@ import type { KnowledgePlannerIntent, KnowledgePlannerStrategy } from "./planner
 import type { KnowledgeCandidateSignal } from "./retrievalRanking";
 import type { StructuredAnalysisResult, StructuredInputRange } from "./structuredData";
 import type { KnowledgeVisualAnalysisResult } from "./visualEvidence";
+import type { KnowledgePassageLayoutKind } from "./retrievalTypes";
 
 export const KNOWLEDGE_EVIDENCE_PACKAGE_VERSION = 2 as const;
 export const KNOWLEDGE_EVIDENCE_PROVENANCE_VERSION = 1 as const;
@@ -36,6 +37,7 @@ export type KnowledgeEvidencePackageItem = Readonly<{
   contextBoundaries: Readonly<{
     expanded: boolean;
     excerptBytes: number;
+    layoutKind?: KnowledgePassageLayoutKind;
     sourceTextBytes: number;
     structuredAnalysis?: StructuredAnalysisResult;
     visualAnalysis?: KnowledgeVisualAnalysisResult;

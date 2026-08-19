@@ -9,7 +9,7 @@ describe("Knowledge grounding golden evaluation", () => {
     const report = runKnowledgeGroundingEval();
     expect(() => assertKnowledgeGroundingEvalGates(report)).not.toThrow();
     expect(report).toMatchObject({
-      fixtureCount: 15,
+      fixtureCount: 17,
       metrics: {
         boundedRepair: true,
         citationCoverage: 1,

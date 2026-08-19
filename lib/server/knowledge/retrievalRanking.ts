@@ -37,6 +37,7 @@ export type KnowledgeRetrievalCandidate = Readonly<{
   fileName: string;
   headingPath: readonly string[];
   knowledgeBaseId: string;
+  layoutKind: "body" | "table_ambiguous" | "table_row";
   page: number;
   sectionId: string | null;
   signals: readonly KnowledgeCandidateSignal[];

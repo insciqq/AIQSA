@@ -8,6 +8,7 @@ import {
 } from "./toolExecutor";
 import {
   KNOWLEDGE_EXACT_TOOL_NAME,
+  KNOWLEDGE_READ_SOURCE_TOOL_NAME,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_SEARCH_TOOL_NAME,
   type KnowledgeAcceptedBinding,
@@ -251,9 +252,16 @@ function harness(input: Readonly<{
   bindings?: KnowledgeAcceptedBinding[];
   budgetStopReason?: KnowledgeBudgetStopReason;
   candidateCount?: number;
+  hybridBindingCount?: number;
   invocationOrdinal?: number;
   passages?: KnowledgeHybridPassage[];
   policy?: { candidateLimit: number; resultLimit: number; scoreThreshold: number };
+  readResult?: Readonly<{
+    bindingCount: number;
+    candidateCount: number;
+    candidateCounts: Readonly<Record<number, number>>;
+    passages: readonly KnowledgeHybridPassage[];
+  }>;
   runtimeFailure?: Error;
   structuredResult?: StructuredKnowledgeSearchResult;
   visualResult?: KnowledgeVisualSearchResult;
@@ -299,7 +307,7 @@ function harness(input: Readonly<{
       }))
     } : {}),
     hybridSearch: vi.fn(async () => ({
-      bindingCount: (input.bindings ?? [binding()]).length,
+      bindingCount: input.hybridBindingCount ?? (input.bindings ?? [binding()]).length,
       candidateCount: input.candidateCount ?? 1,
       candidateCounts: { 0: input.candidateCount ?? 1 },
       passages: input.passages ?? [passage()]
@@ -307,6 +315,7 @@ function harness(input: Readonly<{
     invocationOrdinal: vi.fn(async () => input.invocationOrdinal ?? 1),
     loadBindings: vi.fn(async () => input.bindings ?? [binding()]),
     ...(input.aliases ? { loadScopeAliases: vi.fn(async () => input.aliases!) } : {}),
+    ...(input.readResult ? { readSource: vi.fn(async () => input.readResult!) } : {}),
     persistReceipt: vi.fn(async (receipt) => {
       receipts.push(receipt);
     }),
@@ -358,10 +367,13 @@ describe("Knowledge retrieval tool executor", () => {
       vectors: [expect.objectContaining({ bindingOrdinal: 0, targetDimension: 1024 })]
     }));
     expect(result.status).toBe("complete");
-    expect(text).toContain("[K1] page 7\nThe retained private passage.");
+    expect(text).toContain(
+      "[K1] source legacy source; name FILE-NAME-PRIVATE-SENTINEL.pdf; " +
+        "file FILE-NAME-PRIVATE-SENTINEL.pdf; page 7; heading document root"
+    );
+    expect(text).toContain("The retained private passage.");
     for (const sentinel of [
       "BASE-NAME-PRIVATE-SENTINEL",
-      "FILE-NAME-PRIVATE-SENTINEL",
       "base-id-private-sentinel",
       "version-id-private-sentinel",
       "chunk-id-private-sentinel"
@@ -587,7 +599,12 @@ describe("Knowledge retrieval tool executor", () => {
 
   it("bounds UTF-8 provider text and records honest per-passage truncation", async () => {
     const source = "🧭".repeat(20_000);
-    const value = harness({ passages: [passage(source)] });
+    const value = harness({
+      passages: [{
+        ...passage(source),
+        headingPath: Array.from({ length: 64 }, () => "h".repeat(512))
+      }]
+    });
     const result = await execute(value);
     const evidence = knowledgeEvidenceFromToolResult(result)!;
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -685,15 +702,37 @@ describe("Knowledge retrieval tool executor", () => {
       sourceName: "Source label"
     };
     const value = harness({
-      aliases: [{
-        alias: "S1",
-        bindingOrdinal: 0,
-        kind: "source",
-        label: "Source label",
-        sourceArtifactId: "artifact-private-sentinel",
-        sourceId: "source-private-sentinel"
-      }],
-      bindings: [binding({ includeWholeBase: false, selectedSourceIds: ["source-private-sentinel"] })],
+      aliases: [
+        {
+          alias: "S1",
+          bindingOrdinal: 0,
+          kind: "source",
+          label: "Source label",
+          sourceArtifactId: "artifact-private-sentinel",
+          sourceId: "source-private-sentinel"
+        },
+        {
+          alias: "S2",
+          bindingOrdinal: 1,
+          kind: "source",
+          label: "Same artifact in another Base",
+          sourceArtifactId: "artifact-private-sentinel",
+          sourceId: "source-private-sentinel"
+        }
+      ],
+      bindings: [
+        binding({ includeWholeBase: false, selectedSourceIds: ["source-private-sentinel"] }),
+        binding({
+          baseName: "SECOND-BASE-PRIVATE-SENTINEL",
+          includeWholeBase: false,
+          indexGenerationId: "generation-2-private-sentinel",
+          knowledgeBaseId: "base-2-private-sentinel",
+          knowledgeBaseSnapshotId: "snapshot-2-private-sentinel",
+          ordinal: 1,
+          selectedSourceIds: ["source-private-sentinel"]
+        })
+      ],
+      hybridBindingCount: 1,
       passages: [scopedPassage]
     });
     const result = await value.executor.execute({
@@ -713,8 +752,162 @@ describe("Knowledge retrieval tool executor", () => {
       sourceIds: ["source-private-sentinel"]
     }));
     expect(text).toContain("S1 — Source label");
+    expect(text).not.toContain("S2 — Same artifact in another Base");
+    expect(text).toContain(
+      "[K1] source S1; name Source label; file FILE-NAME-PRIVATE-SENTINEL.pdf; " +
+        "page 7; heading document root"
+    );
     expect(text).not.toContain("source-private-sentinel");
     expect(text).not.toContain("artifact-private-sentinel");
+  });
+
+  it("reads one admitted Source deterministically without an embedding call", async () => {
+    const sourcePassage: KnowledgeHybridPassage = {
+      ...passage("The exact neighboring passage."),
+      annRank: null,
+      contentHash: "e".repeat(64),
+      documentId: "source-private-sentinel",
+      ftsRank: 1,
+      ftsScore: 1,
+      fusedScore: 1 / 61,
+      headingPath: ["Results"],
+      layoutKind: "body",
+      sourceArtifactId: "artifact-private-sentinel",
+      sourceName: "Dated report",
+      vectorDistance: null,
+      vectorScore: null
+    };
+    const value = harness({
+      aliases: [{
+        alias: "S1",
+        bindingOrdinal: 0,
+        kind: "source",
+        label: "Dated report",
+        sourceArtifactId: "artifact-private-sentinel",
+        sourceId: "source-private-sentinel"
+      }],
+      readResult: {
+        bindingCount: 1,
+        candidateCount: 1,
+        candidateCounts: { 0: 1 },
+        passages: [sourcePassage]
+      }
+    });
+    const result = await value.executor.execute({
+      arguments: { direction: "around", locator: "page 7", sourceAlias: "S1", window: 3 },
+      id: "provider-call-1",
+      name: KNOWLEDGE_READ_SOURCE_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-row-1",
+      request: {} as never,
+      runId: "run-1",
+      userId: "user-1"
+    });
+
+    expect(value.store.readSource).toHaveBeenCalledWith(expect.objectContaining({
+      direction: "around",
+      locator: "page 7",
+      sourceArtifactId: "artifact-private-sentinel",
+      sourceId: "source-private-sentinel",
+      window: 3
+    }));
+    expect(value.embed).not.toHaveBeenCalled();
+    expect(value.store.hybridSearch).not.toHaveBeenCalled();
+    const evidence = knowledgeEvidenceFromToolResult(result)!;
+    expect(evidence).toMatchObject({
+      embeddingExecutions: [],
+      operation: "read_source",
+      outcome: "complete",
+      results: [{ handle: "K1", sourceAlias: "S1" }]
+    });
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      embeddingExecutions: [{
+        bindingOrdinals: [0],
+        durationMs: 1,
+        inputTokens: 1,
+        modelId: "embedding-v1",
+        provider: "fake",
+        providerModelId: "embedding-1",
+        requestId: null,
+        status: "complete",
+        totalTokens: 1
+      }]
+    })).toBeNull();
+  });
+
+  it("persists an exact Source-location miss without misreporting the admitted Base as empty", async () => {
+    const aliases = [{
+      alias: "S1",
+      bindingOrdinal: 0,
+      kind: "source" as const,
+      label: "Dated report",
+      sourceArtifactId: "artifact-private-sentinel",
+      sourceId: "source-private-sentinel"
+    }];
+    const value = harness({
+      aliases,
+      readResult: {
+        bindingCount: 1,
+        candidateCount: 0,
+        candidateCounts: { 0: 0 },
+        passages: []
+      }
+    });
+    const result = await value.executor.execute({
+      arguments: { direction: "around", locator: "heading: Missing", sourceAlias: "S1", window: 3 },
+      id: "provider-call-1",
+      name: KNOWLEDGE_READ_SOURCE_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-row-1",
+      request: {} as never,
+      runId: "run-1",
+      userId: "user-1"
+    });
+
+    expect(value.embed).not.toHaveBeenCalled();
+    expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
+      bases: [{ candidateCount: 0, state: "ready" }],
+      embeddingExecutions: [],
+      operation: "read_source",
+      outcome: "source_location_unavailable",
+      results: []
+    });
+  });
+
+  it("rejects a deterministic read result that crosses its requested Source boundary", async () => {
+    const value = harness({
+      aliases: [{
+        alias: "S1",
+        bindingOrdinal: 0,
+        kind: "source",
+        label: "Dated report",
+        sourceArtifactId: "artifact-private-sentinel",
+        sourceId: "source-private-sentinel"
+      }],
+      readResult: {
+        bindingCount: 1,
+        candidateCount: 1,
+        candidateCounts: { 0: 1 },
+        passages: [{
+          ...passage("Wrong Source passage."),
+          documentId: "other-source-private-sentinel",
+          sourceArtifactId: "other-artifact-private-sentinel"
+        }]
+      }
+    });
+
+    await expect(value.executor.execute({
+      arguments: { direction: "around", locator: "page 7", sourceAlias: "S1", window: 3 },
+      id: "provider-call-1",
+      name: KNOWLEDGE_READ_SOURCE_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-row-1",
+      request: {} as never,
+      runId: "run-1",
+      userId: "user-1"
+    })).rejects.toThrow("knowledge_source_read_result_invalid");
+    expect(value.embed).not.toHaveBeenCalled();
   });
 
   it("keeps exact follow-up retrieval local and rejects unknown aliases before search", async () => {

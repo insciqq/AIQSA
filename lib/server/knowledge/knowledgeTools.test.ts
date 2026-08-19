@@ -73,6 +73,12 @@ describe("Knowledge semantic tools", () => {
     })).toEqual({
       operation: "read_source",
       query: "page 9",
+      read: {
+        direction: "after",
+        locator: "page 9",
+        sourceAlias: "S3",
+        window: 4
+      },
       sourceAliases: ["S3"]
     });
     expect(parseKnowledgeSemanticToolRequest({
@@ -85,6 +91,12 @@ describe("Knowledge semantic tools", () => {
     })).toEqual({
       operation: "read_source",
       query: "page 9",
+      read: {
+        direction: "around",
+        locator: "page 9",
+        sourceAlias: "S3",
+        window: 3
+      },
       sourceAliases: ["S3"]
     });
   });

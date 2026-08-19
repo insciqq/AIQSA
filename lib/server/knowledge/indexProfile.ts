@@ -3,7 +3,7 @@ import type { EmbeddingProviderFamily } from "../../domain/embeddingModels";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 
 export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
-export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 2;
+export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 3;
 
 export type KnowledgeIndexDimension = (typeof KNOWLEDGE_INDEX_DIMENSIONS)[number];
 

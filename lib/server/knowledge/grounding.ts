@@ -9,7 +9,7 @@ import {
   type KnowledgeEvidencePackageItem
 } from "./evidencePackage";
 
-export const KNOWLEDGE_GROUNDING_VERSION = 3 as const;
+export const KNOWLEDGE_GROUNDING_VERSION = 4 as const;
 export const KNOWLEDGE_GROUNDING_MAX_REPAIRS = 1 as const;
 
 export const knowledgeGroundingIssueCodes = [
@@ -67,15 +67,24 @@ const fullWidthCitationGroup = /【\s*((?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?)(?:\s*(?:
 const citationHandleToken = /K[1-9]\d{0,3}(?:\.[1-9]\d?)?/giu;
 const numberOrDate = /(?<![\p{L}\p{N}])(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d+(?:[.,]\d+)?%?)(?![\p{L}\p{N}])/gu;
 const dateOrTime = /(?<![\p{L}\p{N}])(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}:\d{2}(?::\d{2})?)(?![\p{L}\p{N}])/gu;
-const scalarNumber = /(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?%?(?![\p{L}\p{N}])/gu;
+const scalarNumber = /(?<![\p{L}\p{N}])[+-]?\d+(?:[.,]\d+)?%?(?![\p{L}\p{N}])/gu;
+const citationRun = /(?:\[(?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\]\s*)+/giu;
 const word = /[\p{L}\p{N}][\p{L}\p{M}\p{N}_-]*/gu;
 const stopWords = new Set([
-  "about", "after", "also", "and", "are", "been", "being", "between", "but", "can",
+  "about", "after", "also", "and", "are", "as", "at", "been", "being", "between", "but", "by", "can",
   "could", "does", "for", "from", "have", "into", "its", "more", "not", "that", "the",
-  "their", "there", "these", "this", "those", "was", "were", "which", "will", "with",
-  "без", "был", "была", "были", "быть", "для", "его", "или", "как", "который", "между",
-  "может", "она", "они", "после", "при", "про", "также", "того", "этого", "это"
+  "their", "there", "these", "this", "those", "to", "was", "were", "which", "will", "with",
+  "без", "был", "была", "были", "быть", "для", "до", "его", "или", "как", "который", "между",
+  "может", "на", "она", "они", "от", "по", "после", "при", "про", "также", "того", "этого", "это"
 ]);
+const genericClaimWords = new Set([
+  "another", "conflict", "day", "days", "document", "file", "measurement", "measurements", "metric",
+  "metrics", "one", "recorded", "report", "result", "results", "source", "states", "value",
+  "values", "version", "versions", "while", "year", "years", "день", "дней", "дня", "документ", "значение", "значения",
+  "измерение", "измерения", "источник", "отчет", "отчёт", "показатель", "показатели",
+  "результат", "результаты", "составляет", "версия", "версии", "конфликт"
+]);
+const unitWord = /^(?:g|kg|l|mg|ml|mmol|mol|percent|г|кг|л|мг|мл|ммоль|моль|процент\p{L}*)$/iu;
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -88,6 +97,41 @@ function normalized(value: string): string {
 function tokens(value: string): string[] {
   return (normalized(value).match(word) ?? [])
     .filter((entry) => entry.length > 1 && !stopWords.has(entry));
+}
+
+function labelStem(value: string): string {
+  if (value.length <= 4) return value;
+  if (/^[a-z]+$/u.test(value)) {
+    return value.replace(/(?:ations?|ments?|ingly|edly|ing|ers?|ed|es|s)$/u, "") || value;
+  }
+  if (/^[а-яё]+$/u.test(value)) {
+    return value.replace(
+      /(?:иями|ями|ами|ого|ему|ому|ими|ий|ый|ая|яя|ое|ее|ые|ие|ых|их|ую|юю|ов|ев|ам|ям|ах|ях|ом|ем|ой|ей|ы|и|а|я|у|ю|е|о)$/u,
+      ""
+    ) || value;
+  }
+  return value;
+}
+
+function labelTokens(value: string): string[] {
+  return [...new Set(tokens(claimPayload(value))
+    .filter((token) => !genericClaimWords.has(token) && !unitWord.test(token) &&
+      !/^\d/u.test(token) && !monthNumber(token))
+    .map(labelStem)
+    .filter((token) => token.length >= 2))];
+}
+
+function acronymLabelTokens(value: string): string[] {
+  return [...new Set((claimPayload(value).match(word) ?? []).flatMap((token) => {
+    const letters = [...token].filter((character) => /\p{L}/u.test(character));
+    const uppercase = letters.filter((character) =>
+      character === character.toLocaleUpperCase() &&
+      character !== character.toLocaleLowerCase()).length;
+    const normalizedToken = normalized(token);
+    return uppercase >= 2 && !unitWord.test(normalizedToken) && !monthNumber(normalizedToken)
+      ? [labelStem(normalizedToken)]
+      : [];
+  }))];
 }
 
 function numericTokens(value: string): string[] {
@@ -111,6 +155,73 @@ function scalarTokens(value: string): string[] {
       return year < 1900 || year > 2100;
     })
     .map(canonicalScalar))];
+}
+
+function dateTokens(value: string): string[] {
+  return [...new Set((normalized(value).match(dateOrTime) ?? []).map((entry) => {
+    if (/^\d{1,2}:\d{2}/u.test(entry)) return entry;
+    const parts = entry.split(/[./-]/u).map(Number);
+    if (parts.length !== 3 || parts.some((part) => !Number.isSafeInteger(part))) return entry;
+    const [first, second, third] = parts;
+    const year = first! >= 1_000 ? first! : third! < 100 ? 2_000 + third! : third!;
+    const month = first! >= 1_000 ? second! : second!;
+    const day = first! >= 1_000 ? third! : first!;
+    return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-` +
+      String(day).padStart(2, "0");
+  }))];
+}
+
+const monthNumbers: Readonly<Record<string, string>> = Object.freeze({
+  april: "04", august: "08", december: "12", february: "02", january: "01",
+  july: "07", june: "06", march: "03", may: "05", november: "11", october: "10",
+  september: "09"
+});
+
+function monthNumber(value: string): string | null {
+  const latin = monthNumbers[value];
+  if (latin) return latin;
+  if (/^январ/iu.test(value)) return "01";
+  if (/^феврал/iu.test(value)) return "02";
+  if (/^март/iu.test(value)) return "03";
+  if (/^апрел/iu.test(value)) return "04";
+  if (/^ма(?:й|я|е|ю)$/iu.test(value)) return "05";
+  if (/^июн/iu.test(value)) return "06";
+  if (/^июл/iu.test(value)) return "07";
+  if (/^август/iu.test(value)) return "08";
+  if (/^сентябр/iu.test(value)) return "09";
+  if (/^октябр/iu.test(value)) return "10";
+  if (/^ноябр/iu.test(value)) return "11";
+  if (/^декабр/iu.test(value)) return "12";
+  return null;
+}
+
+function temporalTokens(value: string): string[] {
+  const text = normalized(value);
+  const result = new Set(dateTokens(text));
+  for (const date of dateTokens(text)) {
+    const match = /^(\d{4})-(\d{2})-\d{2}$/u.exec(date);
+    if (match) {
+      result.add(`y${match[1]}`);
+      result.add(`m${match[2]}`);
+      result.add(`${match[1]}-${match[2]}`);
+    }
+  }
+  for (const match of text.matchAll(/[\p{L}ё]+/giu)) {
+    const month = monthNumber(match[0]);
+    if (!month) continue;
+    result.add(`m${month}`);
+    const start = Math.max(0, (match.index ?? 0) - 12);
+    const end = Math.min(text.length, (match.index ?? 0) + match[0].length + 12);
+    const year = /(?:19|20|21)\d{2}/u.exec(text.slice(start, end))?.[0];
+    if (year) {
+      result.add(`y${year}`);
+      result.add(`${year}-${month}`);
+    }
+  }
+  for (const year of text.match(/(?<!\d)(?:19|20|21)\d{2}(?!\d)/gu) ?? []) {
+    result.add(`y${year}`);
+  }
+  return [...result];
 }
 
 function withoutCitationMarkup(value: string): string {
@@ -137,7 +248,7 @@ function substantive(value: string): boolean {
 
 function sentences(value: string): string[] {
   return value
-    .split(/(?<=[.!?])\s+|\n{2,}/u)
+    .split(/(?<=[.!?])\s+|\n+/u)
     .map((entry) => entry.trim())
     .filter(Boolean);
 }
@@ -160,26 +271,65 @@ function itemSupportText(item: KnowledgeEvidencePackageItem): string {
   ].join("\n");
 }
 
-function obviousNumericMismatch(
-  claim: string,
-  input: KnowledgeEvidencePackage,
-  citedItems: readonly KnowledgeEvidencePackageItem[]
+function itemObservationText(item: KnowledgeEvidencePackageItem): string {
+  return [item.excerpt ?? "", item.headingPath.join(" ")].join("\n");
+}
+
+function claimPayload(value: string): string {
+  return withoutCitationMarkup(value)
+    .replace(/^(?:#{1,6}\s*|[-*+]\s+|\d+[.)]\s+)/u, "")
+    .trim();
+}
+
+function itemSupportsScalarsAndDates(
+  item: KnowledgeEvidencePackageItem,
+  value: string,
+  evidenceLabelVocabulary: ReadonlySet<string>
 ): boolean {
-  const claimNumbers = scalarTokens(withoutCitationMarkup(claim));
-  if (claimNumbers.length === 0) return false;
-  const supportText = [
-    input.originalIntent.query,
-    String(input.items.length),
-    String(input.readiness.readyBases),
-    String(input.readiness.readySources),
-    String(input.readiness.excludedResources),
-    ...input.items.flatMap((item) => item.state === "available" ? [itemSupportText(item)] : [])
-  ].join("\n");
-  const evidenceNumbers = new Set(scalarTokens(supportText));
-  if (evidenceNumbers.size === 0) return false;
-  const missing = claimNumbers.filter((entry) => !evidenceNumbers.has(entry));
-  if (missing.length === 0 || claimNumbers.length !== 1 || citedItems.length !== 1) return false;
-  return new Set(scalarTokens(citedItems[0]!.excerpt ?? "")).size === 1;
+  if (item.contextBoundaries?.layoutKind === "table_ambiguous") return false;
+  const observation = itemObservationText(item);
+  const supportScalars = new Set(scalarTokens(item.excerpt ?? ""));
+  const supportDates = new Set(temporalTokens(itemSupportText(item)));
+  const requiredLabels = new Set([
+    ...labelTokens(value).filter((token) => evidenceLabelVocabulary.has(token)),
+    ...acronymLabelTokens(value)
+  ]);
+  const supportLabels = new Set(tokens(observation).map(labelStem));
+  return scalarTokens(value).every((token) => supportScalars.has(token)) &&
+    temporalTokens(value).every((token) => supportDates.has(token)) &&
+    [...requiredLabels].every((token) => supportLabels.has(token));
+}
+
+function sourceLocalNumericAssessment(
+  claim: string,
+  byHandle: ReadonlyMap<string, KnowledgeEvidencePackageItem>
+): Readonly<{ mismatch: boolean; uncited: boolean }> {
+  const hasEvidenceValues = (value: string): boolean =>
+    scalarTokens(claimPayload(value)).length > 0 || temporalTokens(claimPayload(value)).length > 0;
+  if (!hasEvidenceValues(claim)) return { mismatch: false, uncited: false };
+  const evidenceLabelVocabulary = new Set([...byHandle.values()].flatMap((item) =>
+    item.state === "available" && item.excerpt
+      ? tokens(itemObservationText(item)).map(labelStem)
+      : []));
+  let cursor = 0;
+  let mismatch = false;
+  let uncited = false;
+  for (const match of claim.matchAll(citationRun)) {
+    const start = match.index ?? 0;
+    const segment = claim.slice(cursor, start);
+    if (hasEvidenceValues(segment)) {
+      const items = citedHandles(match[0]).flatMap((handle) => {
+        const item = byHandle.get(handle);
+        return item?.state === "available" && item.excerpt ? [item] : [];
+      });
+      if (items.length === 0) uncited = true;
+      else if (!items.some((item) =>
+        itemSupportsScalarsAndDates(item, segment, evidenceLabelVocabulary))) mismatch = true;
+    }
+    cursor = start + match[0].length;
+  }
+  if (hasEvidenceValues(claim.slice(cursor))) uncited = true;
+  return { mismatch, uncited };
 }
 
 function internalIdentityPresent(
@@ -231,6 +381,7 @@ function assessClaim(
   });
   const availableCitedItems = citedItems.filter((item) =>
     item.state === "available" && Boolean(item.excerpt));
+  const numericAssessment = sourceLocalNumericAssessment(claim, byHandle);
   const instructionFollowed = sourceInstructionFollowed(
     claim,
     input.originalIntent.query,
@@ -254,15 +405,13 @@ function assessClaim(
   if (internalIdentityPresent(claim, input.items)) issues.add("internal_identity");
   if (instructionFollowed) issues.add("source_instruction_followed");
   if (coverageClaim.test(claim) && !input.coverage.verified) issues.add("coverage_overclaim");
-  if (raw.length === 0 && !answerHasAvailableCitation) {
+  if (numericAssessment.uncited) {
+    issues.add("unsupported_claim");
+  } else if (raw.length === 0 && !answerHasAvailableCitation) {
     issues.add("general_knowledge_unseparated");
   } else if (raw.length > 0 && availableCitedItems.length === 0) {
     issues.add("unsupported_claim");
-  } else if (availableCitedItems.length > 0 && obviousNumericMismatch(
-    claim,
-    input,
-    availableCitedItems
-  )) {
+  } else if (numericAssessment.mismatch) {
     issues.add("numeric_or_date_mismatch");
   }
   return {
@@ -270,7 +419,8 @@ function assessClaim(
     citationCount: raw.length,
     issueCodes: [...issues],
     keep: issues.size === 0,
-    sourceClaim: raw.length > 0 || !answerHasAvailableCitation,
+    sourceClaim: raw.length > 0 || numericAssessment.uncited || numericAssessment.mismatch ||
+      !answerHasAvailableCitation,
     text: claim,
     validCitationCount: availableCitedItems.length
   };

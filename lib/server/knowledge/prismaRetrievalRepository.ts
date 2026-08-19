@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { KNOWLEDGE_CITATION_V2_MAX } from "../../contracts/knowledge";
+import {
+  decodeKnowledgeCitationHandle,
+  KNOWLEDGE_CITATION_V2_MAX
+} from "../../contracts/knowledge";
 import {
   createAcceptedEmbeddingRuntime,
   type AcceptedEmbeddingRuntimeStore
@@ -63,6 +66,7 @@ type RetrievalPrisma = Pick<
   PrismaClient,
   | "$queryRaw"
   | "$transaction"
+  | "knowledgeEvidenceItem"
   | "knowledgeRun"
   | "knowledgeRunBinding"
   | "knowledgeRetrievalSession"
@@ -137,6 +141,28 @@ function noveltyRatio(value: unknown): number | null {
     value.noveltyRatio >= 0 && value.noveltyRatio <= 1
     ? value.noveltyRatio
     : null;
+}
+
+function sourceReadPage(locator: string): number | null {
+  const match = /^(?:page|p\.?|страниц(?:а|е|у|ы)?|стр\.?)\s*#?\s*(\d{1,6})$/iu
+    .exec(locator.trim());
+  const page = match ? Number(match[1]) : NaN;
+  return Number.isSafeInteger(page) && page >= 1 ? page : null;
+}
+
+function sourceReadHeading(locator: string): string {
+  return locator
+    .replace(/^(?:heading|section|раздел|заголовок)\s*[:—-]\s*/iu, "")
+    .replace(/\s*[›>]\s*/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function passageLayoutKind(contextPrefix: string): "body" | "table_ambiguous" | "table_row" {
+  const marker = contextPrefix.split("\n", 1)[0];
+  if (marker === "Evidence layout: table_ambiguous_v1") return "table_ambiguous";
+  if (marker === "Evidence layout: table_row_v1") return "table_row";
+  return "body";
 }
 
 export function createPrismaKnowledgeRetrievalStore(
@@ -305,6 +331,7 @@ export function createPrismaKnowledgeRetrievalStore(
           fusedScore: passage.fusedScore,
           headingPath: passage.headingPath,
           knowledgeBaseId: passage.knowledgeBaseId,
+          layoutKind: passage.layoutKind,
           page: passage.page,
           rerankScore: passage.rerankScore,
           sectionId: passage.sectionId,
@@ -317,6 +344,160 @@ export function createPrismaKnowledgeRetrievalStore(
         })),
         rankingEvidence: result.rankingEvidence,
         vectorSearchEvidence: result.vectorSearchEvidence
+      };
+    },
+    async readSource(input): Promise<KnowledgeHybridSearchResult> {
+      const empty = (): KnowledgeHybridSearchResult => ({
+        bindingCount: 1,
+        candidateCount: 0,
+        candidateCounts: { [input.binding.ordinal]: 0 },
+        passages: []
+      });
+      if (!input.binding.includeWholeBase &&
+        !input.binding.selectedSourceIds.includes(input.sourceId)) return empty();
+      const artifact = await client.knowledgeSourceIndexArtifact.findFirst({
+        select: {
+          hierarchicalIndexes: {
+            orderBy: { schemaVersion: "desc" },
+            select: { id: true },
+            take: 1,
+            where: { state: "ready" }
+          },
+          sourceVersion: {
+            select: {
+              fileName: true,
+              id: true,
+              versionNumber: true,
+              source: { select: { name: true } }
+            }
+          }
+        },
+        where: {
+          id: input.sourceArtifactId,
+          sourceVersion: { sourceId: input.sourceId },
+          state: "ready",
+          snapshotSources: {
+            some: {
+              artifactId: input.sourceArtifactId,
+              knowledgeBaseId: input.binding.knowledgeBaseId,
+              snapshotId: input.binding.knowledgeBaseSnapshotId,
+              sourceId: input.sourceId
+            }
+          }
+        }
+      });
+      const indexArtifactId = artifact?.hierarchicalIndexes[0]?.id;
+      if (!artifact || !indexArtifactId) return empty();
+
+      const locator = input.locator.trim();
+      const handle = decodeKnowledgeCitationHandle(locator)?.handle ?? null;
+      const requestedPage = sourceReadPage(input.locator);
+      let anchor: Readonly<{ ordinal: number; page: number }> | null = null;
+      if (handle) {
+        const item = await client.knowledgeEvidenceItem.findFirst({
+          select: { page: true, passageId: true },
+          where: {
+            handle,
+            retrievalSession: { modelRun: { id: input.runId, userId: input.userId } },
+            sourceArtifactId: input.sourceArtifactId,
+            state: "available"
+          }
+        });
+        if (item?.passageId) {
+          anchor = await client.knowledgeArtifactPassageIndex.findFirst({
+            select: { ordinal: true, page: true },
+            where: { id: item.passageId, indexArtifactId }
+          });
+        }
+        if (!anchor && item?.page) {
+          anchor = await client.knowledgeArtifactPassageIndex.findFirst({
+            orderBy: { ordinal: "asc" },
+            select: { ordinal: true, page: true },
+            where: { indexArtifactId, page: { lte: item.page }, pageEnd: { gte: item.page } }
+          });
+        }
+      } else if (requestedPage !== null) {
+        anchor = await client.knowledgeArtifactPassageIndex.findFirst({
+          orderBy: { ordinal: "asc" },
+          select: { ordinal: true, page: true },
+          where: { indexArtifactId, page: { lte: requestedPage }, pageEnd: { gte: requestedPage } }
+        });
+      } else {
+        const heading = sourceReadHeading(input.locator);
+        if (heading) {
+          anchor = await client.knowledgeArtifactPassageIndex.findFirst({
+            orderBy: { ordinal: "asc" },
+            select: { ordinal: true, page: true },
+            where: {
+              headingText: { equals: heading, mode: "insensitive" },
+              indexArtifactId
+            }
+          });
+        }
+      }
+      if (!anchor) return empty();
+
+      const before = input.direction === "after"
+        ? 0
+        : input.direction === "before"
+          ? input.window - 1
+          : Math.floor((input.window - 1) / 2);
+      const after = input.direction === "before" ? 0 : input.window - before - 1;
+      const rows = await client.knowledgeArtifactPassageIndex.findMany({
+        orderBy: { ordinal: "asc" },
+        select: {
+          contentHash: true,
+          contextPrefix: true,
+          headingPath: true,
+          id: true,
+          ordinal: true,
+          page: true,
+          sectionId: true,
+          sourceName: true,
+          text: true
+        },
+        take: input.window,
+        where: {
+          indexArtifactId,
+          ordinal: {
+            gte: Math.max(0, anchor.ordinal - before),
+            lte: anchor.ordinal + after
+          }
+        }
+      });
+      const passages = rows.map((row, index): KnowledgeHybridPassage => {
+        const rank = index + 1;
+        return {
+          annRank: null,
+          baseName: input.binding.baseName,
+          bindingOrdinal: input.binding.ordinal,
+          chunkId: row.id,
+          chunkIndex: row.ordinal,
+          contentHash: row.contentHash.trim(),
+          documentId: input.sourceId,
+          documentVersionId: artifact.sourceVersion.id,
+          documentVersionNumber: artifact.sourceVersion.versionNumber,
+          fileName: artifact.sourceVersion.fileName,
+          ftsRank: rank,
+          ftsScore: 1,
+          fusedScore: 1 / (60 + rank),
+          headingPath: row.headingPath,
+          knowledgeBaseId: input.binding.knowledgeBaseId,
+          layoutKind: passageLayoutKind(row.contextPrefix),
+          page: row.page,
+          sectionId: row.sectionId,
+          sourceArtifactId: input.sourceArtifactId,
+          sourceName: row.sourceName || artifact.sourceVersion.source.name,
+          text: row.text,
+          vectorDistance: null,
+          vectorScore: null
+        };
+      });
+      return {
+        bindingCount: 1,
+        candidateCount: passages.length,
+        candidateCounts: { [input.binding.ordinal]: passages.length },
+        passages
       };
     },
     ...(structuredStorage ? {
@@ -893,6 +1074,9 @@ export function createPrismaKnowledgeRetrievalStore(
                 contextBoundaries: json({
                   expanded: entry.result.textTruncated,
                   excerptBytes: entry.result.includedTextBytes,
+                  ...(entry.result.layoutKind
+                    ? { layoutKind: entry.result.layoutKind }
+                    : {}),
                   sourceTextBytes: entry.result.sourceTextBytes,
                   ...(entry.result.structuredAnalysis
                     ? { structuredAnalysis: entry.result.structuredAnalysis }
