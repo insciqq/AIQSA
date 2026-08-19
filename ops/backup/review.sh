@@ -23,8 +23,8 @@ SHA-256 evidence identity. --not-required is an explicit operator attestation
 that no external post-backup journal entries exist for that interval.
 
 The command keeps all application/provider roles absent, rechecks suppression
-keys, drives only the deletion coordinator in the network-isolated tools role,
-audits outbox/account/source-barrier state, and writes a private promotion.env
+keys, drives Memory and Knowledge deletion obligations in the network-isolated
+tools role, audits their durable state, and writes a private promotion.env
 receipt. It never starts an app/worker or performs production cutover.
 USAGE
 }
@@ -150,6 +150,15 @@ if ! reconciliation_output="$(compose run --rm --no-deps --env HOME=/tmp \
     reconciliation_code="memory_restore_reconciliation_failed"
   die "Restore review blocked: deletion reconciliation remains incomplete ($reconciliation_code)."
 fi
+if ! reconciliation_output="$(compose run --rm --no-deps --env HOME=/tmp \
+  --entrypoint npm "$RESTORE_REVIEW_TOOLS_SERVICE" --silent run \
+  knowledge:restore:reconcile 2>&1)"; then
+  reconciliation_code="$(printf '%s\n' "$reconciliation_output" |
+    grep -Eo 'knowledge_[a-z0-9_]+' | tail -n 1 || true)"
+  [[ "$reconciliation_code" =~ ^knowledge_[a-z0-9_]+$ ]] ||
+    reconciliation_code="knowledge_restore_reconciliation_failed"
+  die "Restore review blocked: Knowledge deletion reconciliation remains incomplete ($reconciliation_code)."
+fi
 
 audit_values="$(postgres_query "
   SELECT concat_ws(',',
@@ -218,17 +227,69 @@ audit_values="$(postgres_query "
             WHERE barrier.\"userId\" = deletion.\"userId\"
               AND barrier.\"id\" = deletion.\"targetId\"
               AND barrier.\"kind\" = 'HISTORY_INDEX'::\"MemorySourceBarrierKind\"))
+        )),
+    (SELECT count(*) FROM \"KnowledgeDeletionJob\"
+      WHERE \"state\" IN (
+        'PENDING'::\"KnowledgeDeletionState\",
+        'RUNNING'::\"KnowledgeDeletionState\",
+        'RETRY_WAIT'::\"KnowledgeDeletionState\",
+        'BLOCKED_REQUIRES_ADMIN'::\"KnowledgeDeletionState\"
+      )),
+    (SELECT count(*) FROM \"KnowledgeDeletionJob\"
+      WHERE \"state\" = 'RUNNING'::\"KnowledgeDeletionState\"
+        OR \"claimToken\" IS NOT NULL
+        OR \"claimedAt\" IS NOT NULL
+        OR \"leaseExpiresAt\" IS NOT NULL),
+    (SELECT count(*) FROM \"KnowledgeDeletionObject\"
+      WHERE \"disposition\" = 'PENDING'::\"KnowledgeDeletionObjectDisposition\"),
+    ((SELECT count(*) FROM \"KnowledgeBase\" AS base
+      WHERE base.\"deletionRequestedAt\" IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM \"KnowledgeDeletionJob\" AS job
+          WHERE job.\"targetType\" = 'BASE'::\"KnowledgeDeletionTargetType\"
+            AND job.\"targetId\" = base.\"id\"
         ))
+      + (SELECT count(*) FROM \"KnowledgeSource\" AS source
+      WHERE source.\"deletionRequestedAt\" IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM \"KnowledgeDeletionJob\" AS job
+          WHERE job.\"targetType\" = 'SOURCE'::\"KnowledgeDeletionTargetType\"
+            AND job.\"targetId\" = source.\"id\"
+        ))),
+    (SELECT count(*) FROM \"KnowledgeDeletionJob\" AS job
+      WHERE (
+        job.\"state\" = 'SUCCEEDED'::\"KnowledgeDeletionState\"
+        AND (
+          (job.\"targetType\" = 'BASE'::\"KnowledgeDeletionTargetType\"
+            AND EXISTS (SELECT 1 FROM \"KnowledgeBase\" WHERE \"id\" = job.\"targetId\"))
+          OR
+          (job.\"targetType\" = 'SOURCE'::\"KnowledgeDeletionTargetType\"
+            AND EXISTS (SELECT 1 FROM \"KnowledgeSource\" WHERE \"id\" = job.\"targetId\"))
+        )
+      ) OR (
+        job.\"state\" <> 'SUCCEEDED'::\"KnowledgeDeletionState\"
+        AND NOT (
+          (job.\"targetType\" = 'BASE'::\"KnowledgeDeletionTargetType\"
+            AND EXISTS (SELECT 1 FROM \"KnowledgeBase\" WHERE \"id\" = job.\"targetId\"))
+          OR
+          (job.\"targetType\" = 'SOURCE'::\"KnowledgeDeletionTargetType\"
+            AND EXISTS (SELECT 1 FROM \"KnowledgeSource\" WHERE \"id\" = job.\"targetId\"))
+        )
+      )),
+    (SELECT count(*) FROM \"KnowledgeDeletionJob\" AS job
+      WHERE NOT EXISTS (SELECT 1 FROM \"User\" WHERE \"id\" = job.\"ownerUserId\"))
   );
 " 2>/dev/null)" ||
   die "Restore review blocked: deletion/barrier audit failed."
 audit_values="${audit_values//[[:space:]]/}"
 
-[[ "$audit_values" =~ ^[0-9]+(,[0-9]+){7}$ ]] ||
+[[ "$audit_values" =~ ^[0-9]+(,[0-9]+){13}$ ]] ||
   die "Restore review blocked: deletion/barrier audit returned invalid evidence."
 IFS=',' read -r unresolved account_obligations deletion_leases job_leases \
   unsafe_executions invalid_barrier_owners missing_barrier_obligations \
-  missing_barrier_targets <<<"$audit_values"
+  missing_barrier_targets knowledge_unresolved knowledge_leases \
+  knowledge_pending_objects missing_knowledge_obligations \
+  invalid_knowledge_targets invalid_knowledge_owners <<<"$audit_values"
 [[ "$unresolved" -eq 0 ]] ||
   die "Restore review blocked: deletion outbox remains unresolved."
 [[ "$account_obligations" -eq 0 ]] ||
@@ -245,6 +306,18 @@ IFS=',' read -r unresolved account_obligations deletion_leases job_leases \
   die "Restore review blocked: a source barrier lacks its deletion obligation."
 [[ "$missing_barrier_targets" -eq 0 ]] ||
   die "Restore review blocked: a deletion obligation lacks its source barrier."
+[[ "$knowledge_unresolved" -eq 0 ]] ||
+  die "Restore review blocked: a Knowledge deletion obligation remains unresolved."
+[[ "$knowledge_leases" -eq 0 ]] ||
+  die "Restore review blocked: a Knowledge deletion lease remains live."
+[[ "$knowledge_pending_objects" -eq 0 ]] ||
+  die "Restore review blocked: a Knowledge object deletion remains unresolved."
+[[ "$missing_knowledge_obligations" -eq 0 ]] ||
+  die "Restore review blocked: a deleting Knowledge resource lacks its obligation."
+[[ "$invalid_knowledge_targets" -eq 0 ]] ||
+  die "Restore review blocked: Knowledge deletion target state is inconsistent."
+[[ "$invalid_knowledge_owners" -eq 0 ]] ||
+  die "Restore review blocked: a Knowledge deletion obligation has no owner."
 
 if ! compose exec -T "$RESTORE_REVIEW_MINIO_SERVICE" sh -ceu '
   bucket="$1"

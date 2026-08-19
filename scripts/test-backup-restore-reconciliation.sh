@@ -139,6 +139,8 @@ source_compose run --rm --no-deps --entrypoint /bin/sh minio-init -ceu '
   mc alias set --quiet source "$S3_ENDPOINT" "$S3_ACCESS_KEY_ID" \
     "$S3_SECRET_ACCESS_KEY" >/dev/null
   printf restore-fixture | mc pipe "source/$S3_BUCKET/evidence/fixture.bin" >/dev/null
+  printf knowledge-restore-fixture | \
+    mc pipe "source/$S3_BUCKET/knowledge/backup-source.bin" >/dev/null
 ' >/dev/null
 
 source_sql "
@@ -155,6 +157,55 @@ source_sql "
     'memory-lexical-v1'
   FROM \"UserMemorySettings\" AS settings
   WHERE settings.\"userId\" = '00000000-0000-4000-8000-000000000001';
+" >/dev/null
+source_sql "
+  INSERT INTO \"KnowledgeSource\" (
+    \"id\", \"ownerUserId\", \"name\", \"description\", \"tags\",
+    \"version\", \"createdAt\", \"updatedAt\"
+  ) VALUES (
+    'backup-restore-knowledge-source',
+    '00000000-0000-4000-8000-000000000001',
+    'Backup restore deletion fixture',
+    '',
+    ARRAY[]::text[],
+    1,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+  );
+  INSERT INTO \"KnowledgeSourceVersion\" (
+    \"id\", \"sourceId\", \"ownerUserId\", \"versionNumber\", \"fileName\",
+    \"mimeType\", \"byteSize\", \"checksum\", \"originalStorageKey\", \"createdAt\"
+  ) VALUES (
+    'backup-restore-knowledge-version',
+    'backup-restore-knowledge-source',
+    '00000000-0000-4000-8000-000000000001',
+    1,
+    'backup-source.bin',
+    'application/octet-stream',
+    25,
+    repeat('e', 64),
+    'knowledge/backup-source.bin',
+    CURRENT_TIMESTAMP
+  );
+  UPDATE \"KnowledgeSource\"
+  SET \"currentVersionId\" = 'backup-restore-knowledge-version',
+      \"trashedAt\" = CURRENT_TIMESTAMP,
+      \"deletionRequestedAt\" = CURRENT_TIMESTAMP,
+      \"version\" = 2,
+      \"updatedAt\" = CURRENT_TIMESTAMP
+  WHERE \"id\" = 'backup-restore-knowledge-source';
+  INSERT INTO \"KnowledgeDeletionJob\" (
+    \"id\", \"ownerUserId\", \"targetType\", \"targetId\", \"state\",
+    \"createdAt\", \"updatedAt\"
+  ) VALUES (
+    'backup-restore-knowledge-deletion',
+    '00000000-0000-4000-8000-000000000001',
+    'SOURCE'::\"KnowledgeDeletionTargetType\",
+    'backup-restore-knowledge-source',
+    'PENDING'::\"KnowledgeDeletionState\",
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+  );
 " >/dev/null
 source_user_count="$(source_sql 'SELECT count(*) FROM "User";')"
 [[ "$source_user_count" =~ ^[0-9]+$ && "$source_user_count" -gt 0 ]]
@@ -234,10 +285,15 @@ test_stage="restored-data-audit"
 restored_user_count="$(target_sql 'SELECT count(*) FROM "User";')"
 restored_user_count="${restored_user_count//[[:space:]]/}"
 [[ "$restored_user_count" -eq "$source_user_count" ]]
+restored_knowledge_source_count="$(target_sql \
+  'SELECT count(*) FROM "KnowledgeSource" WHERE "id" = '\''backup-restore-knowledge-source'\'';')"
+restored_knowledge_source_count="${restored_knowledge_source_count//[[:space:]]/}"
+[[ "$restored_knowledge_source_count" -eq 1 ]]
 target_compose "$KEYRING" exec -T minio-restore sh -ceu '
   mc alias set --quiet target http://127.0.0.1:9000 \
     "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
   mc stat "target/aiqsa-restore/evidence/fixture.bin" >/dev/null
+  mc stat "target/aiqsa-restore/knowledge/backup-source.bin" >/dev/null
 '
 target_compose "$KEYRING" run --rm --no-deps --entrypoint npm restore-tools \
   --silent run db:generate >/dev/null
@@ -273,6 +329,15 @@ if COMPOSE_FILE="$TARGET_COMPOSE" \
 fi
 grep -Fq "deletion reconciliation remains incomplete" "$test_root/unresolved.log"
 [[ ! -e "$test_root/review/promotion.env" ]]
+blocked_knowledge_source_count="$(target_sql \
+  'SELECT count(*) FROM "KnowledgeSource" WHERE "id" = '\''backup-restore-knowledge-source'\'';')"
+blocked_knowledge_source_count="${blocked_knowledge_source_count//[[:space:]]/}"
+[[ "$blocked_knowledge_source_count" -eq 1 ]]
+target_compose "$KEYRING" exec -T minio-restore sh -ceu '
+  mc alias set --quiet target http://127.0.0.1:9000 \
+    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+  mc stat "target/aiqsa-restore/knowledge/backup-source.bin" >/dev/null
+'
 
 target_sql "
   DELETE FROM \"MemoryDeletionOutbox\"
@@ -295,6 +360,22 @@ AIQSA_RESTORE_S3_SECRET_ACCESS_KEY="aiqsa-restore-object-secret" \
 )
 grep -Fxq "PROMOTION_STATE=PASSED" "$test_root/review/promotion.env"
 grep -Fxq "DELETION_JOURNAL_STATUS=NOT_REQUIRED" "$test_root/review/promotion.env"
+purged_knowledge_source_count="$(target_sql \
+  'SELECT count(*) FROM "KnowledgeSource" WHERE "id" = '\''backup-restore-knowledge-source'\'';')"
+purged_knowledge_source_count="${purged_knowledge_source_count//[[:space:]]/}"
+[[ "$purged_knowledge_source_count" -eq 0 ]]
+knowledge_deletion_state="$(target_sql \
+  'SELECT "state"::text FROM "KnowledgeDeletionJob" WHERE "id" = '\''backup-restore-knowledge-deletion'\'';')"
+knowledge_deletion_state="${knowledge_deletion_state//[[:space:]]/}"
+[[ "$knowledge_deletion_state" == "SUCCEEDED" ]]
+if target_compose "$KEYRING" exec -T minio-restore sh -ceu '
+  mc alias set --quiet target http://127.0.0.1:9000 \
+    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+  mc stat "target/aiqsa-restore/knowledge/backup-source.bin" >/dev/null 2>&1
+'; then
+  printf '%s\n' "Knowledge restore reconciliation retained a purged Source object." >&2
+  exit 1
+fi
 
 running_services="$(target_compose "$KEYRING" ps --services --status running | LC_ALL=C sort)"
 [[ "$running_services" == $'minio-restore\npostgres-restore' ]]

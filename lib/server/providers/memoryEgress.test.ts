@@ -16,7 +16,7 @@ function request(): ProviderRunRequest {
       ],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: ["base-1"] },
+    knowledgePlan: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 },
     mcp: {
       servers: [{
         fingerprint: "mcp-fingerprint",

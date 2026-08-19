@@ -66,7 +66,7 @@ async function createAssistant(ownerUserId: string, name: string, published: boo
       authorUserId: ownerUserId,
       avatar: {},
       description: "",
-      knowledgeBaseIds: [],
+      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       name,
       providerModelId: providerTemplateIds.fakeModel,

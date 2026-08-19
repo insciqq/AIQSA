@@ -269,21 +269,23 @@ async function main() {
     const successfulUploads = [
       {
         chunked: false,
-        path: "/api/me/knowledge-bases/base-1/documents?transfer=declared&mode=initial"
+        method: "POST",
+        path: "/api/me/knowledge-sources/source-1/versions?transfer=declared"
       },
       {
         chunked: true,
-        path: "/api/me/knowledge-bases/base-1/documents?transfer=chunked&mode=initial"
+        method: "POST",
+        path: "/api/me/knowledge-sources/source-1/versions?transfer=chunked"
       },
       {
         chunked: false,
-        path:
-          "/api/me/knowledge-bases/base-1/documents/document-1/versions?transfer=declared&mode=replacement"
+        method: "PUT",
+        path: "/api/me/knowledge-bases/base-1/upload-batches/batch-1/items/item-1/content?transfer=declared"
       },
       {
         chunked: true,
-        path:
-          "/api/me/knowledge-bases/base-1/documents/document-1/versions?transfer=chunked&mode=replacement"
+        method: "PUT",
+        path: "/api/me/knowledge-bases/base-1/upload-batches/batch-1/items/item-1/content?transfer=chunked"
       }
     ];
 
@@ -291,20 +293,20 @@ async function main() {
       const response = await sendRequest(proxyPort, {
         body: threeMib,
         chunked: upload.chunked,
-        method: "POST",
+        method: upload.method,
         path: upload.path
       });
-      assert.equal(response.status, 200, `POST ${upload.path} status`);
+      assert.equal(response.status, 200, `${upload.method} ${upload.path} status`);
       const upstreamRecord = JSON.parse(response.body);
       assert.deepEqual(
         upstreamRecord,
         {
           bytes: threeMib.length,
           digest: expectedDigest,
-          method: "POST",
+          method: upload.method,
           url: upload.path
         },
-        `POST ${upload.path} upstream request`
+        `${upload.method} ${upload.path} upstream request`
       );
     }
 
@@ -326,7 +328,7 @@ async function main() {
         request: {
           body: threeMib,
           method: "GET",
-          path: "/api/me/knowledge-bases/base-1/documents?transfer=declared"
+          path: "/api/me/knowledge-sources/source-1/versions?transfer=declared"
         }
       },
       {
@@ -335,7 +337,7 @@ async function main() {
           body: threeMib,
           chunked: true,
           method: "GET",
-          path: "/api/me/knowledge-bases/base-1/documents?transfer=chunked"
+          path: "/api/me/knowledge-bases/base-1/upload-batches/batch-1/items/item-1/content?transfer=chunked"
         }
       },
       {
@@ -343,8 +345,7 @@ async function main() {
         request: {
           body: threeMib,
           method: "DELETE",
-          path:
-            "/api/me/knowledge-bases/base-1/documents/document-1/versions?transfer=declared"
+          path: "/api/me/knowledge-sources/source-1/versions?transfer=declared"
         }
       },
       {
@@ -353,8 +354,7 @@ async function main() {
           body: threeMib,
           chunked: true,
           method: "DELETE",
-          path:
-            "/api/me/knowledge-bases/base-1/documents/document-1/versions?transfer=chunked"
+          path: "/api/me/knowledge-bases/base-1/upload-batches/batch-1/items/item-1/content?transfer=chunked"
         }
       },
       {
@@ -362,7 +362,7 @@ async function main() {
         request: {
           body: threeMib,
           method: "POST",
-          path: "/api/me/knowledge-bases/base-1/documents/document-1?lookalike=1"
+          path: "/api/me/knowledge-sources/source-1?lookalike=1"
         }
       }
     ];
@@ -376,7 +376,7 @@ async function main() {
         body: Buffer.from("x"),
         declaredLength: 80 * mib + 1,
         method: "POST",
-        path: "/api/me/knowledge-bases/base-1/documents?oversized=1"
+        path: "/api/me/knowledge-sources/source-1/versions?oversized=1"
       },
       uploadLimitError
     );
@@ -386,7 +386,7 @@ async function main() {
       body: Buffer.from("direct"),
       method: "POST",
       path:
-        "/__aiqsa_internal_knowledge_upload/api/me/knowledge-bases/base-1/documents?direct=1"
+        "/__aiqsa_internal_knowledge_upload/api/me/knowledge-sources/source-1/versions?direct=1"
     });
     assert.equal(directInternal.status, 404, "direct internal namespace status");
     assert.equal(
@@ -400,14 +400,13 @@ async function main() {
         body: Buffer.from("small-get"),
         chunked: false,
         method: "GET",
-        path: "/api/me/knowledge-bases/base-1/documents?small=get"
+        path: "/api/me/knowledge-sources/source-1/versions?small=get"
       },
       {
         body: Buffer.from("small-delete"),
         chunked: true,
         method: "DELETE",
-        path:
-          "/api/me/knowledge-bases/base-1/documents/document-1/versions?small=delete"
+        path: "/api/me/knowledge-bases/base-1/upload-batches/batch-1/items/item-1/content?small=delete"
       }
     ];
     for (const smallRequest of smallRequests) {

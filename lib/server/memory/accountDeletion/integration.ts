@@ -5,6 +5,7 @@ import { inspectAccountMemoryDeletionResiduals } from "./handler";
 
 export type AccountMemoryDeletionAdvance = Readonly<{
   admitted: boolean;
+  deletionPending: boolean;
   readyForUserDeletion: boolean;
 }>;
 
@@ -155,10 +156,10 @@ async function advanceAccountDeletion(
   const existing = await existingAccountDeletion(tx, input.userId);
   if (!existing) {
     if (!admissionEnabled) {
-      return { admitted: false, readyForUserDeletion: false };
+      return { admitted: false, deletionPending: false, readyForUserDeletion: false };
     }
     await fenceAndAdmit(tx, input.userId, input.now);
-    return { admitted: true, readyForUserDeletion: false };
+    return { admitted: true, deletionPending: true, readyForUserDeletion: false };
   }
   if (existing.state === "CANCELLED") {
     await tx.memoryDeletionOutbox.update({
@@ -171,10 +172,10 @@ async function advanceAccountDeletion(
       },
       where: { id: existing.id }
     });
-    return { admitted: true, readyForUserDeletion: false };
+    return { admitted: true, deletionPending: true, readyForUserDeletion: false };
   }
   if (existing.state !== "SUCCEEDED") {
-    return { admitted: false, readyForUserDeletion: false };
+    return { admitted: false, deletionPending: true, readyForUserDeletion: false };
   }
 
   const residuals = await inspectAccountMemoryDeletionResiduals(tx, {
@@ -192,7 +193,7 @@ async function advanceAccountDeletion(
       },
       where: { id: existing.id }
     });
-    return { admitted: true, readyForUserDeletion: false };
+    return { admitted: true, deletionPending: true, readyForUserDeletion: false };
   }
 
   // The leaf retained only usage-backed, provider-detached immutable call
@@ -215,7 +216,7 @@ async function advanceAccountDeletion(
   if (deleted.count !== 1) {
     throw new MemoryCoordinatorError("memory_account_deletion_finalize_conflict", true);
   }
-  return { admitted: false, readyForUserDeletion: true };
+  return { admitted: false, deletionPending: false, readyForUserDeletion: true };
 }
 
 export function createAccountMemoryDeletionHook(input: Readonly<{

@@ -5,24 +5,26 @@ import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 
 function knowledgeBase(id: string, name: string): KnowledgeBaseSummary {
   return {
-    activeGeneration: {
-      chunkingProfileVersion: 1,
-      embeddingDeployment: null,
-      embeddingDeploymentId: null,
-      id: `generation-${id}`,
-      indexedContentRevision: 1,
-      targetDimension: 1024,
-      vectorSpaceFingerprint: "a".repeat(64)
-    },
     archived: false,
-    contentRevision: 1,
+    deletionPending: false,
     description: "",
+    sourceCount: 1,
     id,
     name,
     owned: true,
     ownerDisplayName: "Owner",
-    published: false,
+    purgeScheduledAt: null,
+    readiness: {
+      attentionSources: 0,
+      processingSources: 0,
+      readySources: 1,
+      state: "ready",
+      supportReference: null,
+      totalSources: 1
+    },
     scope: { kind: "owner" },
+    trashed: false,
+    trashedAt: null,
     updatedAt: "2026-08-08T12:00:00.000Z",
     version: 1
   };
@@ -244,7 +246,9 @@ describe("ProjectSettingsDialog", () => {
     render(
       <ProjectSettingsDialog
         folder={{
-          defaultKnowledgePlan: { baseIds: ["retained"] },
+          defaultKnowledgePlan: {
+            baseIds: ["retained"], mode: "explicit", sourceIds: [], version: 1
+          },
           id: "folder-1",
           name: "Research",
           parentId: null,

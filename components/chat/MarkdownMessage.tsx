@@ -111,7 +111,38 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
   );
 }
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
+export type MarkdownCitationRenderer = (handle: string, key: string) => ReactNode | null;
+
+function renderPlainInline(
+  text: string,
+  keyPrefix: string,
+  renderCitation?: MarkdownCitationRenderer
+): ReactNode[] {
+  if (!renderCitation) return [text];
+  const nodes: ReactNode[] = [];
+  const citationPattern = /\[(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\]/gu;
+  let lastIndex = 0;
+  let match = citationPattern.exec(text);
+  while (match) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const nestedLinkLabel = text[match.index - 1] === "[" &&
+      text.slice(match.index + match[0].length, match.index + match[0].length + 2) === "](";
+    const rendered = nestedLinkLabel
+      ? null
+      : renderCitation(match[1], `${keyPrefix}-citation-${match.index}`);
+    nodes.push(rendered ?? match[0]);
+    lastIndex = match.index + match[0].length;
+    match = citationPattern.exec(text);
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
+function renderInline(
+  text: string,
+  keyPrefix: string,
+  renderCitation?: MarkdownCitationRenderer
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   const inlinePattern =
     /(`[^`]+`|\[[^\]]+\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*[^*]+\*\*|(?<!\\)\\\((?:[^\\\n`]|\\(?!\)))*\\\)|(?<!\\)\$(?![$\s])(?:\\.|[^$\\\n`])*?(?<![\s\\])\$(?!\d)|~~[^~]+~~|\*[^*\n]+\*|(?<![A-Za-z0-9])_[^_\n]+_(?![A-Za-z0-9]))/g;
@@ -120,7 +151,11 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 
   while (match) {
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+      nodes.push(...renderPlainInline(
+        text.slice(lastIndex, match.index),
+        `${keyPrefix}-plain-${lastIndex}`,
+        renderCitation
+      ));
     }
 
     const token = match[0];
@@ -146,7 +181,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     } else if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push(
         <strong className="font-semibold text-ink" key={`${keyPrefix}-strong-${match.index}`}>
-          {token.slice(2, -2)}
+          {renderPlainInline(token.slice(2, -2), `${keyPrefix}-strong-${match.index}`, renderCitation)}
         </strong>
       );
     } else if (token.startsWith("`") && token.endsWith("`")) {
@@ -180,13 +215,13 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     } else if (token.startsWith("~~") && token.endsWith("~~")) {
       nodes.push(
         <del className="text-ink-muted" key={`${keyPrefix}-del-${match.index}`}>
-          {token.slice(2, -2)}
+          {renderPlainInline(token.slice(2, -2), `${keyPrefix}-del-${match.index}`, renderCitation)}
         </del>
       );
     } else {
       nodes.push(
         <em className="italic text-ink" key={`${keyPrefix}-em-${match.index}`}>
-          {token.slice(1, -1)}
+          {renderPlainInline(token.slice(1, -1), `${keyPrefix}-em-${match.index}`, renderCitation)}
         </em>
       );
     }
@@ -196,7 +231,11 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   }
 
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+    nodes.push(...renderPlainInline(
+      text.slice(lastIndex),
+      `${keyPrefix}-plain-${lastIndex}`,
+      renderCitation
+    ));
   }
 
   return nodes;
@@ -222,7 +261,11 @@ function headingClass(level: number): string {
   return "pt-1 text-sm leading-6";
 }
 
-function renderHeading(line: string, keyPrefix: string): ReactNode | null {
+function renderHeading(
+  line: string,
+  keyPrefix: string,
+  renderCitation?: MarkdownCitationRenderer
+): ReactNode | null {
   const heading = /^(#{1,6})\s+(.+)$/.exec(line.trim());
   if (!heading) {
     return null;
@@ -230,7 +273,7 @@ function renderHeading(line: string, keyPrefix: string): ReactNode | null {
 
   const level = heading[1].length;
   const className = `${headingClass(level)} break-words font-semibold text-ink first:pt-0 [overflow-wrap:anywhere]`;
-  const children = renderInline(heading[2], `${keyPrefix}-heading`);
+  const children = renderInline(heading[2], `${keyPrefix}-heading`, renderCitation);
 
   switch (level) {
     case 1:
@@ -337,7 +380,11 @@ function parseList(lines: string[], startIndex: number, baseIndent?: number): { 
   };
 }
 
-function renderList(block: ListBlock, keyPrefix: string): ReactNode {
+function renderList(
+  block: ListBlock,
+  keyPrefix: string,
+  renderCitation?: MarkdownCitationRenderer
+): ReactNode {
   const Tag = block.ordered ? "ol" : "ul";
   const className = block.ordered
     ? "list-decimal space-y-1 break-words pl-5 marker:text-ink-muted [overflow-wrap:anywhere]"
@@ -347,10 +394,10 @@ function renderList(block: ListBlock, keyPrefix: string): ReactNode {
     <Tag className={className} key={keyPrefix}>
       {block.items.map((item, index) => (
         <li key={`${keyPrefix}-item-${index}`}>
-          {renderInline(item.content, `${keyPrefix}-item-${index}`)}
+          {renderInline(item.content, `${keyPrefix}-item-${index}`, renderCitation)}
           {item.children.map((child, childIndex) => (
             <div className="mt-1" key={`${keyPrefix}-item-${index}-child-${childIndex}`}>
-              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`)}
+              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`, renderCitation)}
             </div>
           ))}
         </li>
@@ -378,7 +425,12 @@ function isTableStart(lines: string[], index: number): boolean {
   return lines[index]?.includes("|") && isTableDelimiter(lines[index + 1] ?? "");
 }
 
-function renderTable(lines: string[], startIndex: number, keyPrefix: string): { nextIndex: number; node: ReactNode } {
+function renderTable(
+  lines: string[],
+  startIndex: number,
+  keyPrefix: string,
+  renderCitation?: MarkdownCitationRenderer
+): { nextIndex: number; node: ReactNode } {
   const headerCells = tableRowCells(lines[startIndex]);
   const rows: string[][] = [];
   let index = startIndex + 2;
@@ -404,7 +456,7 @@ function renderTable(lines: string[], startIndex: number, keyPrefix: string): { 
             <tr>
               {headerCells.map((cell, cellIndex) => (
                 <th className="border-b border-r border-trace-subtle bg-answer-paper px-3 py-2 font-semibold last:border-r-0" key={`${keyPrefix}-th-${cellIndex}`}>
-                  {renderInline(cell, `${keyPrefix}-th-${cellIndex}`)}
+                  {renderInline(cell, `${keyPrefix}-th-${cellIndex}`, renderCitation)}
                 </th>
               ))}
             </tr>
@@ -414,7 +466,11 @@ function renderTable(lines: string[], startIndex: number, keyPrefix: string): { 
               <tr className="border-b border-trace-subtle last:border-b-0" key={`${keyPrefix}-tr-${rowIndex}`}>
                 {headerCells.map((_header, cellIndex) => (
                   <td className="border-r border-trace-subtle px-3 py-2 align-top last:border-r-0" key={`${keyPrefix}-td-${rowIndex}-${cellIndex}`}>
-                    {renderInline(row[cellIndex] ?? "", `${keyPrefix}-td-${rowIndex}-${cellIndex}`)}
+                    {renderInline(
+                      row[cellIndex] ?? "",
+                      `${keyPrefix}-td-${rowIndex}-${cellIndex}`,
+                      renderCitation
+                    )}
                   </td>
                 ))}
               </tr>
@@ -489,7 +545,11 @@ function isBlockStart(lines: string[], index: number): boolean {
   );
 }
 
-function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
+function renderTextLines(
+  markdown: string,
+  keyPrefix: string,
+  renderCitation?: MarkdownCitationRenderer
+): ReactNode[] {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const nodes: ReactNode[] = [];
   let index = 0;
@@ -514,7 +574,7 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
       continue;
     }
 
-    const heading = renderHeading(lines[index], `${keyPrefix}-h-${index}`);
+    const heading = renderHeading(lines[index], `${keyPrefix}-h-${index}`, renderCitation);
     if (heading) {
       nodes.push(heading);
       index += 1;
@@ -536,14 +596,14 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
 
       nodes.push(
         <blockquote className="space-y-2 border-l-2 border-proof/40 pl-4 text-ink-secondary" key={`${keyPrefix}-quote-${index}`}>
-          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`)}
+          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`, renderCitation)}
         </blockquote>
       );
       continue;
     }
 
     if (isTableStart(lines, index)) {
-      const table = renderTable(lines, index, `${keyPrefix}-table-${index}`);
+      const table = renderTable(lines, index, `${keyPrefix}-table-${index}`, renderCitation);
       nodes.push(table.node);
       index = table.nextIndex;
       continue;
@@ -551,7 +611,7 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
 
     if (parseListLine(lines[index])) {
       const list = parseList(lines, index);
-      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`));
+      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`, renderCitation));
       index = list.nextIndex;
       continue;
     }
@@ -565,7 +625,11 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
 
     nodes.push(
       <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-p-${index}`}>
-        {renderInline(paragraphLines.join("\n").trim(), `${keyPrefix}-p-${index}`)}
+        {renderInline(
+          paragraphLines.join("\n").trim(),
+          `${keyPrefix}-p-${index}`,
+          renderCitation
+        )}
       </p>
     );
   }
@@ -575,6 +639,7 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
 
 type MarkdownMessageProps = {
   content: string;
+  renderCitation?: MarkdownCitationRenderer;
   streaming?: boolean;
 };
 
@@ -677,7 +742,11 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
   );
 }
 
-function MarkdownMessageComponent({ content, streaming = false }: MarkdownMessageProps) {
+function MarkdownMessageComponent({
+  content,
+  renderCitation,
+  streaming = false
+}: MarkdownMessageProps) {
   return (
     <div className="min-w-0 space-y-4">
       {splitMarkdown(content).map((part, index) => {
@@ -685,7 +754,7 @@ function MarkdownMessageComponent({ content, streaming = false }: MarkdownMessag
           return <CodeBlock code={part.code} language={part.language} streaming={streaming} key={`${part.type}-${index}`} />;
         }
 
-        return renderTextLines(part.text, `${part.type}-${index}`);
+        return renderTextLines(part.text, `${part.type}-${index}`, renderCitation);
       })}
     </div>
   );

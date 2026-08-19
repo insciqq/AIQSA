@@ -336,25 +336,32 @@ function AssistantCardV2({
 
 const knowledgeStatusLabel: Record<KnowledgeSummaryV2["status"], string> = {
   archived: "Archived",
-  indexing: "Indexing",
+  indexing: "Processing",
   ready: "Ready",
   unavailable: "Unavailable"
 };
 
 export function KnowledgePanelV2({
   bases,
+  onBrowseSources,
   onCreate,
   onOpen
 }: Readonly<{
   bases: readonly KnowledgeSummaryV2[];
+  onBrowseSources?(): void;
   onCreate?(): void;
   onOpen?(id: string): void;
 }>) {
   return (
     <div data-testid="library-knowledge-panel">
       <SectionHeading
-        action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>New base</UiV2Button>}
-        description="Documents you can explicitly attach to your next run. Indexing and access remain server truth."
+        action={(
+          <>
+            <UiV2Button onClick={onBrowseSources}>Browse Sources</UiV2Button>
+            <UiV2Button icon="plus" tone="primary" onClick={onCreate}>New base</UiV2Button>
+          </>
+        )}
+        description="Bases group reusable Sources into the exact Knowledge scopes selected for Chat, Projects, and Assistants."
       >
         Knowledge
       </SectionHeading>
@@ -369,7 +376,7 @@ export function KnowledgePanelV2({
                   <span data-status={base.status}>{knowledgeStatusLabel[base.status]}</span>
                 </div>
                 <p>{base.description}</p>
-                <small>{base.owned ? "Your base" : "Shared with you"} · {base.documentCount} {base.documentCount === 1 ? "file" : "files"}</small>
+                <small>{base.owned ? "Your base" : "Shared with you"} · {base.sourceCount} {base.sourceCount === 1 ? "Source" : "Sources"}</small>
               </div>
               <UiV2Button onClick={() => onOpen?.(base.id)}>Open</UiV2Button>
             </li>

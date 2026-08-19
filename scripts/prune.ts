@@ -10,6 +10,8 @@ type CliOptions = {
   dryRun: boolean;
   eventRetentionDays?: number;
   knowledgePayloadRetentionDays?: number;
+  knowledgeTrashRetentionDays?: number;
+  knowledgeUploadSessionRetentionDays?: number;
   orphanAttachmentRetentionDays?: number;
 };
 
@@ -87,7 +89,7 @@ function readFlagValue(args: string[], index: number, flag: string): { nextIndex
 
 function usage(): string {
   return [
-    "Usage: npm run prune -- [--dry-run|--execute] [--event-days N] [--orphan-attachment-days N] [--knowledge-payload-days N] [--auth-days N] [--deletion-job-lease-minutes N] [--batch-size N]",
+    "Usage: npm run prune -- [--dry-run|--execute] [--event-days N] [--orphan-attachment-days N] [--knowledge-payload-days N] [--knowledge-trash-days N] [--knowledge-upload-session-days N] [--auth-days N] [--deletion-job-lease-minutes N] [--batch-size N]",
     "",
     "Defaults to --dry-run. Pass --execute to stage orphan/stale Knowledge payloads, drain object-deletion jobs, and prune terminal event/auth rows."
   ].join("\n");
@@ -137,6 +139,23 @@ function parseArgs(args: string[]): CliOptions {
       continue;
     }
 
+    if (arg === "--knowledge-trash-days" || arg.startsWith("--knowledge-trash-days=")) {
+      const parsed = readFlagValue(args, index, "--knowledge-trash-days");
+      options.knowledgeTrashRetentionDays = parsePositiveInteger(parsed.value, "--knowledge-trash-days");
+      index = parsed.nextIndex;
+      continue;
+    }
+
+    if (arg === "--knowledge-upload-session-days" || arg.startsWith("--knowledge-upload-session-days=")) {
+      const parsed = readFlagValue(args, index, "--knowledge-upload-session-days");
+      options.knowledgeUploadSessionRetentionDays = parsePositiveInteger(
+        parsed.value,
+        "--knowledge-upload-session-days"
+      );
+      index = parsed.nextIndex;
+      continue;
+    }
+
     if (arg === "--auth-days" || arg.startsWith("--auth-days=")) {
       const parsed = readFlagValue(args, index, "--auth-days");
       options.authRetentionDays = parsePositiveInteger(parsed.value, "--auth-days");
@@ -175,6 +194,8 @@ async function main() {
     dryRun: options.dryRun,
     eventRetentionDays: options.eventRetentionDays,
     knowledgePayloadRetentionDays: options.knowledgePayloadRetentionDays,
+    knowledgeTrashRetentionDays: options.knowledgeTrashRetentionDays,
+    knowledgeUploadSessionRetentionDays: options.knowledgeUploadSessionRetentionDays,
     orphanAttachmentRetentionDays: options.orphanAttachmentRetentionDays,
     repository: createPrismaRetentionRepository(prisma),
     storage: createS3StorageAdapter()

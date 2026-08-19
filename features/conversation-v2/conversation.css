@@ -140,6 +140,31 @@
   overflow-wrap: anywhere;
 }
 
+.knowledge-citation-control {
+  display: inline-flex;
+  min-height: 1.35rem;
+  align-items: center;
+  margin: 0 0.08em;
+  padding: 0 0.18em;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-accent);
+  background: color-mix(in srgb, var(--v2-color-accent) 7%, transparent);
+  cursor: pointer;
+  font: 600 0.72em/1.35 var(--font-mono), monospace;
+  vertical-align: 0.08em;
+  user-select: text;
+}
+
+.knowledge-citation-control:hover {
+  background: color-mix(in srgb, var(--v2-color-accent) 13%, transparent);
+}
+
+.knowledge-citation-control:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
+}
+
 .v2-conversation-markdown h2,
 .v2-conversation-markdown h3,
 .v2-conversation-markdown h4,

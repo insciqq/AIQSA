@@ -18,11 +18,15 @@ server {
     access_log /var/log/nginx/aiqsa-access.log aiqsa_json;
     add_header X-Request-ID $request_id always;
 
-    # Route only the two Knowledge multipart POST shapes before Nginx performs
-    # location lookup and its declared Content-Length check. Query arguments
-    # remain attached to the internal redirect, and the method is unchanged.
+    # Route only the canonical Source replacement and proxy-upload content
+    # shapes before Nginx performs location lookup and its declared
+    # Content-Length check. Query arguments remain attached to the internal
+    # redirect, and the method is unchanged.
     if ($request_method = POST) {
-        rewrite ^(/api/me/knowledge-bases/[^/]+/documents(?:/[^/]+/versions)?)$ /__aiqsa_internal_knowledge_upload$1 last;
+        rewrite ^(/api/me/knowledge-sources/[^/]+/versions)$ /__aiqsa_internal_knowledge_upload$1 last;
+    }
+    if ($request_method = PUT) {
+        rewrite ^(/api/me/knowledge-bases/[^/]+/upload-batches/[^/]+/items/[^/]+/content)$ /__aiqsa_internal_knowledge_upload$1 last;
     }
 
     location = /api/uploads {
@@ -57,11 +61,11 @@ server {
         proxy_send_timeout 720s;
     }
 
-    location ~ ^/__aiqsa_internal_knowledge_upload(/api/me/knowledge-bases/[^/]+/documents(?:/[^/]+/versions)?)$ {
+    location ~ ^/__aiqsa_internal_knowledge_upload(/api/me/(?:knowledge-sources/[^/]+/versions|knowledge-bases/[^/]+/upload-batches/[^/]+/items/[^/]+/content))$ {
         # This location is reachable only through the exact server-rewrite
         # producer above. Direct client requests to the internal namespace are
-        # rejected by Nginx, and all non-POST routes retain the ordinary 2 MiB
-        # server envelope during their own location lookup.
+        # rejected by Nginx, and requests with any other method retain the
+        # ordinary 2 MiB server envelope during their own location lookup.
         internal;
 
         # 80 MiB covers the 64 MiB application hard ceiling plus multipart

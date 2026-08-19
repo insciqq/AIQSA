@@ -27,6 +27,10 @@ import { loadUserMcpServers } from "@/components/app-shell/mcpSettingsApi";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import type { Catalog, CatalogModel } from "@/components/app-shell/types";
 import type { AssistantDetail } from "@/lib/contracts/assistants";
+import {
+  EMPTY_KNOWLEDGE_SELECTION,
+  explicitKnowledgeSelection
+} from "@/lib/contracts/knowledge";
 
 const RECENT_ASSISTANTS_KEY = "aiqsa.assistants.recent";
 const RECENT_ASSISTANTS_LIMIT = 5;
@@ -100,7 +104,7 @@ function blankEditorDraft(prefill?: Partial<AssistantEditorDraftState>): Assista
     category: null,
     description: "",
     developerPrompt: "",
-    knowledgeBaseIds: [],
+    knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
     maxOutputTokens: "",
     mcpServerIds: [],
     name: "",
@@ -135,6 +139,7 @@ export type AssistantLibraryControllerInput = {
   catalog: Catalog | null;
   catalogError: string | null;
   knowledgeBases: { available: boolean; id: string; name: string }[];
+  knowledgeSources: { available: boolean; id: string; name: string }[];
   knowledgeDataError: string | null;
   knowledgeDataState: "error" | "loading" | "ready";
   retryCatalog(): void;
@@ -269,7 +274,9 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const controls = useComposerControlStore.getState();
     openNewAssistantEditor({
       backgroundMode: controls.backgroundMode,
-      knowledgeBaseIds: [...controls.selectedKnowledgeBaseIds],
+      knowledgeSelection: explicitKnowledgeSelection({
+        baseIds: controls.selectedKnowledgeBaseIds
+      }),
       maxOutputTokens: controls.maxOutputTokens,
       providerModelId: controls.selectedModelId || null,
       reasoningEffort: controls.reasoningEffort,
@@ -801,6 +808,7 @@ export function buildAssistantLibraryView(
             : null,
           options: {
             knowledgeBases: input.knowledgeBases,
+            knowledgeSources: input.knowledgeSources,
             knowledgeDataError: input.knowledgeDataError,
             knowledgeDataState: input.knowledgeDataState,
             mcpServers: snapshot.mcpOptions,

@@ -1,4 +1,11 @@
 import { extractTextDocument } from "../uploads/textDocuments";
+import {
+  finalizeParsedDocument,
+  parsedDocumentNeedsFallback,
+  parsedDocumentQualityScore,
+  parsedLanguageHints,
+  withParserEvidence
+} from "./assessment";
 import { HttpDocumentParserEngineAdapter } from "./client";
 import { getDocumentParserConfig, type DocumentParserConfig } from "./config";
 import {
@@ -7,12 +14,14 @@ import {
   type DocumentParserErrorCode
 } from "./errors";
 import { resolveDocumentParserRoute } from "./routing";
+import { parseSpreadsheetDocument } from "./spreadsheet";
 import type {
   DocumentParseInput,
   DocumentParserEngineAdapter,
   DocumentParserProbe,
   ParsedDocument,
   ParsedDocumentBlock,
+  ParsedDocumentParserAttempt,
   ParserProbeResult,
   SidecarParserEngine
 } from "./types";
@@ -41,21 +50,39 @@ function inlineDocument(
   });
   const blocks: ParsedDocumentBlock[] = extracted.text
     ? [Object.freeze({
+        assetIds: Object.freeze([]),
+        boundingBoxes: Object.freeze([]),
         headingPath: Object.freeze([]),
         index: 0,
         isTable: extracted.kind === "csv",
+        languageHints: parsedLanguageHints(extracted.text),
         page: 1,
-        text: extracted.text
+        pageEnd: 1,
+        readingOrder: 0,
+        table: null,
+        text: extracted.text,
+        type: extracted.kind === "csv"
+          ? "table"
+          : extracted.kind === "json"
+            ? "code"
+            : "paragraph"
       })]
     : [];
 
-  return Object.freeze({
-    blocks: Object.freeze(blocks),
+  const status = extracted.truncated ? "partial" : "complete";
+  return finalizeParsedDocument({
+    attempts: [{
+      engine: "inline",
+      errorCode: null,
+      outcome: status
+    }],
+    blocks,
     engine: "inline",
     mediaType,
     pageCount: 1,
-    status: extracted.truncated ? "partial" : "complete",
-    text: extracted.text
+    status,
+    text: extracted.text,
+    warnings: extracted.truncated ? ["truncated_oversized_section"] : []
   });
 }
 
@@ -77,6 +104,19 @@ function terminalError(errors: DocumentParserError[]): DocumentParserError {
     if (error) return error;
   }
   return new DocumentParserError("parser_unavailable");
+}
+
+function attemptForError(
+  engine: SidecarParserEngine,
+  error: DocumentParserError
+): ParsedDocumentParserAttempt {
+  return Object.freeze({
+    engine,
+    errorCode: error.code,
+    outcome: error.code === "parser_unavailable" || error.code === "parser_timeout"
+      ? "retryable_failure"
+      : "rejected"
+  });
 }
 
 export class DocumentParserBoundary {
@@ -116,25 +156,74 @@ export class DocumentParserBoundary {
     if (route.kind === "inline") {
       return inlineDocument(input, route.mediaType, this.#inlineMaxChars);
     }
+    if (route.kind === "spreadsheet") {
+      return parseSpreadsheetDocument({ ...input, mimeType: route.mediaType }, {
+        maxCharacters: this.#inlineMaxChars
+      });
+    }
 
     const errors: DocumentParserError[] = [];
+    const attempts: ParsedDocumentParserAttempt[] = [];
+    const candidates: ParsedDocument[] = [];
     const engines = this.#sidecarFallback ? route.engines : route.engines.slice(0, 1);
     for (const engine of engines) {
       if (input.signal?.aborted) throw abortReason(input.signal);
       const adapter = this.#adapters[engine];
       if (!adapter) {
-        errors.push(unavailable(engine));
+        const error = unavailable(engine);
+        errors.push(error);
+        attempts.push(attemptForError(engine, error));
         continue;
       }
 
       try {
-        return await adapter.parse({ ...input, mediaType: route.mediaType });
+        const parsed = await adapter.parse({ ...input, mediaType: route.mediaType });
+        const qualityFailure = parsedDocumentNeedsFallback(parsed);
+        attempts.push(Object.freeze({
+          engine,
+          errorCode: null,
+          outcome: parsed.quality.usableBlockCount === 0 || !parsed.quality.encodingValid
+            ? "quality_failure"
+            : parsed.status === "partial"
+              ? "partial"
+              : qualityFailure
+                ? "quality_failure"
+                : "complete"
+        }));
+        if (parsed.quality.usableBlockCount > 0 && parsed.quality.encodingValid) {
+          candidates.push(parsed);
+        } else {
+          errors.push(new DocumentParserError("parser_rejected", engine));
+        }
+        if (!qualityFailure) return withParserEvidence(parsed, attempts);
       } catch (error) {
         if (input.signal?.aborted) throw abortReason(input.signal);
-        errors.push(isDocumentParserError(error) ? error : unavailable(engine));
+        const normalized = isDocumentParserError(error) ? error : unavailable(engine);
+        errors.push(normalized);
+        attempts.push(attemptForError(engine, normalized));
+        if (normalized.code === "parser_output_too_large") throw normalized;
       }
     }
 
+    if (candidates.length > 0) {
+      const best = [...candidates].sort((left, right) =>
+        parsedDocumentQualityScore(right) - parsedDocumentQualityScore(left)
+      )[0]!;
+      const selectedAttemptIndex = attempts.findIndex((attempt) =>
+        attempt.engine === best.engine &&
+        (attempt.outcome === "complete" || attempt.outcome === "partial" ||
+          attempt.outcome === "quality_failure")
+      );
+      const fallbackFailedAfterSelectedResult = selectedAttemptIndex >= 0 &&
+        attempts.slice(selectedAttemptIndex + 1).some((attempt) =>
+          attempt.outcome === "quality_failure" || attempt.outcome === "rejected" ||
+          attempt.outcome === "retryable_failure"
+        );
+      return withParserEvidence(best, attempts, {
+        additionalWarnings: fallbackFailedAfterSelectedResult ? ["parser_fallback_failed"] : [],
+        forcePartial: parsedDocumentNeedsFallback(best)
+      });
+    }
     throw terminalError(errors);
   }
 

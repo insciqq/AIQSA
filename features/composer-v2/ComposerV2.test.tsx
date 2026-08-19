@@ -366,6 +366,37 @@ describe("Composer v2", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
+  it("searches eligible Sources beyond the initially loaded library page", async () => {
+    const onSelectKnowledgeSelection = vi.fn();
+    const onSearchKnowledgeSources = vi.fn().mockResolvedValue([{
+      description: "A remotely matched source",
+      id: "source-deep",
+      name: "Deep archive",
+      owned: true,
+      readiness: "ready"
+    }]);
+    render(<ComposerV2 {...props({
+      initialLayer: "capabilities",
+      onSearchKnowledgeSources,
+      onSelectKnowledgeBaseIds: undefined,
+      onSelectKnowledgeSelection,
+      selectedKnowledgeBaseIds: []
+    })} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search Knowledge resources" }), {
+      target: { value: "deep" }
+    });
+    await waitFor(() => expect(onSearchKnowledgeSources).toHaveBeenCalledWith("deep"));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Deep archive/ }));
+
+    expect(onSelectKnowledgeSelection).toHaveBeenCalledWith({
+      baseIds: [],
+      mode: "explicit",
+      sourceIds: ["source-deep"],
+      version: 1
+    });
+  });
+
   it("never renders opaque provider, model, Knowledge, or MCP bindings", () => {
     const { container } = render(<ComposerV2 {...props() } />);
     const text = container.textContent ?? "";

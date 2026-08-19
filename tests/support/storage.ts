@@ -3,6 +3,7 @@ import {
   type StorageAdapter,
   type StoredObjectInput
 } from "@/lib/server/uploads/storage";
+import { createHash } from "node:crypto";
 
 function maxBytes(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -42,8 +43,57 @@ export function createMemoryStorageAdapter(): StorageAdapter & {
       throwIfAborted(options?.signal);
       return object;
     },
+    async inspectObject(storageKey, options) {
+      const limit = maxBytes(options?.maxBytes);
+      throwIfAborted(options?.signal);
+      const object = objects.get(storageKey);
+      if (!object) throw new Error("stored_object_not_found");
+      if (limit !== undefined && object.body.byteLength > limit) {
+        throw new StoredObjectTooLargeError({
+          maxBytes: limit,
+          observedBytes: object.body.byteLength
+        });
+      }
+      const sampleBytes = options?.sampleBytes ?? 64 * 1_024;
+      if (!Number.isSafeInteger(sampleBytes) || sampleBytes < 1 || sampleBytes > 1_048_576) {
+        throw new RangeError("invalid_stored_object_sample_bytes");
+      }
+      const needles = options?.needles ?? [];
+      throwIfAborted(options?.signal);
+      return {
+        byteSize: object.body.byteLength,
+        checksum: createHash("sha256").update(object.body).digest("hex"),
+        contentType: object.contentType,
+        foundNeedles: needles.filter((needle) => object.body.includes(Buffer.from(needle, "utf8"))),
+        sample: object.body.subarray(0, sampleBytes),
+        storageKey
+      };
+    },
     async putObject(input) {
       objects.set(input.storageKey, input);
+    },
+    async putObjectStream(input) {
+      throwIfAborted(input.signal);
+      const chunks: Buffer[] = [];
+      let byteSize = 0;
+      for await (const value of input.body as unknown as AsyncIterable<Uint8Array>) {
+        throwIfAborted(input.signal);
+        const chunk = Buffer.from(value);
+        byteSize += chunk.byteLength;
+        if (byteSize > input.byteSize) {
+          throw new StoredObjectTooLargeError({
+            maxBytes: input.byteSize,
+            observedBytes: byteSize
+          });
+        }
+        chunks.push(chunk);
+      }
+      if (byteSize !== input.byteSize) throw new Error("stored_object_size_mismatch");
+      objects.set(input.storageKey, {
+        body: Buffer.concat(chunks, byteSize),
+        contentType: input.contentType,
+        storageKey: input.storageKey
+      });
     }
   };
 }

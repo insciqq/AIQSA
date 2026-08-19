@@ -321,6 +321,13 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.knowledgeIndexProfile.upsert({
+    create: { id: "installation" },
+    // Profile activation is an administrator-owned egress decision. Bootstrap
+    // repairs only a missing singleton and never selects or replaces a route.
+    update: {},
+    where: { id: "installation" }
+  });
   await tx.memoryEgressAdminPolicy.upsert({
     create: { id: "installation" },
     // Bootstrap adoption repairs only a missing row. An accepted destination

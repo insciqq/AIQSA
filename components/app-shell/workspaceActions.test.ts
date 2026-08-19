@@ -1028,7 +1028,9 @@ describe("workspace actions", () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     useWorkspaceStore.setState({
       folders: [{
-        defaultKnowledgePlan: { baseIds: ["project-base"] },
+        defaultKnowledgePlan: {
+          baseIds: ["project-base"], mode: "explicit", sourceIds: [], version: 1
+        },
         id: "folder-1",
         name: "Research",
         parentId: null,
@@ -1039,11 +1041,15 @@ describe("workspace actions", () => {
 
     await state.actions.activateChat({
       ...state.chatB,
-      defaultKnowledgePlan: { baseIds: ["chat-base"] },
+      defaultKnowledgePlan: {
+        baseIds: ["chat-base"], mode: "explicit", sourceIds: [], version: 1
+      },
       folderId: "folder-1"
     }, { resumeRuns: false });
     expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      ["chat-base"], "chat", "system"
+      { baseIds: ["chat-base"], mode: "explicit", sourceIds: [], version: 1 },
+      "chat",
+      "system"
     );
 
     await state.actions.activateChat({
@@ -1052,40 +1058,56 @@ describe("workspace actions", () => {
       folderId: "folder-1"
     }, { resumeRuns: false });
     expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      ["project-base"], "project", "system"
+      { baseIds: ["project-base"], mode: "explicit", sourceIds: [], version: 1 },
+      "project",
+      "system"
     );
 
     state.actions.activateBlankWorkspace();
-    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith([], "off", "system");
+    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
+      { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+      "off",
+      "system"
+    );
     state.actions.activateBlankWorkspace("folder-1");
     expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      ["project-base"], "project", "system"
+      { baseIds: ["project-base"], mode: "explicit", sourceIds: [], version: 1 },
+      "project",
+      "system"
     );
   });
 
   it("persists a chat Knowledge default and reapplies its effective source", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
-    const updated = {
+    const updated: WorkspaceChatSummary = {
       ...state.chatA,
-      defaultKnowledgePlan: { baseIds: ["base-policies"] },
+      defaultKnowledgePlan: {
+        baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
+      },
       updatedAt: "2026-06-10T00:01:00.000Z"
     };
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ chat: apiChatSummary(updated) }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(state.actions.setChatKnowledgeDefault({
-      baseIds: ["base-policies"]
+      baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
     })).resolves.toBe(true);
 
     expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({
-      body: JSON.stringify({ defaultKnowledgePlan: { baseIds: ["base-policies"] } }),
+      body: JSON.stringify({
+        defaultKnowledgePlan: {
+          baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
+        }
+      }),
       method: "PATCH"
     }));
     expect(state.chats().find((chat) => chat.id === "chat-a")?.defaultKnowledgePlan).toEqual({
-      baseIds: ["base-policies"]
+      baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
     });
     expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      ["base-policies"], "chat", "system"
+      { baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1 },
+      "chat",
+      "system"
     );
   });
 
@@ -1096,21 +1118,27 @@ describe("workspace actions", () => {
       resolveSave = resolve;
     })));
 
-    const pendingSave = state.actions.setChatKnowledgeDefault({ baseIds: ["base-policies"] });
+    const pendingSave = state.actions.setChatKnowledgeDefault({
+      baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
+    });
     await vi.waitFor(() => expect(resolveSave).toBeTypeOf("function"));
     state.actions.activateBlankWorkspace();
     state.setSelectedKnowledgePlan.mockClear();
     resolveSave(Response.json({
       chat: apiChatSummary({
         ...state.chatA,
-        defaultKnowledgePlan: { baseIds: ["base-policies"] }
+        defaultKnowledgePlan: {
+          baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
+        }
       })
     }));
 
     await expect(pendingSave).resolves.toBe(true);
     expect(state.setSelectedKnowledgePlan).not.toHaveBeenCalled();
     expect(state.chats().find((candidate) => candidate.id === "chat-a")?.defaultKnowledgePlan)
-      .toEqual({ baseIds: ["base-policies"] });
+      .toEqual({
+        baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
+      });
   });
 
   it("transfers an inactive blank session without stealing the selected chat", async () => {

@@ -66,7 +66,7 @@ export const adminSections = [
   },
   {
     Icon: BookOpenText,
-    description: "Set global retrieval policy and inspect effective ingestion limits without exposing private bases.",
+    description: "Choose the installation processing route and retrieval policy without exposing private bases.",
     group: "ai-setup",
     id: "knowledge",
     label: "Knowledge"

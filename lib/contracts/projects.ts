@@ -1,4 +1,9 @@
-import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
+import {
+  decodeKnowledgePlan,
+  decodeKnowledgeSelection,
+  EMPTY_KNOWLEDGE_SELECTION,
+  type KnowledgePlan
+} from "./knowledge";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import type { KnowledgePlan as StoredKnowledgePlan } from "./knowledge";
 import {
@@ -10,6 +15,7 @@ import {
 import { decodeCatalogResponse, type Catalog } from "./catalog";
 import type {
   ComposerConfigKnowledgeBase,
+  ComposerConfigKnowledgeSource,
   ComposerConfigMcpServer
 } from "./composerConfig";
 
@@ -48,7 +54,7 @@ export type ProjectReadinessWire = Readonly<{
 export const EMPTY_PROJECT_DEFAULTS: ProjectDefaultsWire = Object.freeze({
   assistantId: null,
   controlValues: Object.freeze({}),
-  knowledgePlan: Object.freeze({ baseIds: [] }),
+  knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
   mcpMode: "off",
   providerModelId: null,
   searchPlan: Object.freeze({ mode: "all_selected", optionIds: [] })
@@ -88,8 +94,9 @@ function controlValues(value: unknown): Readonly<Record<string, boolean | string
   return Object.freeze(Object.fromEntries(entries) as Record<string, boolean | string>);
 }
 
-export function decodeProjectDefaults(
-  value: unknown
+function decodeProjectDefaultsWith(
+  value: unknown,
+  strictKnowledge: boolean
 ): { defaults: ProjectDefaultsWire; ok: true } | { ok: false } {
   if (!isRecord(value)) return { ok: false };
   const allowed = new Set([
@@ -104,7 +111,9 @@ export function decodeProjectDefaults(
   const assistantId = nullableId(value.assistantId ?? null);
   const providerModelId = nullableId(value.providerModelId ?? null);
   const controls = controlValues(value.controlValues ?? {});
-  const knowledge = decodeKnowledgePlan(value.knowledgePlan ?? { baseIds: [] });
+  const knowledge = strictKnowledge
+    ? decodeKnowledgeSelection(value.knowledgePlan ?? EMPTY_KNOWLEDGE_SELECTION)
+    : decodeKnowledgePlan(value.knowledgePlan ?? EMPTY_KNOWLEDGE_SELECTION);
   const search = decodeSearchPlan(value.searchPlan ?? { mode: "all_selected", optionIds: [] });
   const mcpMode = value.mcpMode ?? "off";
   if (
@@ -126,6 +135,20 @@ export function decodeProjectDefaults(
     },
     ok: true
   };
+}
+
+/** Decoder for persisted/server response values, including legacy read compatibility. */
+export function decodeProjectDefaults(
+  value: unknown
+): { defaults: ProjectDefaultsWire; ok: true } | { ok: false } {
+  return decodeProjectDefaultsWith(value, false);
+}
+
+/** Strict decoder for new Project mutation payloads. */
+export function decodeProjectDefaultsInput(
+  value: unknown
+): { defaults: ProjectDefaultsWire; ok: true } | { ok: false } {
+  return decodeProjectDefaultsWith(value, true);
 }
 
 export function decodeProjectPolicy(
@@ -196,6 +219,7 @@ export type ProjectComposerWire = Readonly<{
   }>[];
   catalog: Catalog;
   knowledgeBases: readonly ComposerConfigKnowledgeBase[];
+  knowledgeSources: readonly ComposerConfigKnowledgeSource[];
   mcpServers: readonly ComposerConfigMcpServer[];
 }>;
 
@@ -385,19 +409,6 @@ export type ProjectWorkspaceResponseWire = Readonly<{
   folders: readonly ProjectFolderWire[];
 }>;
 
-export type ProjectKnowledgeCitationWire = Readonly<{
-  baseName: string;
-  fileName: string;
-  handle: string;
-  page: number;
-  text: string;
-  textTruncated: boolean;
-}>;
-
-export type ProjectKnowledgeCitationResponseWire = Readonly<{
-  citation: ProjectKnowledgeCitationWire;
-}>;
-
 export type ProjectMemoryFactWire = Readonly<{
   createdAt: string;
   createdByDisplayName: string;
@@ -520,7 +531,9 @@ function decodeProjectResource(value: unknown): ProjectResourceWire | null {
 
 function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
   if (!isRecord(value) || !Array.isArray(value.assistants) ||
-    !Array.isArray(value.knowledgeBases) || !Array.isArray(value.mcpServers)) return null;
+    !Array.isArray(value.knowledgeBases) ||
+    !(value.knowledgeSources === undefined || Array.isArray(value.knowledgeSources)) ||
+    !Array.isArray(value.mcpServers)) return null;
   const catalog = decodeCatalogResponse({ catalog: value.catalog });
   if (!catalog) return null;
   const assistants = value.assistants.map((entry) => {
@@ -537,6 +550,13 @@ function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
     typeof base.description === "string" && typeof base.id === "string" &&
     typeof base.name === "string" && typeof base.owned === "boolean"
   );
+  const knowledgeSourceValues = value.knowledgeSources ?? [];
+  const knowledgeSources = knowledgeSourceValues.filter((source): source is ComposerConfigKnowledgeSource =>
+    isRecord(source) && typeof source.description === "string" &&
+    typeof source.id === "string" && typeof source.name === "string" &&
+    typeof source.owned === "boolean" &&
+    ["needs_attention", "processing", "ready"].includes(String(source.readiness))
+  );
   const readiness = new Set([
     "authorizing", "disabled", "idle", "needs_authorization", "needs_setup", "queued",
     "ready", "reauthorization_required", "restarting", "starting", "unavailable"
@@ -550,12 +570,14 @@ function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
   );
   return assistants.some((entry) => entry === null) ||
     knowledgeBases.length !== value.knowledgeBases.length ||
+    knowledgeSources.length !== knowledgeSourceValues.length ||
     mcpServers.length !== value.mcpServers.length
     ? null
     : {
         assistants: assistants as ProjectComposerWire["assistants"],
         catalog,
         knowledgeBases,
+        knowledgeSources,
         mcpServers
       };
 }
@@ -714,29 +736,4 @@ export function decodeProjectWorkspaceResponse(value: unknown): ProjectWorkspace
         chats: chats as ProjectChatSummaryWire[],
         folders: folders as ProjectFolderWire[]
       };
-}
-
-export function decodeProjectKnowledgeCitationResponse(
-  value: unknown
-): ProjectKnowledgeCitationResponseWire | null {
-  if (!isRecord(value) || !isRecord(value.citation)) return null;
-  const citation = value.citation;
-  if (
-    typeof citation.baseName !== "string" || citation.baseName.length > 512 ||
-    typeof citation.fileName !== "string" || citation.fileName.length > 1_024 ||
-    typeof citation.handle !== "string" || !/^K[1-3]\.[1-8]$/u.test(citation.handle) ||
-    !finiteRevision(citation.page) || citation.page < 1 ||
-    typeof citation.text !== "string" || citation.text.length > 64 * 1_024 ||
-    typeof citation.textTruncated !== "boolean"
-  ) return null;
-  return {
-    citation: {
-      baseName: citation.baseName,
-      fileName: citation.fileName,
-      handle: citation.handle,
-      page: citation.page,
-      text: citation.text,
-      textTruncated: citation.textTruncated
-    }
-  };
 }

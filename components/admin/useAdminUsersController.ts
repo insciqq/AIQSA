@@ -172,12 +172,12 @@ export function useAdminUsersController({
         confirmLabel: "Delete user",
         dialogLabel: `Delete ${user.email ?? user.displayName}`,
         icon: "trash",
-        message: "User deleted.",
+        message: "Account deletion accepted.",
         onSuccess: () => {
           setRequestedSelectedUserId(null);
           setCompactDetailOpen(false);
         },
-        prompt: `Delete ${user.email ?? user.displayName}? This permanently removes the stale account shell and auth records. This cannot delete users with app-owned data.`,
+        prompt: `Delete ${user.email ?? user.displayName}? Personal Memory and Knowledge are fenced and durably purged before the stale account and auth records are removed. Shared Project data remains. This cannot be undone.`,
         testId: "admin-confirm-delete-user",
         title: "Delete stale user?"
       });

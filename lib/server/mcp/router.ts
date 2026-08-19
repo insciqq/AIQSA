@@ -86,7 +86,7 @@ function branchContext(
   currentUserText: string
 ) {
   const messages = (request.context?.messages ?? []).filter(
-    (message) => message.purpose !== "skill_context"
+    (message) => message.purpose === undefined
   );
   const last = messages.at(-1);
   if (last?.role === "user" &&

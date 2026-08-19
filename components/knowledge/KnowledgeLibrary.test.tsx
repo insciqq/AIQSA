@@ -1,130 +1,171 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  KnowledgeBaseDetail,
+  KnowledgeReadiness,
+  KnowledgeSourceDetail,
+  KnowledgeSourceListResponse
+} from "@/lib/contracts/knowledge";
 import type {
   KnowledgeCreateView,
   KnowledgeDetailView,
   KnowledgeLibraryView,
-  KnowledgeListView
+  KnowledgeListView,
+  KnowledgeSourceDetailView
 } from "./libraryViewContracts";
-import type {
-  KnowledgeBaseDetail,
-  KnowledgeDocumentStatus,
-  KnowledgeIngestionStatusResponse
-} from "@/lib/contracts/knowledge";
 import { KnowledgeLibrary } from "./KnowledgeLibrary";
+
+function readiness(
+  state: KnowledgeReadiness["state"] = "ready",
+  totalSources = 1
+): KnowledgeReadiness {
+  const attentionSources = state === "needs_attention" ? 1 : 0;
+  const processingSources = state === "processing" ? 1 : 0;
+  return {
+    attentionSources,
+    processingSources,
+    readySources: Math.max(0, totalSources - attentionSources - processingSources),
+    state,
+    supportReference: state === "needs_attention" ? "K-0123456789AB" : null,
+    totalSources
+  };
+}
 
 function base(overrides: Partial<KnowledgeBaseDetail> = {}): KnowledgeBaseDetail {
   return {
-    activeGeneration: {
-      chunkingProfileVersion: 1,
-      embeddingDeployment: {
-        connectionDisplayName: "Embedding connection",
-        id: "embedding-1",
-        indexSupported: true,
-        modelDisplayName: "Embed model",
-        provider: "openai",
-        targetDimension: 1536
-      },
-      embeddingDeploymentId: "embedding-1",
-      id: "generation-12345678",
-      indexedContentRevision: 2,
-      targetDimension: 1536,
-      vectorSpaceFingerprint: "vector-space-1"
-    },
     archived: false,
-    contentRevision: 2,
+    deletionPending: false,
     description: "Product references",
-    documentCount: 1,
+    sourceCount: 1,
     id: "base-1",
     name: "Product docs",
     owned: true,
     ownerDisplayName: "Owner",
+    purgeScheduledAt: null,
     publications: [],
-    published: false,
+    readiness: readiness(),
     scope: { kind: "owner" },
-    updatedAt: "2026-08-08T10:00:00.000Z",
+    trashed: false,
+    trashedAt: null,
+    updatedAt: "2026-08-18T10:00:00.000Z",
     version: 1,
     ...overrides
   };
 }
 
-function knowledgeDocument(overrides: Partial<KnowledgeDocumentStatus> = {}): KnowledgeDocumentStatus {
+function list(overrides: Partial<KnowledgeListView> = {}): KnowledgeListView {
+  const owner = base();
+  const { publications: _publications, ...summary } = owner;
   return {
-    archived: false,
-    currentVersionId: "version-2",
-    id: "document-1",
+    catalog: "bases",
+    canCreate: true,
+    filter: "all",
+    knowledgeBases: [summary],
+    onArchiveToggle: vi.fn(),
+    onCatalogChange: vi.fn(),
+    onFilterChange: vi.fn(),
+    onNewBase: vi.fn(),
+    onOpenBase: vi.fn(),
+    onOpenSource: vi.fn(),
+    onQueryChange: vi.fn(),
+    onSourceFilterChange: vi.fn(),
+    onSourcePageChange: vi.fn(),
+    onSourceQueryChange: vi.fn(),
+    query: "",
+    sourceData: {
+      pagination: { page: 1, pageSize: 25, query: "", totalItems: 0, totalPages: 0 },
+      sources: []
+    },
+    sourceDataError: null,
+    sourceDataState: "ready",
+    sourceFilter: "all",
+    sourceQuery: "",
+    ...overrides
+  };
+}
+
+function source(overrides: Partial<KnowledgeSourceDetail> = {}): KnowledgeSourceDetail {
+  const currentVersion = {
+    byteSize: 2_400,
+    createdAt: "2026-08-18T10:00:00.000Z",
+    fileName: "product-guide.pdf",
+    isCurrent: true,
+    isPending: false,
+    pageCount: 8,
+    readiness: { state: "ready" as const, supportReference: null, warningCodes: [] },
+    versionNumber: 2
+  };
+  return {
+    currentVersion,
+    deletionPending: false,
+    description: "Canonical product guidance",
+    eligibleBases: [
+      { archived: false, id: "base-2", name: "Assistant docs" },
+      { archived: false, id: "base-3", name: "Project docs" }
+    ],
+    id: "source-1",
+    membershipCount: 1,
+    memberships: [{ archived: false, id: "base-1", name: "Product docs" }],
+    name: "Product guide",
+    owned: true,
+    ownerDisplayName: "Owner",
+    purgeScheduledAt: null,
+    readiness: { state: "ready", supportReference: null, warningCodes: [] },
+    replacement: { state: "none", supportReference: null },
+    tags: ["product", "onboarding"],
+    trashed: false,
+    trashedAt: null,
+    updatedAt: "2026-08-18T10:00:00.000Z",
+    version: 3,
     versions: [
+      currentVersion,
       {
-        byteSize: 1_200,
-        completedAt: null,
-        createdAt: "2026-08-08T10:00:00.000Z",
-        current: true,
-        embeddedChunks: 3,
-        errorCode: null,
-        fileName: "guide.md",
-        id: "version-2",
-        mimeType: "text/markdown",
-        pageCount: null,
-        payloadAvailable: true,
-        state: "embedding",
-        totalChunks: 8,
-        updatedAt: "2026-08-08T10:01:00.000Z",
-        versionNumber: 2,
-        visibleFromRevision: null,
-        visibleUntilRevision: null
-      },
-      {
-        byteSize: 900,
-        completedAt: "2026-08-07T10:01:00.000Z",
-        createdAt: "2026-08-07T10:00:00.000Z",
-        current: false,
-        embeddedChunks: 4,
-        errorCode: null,
-        fileName: "guide.md",
-        id: "version-1",
-        mimeType: "text/markdown",
-        pageCount: null,
-        payloadAvailable: true,
-        state: "ready",
-        totalChunks: 4,
-        updatedAt: "2026-08-07T10:01:00.000Z",
-        versionNumber: 1,
-        visibleFromRevision: 1,
-        visibleUntilRevision: 2
+        ...currentVersion,
+        createdAt: "2026-08-17T10:00:00.000Z",
+        fileName: "product-guide-v1.pdf",
+        isCurrent: false,
+        versionNumber: 1
       }
     ],
     ...overrides
   };
 }
 
-function ingestion(overrides: Partial<KnowledgeIngestionStatusResponse> = {}): KnowledgeIngestionStatusResponse {
-  const documents = overrides.documents ?? [knowledgeDocument()];
+function sourceDetail(overrides: Partial<KnowledgeSourceDetailView> = {}): KnowledgeSourceDetailView {
+  const value = source();
   return {
-    documents,
-    owned: overrides.owned ?? true,
-    pagination: overrides.pagination ?? {
-      page: 1,
-      pageSize: 25,
-      query: "",
-      totalItems: documents.length,
-      totalPages: documents.length > 0 ? 1 : 0
-    },
-    reindex: overrides.reindex ?? null
+    actionId: null,
+    backLabel: "Back to Sources",
+    dataError: null,
+    dataState: "ready",
+    dirty: false,
+    draft: { description: value.description, name: value.name, tags: value.tags.join(", ") },
+    error: null,
+    onAddToBases: vi.fn(),
+    onBack: vi.fn(),
+    onChange: vi.fn(),
+    onDeletePermanently: vi.fn(),
+    onMove: vi.fn(),
+    onRefresh: vi.fn(),
+    onRemoveFromBase: vi.fn(),
+    onReplace: vi.fn(),
+    onReprocess: vi.fn(),
+    onRestore: vi.fn(),
+    onSave: vi.fn(),
+    onTrash: vi.fn(),
+    source: value,
+    ...overrides
   };
 }
 
-function list(overrides: Partial<KnowledgeListView> = {}): KnowledgeListView {
-  const owner = base();
-  const { documentCount: _count, publications: _publications, ...summary } = owner;
+function baseSources(
+  value: KnowledgeSourceDetail = source(),
+  overrides: Partial<KnowledgeSourceListResponse> = {}
+): KnowledgeSourceListResponse {
+  const { eligibleBases: _eligibleBases, memberships: _memberships, versions: _versions, ...summary } = value;
   return {
-    filter: "all",
-    knowledgeBases: [summary],
-    onArchiveToggle: vi.fn(),
-    onFilterChange: vi.fn(),
-    onNewBase: vi.fn(),
-    onOpenBase: vi.fn(),
-    onQueryChange: vi.fn(),
-    query: "",
+    pagination: { page: 1, pageSize: 25, query: "", totalItems: 1, totalPages: 1 },
+    sources: [summary],
     ...overrides
   };
 }
@@ -132,12 +173,13 @@ function list(overrides: Partial<KnowledgeListView> = {}): KnowledgeListView {
 function creation(overrides: Partial<KnowledgeCreateView> = {}): KnowledgeCreateView {
   return {
     dirty: false,
-    draft: { description: "", embeddingDeploymentId: "embedding-1", name: "" },
-    embeddingDeployments: [base().activeGeneration.embeddingDeployment!],
+    draft: { description: "", files: [], name: "" },
     error: null,
+    maxUploadBytes: 50_000_000,
     onCancel: vi.fn(),
     onChange: vi.fn(),
     onSave: vi.fn(),
+    progress: null,
     saving: false,
     ...overrides
   };
@@ -151,29 +193,34 @@ function detail(overrides: Partial<KnowledgeDetailView> = {}): KnowledgeDetailVi
     canPublishInstallation: true,
     dataError: null,
     dataState: "ready",
-    documentPage: 1,
-    documentQuery: "",
     dirty: false,
     draft: { description: owner.description, name: owner.name },
-    embeddingDeployments: [owner.activeGeneration.embeddingDeployment!],
     error: null,
-    ingestion: ingestion(),
+    maxUploadBytes: 50_000_000,
     onArchiveToggle: vi.fn(),
     onBack: vi.fn(),
+    onCancelUpload: vi.fn(),
     onChange: vi.fn(),
-    onDocumentPageChange: vi.fn(),
-    onDocumentQueryChange: vi.fn(),
+    onDeletePermanently: vi.fn(),
+    onOpenSource: vi.fn(),
     onPublish: vi.fn(),
     onRefresh: vi.fn(),
-    onReindex: vi.fn(),
-    onRemoveDocument: vi.fn(),
-    onReplaceDocument: vi.fn(),
-    onRetryDocument: vi.fn(),
+    onRemoveSource: vi.fn(),
+    onResumeUpload: vi.fn(),
     onRevokePublication: vi.fn(),
+    onRestore: vi.fn(),
     onSave: vi.fn(),
+    onTrash: vi.fn(),
     onUpload: vi.fn(),
     publishableGroups: [{ id: "group-1", name: "Research" }],
-    upload: null,
+    sourcePage: 1,
+    sourceQuery: "",
+    sources: baseSources(),
+    onSourcePageChange: vi.fn(),
+    onSourceQueryChange: vi.fn(),
+    uploadBatches: [],
+    uploadErrors: {},
+    uploadProgress: {},
     ...overrides
   };
 }
@@ -190,6 +237,7 @@ function view(overrides: Partial<KnowledgeLibraryView> = {}): KnowledgeLibraryVi
     onBackToChat: vi.fn(),
     onDismissNotice: vi.fn(),
     onRetry: vi.fn(),
+    sourceDetail: null,
     task: "list",
     ...overrides
   };
@@ -198,267 +246,485 @@ function view(overrides: Partial<KnowledgeLibraryView> = {}): KnowledgeLibraryVi
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-  vi.restoreAllMocks();
 });
 
 describe("KnowledgeLibrary", () => {
-  it("renders a full-screen library index from only the server-authorized bases", () => {
-    const owner = base();
-    const { documentCount: _ownerCount, publications: _ownerPublications, ...ownerSummary } = owner;
-    const shared = base({
-      id: "base-shared",
-      name: "Shared research",
-      owned: false,
-      ownerDisplayName: "Publisher",
-      publications: null,
-      scope: { groupNames: ["Research"], kind: "group" }
-    });
-    const { documentCount: _sharedCount, publications: _sharedPublications, ...sharedSummary } = shared;
-    const archived = base({ archived: true, id: "base-archived", name: "Old docs" });
-    const { documentCount: _archivedCount, publications: _archivedPublications, ...archivedSummary } = archived;
-    const libraryList = list({ knowledgeBases: [ownerSummary, sharedSummary, archivedSummary] });
-    render(<KnowledgeLibrary view={view({ list: libraryList })} />);
-
-    const dialog = screen.getByRole("dialog", { name: "Knowledge" });
-    expect(dialog).toHaveClass("fixed", "h-[100dvh]", "overflow-hidden");
-    expect(screen.getByRole("heading", { level: 1, name: "Knowledge" })).toBeVisible();
-    expect(screen.getByTestId("knowledge-base-base-1")).toBeVisible();
-    expect(screen.getByTestId("knowledge-base-base-shared")).toHaveTextContent("Shared with Research");
-    expect(screen.queryByTestId("knowledge-base-base-archived")).not.toBeInTheDocument();
-    expect(screen.getByTestId("knowledge-base-base-1")).toHaveTextContent("Content revision 2");
-    expect(screen.getByTestId("knowledge-base-base-1")).toHaveTextContent("Indexed revision 2");
-
-    fireEvent.click(screen.getByRole("button", { name: "Shared" }));
-    expect(libraryList.onFilterChange).toHaveBeenCalledWith("shared");
-    fireEvent.click(within(screen.getByTestId("knowledge-base-base-1")).getAllByRole("button")[0]);
-    expect(libraryList.onOpenBase).toHaveBeenCalledWith("base-1");
-  });
-
-  it("renders the exact embedding egress disclosure and submits the creation task", () => {
-    const create = creation({
-      draft: {
-        description: "Operational references",
-        embeddingDeploymentId: "embedding-1",
-        name: "Runbooks"
+  it("shows simple Base readiness, Source count, access, and updated time", () => {
+    const affected = base({
+      sourceCount: 3,
+      readiness: {
+        attentionSources: 1,
+        processingSources: 1,
+        readySources: 1,
+        state: "needs_attention",
+        supportReference: "K-0123456789AB",
+        totalSources: 3
       }
     });
-    render(<KnowledgeLibrary view={view({ create, task: "create" })} />);
+    const { publications: _publications, ...summary } = affected;
+    render(<KnowledgeLibrary view={view({ list: list({ knowledgeBases: [summary] }) })} />);
 
-    expect(screen.getByTestId("knowledge-egress-disclosure")).toHaveTextContent(
-      "Indexing sends this base’s document text to Embedding connection / Embed model for embedding"
-    );
-    expect(screen.getByTestId("knowledge-egress-disclosure")).toHaveTextContent(
-      "outside chat runs and repeats when the base is reindexed"
-    );
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Updated runbooks" } });
-    expect(create.onChange).toHaveBeenCalledWith({ name: "Updated runbooks" });
-    fireEvent.click(screen.getByRole("button", { name: "Create base" }));
-    expect(create.onSave).toHaveBeenCalledOnce();
+    const row = screen.getByTestId("knowledge-base-base-1");
+    expect(row).toHaveTextContent("1 ready · 1 processing · 1 needs attention");
+    expect(row).toHaveTextContent("3 Sources");
+    expect(row).toHaveTextContent("Yours");
+    expect(row).toHaveTextContent("Updated");
+    expect(row).not.toHaveTextContent(/embedding|generation|revision|fingerprint|chunk/iu);
   });
 
-  it("blocks every dirty create and detail exit behind discard confirmation", () => {
-    const create = creation({ dirty: true });
-    const { rerender } = render(<KnowledgeLibrary view={view({ create, task: "create" })} />);
+  it("keeps existing Bases available while creation is temporarily unavailable", () => {
+    const listView = list({ canCreate: false });
+    render(<KnowledgeLibrary view={view({ list: listView })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to Knowledge" }));
-    expect(create.onCancel).not.toHaveBeenCalled();
-    expect(screen.getByTestId("knowledge-library")).toHaveAttribute("inert");
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
-    expect(create.onCancel).toHaveBeenCalledOnce();
-
-    const detailView = detail({ dirty: true });
-    rerender(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(detailView.onBack).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
-    expect(detailView.onBack).toHaveBeenCalledOnce();
+    expect(screen.getByText("Knowledge is temporarily unavailable")).toBeVisible();
+    expect(screen.getByRole("button", { name: "New knowledge base" })).toBeDisabled();
+    fireEvent.click(screen.getByText("Product docs"));
+    expect(listView.onOpenBase).toHaveBeenCalledWith("base-1");
   });
 
-  it("protects dirty Knowledge create/detail drafts from document unload", () => {
-    const create = creation({ dirty: true });
-    const { rerender } = render(<KnowledgeLibrary view={view({ create, task: "create" })} />);
-    const createUnload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(createUnload);
-    expect(createUnload.defaultPrevented).toBe(true);
+  it("creates from identity and optional files without technical settings", async () => {
+    const createView = creation();
+    render(<KnowledgeLibrary view={view({ create: createView, task: "create" })} />);
 
-    rerender(<KnowledgeLibrary view={view({ detail: detail({ dirty: true }), task: "detail" })} />);
-    const detailUnload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(detailUnload);
-    expect(detailUnload.defaultPrevented).toBe(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to Knowledge" })).toHaveFocus());
+    expect(screen.queryByText(/embedding|provider|dimension|fingerprint|revision|generation/iu))
+      .not.toBeInTheDocument();
+    expect(screen.getByText(/Up to 50 MB per file/)).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Runbooks" } });
+    expect(createView.onChange).toHaveBeenCalledWith({ name: "Runbooks" });
 
-    rerender(<KnowledgeLibrary view={view()} />);
-    const cleanUnload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(cleanUnload);
-    expect(cleanUnload.defaultPrevented).toBe(false);
+    const first = new File(["first"], "first.md", { type: "text/markdown" });
+    const second = new File(["second"], "second.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Choose files"), { target: { files: [first, second] } });
+    expect(createView.onChange).toHaveBeenCalledWith({ files: [first, second] });
+
+    fireEvent.submit(screen.getByRole("button", { name: "Create knowledge base" }).closest("form")!);
+    expect(createView.onSave).toHaveBeenCalledOnce();
   });
 
-  it("shows exact document stages, versions, drag/drop upload, retry, replacement, and logical removal", () => {
-    const failed = knowledgeDocument({
-      currentVersionId: "failed-version",
-      id: "failed-document",
-      versions: [{
-        ...knowledgeDocument().versions[0],
-        embeddedChunks: 0,
-        errorCode: "embedding_failed",
-        id: "failed-version",
-        state: "failed",
-        totalChunks: 8
-      }]
+  it("supports drag-and-drop file selection during creation", () => {
+    const createView = creation();
+    render(<KnowledgeLibrary view={view({ create: createView, task: "create" })} />);
+    const file = new File(["guide"], "guide.md", { type: "text/markdown" });
+    const transfer = { dropEffect: "none", files: [file], types: ["Files"] } as unknown as DataTransfer;
+
+    fireEvent.dragEnter(screen.getByTestId("knowledge-create-drop-zone"), { dataTransfer: transfer });
+    expect(screen.getByTestId("knowledge-create-drop-zone")).toHaveAttribute("data-drop-active", "true");
+    fireEvent.drop(screen.getByTestId("knowledge-create-drop-zone"), { dataTransfer: transfer });
+    expect(createView.onChange).toHaveBeenCalledWith({ files: [file] });
+  });
+
+  it("keeps Source troubleshooting safe and routes recovery through Source details", () => {
+    const affected = source({
+      currentVersion: null,
+      readiness: {
+        state: "needs_attention",
+        supportReference: "K-ABCDEF012345",
+        warningCodes: []
+      },
+      versions: []
     });
-    const detailView = detail({ ingestion: ingestion({ documents: [knowledgeDocument(), failed] }) });
+    const detailView = detail({
+      base: base({
+        readiness: {
+          ...readiness("needs_attention"),
+          supportReference: "K-ABCDEF012345"
+        }
+      }),
+      sources: baseSources(affected)
+    });
+    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
+    expect(screen.getByText(/Up to 50 MB per file/)).toBeVisible();
+
+    expect(screen.getByTestId("knowledge-readiness-summary")).toHaveTextContent(/needs attention/iu);
+    expect(screen.getByText(/Support reference K-ABCDEF012345/)).toBeVisible();
+    expect(screen.getByText(/Processing needs attention. Open the Source/)).toBeVisible();
+    expect(screen.queryByText(/errorCode|embedding_failed|generation|revision|chunks?/iu))
+      .not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Source" }));
+    expect(detailView.onOpenSource).toHaveBeenCalledWith("source-1");
+    expect(screen.queryByRole("button", { name: /reprocess/iu })).not.toBeInTheDocument();
+  });
+
+  it("shows user-safe partial-success warnings without parser internals", () => {
+    const currentVersion = source().currentVersion!;
+    const warnedSource = source({
+      currentVersion: {
+        ...currentVersion,
+        readiness: {
+          state: "ready",
+          supportReference: null,
+          warningCodes: ["partial_parse", "unreadable_pages"]
+        }
+      },
+      readiness: {
+        state: "ready",
+        supportReference: null,
+        warningCodes: ["partial_parse", "unreadable_pages"]
+      }
+    });
+    const detailView = detail({
+      sources: baseSources(warnedSource)
+    });
     render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
 
-    expect(screen.getByTestId("knowledge-revision-spine")).toHaveTextContent("Active index");
-    expect(screen.getAllByText("Embedding 3 of 8 chunks")[0]).toBeVisible();
-    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
-    expect(screen.getByText("Code: embedding_failed")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(detailView.onRetryDocument).toHaveBeenCalledWith("failed-document", "failed-version");
+    expect(screen.getByText("The usable part is searchable")).toBeVisible();
+    expect(screen.getByText("Some pages could not be read")).toBeVisible();
+    expect(screen.queryByText(/partial_parse|unreadable_pages|coverage|confidence/iu))
+      .not.toBeInTheDocument();
+  });
 
-    fireEvent.click(screen.getAllByText("Version history (2)")[0]);
-    expect(screen.getByText(/visible from revision 1 before revision 2/)).toBeVisible();
+  it("keeps retry and replacement actions on the canonical Source", () => {
+    const affected = source({
+      currentVersion: null,
+      readiness: {
+        state: "needs_attention",
+        supportReference: "K-ABCDEF012345",
+        warningCodes: []
+      },
+      versions: []
+    });
+    const detailView = sourceDetail({
+      draft: { description: affected.description, name: affected.name, tags: affected.tags.join(", ") },
+      source: affected
+    });
+    render(<KnowledgeLibrary view={view({ sourceDetail: detailView, task: "source-detail" })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry processing" }));
+    expect(detailView.onReprocess).toHaveBeenCalledOnce();
+
+    const replacement = new File(["replacement"], "guide-new.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("Replace file"), { target: { files: [replacement] } });
+    expect(detailView.onReplace).toHaveBeenCalledWith(replacement);
+  });
+
+  it("uploads, opens, and removes a Source with product-level consequences", () => {
+    const detailView = detail();
+    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
 
     const first = new File(["first"], "first.md", { type: "text/markdown" });
     const second = new File(["second"], "second.txt", { type: "text/plain" });
     const transfer = { dropEffect: "none", files: [first, second], types: ["Files"] } as unknown as DataTransfer;
-    fireEvent.dragEnter(screen.getByTestId("knowledge-drop-zone"), { dataTransfer: transfer });
-    expect(screen.getByTestId("knowledge-drop-zone")).toHaveAttribute("data-drop-active", "true");
     fireEvent.drop(screen.getByTestId("knowledge-drop-zone"), { dataTransfer: transfer });
     expect(detailView.onUpload).toHaveBeenCalledWith([first, second]);
 
-    const replaceInputs = screen.getAllByLabelText("New version");
-    const replacement = new File(["replacement"], "guide-v3.md", { type: "text/markdown" });
-    fireEvent.change(replaceInputs[0], { target: { files: [replacement] } });
-    expect(detailView.onReplaceDocument).toHaveBeenCalledWith("document-1", replacement);
+    fireEvent.click(screen.getByRole("button", { name: "Open Source" }));
+    expect(detailView.onOpenSource).toHaveBeenCalledWith("source-1");
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]);
-    const confirmation = screen.getByRole("dialog", { name: "Remove guide.md from this Knowledge base" });
-    expect(confirmation).toHaveTextContent("Historical version identity");
-    expect(detailView.onRemoveDocument).not.toHaveBeenCalled();
-    fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm remove document" }));
-    expect(detailView.onRemoveDocument).toHaveBeenCalledWith("document-1");
+    fireEvent.click(screen.getByRole("button", { name: "Remove from base" }));
+    const confirmation = screen.getByRole("dialog", { name: "Remove Product guide from Product docs" });
+    expect(confirmation).toHaveTextContent(/future chats/iu);
+    expect(confirmation).not.toHaveTextContent(/version|binding|revision/iu);
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm remove from base" }));
+    expect(detailView.onRemoveSource).toHaveBeenCalledWith("source-1");
   });
 
-  it("searches filenames and navigates bounded server pages", () => {
-    const pagedIngestion = ingestion({
-      pagination: {
-        page: 2,
-        pageSize: 25,
-        query: "guide",
-        totalItems: 26,
-        totalPages: 2
-      }
+  it("renders durable per-file progress with independent resume, retry, and cancel", () => {
+    const uploadItem = (input: {
+      failureCode?: string | null;
+      fileName: string;
+      id: string;
+      sourceId?: string | null;
+      state: "needs_attention" | "queued" | "ready" | "uploading";
+      uploadedBytes?: number;
+    }) => ({
+      attemptNumber: 1,
+      byteSize: 10,
+      clientFileId: `client-${input.id}`,
+      failureCode: input.failureCode ?? null,
+      fileName: input.fileName,
+      id: input.id,
+      sourceId: input.sourceId ?? null,
+      state: input.state,
+      transport: input.state === "queued" || input.state === "uploading"
+        ? { kind: "proxy" as const, uploadUrl: `/api/upload/${input.id}` }
+        : null,
+      updatedAt: "2026-08-18T10:00:00.000Z",
+      uploadedBytes: input.uploadedBytes ?? 0
     });
     const detailView = detail({
-      documentPage: 2,
-      documentQuery: "guide",
-      ingestion: pagedIngestion
+      uploadBatches: [{
+        createdAt: "2026-08-18T10:00:00.000Z",
+        id: "batch-1",
+        items: [
+          uploadItem({ fileName: "ready.md", id: "ready", sourceId: "source-1", state: "ready", uploadedBytes: 10 }),
+          uploadItem({ fileName: "active.md", id: "active", state: "uploading", uploadedBytes: 2 }),
+          uploadItem({
+            failureCode: "knowledge_upload_session_expired",
+            fileName: "expired.md",
+            id: "expired",
+            state: "needs_attention"
+          }),
+          uploadItem({ fileName: "resume.md", id: "resume", state: "queued" })
+        ],
+        updatedAt: "2026-08-18T10:00:00.000Z"
+      }],
+      uploadProgress: { active: 5 }
+    });
+    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
+
+    expect(screen.getByText("1 ready · 2 transferring · 1 needs attention", { exact: true }))
+      .toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "active.md upload progress" }))
+      .toHaveAttribute("aria-valuenow", "50");
+    expect(screen.getByTestId("knowledge-upload-item-expired"))
+      .toHaveTextContent("The upload session expired");
+    expect(screen.queryByText("knowledge_upload_session_expired")).not.toBeInTheDocument();
+
+    const retry = new File(["0123456789"], "expired.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("Retry"), { target: { files: [retry] } });
+    expect(detailView.onResumeUpload).toHaveBeenCalledWith("batch-1", "expired", retry);
+    const resume = new File(["0123456789"], "resume.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("Resume"), { target: { files: [resume] } });
+    expect(detailView.onResumeUpload).toHaveBeenCalledWith("batch-1", "resume", resume);
+    fireEvent.click(within(screen.getByTestId("knowledge-upload-item-active")).getByRole(
+      "button",
+      { name: "Cancel" }
+    ));
+    expect(detailView.onCancelUpload).toHaveBeenCalledWith("batch-1", "active");
+  });
+
+  it("searches Sources and navigates bounded server pages", () => {
+    const detailView = detail({
+      sourcePage: 2,
+      sourceQuery: "guide",
+      sources: baseSources(source(), {
+        pagination: {
+          page: 2,
+          pageSize: 25,
+          query: "guide",
+          totalItems: 26,
+          totalPages: 2
+        }
+      })
     });
     render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
 
     expect(screen.getByText(/Showing 26–26 of 26 matching/)).toBeVisible();
-    expect(screen.getByText("Page 2 of 2")).toBeVisible();
-    fireEvent.change(screen.getByRole("searchbox", { name: "Search documents by filename" }), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search Sources in this base" }), {
       target: { value: "incident" }
     });
-    expect(detailView.onDocumentQueryChange).toHaveBeenCalledWith("incident");
+    expect(detailView.onSourceQueryChange).toHaveBeenCalledWith("incident");
     fireEvent.click(screen.getByRole("button", { name: "Previous" }));
-    expect(detailView.onDocumentPageChange).toHaveBeenCalledWith(1);
-    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(detailView.onSourcePageChange).toHaveBeenCalledWith(1);
   });
 
-  it("distinguishes an empty base from a filename search with no matches", () => {
-    const detailView = detail({
-      documentQuery: "missing",
-      ingestion: ingestion({
-        documents: [],
-        pagination: {
-          page: 1,
-          pageSize: 25,
-          query: "missing",
-          totalItems: 0,
-          totalPages: 0
-        }
-      })
-    });
-    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
-
-    expect(screen.getByText("No documents match this filename")).toBeVisible();
-    expect(screen.getByText(/does not inspect document contents/)).toBeVisible();
-    expect(screen.queryByText(/honest empty retrieval result/)).not.toBeInTheDocument();
-  });
-
-  it("renders truthful reindex and live-publication controls with their disclosures", () => {
-    const owner = base({
-      publications: [{
-        groupId: null,
-        groupName: null,
-        id: "publication-installation",
-        scope: "installation",
-        updatedAt: "2026-08-08T10:00:00.000Z"
-      }]
-    });
-    const detailView = detail({
-      base: owner,
-      ingestion: ingestion({
-        reindex: {
-          completedDocuments: 2,
-          createdAt: "2026-08-08T10:00:00.000Z",
-          errorCode: null,
-          failedDocuments: 1,
-          generationId: "generation-2",
-          status: "failed",
-          targetContentRevision: 2,
-          totalDocuments: 3
-        }
-      })
-    });
-    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
-
-    expect(screen.getByText("Reindex failed")).toBeVisible();
-    expect(screen.getByText("2 completed · 1 failed · 3 total · target revision 2")).toBeVisible();
-    expect(screen.getAllByTestId("knowledge-egress-disclosure").at(-1)).toHaveTextContent(
-      "Embedding connection / Embed model"
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Start reindex" }));
-    expect(detailView.onReindex).toHaveBeenCalledWith("embedding-1");
-
-    expect(screen.getByTestId("knowledge-publication-disclosure")).toHaveTextContent(
-      "Revoking stops future run admission; runs accepted earlier keep their admitted revision"
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
-    expect(detailView.onRevokePublication).toHaveBeenCalledWith("publication-installation");
-    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
-    expect(detailView.onPublish).toHaveBeenCalledWith({ groupId: "group-1", scope: "group" });
-  });
-
-  it("keeps a shared base read-only and does not reveal a hidden embedding destination", () => {
+  it("keeps a shared Base read-only", () => {
     const shared = base({
-      activeGeneration: {
-        ...base().activeGeneration,
-        embeddingDeployment: null,
-        embeddingDeploymentId: null
-      },
       owned: false,
       ownerDisplayName: "Publisher",
       publications: null,
       scope: { groupNames: ["Research"], kind: "group" }
     });
-    const detailView = detail({ base: shared, ingestion: ingestion({ owned: false }) });
-    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
+    render(<KnowledgeLibrary view={view({
+      detail: detail({ base: shared }),
+      task: "detail"
+    })} />);
 
     expect(screen.getByText("Read-only shared base")).toBeVisible();
-    expect(screen.getByTestId("knowledge-revision-spine")).toHaveTextContent("Destination hidden by access policy");
-    expect(screen.queryByText("Embedding connection")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Add documents")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Reindex" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Add Sources")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Troubleshooting" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Publication" })).not.toBeInTheDocument();
   });
 
-  it("polls only while observed lifecycle work is transient", async () => {
+  it("confirms Base Trash and permanent deletion with the restoration boundary", () => {
+    const active = detail();
+    const { rerender } = render(
+      <KnowledgeLibrary view={view({ detail: active, task: "detail" })} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Move Product docs to Trash" }));
+    const trashConfirmation = screen.getByRole("dialog", {
+      name: "Move to Trash Product docs"
+    });
+    expect(trashConfirmation).toHaveTextContent("Future Chat, Project, and Assistant runs");
+    fireEvent.click(within(trashConfirmation).getByRole("button", {
+      name: "Confirm move to trash"
+    }));
+    expect(active.onTrash).toHaveBeenCalledOnce();
+
+    const trashed = detail({
+      base: base({
+        purgeScheduledAt: "2026-09-17T10:00:00.000Z",
+        readiness: readiness("trashed"),
+        trashed: true,
+        trashedAt: "2026-08-18T10:00:00.000Z",
+        version: 2
+      })
+    });
+    rerender(<KnowledgeLibrary view={view({ detail: trashed, task: "detail" })} />);
+
+    expect(screen.getByText("Knowledge base is in Trash")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Knowledge base Trash actions" }))
+      .toHaveTextContent(/Deleted .*purge scheduled/u);
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(trashed.onRestore).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    const deleteConfirmation = screen.getByRole("dialog", {
+      name: "Permanently delete Product docs"
+    });
+    expect(deleteConfirmation).toHaveTextContent("Canonical Sources remain available");
+    expect(deleteConfirmation).toHaveTextContent("generic citation handles");
+    fireEvent.click(within(deleteConfirmation).getByRole("button", {
+      name: "Confirm delete permanently"
+    }));
+    expect(trashed.onDeletePermanently).toHaveBeenCalledOnce();
+  });
+
+  it("confirms restoring a Source into multiple Bases and shows its purge window", () => {
+    const sourceView = sourceDetail({
+      source: source({
+        membershipCount: 2,
+        memberships: [
+          { archived: false, id: "base-1", name: "Product docs" },
+          { archived: false, id: "base-2", name: "Assistant docs" }
+        ],
+        purgeScheduledAt: "2026-09-17T10:00:00.000Z",
+        trashed: true,
+        trashedAt: "2026-08-18T10:00:00.000Z"
+      })
+    });
+    render(<KnowledgeLibrary view={view({ sourceDetail: sourceView, task: "source-detail" })} />);
+
+    expect(screen.getByRole("region", { name: "Source Trash actions" }))
+      .toHaveTextContent(/Deleted .*purge scheduled/u);
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(sourceView.onRestore).not.toHaveBeenCalled();
+    const confirmation = screen.getByRole("dialog", { name: "Restore Product guide" });
+    expect(confirmation).toHaveTextContent("2 Base memberships");
+    fireEvent.click(within(confirmation).getByRole("button", {
+      name: "Confirm restore source"
+    }));
+    expect(sourceView.onRestore).toHaveBeenCalledOnce();
+  });
+
+  it("switches to the reusable Source catalog and opens a Source", () => {
+    const sourceValue = source();
+    const { eligibleBases: _eligibleBases, memberships: _memberships, versions: _versions, ...summary } = sourceValue;
+    const listView = list({
+      catalog: "sources",
+      sourceData: {
+        pagination: { page: 1, pageSize: 25, query: "", totalItems: 1, totalPages: 1 },
+        sources: [summary]
+      }
+    });
+    render(<KnowledgeLibrary view={view({ list: listView })} />);
+
+    expect(screen.getByText(/Sources are reusable files/)).toBeVisible();
+    expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("Product guide");
+    expect(screen.getByTestId("knowledge-source-source-1")).toHaveTextContent("1 base");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search Sources" }), {
+      target: { value: "policy" }
+    });
+    expect(listView.onSourceQueryChange).toHaveBeenCalledWith("policy");
+    fireEvent.click(screen.getByText("Product guide"));
+    expect(listView.onOpenSource).toHaveBeenCalledWith("source-1");
+  });
+
+  it("keeps Source add, move, and remove as distinct owner actions", () => {
+    const detailView = sourceDetail();
+    render(<KnowledgeLibrary view={view({ sourceDetail: detailView, task: "source-detail" })} />);
+
+    expect(screen.getByText("One canonical file identity, reused wherever you add it.")).toBeVisible();
+    expect(screen.getByText("Version history · 2")).toBeVisible();
+
+    fireEvent.click(screen.getByLabelText("Assistant docs"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to selected" }));
+    expect(detailView.onAddToBases).toHaveBeenCalledWith(["base-2"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Move Source" }));
+    expect(detailView.onMove).toHaveBeenCalledWith("base-1", "base-2");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove from base" }));
+    const confirmation = screen.getByRole("dialog", { name: "Remove Product guide from Product docs" });
+    expect(confirmation).toHaveTextContent("stays in your library and in its other bases");
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm remove from base" }));
+    expect(detailView.onRemoveFromBase).toHaveBeenCalledWith("base-1");
+  });
+
+  it("opens a ready Source in the shared viewer from Source details", () => {
+    const onPreviewSource = vi.fn();
+    render(
+      <KnowledgeLibrary
+        onPreviewSource={onPreviewSource}
+        view={view({ sourceDetail: sourceDetail(), task: "source-detail" })}
+      />
+    );
+
+    const preview = screen.getByRole("button", { name: "Preview" });
+    fireEvent.click(preview);
+    expect(onPreviewSource).toHaveBeenCalledWith("source-1", preview);
+  });
+
+  it("keeps a ready Source usable while surfacing bounded extraction warnings", () => {
+    const current = source().currentVersion!;
+    const warnedCurrent = {
+      ...current,
+      readiness: {
+        state: "ready" as const,
+        supportReference: null,
+        warningCodes: ["table_extraction_degraded" as const]
+      }
+    };
+    const warnedSource = source({
+      currentVersion: warnedCurrent,
+      readiness: warnedCurrent.readiness,
+      versions: [warnedCurrent]
+    });
+    render(<KnowledgeLibrary view={view({
+      sourceDetail: sourceDetail({
+        draft: {
+          description: warnedSource.description,
+          name: warnedSource.name,
+          tags: warnedSource.tags.join(", ")
+        },
+        source: warnedSource
+      }),
+      task: "source-detail"
+    })} />);
+
+    expect(screen.getAllByText("Ready with warnings").length).toBeGreaterThan(0);
+    expect(screen.getByText("Some table structure was simplified")).toBeVisible();
+    expect(screen.queryByText(/table_extraction_degraded|parser|score/iu)).not.toBeInTheDocument();
+  });
+
+  it("keeps a shared Source read-only and limits it to current safe metadata", () => {
+    const current = source().currentVersion!;
+    const shared = source({
+      eligibleBases: [],
+      memberships: [{ archived: false, id: "base-shared", name: "Shared policies" }],
+      membershipCount: 1,
+      owned: false,
+      ownerDisplayName: "Publisher",
+      versions: [current]
+    });
+    render(<KnowledgeLibrary view={view({
+      sourceDetail: sourceDetail({
+        draft: { description: shared.description, name: shared.name, tags: shared.tags.join(", ") },
+        source: shared
+      }),
+      task: "source-detail"
+    })} />);
+
+    expect(screen.getByText("Read-only shared Source")).toBeVisible();
+    expect(screen.getByText("Version history · 1")).toBeVisible();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to selected" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move Source" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove from base" })).not.toBeInTheDocument();
+  });
+
+  it("polls only while observed processing work is transient", async () => {
     vi.useFakeTimers();
-    const detailView = detail();
+    const processingSource = source({
+      currentVersion: null,
+      readiness: { state: "processing", supportReference: null, warningCodes: [] },
+      versions: []
+    });
+    const detailView = detail({ sources: baseSources(processingSource) });
     render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
 
     await act(async () => {

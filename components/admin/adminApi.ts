@@ -152,7 +152,7 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     system_group_forbidden: "Full access is built in and cannot be renamed, archived, deleted, or edited with ordinary grants.",
     unauthorized: "Your admin session is no longer valid. Sign in again to continue.",
     user_active: "Disable this user before deleting it.",
-    user_has_owned_data: "This user owns app data and must remain disabled until a purge flow exists.",
+    user_has_owned_data: "Remove or transfer the remaining non-purgeable app data before deleting this account.",
     user_not_found: "This user no longer exists or is no longer eligible for this action. Refresh to review the current users.",
     user_not_verified: "Verify this user's email identity before approving the account.",
     user_required: "Choose a user before continuing."

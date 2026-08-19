@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DocumentParserError } from "../parsing";
+import { finalizeParsedDocument } from "../parsing/assessment";
 import {
   AttachmentProcessingError,
   createAttachmentProcessor,
@@ -88,7 +89,7 @@ describe("attachment processor", () => {
   it("stores normalized sidecar evidence for Office documents", async () => {
     const bytes = Buffer.from("PK\u0003\u0004docx");
     const parser = {
-      parse: vi.fn(async () => ({
+      parse: vi.fn(async () => finalizeParsedDocument({
         blocks: [],
         engine: "docling" as const,
         mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -121,7 +122,7 @@ describe("attachment processor", () => {
     vi.stubEnv("AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS", "3");
     const bytes = Buffer.from("PK\u0003\u0004docx");
     const parser = {
-      parse: vi.fn(async () => ({
+      parse: vi.fn(async () => finalizeParsedDocument({
         blocks: [],
         engine: "docling" as const,
         mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

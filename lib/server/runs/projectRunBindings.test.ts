@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import {
   assertProjectAssistantRunProvenance,
@@ -39,13 +40,31 @@ describe("Project-scoped run binding locks", () => {
   it("locks Project Knowledge authority without consulting the contributor's publications", async () => {
     const queryRaw = vi.fn<QueryRaw>(async () => [{ id: "project-knowledge-binding" }]);
     const plan = {
-      bindings: [],
+      bindings: [{
+        baseContentRevision: 1,
+        embeddingCredentialSource: "default",
+        embeddingExecutionSnapshot: {} as never,
+        embeddingProviderModelId: "embedding-model-1",
+        includeWholeBase: true,
+        indexedContentRevision: 1,
+        indexGenerationId: "generation-1",
+        knowledgeBaseId: "knowledge-1",
+        ordinal: 0,
+        selectedSourceIds: [],
+        targetDimension: 1024,
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
       executionScope: "project",
+      exclusions: [],
       fingerprint: "fingerprint",
-      knowledgePlan: { baseIds: ["knowledge-1"] },
+      knowledgePlan: {
+        baseIds: ["knowledge-1"], mode: "explicit", sourceIds: [], version: 1
+      },
       projectId: "project-1",
+      resolvedSourceCount: 0,
       userId: "contributor-without-personal-access"
-    } as KnowledgeRunAdmissionPlan;
+    } satisfies KnowledgeRunAdmissionPlan;
 
     await lockKnowledgeRunAdmissionSources(
       { $queryRaw: queryRaw } as unknown as Pick<Prisma.TransactionClient, "$queryRaw">,

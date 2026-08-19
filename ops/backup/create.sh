@@ -15,7 +15,8 @@ Usage: ops/backup/create.sh DESTINATION_DIRECTORY
 
 Create a coordinated AIQSA backup while the web app and standalone Memory
 worker are stopped. The script restarts only services that were running before
-the backup began and fences their durable Memory leases before copying data.
+the backup began and fences durable Memory and Knowledge deletion leases before
+copying data.
 
 The destination receives one mode-0700 bundle containing:
   manifest.env   privacy-safe format/runtime metadata
@@ -140,7 +141,7 @@ if service_is_running memory-worker; then
   die "memory-worker is still running; backup was not started."
 fi
 
-info "Fencing durable Memory leases..."
+info "Fencing durable deletion leases..."
 if ! compose exec -T postgres sh -ceu '
   : "${POSTGRES_DB:?}"
   : "${POSTGRES_USER:?}"
@@ -169,10 +170,27 @@ SET
   "errorCode" = '"'"'memory_backup_fenced'"'"',
   "updatedAt" = CURRENT_TIMESTAMP
 WHERE "state" = '"'"'RUNNING'"'"'::"MemoryDeletionState";
+UPDATE "KnowledgeDeletionJob"
+SET
+  "state" = '"'"'RETRY_WAIT'"'"'::"KnowledgeDeletionState",
+  "claimToken" = NULL,
+  "claimedAt" = NULL,
+  "leaseExpiresAt" = NULL,
+  "nextAttemptAt" = CURRENT_TIMESTAMP,
+  "lastErrorCode" = '"'"'knowledge_backup_fenced'"'"',
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "state" = '"'"'RUNNING'"'"'::"KnowledgeDeletionState";
+UPDATE "AttachmentDeletionJob"
+SET
+  "claimToken" = NULL,
+  "claimedAt" = NULL,
+  "lastErrorCode" = '"'"'backup_fenced'"'"',
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "claimToken" IS NOT NULL OR "claimedAt" IS NOT NULL;
 COMMIT;
 SQL
 ' >/dev/null 2>&1; then
-  die "Durable Memory lease fencing failed; backup was not started."
+  die "Durable deletion lease fencing failed; backup was not started."
 fi
 
 memory_key_ids="$({

@@ -189,6 +189,13 @@ describe("Prisma admin provider repository", () => {
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
 
     const result = await repository.listConnections();
+    expect(db.providerConnection.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        family: {
+          in: ["anthropic", "gemini", "openai", "openai_compatible", "openrouter"]
+        }
+      }
+    }));
     expect(result[0]?.credentials[0]).toMatchObject({
       draftSecretConfigured: true,
       id: "credential-1"

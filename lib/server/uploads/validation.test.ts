@@ -1,6 +1,60 @@
 import { describe, expect, it } from "vitest";
+import {
+  UPLOAD_FORMAT_REGISTRY,
+  type UploadContentEvidence
+} from "../../domain/uploadFormats";
 import { resolveDocumentParserRoute } from "../parsing/routing";
-import { defaultUploadMaxBytes, validateUpload } from "./validation";
+import {
+  defaultUploadMaxBytes,
+  validateUpload,
+  validateUploadInspection
+} from "./validation";
+
+function contentFixture(evidence: UploadContentEvidence): Buffer {
+  switch (evidence) {
+    case "bmp": return Buffer.from("BMfixture", "ascii");
+    case "eml": return Buffer.from("From: source@example.test\r\nSubject: Fixture\r\n\r\nBody");
+    case "epub": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("mimetype application/epub+zip META-INF/container.xml")
+    ]);
+    case "gif": return Buffer.from("GIF89a", "ascii");
+    case "html": return Buffer.from("<!doctype html><main>Fixture</main>");
+    case "jpeg": return Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    case "json": return Buffer.from('{"fixture":true}');
+    case "ole": return Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    case "open_document_presentation": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("content.xml META-INF/manifest.xml application/vnd.oasis.opendocument.presentation")
+    ]);
+    case "open_document_spreadsheet": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("content.xml META-INF/manifest.xml application/vnd.oasis.opendocument.spreadsheet")
+    ]);
+    case "open_document_text": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("content.xml META-INF/manifest.xml application/vnd.oasis.opendocument.text")
+    ]);
+    case "pdf": return Buffer.from("%PDF-1.7\n");
+    case "png": return Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    case "presentation_ooxml": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("[Content_Types].xml ppt/presentation.xml")
+    ]);
+    case "rtf": return Buffer.from("{\\rtf1 fixture}");
+    case "spreadsheet_ooxml": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("[Content_Types].xml xl/workbook.xml")
+    ]);
+    case "text": return Buffer.from("Fixture text,second column\nvalue,2");
+    case "tiff": return Buffer.from([0x49, 0x49, 0x2a, 0x00]);
+    case "webp": return Buffer.from("RIFF\x00\x00\x00\x00WEBP", "binary");
+    case "word_ooxml": return Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("[Content_Types].xml word/document.xml")
+    ]);
+  }
+}
 
 const magicFixtures = [
   {
@@ -45,7 +99,7 @@ const magicFixtures = [
   {
     bytes: Buffer.concat([
       Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-      Buffer.from("application/vnd.oasis.opendocument.text content.xml")
+      Buffer.from("application/vnd.oasis.opendocument.text content.xml META-INF/manifest.xml")
     ]),
     fileName: "notes.odt",
     kind: "document",
@@ -207,6 +261,40 @@ describe("upload validation", () => {
     }
   });
 
+  it("admits every canonical Knowledge format with matching bounded content evidence", () => {
+    const knowledgeFormats = UPLOAD_FORMAT_REGISTRY.filter((format) =>
+      format.scopes.includes("knowledge")
+    );
+
+    for (const format of knowledgeFormats) {
+      const bytes = contentFixture(format.contentEvidence);
+      expect(validateUpload({
+        byteSize: bytes.byteLength,
+        bytes,
+        fileName: `fixture${format.extensions[0]}`,
+        maxBytes: 1024,
+        mimeType: format.canonicalMimeType,
+        scope: "knowledge"
+      }), format.id).toEqual({
+        kind: format.kind,
+        mimeType: format.canonicalMimeType,
+        ok: true
+      });
+    }
+  });
+
+  it("keeps attachment-only formats out of Knowledge admission", () => {
+    const bytes = contentFixture("gif");
+    expect(validateUpload({
+      byteSize: bytes.byteLength,
+      bytes,
+      fileName: "fixture.gif",
+      maxBytes: 1024,
+      mimeType: "image/gif",
+      scope: "knowledge"
+    })).toEqual({ code: "unsupported_type", ok: false });
+  });
+
   it("derives canonical MIME types from the validated extension", () => {
     expect(
       validateUpload({
@@ -249,5 +337,33 @@ describe("upload validation", () => {
         mimeType: "text/plain"
       })
     ).toEqual({ code: "unsupported_type", ok: false });
+  });
+
+  it("validates archive markers found beyond the bounded leading sample", () => {
+    expect(validateUploadInspection({
+      byteSize: 8_000_000,
+      fileName: "large.docx",
+      foundNeedles: ["[Content_Types].xml", "word/"],
+      maxBytes: 50_000_000,
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sample: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      scope: "knowledge"
+    })).toEqual({
+      kind: "document",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ok: true
+    });
+  });
+
+  it("rejects conflicting archive evidence during streaming settlement", () => {
+    expect(validateUploadInspection({
+      byteSize: 8_000_000,
+      fileName: "spoof.docx",
+      foundNeedles: ["[Content_Types].xml", "word/", "ppt/"],
+      maxBytes: 50_000_000,
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sample: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      scope: "knowledge"
+    })).toEqual({ code: "unsupported_type", ok: false });
   });
 });

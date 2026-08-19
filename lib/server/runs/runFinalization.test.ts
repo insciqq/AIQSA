@@ -108,7 +108,7 @@ describe("run finalization", () => {
       reasoningTokens: 2,
       totalTokens: 15
     };
-    expect(result).toEqual({ status: "completed", usage });
+    expect(result).toEqual({ finalText: "Final answer", status: "completed", usage });
     expect(completeRun).toHaveBeenCalledWith({
       assistantMessageId: "assistant-1",
       chatId: "chat-1",
@@ -149,5 +149,49 @@ describe("run finalization", () => {
 
     expect(result).toEqual({ status: "not_completed" });
     expect(completeRun).toHaveBeenCalledOnce();
+  });
+
+  it("persists only the deterministic grounded repair for a Knowledge answer", async () => {
+    const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
+    const grounding = {
+      diagnostics: {
+        citationCoverage: 0,
+        citationPrecision: 0,
+        citedClaimCount: 1,
+        issueCodes: ["invalid_handle" as const],
+        sourceClaimCount: 1,
+        unsupportedClaimCount: 1
+      },
+      finalAnswerHash: "b".repeat(64),
+      finalText: "I couldn't find enough support in the selected sources to answer reliably.",
+      originalAnswerHash: "a".repeat(64),
+      outcome: "no_answer" as const,
+      receiptHash: "c".repeat(64),
+      repairCount: 1 as const,
+      sessionId: "evidence-session-1",
+      version: 1 as const
+    };
+    const groundKnowledgeAnswer = vi.fn(async () => grounding);
+    const repository = {
+      completeRun,
+      groundKnowledgeAnswer,
+      loadModelPricing: async () => null
+    };
+
+    const result = await finalizeRunCompletion({
+      ...completionInput(repository),
+      result: { ...completionInput(repository).result, finalText: "Unsupported [K99]." }
+    });
+
+    expect(result).toMatchObject({ finalText: grounding.finalText, status: "completed" });
+    expect(groundKnowledgeAnswer).toHaveBeenCalledWith({
+      answer: "Unsupported [K99].",
+      runId: "run-1",
+      userId: "user-1"
+    });
+    expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({
+      finalText: grounding.finalText,
+      knowledgeGrounding: grounding
+    }));
   });
 });

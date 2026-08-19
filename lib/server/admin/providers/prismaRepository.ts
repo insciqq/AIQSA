@@ -742,7 +742,11 @@ export function createPrismaAdminProviderRepository(
             models: { orderBy: { createdAt: "asc" } }
           },
           orderBy: { createdAt: "asc" },
-          where: { family: { not: "fake" } }
+          where: {
+            family: {
+              in: ["anthropic", "gemini", "openai", "openai_compatible", "openrouter"]
+            }
+          }
         }),
         prisma.providerDraftCheck.findMany({ orderBy: { checkedAt: "desc" } }),
         prisma.providerModelCredentialCheck.findMany({ orderBy: { checkedAt: "desc" } })

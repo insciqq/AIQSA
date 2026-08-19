@@ -1,4 +1,5 @@
 import { createDocumentParserBoundary } from "./boundary";
+import { finalizeParsedDocument } from "./assessment";
 import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
 import { DocumentParserError } from "./errors";
 import type {
@@ -19,14 +20,27 @@ function engineConfig(baseUrl: string, overrides: Partial<ParserEngineConfig> = 
 }
 
 function parsed(engine: SidecarParserEngine, text = "parsed"): ParsedDocument {
-  return {
-    blocks: [{ headingPath: [], index: 0, isTable: false, page: 1, text }],
+  return finalizeParsedDocument({
+    blocks: [{
+      assetIds: [],
+      boundingBoxes: [],
+      headingPath: [],
+      index: 0,
+      isTable: false,
+      languageHints: ["und-Latn"],
+      page: 1,
+      pageEnd: 1,
+      readingOrder: 0,
+      table: null,
+      text,
+      type: "paragraph"
+    }],
     engine,
     mediaType: "application/pdf",
     pageCount: 1,
     status: "complete",
     text
-  };
+  });
 }
 
 function fakeAdapter(input: Readonly<{
@@ -152,13 +166,98 @@ describe("document parser boundary", () => {
       }
     });
 
+    const result = await boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    });
+    expect(result).toMatchObject({
+      attempts: [
+        { engine: "docling", outcome: "rejected" },
+        { engine: "tika", outcome: "complete" }
+      ],
+      engine: "tika",
+      text: "fallback"
+    });
+    expect(result.warnings).not.toContain("parser_fallback_failed");
+    expect(doclingParse).toHaveBeenCalledOnce();
+    expect(tikaParse).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a usable partial result when the bounded fallback is unavailable", async () => {
+    const primary = finalizeParsedDocument({
+      ...parsed("docling", "usable partial text"),
+      status: "partial"
+    });
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: async () => primary }),
+        tika: fakeAdapter({
+          engine: "tika",
+          parse: async () => { throw new DocumentParserError("parser_unavailable", "tika"); }
+        })
+      }
+    });
+
     await expect(boundary.parse({
       bytes: Buffer.from("%PDF-fixture"),
       fileName: "fixture.pdf",
       mimeType: "application/pdf"
-    })).resolves.toMatchObject({ engine: "tika", text: "fallback" });
+    })).resolves.toMatchObject({
+      attempts: [
+        { engine: "docling", outcome: "partial" },
+        { engine: "tika", outcome: "retryable_failure" }
+      ],
+      engine: "docling",
+      status: "partial",
+      warnings: expect.arrayContaining(["partial_parse", "parser_fallback_failed"])
+    });
+  });
+
+  it("falls back from unusable output and never invokes an engine twice", async () => {
+    const doclingParse = vi.fn(async () => finalizeParsedDocument({
+      blocks: [],
+      engine: "docling",
+      mediaType: "application/pdf",
+      pageCount: 2,
+      status: "complete",
+      text: ""
+    }));
+    const tikaParse = vi.fn(async () => parsed("tika", "useful fallback text"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      }
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    })).resolves.toMatchObject({ engine: "tika", status: "complete" });
     expect(doclingParse).toHaveBeenCalledOnce();
     expect(tikaParse).toHaveBeenCalledOnce();
+  });
+
+  it("does not hide a hard output bound behind another parser", async () => {
+    const tikaParse = vi.fn(async () => parsed("tika"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({
+          engine: "docling",
+          parse: async () => { throw new DocumentParserError("parser_output_too_large", "docling"); }
+        }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      }
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    })).rejects.toMatchObject({ code: "parser_output_too_large", engine: "docling" });
+    expect(tikaParse).not.toHaveBeenCalled();
   });
 
   it("can pin Knowledge parsing to the first code-owned engine without fallback", async () => {

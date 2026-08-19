@@ -40,7 +40,6 @@ import {
   textFromThreadContent
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import { loadProjectKnowledgeCitation } from "@/components/app-shell/projectWorkspaceApi";
 import { UiV2IconSprite } from "@/components/ui-v2";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
@@ -66,6 +65,7 @@ import {
   type NewChatMode
 } from "@/features/navigation-v2/NavigationV2";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import { KnowledgeCitationControl } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   presentRunLifecycleV2,
   presentToolActivityV2,
@@ -311,6 +311,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       name: base.name,
       owned: base.owned
     })),
+    knowledgeSources: composer.knowledge.sources,
     mcpServers: projectContext
       ? activeProject?.policy.externalToolsEnabled
         ? activeProject.composer?.mcpServers ?? []
@@ -341,7 +342,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             : []
         )
       : skillCatalog?.skills ?? []
-  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, mcpServers, projectContext, skillCatalog?.skills]);
+  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.sources, mcpServers, projectContext, skillCatalog?.skills]);
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
@@ -392,7 +393,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
       onRetryAttachment={composer.composerActions.retryAttachment}
       onRetryConfig={composer.retryCatalog}
-      onSelectKnowledgeBaseIds={composer.knowledge.select}
+      onSearchKnowledgeSources={composer.knowledge.searchSources}
+      onSelectKnowledgeSelection={composer.knowledge.select}
       onSelectMcp={(selection) => useComposerControlStore.getState().setMcpSelection(selection)}
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
@@ -419,7 +421,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       runId={thread.currentRunId}
       selectedAssistant={composer.assistant.selected}
       mcpSelection={mcpSelection}
-      selectedKnowledgeBaseIds={composer.knowledge.selectedBaseIds}
+      selectedKnowledgeSelection={composer.knowledge.selection}
       selectedModelId={composer.selectedModelId}
       selectedProvider={composer.selectedProvider}
       selectedSearchOptionIds={composer.selectedSearchOptionIds}
@@ -609,6 +611,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // post-hoc execution surface.
     const settled = settledRunPresentationV2(presentation);
     const identity = answerIdentityV2(source);
+    const knowledgeHandles = new Set(
+      artifact?.knowledgeCitations?.map((citation) => citation.handle) ?? []
+    );
+    const knowledgeReference = settled && source.runId && knowledgeHandles.size > 0
+      ? { messageId: source.id, runId: source.runId }
+      : undefined;
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
@@ -619,14 +627,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               identitySlot={identity ? (
                 <span data-testid={identity.testId}>{identity.label}</span>
               ) : null}
-              loadKnowledgeCitation={activeProject && activeProjectChat
-                ? (citation) => loadProjectKnowledgeCitation({
-                    chatId: activeProjectChat.id,
-                    handle: citation.handle,
-                    messageId: source.id,
-                    projectId: activeProject.id
-                  })
-                : undefined}
+              knowledgeReference={knowledgeReference}
               showReasoning={composer.showReasoningBlocks}
             />
             {pagerSlot}
@@ -648,6 +649,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           () => thread.handleRegenerateMessage(source.id)
         )}
         presentation={presentation}
+        renderCitation={knowledgeReference
+          ? (handle, key) => knowledgeHandles.has(handle) ? (
+              <KnowledgeCitationControl
+                key={key}
+                reference={{ ...knowledgeReference, handle }}
+              />
+            ) : null
+          : undefined}
         toolActivity={toolActivity}
       />
     );

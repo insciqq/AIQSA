@@ -12,6 +12,10 @@ import type {
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { SkillSummary } from "@/lib/contracts/skills";
+import {
+  EMPTY_KNOWLEDGE_SELECTION,
+  type KnowledgeSelection
+} from "@/lib/contracts/knowledge";
 
 export type LibraryNotice = {
   kind: "error" | "success";
@@ -39,7 +43,7 @@ export type AssistantEditorDraftState = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string;
-  knowledgeBaseIds: string[];
+  knowledgeSelection: KnowledgeSelection;
   maxOutputTokens: string;
   mcpServerIds: string[];
   name: string;
@@ -66,6 +70,7 @@ export type AssistantEditorModelOption = {
 
 export type AssistantEditorOptions = {
   knowledgeBases: { available: boolean; id: string; name: string }[];
+  knowledgeSources: { available: boolean; id: string; name: string }[];
   knowledgeDataError: string | null;
   knowledgeDataState: "error" | "loading" | "ready";
   mcpServers: { id: string; name: string }[];
@@ -184,7 +189,7 @@ export function assistantDraftFromEditorState(
     category: state.category,
     description: state.description.trim(),
     developerPrompt: state.developerPrompt.trim() ? state.developerPrompt : null,
-    knowledgeBaseIds: [...state.knowledgeBaseIds],
+    knowledgeSelection: state.knowledgeSelection,
     mcpServerIds: [...state.mcpServerIds],
     name: state.name.trim(),
     providerModelId: state.providerModelId,
@@ -219,7 +224,9 @@ export function editorStateFromRevision(
     category: revision.category,
     description: revision.description,
     developerPrompt: revision.developerPrompt ?? "",
-    knowledgeBaseIds: [...revision.knowledgeBaseIds],
+    knowledgeSelection: revision.knowledgeSelection.mode === "inherited"
+      ? EMPTY_KNOWLEDGE_SELECTION
+      : revision.knowledgeSelection,
     maxOutputTokens:
       controls.maxOutputTokens !== undefined
         ? String(controls.maxOutputTokens)

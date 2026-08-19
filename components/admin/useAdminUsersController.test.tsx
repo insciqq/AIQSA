@@ -242,6 +242,8 @@ describe("useAdminUsersController", () => {
       },
       confirmLabel: "Delete user",
       icon: "trash",
+      message: "Account deletion accepted.",
+      prompt: expect.stringMatching(/Memory and Knowledge.*Shared Project data remains/u),
       testId: "admin-confirm-delete-user"
     });
     expect(requireSectionProps(result.current.sectionProps).data.selectedUser?.id).toBe(second.id);

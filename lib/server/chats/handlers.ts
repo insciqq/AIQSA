@@ -25,7 +25,7 @@ import type {
   WorkspaceChatSummaryWire,
   WorkspaceChatsResponseWire
 } from "../../contracts/chats";
-import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+import { decodeKnowledgeSelection, type KnowledgePlan } from "../../contracts/knowledge";
 
 export type {
   ChatUsageStats,
@@ -219,7 +219,7 @@ function knowledgeDefaultValue(
   if (body.defaultKnowledgePlan === null) {
     return { ok: true, value: null };
   }
-  const decoded = decodeKnowledgePlan(body.defaultKnowledgePlan);
+  const decoded = decodeKnowledgeSelection(body.defaultKnowledgePlan);
   return decoded.ok ? { ok: true, value: decoded.plan } : { ok: false };
 }
 

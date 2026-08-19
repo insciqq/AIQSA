@@ -115,7 +115,7 @@ function validDraft(): Record<string, unknown> {
     category: "coding",
     description: "Reviews changes for correctness.",
     developerPrompt: null,
-    knowledgeBaseIds: [],
+    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: ["server-1"],
     name: "Code Reviewer",
     providerModelId: "model-1",
@@ -132,7 +132,9 @@ describe("assistant draft decode", () => {
     const decoded = decodeAssistantDraft({ ...validDraft(), name: "  Code Reviewer  " });
     expect(decoded.ok).toBe(true);
     if (decoded.ok) {
-      expect(decoded.draft.knowledgeBaseIds).toEqual([]);
+      expect(decoded.draft.knowledgeSelection).toEqual({
+        baseIds: [], mode: "none", sourceIds: [], version: 1
+      });
       expect(decoded.draft.name).toBe("Code Reviewer");
       expect(decoded.draft.searchPlan).toEqual({
         mode: "all_selected",
@@ -153,9 +155,30 @@ describe("assistant draft decode", () => {
       [{ ...validDraft(), developerPrompt: 7 }, "assistant_developer_prompt_invalid"],
       [{ ...validDraft(), runControls: { topP: 1 } }, "assistant_run_controls_invalid"],
       [{ ...validDraft(), searchPlan: { mode: "sometimes", optionIds: [] } }, "assistant_search_plan_invalid"],
-      [{ ...validDraft(), knowledgeBaseIds: ["base", "base"] }, "assistant_knowledge_bases_invalid"],
-      [{ ...validDraft(), knowledgeBaseIds: ["a", "b", "c", "d"] }, "assistant_knowledge_bases_invalid"],
-      [{ ...validDraft(), knowledgeBaseIds: ["  "] }, "assistant_knowledge_bases_invalid"],
+      [{
+        ...validDraft(), knowledgeSelection: { baseIds: ["legacy-base"] }
+      }, "assistant_knowledge_bases_invalid"],
+      [{
+        ...validDraft(),
+        knowledgeSelection: {
+          baseIds: ["base", "base"], mode: "explicit", sourceIds: [], version: 1
+        }
+      }, "assistant_knowledge_bases_invalid"],
+      [{
+        ...validDraft(),
+        knowledgeSelection: {
+          baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`),
+          mode: "explicit",
+          sourceIds: [],
+          version: 1
+        }
+      }, "assistant_knowledge_bases_invalid"],
+      [{
+        ...validDraft(),
+        knowledgeSelection: {
+          baseIds: ["  "], mode: "explicit", sourceIds: [], version: 1
+        }
+      }, "assistant_knowledge_bases_invalid"],
       [{ ...validDraft(), mcpServerIds: ["a", "a"] }, "assistant_mcp_servers_invalid"],
       [{ ...validDraft(), skillIds: ["a", "a"] }, "assistant_skills_invalid"],
       [
@@ -254,19 +277,27 @@ describe("assistant wire decoders", () => {
       revisionNumber: 2
     };
     const withoutKnowledge: Record<string, unknown> = { ...revision };
-    delete withoutKnowledge.knowledgeBaseIds;
+    delete withoutKnowledge.knowledgeSelection;
     expect(decodeAssistantRevisionContent(withoutKnowledge)).toBeNull();
     expect(decodeAssistantRevisionContent({
       ...revision,
-      knowledgeBaseIds: ["base-a", "base-b"]
-    })?.knowledgeBaseIds).toEqual(["base-a", "base-b"]);
+      knowledgeSelection: {
+        baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
+      }
+    })?.knowledgeSelection).toEqual({
+      baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
+    });
     expect(decodeAssistantRevisionContent({
       ...revision,
-      knowledgeBaseIds: ["base-a", "base-a"]
+      knowledgeSelection: {
+        baseIds: ["base-a", "base-a"], mode: "explicit", sourceIds: [], version: 1
+      }
     })).toBeNull();
     expect(decodeAssistantRevisionContent({
       ...revision,
-      knowledgeBaseIds: [" "]
+      knowledgeSelection: {
+        baseIds: [" "], mode: "explicit", sourceIds: [], version: 1
+      }
     })).toBeNull();
     const withoutSkills: Record<string, unknown> = { ...revision };
     delete withoutSkills.skillIds;

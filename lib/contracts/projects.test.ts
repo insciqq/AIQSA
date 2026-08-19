@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeProjectDefaults,
-  decodeProjectKnowledgeCitationResponse,
+  decodeProjectDefaultsInput,
   decodeProjectPolicy,
   decodeProjectsResponse
 } from "./projects";
@@ -12,7 +12,7 @@ describe("Project wire contracts", () => {
       defaults: {
         assistantId: null,
         controlValues: {},
-        knowledgePlan: { baseIds: [] },
+        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         mcpMode: "off",
         providerModelId: null,
         searchPlan: { mode: "all_selected", optionIds: [] }
@@ -21,6 +21,13 @@ describe("Project wire contracts", () => {
     });
     expect(decodeProjectDefaults({ mcpMode: "personal" })).toEqual({ ok: false });
     expect(decodeProjectDefaults({ assistantId: "   " })).toEqual({ ok: false });
+    expect(decodeProjectDefaultsInput({ knowledgePlan: { baseIds: ["legacy-base"] } }))
+      .toEqual({ ok: false });
+    expect(decodeProjectDefaultsInput({
+      knowledgePlan: {
+        baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+      }
+    })).toMatchObject({ ok: true });
     expect(decodeProjectPolicy({ externalToolsEnabled: false })).toEqual({
       ok: true,
       policy: { externalToolsEnabled: false }
@@ -44,25 +51,5 @@ describe("Project wire contracts", () => {
         updatedAt: "2026-08-17T00:00:00.000Z"
       }]
     })?.projects[0]?.name).toBe("Research");
-  });
-
-  it("accepts only bounded client-safe Project citation evidence", () => {
-    const response = {
-      citation: {
-        baseName: "Engineering handbook",
-        fileName: "retrieval-policy.pdf",
-        handle: "K1.1",
-        page: 18,
-        text: "Accepted passage",
-        textTruncated: false
-      }
-    };
-    expect(decodeProjectKnowledgeCitationResponse(response)).toEqual(response);
-    expect(decodeProjectKnowledgeCitationResponse({
-      citation: { ...response.citation, handle: "K9.9" }
-    })).toBeNull();
-    expect(decodeProjectKnowledgeCitationResponse({
-      citation: { ...response.citation, text: "x".repeat(64 * 1_024 + 1) }
-    })).toBeNull();
   });
 });

@@ -123,7 +123,7 @@ const request: ProviderRunRequest = {
         forceNonStreaming: true
       }
     : {}),
-  knowledgePlan: { baseIds: [] },
+  knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
   toolMode: "auto",
   modelCapabilities,
   modelId,

@@ -3,7 +3,11 @@ import {
   MAX_SEARCH_PLAN_OPTIONS,
   type SearchPlan
 } from "./search";
-import { KNOWLEDGE_PLAN_MAX_BASES } from "./knowledge";
+import {
+  decodeKnowledgePlan,
+  decodeKnowledgeSelection,
+  type KnowledgeSelection
+} from "./knowledge";
 import { SKILL_MAX_SELECTED } from "./skills";
 
 export const ASSISTANT_NAME_MAX_LENGTH = 80;
@@ -270,7 +274,7 @@ export type AssistantDraft = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string | null;
-  knowledgeBaseIds: string[];
+  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
   providerModelId: string;
@@ -356,16 +360,9 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
     return { code: "assistant_mcp_servers_invalid", ok: false };
   }
 
-  const knowledgeBaseIds = value.knowledgeBaseIds;
-  const normalizedKnowledgeBaseIds = Array.isArray(knowledgeBaseIds)
-    ? knowledgeBaseIds.map((id) => typeof id === "string" ? id.trim() : id)
-    : knowledgeBaseIds;
-  if (
-    !Array.isArray(normalizedKnowledgeBaseIds) ||
-    normalizedKnowledgeBaseIds.length > KNOWLEDGE_PLAN_MAX_BASES ||
-    !normalizedKnowledgeBaseIds.every(boundedId) ||
-    new Set(normalizedKnowledgeBaseIds).size !== normalizedKnowledgeBaseIds.length
-  ) {
+  const knowledge = decodeKnowledgeSelection(value.knowledgeSelection);
+  if (!knowledge.ok ||
+    knowledge.plan.mode === "all_my_knowledge" || knowledge.plan.mode === "inherited") {
     return { code: "assistant_knowledge_bases_invalid", ok: false };
   }
 
@@ -400,7 +397,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
       category: (category as AssistantCategory | null) ?? null,
       description,
       developerPrompt: typeof developerPrompt === "string" ? developerPrompt : null,
-      knowledgeBaseIds: normalizedKnowledgeBaseIds as string[],
+      knowledgeSelection: knowledge.plan,
       mcpServerIds: mcpServerIds.map((id) => (id as string).trim()),
       name,
       providerModelId: (value.providerModelId as string).trim(),
@@ -458,7 +455,7 @@ export type AssistantRevisionContent = {
   createdAt: string;
   description: string;
   developerPrompt: string | null;
-  knowledgeBaseIds: string[];
+  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
   providerModelId: string | null;
@@ -631,7 +628,9 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
   const category = decodeCategory(value.category);
   const runControls = decodeAssistantRunControls(value.runControls);
   const searchPlan = decodeSearchPlan(value.searchPlan);
-  const knowledgeBaseIds = value.knowledgeBaseIds;
+  const knowledge = decodeKnowledgePlan(value.knowledgeSelection ?? {
+    baseIds: value.knowledgeBaseIds
+  });
   const skillIds = value.skillIds;
   if (
     !stringOrNull(value.authorDisplayName) ||
@@ -640,11 +639,9 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     !nonEmptyString(value.createdAt) ||
     typeof value.description !== "string" ||
     !stringOrNull(value.developerPrompt) ||
-    !stringArray(knowledgeBaseIds) ||
-    !knowledgeBaseIds.every(boundedId) ||
-    knowledgeBaseIds.some((id) => id !== id.trim()) ||
-    knowledgeBaseIds.length > KNOWLEDGE_PLAN_MAX_BASES ||
-    new Set(knowledgeBaseIds).size !== knowledgeBaseIds.length ||
+    !knowledge.ok ||
+    knowledge.plan.mode === "all_my_knowledge" ||
+    knowledge.plan.mode === "inherited" && knowledge.plan.inheritedFrom !== "assistant" ||
     !stringArray(value.mcpServerIds) ||
     !nonEmptyString(value.name) ||
     !stringOrNull(value.providerModelId) ||
@@ -669,7 +666,7 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     createdAt: value.createdAt,
     description: value.description,
     developerPrompt: value.developerPrompt,
-    knowledgeBaseIds,
+    knowledgeSelection: knowledge.plan,
     mcpServerIds: value.mcpServerIds,
     name: value.name,
     providerModelId: value.providerModelId,

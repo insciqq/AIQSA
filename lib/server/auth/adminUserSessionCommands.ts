@@ -10,6 +10,10 @@ import type {
 import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
 import { lockAuthUser } from "./transactionLocks";
+import {
+  countAccountKnowledgeOwnedData,
+  type AccountKnowledgeDeletionHook
+} from "../knowledge/accountDeletion";
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
 import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
@@ -24,12 +28,21 @@ export type AdminUserSessionCommands = Pick<
   | "revokeUserSessions"
 >;
 
+class AccountDeletionPurgeUnavailableError extends Error {
+  constructor() {
+    super("account_deletion_purge_unavailable");
+    this.name = "AccountDeletionPurgeUnavailableError";
+  }
+}
+
 export function createAdminUserSessionCommands(
   prisma: PrismaClient,
   options: Readonly<{
+    accountKnowledgeDeletionHook?: () => AccountKnowledgeDeletionHook | null;
     accountMemoryDeletionHook?: () => AccountMemoryDeletionHook | null;
   }> = {}
 ): AdminUserSessionCommands {
+  const accountKnowledgeDeletionHook = options.accountKnowledgeDeletionHook ?? (() => null);
   const accountMemoryDeletionHook = options.accountMemoryDeletionHook ?? (() => null);
   return {
     async approveUser(input) {
@@ -79,7 +92,12 @@ export function createAdminUserSessionCommands(
         return "self_delete_forbidden";
       }
 
+      let admittedKnowledgeDeletion = false;
       let admittedMemoryDeletion = false;
+      const deletionKicks: {
+        knowledge: (() => void) | null;
+        memory: (() => void) | null;
+      } = { knowledge: null, memory: null };
       try {
         const result = await prisma.$transaction(async (tx) => {
           await lockAuthUser(tx, input.userId);
@@ -107,22 +125,49 @@ export function createAdminUserSessionCommands(
           }
 
           const ownedData = await countUserOwnedAppData(tx, user.id);
-          if (ownedData.nonMemory > 0) {
+          if (ownedData.nonPurgeable > 0) {
             return "user_has_owned_data" as const;
           }
+          let knowledgeReady = ownedData.knowledge === 0;
+          let memoryReady = ownedData.memory === 0;
+          const knowledgeHook = ownedData.knowledge > 0
+            ? accountKnowledgeDeletionHook()
+            : null;
+          const memoryHook = ownedData.memory > 0
+            ? accountMemoryDeletionHook()
+            : null;
+          if (
+            (ownedData.knowledge > 0 && !knowledgeHook) ||
+            (ownedData.memory > 0 && !memoryHook)
+          ) {
+            throw new AccountDeletionPurgeUnavailableError();
+          }
           if (ownedData.memory > 0) {
-            const hook = accountMemoryDeletionHook();
-            if (!hook) return "user_has_owned_data" as const;
-            const advanced = await hook.advance(tx, {
+            const advanced = await memoryHook!.advance(tx, {
               now: new Date(),
               userId: user.id
             });
-            if (advanced.admitted) {
-              admittedMemoryDeletion = true;
+            if (!advanced.deletionPending && !advanced.readyForUserDeletion) {
+              throw new AccountDeletionPurgeUnavailableError();
             }
-            if (!advanced.readyForUserDeletion) {
-              return "user_has_owned_data" as const;
+            admittedMemoryDeletion = advanced.admitted;
+            memoryReady = advanced.readyForUserDeletion;
+            deletionKicks.memory = memoryHook!.kick;
+          }
+          if (ownedData.knowledge > 0) {
+            const advanced = await knowledgeHook!.advance(tx, {
+              now: new Date(),
+              userId: user.id
+            });
+            if (!advanced.deletionPending && !advanced.readyForUserDeletion) {
+              throw new AccountDeletionPurgeUnavailableError();
             }
+            admittedKnowledgeDeletion = advanced.admitted;
+            knowledgeReady = advanced.readyForUserDeletion;
+            deletionKicks.knowledge = knowledgeHook!.kick;
+          }
+          if (!knowledgeReady || !memoryReady) {
+            return "deletion_pending" as const;
           }
 
           await tx.user.delete({
@@ -134,10 +179,18 @@ export function createAdminUserSessionCommands(
           return "deleted" as const;
         });
         if (admittedMemoryDeletion) {
-          accountMemoryDeletionHook()?.kick();
+          deletionKicks.memory?.();
+        }
+        if (admittedKnowledgeDeletion) {
+          deletionKicks.knowledge?.();
         }
         return result;
       } catch (error) {
+        if (error instanceof AccountDeletionPurgeUnavailableError) {
+          admittedKnowledgeDeletion = false;
+          admittedMemoryDeletion = false;
+          return "user_has_owned_data";
+        }
         if (error instanceof MemoryCoordinatorError) {
           return "user_has_owned_data";
         }
@@ -244,14 +297,13 @@ export function createAdminUserSessionCommands(
 async function countUserOwnedAppData(
   tx: Prisma.TransactionClient,
   userId: string
-): Promise<Readonly<{ memory: number; nonMemory: number }>> {
+): Promise<Readonly<{ knowledge: number; memory: number; nonPurgeable: number }>> {
   const [
     accessGrants,
     authSessionsRevoked,
     attachments,
     chats,
     folders,
-    knowledgeBases,
     mcpGrants,
     mcpOAuthConnections,
     mcpUserServers,
@@ -261,7 +313,8 @@ async function countUserOwnedAppData(
     settings,
     sharedSnapshots,
     usageEvents,
-    memory
+    memory,
+    knowledge
   ] = await Promise.all([
     tx.accessGrant.count({
       where: {
@@ -286,11 +339,6 @@ async function countUserOwnedAppData(
     tx.folder.count({
       where: {
         userId
-      }
-    }),
-    tx.knowledgeBase.count({
-      where: {
-        ownerUserId: userId
       }
     }),
     tx.mcpGrant.count({
@@ -340,16 +388,17 @@ async function countUserOwnedAppData(
         userId
       }
     }),
-    countAccountMemoryOwnedData(tx, userId)
+    countAccountMemoryOwnedData(tx, userId),
+    countAccountKnowledgeOwnedData(tx, userId)
   ]);
 
-  const nonMemory = adminOwnedAppDataCount({
+  const nonPurgeable = adminOwnedAppDataCount({
     accessGrants,
     authSessionsRevoked,
     attachments,
     chats,
     folders,
-    knowledgeBases,
+    knowledgeBases: 0,
     memory: 0,
     mcpGrants,
     mcpOAuthConnections,
@@ -361,7 +410,7 @@ async function countUserOwnedAppData(
     sharedSnapshots,
     usageEvents
   });
-  return { memory, nonMemory };
+  return { knowledge, memory, nonPurgeable };
 }
 
 async function lockActiveAdmins(tx: Prisma.TransactionClient): Promise<{ id: string }[]> {

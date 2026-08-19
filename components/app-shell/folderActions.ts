@@ -8,6 +8,7 @@ import { shellFetch } from "@/components/app-shell/shellApi";
 import type { WorkspaceChatSummary, FolderSummary, Notice } from "@/components/app-shell/types";
 import type { WorkspaceFolderMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 import { sortFoldersByOrder, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { EMPTY_KNOWLEDGE_SELECTION } from "@/lib/contracts/knowledge";
 
 type FolderActionsInput = {
   activeChat: WorkspaceChatSummary | null;
@@ -247,7 +248,7 @@ export function createFolderActions({
       const controls = useComposerControlStore.getState();
       if (currentProjectId === body.folder.id && controls.knowledgePlanSource === "project") {
         controls.setSelectedKnowledgePlan(
-          body.folder.defaultKnowledgePlan?.baseIds ?? [],
+          body.folder.defaultKnowledgePlan ?? EMPTY_KNOWLEDGE_SELECTION,
           body.folder.defaultKnowledgePlan ? "project" : "off",
           "system"
         );

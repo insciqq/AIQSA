@@ -1,6 +1,11 @@
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
-import { KNOWLEDGE_PLAN_MAX_BASES } from "@/lib/contracts/knowledge";
+import {
+  decodeKnowledgePlan,
+  EMPTY_KNOWLEDGE_SELECTION,
+  explicitKnowledgeSelection,
+  type KnowledgeSelection
+} from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { create } from "zustand";
@@ -48,6 +53,7 @@ export type ComposerManualDraftBackup = {
   backgroundMode: boolean;
   maxOutputTokens: string;
   knowledgePlanSource: Exclude<ComposerKnowledgePlanSource, "assistant">;
+  knowledgeSelection: KnowledgeSelection;
   reasoningEffort: string;
   reasoningMode: string;
   searchPlanMode: SearchPlanMode;
@@ -67,6 +73,7 @@ export type ComposerControlSnapshot = {
   backgroundMode: boolean;
   maxOutputTokens: string;
   knowledgePlanSource: ComposerKnowledgePlanSource;
+  knowledgeSelection: KnowledgeSelection;
   reasoningEffort: string;
   reasoningMode: string;
   selectedAssistant: ComposerAssistantSelection | null;
@@ -88,7 +95,8 @@ export type ComposerControlStore = ComposerControlSnapshot & {
     assistant: ComposerAssistantSelection;
     controlDefaults: ControlDefaults;
     modelId: string;
-    knowledgeBaseIds: readonly string[];
+    knowledgeBaseIds?: readonly string[];
+    knowledgeSelection?: KnowledgeSelection;
     provider: string;
     searchOptionIds: readonly string[];
     searchPlanMode: SearchPlanMode;
@@ -104,7 +112,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   setMaxOutputTokens(value: string): void;
   setMcpSelection(value: ComposerMcpSelection): void;
   setSelectedKnowledgePlan(
-    baseIds: readonly string[],
+    selection: KnowledgeSelection | readonly string[],
     source?: Exclude<ComposerKnowledgePlanSource, "assistant">,
     origin?: ComposerControlChangeOrigin
   ): void;
@@ -131,6 +139,7 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   maxOutputTokens: "128000",
   mcpSelection: { mode: "auto" },
   knowledgePlanSource: "off",
+  knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
   reasoningEffort: "medium",
   reasoningMode: "standard",
   selectedAssistant: null,
@@ -150,11 +159,20 @@ function applyUpdate<T>(current: T, update: StateUpdate<T>): T {
   return typeof update === "function" ? (update as (value: T) => T)(current) : update;
 }
 
+function clonedKnowledgeSelection(selection: KnowledgeSelection): KnowledgeSelection {
+  return {
+    ...selection,
+    baseIds: [...selection.baseIds],
+    sourceIds: [...selection.sourceIds]
+  };
+}
+
 function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBackup {
   return {
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
     mcpSelection: { ...state.mcpSelection },
+    knowledgeSelection: clonedKnowledgeSelection(state.knowledgeSelection),
     knowledgePlanSource: state.knowledgePlanSource === "assistant" ? "off" : state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
@@ -194,12 +212,15 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   applyAssistantSelection({
     assistant,
     controlDefaults,
-    knowledgeBaseIds,
+    knowledgeBaseIds = [],
+    knowledgeSelection,
     modelId,
     provider,
     searchOptionIds,
     searchPlanMode
   }) {
+    const resolvedKnowledgeSelection = knowledgeSelection ??
+      explicitKnowledgeSelection({ baseIds: knowledgeBaseIds });
     set((state) => ({
       assistantManualBackup: state.selectedAssistant
         ? state.assistantManualBackup
@@ -208,6 +229,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       backgroundMode: controlDefaults.backgroundMode,
       maxOutputTokens: controlDefaults.maxOutputTokens,
       knowledgePlanSource: "assistant",
+      knowledgeSelection: clonedKnowledgeSelection(resolvedKnowledgeSelection),
       reasoningEffort: controlDefaults.reasoningEffort,
       reasoningMode: controlDefaults.reasoningMode,
       selectedAssistant: {
@@ -215,7 +237,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
         includedSkills: assistant.includedSkills?.map((skill) => ({ ...skill })) ?? [],
         starterPrompts: [...assistant.starterPrompts]
       },
-      selectedKnowledgeBaseIds: [...knowledgeBaseIds],
+      selectedKnowledgeBaseIds: [...resolvedKnowledgeSelection.baseIds],
       selectedModelId: modelId,
       selectedProvider: provider,
       selectedSearchOptionIds: [...searchOptionIds],
@@ -266,6 +288,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
               backgroundMode: backup.backgroundMode,
               maxOutputTokens: backup.maxOutputTokens,
               mcpSelection: { ...backup.mcpSelection },
+              knowledgeSelection: clonedKnowledgeSelection(backup.knowledgeSelection),
               knowledgePlanSource: backup.knowledgePlanSource,
               reasoningEffort: backup.reasoningEffort,
               reasoningMode: backup.reasoningMode,
@@ -295,16 +318,17 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
           mcpSelection: { ...mcpSelection }
         });
   },
-  setSelectedKnowledgePlan(baseIds, source = "explicit", origin = "user") {
-    const selectedKnowledgeBaseIds = [...baseIds];
-    if (
-      selectedKnowledgeBaseIds.length > KNOWLEDGE_PLAN_MAX_BASES ||
-      new Set(selectedKnowledgeBaseIds).size !== selectedKnowledgeBaseIds.length
-    ) return;
+  setSelectedKnowledgePlan(selection, source = "explicit", origin = "user") {
+    const decoded = decodeKnowledgePlan(Array.isArray(selection)
+      ? explicitKnowledgeSelection({ baseIds: selection })
+      : selection);
+    if (!decoded.ok) return;
+    const knowledgeSelection = decoded.plan;
     set((state) => ({
       ...droppedAssistantIdentity(state, origin),
       knowledgePlanSource: source,
-      selectedKnowledgeBaseIds
+      knowledgeSelection,
+      selectedKnowledgeBaseIds: [...knowledgeSelection.baseIds]
     }));
   },
   setReasoningEffort(value) {

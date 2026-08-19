@@ -15,6 +15,7 @@ import {
 import { prisma } from "../prisma";
 import { kickDefaultMcpRuntime } from "../mcp/defaultRuntime";
 import { emailDispatcher } from "../email/defaultEmail";
+import { getDefaultAccountKnowledgeDeletionHook } from "../knowledge/accountDeletion";
 import { kickDefaultMemoryCoordinator } from "../memory/coordinator/defaultCoordinator";
 import {
   getDefaultAccountMemoryDeletionHook,
@@ -25,6 +26,7 @@ tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
 
 export const authMailer = createDispatcherAuthMailer(emailDispatcher);
 export const adminRepository = createPrismaAdminRepository(prisma, {
+  accountKnowledgeDeletionHook: getDefaultAccountKnowledgeDeletionHook,
   accountMemoryDeletionHook: getDefaultAccountMemoryDeletionHook
 });
 export const oauthIdentityRepository = createPrismaOAuthIdentityRepository(prisma);

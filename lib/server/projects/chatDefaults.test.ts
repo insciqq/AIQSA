@@ -27,7 +27,7 @@ function answerModel(input: { enabled?: boolean; family?: string; id: string }) 
   };
 }
 
-function knowledgeBase(input: { enabled?: boolean; id: string }) {
+function knowledgeBase(input: { enabled?: boolean; id: string; sourceId?: string }) {
   return {
     knowledgeBase: {
       activeIndexGeneration: {
@@ -44,10 +44,23 @@ function knowledgeBase(input: { enabled?: boolean; id: string }) {
           enabled: input.enabled ?? true,
           modelClass: "embedding"
         },
+        profileRevisionId: "profile-1",
         status: "active"
       },
       archivedAt: null,
-      id: input.id
+      id: input.id,
+      sourceMemberships: input.sourceId ? [{
+        source: {
+          currentVersion: {
+            artifacts: [{
+              hierarchicalIndexes: [{ state: "ready" }],
+              profileRevisionId: "profile-1",
+              state: "ready"
+            }]
+          }
+        },
+        sourceId: input.sourceId
+      }] : []
     }
   };
 }
@@ -57,7 +70,7 @@ describe("Project chat default projection", () => {
     const prisma = {
       projectKnowledgeBaseBinding: {
         findMany: vi.fn().mockResolvedValue([
-          knowledgeBase({ id: "knowledge-safe" }),
+          knowledgeBase({ id: "knowledge-safe", sourceId: "source-safe" }),
           knowledgeBase({ enabled: false, id: "knowledge-revoked" })
         ])
       },
@@ -71,18 +84,33 @@ describe("Project chat default projection", () => {
 
     const authority = await loadProjectChatDefaultAuthority(prisma, "project-1");
     expect(projectChatDefaultsProjection(authority, {
-      defaultKnowledgePlan: { baseIds: ["knowledge-safe", "knowledge-revoked"] },
+      defaultKnowledgePlan: {
+        baseIds: ["knowledge-safe", "knowledge-revoked"],
+        mode: "explicit",
+        sourceIds: ["source-safe", "source-revoked"],
+        version: 1
+      },
       defaultModelId: "model-safe"
     })).toEqual({
-      defaultKnowledgePlan: { baseIds: ["knowledge-safe"] },
+      defaultKnowledgePlan: {
+        baseIds: ["knowledge-safe"],
+        mode: "explicit",
+        sourceIds: ["source-safe"],
+        version: 1
+      },
       defaultModelId: "model-safe",
       defaultProvider: "connection:model-safe"
     });
     expect(projectChatDefaultsProjection(authority, {
-      defaultKnowledgePlan: { baseIds: ["knowledge-revoked"] },
+      defaultKnowledgePlan: {
+        baseIds: ["knowledge-revoked"],
+        mode: "explicit",
+        sourceIds: ["source-revoked"],
+        version: 1
+      },
       defaultModelId: "model-revoked"
     })).toEqual({
-      defaultKnowledgePlan: { baseIds: [] },
+      defaultKnowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       defaultModelId: null,
       defaultProvider: null
     });

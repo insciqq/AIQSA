@@ -689,7 +689,14 @@ describe("chat route handlers", () => {
     const folderPatch = createUpdateFolderHandler({ repository, resolveAuth: auth.resolveAuth });
     const chatResponse = await chatPatch(
       new Request("http://app.local/api/chats/chat-1", {
-        body: JSON.stringify({ defaultKnowledgePlan: { baseIds: ["base-1", "base-2"] } }),
+        body: JSON.stringify({
+          defaultKnowledgePlan: {
+            baseIds: ["base-1", "base-2"],
+            mode: "explicit",
+            sourceIds: [],
+            version: 1
+          }
+        }),
         headers: { cookie: authCookie() },
         method: "PATCH"
       }),
@@ -706,7 +713,9 @@ describe("chat route handlers", () => {
 
     expect(chatResponse.status).toBe(200);
     expect(folderResponse.status).toBe(200);
-    expect(chatDefault).toEqual({ baseIds: ["base-1", "base-2"] });
+    expect(chatDefault).toEqual({
+      baseIds: ["base-1", "base-2"], mode: "explicit", sourceIds: [], version: 1
+    });
     expect(folderDefault).toBeNull();
   });
 
@@ -726,7 +735,11 @@ describe("chat route handlers", () => {
     };
     const response = await createUpdateChatHandler({ repository, resolveAuth: auth.resolveAuth })(
       new Request("http://app.local/api/chats/chat-1", {
-        body: JSON.stringify({ defaultKnowledgePlan: { baseIds: ["same", "same"] } }),
+        body: JSON.stringify({
+          defaultKnowledgePlan: {
+            baseIds: ["same", "same"], mode: "explicit", sourceIds: [], version: 1
+          }
+        }),
         headers: { cookie: authCookie() },
         method: "PATCH"
       }),

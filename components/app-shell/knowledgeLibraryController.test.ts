@@ -1,14 +1,20 @@
 import type {
   KnowledgeBaseDetail,
   KnowledgeBaseListResponse,
-  KnowledgeDocumentStatus,
-  KnowledgeIngestionStatusResponse
+  KnowledgeReadiness,
+  KnowledgeSourceDetail,
+  KnowledgeSourceListResponse
 } from "@/lib/contracts/knowledge";
+import type {
+  KnowledgeUploadBatch,
+  KnowledgeUploadItem
+} from "@/lib/contracts/knowledgeUploads";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetKnowledgeLibraryStoreForTest } from "@/tests/support/appShellStores";
 import {
   buildKnowledgeLibraryView,
-  createKnowledgeLibraryActions
+  createKnowledgeLibraryActions,
+  mergeKnowledgeUploadBatch
 } from "./knowledgeLibraryController";
 import {
   initialKnowledgeLibrarySnapshot,
@@ -16,114 +22,172 @@ import {
 } from "./knowledgeLibraryStore";
 
 const mocks = vi.hoisted(() => ({
-  archiveKnowledgeDocument: vi.fn(),
+  addKnowledgeSourceMemberships: vi.fn(),
+  cancelKnowledgeUploadItem: vi.fn(),
+  checkpointKnowledgeUploadPart: vi.fn(),
   createKnowledgeBase: vi.fn(),
+  createKnowledgeUploadBatch: vi.fn(),
   fetchKnowledgeBaseDetail: vi.fn(),
   fetchKnowledgeBaseList: vi.fn(),
-  fetchKnowledgeDocuments: vi.fn(),
+  fetchKnowledgeSourceDetail: vi.fn(),
+  fetchKnowledgeSources: vi.fn(),
+  fetchKnowledgeUploadBatches: vi.fn(),
+  moveKnowledgeSource: vi.fn(),
   publishKnowledgeBase: vi.fn(),
-  replaceKnowledgeDocument: vi.fn(),
-  retryKnowledgeDocumentVersion: vi.fn(),
+  replaceKnowledgeSource: vi.fn(),
+  retryKnowledgeUploadItem: vi.fn(),
+  removeKnowledgeSourceMembership: vi.fn(),
+  reprocessKnowledgeSource: vi.fn(),
   revokeKnowledgeBasePublication: vi.fn(),
-  startKnowledgeReindex: vi.fn(),
+  settleKnowledgeUploadItem: vi.fn(),
+  startKnowledgeUploadItem: vi.fn(),
   updateKnowledgeBase: vi.fn(),
-  uploadKnowledgeDocument: vi.fn()
+  updateKnowledgeSource: vi.fn(),
+  uploadKnowledgeMultipartPart: vi.fn(),
+  uploadKnowledgeProxyContent: vi.fn()
 }));
 
 vi.mock("@/components/knowledge/knowledgeApi", () => mocks);
 
+function readiness(
+  state: KnowledgeReadiness["state"] = "ready",
+  totalSources = 1
+): KnowledgeReadiness {
+  const attentionSources = state === "needs_attention" ? 1 : 0;
+  const processingSources = state === "processing" ? 1 : 0;
+  const readySources = Math.max(0, totalSources - attentionSources - processingSources);
+  return {
+    attentionSources,
+    processingSources,
+    readySources,
+    state,
+    supportReference: state === "needs_attention" ? "K-0123456789AB" : null,
+    totalSources
+  };
+}
+
 function base(overrides: Partial<KnowledgeBaseDetail> = {}): KnowledgeBaseDetail {
   return {
-    activeGeneration: {
-      chunkingProfileVersion: 1,
-      embeddingDeployment: {
-        connectionDisplayName: "Embedding connection",
-        id: "embedding-1",
-        indexSupported: true,
-        modelDisplayName: "Embed model",
-        provider: "openai",
-        targetDimension: 1536
-      },
-      embeddingDeploymentId: "embedding-1",
-      id: "generation-1",
-      indexedContentRevision: 1,
-      targetDimension: 1536,
-      vectorSpaceFingerprint: "vector-space-1"
-    },
     archived: false,
-    contentRevision: 1,
+    deletionPending: false,
     description: "Product references",
-    documentCount: 1,
+    sourceCount: 1,
     id: "base-1",
     name: "Product docs",
     owned: true,
     ownerDisplayName: "Owner",
+    purgeScheduledAt: null,
     publications: [],
-    published: false,
+    readiness: readiness(),
     scope: { kind: "owner" },
-    updatedAt: "2026-08-08T10:00:00.000Z",
+    trashed: false,
+    trashedAt: null,
+    updatedAt: "2026-08-18T10:00:00.000Z",
     version: 1,
     ...overrides
   };
 }
 
-function documentStatus(overrides: Partial<KnowledgeDocumentStatus> = {}): KnowledgeDocumentStatus {
+function uploadItem(
+  id: string,
+  fileName: string,
+  clientFileId: string,
+  overrides: Partial<KnowledgeUploadItem> = {}
+): KnowledgeUploadItem {
   return {
-    archived: false,
-    currentVersionId: "version-1",
-    id: "document-1",
-    versions: [{
-      byteSize: 12,
-      completedAt: null,
-      createdAt: "2026-08-08T10:00:00.000Z",
-      current: true,
-      embeddedChunks: 0,
-      errorCode: null,
-      fileName: "guide.md",
-      id: "version-1",
-      mimeType: "text/markdown",
-      pageCount: null,
-      payloadAvailable: true,
-      state: "queued",
-      totalChunks: null,
-      updatedAt: "2026-08-08T10:00:00.000Z",
-      versionNumber: 1,
-      visibleFromRevision: null,
-      visibleUntilRevision: null
-    }],
+    attemptNumber: 1,
+    byteSize: fileName.startsWith("first") ? 5 : fileName.startsWith("second") ? 6 : 7,
+    clientFileId,
+    failureCode: null,
+    fileName,
+    id,
+    sourceId: null,
+    state: "queued",
+    transport: { kind: "proxy", uploadUrl: `/api/upload/${id}` },
+    updatedAt: "2026-08-18T10:00:00.000Z",
+    uploadedBytes: 0,
     ...overrides
   };
 }
 
-function ingestion(overrides: Partial<KnowledgeIngestionStatusResponse> = {}): KnowledgeIngestionStatusResponse {
-  const documents = overrides.documents ?? [documentStatus()];
+function uploadBatch(
+  items: KnowledgeUploadItem[],
+  id = "batch-1"
+): KnowledgeUploadBatch {
   return {
-    documents,
-    owned: overrides.owned ?? true,
-    pagination: overrides.pagination ?? {
-      page: 1,
-      pageSize: 25,
-      query: "",
-      totalItems: documents.length,
-      totalPages: documents.length > 0 ? 1 : 0
-    },
-    reindex: overrides.reindex ?? null
+    createdAt: "2026-08-18T10:00:00.000Z",
+    id,
+    items,
+    updatedAt: "2026-08-18T10:00:00.000Z"
   };
 }
 
 function listData(overrides: Partial<KnowledgeBaseListResponse> = {}): KnowledgeBaseListResponse {
   const detail = base();
-  const { documentCount: _count, publications: _publications, ...summary } = detail;
+  const { publications: _publications, ...summary } = detail;
   return {
-    embeddingDeployments: [detail.activeGeneration.embeddingDeployment!],
     knowledgeBases: [summary],
     publishableGroups: [{ id: "group-1", name: "Research" }],
-    viewer: { canPublishInstallation: true },
+    viewer: { canCreate: true, canPublishInstallation: true, maxUploadBytes: 50_000_000 },
     ...overrides
   };
 }
 
-function installDetail(detail = base(), status = ingestion()) {
+function source(overrides: Partial<KnowledgeSourceDetail> = {}): KnowledgeSourceDetail {
+  const currentVersion = {
+    byteSize: 2_400,
+    createdAt: "2026-08-18T10:00:00.000Z",
+    fileName: "product-guide.pdf",
+    isCurrent: true,
+    isPending: false,
+    pageCount: 8,
+    readiness: { state: "ready" as const, supportReference: null, warningCodes: [] },
+    versionNumber: 2
+  };
+  return {
+    currentVersion,
+    deletionPending: false,
+    description: "Canonical product guidance",
+    eligibleBases: [{ archived: false, id: "base-2", name: "Assistant docs" }],
+    id: "source-1",
+    membershipCount: 1,
+    memberships: [{ archived: false, id: "base-1", name: "Product docs" }],
+    name: "Product guide",
+    owned: true,
+    ownerDisplayName: "Owner",
+    purgeScheduledAt: null,
+    readiness: { state: "ready", supportReference: null, warningCodes: [] },
+    replacement: { state: "none", supportReference: null },
+    tags: ["product", "onboarding"],
+    trashed: false,
+    trashedAt: null,
+    updatedAt: "2026-08-18T10:00:00.000Z",
+    version: 3,
+    versions: [currentVersion],
+    ...overrides
+  };
+}
+
+function sourceList(
+  value: KnowledgeSourceDetail = source(),
+  overrides: Partial<KnowledgeSourceListResponse> = {}
+): KnowledgeSourceListResponse {
+  const { eligibleBases: _eligibleBases, memberships: _memberships, versions: _versions, ...summary } = value;
+  return {
+    pagination: { page: 1, pageSize: 25, query: "", totalItems: 1, totalPages: 1 },
+    sources: [summary],
+    ...overrides
+  };
+}
+
+function emptySourceList(query = ""): KnowledgeSourceListResponse {
+  return {
+    pagination: { page: 1, pageSize: 25, query, totalItems: 0, totalPages: 0 },
+    sources: []
+  };
+}
+
+function installDetail(detail = base(), sources = sourceList()) {
   useKnowledgeLibraryStore.setState({
     ...initialKnowledgeLibrarySnapshot,
     data: listData(),
@@ -135,16 +199,48 @@ function installDetail(detail = base(), status = ingestion()) {
       baseline: JSON.stringify([detail.description, detail.name]),
       dataError: null,
       dataState: "ready",
-      documentPage: status.pagination.page,
-      documentQuery: status.pagination.query,
       draft: { description: detail.description, name: detail.name },
       error: null,
-      ingestion: status,
       requestId: 0,
-      upload: null
+      sourcePage: sources.pagination.page,
+      sourceQuery: sources.pagination.query,
+      sources,
+      uploadBatches: [],
+      uploadErrors: {},
+      uploadProgress: {}
     },
     open: true,
     task: "detail"
+  });
+}
+
+function installSourceDetail(value = source()) {
+  const draft = {
+    description: value.description,
+    name: value.name,
+    tags: value.tags.join(", ")
+  };
+  useKnowledgeLibraryStore.setState({
+    ...initialKnowledgeLibrarySnapshot,
+    catalog: "sources",
+    data: listData(),
+    dataState: "ready",
+    open: true,
+    sourceData: sourceList(value),
+    sourceDataState: "ready",
+    sourceDetail: {
+      actionId: null,
+      baseline: JSON.stringify([draft.description, draft.name, draft.tags]),
+      dataError: null,
+      dataState: "ready",
+      draft,
+      error: null,
+      requestId: 0,
+      returnBaseId: null,
+      source: value,
+      sourceId: value.id
+    },
+    task: "source-detail"
   });
 }
 
@@ -161,47 +257,175 @@ beforeEach(() => {
   resetKnowledgeLibraryStoreForTest();
   mocks.fetchKnowledgeBaseList.mockResolvedValue({ data: listData(), ok: true });
   mocks.fetchKnowledgeBaseDetail.mockResolvedValue({ data: base(), ok: true });
-  mocks.fetchKnowledgeDocuments.mockResolvedValue({ data: ingestion(), ok: true });
+  mocks.fetchKnowledgeSourceDetail.mockResolvedValue({ data: source(), ok: true });
+  mocks.fetchKnowledgeSources.mockResolvedValue({ data: sourceList(), ok: true });
+  mocks.fetchKnowledgeUploadBatches.mockResolvedValue({ data: { batches: [] }, ok: true });
 });
 
 describe("knowledgeLibraryController", () => {
-  it("loads the server-authorized list and creates with the exact selected embedding deployment", async () => {
-    const created = base({ id: "base-new", name: "Runbooks" });
+  it("does not let an out-of-order batch response regress a sibling or replacement attempt", () => {
+    const current = uploadBatch([
+      uploadItem("item-1", "first.md", "file-1", {
+        sourceId: "source-1",
+        state: "ready",
+        transport: null,
+        updatedAt: "2026-08-18T10:02:00.000Z",
+        uploadedBytes: 5
+      }),
+      uploadItem("item-2", "second.md", "file-2", {
+        attemptNumber: 2,
+        state: "queued",
+        updatedAt: "2026-08-18T10:03:00.000Z"
+      })
+    ]);
+    const stale = uploadBatch([
+      uploadItem("item-1", "first.md", "file-1", {
+        state: "uploading",
+        updatedAt: "2026-08-18T10:01:00.000Z"
+      }),
+      uploadItem("item-2", "second.md", "file-2", {
+        attemptNumber: 1,
+        failureCode: "knowledge_storage_unavailable",
+        state: "needs_attention",
+        transport: null,
+        updatedAt: "2026-08-18T10:04:00.000Z"
+      })
+    ]);
+
+    expect(mergeKnowledgeUploadBatch(current, stale).items).toMatchObject([
+      { id: "item-1", state: "ready" },
+      { attemptNumber: 2, id: "item-2", state: "queued" }
+    ]);
+
+    const afterDeletion = {
+      ...current,
+      items: [current.items[1]!],
+      updatedAt: "2026-08-18T10:05:00.000Z"
+    };
+    expect(mergeKnowledgeUploadBatch(afterDeletion, {
+      ...stale,
+      updatedAt: "2026-08-18T10:04:00.000Z"
+    }).items.map(({ id }) => id)).toEqual(["item-2"]);
+  });
+
+  it("creates from name, description, and optional files without technical authority", async () => {
+    const created = base({
+      sourceCount: 0,
+      id: "base-new",
+      name: "Runbooks",
+      readiness: readiness("empty", 0)
+    });
     mocks.createKnowledgeBase.mockResolvedValue({ data: created, ok: true });
     mocks.fetchKnowledgeBaseDetail.mockResolvedValue({ data: created, ok: true });
+    mocks.fetchKnowledgeSources.mockResolvedValue({ data: emptySourceList(), ok: true });
+    let admittedBatch: KnowledgeUploadBatch;
+    mocks.createKnowledgeUploadBatch.mockImplementation(async (_baseId, input) => {
+      const candidate = input as {
+        files: Array<{ byteSize: number; clientFileId: string; fileName: string }>;
+      };
+      admittedBatch = uploadBatch(candidate.files.map((file, index) => uploadItem(
+        `item-${index + 1}`,
+        file.fileName,
+        file.clientFileId,
+        { byteSize: file.byteSize }
+      )));
+      return { data: admittedBatch, ok: true };
+    });
+    mocks.startKnowledgeUploadItem.mockImplementation(async () => ({
+      data: uploadBatch(admittedBatch.items.map((item) => ({ ...item, state: "uploading" }))),
+      ok: true
+    }));
+    mocks.uploadKnowledgeProxyContent.mockImplementation(async () => ({
+      data: uploadBatch(admittedBatch.items.map((item) => ({
+        ...item,
+        state: "upload_complete",
+        transport: null,
+        uploadedBytes: item.byteSize
+      }))),
+      ok: true
+    }));
+    mocks.settleKnowledgeUploadItem.mockImplementation(async () => ({
+      data: uploadBatch(admittedBatch.items.map((item) => ({
+        ...item,
+        sourceId: "source-new",
+        state: "processing",
+        transport: null,
+        uploadedBytes: item.byteSize
+      }))),
+      ok: true
+    }));
     const actions = createKnowledgeLibraryActions();
 
     actions.openLibrary();
     await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().dataState).toBe("ready"));
     actions.openCreate();
-    let view = buildKnowledgeLibraryView(actions, useKnowledgeLibraryStore.getState())!;
-    expect(view.create?.draft.embeddingDeploymentId).toBe("embedding-1");
-    view.create?.onChange({ description: "Operational references", name: "Runbooks" });
-    view = buildKnowledgeLibraryView(actions, useKnowledgeLibraryStore.getState())!;
+    const file = new File(["runbook"], "runbook.md", { type: "text/markdown" });
+    const view = buildKnowledgeLibraryView(actions, useKnowledgeLibraryStore.getState())!;
+    expect(view.create?.maxUploadBytes).toBe(50_000_000);
+    view.create?.onChange({
+      description: "Operational references",
+      files: [file],
+      name: "Runbooks"
+    });
 
     await actions.saveCreate();
 
     expect(mocks.createKnowledgeBase).toHaveBeenCalledWith({
       description: "Operational references",
-      embeddingDeploymentId: "embedding-1",
       name: "Runbooks"
     });
+    await vi.waitFor(() => expect(mocks.settleKnowledgeUploadItem).toHaveBeenCalledOnce());
+    expect(mocks.createKnowledgeUploadBatch).toHaveBeenCalledWith("base-new", {
+      clientBatchId: expect.stringMatching(/^batch-/u),
+      files: [{
+        byteSize: file.size,
+        clientFileId: expect.stringMatching(/^file-/u),
+        fileName: "runbook.md",
+        mimeType: "text/markdown"
+      }]
+    });
+    expect(JSON.stringify(mocks.createKnowledgeBase.mock.calls[0]?.[0])).not.toMatch(
+      /embedding|generation|dimension|fingerprint/u
+    );
     expect(useKnowledgeLibraryStore.getState()).toMatchObject({
       task: "detail",
       detail: { baseId: "base-new" },
-      notice: { kind: "success" }
+      notice: { kind: "success", text: expect.stringContaining("1 file uploaded") }
+    });
+  });
+
+  it("keeps the create action unavailable when installation processing is unavailable", async () => {
+    const actions = createKnowledgeLibraryActions();
+    useKnowledgeLibraryStore.setState({
+      ...initialKnowledgeLibrarySnapshot,
+      data: listData({
+        viewer: {
+          canCreate: false,
+          canPublishInstallation: false,
+          maxUploadBytes: 50_000_000
+        }
+      }),
+      dataState: "ready",
+      open: true
+    });
+
+    actions.openCreate();
+
+    expect(useKnowledgeLibraryStore.getState()).toMatchObject({
+      task: "list",
+      notice: { text: "Knowledge is temporarily unavailable. Contact your administrator." }
     });
   });
 
   it("ignores a late detail response after another base becomes current", async () => {
     const firstDetail = deferred<{ data: KnowledgeBaseDetail; ok: true }>();
-    const firstIngestion = deferred<{ data: KnowledgeIngestionStatusResponse; ok: true }>();
+    const firstSources = deferred<{ data: KnowledgeSourceListResponse; ok: true }>();
     mocks.fetchKnowledgeBaseDetail
       .mockReturnValueOnce(firstDetail.promise)
       .mockResolvedValueOnce({ data: base({ id: "base-2", name: "Second" }), ok: true });
-    mocks.fetchKnowledgeDocuments
-      .mockReturnValueOnce(firstIngestion.promise)
-      .mockResolvedValueOnce({ data: ingestion(), ok: true });
+    mocks.fetchKnowledgeSources
+      .mockReturnValueOnce(firstSources.promise)
+      .mockResolvedValueOnce({ data: sourceList(), ok: true });
     const actions = createKnowledgeLibraryActions();
     useKnowledgeLibraryStore.setState({
       ...initialKnowledgeLibrarySnapshot,
@@ -215,8 +439,7 @@ describe("knowledgeLibraryController", () => {
     actions.openDetail("base-2");
     await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().detail?.base?.id).toBe("base-2"));
     firstDetail.resolve({ data: base({ id: "base-1", name: "Late first" }), ok: true });
-    firstIngestion.resolve({ data: ingestion(), ok: true });
-    await vi.waitFor(() => expect(mocks.fetchKnowledgeBaseDetail).toHaveBeenCalledTimes(2));
+    firstSources.resolve({ data: sourceList(), ok: true });
 
     expect(useKnowledgeLibraryStore.getState().detail).toMatchObject({
       baseId: "base-2",
@@ -224,7 +447,7 @@ describe("knowledgeLibraryController", () => {
     });
   });
 
-  it("refreshes lifecycle evidence without overwriting a dirty CAS baseline", async () => {
+  it("refreshes processing state without overwriting a dirty settings draft", async () => {
     installDetail();
     useKnowledgeLibraryStore.getState().patchDetail({
       draft: { description: "Unsaved", name: "Local edit" }
@@ -233,10 +456,7 @@ describe("knowledgeLibraryController", () => {
       data: base({ description: "External", name: "External edit", version: 2 }),
       ok: true
     });
-    const ready = documentStatus({
-      versions: [{ ...documentStatus().versions[0], embeddedChunks: 2, state: "ready", totalChunks: 2 }]
-    });
-    mocks.fetchKnowledgeDocuments.mockResolvedValue({ data: ingestion({ documents: [ready] }), ok: true });
+    mocks.fetchKnowledgeSources.mockResolvedValue({ data: sourceList(), ok: true });
     const actions = createKnowledgeLibraryActions();
 
     await actions.refreshDetail("base-1", true);
@@ -244,148 +464,369 @@ describe("knowledgeLibraryController", () => {
     expect(useKnowledgeLibraryStore.getState().detail).toMatchObject({
       base: { version: 1 },
       draft: { description: "Unsaved", name: "Local edit" },
-      ingestion: { documents: [{ versions: [{ state: "ready" }] }] }
+      sources: { sources: [{ readiness: { state: "ready" } }] }
     });
   });
 
-  it("keeps the active filename query and page in refreshes", async () => {
-    installDetail(base(), ingestion({
-      pagination: {
-        page: 1,
-        pageSize: 25,
-        query: "",
-        totalItems: 51,
-        totalPages: 3
-      }
-    }));
-    const actions = createKnowledgeLibraryActions();
-    const pageTwo = ingestion({
-      pagination: {
-        page: 2,
-        pageSize: 25,
-        query: "",
-        totalItems: 51,
-        totalPages: 3
-      }
-    });
-    mocks.fetchKnowledgeDocuments.mockResolvedValueOnce({ data: pageTwo, ok: true });
-
-    actions.setDocumentPage(2);
-    await vi.waitFor(() => expect(mocks.fetchKnowledgeDocuments).toHaveBeenCalledWith(
-      "base-1",
-      { page: 2, pageSize: 25, query: "" }
-    ));
-    await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().detail?.documentPage).toBe(2));
-
-    const searched = ingestion({
-      documents: [],
-      pagination: {
-        page: 1,
-        pageSize: 25,
-        query: "incident",
-        totalItems: 0,
-        totalPages: 0
-      }
-    });
-    mocks.fetchKnowledgeDocuments.mockResolvedValueOnce({ data: searched, ok: true });
-    actions.setDocumentQuery("incident");
-    await vi.waitFor(() => expect(mocks.fetchKnowledgeDocuments).toHaveBeenLastCalledWith(
-      "base-1",
-      { page: 1, pageSize: 25, query: "incident" }
-    ));
-    await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().detail).toMatchObject({
-      documentPage: 1,
-      documentQuery: "incident",
-      ingestion: { documents: [] }
-    }));
-  });
-
-  it("uploads multiple files sequentially and keeps partial failure truthful", async () => {
-    installDetail(base({ documentCount: 0 }), ingestion({ documents: [] }));
-    const first = deferred<{ data: KnowledgeDocumentStatus; ok: true }>();
-    mocks.uploadKnowledgeDocument
-      .mockReturnValueOnce(first.promise)
-      .mockResolvedValueOnce({ code: "unsupported_type", message: "raw", ok: false });
+  it("uploads files concurrently and keeps a partial transfer failure file-scoped", async () => {
+    installDetail(base({ sourceCount: 0, readiness: readiness("empty", 0) }), emptySourceList());
     const actions = createKnowledgeLibraryActions();
     const files = [
       new File(["first"], "first.md", { type: "text/markdown" }),
-      new File(["second"], "second.svg", { type: "image/svg+xml" })
+      new File(["second"], "second.md", { type: "text/markdown" })
     ];
+    let admittedBatch!: KnowledgeUploadBatch;
+    mocks.createKnowledgeUploadBatch.mockImplementation(async (_baseId, input) => {
+      const candidate = input as {
+        files: Array<{ byteSize: number; clientFileId: string; fileName: string }>;
+      };
+      admittedBatch = uploadBatch(candidate.files.map((file, index) => uploadItem(
+        `item-${index + 1}`,
+        file.fileName,
+        file.clientFileId,
+        { byteSize: file.byteSize }
+      )));
+      return { data: admittedBatch, ok: true };
+    });
+    mocks.startKnowledgeUploadItem.mockImplementation(async () => ({
+      data: uploadBatch(admittedBatch.items.map((item) => ({ ...item, state: "uploading" }))),
+      ok: true
+    }));
+    const uploadedBatch = uploadBatch([]);
+    const first = deferred<{ data: KnowledgeUploadBatch; ok: true }>();
+    mocks.uploadKnowledgeProxyContent
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ code: "unsupported_type", message: "raw", ok: false });
+    mocks.settleKnowledgeUploadItem.mockImplementation(async (_baseId, _batchId, itemId) => ({
+      data: uploadBatch(admittedBatch.items.map((item) => item.id === itemId
+        ? {
+            ...item,
+            sourceId: "source-1",
+            state: "processing",
+            transport: null,
+            uploadedBytes: item.byteSize
+          }
+        : item)),
+      ok: true
+    }));
 
     const pending = actions.uploadFiles(files);
-    await vi.waitFor(() => expect(mocks.uploadKnowledgeDocument).toHaveBeenCalledTimes(1));
-    expect(mocks.uploadKnowledgeDocument).toHaveBeenNthCalledWith(1, "base-1", files[0]);
-    expect(useKnowledgeLibraryStore.getState().detail?.upload).toMatchObject({ current: 1, total: 2 });
-    first.resolve({ data: documentStatus(), ok: true });
-    await pending;
-
-    expect(mocks.uploadKnowledgeDocument).toHaveBeenNthCalledWith(2, "base-1", files[1]);
-    expect(useKnowledgeLibraryStore.getState().notice?.text).toContain("1 document queued; 1 could not be uploaded");
-    expect(useKnowledgeLibraryStore.getState().notice?.text).toContain("not supported");
-    expect(useKnowledgeLibraryStore.getState().notice?.text).not.toContain("raw");
-  });
-
-  it("drives retry, reindex, publication, revocation, document removal, and archive through their owners", async () => {
-    const failed = documentStatus({
-      versions: [{ ...documentStatus().versions[0], errorCode: "embedding_failed", state: "failed" }]
-    });
-    installDetail(base(), ingestion({ documents: [failed] }));
-    const retried = documentStatus();
-    mocks.retryKnowledgeDocumentVersion.mockResolvedValue({ data: retried, ok: true });
-    mocks.startKnowledgeReindex.mockResolvedValue({
+    await vi.waitFor(() => expect(mocks.uploadKnowledgeProxyContent).toHaveBeenCalledTimes(2));
+    first.resolve({
       data: {
-        completedDocuments: 0,
-        createdAt: "2026-08-08T10:00:00.000Z",
-        errorCode: null,
-        failedDocuments: 0,
-        generationId: "generation-2",
-        status: "building",
-        targetContentRevision: 1,
-        totalDocuments: 1
+        ...uploadedBatch,
+        id: admittedBatch.id,
+        items: admittedBatch.items.map((item) => item.id === "item-1"
+          ? {
+              ...item,
+              state: "upload_complete",
+              transport: null,
+              uploadedBytes: item.byteSize
+            }
+          : item)
       },
       ok: true
     });
+    await pending;
+
+    expect(mocks.uploadKnowledgeProxyContent).toHaveBeenNthCalledWith(
+      2,
+      "/api/upload/item-2",
+      files[1],
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(useKnowledgeLibraryStore.getState().notice?.text).toContain("1 file needs attention");
+    expect(useKnowledgeLibraryStore.getState().notice?.text).not.toContain("raw");
+  });
+
+  it("checkpoints multipart parts before settling one file", async () => {
+    installDetail(base({ sourceCount: 0, readiness: readiness("empty", 0) }), emptySourceList());
+    const actions = createKnowledgeLibraryActions();
+    const file = new File(["0123456789"], "large.md", { type: "text/markdown" });
+    const queued = uploadItem("item-multipart", file.name, "client-file", {
+      byteSize: file.size,
+      transport: {
+        kind: "multipart",
+        parts: [
+          { byteOffset: 0, byteSize: 5, complete: false, partNumber: 1, uploadUrl: "https://storage.test/part-1" },
+          { byteOffset: 5, byteSize: 5, complete: false, partNumber: 2, uploadUrl: "https://storage.test/part-2" }
+        ]
+      }
+    });
+    let admitted = uploadBatch([queued], "batch-multipart");
+    mocks.createKnowledgeUploadBatch.mockImplementation(async (_baseId, input) => {
+      const clientFileId = (input as { files: Array<{ clientFileId: string }> }).files[0]!.clientFileId;
+      admitted = uploadBatch([{ ...queued, clientFileId }], "batch-multipart");
+      return { data: admitted, ok: true };
+    });
+    mocks.startKnowledgeUploadItem.mockImplementation(async () => ({
+      data: uploadBatch([{ ...admitted.items[0]!, state: "uploading" }], admitted.id),
+      ok: true
+    }));
+    mocks.uploadKnowledgeMultipartPart
+      .mockResolvedValueOnce({ data: "etag-1", ok: true })
+      .mockResolvedValueOnce({ data: "etag-2", ok: true });
+    mocks.checkpointKnowledgeUploadPart.mockImplementation(async (
+      _baseId,
+      _batchId,
+      _itemId,
+      partNumber
+    ) => ({
+      data: uploadBatch([{
+        ...queued,
+        state: "uploading",
+        transport: {
+          kind: "multipart",
+          parts: (queued.transport as Extract<KnowledgeUploadItem["transport"], { kind: "multipart" }>).parts
+            .map((part) => part.partNumber <= Number(partNumber)
+              ? { ...part, complete: true, uploadUrl: null }
+              : part)
+        },
+        uploadedBytes: Number(partNumber) * 5
+      }], admitted.id),
+      ok: true
+    }));
+    mocks.settleKnowledgeUploadItem.mockResolvedValue({
+      data: uploadBatch([{
+        ...queued,
+        sourceId: "source-multipart",
+        state: "processing",
+        transport: null,
+        uploadedBytes: file.size
+      }], admitted.id),
+      ok: true
+    });
+
+    await actions.uploadFiles([file]);
+
+    expect(mocks.uploadKnowledgeMultipartPart).toHaveBeenCalledTimes(2);
+    expect((mocks.uploadKnowledgeMultipartPart.mock.calls[0]?.[1] as Blob).size).toBe(5);
+    expect((mocks.uploadKnowledgeMultipartPart.mock.calls[1]?.[1] as Blob).size).toBe(5);
+    expect(mocks.checkpointKnowledgeUploadPart).toHaveBeenNthCalledWith(
+      1,
+      "base-1",
+      "batch-multipart",
+      "item-multipart",
+      1,
+      { attemptNumber: 1, byteSize: 5, etag: "etag-1" }
+    );
+    expect(mocks.settleKnowledgeUploadItem).toHaveBeenCalledWith(
+      "base-1",
+      "batch-multipart",
+      "item-multipart",
+      1
+    );
+    expect(useKnowledgeLibraryStore.getState().detail?.uploadProgress).toEqual({});
+  });
+
+  it("settles an upload-complete receipt after reload without reselecting bytes", async () => {
+    installDetail(base({ sourceCount: 0, readiness: readiness("empty", 0) }), emptySourceList());
+    const stored = uploadItem("item-stored", "stored.md", "client-stored", {
+      sourceId: null,
+      state: "upload_complete",
+      transport: null,
+      uploadedBytes: 7
+    });
+    const batch = uploadBatch([stored], "batch-stored");
+    mocks.fetchKnowledgeUploadBatches.mockResolvedValue({ data: { batches: [batch] }, ok: true });
+    mocks.settleKnowledgeUploadItem.mockResolvedValue({
+      data: uploadBatch([{
+        ...stored,
+        sourceId: "source-stored",
+        state: "processing"
+      }], batch.id),
+      ok: true
+    });
+    const actions = createKnowledgeLibraryActions();
+
+    await actions.refreshDetail("base-1", true);
+    await vi.waitFor(() => expect(mocks.settleKnowledgeUploadItem).toHaveBeenCalledOnce());
+
+    expect(mocks.uploadKnowledgeProxyContent).not.toHaveBeenCalled();
+    expect(mocks.uploadKnowledgeMultipartPart).not.toHaveBeenCalled();
+    expect(mocks.settleKnowledgeUploadItem).toHaveBeenCalledWith(
+      "base-1",
+      "batch-stored",
+      "item-stored",
+      1
+    );
+  });
+
+  it("restarts an interrupted proxy stream with a fenced attempt after reload", async () => {
+    installDetail(base({ sourceCount: 0, readiness: readiness("empty", 0) }), emptySourceList());
+    const file = new File(["resume"], "resume.md", { type: "text/markdown" });
+    const interrupted = uploadItem("item-interrupted", file.name, "client-interrupted", {
+      byteSize: file.size,
+      state: "uploading",
+      transport: { kind: "proxy", uploadUrl: "/api/upload/item-interrupted?attempt=1" }
+    });
+    const batch = uploadBatch([interrupted], "batch-interrupted");
+    useKnowledgeLibraryStore.getState().patchDetail({ uploadBatches: [batch] });
+    const restarted = uploadBatch([{
+      ...interrupted,
+      attemptNumber: 2,
+      state: "queued",
+      transport: { kind: "proxy", uploadUrl: "/api/upload/item-interrupted?attempt=2" }
+    }], batch.id);
+    mocks.retryKnowledgeUploadItem.mockResolvedValue({ data: restarted, ok: true });
+    mocks.startKnowledgeUploadItem.mockResolvedValue({
+      data: uploadBatch([{ ...restarted.items[0]!, state: "uploading" }], batch.id),
+      ok: true
+    });
+    mocks.uploadKnowledgeProxyContent.mockResolvedValue({
+      data: uploadBatch([{
+        ...restarted.items[0]!,
+        state: "upload_complete",
+        transport: null,
+        uploadedBytes: file.size
+      }], batch.id),
+      ok: true
+    });
+    mocks.settleKnowledgeUploadItem.mockResolvedValue({
+      data: uploadBatch([{
+        ...restarted.items[0]!,
+        sourceId: "source-resumed",
+        state: "processing",
+        transport: null,
+        uploadedBytes: file.size
+      }], batch.id),
+      ok: true
+    });
+    const actions = createKnowledgeLibraryActions();
+
+    await actions.resumeUpload(batch.id, interrupted.id, file);
+
+    expect(mocks.retryKnowledgeUploadItem).toHaveBeenCalledWith(
+      "base-1",
+      batch.id,
+      interrupted.id,
+      1
+    );
+    expect(mocks.startKnowledgeUploadItem).toHaveBeenCalledWith(
+      "base-1",
+      batch.id,
+      interrupted.id,
+      2
+    );
+    expect(mocks.uploadKnowledgeProxyContent).toHaveBeenCalledWith(
+      "/api/upload/item-interrupted?attempt=2",
+      file,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  it("aborts an active transfer and persists file-scoped cancellation", async () => {
+    installDetail(base({ sourceCount: 0, readiness: readiness("empty", 0) }), emptySourceList());
+    const actions = createKnowledgeLibraryActions();
+    const file = new File(["cancel"], "cancel.md", { type: "text/markdown" });
+    const queued = uploadItem("item-cancel", file.name, "client-cancel", { byteSize: file.size });
+    let batch = uploadBatch([queued], "batch-cancel");
+    let persistedBatch = batch;
+    mocks.fetchKnowledgeUploadBatches.mockImplementation(async () => ({
+      data: { batches: [persistedBatch] },
+      ok: true
+    }));
+    mocks.createKnowledgeUploadBatch.mockImplementation(async (_baseId, input) => {
+      const clientFileId = (input as { files: Array<{ clientFileId: string }> }).files[0]!.clientFileId;
+      batch = uploadBatch([{ ...queued, clientFileId }], "batch-cancel");
+      return { data: batch, ok: true };
+    });
+    mocks.startKnowledgeUploadItem.mockImplementation(async () => ({
+      data: uploadBatch([{ ...batch.items[0]!, state: "uploading" }], batch.id),
+      ok: true
+    }));
+    mocks.uploadKnowledgeProxyContent.mockImplementation(async (_url, _file, input) =>
+      new Promise((resolve) => {
+        (input as { signal: AbortSignal }).signal.addEventListener("abort", () => resolve({
+          code: "knowledge_upload_cancelled",
+          message: "raw cancellation",
+          ok: false
+        }), { once: true });
+      }));
+    const cancelResponse = deferred<{ data: KnowledgeUploadBatch; ok: true }>();
+    mocks.cancelKnowledgeUploadItem.mockReturnValue(cancelResponse.promise);
+
+    const upload = actions.uploadFiles([file]);
+    await vi.waitFor(() => expect(mocks.uploadKnowledgeProxyContent).toHaveBeenCalledOnce());
+    const cancellation = actions.cancelUpload(batch.id, queued.id);
+    persistedBatch = uploadBatch([{
+        ...queued,
+        state: "cancelled",
+        transport: null,
+        uploadedBytes: 0
+      }], batch.id);
+    cancelResponse.resolve({
+      data: persistedBatch,
+      ok: true
+    });
+    await Promise.all([upload, cancellation]);
+
+    expect(mocks.cancelKnowledgeUploadItem).toHaveBeenCalledWith(
+      "base-1",
+      "batch-cancel",
+      "item-cancel",
+      1
+    );
+    await vi.waitFor(() => expect(
+      useKnowledgeLibraryStore.getState().detail?.uploadBatches[0]?.items[0]?.state
+    ).toBe("cancelled"));
+    expect(useKnowledgeLibraryStore.getState().detail?.uploadErrors).toEqual({});
+    expect(useKnowledgeLibraryStore.getState().notice?.text).toContain("1 file cancelled");
+  });
+
+  it("drives user actions through their existing server owners", async () => {
+    const affected = source({
+      readiness: {
+        state: "needs_attention",
+        supportReference: "K-0123456789AB",
+        warningCodes: []
+      }
+    });
+    installDetail(
+      base({ readiness: readiness("needs_attention") }),
+      sourceList(affected)
+    );
     mocks.publishKnowledgeBase.mockResolvedValue({
       data: {
         groupId: "group-1",
         groupName: "Research",
         id: "publication-1",
         scope: "group",
-        updatedAt: "2026-08-08T10:01:00.000Z"
+        updatedAt: "2026-08-18T10:01:00.000Z"
       },
       ok: true
     });
     mocks.revokeKnowledgeBasePublication.mockResolvedValue({ data: undefined, ok: true });
-    mocks.archiveKnowledgeDocument.mockResolvedValue({ data: undefined, ok: true });
-    mocks.updateKnowledgeBase.mockResolvedValue({ data: base({ archived: true, version: 2 }), ok: true });
+    mocks.removeKnowledgeSourceMembership.mockResolvedValue({ data: affected, ok: true });
+    mocks.updateKnowledgeBase.mockResolvedValue({
+      data: base({ archived: true, readiness: readiness("archived"), version: 2 }),
+      ok: true
+    });
     const actions = createKnowledgeLibraryActions();
 
-    await actions.retryDocument("document-1", "version-1");
-    await actions.reindex("embedding-1");
     await actions.publish({ groupId: "group-1", scope: "group" });
     await actions.revokePublication("publication-1");
-    await actions.removeDocument("document-1");
+    await actions.removeSourceFromDetail("source-1");
     await actions.setArchived("base-1", true);
 
-    expect(mocks.retryKnowledgeDocumentVersion).toHaveBeenCalledWith("base-1", "document-1", "version-1");
-    expect(mocks.startKnowledgeReindex).toHaveBeenCalledWith("base-1", "embedding-1");
-    expect(mocks.publishKnowledgeBase).toHaveBeenCalledWith("base-1", { groupId: "group-1", scope: "group" });
-    expect(mocks.revokeKnowledgeBasePublication).toHaveBeenCalledWith("base-1", "publication-1");
-    expect(mocks.archiveKnowledgeDocument).toHaveBeenCalledWith("base-1", "document-1");
-    expect(mocks.updateKnowledgeBase).toHaveBeenCalledWith("base-1", { archived: true, expectedVersion: 1 });
+    expect(mocks.publishKnowledgeBase).toHaveBeenCalledWith("base-1", {
+      groupId: "group-1",
+      scope: "group"
+    });
+    expect(mocks.removeKnowledgeSourceMembership).toHaveBeenCalledWith("source-1", "base-1");
   });
 
-  it("keeps shared bases read-only and exposes only the list entries authorized by the server", async () => {
+  it("keeps a shared Base read-only", async () => {
     const shared = base({
-      activeGeneration: { ...base().activeGeneration, embeddingDeployment: null, embeddingDeploymentId: null },
       owned: false,
       ownerDisplayName: "Publisher",
       publications: null,
       scope: { groupNames: ["Research"], kind: "group" }
     });
-    installDetail(shared, ingestion({ owned: false }));
+    installDetail(shared, sourceList(source({ owned: false, ownerDisplayName: "Publisher" })));
     const actions = createKnowledgeLibraryActions();
     const view = buildKnowledgeLibraryView(actions, useKnowledgeLibraryStore.getState())!;
+    expect(view.detail?.maxUploadBytes).toBe(50_000_000);
 
     view.detail?.onArchiveToggle(true);
     view.detail?.onUpload([new File(["x"], "x.md")]);
@@ -393,8 +834,166 @@ describe("knowledgeLibraryController", () => {
     await Promise.resolve();
 
     expect(mocks.updateKnowledgeBase).not.toHaveBeenCalled();
-    expect(mocks.uploadKnowledgeDocument).not.toHaveBeenCalled();
+    expect(mocks.createKnowledgeUploadBatch).not.toHaveBeenCalled();
     expect(mocks.publishKnowledgeBase).not.toHaveBeenCalled();
-    expect(view.list.knowledgeBases.map((candidate) => candidate.id)).toEqual(["base-1"]);
+  });
+
+  it("loads the Source catalog from server filters and ignores stale responses", async () => {
+    const first = deferred<{ data: KnowledgeSourceListResponse; ok: true }>();
+    const second = deferred<{ data: KnowledgeSourceListResponse; ok: true }>();
+    mocks.fetchKnowledgeSources
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    useKnowledgeLibraryStore.setState({
+      ...initialKnowledgeLibrarySnapshot,
+      data: listData(),
+      dataState: "ready",
+      open: true
+    });
+    const actions = createKnowledgeLibraryActions();
+
+    actions.setCatalog("sources");
+    await vi.waitFor(() => expect(mocks.fetchKnowledgeSources).toHaveBeenCalledOnce());
+    actions.setSourceQuery("policy");
+    await vi.waitFor(() => expect(mocks.fetchKnowledgeSources).toHaveBeenCalledTimes(2));
+    const latest = source({ id: "source-2", name: "Policy manual" });
+    second.resolve({
+      data: sourceList(latest, {
+        pagination: { page: 1, pageSize: 25, query: "policy", totalItems: 1, totalPages: 1 }
+      }),
+      ok: true
+    });
+    await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().sourceData?.sources[0]?.id)
+      .toBe("source-2"));
+    first.resolve({ data: sourceList(source({ name: "Late result" })), ok: true });
+    await Promise.resolve();
+
+    expect(mocks.fetchKnowledgeSources).toHaveBeenNthCalledWith(1, {
+      filter: "all",
+      page: 1,
+      query: ""
+    });
+    expect(mocks.fetchKnowledgeSources).toHaveBeenNthCalledWith(2, {
+      filter: "all",
+      page: 1,
+      query: "policy"
+    });
+    expect(useKnowledgeLibraryStore.getState().sourceData?.sources[0]?.name).toBe("Policy manual");
+  });
+
+  it("edits a Source and keeps add, move, and remove as distinct membership calls", async () => {
+    installSourceDetail();
+    const saved = source({
+      description: "Updated guidance",
+      name: "Product handbook",
+      tags: ["product", "policy"],
+      version: 4
+    });
+    mocks.updateKnowledgeSource.mockResolvedValue({ data: saved, ok: true });
+    const added = source({
+      eligibleBases: [{ archived: false, id: "base-3", name: "Project docs" }],
+      membershipCount: 2,
+      memberships: [
+        { archived: false, id: "base-1", name: "Product docs" },
+        { archived: false, id: "base-2", name: "Assistant docs" }
+      ],
+      version: 5
+    });
+    const moved = source({
+      eligibleBases: [{ archived: false, id: "base-1", name: "Product docs" }],
+      membershipCount: 2,
+      memberships: [
+        { archived: false, id: "base-2", name: "Assistant docs" },
+        { archived: false, id: "base-3", name: "Project docs" }
+      ],
+      version: 6
+    });
+    const removed = source({
+      eligibleBases: [
+        { archived: false, id: "base-1", name: "Product docs" },
+        { archived: false, id: "base-2", name: "Assistant docs" }
+      ],
+      membershipCount: 1,
+      memberships: [{ archived: false, id: "base-3", name: "Project docs" }],
+      version: 7
+    });
+    mocks.addKnowledgeSourceMemberships.mockResolvedValue({ data: added, ok: true });
+    mocks.moveKnowledgeSource.mockResolvedValue({ data: moved, ok: true });
+    mocks.removeKnowledgeSourceMembership.mockResolvedValue({ data: removed, ok: true });
+    const actions = createKnowledgeLibraryActions();
+    const sourceView = buildKnowledgeLibraryView(actions, useKnowledgeLibraryStore.getState())!;
+    sourceView.sourceDetail?.onChange({
+      description: " Updated guidance ",
+      name: " Product handbook ",
+      tags: "product, policy"
+    });
+
+    await actions.saveSourceDetail();
+    await actions.addSourceToBases(["base-2"]);
+    await actions.moveSourceMembership("base-1", "base-3");
+    await actions.removeSourceFromBase("base-2");
+
+    expect(mocks.updateKnowledgeSource).toHaveBeenCalledWith("source-1", {
+      description: "Updated guidance",
+      expectedVersion: 3,
+      name: "Product handbook",
+      tags: ["product", "policy"]
+    });
+    expect(mocks.addKnowledgeSourceMemberships).toHaveBeenCalledWith("source-1", ["base-2"]);
+    expect(mocks.moveKnowledgeSource).toHaveBeenCalledWith("source-1", {
+      fromBaseId: "base-1",
+      toBaseId: "base-3"
+    });
+    expect(mocks.removeKnowledgeSourceMembership).toHaveBeenCalledWith("source-1", "base-2");
+    expect(useKnowledgeLibraryStore.getState().sourceDetail?.source).toMatchObject({
+      membershipCount: 1,
+      version: 7
+    });
+  });
+
+  it("replaces and retries the canonical Source from its own detail view", async () => {
+    installSourceDetail(source({
+      replacement: { state: "needs_attention", supportReference: "K-RETRY" }
+    }));
+    const processing = source({
+      replacement: { state: "processing", supportReference: null },
+      version: 4
+    });
+    mocks.replaceKnowledgeSource.mockResolvedValue({ data: processing, ok: true });
+    mocks.reprocessKnowledgeSource.mockResolvedValue({ data: processing, ok: true });
+    const actions = createKnowledgeLibraryActions();
+    const file = new File(["replacement"], "replacement.md", { type: "text/markdown" });
+
+    await actions.replaceSource(file);
+    await actions.reprocessSource();
+
+    expect(mocks.replaceKnowledgeSource).toHaveBeenCalledWith("source-1", file);
+    expect(mocks.reprocessKnowledgeSource).toHaveBeenCalledWith("source-1");
+    expect(useKnowledgeLibraryStore.getState().sourceDetail?.source).toMatchObject({
+      replacement: { state: "processing" },
+      version: 4
+    });
+    expect(useKnowledgeLibraryStore.getState().notice?.text).toBe(
+      "Source processing restarted."
+    );
+  });
+
+  it("blocks Source membership changes while its metadata draft is dirty", async () => {
+    installSourceDetail();
+    const actions = createKnowledgeLibraryActions();
+    useKnowledgeLibraryStore.getState().patchSourceDetail({
+      draft: { description: "Unsaved", name: "Product guide", tags: "product, onboarding" }
+    });
+
+    await actions.addSourceToBases(["base-2"]);
+    await actions.moveSourceMembership("base-1", "base-2");
+    await actions.removeSourceFromBase("base-1");
+
+    expect(mocks.addKnowledgeSourceMemberships).not.toHaveBeenCalled();
+    expect(mocks.moveKnowledgeSource).not.toHaveBeenCalled();
+    expect(mocks.removeKnowledgeSourceMembership).not.toHaveBeenCalled();
+    expect(useKnowledgeLibraryStore.getState().notice?.text).toBe(
+      "Save or discard Source changes first."
+    );
   });
 });

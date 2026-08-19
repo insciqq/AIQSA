@@ -84,7 +84,7 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
     chatId: "provider-admin-test",
     content: { blocks: [{ text: "Reply with OK.", type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: input.model.capabilities,
     modelId: input.model.upstreamModelId,

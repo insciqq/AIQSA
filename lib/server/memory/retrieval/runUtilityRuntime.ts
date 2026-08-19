@@ -183,7 +183,7 @@ function providerRequest(
     chatId: "memory-retrieval",
     content: { blocks: [{ text: JSON.stringify(payload), type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,

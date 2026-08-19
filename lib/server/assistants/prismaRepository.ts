@@ -4,6 +4,10 @@ import {
   decodeAssistantRunControls,
   type AssistantDraft
 } from "../../contracts/assistants";
+import {
+  decodeKnowledgePlan,
+  type KnowledgeSelection
+} from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
@@ -36,7 +40,7 @@ export type AssistantRevisionRow = {
   description: string;
   developerPrompt: string | null;
   id: string;
-  knowledgeBaseIds: string[];
+  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
   providerModelId: string;
@@ -123,7 +127,7 @@ const revisionSelect = {
   description: true,
   developerPrompt: true,
   id: true,
-  knowledgeBaseIds: true,
+  knowledgeSelection: true,
   mcpServerIds: true,
   name: true,
   providerModelId: true,
@@ -144,6 +148,11 @@ const revisionSelect = {
 type RevisionRecord = Prisma.AssistantRevisionGetPayload<{ select: typeof revisionSelect }>;
 
 function revisionRow(record: RevisionRecord): AssistantRevisionRow {
+  const knowledge = decodeKnowledgePlan(record.knowledgeSelection);
+  if (!knowledge.ok || knowledge.plan.mode === "all_my_knowledge" ||
+    knowledge.plan.mode === "inherited") {
+    throw new Error("assistant_revision_integrity_invalid");
+  }
   return {
     authorDisplayName: record.author?.displayName ?? null,
     avatar: record.avatar,
@@ -152,7 +161,7 @@ function revisionRow(record: RevisionRecord): AssistantRevisionRow {
     description: record.description,
     developerPrompt: record.developerPrompt,
     id: record.id,
-    knowledgeBaseIds: [...record.knowledgeBaseIds],
+    knowledgeSelection: knowledge.plan,
     mcpServerIds: [...record.mcpServerIds],
     name: record.name,
     providerModelId: record.providerModelId,
@@ -197,7 +206,7 @@ function revisionDraftData(draft: AssistantDraft): Omit<
     category: draft.category,
     description: draft.description,
     developerPrompt: draft.developerPrompt,
-    knowledgeBaseIds: [...draft.knowledgeBaseIds],
+    knowledgeSelection: draft.knowledgeSelection as unknown as Prisma.InputJsonValue,
     mcpServerIds: [...draft.mcpServerIds],
     name: draft.name,
     providerModelId: draft.providerModelId,
@@ -426,6 +435,25 @@ function distinctKnowledgeBaseIds(knowledgeBaseIds: readonly string[]): string[]
   return [...new Set(knowledgeBaseIds)].sort((left, right) => left.localeCompare(right));
 }
 
+function distinctKnowledgeSourceIds(sourceIds: readonly string[]): string[] {
+  return [...new Set(sourceIds)].sort((left, right) => left.localeCompare(right));
+}
+
+async function lockKnowledgeSourceRowsForDuplicate(
+  tx: Prisma.TransactionClient,
+  sourceIds: readonly string[]
+): Promise<boolean> {
+  if (sourceIds.length === 0) return true;
+  const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT source."id"
+    FROM "KnowledgeSource" AS source
+    WHERE source."id" IN (${Prisma.join(sourceIds)})
+    ORDER BY source."id"
+    FOR SHARE OF source
+  `);
+  return locked.length === sourceIds.length;
+}
+
 async function lockKnowledgeBaseRowsForDuplicate(
   tx: Prisma.TransactionClient,
   knowledgeBaseIds: readonly string[]
@@ -463,16 +491,15 @@ async function lockKnowledgePublicationRowsForDuplicate(
 async function allKnowledgeDependenciesAvailable(
   tx: Prisma.TransactionClient,
   userId: string,
-  knowledgeBaseIds: readonly string[]
+  selection: KnowledgeSelection
 ): Promise<boolean> {
-  if (knowledgeBaseIds.length === 0) return true;
-
   const groupIds = await activeMemberGroupIds(tx, userId);
   const accessible = await tx.knowledgeBase.findMany({
     select: { id: true },
     where: {
       archivedAt: null,
-      id: { in: [...knowledgeBaseIds] },
+      deletionRequestedAt: null,
+      trashedAt: null,
       OR: [
         { ownerUserId: userId },
         {
@@ -494,7 +521,29 @@ async function allKnowledgeDependenciesAvailable(
       ]
     }
   });
-  return accessible.length === knowledgeBaseIds.length;
+  const accessibleIds = new Set(accessible.map(({ id }) => id));
+  if (selection.baseIds.some((id) => !accessibleIds.has(id))) return false;
+  if (selection.sourceIds.length === 0) return true;
+  const sources = await tx.knowledgeSource.findMany({
+    select: { id: true },
+    where: {
+      deletionRequestedAt: null,
+      id: { in: [...selection.sourceIds] },
+      OR: [
+        { ownerUserId: userId },
+        {
+          baseMemberships: {
+            some: {
+              knowledgeBaseId: { in: [...accessibleIds] },
+              removedAt: null
+            }
+          }
+        }
+      ],
+      trashedAt: null
+    }
+  });
+  return sources.length === selection.sourceIds.length;
 }
 
 export function createPrismaAssistantRepository(
@@ -664,11 +713,14 @@ export function createPrismaAssistantRepository(
             await lockAssistantPublicationRowsForDuplicate(tx, assistantId);
             const provisionalSource = await loadAccessEntryWith(tx, userId, assistantId);
             if (!provisionalSource) return { kind: "not_found" as const };
-            const knowledgeBaseIds = distinctKnowledgeBaseIds(
-              provisionalSource.revision.knowledgeBaseIds
-            );
+            const knowledgeSelection = provisionalSource.revision.knowledgeSelection;
+            const knowledgeBaseIds = distinctKnowledgeBaseIds(knowledgeSelection.baseIds);
+            const knowledgeSourceIds = distinctKnowledgeSourceIds(knowledgeSelection.sourceIds);
             const skillIds = distinctSortedSkillIds(provisionalSource.revision.skillIds);
             if (!await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds)) {
+              return { kind: "knowledge_not_available" as const };
+            }
+            if (!await lockKnowledgeSourceRowsForDuplicate(tx, knowledgeSourceIds)) {
               return { kind: "knowledge_not_available" as const };
             }
             if (!await lockSkillDefinitionRows(tx, skillIds)) {
@@ -689,7 +741,7 @@ export function createPrismaAssistantRepository(
             if (!await allKnowledgeDependenciesAvailable(
               tx,
               userId,
-              knowledgeBaseIds
+              knowledgeSelection
             )) {
               return { kind: "knowledge_not_available" as const };
             }
@@ -725,7 +777,7 @@ export function createPrismaAssistantRepository(
                 category: source.revision.category,
                 description: source.revision.description,
                 developerPrompt: source.revision.developerPrompt,
-                knowledgeBaseIds: [...source.revision.knowledgeBaseIds],
+                knowledgeSelection: source.revision.knowledgeSelection as unknown as Prisma.InputJsonValue,
                 mcpServerIds: [...source.revision.mcpServerIds],
                 name: copyName,
                 providerModelId: source.revision.providerModelId,
@@ -1269,12 +1321,16 @@ export function createPrismaAssistantRepository(
       const runControls = decodeAssistantRunControls(revision.runControls ?? {});
       const searchPlan = decodeSearchPlan(revision.searchPlan);
       const avatar = decodeAssistantAvatarRecipe(revision.avatar);
-      if (!runControls || !searchPlan.ok || !avatar) throw new Error("assistant_revision_integrity_invalid");
+      const knowledge = decodeKnowledgePlan(revision.knowledgeSelection);
+      if (!runControls || !searchPlan.ok || !avatar || !knowledge.ok ||
+        knowledge.plan.mode === "all_my_knowledge" || knowledge.plan.mode === "inherited") {
+        throw new Error("assistant_revision_integrity_invalid");
+      }
       return {
         assistant: {
           assistantId,
           developerPrompt: revision.developerPrompt,
-          knowledgeBaseIds: [...revision.knowledgeBaseIds],
+          knowledgeSelection: knowledge.plan,
           mcpServerIds: [...revision.mcpServerIds],
           name: revision.name,
           provider: revision.providerModel.connectionId,
@@ -1310,7 +1366,7 @@ export function createPrismaAssistantRepository(
       const assistant: AssistantRunMaterialization = {
         assistantId: entry.id,
         developerPrompt: entry.revision.developerPrompt,
-        knowledgeBaseIds: [...entry.revision.knowledgeBaseIds],
+        knowledgeSelection: entry.revision.knowledgeSelection,
         mcpServerIds: [...entry.revision.mcpServerIds],
         name: entry.revision.name,
         provider: model.connectionId,

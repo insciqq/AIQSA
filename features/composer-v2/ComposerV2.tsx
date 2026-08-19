@@ -34,8 +34,16 @@ import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import type {
   ComposerConfig,
-  ComposerConfigKnowledgeBase
+  ComposerConfigKnowledgeBase,
+  ComposerConfigKnowledgeSource
 } from "@/lib/contracts/composerConfig";
+import {
+  allMyKnowledgeSelection,
+  EMPTY_KNOWLEDGE_SELECTION,
+  explicitKnowledgeSelection,
+  KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH,
+  type KnowledgeSelection
+} from "@/lib/contracts/knowledge";
 import {
   useEffect,
   useId,
@@ -85,6 +93,9 @@ export type ComposerV2Props = Readonly<{
   onRejectedFiles?(files: readonly File[]): void;
   onRetryConfig?(): void;
   onRetryAttachment?(id: string): void;
+  onSearchKnowledgeSources?(query: string): Promise<readonly ComposerConfigKnowledgeSource[]>;
+  onSelectKnowledgeSelection?(selection: KnowledgeSelection): void;
+  /** @deprecated Use onSelectKnowledgeSelection. */
   onSelectKnowledgeBaseIds?(baseIds: readonly string[]): void;
   onSelectModel?(model: CatalogModel): void;
   onSelectMcp?(selection: McpRunSelection): void;
@@ -100,6 +111,8 @@ export type ComposerV2Props = Readonly<{
     includedSkills?: readonly { id: string; name: string }[];
   }) | null;
   mcpSelection?: McpRunSelection;
+  selectedKnowledgeSelection?: KnowledgeSelection;
+  /** @deprecated Use selectedKnowledgeSelection. */
   selectedKnowledgeBaseIds?: readonly string[];
   selectedModelId: string;
   selectedProvider: string;
@@ -294,6 +307,8 @@ export function ComposerV2({
   onRejectedFiles,
   onRetryConfig,
   onRetryAttachment,
+  onSearchKnowledgeSources,
+  onSelectKnowledgeSelection,
   onSelectKnowledgeBaseIds,
   onSelectMcp,
   onSelectModel,
@@ -305,6 +320,7 @@ export function ComposerV2({
   runId = null,
   selectedAssistant = null,
   mcpSelection = { mode: "auto" },
+  selectedKnowledgeSelection,
   selectedKnowledgeBaseIds = [],
   selectedModelId,
   selectedProvider,
@@ -319,6 +335,11 @@ export function ComposerV2({
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
   const [modelQuery, setModelQuery] = useState("");
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [knowledgeSourceSearch, setKnowledgeSourceSearch] = useState<Readonly<{
+    query: string;
+    sources: readonly ComposerConfigKnowledgeSource[];
+  }> | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -373,13 +394,32 @@ export function ComposerV2({
     currentModel?.searchStrategyIds.filter((id) => id !== "search-disabled") ?? []
   );
   const selectedSearchSet = new Set(selectedSearchOptionIds);
-  const selectedKnowledgeSet = new Set(selectedKnowledgeBaseIds);
+  const knowledgeSelection = selectedKnowledgeSelection ??
+    explicitKnowledgeSelection({ baseIds: selectedKnowledgeBaseIds });
+  const selectedKnowledgeSet = new Set(knowledgeSelection.baseIds);
+  const selectedKnowledgeSourceSet = new Set(knowledgeSelection.sourceIds);
   const knowledgeById = new Map(
     (config?.knowledgeBases ?? []).map((base) => [base.id, base])
   );
-  const selectedKnowledgeNames = selectedKnowledgeBaseIds.map(
-    (id) => knowledgeById.get(id)?.name ?? "unavailable"
-  );
+  const normalizedKnowledgeQuery = knowledgeQuery.trim().toLocaleLowerCase();
+  const remotelyMatchedSources = knowledgeSourceSearch?.query === normalizedKnowledgeQuery
+    ? knowledgeSourceSearch.sources
+    : [];
+  const allKnowledgeSources = [...new Map([
+    ...(config?.knowledgeSources ?? []),
+    ...remotelyMatchedSources
+  ].map((source) => [source.id, source] as const)).values()];
+  const sourceById = new Map(allKnowledgeSources.map((source) => [source.id, source]));
+  const selectedKnowledgeNames = [
+    ...knowledgeSelection.baseIds.map((id) => knowledgeById.get(id)?.name ?? "unavailable"),
+    ...knowledgeSelection.sourceIds.map((id) => sourceById.get(id)?.name ?? "unavailable")
+  ];
+  const visibleKnowledgeBases = (config?.knowledgeBases ?? []).filter((base) =>
+    !normalizedKnowledgeQuery || `${base.name} ${base.description}`.toLocaleLowerCase()
+      .includes(normalizedKnowledgeQuery));
+  const visibleKnowledgeSources = allKnowledgeSources.filter((source) =>
+    !normalizedKnowledgeQuery || `${source.name} ${source.description}`.toLocaleLowerCase()
+      .includes(normalizedKnowledgeQuery));
   const availableSkills = (config?.skills ?? []).filter((skill) => !skill.archived);
   const selectedSkillSet = new Set(selectedSkillIds);
   const selectedSkillNames = selectedSkillIds.map((id) =>
@@ -427,6 +467,24 @@ export function ComposerV2({
   }, [draft]);
 
   useEffect(() => {
+    const query = knowledgeQuery.trim();
+    if (layer !== "capabilities" || !onSearchKnowledgeSources || !query) return;
+    let cancelled = false;
+    const normalizedQuery = query.toLocaleLowerCase();
+    const timer = window.setTimeout(() => {
+      void onSearchKnowledgeSources(query).then((sources) => {
+        if (!cancelled) setKnowledgeSourceSearch({ query: normalizedQuery, sources });
+      }).catch(() => {
+        if (!cancelled) setKnowledgeSourceSearch({ query: normalizedQuery, sources: [] });
+      });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [knowledgeQuery, layer, onSearchKnowledgeSources]);
+
+  useEffect(() => {
     if (!layer) return;
     let cancelled = false;
     queueMicrotask(() => {
@@ -462,6 +520,7 @@ export function ComposerV2({
     }
     openerRef.current = opener;
     if (next === "model") setModelQuery("");
+    if (next === "capabilities") setKnowledgeQuery("");
     setLayer(next);
   }
 
@@ -597,11 +656,31 @@ export function ComposerV2({
   }
 
   function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
-    if (!onSelectKnowledgeBaseIds) return;
+    if (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds) return;
     const next = selectedKnowledgeSet.has(base.id)
-      ? selectedKnowledgeBaseIds.filter((id) => id !== base.id)
-      : [...selectedKnowledgeBaseIds, base.id];
-    onSelectKnowledgeBaseIds(next);
+      ? knowledgeSelection.baseIds.filter((id) => id !== base.id)
+      : [...knowledgeSelection.baseIds, base.id];
+    selectKnowledge(explicitKnowledgeSelection({
+      baseIds: next,
+      sourceIds: knowledgeSelection.sourceIds
+    }));
+    closeLayer();
+  }
+
+  function selectKnowledge(selection: KnowledgeSelection) {
+    if (onSelectKnowledgeSelection) onSelectKnowledgeSelection(selection);
+    else onSelectKnowledgeBaseIds?.(selection.baseIds);
+  }
+
+  function toggleKnowledgeSource(source: ComposerConfigKnowledgeSource) {
+    if (!onSelectKnowledgeSelection) return;
+    const next = selectedKnowledgeSourceSet.has(source.id)
+      ? knowledgeSelection.sourceIds.filter((id) => id !== source.id)
+      : [...knowledgeSelection.sourceIds, source.id];
+    selectKnowledge(explicitKnowledgeSelection({
+      baseIds: knowledgeSelection.baseIds,
+      sourceIds: next
+    }));
     closeLayer();
   }
 
@@ -797,16 +876,18 @@ export function ComposerV2({
                 {!controlsLocked ? <UiV2Icon name="close" /> : null}
               </button>
             ) : null}
-            {config && selectedKnowledgeBaseIds.length > 0 ? (
+            {config && knowledgeSelection.mode !== "none" ? (
               <button
                 className="v2-composer-indicator v2-focusable"
                 type="button"
-                disabled={controlsLocked || activeRun || !onSelectKnowledgeBaseIds}
+                disabled={controlsLocked || activeRun || (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds)}
                 aria-label="Turn off Knowledge"
-                onClick={() => onSelectKnowledgeBaseIds?.([])}
+                onClick={() => selectKnowledge(EMPTY_KNOWLEDGE_SELECTION)}
               >
                 <span aria-hidden="true" />
-                {selectedKnowledgeNames.length === 1
+                {knowledgeSelection.mode === "all_my_knowledge"
+                  ? "Knowledge: All mine"
+                  : selectedKnowledgeNames.length === 1
                   ? `Knowledge: ${selectedKnowledgeNames[0]}`
                   : `Knowledge: ${selectedKnowledgeNames.length}`}
                 {!controlsLocked ? <UiV2Icon name="close" /> : null}
@@ -947,27 +1028,57 @@ export function ComposerV2({
                   })}
 
                   <p className="v2-composer-layer-label">Knowledge</p>
-                  {(config?.knowledgeBases.length ?? 0) === 0 && selectedKnowledgeBaseIds.length === 0 ? (
+                  {onSearchKnowledgeSources ||
+                    (config?.knowledgeBases.length ?? 0) + (config?.knowledgeSources?.length ?? 0) > 6 ? (
+                    <label className="v2-composer-model-search-wrap">
+                      <UiV2Icon name="search" />
+                      <input
+                        aria-label="Search Knowledge resources"
+                        maxLength={KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH}
+                        placeholder="Search Bases and Sources…"
+                        type="search"
+                        value={knowledgeQuery}
+                        onChange={(event) => setKnowledgeQuery(event.currentTarget.value)}
+                      />
+                    </label>
+                  ) : null}
+                  {!sharedProject && onSelectKnowledgeSelection ? (
+                    <CapabilityRow
+                      icon="library"
+                      selected={knowledgeSelection.mode === "all_my_knowledge"}
+                      disabled={controlsLocked || activeRun}
+                      reason="Explicitly search all Knowledge currently available to you"
+                      selectionRole="radio"
+                      onClick={() => {
+                        selectKnowledge(knowledgeSelection.mode === "all_my_knowledge"
+                          ? EMPTY_KNOWLEDGE_SELECTION
+                          : allMyKnowledgeSelection());
+                        closeLayer();
+                      }}
+                    >
+                      All my knowledge
+                    </CapabilityRow>
+                  ) : null}
+                  {(config?.knowledgeBases.length ?? 0) === 0 &&
+                    (config?.knowledgeSources?.length ?? 0) === 0 &&
+                    knowledgeSelection.mode === "none" ? (
                     <CapabilityRow icon="library" disabled reason="No knowledge bases available">
                       Knowledge
                     </CapabilityRow>
                   ) : null}
-                  {config?.knowledgeBases.map((base) => {
+                  {visibleKnowledgeBases.map((base) => {
                     const selected = selectedKnowledgeSet.has(base.id);
-                    const atLimit = selectedKnowledgeBaseIds.length >= 3 && !selected;
                     const reason = controlsLocked
                       ? "Managed by the Assistant"
                       : base.archived
                         ? "Access revoked or base archived"
-                        : atLimit
-                          ? "Select up to three bases"
-                          : base.description || null;
+                        : base.description || "Includes this Base’s current ready Sources";
                     return (
                       <CapabilityRow
                         key={base.id}
                         icon="library"
                         selected={selected}
-                        disabled={controlsLocked || activeRun || atLimit || (base.archived && !selected)}
+                        disabled={controlsLocked || activeRun || (base.archived && !selected)}
                         reason={reason}
                         onClick={() => toggleKnowledge(base)}
                       >
@@ -975,7 +1086,30 @@ export function ComposerV2({
                       </CapabilityRow>
                     );
                   })}
-                  {selectedKnowledgeBaseIds
+                  {visibleKnowledgeSources.map((source) => {
+                    const selected = selectedKnowledgeSourceSet.has(source.id);
+                    const unavailable = source.readiness !== "ready";
+                    const reason = controlsLocked
+                      ? "Managed by the Assistant"
+                      : unavailable
+                        ? source.readiness === "processing"
+                          ? "Still processing; it will be skipped until ready"
+                          : "Needs attention before it can be searched"
+                        : source.description || "Use this Source without selecting its whole Base";
+                    return (
+                      <CapabilityRow
+                        key={`source:${source.id}`}
+                        icon="book"
+                        selected={selected}
+                        disabled={controlsLocked || activeRun || !onSelectKnowledgeSelection || (unavailable && !selected)}
+                        reason={reason}
+                        onClick={() => toggleKnowledgeSource(source)}
+                      >
+                        {source.name}
+                      </CapabilityRow>
+                    );
+                  })}
+                  {knowledgeSelection.baseIds
                     .filter((id) => !knowledgeById.has(id))
                     .map((id) => (
                       <CapabilityRow
@@ -985,13 +1119,34 @@ export function ComposerV2({
                         disabled={controlsLocked || activeRun}
                         reason={controlsLocked ? "Managed by the Assistant" : "Access revoked"}
                         onClick={() => {
-                          onSelectKnowledgeBaseIds?.(
-                            selectedKnowledgeBaseIds.filter((candidate) => candidate !== id)
-                          );
+                          selectKnowledge(explicitKnowledgeSelection({
+                            baseIds: knowledgeSelection.baseIds.filter((candidate) => candidate !== id),
+                            sourceIds: knowledgeSelection.sourceIds
+                          }));
                           closeLayer();
                         }}
                       >
                         Unavailable knowledge base
+                      </CapabilityRow>
+                    ))}
+                  {knowledgeSelection.sourceIds
+                    .filter((id) => !sourceById.has(id))
+                    .map((id) => (
+                      <CapabilityRow
+                        key={`missing-source:${id}`}
+                        icon="book"
+                        selected
+                        disabled={controlsLocked || activeRun}
+                        reason={controlsLocked ? "Managed by the Assistant" : "Access revoked"}
+                        onClick={() => {
+                          selectKnowledge(explicitKnowledgeSelection({
+                            baseIds: knowledgeSelection.baseIds,
+                            sourceIds: knowledgeSelection.sourceIds.filter((candidate) => candidate !== id)
+                          }));
+                          closeLayer();
+                        }}
+                      >
+                        Unavailable Knowledge source
                       </CapabilityRow>
                     ))}
 

@@ -202,7 +202,7 @@ function historyToolProviderRequest(chatId: string): ProviderRunRequest {
     attachments: [],
     chatId,
     content: textMessageContent("Search my history"),
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

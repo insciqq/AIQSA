@@ -30,6 +30,11 @@ import {
   decodeAssistantRunControls,
   type AssistantCategory
 } from "../../contracts/assistants";
+import {
+  decodeKnowledgePlan,
+  explicitKnowledgeSelection,
+  inheritedKnowledgeSelection
+} from "../../contracts/knowledge";
 import { buildCatalogModel, toCatalogSearchStrategy } from "../../domain/catalogMatrix";
 import { decodeSearchPlan } from "../../domain/search";
 import {
@@ -85,7 +90,7 @@ const projectDetailInclude = {
           description: true,
           developerPrompt: true,
           id: true,
-          knowledgeBaseIds: true,
+          knowledgeSelection: true,
           mcpServerIds: true,
           name: true,
           providerModelId: true,
@@ -131,13 +136,45 @@ const projectDetailInclude = {
                   modelClass: true
                 }
               },
+              profileRevisionId: true,
               status: true
             }
           },
           archivedAt: true,
           description: true,
           id: true,
-          name: true
+          name: true,
+          sourceMemberships: {
+            select: {
+              source: {
+                select: {
+                  currentVersion: {
+                    select: {
+                      artifacts: {
+                        select: {
+                          hierarchicalIndexes: {
+                            orderBy: { schemaVersion: "desc" as const },
+                            select: { state: true },
+                            take: 1
+                          },
+                          profileRevisionId: true,
+                          state: true
+                        }
+                      }
+                    }
+                  },
+                  description: true,
+                  id: true,
+                  name: true
+                }
+              },
+              sourceId: true
+            },
+            where: {
+              removedAt: null,
+              source: { deletionRequestedAt: null, trashedAt: null }
+            }
+          }
         }
       }
     }
@@ -280,6 +317,51 @@ const projectDetailInclude = {
 } satisfies Prisma.ProjectInclude;
 
 type ProjectDetailRow = Prisma.ProjectGetPayload<{ include: typeof projectDetailInclude }>;
+
+type ProjectKnowledgeSourceWire = NonNullable<
+  ProjectDetailWire["composer"]
+>["knowledgeSources"][number];
+
+function projectKnowledgeSources(
+  row: ProjectDetailRow,
+  visibleKnowledgeBaseIds: ReadonlySet<string>
+): ProjectKnowledgeSourceWire[] {
+  const priority = { needs_attention: 0, processing: 1, ready: 2 } as const;
+  const sources = new Map<string, ProjectKnowledgeSourceWire>();
+  for (const binding of row.knowledgeBaseBindings) {
+    const base = binding.knowledgeBase;
+    if (!visibleKnowledgeBaseIds.has(base.id)) continue;
+    const profileRevisionId = base.activeIndexGeneration?.profileRevisionId;
+    for (const membership of base.sourceMemberships) {
+      const source = membership.source;
+      const artifact = profileRevisionId
+        ? source.currentVersion?.artifacts.find((candidate) =>
+            candidate.profileRevisionId === profileRevisionId)
+        : null;
+      const hierarchyState = artifact?.hierarchicalIndexes[0]?.state;
+      const readiness: ProjectKnowledgeSourceWire["readiness"] =
+        artifact?.state === "ready" && hierarchyState === "ready"
+          ? "ready"
+          : artifact?.state === "pending" || artifact?.state === "processing" ||
+              artifact?.state === "ready" && hierarchyState === "building"
+            ? "processing"
+            : "needs_attention";
+      const next = {
+        description: source.description,
+        id: source.id,
+        name: source.name,
+        owned: false,
+        readiness
+      } satisfies ProjectKnowledgeSourceWire;
+      const current = sources.get(source.id);
+      if (!current || priority[next.readiness] > priority[current.readiness]) {
+        sources.set(source.id, next);
+      }
+    }
+  }
+  return [...sources.values()].sort((left, right) =>
+    left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+}
 
 function iso(value: Date): string {
   return value.toISOString();
@@ -523,6 +605,9 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
   const models = activeByType("model");
   const searches = activeByType("search");
   const knowledge = activeByType("knowledge");
+  const knowledgeSources = new Set(projectKnowledgeSources(row, knowledge)
+    .filter((source) => source.readiness === "ready")
+    .map((source) => source.id));
   const mcp = activeByType("mcp");
   const skills = activeByType("skill");
   const assistants = values.filter((resource) => {
@@ -530,8 +615,12 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
     const binding = row.assistantBindings.find((candidate) =>
       candidate.assistantId === resource.resourceId && candidate.revisionId === resource.revisionId
     );
-    return Boolean(binding) && models.has(binding!.revision.providerModelId) &&
-      binding!.revision.knowledgeBaseIds.every((id) => knowledge.has(id)) &&
+    const selection = binding ? decodeKnowledgePlan(binding.revision.knowledgeSelection) : null;
+    return Boolean(binding) && selection?.ok === true &&
+      selection.plan.mode !== "all_my_knowledge" && selection.plan.mode !== "inherited" &&
+      models.has(binding!.revision.providerModelId) &&
+      selection.plan.baseIds.every((id) => knowledge.has(id)) &&
+      selection.plan.sourceIds.every((id) => knowledgeSources.has(id)) &&
       binding!.revision.mcpServerIds.every((id) => mcp.has(id)) &&
       searchOptionIds(binding!.revision.searchPlan).every((id) => searches.has(id)) &&
       binding!.revision.skillLinks.every((link) => skills.has(link.skillId));
@@ -614,7 +703,7 @@ function projectComposer(
         // Prompts remain server-side; only the bounded size participates in
         // the composer context gauge.
         developerPrompt: null,
-        knowledgeBaseIds: binding.revision.knowledgeBaseIds,
+        knowledgeSelection: inheritedKnowledgeSelection("assistant"),
         mcpServerIds: binding.revision.mcpServerIds,
         name: binding.revision.name,
         providerModelId: binding.revision.providerModelId,
@@ -661,6 +750,10 @@ function projectComposer(
         }]
       : []
   );
+  const knowledgeSources = projectKnowledgeSources(
+    row,
+    new Set(knowledgeBases.map((base) => base.id))
+  );
   const mcpServers = row.mcpBindings.flatMap((binding) =>
     visible.has(`mcp:${binding.serverId}`)
       ? [{
@@ -700,6 +793,7 @@ function projectComposer(
       searchStrategies: searchEntries.map(toCatalogSearchStrategy)
     },
     knowledgeBases,
+    knowledgeSources,
     mcpServers
   };
 }
@@ -743,6 +837,9 @@ function detail(
   const visibleKnowledge = new Set(visibleResources.flatMap((resource) =>
     resource.type === "knowledge" ? [resource.resourceId] : []
   ));
+  const visibleKnowledgeSources = new Set(projectKnowledgeSources(row, visibleKnowledge)
+    .filter((source) => source.readiness === "ready")
+    .map((source) => source.id));
   const visibleSearch = new Set(visibleResources.flatMap((resource) =>
     resource.type === "search" ? [resource.resourceId] : []
   ));
@@ -752,9 +849,13 @@ function detail(
     assistantId: rawDefaults.assistantId && visibleAssistants.has(rawDefaults.assistantId)
       ? rawDefaults.assistantId
       : null,
-    knowledgePlan: {
-      baseIds: rawDefaults.knowledgePlan.baseIds.filter((id) => visibleKnowledge.has(id))
-    },
+    knowledgePlan: rawDefaults.knowledgePlan.mode === "inherited"
+      ? rawDefaults.knowledgePlan
+      : explicitKnowledgeSelection({
+          baseIds: rawDefaults.knowledgePlan.baseIds.filter((id) => visibleKnowledge.has(id)),
+          sourceIds: rawDefaults.knowledgePlan.sourceIds.filter((id) =>
+            visibleKnowledgeSources.has(id))
+        }),
     mcpMode: visibleResources.some((resource) => resource.type === "mcp")
       ? rawDefaults.mcpMode
       : "off",
@@ -940,6 +1041,75 @@ async function resolveBoundProjectResource(
   } : null;
 }
 
+async function projectBoundKnowledgeSourceIds(
+  db: ProjectDataClient,
+  projectId: string,
+  excludingKnowledgeBaseId?: string
+): Promise<ReadonlySet<string>> {
+  const bindings = await db.projectKnowledgeBaseBinding.findMany({
+    select: {
+      knowledgeBase: {
+        select: {
+          activeIndexGeneration: {
+            select: { profileRevisionId: true, status: true }
+          },
+          sourceMemberships: {
+            select: {
+              source: {
+                select: {
+                  currentVersion: {
+                    select: {
+                      artifacts: {
+                        select: {
+                          hierarchicalIndexes: {
+                            orderBy: { schemaVersion: "desc" },
+                            select: { state: true },
+                            take: 1
+                          },
+                          profileRevisionId: true,
+                          state: true
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              sourceId: true
+            },
+            where: {
+              removedAt: null,
+              source: { deletionRequestedAt: null, trashedAt: null }
+            }
+          }
+        }
+      }
+    },
+    where: {
+      projectId,
+      knowledgeBase: {
+        archivedAt: null,
+        deletionRequestedAt: null,
+        trashedAt: null
+      },
+      ...(excludingKnowledgeBaseId
+        ? { knowledgeBaseId: { not: excludingKnowledgeBaseId } }
+        : {})
+    }
+  });
+  const sourceIds = new Set<string>();
+  for (const { knowledgeBase } of bindings) {
+    const generation = knowledgeBase.activeIndexGeneration;
+    if (generation?.status !== "active" || !generation.profileRevisionId) continue;
+    for (const membership of knowledgeBase.sourceMemberships) {
+      const ready = membership.source.currentVersion?.artifacts.some((artifact) =>
+        artifact.profileRevisionId === generation.profileRevisionId && artifact.state === "ready" &&
+        artifact.hierarchicalIndexes.some((hierarchy) => hierarchy.state === "ready"));
+      if (ready) sourceIds.add(membership.sourceId);
+    }
+  }
+  return sourceIds;
+}
+
 async function dependentAssistantBindings(
   db: ProjectDataClient,
   input: Readonly<{ projectId: string; resourceId: string; type: ProjectResourceTypeWire }>
@@ -951,7 +1121,7 @@ async function dependentAssistantBindings(
     include: {
       revision: {
         select: {
-          knowledgeBaseIds: true,
+          knowledgeSelection: true,
           mcpServerIds: true,
           name: true,
           providerModelId: true,
@@ -962,10 +1132,17 @@ async function dependentAssistantBindings(
     },
     where: { projectId: input.projectId }
   });
+  const remainingKnowledgeSourceIds = input.type === "knowledge"
+    ? await projectBoundKnowledgeSourceIds(db, input.projectId, input.resourceId)
+    : new Set<string>();
   return bindings.filter((binding) => {
     const revision = binding.revision;
+    const knowledge = decodeKnowledgePlan(revision.knowledgeSelection);
     return input.type === "model" && revision.providerModelId === input.resourceId ||
-      input.type === "knowledge" && revision.knowledgeBaseIds.includes(input.resourceId) ||
+      input.type === "knowledge" && knowledge.ok && (
+        knowledge.plan.baseIds.includes(input.resourceId) ||
+        knowledge.plan.sourceIds.some((sourceId) => !remainingKnowledgeSourceIds.has(sourceId))
+      ) ||
       input.type === "mcp" && revision.mcpServerIds.includes(input.resourceId) ||
       input.type === "search" && searchOptionIds(revision.searchPlan).includes(input.resourceId) ||
       input.type === "skill" && revision.skillLinks.some((link) => link.skillId === input.resourceId);
@@ -999,6 +1176,7 @@ function defaultsAfterResourceRemoval(
   input: Readonly<{
     dependentAssistantIds: ReadonlySet<string>;
     hasRemainingMcp: boolean;
+    remainingKnowledgeSourceIds: ReadonlySet<string>;
     resourceId: string;
     type: ProjectResourceTypeWire;
   }>
@@ -1009,11 +1187,15 @@ function defaultsAfterResourceRemoval(
       input.type === "assistant" && defaults.assistantId === input.resourceId ||
       input.dependentAssistantIds.has(defaults.assistantId)
     ) ? null : defaults.assistantId,
-    knowledgePlan: {
+    knowledgePlan: explicitKnowledgeSelection({
       baseIds: input.type === "knowledge"
         ? defaults.knowledgePlan.baseIds.filter((id) => id !== input.resourceId)
-        : [...defaults.knowledgePlan.baseIds]
-    },
+        : [...defaults.knowledgePlan.baseIds],
+      sourceIds: input.type === "knowledge"
+        ? defaults.knowledgePlan.sourceIds.filter((id) =>
+            input.remainingKnowledgeSourceIds.has(id))
+        : defaults.knowledgePlan.sourceIds
+    }),
     mcpMode: input.type === "mcp" && !input.hasRemainingMcp ? "off" : defaults.mcpMode,
     providerModelId: input.type === "model" && defaults.providerModelId === input.resourceId
       ? null
@@ -1042,17 +1224,22 @@ async function resourceRemovalConsequences(
     input.projectId,
     input.resource.storageId
   );
+  const remainingKnowledgeSourceIds = input.resource.type === "knowledge"
+    ? await projectBoundKnowledgeSourceIds(db, input.projectId, input.resource.resourceId)
+    : new Set(defaults.knowledgePlan.sourceIds);
   const dependentAssistantIds = new Set(dependents.map((binding) => binding.assistantId));
   const next = defaultsAfterResourceRemoval(defaults, {
     dependentAssistantIds,
     hasRemainingMcp,
+    remainingKnowledgeSourceIds,
     resourceId: input.resource.resourceId,
     type: input.resource.type
   });
   const clearedDefaults: string[] = [];
   if (defaults.providerModelId !== next.providerModelId) clearedDefaults.push("Project default model");
   if (defaults.assistantId !== next.assistantId) clearedDefaults.push("Project default Assistant");
-  if (defaults.knowledgePlan.baseIds.length !== next.knowledgePlan.baseIds.length) {
+  if (defaults.knowledgePlan.baseIds.length !== next.knowledgePlan.baseIds.length ||
+    defaults.knowledgePlan.sourceIds.length !== next.knowledgePlan.sourceIds.length) {
     clearedDefaults.push("Project default Knowledge");
   }
   if (defaults.searchPlan.optionIds.length !== next.searchPlan.optionIds.length) {
@@ -1070,9 +1257,14 @@ async function resourceRemovalConsequences(
       where: { projectId: input.projectId }
     });
     affectedChatCount = chats.filter((chat) => {
-      const plan = chat.defaultKnowledgePlan;
-      return typeof plan === "object" && plan !== null && !Array.isArray(plan) &&
-        Array.isArray(plan.baseIds) && plan.baseIds.includes(input.resource.resourceId);
+      const plan = chat.defaultKnowledgePlan === null
+        ? null
+        : decodeKnowledgePlan(chat.defaultKnowledgePlan);
+      return plan?.ok === true && plan.plan.mode !== "all_my_knowledge" &&
+        plan.plan.mode !== "inherited" && (
+          plan.plan.baseIds.includes(input.resource.resourceId) ||
+          plan.plan.sourceIds.some((sourceId) => !remainingKnowledgeSourceIds.has(sourceId))
+        );
     }).length;
   }
   return {
@@ -1081,6 +1273,7 @@ async function resourceRemovalConsequences(
     dependentAssistantIds,
     dependentAssistants: dependents.map((binding) => binding.revision.name),
     hasRemainingMcp,
+    remainingKnowledgeSourceIds,
     next
   };
 }
@@ -1123,11 +1316,20 @@ async function cleanupResourceReferences(
       where: { projectId: input.projectId }
     });
     for (const chat of chats) {
-      const plan = chat.defaultKnowledgePlan;
-      if (typeof plan !== "object" || plan === null || Array.isArray(plan) || !Array.isArray(plan.baseIds)) continue;
-      const baseIds = plan.baseIds.filter((id): id is string => typeof id === "string" && id !== input.resourceId);
-      if (baseIds.length !== plan.baseIds.length) {
-        await tx.chat.update({ data: { defaultKnowledgePlan: { baseIds } }, where: { id: chat.id } });
+      if (chat.defaultKnowledgePlan === null) continue;
+      const decodedPlan = decodeKnowledgePlan(chat.defaultKnowledgePlan);
+      if (!decodedPlan.ok || decodedPlan.plan.mode === "all_my_knowledge" ||
+        decodedPlan.plan.mode === "inherited") continue;
+      const nextPlan = explicitKnowledgeSelection({
+        baseIds: decodedPlan.plan.baseIds.filter((id) => id !== input.resourceId),
+        sourceIds: decodedPlan.plan.sourceIds.filter((id) =>
+          consequences.remainingKnowledgeSourceIds.has(id))
+      });
+      if (JSON.stringify(nextPlan) !== JSON.stringify(decodedPlan.plan)) {
+        await tx.chat.update({
+          data: { defaultKnowledgePlan: nextPlan as unknown as Prisma.InputJsonValue },
+          where: { id: chat.id }
+        });
       }
     }
   }
@@ -1234,7 +1436,11 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
     if (!target || !revision) return null;
 
     const requiredSearchIds = [...new Set(searchOptionIds(revision.searchPlan))];
-    const requiredKnowledgeIds = [...new Set(revision.knowledgeBaseIds)];
+    const knowledge = decodeKnowledgePlan(revision.knowledgeSelection);
+    if (!knowledge.ok || knowledge.plan.mode === "all_my_knowledge" ||
+      knowledge.plan.mode === "inherited") return null;
+    const requiredKnowledgeIds = [...new Set(knowledge.plan.baseIds)];
+    const requiredKnowledgeSourceIds = [...new Set(knowledge.plan.sourceIds)];
     const requiredSkillIds = [...new Set(revision.skillLinks.map((link) => link.skillId))];
     const requiredMcpIds = [...new Set(revision.mcpServerIds)];
     const [
@@ -1279,7 +1485,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             }
           })
         : Promise.resolve([]),
-      requiredKnowledgeIds.length > 0
+      requiredKnowledgeIds.length > 0 || requiredKnowledgeSourceIds.length > 0
         ? db.knowledgeBase.findMany({
             include: {
               activeIndexGeneration: {
@@ -1290,16 +1496,66 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
                         include: { defaultCredential: { include: { activeVersion: true } } }
                       }
                     }
+                  },
+                  profileRevision: { select: { id: true } }
+                }
+              },
+              sourceMemberships: {
+                include: {
+                  source: {
+                    include: {
+                      currentVersion: {
+                        include: {
+                          artifacts: {
+                            include: {
+                              hierarchicalIndexes: {
+                                orderBy: { schemaVersion: "desc" },
+                                take: 1
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
                   }
+                },
+                where: {
+                  removedAt: null,
+                  sourceId: { in: requiredKnowledgeSourceIds },
+                  source: { deletionRequestedAt: null, trashedAt: null }
                 }
               }
             },
+            orderBy: { id: "asc" },
             where: {
               archivedAt: null,
-              id: { in: requiredKnowledgeIds },
-              OR: [
-                { ownerUserId: input.userId },
-                { projectBindings: { some: { projectId: input.projectId } } }
+              deletionRequestedAt: null,
+              trashedAt: null,
+              AND: [
+                {
+                  OR: [
+                    { ownerUserId: input.userId },
+                    { projectBindings: { some: { projectId: input.projectId } } }
+                  ]
+                },
+                {
+                  OR: [
+                    ...(requiredKnowledgeIds.length > 0
+                      ? [{ id: { in: requiredKnowledgeIds } }]
+                      : []),
+                    ...(requiredKnowledgeSourceIds.length > 0
+                      ? [{
+                          sourceMemberships: {
+                            some: {
+                              removedAt: null,
+                              sourceId: { in: requiredKnowledgeSourceIds },
+                              source: { deletionRequestedAt: null, trashedAt: null }
+                            }
+                          }
+                        }]
+                      : [])
+                  ]
+                }
               ]
             }
           })
@@ -1384,10 +1640,8 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       });
     }
 
-    const knowledgeById = new Map(knowledgeBases.map((base) => [base.id, base]));
     const eligibleKnowledgeIds = new Set<string>();
-    for (const baseId of requiredKnowledgeIds) {
-      const base = knowledgeById.get(baseId);
+    for (const base of knowledgeBases) {
       const generation = base?.activeIndexGeneration;
       const embedding = generation?.embeddingProviderModel;
       const connection = embedding?.connection;
@@ -1400,6 +1654,40 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           connection.defaultCredential.activeVersion?.revokedAt === null
         ));
       if (base && eligible) eligibleKnowledgeIds.add(base.id);
+    }
+    const knowledgeById = new Map(knowledgeBases.map((base) => [base.id, base]));
+    const resolvedKnowledgeIds = new Set(requiredKnowledgeIds);
+    for (const sourceId of requiredKnowledgeSourceIds) {
+      const candidateBases = knowledgeBases.filter((base) => {
+        if (!eligibleKnowledgeIds.has(base.id)) return false;
+        const profileRevisionId = base.activeIndexGeneration?.profileRevisionId;
+        const membership = base.sourceMemberships.find((entry) => entry.sourceId === sourceId);
+        return Boolean(profileRevisionId && membership?.source.currentVersion?.artifacts.some((artifact) =>
+          artifact.profileRevisionId === profileRevisionId && artifact.state === "ready" &&
+          artifact.hierarchicalIndexes.some((hierarchy) => hierarchy.state === "ready")));
+      }).sort((left, right) => {
+        const rank = (baseId: string) => requiredKnowledgeIds.includes(baseId)
+          ? 0
+          : active.knowledge.has(baseId) ? 1 : 2;
+        return rank(left.id) - rank(right.id) || left.id.localeCompare(right.id);
+      });
+      const selectedBase = candidateBases[0];
+      if (selectedBase) {
+        resolvedKnowledgeIds.add(selectedBase.id);
+      } else {
+        const source = knowledgeBases.flatMap((base) => base.sourceMemberships)
+          .find((membership) => membership.sourceId === sourceId)?.source;
+        dependencies.push({
+          label: source?.name ?? "Required Knowledge Source",
+          reason: "Not available through a publishable Knowledge Base.",
+          state: "ineligible",
+          type: "knowledge"
+        });
+      }
+    }
+    for (const baseId of resolvedKnowledgeIds) {
+      const base = knowledgeById.get(baseId);
+      const eligible = Boolean(base && eligibleKnowledgeIds.has(base.id));
       dependencies.push(base && eligible ? {
         label: base.name,
         reason: null,
@@ -1454,7 +1742,8 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
     return {
       canCommit: dependencies.every((dependency) => dependency.state !== "ineligible"),
       dependencies,
-      knowledgeBases: knowledgeBases.filter((base) => eligibleKnowledgeIds.has(base.id)),
+      knowledgeBases: knowledgeBases.filter((base) =>
+        eligibleKnowledgeIds.has(base.id) && resolvedKnowledgeIds.has(base.id)),
       mcpServers: mcpServers.filter((server) => eligibleMcpIds.has(server.id)),
       revision,
       searchOptions,
@@ -1748,7 +2037,9 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           take,
           where: {
             archivedAt: null,
+            deletionRequestedAt: null,
             ownerUserId: input.userId,
+            trashedAt: null,
             ...(contains ? { name: { contains, mode: "insensitive" } } : {})
           }
         });
@@ -1991,6 +2282,9 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             const knowledgeIds = new Set(activeResources.flatMap((resource) =>
               resource.type === "knowledge" ? [resource.resourceId] : []
             ));
+            const knowledgeSourceIds = new Set(projectKnowledgeSources(authority, knowledgeIds)
+              .filter((source) => source.readiness === "ready")
+              .map((source) => source.id));
             const assistantIds = new Set(activeResources.flatMap((resource) =>
               resource.type === "assistant" ? [resource.resourceId] : []
             ));
@@ -1998,6 +2292,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             if (
               (input.defaults.providerModelId !== null && !modelIds.has(input.defaults.providerModelId)) ||
               input.defaults.knowledgePlan.baseIds.some((id) => !knowledgeIds.has(id)) ||
+              input.defaults.knowledgePlan.sourceIds.some((id) => !knowledgeSourceIds.has(id)) ||
               input.defaults.searchPlan.optionIds.some((id) => !searchIds.has(id)) ||
               (input.defaults.assistantId !== null && !assistantIds.has(input.defaults.assistantId)) ||
               (input.defaults.mcpMode !== "off" && !hasMcp)
@@ -2559,8 +2854,10 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               },
               where: {
                 archivedAt: null,
+                deletionRequestedAt: null,
                 id: input.resourceId,
-                ownerUserId: input.userId
+                ownerUserId: input.userId,
+                trashedAt: null
               }
             });
             const generation = target?.activeIndexGeneration;

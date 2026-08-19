@@ -737,6 +737,12 @@ describe("message run actions", () => {
     const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use policies" });
     useComposerControlStore.setState({
       knowledgePlanSource: "explicit",
+      knowledgeSelection: {
+        baseIds: ["base-policies", "base-release"],
+        mode: "explicit",
+        sourceIds: [],
+        version: 1
+      },
       selectedKnowledgeBaseIds: ["base-policies", "base-release"]
     });
 
@@ -801,7 +807,7 @@ describe("message run actions", () => {
     await actions.submitComposer();
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(requestInit.body))).toMatchObject({ knowledgePlan: { baseIds: [] } });
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({ knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 } });
   });
 
   it.each(["personal", "organization"] as const)(

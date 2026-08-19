@@ -3,10 +3,12 @@ import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from 
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 
-type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing">;
+type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
+  Pick<RunRepository, "groundKnowledgeAnswer">;
 
 export type RunCompletionFinalizationResult =
   | Readonly<{
+      finalText: string;
       status: "completed";
       usage: ModelRunUsage;
     }>
@@ -74,6 +76,13 @@ export async function finalizeRunCompletion(input: Readonly<{
     userId: string;
   }>;
 }>): Promise<RunCompletionFinalizationResult> {
+  const grounding = input.repository.groundKnowledgeAnswer
+    ? await input.repository.groundKnowledgeAnswer({
+        answer: input.result.finalText,
+        runId: input.run.runId,
+        userId: input.run.userId
+      })
+    : null;
   const usageAttributions = await usageAttributionsWithEstimatedCost(
     input.repository,
     input.result.usageAttributions?.length
@@ -98,7 +107,8 @@ export async function finalizeRunCompletion(input: Readonly<{
     assistantMessageId: input.run.assistantMessageId,
     chatId: input.run.chatId,
     estimatedCostMicros: usage.estimatedCostMicros ?? null,
-    finalText: input.result.finalText,
+    finalText: grounding?.finalText ?? input.result.finalText,
+    ...(grounding ? { knowledgeGrounding: grounding } : {}),
     modelId: input.run.modelId,
     provider: input.run.provider,
     providerResponseId: input.result.providerResponseId,
@@ -111,6 +121,7 @@ export async function finalizeRunCompletion(input: Readonly<{
 
   return completed
     ? {
+        finalText: grounding?.finalText ?? input.result.finalText,
         status: "completed",
         usage
       }

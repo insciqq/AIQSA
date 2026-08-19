@@ -1,6 +1,12 @@
-import { normalizedFileExtension } from "../parsing/routing";
+import {
+  uploadFormatFor,
+  type UploadContentEvidence,
+  type UploadFormatDefinition,
+  type UploadFormatScope,
+  type UploadKind
+} from "../../domain/uploadFormats";
 
-export type UploadKind = "document" | "image" | "pdf";
+export type { UploadKind } from "../../domain/uploadFormats";
 
 export type UploadValidationInput = {
   byteSize: number;
@@ -8,7 +14,13 @@ export type UploadValidationInput = {
   fileName: string;
   maxBytes: number;
   mimeType: string;
+  scope?: UploadFormatScope;
 };
+
+export type UploadInspectionInput = Omit<UploadValidationInput, "bytes"> & Readonly<{
+  foundNeedles: readonly string[];
+  sample: Buffer | Uint8Array;
+}>;
 
 export type UploadValidationResult =
   | {
@@ -24,163 +36,228 @@ export type UploadValidationResult =
 export const DEFAULT_UPLOAD_MAX_BYTES = 25_000_000;
 export const MAX_UPLOAD_MAX_BYTES = 67_108_864;
 
-const allowedTypes: Record<string, { extensions: string[]; kind: UploadKind }> = {
-  "application/msword": { extensions: [".doc"], kind: "document" },
-  "application/rtf": { extensions: [".rtf"], kind: "document" },
-  "application/vnd.oasis.opendocument.text": { extensions: [".odt"], kind: "document" },
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
-    extensions: [".pptx"],
-    kind: "document"
-  },
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
-    extensions: [".xlsx"],
-    kind: "document"
-  },
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
-    extensions: [".docx"],
-    kind: "document"
-  },
-  "application/pdf": { extensions: [".pdf"], kind: "pdf" },
-  "application/json": { extensions: [".json"], kind: "document" },
-  "image/gif": { extensions: [".gif"], kind: "image" },
-  "image/jpeg": { extensions: [".jpg", ".jpeg"], kind: "image" },
-  "image/png": { extensions: [".png"], kind: "image" },
-  "image/webp": { extensions: [".webp"], kind: "image" },
-  "text/csv": { extensions: [".csv"], kind: "document" },
-  "text/html": { extensions: [".html", ".htm"], kind: "document" },
-  "text/markdown": { extensions: [".md", ".markdown"], kind: "document" },
-  "text/plain": { extensions: [".txt", ".md", ".markdown"], kind: "document" },
-  "text/rtf": { extensions: [".rtf"], kind: "document" }
-};
+export const UPLOAD_CONTENT_INSPECTION_NEEDLES = Object.freeze([
+  "[Content_Types].xml",
+  "META-INF/container.xml",
+  "META-INF/manifest.xml",
+  "application/epub+zip",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.text",
+  "content.xml",
+  "mimetype",
+  "ppt/",
+  "word/",
+  "xl/"
+] as const);
 
-const canonicalMimeByExtension: Record<string, string> = {
-  ".csv": "text/csv",
-  ".doc": "application/msword",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".gif": "image/gif",
-  ".htm": "text/html",
-  ".html": "text/html",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".json": "application/json",
-  ".markdown": "text/markdown",
-  ".md": "text/markdown",
-  ".odt": "application/vnd.oasis.opendocument.text",
-  ".pdf": "application/pdf",
-  ".png": "image/png",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ".rtf": "application/rtf",
-  ".txt": "text/plain",
-  ".webp": "image/webp",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-};
+function bytesStartWith(bytes: Buffer | Uint8Array, signature: readonly number[]): boolean {
+  return bytes.byteLength >= signature.length &&
+    signature.every((byte, index) => bytes[index] === byte);
+}
 
-function looksZipLike(bytes: Buffer | Uint8Array): boolean {
-  return bytesStartWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
+function ascii(bytes: Buffer | Uint8Array, start = 0, end = bytes.byteLength): string {
+  return Buffer.from(bytes.subarray(start, end)).toString("ascii");
+}
+
+function textSample(bytes: Buffer | Uint8Array): string | null {
+  if (bytes.byteLength === 0) return null;
+  const sample = bytes.subarray(0, Math.min(bytes.byteLength, 64 * 1_024));
+  if (sample.includes(0)) return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(sample).replace(/^\uFEFF/u, "");
+  } catch {
+    return null;
+  }
 }
 
 function zipContains(bytes: Buffer | Uint8Array, marker: string): boolean {
   return Buffer.from(bytes).includes(Buffer.from(marker, "utf8"));
 }
 
-function bytesStartWith(bytes: Buffer | Uint8Array, signature: number[]): boolean {
-  if (bytes.byteLength < signature.length) {
-    return false;
-  }
-
-  return signature.every((byte, index) => bytes[index] === byte);
+function zipEvidence(
+  bytes: Buffer | Uint8Array,
+  required: readonly string[],
+  forbidden: readonly string[] = []
+): boolean {
+  return bytesStartWith(bytes, [0x50, 0x4b, 0x03, 0x04]) &&
+    required.every((marker) => zipContains(bytes, marker)) &&
+    forbidden.every((marker) => !zipContains(bytes, marker));
 }
 
-function ascii(bytes: Buffer | Uint8Array, start: number, end: number): string {
-  return Buffer.from(bytes.subarray(start, end)).toString("ascii");
+function inspectedZipEvidence(
+  sample: Buffer | Uint8Array,
+  found: ReadonlySet<string>,
+  required: readonly string[],
+  forbidden: readonly string[] = []
+): boolean {
+  return bytesStartWith(sample, [0x50, 0x4b, 0x03, 0x04]) &&
+    required.every((marker) => found.has(marker)) &&
+    forbidden.every((marker) => !found.has(marker));
 }
 
-function looksTextLike(bytes: Buffer | Uint8Array): boolean {
-  if (bytes.byteLength === 0) {
-    return false;
-  }
+function matchesEvidence(
+  evidence: UploadContentEvidence,
+  bytes: Buffer | Uint8Array
+): boolean {
+  const sample = evidence === "text" || evidence === "html" || evidence === "json" || evidence === "eml"
+    ? textSample(bytes)
+    : null;
 
-  const sample = bytes.subarray(0, Math.min(bytes.byteLength, 8192));
-  if (sample.includes(0)) {
-    return false;
-  }
-
-  const decoded = Buffer.from(sample).toString("utf8");
-  const replacementCount = (decoded.match(/\uFFFD/g) ?? []).length;
-
-  return replacementCount <= Math.max(8, decoded.length * 0.1);
-}
-
-export function matchesDeclaredUploadType(mimeType: string, bytes: Buffer | Uint8Array): boolean {
-  switch (mimeType.toLowerCase()) {
-    case "application/msword":
-      return bytesStartWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-    case "application/rtf":
-    case "text/rtf":
-      return ascii(bytes, 0, 5) === "{\\rtf";
-    case "application/vnd.oasis.opendocument.text":
-      return looksZipLike(bytes) &&
-        (zipContains(bytes, "application/vnd.oasis.opendocument.text") ||
-          (zipContains(bytes, "content.xml") && zipContains(bytes, "META-INF/manifest.xml")));
-    case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-      return looksZipLike(bytes) && zipContains(bytes, "[Content_Types].xml") && zipContains(bytes, "ppt/");
-    case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-      return looksZipLike(bytes) && zipContains(bytes, "[Content_Types].xml") && zipContains(bytes, "xl/");
-    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-      return looksZipLike(bytes) && zipContains(bytes, "[Content_Types].xml") && zipContains(bytes, "word/");
-    case "application/pdf":
-      return ascii(bytes, 0, 5) === "%PDF-";
-    case "application/json":
-    case "text/csv":
-    case "text/html":
-    case "text/markdown":
-    case "text/plain":
-      return looksTextLike(bytes);
-    case "image/gif":
+  switch (evidence) {
+    case "bmp":
+      return ascii(bytes, 0, 2) === "BM";
+    case "eml":
+      return sample !== null && /^(?:from|to|subject|date|message-id|mime-version):[^\r\n]*$/imu.test(sample);
+    case "epub":
+      return zipEvidence(bytes, ["mimetype", "application/epub+zip", "META-INF/container.xml"]);
+    case "gif":
       return ascii(bytes, 0, 6) === "GIF87a" || ascii(bytes, 0, 6) === "GIF89a";
-    case "image/jpeg":
+    case "html":
+      return sample !== null && /<\s*(?:!doctype\s+html|html|head|body|article|main|p|h[1-6])\b/iu.test(sample);
+    case "jpeg":
       return bytesStartWith(bytes, [0xff, 0xd8, 0xff]);
-    case "image/png":
+    case "json": {
+      if (sample === null) return false;
+      const trimmed = sample.trim();
+      return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+    case "ole":
+      return bytesStartWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    case "open_document_presentation":
+      return zipEvidence(
+        bytes,
+        ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.presentation"],
+        ["application/vnd.oasis.opendocument.spreadsheet", "application/vnd.oasis.opendocument.text"]
+      );
+    case "open_document_spreadsheet":
+      return zipEvidence(
+        bytes,
+        ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.spreadsheet"],
+        ["application/vnd.oasis.opendocument.presentation", "application/vnd.oasis.opendocument.text"]
+      );
+    case "open_document_text":
+      return zipEvidence(
+        bytes,
+        ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.text"],
+        ["application/vnd.oasis.opendocument.presentation", "application/vnd.oasis.opendocument.spreadsheet"]
+      );
+    case "pdf":
+      return ascii(bytes, 0, 5) === "%PDF-";
+    case "png":
       return bytesStartWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    case "image/webp":
+    case "presentation_ooxml":
+      return zipEvidence(bytes, ["[Content_Types].xml", "ppt/"], ["word/", "xl/"]);
+    case "rtf":
+      return ascii(bytes, 0, 5) === "{\\rtf";
+    case "spreadsheet_ooxml":
+      return zipEvidence(bytes, ["[Content_Types].xml", "xl/"], ["word/", "ppt/"]);
+    case "text":
+      return sample !== null;
+    case "tiff":
+      return bytesStartWith(bytes, [0x49, 0x49, 0x2a, 0x00]) ||
+        bytesStartWith(bytes, [0x4d, 0x4d, 0x00, 0x2a]);
+    case "webp":
       return bytes.byteLength >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP";
+    case "word_ooxml":
+      return zipEvidence(bytes, ["[Content_Types].xml", "word/"], ["ppt/", "xl/"]);
+  }
+}
+
+export function uploadContentMatchesFormat(
+  format: UploadFormatDefinition,
+  bytes: Buffer | Uint8Array
+): boolean {
+  return matchesEvidence(format.contentEvidence, bytes);
+}
+
+export function uploadInspectionMatchesFormat(
+  format: UploadFormatDefinition,
+  inspection: Readonly<{
+    foundNeedles: readonly string[];
+    sample: Buffer | Uint8Array;
+  }>
+): boolean {
+  const found = new Set(inspection.foundNeedles);
+  const sample = inspection.sample;
+  switch (format.contentEvidence) {
+    case "epub":
+      return inspectedZipEvidence(sample, found, [
+        "mimetype",
+        "application/epub+zip",
+        "META-INF/container.xml"
+      ]);
+    case "open_document_presentation":
+      return inspectedZipEvidence(sample, found, [
+        "content.xml",
+        "META-INF/manifest.xml",
+        "application/vnd.oasis.opendocument.presentation"
+      ], [
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.text"
+      ]);
+    case "open_document_spreadsheet":
+      return inspectedZipEvidence(sample, found, [
+        "content.xml",
+        "META-INF/manifest.xml",
+        "application/vnd.oasis.opendocument.spreadsheet"
+      ], [
+        "application/vnd.oasis.opendocument.presentation",
+        "application/vnd.oasis.opendocument.text"
+      ]);
+    case "open_document_text":
+      return inspectedZipEvidence(sample, found, [
+        "content.xml",
+        "META-INF/manifest.xml",
+        "application/vnd.oasis.opendocument.text"
+      ], [
+        "application/vnd.oasis.opendocument.presentation",
+        "application/vnd.oasis.opendocument.spreadsheet"
+      ]);
+    case "presentation_ooxml":
+      return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "ppt/"], ["word/", "xl/"]);
+    case "spreadsheet_ooxml":
+      return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "xl/"], ["word/", "ppt/"]);
+    case "word_ooxml":
+      return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "word/"], ["ppt/", "xl/"]);
     default:
-      return false;
+      return matchesEvidence(format.contentEvidence, sample);
   }
 }
 
 export function defaultUploadMaxBytes(env: Record<string, string | undefined> = process.env): number {
   const parsed = Number(env.AIQSA_UPLOAD_MAX_BYTES);
-
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= MAX_UPLOAD_MAX_BYTES
     ? parsed
     : DEFAULT_UPLOAD_MAX_BYTES;
 }
 
 export function validateUpload(input: UploadValidationInput): UploadValidationResult {
-  if (!input.fileName || !input.mimeType || input.byteSize <= 0) {
+  if (!input.fileName || input.byteSize <= 0) {
     return { code: "file_required", ok: false };
   }
-
   if (input.byteSize > input.maxBytes) {
     return { code: "file_too_large", ok: false };
   }
 
-  const rule = allowedTypes[input.mimeType.toLowerCase()];
-  const fileExtension = normalizedFileExtension(input.fileName);
-  const extension = rule?.extensions.find((item) => item === fileExtension);
-
-  if (!rule || !extension) {
-    return { code: "unsupported_type", ok: false };
-  }
-
-  if (input.bytes && !matchesDeclaredUploadType(input.mimeType, input.bytes)) {
+  const format = uploadFormatFor(input.fileName, input.mimeType, input.scope ?? "attachment");
+  if (!format || (input.bytes && !uploadContentMatchesFormat(format, input.bytes))) {
     return { code: "unsupported_type", ok: false };
   }
 
   return {
-    kind: rule.kind,
-    mimeType: canonicalMimeByExtension[extension] ?? input.mimeType.toLowerCase(),
+    kind: format.kind,
+    mimeType: format.canonicalMimeType,
     ok: true
   };
+}
+
+export function validateUploadInspection(input: UploadInspectionInput): UploadValidationResult {
+  if (!input.fileName || input.byteSize <= 0) return { code: "file_required", ok: false };
+  if (input.byteSize > input.maxBytes) return { code: "file_too_large", ok: false };
+  const format = uploadFormatFor(input.fileName, input.mimeType, input.scope ?? "attachment");
+  if (!format || !uploadInspectionMatchesFormat(format, input)) {
+    return { code: "unsupported_type", ok: false };
+  }
+  return { kind: format.kind, mimeType: format.canonicalMimeType, ok: true };
 }

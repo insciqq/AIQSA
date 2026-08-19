@@ -19,7 +19,7 @@ function assistantDraft(providerModelId: string, skillIds: string[]): AssistantD
     category: "analysis",
     description: "Uses an ordered workflow.",
     developerPrompt: null,
-    knowledgeBaseIds: [],
+    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: "Workflow assistant",
     providerModelId,

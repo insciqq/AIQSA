@@ -4,8 +4,11 @@ import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
 import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
 import type { ComposerAssistantSelection } from "@/components/app-shell/composerControlStore";
-import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
-import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
+import type {
+  ComposerConfigKnowledgeBase,
+  ComposerConfigKnowledgeSource
+} from "@/lib/contracts/composerConfig";
+import type { KnowledgeBaseSummary, KnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type {
@@ -195,8 +198,10 @@ export type ShellComposerView = {
   draft: string;
   knowledge: {
     bases: readonly ComposerConfigKnowledgeBase[];
-    select(baseIds: readonly string[]): void;
-    selectedBaseIds: string[];
+    searchSources?(query: string): Promise<readonly ComposerConfigKnowledgeSource[]>;
+    select(selection: KnowledgeSelection): void;
+    selection: KnowledgeSelection;
+    sources: readonly ComposerConfigKnowledgeSource[];
   };
   maxOutputTokens: string;
   memory: {

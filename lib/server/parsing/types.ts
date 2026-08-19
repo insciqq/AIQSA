@@ -1,6 +1,11 @@
-export type SidecarParserEngine = "docling" | "tika";
+import type {
+  SidecarParserEngine as RegistrySidecarParserEngine
+} from "../../domain/uploadFormats";
+import type { KnowledgeProcessingWarningCode } from "../../domain/knowledgeProcessingWarnings";
+import type { DocumentParserErrorCode } from "./errors";
 
-export type DocumentParserEngine = "inline" | SidecarParserEngine;
+export type SidecarParserEngine = RegistrySidecarParserEngine;
+export type DocumentParserEngine = "inline" | "spreadsheet" | SidecarParserEngine;
 
 export type DocumentParseInput = Readonly<{
   bytes: Buffer;
@@ -9,25 +14,173 @@ export type DocumentParseInput = Readonly<{
   signal?: AbortSignal;
 }>;
 
-/**
- * A structure-aware superset of uploads/PdfTextChunk. Consumers that only
- * understand index/page/text can use these blocks without translation.
- */
-export type ParsedDocumentBlock = Readonly<{
-  headingPath: readonly string[];
-  index: number;
-  isTable: boolean;
+export type ParsedDocumentWarningCode = KnowledgeProcessingWarningCode;
+
+export type ParsedDocumentBlockType =
+  | "caption"
+  | "code"
+  | "footnote"
+  | "heading"
+  | "image"
+  | "list_item"
+  | "paragraph"
+  | "table"
+  | "title";
+
+export type ParsedBoundingBox = Readonly<{
+  bottom: number;
+  coordinateOrigin: "bottom_left" | "top_left";
+  left: number;
   page: number;
+  right: number;
+  top: number;
+}>;
+
+export type ParsedTableCell = Readonly<{
+  column: number;
+  columnSpan: number;
+  row: number;
+  rowSpan: number;
   text: string;
 }>;
 
+export type ParsedTable = Readonly<{
+  cells: readonly ParsedTableCell[];
+  columnCount: number;
+  rowCount: number;
+}>;
+
+export type ParsedWorkbookCellType =
+  | "blank"
+  | "boolean"
+  | "date"
+  | "error"
+  | "number"
+  | "string";
+
+export type ParsedWorkbookCell = Readonly<{
+  address: string;
+  column: number;
+  display: string;
+  formula: string | null;
+  numberFormat: string | null;
+  row: number;
+  type: ParsedWorkbookCellType;
+  value: boolean | number | string | null;
+}>;
+
+export type ParsedWorkbookRange = Readonly<{
+  a1: string;
+  columnEnd: number;
+  columnStart: number;
+  rowEnd: number;
+  rowStart: number;
+}>;
+
+export type ParsedWorkbookRegion = ParsedWorkbookRange & Readonly<{
+  columnLabels: readonly string[];
+  headerRow: number | null;
+  rowLabelColumns: readonly number[];
+}>;
+
+export type ParsedWorkbookSheet = Readonly<{
+  cells: readonly ParsedWorkbookCell[];
+  columnCount: number;
+  hidden: "hidden" | "very_hidden" | "visible";
+  hiddenColumns: readonly number[];
+  hiddenRows: readonly number[];
+  index: number;
+  merges: readonly ParsedWorkbookRange[];
+  name: string;
+  regions: readonly ParsedWorkbookRegion[];
+  rowCount: number;
+  truncated: boolean;
+}>;
+
+export type ParsedWorkbookWarningCode =
+  | "duplicate_headers"
+  | "external_links_ignored"
+  | "formula_like_text"
+  | "formula_without_cached_value"
+  | "hidden_data_present"
+  | "macros_ignored"
+  | "spreadsheet_cells_truncated"
+  | "spreadsheet_rows_truncated"
+  | "unsupported_cell_type";
+
+export type ParsedWorkbook = Readonly<{
+  dateSystem: "1900" | "1904";
+  sheets: readonly ParsedWorkbookSheet[];
+  warnings: readonly ParsedWorkbookWarningCode[];
+}>;
+
+export type ParsedDocumentAsset = Readonly<{
+  boundingBoxes: readonly ParsedBoundingBox[];
+  caption: string | null;
+  id: string;
+  kind: "chart" | "diagram" | "image";
+  page: number;
+}>;
+
+/**
+ * A structure-aware superset of the old uploads/PdfTextChunk projection.
+ * `page`, `isTable`, and `text` stay explicit for compatibility while v2
+ * consumers retain exact structure and locators.
+ */
+export type ParsedDocumentBlock = Readonly<{
+  assetIds: readonly string[];
+  boundingBoxes: readonly ParsedBoundingBox[];
+  headingPath: readonly string[];
+  index: number;
+  isTable: boolean;
+  languageHints: readonly string[];
+  page: number;
+  pageEnd: number;
+  readingOrder: number;
+  table: ParsedTable | null;
+  text: string;
+  type: ParsedDocumentBlockType;
+}>;
+
+export type ParsedDocumentQuality = Readonly<{
+  characterCount: number;
+  coveredPageCount: number;
+  duplicateFurnitureRatio: number;
+  emptyPageRatio: number;
+  encodingValid: boolean;
+  headingCount: number;
+  ocrConfidence: number | null;
+  pageCoverage: number;
+  tableCount: number;
+  usableBlockCount: number;
+}>;
+
+export type ParserAttemptOutcome =
+  | "complete"
+  | "partial"
+  | "quality_failure"
+  | "rejected"
+  | "retryable_failure";
+
+export type ParsedDocumentParserAttempt = Readonly<{
+  engine: DocumentParserEngine;
+  errorCode: DocumentParserErrorCode | null;
+  outcome: ParserAttemptOutcome;
+}>;
+
 export type ParsedDocument = Readonly<{
+  assets: readonly ParsedDocumentAsset[];
+  attempts: readonly ParsedDocumentParserAttempt[];
   blocks: readonly ParsedDocumentBlock[];
   engine: DocumentParserEngine;
+  languages: readonly string[];
   mediaType: string;
   pageCount: number;
+  quality: ParsedDocumentQuality;
   status: "complete" | "partial";
   text: string;
+  warnings: readonly ParsedDocumentWarningCode[];
+  workbook: ParsedWorkbook | null;
 }>;
 
 export type ParserProbeResult = Readonly<{
@@ -43,7 +196,7 @@ export type SidecarParseInput = DocumentParseInput & Readonly<{
   mediaType: string;
 }>;
 
-/** Injection boundary used by deterministic tests and later service adapters. */
+/** Injection boundary used by deterministic tests and service adapters. */
 export interface DocumentParserEngineAdapter {
   parse(input: SidecarParseInput): Promise<ParsedDocument>;
   probe(signal?: AbortSignal): Promise<ParserProbeResult>;

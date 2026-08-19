@@ -94,17 +94,17 @@ describe("summarizeMessageRunArtifacts", () => {
     );
   });
 
-  it("projects only cited Knowledge document labels without retrieval metadata", () => {
+  it("projects only cited legacy Knowledge handles without stale source labels", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [],
       knowledgeRuns: [{
-        invocationOrdinal: 1,
+        invocationOrdinal: 12,
         results: [
           {
             baseName: "Policies",
             documentVersionNumber: 3,
             fileName: "handbook.pdf",
-            handle: "K1.1",
+            handle: "K12.1",
             includedText: "private-passage-sentinel",
             knowledgeBaseId: "private-base-id",
             page: 12
@@ -112,7 +112,7 @@ describe("summarizeMessageRunArtifacts", () => {
           {
             baseName: "Policies",
             fileName: "unused.pdf",
-            handle: "K1.2",
+            handle: "K12.2",
             includedText: "unused-private-passage",
             knowledgeBaseId: "private-base-id",
             page: 4
@@ -121,23 +121,46 @@ describe("summarizeMessageRunArtifacts", () => {
       }],
       searchRuns: []
     }, {
-      blocks: [{ text: "The policy applies [K1.1].", type: "text" }]
+      blocks: [{ text: "The policy applies [K12.1].", type: "text" }]
     });
 
     expect(summary).toEqual({
       citations: [],
       knowledgeCitations: [{
-        baseName: "Policies",
-        fileName: "handbook.pdf",
-        handle: "K1.1",
-        page: 12
+        handle: "K12.1"
       }],
       reasoningText: [],
       sources: []
     });
     expect(JSON.stringify(summary)).not.toMatch(
-      /private-passage-sentinel|unused\.pdf|private-base-id|documentVersionNumber/
+      /private-passage-sentinel|handbook\.pdf|unused\.pdf|Policies|private-base-id|documentVersionNumber/
     );
+  });
+
+  it("prefers v2 receipt handles and preserves only deletion state", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      knowledgeRetrievalSession: {
+        evidenceItems: [
+          { handle: "K1", state: "available" },
+          { handle: "K2", state: "deleted" },
+          { handle: "K3", state: "available" }
+        ]
+      },
+      knowledgeRuns: [{
+        invocationOrdinal: 1,
+        results: [{ handle: "K1.1", fileName: "legacy-must-not-project.pdf" }]
+      }],
+      searchRuns: []
+    }, {
+      blocks: [{ text: "Supported [K1], removed [K2], but not unused K3.", type: "text" }]
+    });
+
+    expect(summary?.knowledgeCitations).toEqual([
+      { handle: "K1" },
+      { deleted: true, handle: "K2" }
+    ]);
+    expect(JSON.stringify(summary)).not.toContain("legacy-must-not-project.pdf");
   });
 
   it("keeps only a committed Memory action", () => {
@@ -185,6 +208,30 @@ describe("summarizeMessageRunArtifacts", () => {
 });
 
 describe("summarizeMessageRunToolActivity", () => {
+  it("projects automatic Knowledge preflight as the first user-facing round", () => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: null,
+      normalizedRequest: {},
+      status: "complete",
+      toolCalls: [{
+        completedAt: new Date("2026-08-17T00:00:00.120Z"),
+        ordinal: 0,
+        roundIndex: 0,
+        startedAt: new Date("2026-08-17T00:00:00.000Z"),
+        state: "complete",
+        toolName: "retrieve_knowledge"
+      }]
+    })).toEqual({
+      calls: [{
+        durationMs: 120,
+        round: 1,
+        serverName: "Knowledge",
+        status: "complete",
+        toolName: "retrieve_knowledge"
+      }]
+    });
+  });
+
   it("projects ordered safe labels, status, duration, and an exhausted round warning", () => {
     const activity = summarizeMessageRunToolActivity({
       errorPayload: null,

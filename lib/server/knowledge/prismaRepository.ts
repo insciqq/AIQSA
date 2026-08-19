@@ -2,18 +2,13 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   KnowledgeBaseCreateInput,
   KnowledgeBaseUpdateInput,
-  KnowledgeEmbeddingDeployment
+  KnowledgeReadiness
 } from "../../contracts/knowledge";
-import { canAccessModel } from "../auth/entitlements";
-import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
-import { normalizeProviderModelConfiguration } from "../providers/providerConfiguration";
 import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
-import {
-  KNOWLEDGE_CHUNKING_PROFILE_VERSION,
-  createKnowledgeVectorSpacePin,
-  type KnowledgeVectorSpacePin
-} from "./indexProfile";
+import { resolveActiveKnowledgeProfile } from "./knowledgeProfile";
+import { knowledgeTrashPurgeScheduledAt } from "./lifecyclePolicy";
+import { knowledgeSupportReference } from "./supportReference";
 
 export type KnowledgeBasePublicationRow = Readonly<{
   groupId: string | null;
@@ -24,36 +19,31 @@ export type KnowledgeBasePublicationRow = Readonly<{
 }>;
 
 export type KnowledgeBaseAccessEntry = Readonly<{
-  activeGeneration: Readonly<{
-    chunkingProfileVersion: number;
-    embeddingDeployment: Omit<KnowledgeEmbeddingDeployment, "indexSupported">;
-    id: string;
-    indexedContentRevision: number;
-    vectorSpaceFingerprint: string;
-  }>;
   archived: boolean;
-  contentRevision: number;
+  deletionPending: boolean;
   description: string;
+  sourceCount: number;
   id: string;
   installationScope: boolean;
   memberGroupNames: string[];
   name: string;
   owned: boolean;
   ownerDisplayName: string;
-  published: boolean;
+  purgeScheduledAt: Date | null;
+  readiness: KnowledgeReadiness;
+  trashed: boolean;
+  trashedAt: Date | null;
   updatedAt: Date;
   version: number;
 }>;
 
 export type KnowledgeBaseDetailData = KnowledgeBaseAccessEntry & Readonly<{
-  documentCount: number;
   publications: KnowledgeBasePublicationRow[] | null;
 }>;
 
 export type KnowledgeBaseCreateResult =
   | Readonly<{ id: string; kind: "ok" }>
-  | Readonly<{ kind: "embedding_dimension_not_supported" }>
-  | Readonly<{ kind: "embedding_not_available" }>;
+  | Readonly<{ kind: "profile_unavailable" }>;
 
 export type KnowledgeBaseWriteResult =
   | Readonly<{ kind: "not_found" }>
@@ -70,18 +60,35 @@ export type KnowledgeBaseRevokeResult =
   | Readonly<{ kind: "not_found" }>
   | Readonly<{ kind: "ok" }>;
 
-export type KnowledgeEmbeddingDeploymentResolution = Readonly<{
-  public: KnowledgeEmbeddingDeployment;
-  pin: KnowledgeVectorSpacePin;
-}>;
-
 const baseInclude = {
-  _count: { select: { documents: true } },
-  activeIndexGeneration: {
-    include: {
-      embeddingProviderModel: {
-        include: { connection: { select: { displayName: true } } }
+  activeIndexGeneration: { select: { id: true, profileRevisionId: true } },
+  sourceMemberships: {
+    select: {
+      source: {
+        select: {
+          currentVersion: {
+            select: {
+              artifacts: {
+                select: { errorCode: true, id: true, profileRevisionId: true, state: true }
+              },
+              id: true
+            }
+          },
+          id: true,
+          pendingVersion: {
+            select: {
+              artifacts: {
+                select: { errorCode: true, id: true, profileRevisionId: true, state: true }
+              },
+              id: true
+            }
+          }
+        }
       }
+    },
+    where: {
+      removedAt: null,
+      source: { deletionRequestedAt: null, trashedAt: null }
     }
   },
   owner: { select: { displayName: true } },
@@ -92,6 +99,67 @@ const baseInclude = {
 } satisfies Prisma.KnowledgeBaseInclude;
 
 type BaseRecord = Prisma.KnowledgeBaseGetPayload<{ include: typeof baseInclude }>;
+
+function readiness(record: BaseRecord): KnowledgeReadiness {
+  const profileRevisionId = record.activeIndexGeneration?.profileRevisionId ?? null;
+  const sourceStates = record.sourceMemberships.map(({ source }) => {
+    const currentArtifact = source.currentVersion?.artifacts.find((artifact) =>
+      artifact.profileRevisionId === profileRevisionId);
+    if (currentArtifact?.state === "ready") {
+      return { issue: null, state: "ready" as const };
+    }
+    if (currentArtifact?.state === "failed") {
+      return {
+        issue: `${source.id}:${source.currentVersion?.id ?? "missing"}:${
+          currentArtifact.errorCode ?? "processing_failed"}`,
+        state: "needs_attention" as const
+      };
+    }
+    if (source.currentVersion) return { issue: null, state: "processing" as const };
+
+    const pendingArtifact = source.pendingVersion?.artifacts.find((artifact) =>
+      artifact.profileRevisionId === profileRevisionId);
+    if (pendingArtifact?.state === "failed") {
+      return {
+        issue: `${source.id}:${source.pendingVersion?.id ?? "missing"}:${
+          pendingArtifact.errorCode ?? "processing_failed"}`,
+        state: "needs_attention" as const
+      };
+    }
+    if (source.pendingVersion) return { issue: null, state: "processing" as const };
+    return {
+      issue: `${source.id}:missing-version`,
+      state: "needs_attention" as const
+    };
+  });
+  const readySources = sourceStates.filter(({ state }) => state === "ready").length;
+  const processingSources = sourceStates.filter(({ state }) => state === "processing").length;
+  const attentionStates = sourceStates.filter(({ state }) => state === "needs_attention");
+  const attentionSources = attentionStates.length;
+  const totalSources = sourceStates.length;
+  const state: KnowledgeReadiness["state"] = record.trashedAt !== null
+    ? "trashed"
+    : record.archivedAt !== null
+      ? "archived"
+    : totalSources === 0
+      ? "empty"
+      : attentionSources > 0
+        ? "needs_attention"
+        : processingSources > 0
+          ? "processing"
+          : "ready";
+  const issueParts = attentionStates.map(({ issue }) => issue ?? "processing_failed").sort();
+  return {
+    attentionSources,
+    processingSources,
+    readySources,
+    state,
+    supportReference: state === "needs_attention"
+      ? knowledgeSupportReference("base", record.id, ...issueParts)
+      : null,
+    totalSources
+  };
+}
 
 function publicationRow(record: BaseRecord["publications"][number]): KnowledgeBasePublicationRow {
   return {
@@ -118,23 +186,12 @@ function accessEntry(
       memberGroupIds.has(publication.groupId)
     )
   );
+  const currentReadiness = readiness(record);
   return {
-    activeGeneration: {
-      chunkingProfileVersion: generation.chunkingProfileVersion,
-      embeddingDeployment: {
-        connectionDisplayName: generation.embeddingProviderModel.connection.displayName,
-        id: generation.embeddingProviderModelId,
-        modelDisplayName: generation.embeddingProviderModel.displayName,
-        provider: generation.embeddingProviderModel.provider,
-        targetDimension: generation.targetDimension
-      },
-      id: generation.id,
-      indexedContentRevision: generation.indexedContentRevision,
-      vectorSpaceFingerprint: generation.vectorSpaceFingerprint.trim()
-    },
     archived: record.archivedAt !== null,
-    contentRevision: record.contentRevision,
+    deletionPending: record.deletionRequestedAt !== null,
     description: record.description,
+    sourceCount: currentReadiness.totalSources,
     id: record.id,
     installationScope: accessiblePublications.some(
       (publication) => publication.scope === "installation"
@@ -147,7 +204,10 @@ function accessEntry(
     name: record.name,
     owned,
     ownerDisplayName: record.owner.displayName,
-    published: record.publications.length > 0 || record.projectBindings.length > 0,
+    purgeScheduledAt: knowledgeTrashPurgeScheduledAt(record.trashedAt),
+    readiness: currentReadiness,
+    trashed: record.trashedAt !== null,
+    trashedAt: record.trashedAt,
     updatedAt: record.updatedAt,
     version: record.version
   };
@@ -164,59 +224,6 @@ async function activeMemberGroupIds(
   return memberships.map((membership) => membership.groupId);
 }
 
-export async function resolveKnowledgeEmbeddingDeployments(
-  client: Pick<PrismaClient, "accessGrant" | "providerModel" | "userGroup">,
-  userId: string
-): Promise<KnowledgeEmbeddingDeploymentResolution[]> {
-  const [entitlements, models] = await Promise.all([
-    loadEntitlementsForUser(userId, client),
-    client.providerModel.findMany({
-      include: { connection: { select: { displayName: true } } },
-      orderBy: [
-        { connection: { displayName: "asc" } },
-        { displayName: "asc" },
-        { id: "asc" }
-      ],
-      where: {
-        activeConfig: { not: Prisma.DbNull },
-        activeVersion: { gt: 0 },
-        connection: {
-          activeConfig: { not: Prisma.DbNull },
-          activeVersion: { gt: 0 },
-          enabled: true
-        },
-        enabled: true,
-        modelClass: "embedding"
-      }
-    })
-  ]);
-  const resolved: KnowledgeEmbeddingDeploymentResolution[] = [];
-  for (const model of models) {
-    if (!canAccessModel(entitlements, model.connectionId, model.id) || model.activeConfig === null) {
-      continue;
-    }
-    try {
-      const configuration = normalizeProviderModelConfiguration(model.activeConfig);
-      const pin = createKnowledgeVectorSpacePin({ configuration, deploymentId: model.id });
-      if (!pin) continue;
-      resolved.push({
-        pin,
-        public: {
-          connectionDisplayName: model.connection.displayName,
-          id: model.id,
-          indexSupported: pin.indexSupported,
-          modelDisplayName: model.displayName,
-          provider: model.provider,
-          targetDimension: pin.targetDimension
-        }
-      });
-    } catch {
-      // A malformed persisted active configuration is unavailable, not client data.
-    }
-  }
-  return resolved;
-}
-
 function isSerializationConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
 }
@@ -231,13 +238,9 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           return await client.$transaction(async (tx) => {
-            const deployment = (await resolveKnowledgeEmbeddingDeployments(tx, userId)).find(
-              (candidate) => candidate.public.id === input.embeddingDeploymentId
-            );
-            if (!deployment) return { kind: "embedding_not_available" } as const;
-            if (!deployment.pin.indexSupported) {
-              return { kind: "embedding_dimension_not_supported" } as const;
-            }
+            const resolved = await resolveActiveKnowledgeProfile(tx, userId);
+            if (resolved.kind !== "ok") return { kind: "profile_unavailable" } as const;
+            const profile = resolved.profile;
             const base = await tx.knowledgeBase.create({
               data: {
                 description: input.description,
@@ -250,15 +253,16 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
             const generation = await tx.knowledgeIndexGeneration.create({
               data: {
                 activatedAt: now,
-                chunkingProfileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
-                embeddingConfiguration: deployment.pin.configuration as unknown as Prisma.InputJsonValue,
-                embeddingProviderModelId: deployment.public.id,
+                chunkingProfileVersion: profile.chunkingProfileVersion,
+                embeddingConfiguration: profile.embeddingConfiguration as Prisma.InputJsonValue,
+                embeddingProviderModelId: profile.embeddingProviderModelId,
                 indexedContentRevision: 0,
                 knowledgeBaseId: base.id,
+                profileRevisionId: profile.revisionId,
                 readyAt: now,
                 status: "active",
-                targetDimension: deployment.pin.targetDimension,
-                vectorSpaceFingerprint: deployment.pin.fingerprint
+                targetDimension: profile.pin.targetDimension,
+                vectorSpaceFingerprint: profile.pin.fingerprint
               },
               select: { id: true }
             });
@@ -281,11 +285,13 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       const record = await client.knowledgeBase.findFirst({
         include: baseInclude,
         where: {
+          activeIndexGenerationId: { not: null },
           id: knowledgeBaseId,
           OR: [
             { ownerUserId: userId },
             {
               archivedAt: null,
+              deletionRequestedAt: null,
               publications: {
                 some: {
                   OR: [
@@ -295,7 +301,8 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
                       : [])
                   ]
                 }
-              }
+              },
+              trashedAt: null
             }
           ]
         }
@@ -304,7 +311,6 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       const entry = accessEntry(record, userId, groups);
       return {
         ...entry,
-        documentCount: record._count.documents,
         publications: entry.owned
           ? [
               ...record.publications.map(publicationRow),
@@ -323,8 +329,8 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       };
     },
 
-    async listEmbeddingDeployments(userId: string): Promise<KnowledgeEmbeddingDeployment[]> {
-      return (await resolveKnowledgeEmbeddingDeployments(client, userId)).map((deployment) => deployment.public);
+    async canCreate(userId: string): Promise<boolean> {
+      return (await resolveActiveKnowledgeProfile(client, userId)).kind === "ok";
     },
 
     async listForUser(userId: string): Promise<KnowledgeBaseAccessEntry[]> {
@@ -333,10 +339,12 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
         include: baseInclude,
         orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
         where: {
+          activeIndexGenerationId: { not: null },
           OR: [
             { ownerUserId: userId },
             {
               archivedAt: null,
+              deletionRequestedAt: null,
               publications: {
                 some: {
                   OR: [
@@ -346,7 +354,8 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
                       : [])
                   ]
                 }
-              }
+              },
+              trashedAt: null
             }
           ]
         }
@@ -363,25 +372,6 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       return memberships.map((membership) => membership.group);
     },
 
-    async listVisibleDocumentVersions(
-      knowledgeBaseId: string,
-      contentRevision: number
-    ): Promise<Array<{ documentId: string; id: string; versionNumber: number }>> {
-      if (!Number.isSafeInteger(contentRevision) || contentRevision < 1) return [];
-      return client.knowledgeDocumentVersion.findMany({
-        orderBy: [{ documentId: "asc" }, { versionNumber: "asc" }],
-        select: { documentId: true, id: true, versionNumber: true },
-        where: {
-          knowledgeBaseId,
-          visibleFromRevision: { lte: contentRevision },
-          OR: [
-            { visibleUntilRevision: null },
-            { visibleUntilRevision: { gt: contentRevision } }
-          ]
-        }
-      });
-    },
-
     async publish(input: Readonly<{
       actorIsAdmin: boolean;
       groupId: string | null;
@@ -390,15 +380,22 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       userId: string;
     }>): Promise<KnowledgeBasePublishResult> {
       return client.$transaction(async (tx) => {
-        const locked = await tx.$queryRaw<Array<{ archivedAt: Date | null; ownerUserId: string }>>`
-          SELECT "ownerUserId", "archivedAt"
+        const locked = await tx.$queryRaw<Array<{
+          archivedAt: Date | null;
+          deletionRequestedAt: Date | null;
+          ownerUserId: string;
+          trashedAt: Date | null;
+        }>>`
+          SELECT "ownerUserId", "archivedAt", "trashedAt", "deletionRequestedAt"
           FROM "KnowledgeBase"
           WHERE "id" = ${input.knowledgeBaseId}
           FOR UPDATE
         `;
         const base = locked[0];
         if (!base || base.ownerUserId !== input.userId) return { kind: "not_found" };
-        if (base.archivedAt) return { kind: "archived" };
+        if (base.archivedAt || base.trashedAt || base.deletionRequestedAt) {
+          return { kind: "archived" };
+        }
 
         if (input.scope === "installation") {
           if (!input.actorIsAdmin || input.groupId !== null) return { kind: "forbidden" };
@@ -512,6 +509,8 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
         where: {
           id: knowledgeBaseId,
           ownerUserId: userId,
+          deletionRequestedAt: null,
+          trashedAt: null,
           version: input.expectedVersion
         }
       });

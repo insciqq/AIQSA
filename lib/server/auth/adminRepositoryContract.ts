@@ -35,6 +35,7 @@ export type AdminInviteRecord = Omit<AdminInviteWire, "deletion"> & {
 };
 
 export type AdminDeleteUserResult =
+  | "deletion_pending"
   | "deleted"
   | "not_found"
   | "self_delete_forbidden"

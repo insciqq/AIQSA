@@ -11,7 +11,11 @@ import {
   decodeThreadSearchSource,
   type ThreadSearchSource
 } from "./searchSources";
-import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
+import {
+  decodeKnowledgeCitationHandle,
+  decodeKnowledgePlan,
+  type KnowledgePlan
+} from "./knowledge";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   MEMORY_DELETION_STATES,
@@ -101,12 +105,15 @@ export type ThreadToolBudgetWarning = {
   limit: number;
 };
 
-export type ThreadKnowledgeCitation = {
-  baseName: string;
-  fileName: string;
-  handle: string;
-  page: number;
-};
+export type ThreadKnowledgeCitation =
+  | {
+      deleted?: false;
+      handle: string;
+    }
+  | {
+      deleted: true;
+      handle: string;
+    };
 
 export type ThreadKnowledgeOutcome = {
   invocationOrdinal: number;
@@ -735,26 +742,10 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
 
 function decodeThreadKnowledgeCitation(value: unknown): ThreadKnowledgeCitation | null {
   if (!isRecord(value)) return null;
-  const baseName = requiredString(value.baseName);
-  const fileName = requiredString(value.fileName);
   const handle = requiredString(value.handle);
-  const page = nonNegativeInteger(value.page);
-  if (
-    !baseName ||
-    !fileName ||
-    !handle ||
-    !/^K[1-3]\.[1-8]$/u.test(handle) ||
-    page === null ||
-    page < 1
-  ) {
-    return null;
-  }
-  return {
-    baseName,
-    fileName,
-    handle,
-    page
-  };
+  if (!handle || !decodeKnowledgeCitationHandle(handle)) return null;
+  if (value.deleted === true) return { deleted: true, handle };
+  return { handle };
 }
 
 function decodeThreadAssistantIdentity(value: unknown): ThreadAssistantIdentity | null {

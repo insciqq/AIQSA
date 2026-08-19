@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { providerTemplateIds } from "../../domain/providerTemplates";
+import { createPrismaKnowledgeUploadRepository } from "../knowledge/uploadRepository";
 import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
@@ -202,6 +203,163 @@ describe("Prisma attachment retention outbox", () => {
       expect(deletionJobs.map((job) => job.storageKey).sort()).toEqual([...storageKeys].sort());
     } finally {
       await cleanupUser(user.id, storageKeys);
+    }
+  });
+
+  it("releases expired Knowledge upload authority while preserving an independently retryable receipt", async () => {
+    const user = await createUser();
+    const fixture = await createKnowledgePayloadFixture(
+      user.id,
+      `retention/upload-fixture-original-${randomUUID()}`,
+      `retention/upload-fixture-normalized-${randomUUID()}`
+    );
+    const proxyKey = `retention/upload-proxy-${randomUUID()}`;
+    const multipartKey = `retention/upload-multipart-${randomUUID()}`;
+    const recentKey = `retention/upload-recent-${randomUUID()}`;
+    const batch = await prisma.knowledgeUploadBatch.create({
+      data: {
+        clientBatchId: `retention-${randomUUID()}`,
+        items: {
+          create: [
+            {
+              clientFileId: "proxy-old",
+              declaredByteSize: 4,
+              declaredMimeType: "text/plain",
+              fileName: "proxy-old.txt",
+              normalizedMimeType: "text/plain",
+              sessionExpiresAt: oldDate,
+              state: "UPLOADING",
+              storageKey: proxyKey,
+              transport: "PROXY",
+              uploadedByteSize: 2
+            },
+            {
+              clientFileId: "multipart-old",
+              declaredByteSize: 8,
+              declaredMimeType: "text/plain",
+              errorCode: "knowledge_upload_session_expired",
+              fileName: "multipart-old.txt",
+              multipartUploadId: "retention-multipart-id",
+              normalizedMimeType: "text/plain",
+              parts: {
+                create: [{ byteOffset: 0, byteSize: 8, partNumber: 1 }]
+              },
+              sessionExpiresAt: oldDate,
+              state: "NEEDS_ATTENTION",
+              storageKey: multipartKey,
+              transport: "MULTIPART"
+            },
+            {
+              clientFileId: "proxy-recent",
+              declaredByteSize: 4,
+              declaredMimeType: "text/plain",
+              fileName: "proxy-recent.txt",
+              normalizedMimeType: "text/plain",
+              sessionExpiresAt: new Date("2100-01-01T00:00:00.000Z"),
+              storageKey: recentKey,
+              transport: "PROXY"
+            }
+          ]
+        },
+        knowledgeBaseId: fixture.base.id,
+        ownerUserId: user.id
+      },
+      include: { items: true }
+    });
+    const repository = createPrismaRetentionRepository(prisma);
+    const cutoff = new Date("2000-02-01T00:00:00.000Z");
+
+    try {
+      await expect(repository.inspectExpiredKnowledgeUploadSessions({ cutoff, limit: 10 })).resolves.toEqual({
+        items: 2,
+        multipartSessions: 1
+      });
+      await expect(repository.stageExpiredKnowledgeUploadSessions({
+        cutoff,
+        limit: 10,
+        now: retentionNow
+      })).resolves.toEqual({
+        items: 2,
+        itemsReleased: 2,
+        jobsStaged: 2,
+        multipartSessions: 1,
+        multipartSessionsReleased: 1
+      });
+
+      const storedItems = await prisma.knowledgeUploadItem.findMany({
+        orderBy: { clientFileId: "asc" },
+        select: {
+          clientFileId: true,
+          errorCode: true,
+          multipartUploadId: true,
+          state: true,
+          storageKey: true,
+          uploadedByteSize: true
+        },
+        where: { batchId: batch.id }
+      });
+      expect(storedItems).toEqual([
+        {
+          clientFileId: "multipart-old",
+          errorCode: "knowledge_upload_session_expired",
+          multipartUploadId: null,
+          state: "NEEDS_ATTENTION",
+          storageKey: null,
+          uploadedByteSize: 0
+        },
+        {
+          clientFileId: "proxy-old",
+          errorCode: "knowledge_upload_session_expired",
+          multipartUploadId: null,
+          state: "NEEDS_ATTENTION",
+          storageKey: null,
+          uploadedByteSize: 0
+        },
+        {
+          clientFileId: "proxy-recent",
+          errorCode: null,
+          multipartUploadId: null,
+          state: "QUEUED",
+          storageKey: recentKey,
+          uploadedByteSize: 0
+        }
+      ]);
+      await expect(prisma.knowledgeUploadPart.count({
+        where: { uploadItem: { batchId: batch.id } }
+      })).resolves.toBe(0);
+      await expect(prisma.attachmentDeletionJob.findMany({
+        orderBy: { storageKey: "asc" },
+        select: { multipartUploadId: true, storageKey: true },
+        where: { storageKey: { in: [proxyKey, multipartKey] } }
+      })).resolves.toEqual([
+        { multipartUploadId: "retention-multipart-id", storageKey: multipartKey },
+        { multipartUploadId: null, storageKey: proxyKey }
+      ]);
+
+      const proxyItem = batch.items.find(({ clientFileId }) => clientFileId === "proxy-old")!;
+      await expect(createPrismaKnowledgeUploadRepository(prisma).retry({
+        attemptNumber: proxyItem.attemptNumber,
+        batchId: batch.id,
+        itemId: proxyItem.id,
+        knowledgeBaseId: fixture.base.id,
+        multipartUploadId: null,
+        now: retentionNow,
+        parts: [],
+        sessionExpiresAt: new Date("2100-01-01T00:00:00.000Z"),
+        storageKey: `retention/upload-proxy-retry-${randomUUID()}`,
+        transport: "PROXY",
+        userId: user.id
+      })).resolves.toMatchObject({
+        cleanup: { multipartUploadId: null, storageKey: null, transport: "PROXY" },
+        kind: "ok"
+      });
+    } finally {
+      await prisma.knowledgeUploadBatch.deleteMany({ where: { id: batch.id } });
+      await prisma.attachmentDeletionJob.deleteMany({
+        where: { storageKey: { in: [proxyKey, multipartKey, recentKey] } }
+      });
+      await cleanupKnowledgePayloadFixture(fixture);
+      await cleanupUser(user.id, [proxyKey, multipartKey, recentKey]);
     }
   });
 

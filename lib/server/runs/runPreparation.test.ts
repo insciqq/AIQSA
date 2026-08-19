@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
+import { knowledgeFollowUpTools } from "../knowledge/knowledgeTools";
+import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -43,6 +47,54 @@ const storedUserMessage: ProviderConversationMessage = {
   id: "stored-user-message",
   role: "user"
 };
+
+function knowledgeSelection(baseIds: readonly string[] = []): KnowledgeSelection {
+  return baseIds.length > 0
+    ? { baseIds: [...baseIds], mode: "explicit", sourceIds: [], version: 1 }
+    : { baseIds: [], mode: "none", sourceIds: [], version: 1 };
+}
+
+type KnowledgeAdmissionInput = Parameters<
+  NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
+>[0];
+
+function admittedKnowledge(
+  input: KnowledgeAdmissionInput,
+  fingerprintCharacter: string,
+  bindings?: KnowledgeRunAdmissionPlan["bindings"]
+) {
+  const admittedBindings = bindings ?? (input.knowledgePlan.mode === "none"
+    ? []
+    : [{
+        approxTokens: 1_200,
+        baseContentRevision: 1,
+        embeddingCredentialSource: "default" as const,
+        embeddingExecutionSnapshot: {} as never,
+        embeddingProviderModelId: "embedding-model-1",
+        includeWholeBase: true,
+        indexedContentRevision: 1,
+        indexGenerationId: "generation-1",
+        knowledgeBaseId: input.knowledgePlan.baseIds[0] ?? "knowledge-base-1",
+        ordinal: 0,
+        passageCount: 6,
+        readySourceCount: 1,
+        selectedSourceIds: [],
+        sourceCount: 1,
+        targetDimension: 1024 as const,
+        vectorSpaceFingerprint: "a".repeat(64)
+      }]);
+  return {
+    bindings: admittedBindings,
+    budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+    exclusions: [],
+    fingerprint: fingerprintCharacter.repeat(64),
+    knowledgePlan: input.knowledgePlan,
+    resolvedSourceCount: 0,
+    ...(input.executionScope ? { executionScope: input.executionScope } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    userId: input.userId
+  };
+}
 
 function defaultEntitlements(): ResolvedEntitlements {
   return {
@@ -709,7 +761,7 @@ function projectAdmission(
     defaults: {
       assistantId: null,
       controlValues: {},
-      knowledgePlan: { baseIds: [] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpMode: "off",
       providerModelId: "fake-qsa",
       searchPlan: { mode: "all_selected", optionIds: [] }
@@ -879,12 +931,7 @@ describe("run preparation", () => {
     }) => input.requiresClientToolCoexistence ? client : hosted);
     const knowledgeLoad = vi.fn<
       NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
-    >(async ({ knowledgePlan, userId }) => ({
-        bindings: [],
-        fingerprint: "c".repeat(64),
-        knowledgePlan,
-        userId
-      }));
+    >(async (input) => admittedKnowledge(input, "c"));
     const result = await prepareRun(
       {
         ...createHarness().deps,
@@ -893,7 +940,7 @@ describe("run preparation", () => {
         providerAdmission: { load: admissionLoad }
       },
       sendInput(successBody({
-        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
         modelId: hosted.selection.providerModelId,
         params: {},
         provider: hosted.selection.providerConnectionId,
@@ -902,7 +949,7 @@ describe("run preparation", () => {
         project: projectAdmission({
           defaults: {
             ...projectAdmission().defaults,
-            knowledgePlan: { baseIds: ["knowledge-base-1"] },
+            knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
             providerModelId: hosted.selection.providerModelId,
             searchPlan: { mode: "model_choice", optionIds: [optionId] }
           },
@@ -1970,19 +2017,14 @@ describe("run preparation", () => {
         ...harness.deps,
         allowFakeProvider: false,
         knowledgeAdmission: {
-          async load({ knowledgePlan, userId }) {
-            return {
-              bindings: [],
-              fingerprint: "8".repeat(64),
-              knowledgePlan,
-              userId
-            };
+          async load(input) {
+            return admittedKnowledge(input, "8");
           }
         },
         providerAdmission: { load: admissionLoad }
       },
       sendInput(successBody({
-        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
         modelId: hosted.selection.providerModelId,
         params: {},
         provider: hosted.selection.providerConnectionId,
@@ -2031,12 +2073,8 @@ describe("run preparation", () => {
       const admissionLoad = vi.fn(async (input: {
         requiresClientToolCoexistence?: boolean;
       }) => input.requiresClientToolCoexistence ? client : hosted);
-      const knowledgeLoad = vi.fn(async ({ knowledgePlan, userId }) => ({
-        bindings: [],
-        fingerprint: "c".repeat(64),
-        knowledgePlan,
-        userId
-      }));
+      const knowledgeLoad = vi.fn(async (input: KnowledgeAdmissionInput) =>
+        admittedKnowledge(input, "c"));
       const harness = createHarness();
       const result = await prepareRun(
         {
@@ -2046,7 +2084,7 @@ describe("run preparation", () => {
           providerAdmission: { load: admissionLoad }
         },
         sendInput(successBody({
-          knowledgePlan: { baseIds: ["knowledge-base-1"] },
+          knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
           modelId: hosted.selection.providerModelId,
           params: {},
           provider: hosted.selection.providerConnectionId,
@@ -2065,7 +2103,7 @@ describe("run preparation", () => {
         searchPlan: { mode: "model_choice", optionIds: [optionId] }
       });
       expect(knowledgeLoad).toHaveBeenCalledWith({
-        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
         userId: "user-1"
       });
       expect(prepared.normalizedRequest.searchPlan).toMatchObject({
@@ -2080,7 +2118,7 @@ describe("run preparation", () => {
       });
       expect(prepared.providerAdmissionPlan).toEqual(client);
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        "retrieve_knowledge",
+        ...knowledgeFollowUpTools.map((tool) => tool.name),
         "search_engine_1",
         ...memoryToolNames
       ]);
@@ -2093,6 +2131,114 @@ describe("run preparation", () => {
       });
     }
   );
+
+  it("persists an automatic full-context plan for a small ready source even when the model has no tools", async () => {
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, contextWindow: 16_000, toolCalling: false }
+    });
+    const prepared = preparedFrom(await prepareRun(
+      {
+        ...harness.deps,
+        knowledgeAdmission: {
+          async load(input) {
+            return admittedKnowledge(input, "b", [{
+                approxTokens: 1_200,
+                baseContentRevision: 1,
+                embeddingCredentialSource: "default" as const,
+                embeddingExecutionSnapshot: {} as never,
+                embeddingProviderModelId: "embedding-model-1",
+                includeWholeBase: true,
+                indexedContentRevision: 1,
+                indexGenerationId: "generation-1",
+                knowledgeBaseId: "knowledge-base-1",
+                ordinal: 0,
+                passageCount: 6,
+                readySourceCount: 1,
+                selectedSourceIds: [],
+                sourceCount: 1,
+                targetDimension: 1024,
+                vectorSpaceFingerprint: "a".repeat(64)
+              }]);
+          }
+        }
+      },
+      sendInput(successBody({
+        content: textMessageContent("Summarize this source"),
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"])
+      }))
+    ));
+
+    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
+      automaticRetrieval: true,
+      coverage: { expectedPassageCount: 6, mode: "verified_only" },
+      evidenceMode: "fuller",
+      intent: "single_source_summary",
+      strategy: "full_context",
+      version: 1
+    });
+    expect(prepared.providerRequest.tools).toBeUndefined();
+  });
+
+  it("records a deterministic degraded planner decision when an injected planner is unavailable", async () => {
+    const harness = createHarness();
+    const prepared = preparedFrom(await prepareRun(
+      {
+        ...harness.deps,
+        knowledgeAdmission: {
+          async load(input) {
+            return admittedKnowledge(input, "c");
+          }
+        },
+        knowledgePlanner: {
+          async plan() {
+            throw new Error("planner offline");
+          }
+        }
+      },
+      sendInput(successBody({
+        content: textMessageContent("What is the retention policy?"),
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"])
+      }))
+    ));
+
+    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
+      automaticRetrieval: true,
+      failureCode: "classifier_unavailable",
+      intent: "fact_lookup",
+      status: "degraded",
+      strategy: "focused"
+    });
+  });
+
+  it("keeps Knowledge intent explicit when every selected resource is still processing", async () => {
+    const harness = createHarness();
+    const prepared = preparedFrom(await prepareRun(
+      {
+        ...harness.deps,
+        knowledgeAdmission: {
+          async load(input) {
+            return {
+              ...admittedKnowledge(input, "7", []),
+              exclusions: [{ count: 1, reason: "not_ready" as const, resourceType: "base" as const }]
+            };
+          }
+        }
+      },
+      sendInput(successBody({
+        content: textMessageContent("What is the retention policy?"),
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"])
+      }))
+    ));
+
+    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
+      automaticRetrieval: false,
+      intent: "fact_lookup",
+      strategy: "none",
+      subqueries: []
+    });
+    expect(prepared.providerRequest.tools?.map((tool) => tool.capability) ?? [])
+      .not.toContain("knowledge");
+  });
 
   it("re-admits hosted Search once when Knowledge and MCP tools both coexist", async () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
@@ -2107,19 +2253,14 @@ describe("run preparation", () => {
         ...harness.deps,
         allowFakeProvider: false,
         knowledgeAdmission: {
-          async load({ knowledgePlan, userId }) {
-            return {
-              bindings: [],
-              fingerprint: "f".repeat(64),
-              knowledgePlan,
-              userId
-            };
+          async load(input) {
+            return admittedKnowledge(input, "f");
           }
         },
         providerAdmission: { load: admissionLoad }
       },
       sendInput(successBody({
-        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
         mcp: { mode: "load_all" },
         modelId: hosted.selection.providerModelId,
         params: {},
@@ -2132,7 +2273,7 @@ describe("run preparation", () => {
     const prepared = materializePreparedRunData(result.prepared);
     expect(admissionLoad).toHaveBeenCalledTimes(2);
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      "retrieve_knowledge",
+      ...knowledgeFollowUpTools.map((tool) => tool.name),
       "search_engine_1",
       ...memoryToolNames,
       "mcp_team_lookup_1"
@@ -2157,7 +2298,7 @@ describe("run preparation", () => {
               assistant: {
                 assistantId: "assistant-1",
                 developerPrompt: "Use the selected private Knowledge.",
-                knowledgeBaseIds: ["knowledge-base-1"],
+                knowledgeSelection: knowledgeSelection(["knowledge-base-1"]),
                 mcpServerIds: [],
                 name: "Knowledge Assistant",
                 provider: hosted.selection.providerConnectionId,
@@ -2174,13 +2315,8 @@ describe("run preparation", () => {
           }
         },
         knowledgeAdmission: {
-          async load({ knowledgePlan, userId }) {
-            return {
-              bindings: [],
-              fingerprint: "1".repeat(64),
-              knowledgePlan,
-              userId
-            };
+          async load(input) {
+            return admittedKnowledge(input, "1");
           }
         },
         providerAdmission: { load: admissionLoad }
@@ -2203,7 +2339,7 @@ describe("run preparation", () => {
       "provider_model_client"
     );
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      "retrieve_knowledge",
+      ...knowledgeFollowUpTools.map((tool) => tool.name),
       "search_engine_1",
       ...memoryToolNames
     ]);
@@ -2230,19 +2366,14 @@ describe("run preparation", () => {
           ...harness.deps,
           allowFakeProvider: false,
           knowledgeAdmission: {
-            async load({ knowledgePlan, userId }) {
-              return {
-                bindings: [],
-                fingerprint: "d".repeat(64),
-                knowledgePlan,
-                userId
-              };
+            async load(input) {
+              return admittedKnowledge(input, "d");
             }
           },
           providerAdmission: { load: admissionLoad }
         },
         sendInput(successBody({
-          knowledgePlan: { baseIds: ["knowledge-base-1"] },
+          knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
           modelId: hosted.selection.providerModelId,
           params: {},
           provider: hosted.selection.providerConnectionId,
@@ -2273,19 +2404,14 @@ describe("run preparation", () => {
           ...harness.deps,
           allowFakeProvider: false,
           knowledgeAdmission: {
-            async load({ knowledgePlan, userId }) {
-              return {
-                bindings: [],
-                fingerprint: "e".repeat(64),
-                knowledgePlan,
-                userId
-              };
+            async load(input) {
+              return admittedKnowledge(input, "e");
             }
           },
           providerAdmission: { load: admissionLoad }
         },
         sendInput(successBody({
-          knowledgePlan: { baseIds: ["knowledge-base-1"] },
+          knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
           modelId: hosted.selection.providerModelId,
           params: {},
           provider: hosted.selection.providerConnectionId,

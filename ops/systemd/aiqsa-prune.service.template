@@ -1,0 +1,16 @@
+[Unit]
+Description=AIQSA retention and durable deletion reconciliation
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=__AIQSA_CURRENT_DIRECTORY__
+EnvironmentFile=__AIQSA_ENV_FILE__
+Environment=COMPOSE_PROJECT_NAME=aiqsa
+UMask=0077
+ExecStart=/usr/bin/flock --wait 300 __AIQSA_OPERATION_LOCK__ /usr/bin/docker compose run --rm -T app npm run prune -- --execute
+NoNewPrivileges=true
+PrivateTmp=true

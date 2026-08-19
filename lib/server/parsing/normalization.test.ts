@@ -15,7 +15,10 @@ describe("Docling normalization", () => {
             {
               content_layer: "body",
               label: "paragraph",
-              prov: [{ page_no: 1 }],
+              prov: [{
+                bbox: { b: 18, coord_origin: "TOPLEFT", l: 2, r: 20, t: 4 },
+                page_no: 1
+              }],
               text: "Русский текст для поиска"
             },
             {
@@ -32,7 +35,18 @@ describe("Docling normalization", () => {
 
     expect(parsed.text).toBe("Русский текст для поиска\n\nEnglish text and номер 2026");
     expect(parsed.blocks).toMatchObject([
-      { page: 1, text: "Русский текст для поиска" },
+      {
+        boundingBoxes: [{
+          bottom: 18,
+          coordinateOrigin: "top_left",
+          left: 2,
+          page: 1,
+          right: 20,
+          top: 4
+        }],
+        page: 1,
+        text: "Русский текст для поиска"
+      },
       { page: 2, text: "English text and номер 2026" }
     ]);
   });
@@ -113,13 +127,19 @@ describe("Docling normalization", () => {
       pageCount: 2,
       status: "complete"
     });
-    expect(parsed.blocks).toEqual([
+    expect(parsed.blocks.slice(0, 5)).toMatchObject([
       { headingPath: ["Guide"], index: 0, isTable: false, page: 1, text: "Guide" },
       { headingPath: ["Guide"], index: 1, isTable: false, page: 1, text: "Opening" },
       { headingPath: ["Guide", "Details"], index: 2, isTable: false, page: 2, text: "Details" },
       { headingPath: ["Guide", "Details"], index: 3, isTable: false, page: 2, text: "Second page" },
       { headingPath: ["Guide", "Details"], index: 4, isTable: true, page: 2, text: "Name\tValue\nalpha\t1" }
     ]);
+    expect(parsed.blocks[4]?.table).toMatchObject({ columnCount: 2, rowCount: 2 });
+    expect(parsed.blocks[5]).toMatchObject({
+      assetIds: ["docling-picture-0"],
+      type: "image"
+    });
+    expect(parsed.assets).toMatchObject([{ id: "docling-picture-0", page: 1 }]);
   });
 
   it("rejects a success envelope without a Docling document", () => {
@@ -207,13 +227,14 @@ describe("Tika normalization", () => {
     }], "application/msword");
 
     expect(parsed.pageCount).toBe(2);
-    expect(parsed.blocks).toEqual([
+    expect(parsed.blocks).toMatchObject([
       { headingPath: ["Sample guide"], index: 0, isTable: false, page: 1, text: "Sample guide" },
       { headingPath: ["Sample guide"], index: 1, isTable: false, page: 1, text: "First page" },
       { headingPath: ["Sample guide", "Details"], index: 2, isTable: false, page: 2, text: "Details" },
       { headingPath: ["Sample guide", "Details"], index: 3, isTable: false, page: 2, text: "Second page" },
       { headingPath: ["Sample guide", "Details"], index: 4, isTable: true, page: 2, text: "Key\tValue\na\t1" }
     ]);
+    expect(parsed.blocks[4]?.table).toMatchObject({ columnCount: 2, rowCount: 2 });
   });
 
   it("falls back to one page for Tika XHTML without page containers", () => {

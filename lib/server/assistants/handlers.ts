@@ -12,6 +12,7 @@ import {
   type AssistantRevisionsResponse,
   type AssistantSummary
 } from "../../contracts/assistants";
+import { inheritedKnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
 import { assistantRevisionChangedSections } from "../../domain/assistants";
 import {
@@ -214,7 +215,9 @@ function revisionContent(
     // Knowledge ids are governed dependencies too. Published consumers do
     // not receive opaque ids here; run admission resolves the exact revision
     // server-side and returns one privacy-neutral availability failure.
-    knowledgeBaseIds: options.owned ? [...revision.knowledgeBaseIds] : [],
+    knowledgeSelection: options.owned
+      ? revision.knowledgeSelection
+      : inheritedKnowledgeSelection("assistant"),
     // Consumers never learn hidden dependency ids: unresolvable model ids
     // project as null and MCP ids narrow to the runner's accessible servers.
     mcpServerIds: options.owned

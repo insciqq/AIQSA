@@ -151,7 +151,11 @@
 }
 
 .v2-resource-heading-action {
+  display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .v2-assistant-grid {

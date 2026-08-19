@@ -31,7 +31,10 @@ import {
   resolvePreferredSearchPlan
 } from "@/components/app-shell/powerAppShellData";
 import type { SearchPlanMode } from "@/lib/domain/search";
-import type { KnowledgePlan } from "@/lib/contracts/knowledge";
+import {
+  EMPTY_KNOWLEDGE_SELECTION,
+  type KnowledgePlan
+} from "@/lib/contracts/knowledge";
 import {
   decodeChatMessagesPageResponse,
   decodeChatSummaryResponse,
@@ -106,7 +109,7 @@ type WorkspaceActionsInput = {
   setNotice(notice: Notice): void;
   setSelectedModelId(value: string, origin?: "assistant" | "system" | "user"): void;
   setSelectedKnowledgePlan(
-    baseIds: readonly string[],
+    selection: KnowledgePlan | readonly string[],
     source?: "chat" | "explicit" | "off" | "project",
     origin?: "assistant" | "system" | "user"
   ): void;
@@ -526,7 +529,7 @@ export function useWorkspaceActions({
       : null;
     const knowledgePlan = chat.defaultKnowledgePlan ?? folderDefault;
     setSelectedKnowledgePlan(
-      knowledgePlan?.baseIds ?? [],
+      knowledgePlan ?? EMPTY_KNOWLEDGE_SELECTION,
       chat.defaultKnowledgePlan
         ? "chat"
         : folderDefault
@@ -653,7 +656,7 @@ export function useWorkspaceActions({
             ?.defaultKnowledgePlan ?? null
         : null;
       setSelectedKnowledgePlan(
-        projectPlan?.baseIds ?? [],
+        projectPlan ?? EMPTY_KNOWLEDGE_SELECTION,
         projectPlan ? "project" : "off",
         "system"
       );
@@ -681,7 +684,7 @@ export function useWorkspaceActions({
       const effective = chat.defaultKnowledgePlan ?? folderPlan;
       if (activeChatIdRef.current === chatId) {
         setSelectedKnowledgePlan(
-          effective?.baseIds ?? [],
+          effective ?? EMPTY_KNOWLEDGE_SELECTION,
           chat.defaultKnowledgePlan ? "chat" : folderPlan ? "project" : "off",
           "system"
         );

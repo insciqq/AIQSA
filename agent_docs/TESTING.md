@@ -53,6 +53,62 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 
 This may reset disposable data and must not overlap another stateful check. Reusable-server focused specs are allowed only when their fixtures own no reset/global mutation. Store task-owned browser output under a fresh `/tmp` path when default artifacts are not writable; never delete another process's artifacts.
 
+Knowledge retrieval changes compare against the synthetic, aggregate-only current baseline with:
+
+```bash
+npm run eval:knowledge:baseline
+```
+
+The command owns and cleans its fixtures, starts only the disposable development dependencies, validates the corpus/query labels, and fails closed for any non-disposable database. It records current quality rather than treating the current values as launch gates; later retrieval stages define regression tolerances and production gates against the versioned report contract.
+
+Hierarchical lexical/exact index changes run their Stage 4 quality and plan gates with:
+
+```bash
+npm run eval:knowledge:indexes
+```
+
+This disposable PostgreSQL evaluation builds immutable shadow artifacts for the ready golden corpus and emits aggregate-only document/section/passage recall, multilingual and exact-query quality, scope isolation, bounded-scan, immutability, latency, and GIN/trigram plan evidence. Unlike the baseline command, its versioned thresholds are acceptance gates and a miss fails the command.
+
+Adaptive vector and ranking changes run the full Stage 4 retrieval gate with:
+
+```bash
+npm run eval:knowledge:retrieval
+```
+
+The disposable evaluation compares exact and ANN results across measured scope slices, requires the intended HNSW plans and scope isolation, and gates multilingual/exact/comparison quality, no-answer and duplicate rates, processing-Source behavior, embedding and reranker outages, latency, and private-evidence projection. It owns and removes its synthetic fixtures and emits only sanitized aggregates, limits, and plan evidence.
+
+Release-scale catalog changes run the disposable Source/Base latency and isolation gate with:
+
+```bash
+npm run eval:knowledge:scale
+```
+
+The gate exercises one user with 500 Sources across multiple Bases plus many small private-owner Bases, verifies owner isolation, and enforces the current server-side list p95 target without provider calls. It owns its mutable fixtures and reports only counts and aggregate timings.
+
+Grounded answer or citation-contract changes run the deterministic aggregate-only gate with:
+
+```bash
+npm run eval:knowledge:grounding
+```
+
+The gate covers English/Russian cited answers, v2 handle validity and evidence availability, deterministic normalization of handle-only grouped/alternate citation syntax, obvious novel numeric literals, no-ready and partial-readiness no-answer, truthful citation-binding failure, unverified coverage claims, general-knowledge separation when no Source citation exists, deleted evidence, internal identities, prompt injection, dated-comparison non-regression, and the one-repair ceiling. This cheap runtime gate intentionally does not score semantic entailment, guess citations for uncited claims, or infer generic contradictions between evidence passages. Its report contains only counts, thresholds, and aggregate metrics.
+
+Spreadsheet normalization, planning, execution, or range-receipt changes run the deterministic aggregate-only gate with:
+
+```bash
+npm run eval:knowledge:structured
+```
+
+The gate covers XLS/XLSX/ODS plus CSV formula-injection handling, numeric/date/locale/missing/hidden/cached-formula correctness, multi-sheet joins, ambiguity and ordinary-retrieval routing, resource failures, and a local execution-latency envelope. Its report contains only counts, rates, bounds, and latency.
+
+Visual asset selection, vision policy/runtime, or visual-receipt changes run the deterministic provider-fake gate with:
+
+```bash
+npm run eval:knowledge:visual
+```
+
+The gate covers exact original regions, admitted-scope isolation, separately approved egress, source-size bounds, prompt injection, ambiguity, local-only and provider-outage degradation, and ordinary text fallback. Its report contains only counts, thresholds, and pass rates; the affected original-first viewer states are verified separately in the browser lane.
+
 ## Boundary Evidence
 
 | Changed boundary | Additional evidence |

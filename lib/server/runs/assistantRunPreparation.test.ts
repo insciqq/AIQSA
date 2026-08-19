@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { KnowledgeRunAdmissionError } from "../knowledge/runAdmission";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { ProviderAdapter, ProviderModelCapabilities } from "../providers/types";
 import { prepareRun, type RunPreparationDeps } from "./runPreparation";
@@ -30,6 +32,12 @@ function repository() {
   };
 }
 
+function knowledgeSelection(baseIds: readonly string[] = []): KnowledgeSelection {
+  return baseIds.length > 0
+    ? { baseIds: [...baseIds], mode: "explicit", sourceIds: [], version: 1 }
+    : { baseIds: [], mode: "none", sourceIds: [], version: 1 };
+}
+
 function assistantResolution(
   overrides: Partial<Extract<AssistantRunResolution, { ok: true }>["assistant"]> = {}
 ): AssistantRunResolution {
@@ -37,7 +45,7 @@ function assistantResolution(
     assistant: {
       assistantId: "assistant-1",
       developerPrompt: "Prefer bullet lists.",
-      knowledgeBaseIds: [],
+      knowledgeSelection: knowledgeSelection(),
       mcpServerIds: [],
       name: "Code Reviewer",
       provider: "fake",
@@ -57,6 +65,26 @@ function assistantResolution(
 type AdmissionInput = Parameters<
   NonNullable<RunPreparationDeps["providerAdmission"]>["load"]
 >[0];
+type KnowledgeAdmissionInput = Parameters<
+  NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
+>[0];
+
+function knowledgeAdmissionPlan(
+  input: KnowledgeAdmissionInput,
+  fingerprintCharacter: string
+) {
+  return {
+    bindings: [],
+    budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+    exclusions: [],
+    fingerprint: fingerprintCharacter.repeat(64),
+    knowledgePlan: input.knowledgePlan,
+    resolvedSourceCount: 0,
+    ...(input.executionScope ? { executionScope: input.executionScope } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    userId: input.userId
+  };
+}
 
 function fakeAdmissionPlan(input: AdmissionInput, toolCalling = true): ProviderAdmissionPlan {
   const capabilities: ProviderModelCapabilities = {
@@ -213,33 +241,29 @@ describe("standard-chat baseline admission", () => {
 describe("ordinary Knowledge plan resolution", () => {
   it.each([
     {
-      body: ordinaryBody({ knowledgePlan: { baseIds: ["explicit"] }, text: "Hello" }),
-      chat: { baseIds: ["chat"] },
+      body: ordinaryBody({ knowledgePlan: knowledgeSelection(["explicit"]), text: "Hello" }),
+      chat: knowledgeSelection(["chat"]),
       expected: ["explicit"],
-      folder: { baseIds: ["folder"] },
+      folder: knowledgeSelection(["folder"]),
       label: "explicit over chat and folder"
     },
     {
       body: ordinaryBody({ text: "Hello" }),
-      chat: { baseIds: ["chat"] },
+      chat: knowledgeSelection(["chat"]),
       expected: ["chat"],
-      folder: { baseIds: ["folder"] },
+      folder: knowledgeSelection(["folder"]),
       label: "chat over folder"
     },
     {
       body: ordinaryBody({ text: "Hello" }),
       chat: null,
       expected: ["folder"],
-      folder: { baseIds: ["folder"] },
+      folder: knowledgeSelection(["folder"]),
       label: "folder when chat inherits"
     }
   ])("resolves $label", async ({ body, chat, expected, folder }) => {
-    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
-      bindings: [],
-      fingerprint: "b".repeat(64),
-      knowledgePlan,
-      userId
-    }));
+    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
+      knowledgeAdmissionPlan(input, "b"));
     const source = sendSource();
     const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
       body,
@@ -256,11 +280,13 @@ describe("ordinary Knowledge plan resolution", () => {
 
     expect(result.ok).toBe(true);
     expect(load).toHaveBeenCalledWith({
-      knowledgePlan: { baseIds: expected },
+      knowledgePlan: knowledgeSelection(expected),
       userId: "user-1"
     });
     if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({ baseIds: expected });
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
+        knowledgeSelection(expected)
+      );
     }
   });
 
@@ -268,9 +294,9 @@ describe("ordinary Knowledge plan resolution", () => {
     const load = vi.fn();
     for (const input of [
       {
-        body: ordinaryBody({ knowledgePlan: { baseIds: [] }, text: "Hello" }),
-        chat: { baseIds: ["chat"] },
-        folder: { baseIds: ["folder"] }
+        body: ordinaryBody({ knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }, text: "Hello" }),
+        chat: knowledgeSelection(["chat"]),
+        folder: knowledgeSelection(["folder"])
       },
       { body: ordinaryBody({ text: "Hello" }), chat: null, folder: null }
     ]) {
@@ -289,22 +315,18 @@ describe("ordinary Knowledge plan resolution", () => {
       });
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({ baseIds: [] });
+        expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(knowledgeSelection());
       }
     }
     expect(load).not.toHaveBeenCalled();
   });
 
   it("retains the accepted plan while explicit tool suppression skips Knowledge execution", async () => {
-    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
-      bindings: [],
-      fingerprint: "c".repeat(64),
-      knowledgePlan,
-      userId
-    }));
+    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
+      knowledgeAdmissionPlan(input, "c"));
     const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
       body: ordinaryBody({
-        knowledgePlan: { baseIds: ["base-1"] },
+        knowledgePlan: knowledgeSelection(["base-1"]),
         text: "Hello",
         tools: "none"
       }),
@@ -315,7 +337,7 @@ describe("ordinary Knowledge plan resolution", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.prepared.normalizedRequest).toMatchObject({
-        knowledgePlan: { baseIds: ["base-1"] },
+        knowledgePlan: knowledgeSelection(["base-1"]),
         toolMode: "none"
       });
       expect(result.prepared.providerRequest.tools).toBeUndefined();
@@ -323,12 +345,8 @@ describe("ordinary Knowledge plan resolution", () => {
   });
 
   it("retains the accepted plan but skips Knowledge for a non-tool model", async () => {
-    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
-      bindings: [],
-      fingerprint: "d".repeat(64),
-      knowledgePlan,
-      userId
-    }));
+    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
+      knowledgeAdmissionPlan(input, "d"));
     const result = await prepareRun(deps({
       knowledgeAdmission: { load },
       providerAdmission: {
@@ -337,36 +355,34 @@ describe("ordinary Knowledge plan resolution", () => {
         }
       }
     }), {
-      body: ordinaryBody({ knowledgePlan: { baseIds: ["base-1"] }, text: "Hello" }),
+      body: ordinaryBody({ knowledgePlan: knowledgeSelection(["base-1"]), text: "Hello" }),
       source: sendSource(),
       userId: "user-1"
     });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({ baseIds: ["base-1"] });
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
+        knowledgeSelection(["base-1"])
+      );
       expect(result.prepared.providerRequest.tools).toBeUndefined();
     }
   });
 
   it("applies the same explicit-plan wire contract to regeneration", async () => {
-    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
-      bindings: [],
-      fingerprint: "c".repeat(64),
-      knowledgePlan,
-      userId
-    }));
+    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
+      knowledgeAdmissionPlan(input, "c"));
     const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
-      body: ordinaryBody({ knowledgePlan: { baseIds: ["regeneration-base"] } }),
+      body: ordinaryBody({ knowledgePlan: knowledgeSelection(["regeneration-base"]) }),
       source: {
         kind: "regenerate",
         source: {
           assistantMessage: { modelId: "fake-model", provider: "fake" },
           chat: {
-            defaultKnowledgePlan: { baseIds: ["chat-default"] },
+            defaultKnowledgePlan: knowledgeSelection(["chat-default"]),
             defaultModelId: "fake-model",
             defaultProvider: "fake",
-            folderDefaultKnowledgePlan: { baseIds: ["folder-default"] },
+            folderDefaultKnowledgePlan: knowledgeSelection(["folder-default"]),
             id: "chat-1",
             projectMemory: null
           },
@@ -381,13 +397,13 @@ describe("ordinary Knowledge plan resolution", () => {
 
     expect(result.ok).toBe(true);
     expect(load).toHaveBeenCalledWith({
-      knowledgePlan: { baseIds: ["regeneration-base"] },
+      knowledgePlan: knowledgeSelection(["regeneration-base"]),
       userId: "user-1"
     });
     if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({
-        baseIds: ["regeneration-base"]
-      });
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
+        knowledgeSelection(["regeneration-base"])
+      );
     }
   });
 
@@ -395,10 +411,22 @@ describe("ordinary Knowledge plan resolution", () => {
     const source = sendSource();
     for (const input of [
       {
-        body: ordinaryBody({ knowledgePlan: { baseIds: ["a", "a"] }, text: "Hello" }),
+        body: ordinaryBody({ knowledgePlan: { baseIds: ["legacy-base"] }, text: "Hello" }),
         chat: null
       },
-      { body: ordinaryBody({ text: "Hello" }), chat: { baseIds: ["a", "b", "c", "d"] } }
+      {
+        body: ordinaryBody({
+          knowledgePlan: {
+            baseIds: ["a", "a"], mode: "explicit", sourceIds: [], version: 1
+          },
+          text: "Hello"
+        }),
+        chat: null
+      },
+      {
+        body: ordinaryBody({ text: "Hello" }),
+        chat: { baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`) }
+      }
     ]) {
       const result = await prepareRun(deps(), {
         body: input.body,
@@ -446,16 +474,14 @@ describe("assistant run admission", () => {
   });
 
   it("uses the exact revision Knowledge list and admits it server-side", async () => {
-    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
-      bindings: [],
-      fingerprint: "a".repeat(64),
-      knowledgePlan,
-      userId
-    }));
+    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
+      knowledgeAdmissionPlan(input, "a"));
     const result = await prepareRun(
       deps({
         assistants: {
-          resolveForRun: async () => assistantResolution({ knowledgeBaseIds: ["base-a", "base-b"] })
+          resolveForRun: async () => assistantResolution({
+            knowledgeSelection: knowledgeSelection(["base-a", "base-b"])
+          })
         },
         knowledgeAdmission: { load }
       }),
@@ -468,13 +494,13 @@ describe("assistant run admission", () => {
 
     expect(result.ok).toBe(true);
     expect(load).toHaveBeenCalledWith({
-      knowledgePlan: { baseIds: ["base-a", "base-b"] },
+      knowledgePlan: knowledgeSelection(["base-a", "base-b"]),
       userId: "user-1"
     });
     if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({
-        baseIds: ["base-a", "base-b"]
-      });
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
+        knowledgeSelection(["base-a", "base-b"])
+      );
     }
   });
 
@@ -558,7 +584,7 @@ describe("assistant run admission", () => {
     const resolveForRun = vi.fn(async () => assistantResolution());
     for (const override of [
       { modelId: "other" },
-      { knowledgePlan: { baseIds: [] } },
+      { knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 } },
       { params: { temperature: 1 } },
       { prompt: { system: "spoof" } },
       { provider: "openai" },
@@ -586,7 +612,9 @@ describe("assistant run admission", () => {
     const result = await prepareRun(
       deps({
         assistants: {
-          resolveForRun: async () => assistantResolution({ knowledgeBaseIds: ["hidden-base"] })
+          resolveForRun: async () => assistantResolution({
+            knowledgeSelection: knowledgeSelection(["hidden-base"])
+          })
         },
         knowledgeAdmission: {
           load: async () => { throw new KnowledgeRunAdmissionError(); }

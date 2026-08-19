@@ -1,7 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
+import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import { describe, expect, it, vi } from "vitest";
 import { AnswerOutputsV2 } from "./AnswerOutputsV2";
+
+const shellFetch = vi.hoisted(() => vi.fn());
+
+vi.mock("@/components/app-shell/shellApi", () => ({ shellFetch }));
 
 const artifact: ThreadArtifactSummary = {
   citations: [{
@@ -11,10 +16,7 @@ const artifact: ThreadArtifactSummary = {
     url: "https://example.com/retrieval"
   }],
   knowledgeCitations: [{
-    baseName: "Engineering handbook",
-    fileName: "retrieval-policy.pdf",
-    handle: "K1.1",
-    page: 18
+    handle: "K1.1"
   }],
   reasoningText: ["**Compared sources** without exposing the query."],
   sources: [{
@@ -27,30 +29,49 @@ const artifact: ThreadArtifactSummary = {
 
 describe("answer outputs v2", () => {
   it("shows only safe Sources, reauthorized Project evidence, Reasoning, and identity", async () => {
-    const loadKnowledgeCitation = vi.fn().mockResolvedValue({
-      baseName: "Engineering handbook",
-      fileName: "retrieval-policy.pdf",
-      handle: "K1.1",
-      page: 18,
-      text: "The accepted Project passage.",
-      textTruncated: false
-    });
+    shellFetch.mockResolvedValue(new Response(JSON.stringify({
+      citation: {
+        blocks: [],
+        excerpt: "The accepted Project passage.",
+        excerptTruncated: false,
+        handle: "K1.1",
+        headingPath: ["Retrieval policy"],
+        locator: { boundingBoxes: [], pageEnd: 18, pageStart: 18 },
+        originalKind: null,
+        source: {
+          baseName: "Engineering handbook",
+          fileName: "retrieval-policy.pdf",
+          mimeType: "application/pdf",
+          name: "Retrieval policy",
+          statuses: [],
+          versionNumber: 3
+        },
+        state: "available",
+        visual: null,
+        workbook: null
+      }
+    }), { status: 200 }));
     render(
-      <AnswerOutputsV2
-        artifact={artifact}
-        identitySlot={<span>Quarterly analyst · revision 3</span>}
-        loadKnowledgeCitation={loadKnowledgeCitation}
-        showReasoning
-      />
+      <KnowledgeCitationViewerProvider>
+        <AnswerOutputsV2
+          artifact={artifact}
+          identitySlot={<span>Quarterly analyst · revision 3</span>}
+          knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
+          showReasoning
+        />
+      </KnowledgeCitationViewerProvider>
     );
 
     expect(screen.getByText("Quarterly analyst · revision 3")).toBeVisible();
     fireEvent.click(screen.getByText("Sources"));
     expect(screen.getByRole("link", { name: "Cross-language retrieval" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "retrieval-policy.pdf" }));
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));
     expect(await screen.findByText("The accepted Project passage.")).toBeVisible();
-    expect(loadKnowledgeCitation).toHaveBeenCalledWith(artifact.knowledgeCitations?.[0]);
-    expect(screen.getByText("Engineering handbook · page 18")).toBeVisible();
+    expect(shellFetch).toHaveBeenCalledWith(
+      "/api/runs/run-1/messages/message-1/citations/K1.1",
+      expect.objectContaining({ method: "GET" })
+    );
+    expect(screen.getByText(/retrieval-policy\.pdf · version 3/)).toBeVisible();
     expect(screen.getByTestId("answer-reasoning").textContent).not.toContain("**");
 
     const text = document.body.textContent ?? "";
@@ -64,16 +85,21 @@ describe("answer outputs v2", () => {
   });
 
   it("fails closed when a Project citation is no longer authorized", async () => {
+    shellFetch.mockResolvedValue(new Response(JSON.stringify({
+      error: "knowledge_reference_not_available"
+    }), { status: 404 }));
     render(
-      <AnswerOutputsV2
-        artifact={artifact}
-        loadKnowledgeCitation={vi.fn().mockRejectedValue(new Error("not_found"))}
-        showReasoning={false}
-      />
+      <KnowledgeCitationViewerProvider>
+        <AnswerOutputsV2
+          artifact={artifact}
+          knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
+          showReasoning={false}
+        />
+      </KnowledgeCitationViewerProvider>
     );
     fireEvent.click(screen.getByText("Sources"));
-    fireEvent.click(screen.getByRole("button", { name: "retrieval-policy.pdf" }));
-    expect(await screen.findByText("This source is no longer available in the Project.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));
+    expect((await screen.findAllByText("Source unavailable"))[0]).toBeVisible();
   });
 
   it("renders no placeholder when there is no output", () => {

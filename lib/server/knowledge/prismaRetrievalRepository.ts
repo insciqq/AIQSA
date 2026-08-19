@@ -1,19 +1,62 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { KNOWLEDGE_CITATION_V2_MAX } from "../../contracts/knowledge";
 import {
   createAcceptedEmbeddingRuntime,
   type AcceptedEmbeddingRuntimeStore
 } from "../providerRuntime/embeddingRuntime";
 import type { ProviderConnectionConfiguration } from "../providers/providerConfiguration";
+import type { StorageAdapter } from "../uploads/storage";
 import type {
   KnowledgeAcceptedEmbeddingRuntime,
+  KnowledgeBudgetState,
   KnowledgeEmbeddingRuntimeResolver,
-  KnowledgeRetrievalStore
+  KnowledgeRetrievalStore,
+  KnowledgeScopeAlias
 } from "./toolExecutor";
 import type {
   KnowledgeAcceptedBinding,
   KnowledgeHybridPassage,
   KnowledgeHybridSearchResult,
   KnowledgeRetrievalEvidence
+} from "./retrievalTypes";
+import { getKnowledgeExtractionConfig, type KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
+import { analyzeStructuredKnowledgeSources } from "./structuredRetrieval";
+import {
+  analyzeVisualKnowledgeSources,
+  type KnowledgeVisualAnalysisRuntime
+} from "./visualEvidence";
+import {
+  knowledgeVisionEgressApproved,
+  knowledgeVisionProfileFromConfiguration
+} from "./knowledgeProfile";
+import {
+  KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
+  KNOWLEDGE_EVIDENCE_PROVENANCE_VERSION,
+  knowledgeEvidenceConfidenceBucket,
+  knowledgeEvidenceKey
+} from "./evidencePackage";
+import { decodeKnowledgePlannerPlan } from "./planner";
+import { knowledgeToolResultText } from "./toolResult";
+import {
+  executeKnowledgeRetrievalCore
+} from "./prismaRetrievalCore";
+import type { KnowledgeCandidateReranker } from "./retrievalRanking";
+import {
+  decodeKnowledgeBudgetPolicy,
+  estimatedKnowledgeEmbeddingCostMicros,
+  knowledgeBudgetStopReason,
+  type KnowledgeBudgetUsage,
+  type KnowledgeOperationKind
+} from "./knowledgeBudget";
+import {
+  KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
+  KNOWLEDGE_EXACT_TOOL_NAME,
+  KNOWLEDGE_EXECUTION_TOOL_NAMES,
+  KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+  KNOWLEDGE_SCOPE_MAX_BINDINGS,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
+  KNOWLEDGE_TOOL_NAME
 } from "./retrievalTypes";
 
 type RetrievalPrisma = Pick<
@@ -22,426 +65,495 @@ type RetrievalPrisma = Pick<
   | "$transaction"
   | "knowledgeRun"
   | "knowledgeRunBinding"
+  | "knowledgeRetrievalSession"
+  | "knowledgeRunScope"
+  | "knowledgeArtifactPassageIndex"
+  | "knowledgeSourceIndexArtifact"
+  | "modelRun"
   | "modelRunToolCall"
 > & AcceptedEmbeddingRuntimeStore;
 
-type BoundQueryVector = Readonly<{
-  bindingOrdinal: number;
-  indexGenerationId: string;
-  knowledgeBaseId: string;
-  targetDimension: 1024 | 1536;
-  vector: readonly number[];
-}>;
-
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function nonNegativeInteger(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
 }
 
-function nullableFiniteNumber(value: unknown): number | null | undefined {
-  return value === null ? null : finiteNumber(value) ?? undefined;
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function nullableRank(value: unknown): number | null | undefined {
-  if (value === null) return null;
-  const rank = nonNegativeInteger(value);
-  return rank !== null && rank >= 1 ? rank : undefined;
+function evidenceRank(
+  order: null | readonly string[],
+  chunkId: string,
+  resultOrdinal: number
+): number {
+  if (order === null) return resultOrdinal + 1;
+  const rank = order.indexOf(chunkId);
+  if (rank < 0) throw new Error("knowledge_evidence_ranking_provenance_invalid");
+  return rank + 1;
 }
 
-function decodedPassage(value: unknown): KnowledgeHybridPassage | null {
-  if (!isRecord(value)) return null;
-  const annRank = nullableRank(value.annRank);
-  const bindingOrdinal = nonNegativeInteger(value.bindingOrdinal);
-  const chunkIndex = nonNegativeInteger(value.chunkIndex);
-  const documentVersionNumber = nonNegativeInteger(value.documentVersionNumber);
-  const ftsRank = nullableRank(value.ftsRank);
-  const ftsScore = nullableFiniteNumber(value.ftsScore);
-  const fusedScore = finiteNumber(value.fusedScore);
-  const page = nonNegativeInteger(value.page);
-  const vectorDistance = nullableFiniteNumber(value.vectorDistance);
-  const vectorScore = nullableFiniteNumber(value.vectorScore);
-  const expectedFusedScore = (annRank === null || annRank === undefined ? 0 : 1 / (60 + annRank)) +
-    (ftsRank === null || ftsRank === undefined ? 0 : 1 / (60 + ftsRank));
-  if (
-    annRank === undefined || bindingOrdinal === null || bindingOrdinal > 2 ||
-    chunkIndex === null || documentVersionNumber === null || documentVersionNumber < 1 ||
-    ftsRank === undefined || ftsScore === undefined ||
-    fusedScore === null || fusedScore < 0 || page === null || page < 1 ||
-    vectorDistance === undefined || vectorScore === undefined ||
-    typeof value.baseName !== "string" || !value.baseName ||
-    typeof value.chunkId !== "string" || !value.chunkId ||
-    typeof value.documentId !== "string" || !value.documentId ||
-    typeof value.documentVersionId !== "string" || !value.documentVersionId ||
-    typeof value.fileName !== "string" || !value.fileName ||
-    typeof value.knowledgeBaseId !== "string" || !value.knowledgeBaseId ||
-    typeof value.text !== "string" || !value.text ||
-    (annRank === null) !== (vectorDistance === null) ||
-    (annRank === null) !== (vectorScore === null) ||
-    (ftsRank === null) !== (ftsScore === null) ||
-    vectorDistance !== null && (vectorDistance < 0 || vectorDistance > 2) ||
-    vectorScore !== null && (vectorScore < -1 || vectorScore > 1 ||
-      Math.abs(vectorScore - (1 - vectorDistance!)) > 1e-12) ||
-    ftsScore !== null && ftsScore < 0 ||
-    Math.abs(fusedScore - expectedFusedScore) > 1e-12
-  ) return null;
-  return {
-    annRank,
-    baseName: value.baseName,
-    bindingOrdinal,
-    chunkId: value.chunkId,
-    chunkIndex,
-    documentId: value.documentId,
-    documentVersionId: value.documentVersionId,
-    documentVersionNumber,
-    fileName: value.fileName,
-    ftsRank,
-    ftsScore,
-    fusedScore,
-    knowledgeBaseId: value.knowledgeBaseId,
-    page,
-    text: value.text,
-    vectorDistance,
-    vectorScore
-  };
+const operationToolNames: Record<KnowledgeOperationKind, string> = {
+  automatic_search: KNOWLEDGE_TOOL_NAME,
+  discover_sources: KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
+  find_exact: KNOWLEDGE_EXACT_TOOL_NAME,
+  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+  search_knowledge: KNOWLEDGE_SEARCH_TOOL_NAME
+};
+
+function embeddingTokens(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.reduce((total, entry) => {
+    if (!record(entry) || entry.status !== "complete") return total;
+    const tokens = nonNegativeInteger(entry.totalTokens);
+    return total + (tokens ?? 0);
+  }, 0);
 }
 
-function vectorValues(
-  vectors: readonly BoundQueryVector[],
-  dimension: 1024 | 1536
-): Prisma.Sql {
-  const selected = vectors.filter((entry) => entry.targetDimension === dimension);
-  if (selected.length === 0) {
-    return dimension === 1024
-      ? Prisma.sql`SELECT NULL::integer, NULL::text, NULL::text, NULL::vector(1024) WHERE FALSE`
-      : Prisma.sql`SELECT NULL::integer, NULL::text, NULL::text, NULL::vector(1536) WHERE FALSE`;
+function resultMetrics(value: unknown): Readonly<{
+  contentHashes: readonly string[];
+  retrievedTokens: number;
+}> {
+  if (!Array.isArray(value)) return { contentHashes: [], retrievedTokens: 0 };
+  const contentHashes: string[] = [];
+  let bytes = 0;
+  for (const entry of value) {
+    if (!record(entry)) continue;
+    if (typeof entry.contentHash === "string" && /^[0-9a-f]{64}$/u.test(entry.contentHash)) {
+      contentHashes.push(entry.contentHash);
+    }
+    const includedTextBytes = nonNegativeInteger(entry.includedTextBytes);
+    bytes += includedTextBytes ?? 0;
   }
-  return Prisma.sql`VALUES ${Prisma.join(selected.map((entry) => {
-    const serialized = `[${entry.vector.join(",")}]`;
-    return dimension === 1024
-      ? Prisma.sql`(${entry.bindingOrdinal}, ${entry.knowledgeBaseId}, ${entry.indexGenerationId}, ${serialized}::vector(1024))`
-      : Prisma.sql`(${entry.bindingOrdinal}, ${entry.knowledgeBaseId}, ${entry.indexGenerationId}, ${serialized}::vector(1536))`;
-  }))}`;
+  return { contentHashes, retrievedTokens: Math.ceil(bytes / 4) };
 }
 
-function scopedFtsBranches(vectors: readonly BoundQueryVector[]): Prisma.Sql {
-  if (vectors.length === 0) throw new Error("knowledge_query_vector_invalid");
-  return Prisma.join(vectors.map((entry) => Prisma.sql`
-    SELECT
-      ${entry.bindingOrdinal}::integer AS "ordinal",
-      chunk."id" AS "chunkId",
-      chunk."chunkIndex",
-      chunk."page",
-      chunk."text",
-      chunk."knowledgeBaseId",
-      chunk."documentVersionId",
-      ts_rank_cd(chunk."searchVector", query_terms.query) AS "ftsScore"
-    FROM "KnowledgeChunk" AS chunk
-    CROSS JOIN query_terms
-    WHERE chunk."knowledgeBaseId" = ${entry.knowledgeBaseId}
-      AND chunk."indexGenerationId" = ${entry.indexGenerationId}
-      AND chunk."searchVector" @@ query_terms.query
-  `), " UNION ALL ");
-}
-
-/** One parameterized statement owns ACL binding, temporal revision fencing,
- * dimension-specific ANN, FTS, and reciprocal-rank fusion. Tool arguments can
- * supply only the query/vector for an accepted ordinal, never a base id. */
-export function knowledgeHybridRetrievalSql(input: Readonly<{
-  candidateLimit: number;
-  query: string;
-  resultLimit: number;
-  runId: string;
-  threshold: number;
-  userId: string;
-  vectors: readonly BoundQueryVector[];
-}>): Prisma.Sql {
-  const values1024 = vectorValues(input.vectors, 1024);
-  const values1536 = vectorValues(input.vectors, 1536);
-  const ftsBranches = scopedFtsBranches(input.vectors);
-  return Prisma.sql`
-    WITH
-    input_1024("ordinal", "knowledgeBaseId", "indexGenerationId", "queryVector") AS (${values1024}),
-    input_1536("ordinal", "knowledgeBaseId", "indexGenerationId", "queryVector") AS (${values1536}),
-    bindings AS MATERIALIZED (
-      SELECT
-        binding."ordinal",
-        binding."knowledgeBaseId",
-        binding."indexGenerationId",
-        binding."baseContentRevision",
-        binding."targetDimension",
-        base."name" AS "baseName"
-      FROM "ModelRun" AS run
-      INNER JOIN "KnowledgeRunBinding" AS binding
-        ON binding."modelRunId" = run."id"
-      INNER JOIN "KnowledgeBase" AS base
-        ON base."id" = binding."knowledgeBaseId"
-      WHERE run."id" = ${input.runId}
-        AND run."userId" = ${input.userId}
-        AND (
-          EXISTS (SELECT 1 FROM input_1024 AS supplied
-            WHERE supplied."ordinal" = binding."ordinal"
-              AND supplied."knowledgeBaseId" = binding."knowledgeBaseId"
-              AND supplied."indexGenerationId" = binding."indexGenerationId"
-              AND binding."targetDimension" = 1024)
-          OR EXISTS (SELECT 1 FROM input_1536 AS supplied
-            WHERE supplied."ordinal" = binding."ordinal"
-              AND supplied."knowledgeBaseId" = binding."knowledgeBaseId"
-              AND supplied."indexGenerationId" = binding."indexGenerationId"
-              AND binding."targetDimension" = 1536)
-        )
-    ),
-    query_terms AS (
-      SELECT websearch_to_tsquery('simple'::regconfig, ${input.query}) AS query
-    ),
-    ann_1024_raw AS (
-      SELECT binding."ordinal", hit.*
-      FROM bindings AS binding
-      INNER JOIN input_1024 AS supplied ON supplied."ordinal" = binding."ordinal"
-      CROSS JOIN LATERAL (
-        SELECT
-          chunk."id" AS "chunkId",
-          chunk."chunkIndex",
-          chunk."page",
-          chunk."text",
-          version."documentId",
-          version."id" AS "documentVersionId",
-          version."versionNumber" AS "documentVersionNumber",
-          version."fileName",
-          (chunk."embedding"::vector(1024) <=> supplied."queryVector") AS "vectorDistance"
-        FROM "KnowledgeChunk" AS chunk
-        INNER JOIN "KnowledgeDocumentVersion" AS version
-          ON version."knowledgeBaseId" = chunk."knowledgeBaseId"
-         AND version."id" = chunk."documentVersionId"
-        WHERE chunk."knowledgeBaseId" = binding."knowledgeBaseId"
-          AND chunk."indexGenerationId" = binding."indexGenerationId"
-          AND chunk."embeddingDimension" = 1024
-          AND version."visibleFromRevision" IS NOT NULL
-          AND version."visibleFromRevision" <= binding."baseContentRevision"
-          AND (version."visibleUntilRevision" IS NULL
-            OR binding."baseContentRevision" < version."visibleUntilRevision")
-        ORDER BY chunk."embedding"::vector(1024) <=> supplied."queryVector"
-        LIMIT ${input.candidateLimit}
-      ) AS hit
-    ),
-    ann_1536_raw AS (
-      SELECT binding."ordinal", hit.*
-      FROM bindings AS binding
-      INNER JOIN input_1536 AS supplied ON supplied."ordinal" = binding."ordinal"
-      CROSS JOIN LATERAL (
-        SELECT
-          chunk."id" AS "chunkId",
-          chunk."chunkIndex",
-          chunk."page",
-          chunk."text",
-          version."documentId",
-          version."id" AS "documentVersionId",
-          version."versionNumber" AS "documentVersionNumber",
-          version."fileName",
-          (chunk."embedding"::vector(1536) <=> supplied."queryVector") AS "vectorDistance"
-        FROM "KnowledgeChunk" AS chunk
-        INNER JOIN "KnowledgeDocumentVersion" AS version
-          ON version."knowledgeBaseId" = chunk."knowledgeBaseId"
-         AND version."id" = chunk."documentVersionId"
-        WHERE chunk."knowledgeBaseId" = binding."knowledgeBaseId"
-          AND chunk."indexGenerationId" = binding."indexGenerationId"
-          AND chunk."embeddingDimension" = 1536
-          AND version."visibleFromRevision" IS NOT NULL
-          AND version."visibleFromRevision" <= binding."baseContentRevision"
-          AND (version."visibleUntilRevision" IS NULL
-            OR binding."baseContentRevision" < version."visibleUntilRevision")
-        ORDER BY chunk."embedding"::vector(1536) <=> supplied."queryVector"
-        LIMIT ${input.candidateLimit}
-      ) AS hit
-    ),
-    ann_ranked AS (
-      SELECT ann.*,
-        row_number() OVER (
-          PARTITION BY ann."ordinal"
-          ORDER BY ann."vectorDistance", ann."chunkId"
-        )::integer AS "annRank"
-      FROM (
-        SELECT * FROM ann_1024_raw
-        UNION ALL
-        SELECT * FROM ann_1536_raw
-      ) AS ann
-    ),
-    fts_indexed AS MATERIALIZED (${ftsBranches}),
-    fts_raw AS (
-      SELECT
-        indexed."ordinal",
-        indexed."chunkId",
-        indexed."chunkIndex",
-        indexed."page",
-        indexed."text",
-        version."documentId",
-        version."id" AS "documentVersionId",
-        version."versionNumber" AS "documentVersionNumber",
-        version."fileName",
-        indexed."ftsScore"
-      FROM fts_indexed AS indexed
-      INNER JOIN bindings AS binding
-        ON binding."ordinal" = indexed."ordinal"
-       AND binding."knowledgeBaseId" = indexed."knowledgeBaseId"
-      INNER JOIN "KnowledgeDocumentVersion" AS version
-        ON version."knowledgeBaseId" = indexed."knowledgeBaseId"
-       AND version."id" = indexed."documentVersionId"
-      WHERE version."visibleFromRevision" IS NOT NULL
-        AND version."visibleFromRevision" <= binding."baseContentRevision"
-        AND (version."visibleUntilRevision" IS NULL
-          OR binding."baseContentRevision" < version."visibleUntilRevision")
-    ),
-    fts_ranked_all AS (
-      SELECT fts.*,
-        row_number() OVER (
-          PARTITION BY fts."ordinal"
-          ORDER BY fts."ftsScore" DESC, fts."chunkId"
-        )::integer AS "ftsRank"
-      FROM fts_raw AS fts
-    ),
-    fts_ranked AS (
-      SELECT *
-      FROM fts_ranked_all
-      WHERE "ftsRank" <= ${input.candidateLimit}
-    ),
-    scored AS MATERIALIZED (
-      SELECT
-        COALESCE(ann."ordinal", fts."ordinal") AS "bindingOrdinal",
-        COALESCE(ann."chunkId", fts."chunkId") AS "chunkId",
-        COALESCE(ann."chunkIndex", fts."chunkIndex") AS "chunkIndex",
-        COALESCE(ann."page", fts."page") AS "page",
-        COALESCE(ann."text", fts."text") AS "text",
-        COALESCE(ann."documentId", fts."documentId") AS "documentId",
-        COALESCE(ann."documentVersionId", fts."documentVersionId") AS "documentVersionId",
-        COALESCE(ann."documentVersionNumber", fts."documentVersionNumber") AS "documentVersionNumber",
-        COALESCE(ann."fileName", fts."fileName") AS "fileName",
-        ann."vectorDistance",
-        CASE WHEN ann."vectorDistance" IS NULL THEN NULL
-          ELSE 1.0 - ann."vectorDistance" END AS "vectorScore",
-        fts."ftsScore",
-        ann."annRank",
-        fts."ftsRank",
-        COALESCE(1.0 / (60.0 + ann."annRank"), 0.0) +
-          COALESCE(1.0 / (60.0 + fts."ftsRank"), 0.0) AS "fusedScore"
-      FROM ann_ranked AS ann
-      FULL OUTER JOIN fts_ranked AS fts
-        ON fts."ordinal" = ann."ordinal" AND fts."chunkId" = ann."chunkId"
-    ),
-    selected AS MATERIALIZED (
-      SELECT scored.*, binding."knowledgeBaseId", binding."baseName"
-      FROM scored
-      INNER JOIN bindings AS binding ON binding."ordinal" = scored."bindingOrdinal"
-      WHERE scored."fusedScore" >= ${input.threshold}
-      ORDER BY scored."fusedScore" DESC, scored."bindingOrdinal", scored."chunkId"
-      LIMIT ${input.resultLimit}
-    ),
-    base_candidate_counts AS (
-      SELECT binding."ordinal", count(scored."chunkId")::integer AS count
-      FROM bindings AS binding
-      LEFT JOIN scored ON scored."bindingOrdinal" = binding."ordinal"
-      GROUP BY binding."ordinal"
-    ),
-    candidate_stats AS (
-      SELECT
-        COALESCE(sum(count), 0)::integer AS "candidateCount",
-        COALESCE(jsonb_object_agg("ordinal"::text, count), '{}'::jsonb) AS "candidateCounts"
-      FROM base_candidate_counts
-    )
-    SELECT
-      (SELECT count(*)::integer FROM bindings) AS "bindingCount",
-      candidate_stats."candidateCount",
-      candidate_stats."candidateCounts",
-      COALESCE((
-        SELECT jsonb_agg(jsonb_build_object(
-          'annRank', selected."annRank",
-          'baseName', selected."baseName",
-          'bindingOrdinal', selected."bindingOrdinal",
-          'chunkId', selected."chunkId",
-          'chunkIndex', selected."chunkIndex",
-          'documentId', selected."documentId",
-          'documentVersionId', selected."documentVersionId",
-          'documentVersionNumber', selected."documentVersionNumber",
-          'fileName', selected."fileName",
-          'ftsRank', selected."ftsRank",
-          'ftsScore', selected."ftsScore",
-          'fusedScore', selected."fusedScore",
-          'knowledgeBaseId', selected."knowledgeBaseId",
-          'page', selected."page",
-          'text', selected."text",
-          'vectorDistance', selected."vectorDistance",
-          'vectorScore', selected."vectorScore"
-        ) ORDER BY selected."fusedScore" DESC, selected."bindingOrdinal", selected."chunkId")
-        FROM selected
-      ), '[]'::jsonb) AS passages
-    FROM candidate_stats
-  `;
+function noveltyRatio(value: unknown): number | null {
+  if (!record(value) || value.noveltyRatio === null) return null;
+  return typeof value.noveltyRatio === "number" && Number.isFinite(value.noveltyRatio) &&
+    value.noveltyRatio >= 0 && value.noveltyRatio <= 1
+    ? value.noveltyRatio
+    : null;
 }
 
 export function createPrismaKnowledgeRetrievalStore(
-  client: RetrievalPrisma
+  client: RetrievalPrisma,
+  options: Readonly<{
+    extractionConfig?: KnowledgeExtractionConfig;
+    reranker?: KnowledgeCandidateReranker;
+    storage?: Pick<StorageAdapter, "getObject">;
+    visualRuntime?: KnowledgeVisualAnalysisRuntime;
+  }> = {}
 ): KnowledgeRetrievalStore {
+  const structuredStorage = options.storage;
   return {
+    async budgetState(input): Promise<KnowledgeBudgetState | null> {
+      const expectedToolName = operationToolNames[input.operation];
+      const toolNames = Prisma.sql`ARRAY[${Prisma.join(
+        [...KNOWLEDGE_EXECUTION_TOOL_NAMES]
+      )}]::text[]`;
+      const [summaryRows, scope, receipts] = await Promise.all([
+        client.$queryRaw<Array<{
+          followUpOperations: number;
+          invocationOrdinal: number;
+          operations: number;
+          searchPhases: number;
+          subqueriesInCurrentPhase: number;
+        }>>(Prisma.sql`
+          SELECT
+            count(preceding."id")::integer AS "invocationOrdinal",
+            count(preceding."id")::integer AS operations,
+            count(preceding."id") FILTER (WHERE preceding."roundIndex" > 0)::integer
+              AS "followUpOperations",
+            count(DISTINCT preceding."roundIndex")::integer AS "searchPhases",
+            count(preceding."id") FILTER (
+              WHERE preceding."roundIndex" = target."roundIndex"
+            )::integer AS "subqueriesInCurrentPhase"
+          FROM "ModelRunToolCall" AS target
+          INNER JOIN "ModelRun" AS run ON run."id" = target."modelRunId"
+          INNER JOIN "ModelRunToolCall" AS preceding
+            ON preceding."modelRunId" = target."modelRunId"
+           AND preceding."toolName" = ANY(${toolNames})
+           AND (
+             preceding."roundIndex" < target."roundIndex"
+             OR (preceding."roundIndex" = target."roundIndex"
+               AND preceding."ordinal" <= target."ordinal")
+           )
+          WHERE target."id" = ${input.modelRunToolCallId}
+            AND target."modelRunId" = ${input.runId}
+            AND target."toolName" = ${expectedToolName}
+            AND run."userId" = ${input.userId}
+          GROUP BY target."id", target."roundIndex"
+        `),
+        client.knowledgeRunScope.findFirst({
+          select: { budgetPolicy: true },
+          where: { modelRun: { id: input.runId, userId: input.userId }, modelRunId: input.runId }
+        }),
+        client.knowledgeRun.findMany({
+          orderBy: { invocationOrdinal: "asc" },
+          select: {
+            budgetEvidence: true,
+            candidateCount: true,
+            durationMs: true,
+            embeddingUsage: true,
+            invocationOrdinal: true,
+            rerankerBinding: true,
+            results: true
+          },
+          where: { modelRun: { id: input.runId, userId: input.userId }, modelRunId: input.runId }
+        })
+      ]);
+      const summary = summaryRows[0];
+      const policy = decodeKnowledgeBudgetPolicy(scope?.budgetPolicy);
+      if (!summary || !policy || summary.invocationOrdinal < 1 ||
+        summary.invocationOrdinal > 256) return null;
+
+      let cumulativeCandidates = 0;
+      let evidenceCount = 0;
+      let latencyMs = 0;
+      let queryEmbeddingCalls = 0;
+      let rerankerCalls = 0;
+      let retrievedTokens = 0;
+      let totalEmbeddingTokens = 0;
+      const priorContentHashes: string[] = [];
+      for (const receipt of receipts) {
+        cumulativeCandidates += receipt.candidateCount;
+        latencyMs += receipt.durationMs;
+        const usage = Array.isArray(receipt.embeddingUsage) ? receipt.embeddingUsage : [];
+        queryEmbeddingCalls += usage.length;
+        totalEmbeddingTokens += embeddingTokens(usage);
+        rerankerCalls += receipt.rerankerBinding === null ? 0 : 1;
+        const result = resultMetrics(receipt.results);
+        evidenceCount += Array.isArray(receipt.results) ? receipt.results.length : 0;
+        retrievedTokens += result.retrievedTokens;
+        priorContentHashes.push(...result.contentHashes);
+      }
+      let lowNoveltyStreak = 0;
+      for (const receipt of [...receipts].reverse()) {
+        const ratio = noveltyRatio(receipt.budgetEvidence);
+        if (ratio === null || ratio >= policy.minNoveltyRatio) break;
+        lowNoveltyStreak += 1;
+      }
+      const usage: KnowledgeBudgetUsage = {
+        cumulativeCandidates,
+        estimatedCostMicros: estimatedKnowledgeEmbeddingCostMicros(
+          policy,
+          totalEmbeddingTokens
+        ),
+        followUpOperations: summary.followUpOperations,
+        latencyMs,
+        lowNoveltyStreak,
+        operations: summary.operations,
+        queryEmbeddingCalls,
+        rerankerCalls,
+        retrievedTokens,
+        searchPhases: summary.searchPhases,
+        subqueriesInCurrentPhase: summary.subqueriesInCurrentPhase
+      };
+      return {
+        evidenceCount,
+        invocationOrdinal: summary.invocationOrdinal,
+        policy,
+        priorContentHashes: [...new Set(priorContentHashes)],
+        stopReason: knowledgeBudgetStopReason(policy, usage),
+        usage
+      };
+    },
     async hybridSearch(input): Promise<KnowledgeHybridSearchResult> {
       if (
-        input.vectors.length < 1 || input.vectors.length > 3 ||
+        input.vectors.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
         input.vectors.some((entry) =>
-          entry.bindingOrdinal < 0 || entry.bindingOrdinal > 2 ||
+          entry.bindingOrdinal < 0 || entry.bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
           !entry.knowledgeBaseId || !entry.indexGenerationId ||
           entry.vector.length !== entry.targetDimension ||
           entry.vector.some((value) => !Number.isFinite(value))) ||
         new Set(input.vectors.map((entry) => entry.bindingOrdinal)).size !== input.vectors.length
       ) throw new Error("knowledge_query_vector_invalid");
-      const rows = await client.$queryRaw<Array<{
-        bindingCount: number;
-        candidateCount: number;
-        candidateCounts: unknown;
-        passages: unknown;
-      }>>(knowledgeHybridRetrievalSql(input));
-      const row = rows[0];
-      if (!row || !isRecord(row.candidateCounts) || !Array.isArray(row.passages)) {
-        throw new Error("knowledge_hybrid_result_invalid");
-      }
-      const bindingCount = nonNegativeInteger(row.bindingCount);
-      const candidateCount = nonNegativeInteger(row.candidateCount);
-      const candidateCounts: Record<number, number> = {};
-      for (const [key, value] of Object.entries(row.candidateCounts)) {
-        const ordinal = Number(key);
-        const count = nonNegativeInteger(value);
-        if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal > 2 || count === null) {
-          throw new Error("knowledge_hybrid_result_invalid");
-        }
-        candidateCounts[ordinal] = count;
-      }
-      const passages = row.passages.map(decodedPassage);
-      if (
-        bindingCount === null || candidateCount === null ||
-        passages.some((passage) => passage === null)
-      ) throw new Error("knowledge_hybrid_result_invalid");
+      const result = await executeKnowledgeRetrievalCore(client, {
+        ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+        candidateLimit: input.candidateLimit,
+        query: input.query,
+        ...(options.reranker ? { reranker: options.reranker } : {}),
+        resultLimit: input.resultLimit,
+        runId: input.runId,
+        scoreThreshold: input.threshold,
+        ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+        userId: input.userId,
+        vectors: input.vectors
+      });
       return {
-        bindingCount,
-        candidateCount,
-        candidateCounts,
-        passages: passages as KnowledgeHybridPassage[]
+        bindingCount: result.bindingCount,
+        candidateCount: result.candidateCount,
+        candidateCounts: result.candidateCounts,
+        passages: result.passages.map((passage): KnowledgeHybridPassage => ({
+          annRank: passage.annRank,
+          baseName: passage.baseName,
+          bindingOrdinal: passage.bindingOrdinal,
+          chunkId: passage.chunkId,
+          chunkIndex: passage.chunkIndex,
+          confidence: passage.confidence,
+          contentHash: passage.contentHash,
+          documentId: passage.documentId,
+          documentVersionId: passage.documentVersionId,
+          documentVersionNumber: passage.documentVersionNumber,
+          fileName: passage.fileName,
+          ftsRank: passage.ftsRank,
+          ftsScore: passage.ftsScore,
+          fusedScore: passage.fusedScore,
+          headingPath: passage.headingPath,
+          knowledgeBaseId: passage.knowledgeBaseId,
+          page: passage.page,
+          rerankScore: passage.rerankScore,
+          sectionId: passage.sectionId,
+          signalProvenance: passage.signals,
+          sourceArtifactId: passage.sourceArtifactId,
+          sourceName: passage.sourceName,
+          text: passage.text,
+          vectorDistance: passage.vectorDistance,
+          vectorScore: passage.vectorScore
+        })),
+        rankingEvidence: result.rankingEvidence,
+        vectorSearchEvidence: result.vectorSearchEvidence
       };
     },
+    ...(structuredStorage ? {
+      async structuredSearch(input) {
+        const requestedArtifactIds = [...new Set(input.sourceArtifactIds)].slice(0, 1_000);
+        if (requestedArtifactIds.length === 0) return { kind: "not_applicable" as const };
+        const bindingBySnapshot = new Map(input.bindings.map((binding) => [
+          `${binding.knowledgeBaseId}:${binding.knowledgeBaseSnapshotId}`,
+          binding
+        ]));
+        const snapshotWhere: Prisma.KnowledgeBaseSnapshotSourceWhereInput = {
+          OR: input.bindings.map((binding) => ({
+            knowledgeBaseId: binding.knowledgeBaseId,
+            snapshotId: binding.knowledgeBaseSnapshotId,
+            ...(!binding.includeWholeBase
+              ? { sourceId: { in: [...binding.selectedSourceIds] } }
+              : {})
+          }))
+        };
+        const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
+          orderBy: { id: "asc" },
+          select: {
+            hierarchicalIndexes: {
+              orderBy: { schemaVersion: "desc" },
+              select: { id: true },
+              take: 1,
+              where: { state: "ready" }
+            },
+            id: true,
+            normalizedTextByteSize: true,
+            normalizedTextChecksum: true,
+            normalizedTextStorageKey: true,
+            sourceVersion: {
+              select: {
+                fileName: true,
+                id: true,
+                versionNumber: true,
+                source: { select: { name: true } }
+              }
+            },
+            snapshotSources: {
+              select: {
+                knowledgeBaseId: true,
+                snapshotId: true,
+                sourceId: true,
+                sourceVersionId: true
+              },
+              where: snapshotWhere
+            }
+          },
+          where: {
+            id: { in: requestedArtifactIds },
+            normalizedTextByteSize: { not: null },
+            normalizedTextChecksum: { not: null },
+            normalizedTextStorageKey: { not: null },
+            state: "ready",
+            snapshotSources: { some: snapshotWhere }
+          }
+        });
+        const hierarchyByArtifact = new Map(artifacts.flatMap((artifact) =>
+          artifact.hierarchicalIndexes[0]
+            ? [[artifact.id, artifact.hierarchicalIndexes[0].id] as const]
+            : []));
+        const candidates = artifacts.flatMap((artifact) => artifact.snapshotSources.flatMap((snapshot) => {
+          const binding = bindingBySnapshot.get(
+            `${snapshot.knowledgeBaseId}:${snapshot.snapshotId}`
+          );
+          if (!binding || !artifact.normalizedTextStorageKey ||
+            artifact.normalizedTextByteSize === null || !artifact.normalizedTextChecksum ||
+            !/^[0-9a-f]{64}$/u.test(artifact.normalizedTextChecksum.trim()) ||
+            !hierarchyByArtifact.has(artifact.id)) return [];
+          return [{
+            artifactId: artifact.id,
+            baseName: binding.baseName,
+            bindingOrdinal: binding.ordinal,
+            documentId: snapshot.sourceId,
+            documentVersionId: snapshot.sourceVersionId,
+            documentVersionNumber: artifact.sourceVersion.versionNumber,
+            fileName: artifact.sourceVersion.fileName,
+            knowledgeBaseId: snapshot.knowledgeBaseId,
+            normalizedTextByteSize: artifact.normalizedTextByteSize,
+            normalizedTextChecksum: artifact.normalizedTextChecksum.trim(),
+            normalizedTextStorageKey: artifact.normalizedTextStorageKey,
+            sourceName: artifact.sourceVersion.source.name
+          }];
+        }));
+        return analyzeStructuredKnowledgeSources({
+          candidates,
+          config: options.extractionConfig ?? getKnowledgeExtractionConfig(),
+          async loadAnchor(candidate, page) {
+            const indexArtifactId = hierarchyByArtifact.get(candidate.artifactId);
+            if (!indexArtifactId) return null;
+            return client.knowledgeArtifactPassageIndex.findFirst({
+              orderBy: { ordinal: "asc" },
+              select: {
+                contentHash: true,
+                headingPath: true,
+                id: true,
+                ordinal: true,
+                sectionId: true
+              },
+              where: { indexArtifactId, page }
+            });
+          },
+          query: input.query,
+          ...(input.signal ? { signal: input.signal } : {}),
+          storage: structuredStorage
+        });
+      }
+    } : {}),
+    ...(structuredStorage ? {
+      async visualSearch(input) {
+        const requestedArtifactIds = [...new Set(input.sourceArtifactIds)].slice(0, 1_000);
+        if (requestedArtifactIds.length === 0) return { kind: "not_applicable" as const };
+        const bindingBySnapshot = new Map(input.bindings.map((binding) => [
+          `${binding.knowledgeBaseId}:${binding.knowledgeBaseSnapshotId}`,
+          binding
+        ]));
+        const snapshotWhere: Prisma.KnowledgeBaseSnapshotSourceWhereInput = {
+          OR: input.bindings.map((binding) => ({
+            knowledgeBaseId: binding.knowledgeBaseId,
+            snapshotId: binding.knowledgeBaseSnapshotId,
+            ...(!binding.includeWholeBase
+              ? { sourceId: { in: [...binding.selectedSourceIds] } }
+              : {})
+          }))
+        };
+        const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            normalizedTextByteSize: true,
+            normalizedTextChecksum: true,
+            normalizedTextStorageKey: true,
+            profileRevision: {
+              select: { egressPolicy: true, profileConfiguration: true }
+            },
+            profileRevisionId: true,
+            sourceVersion: {
+              select: {
+                byteSize: true,
+                checksum: true,
+                fileName: true,
+                id: true,
+                mimeType: true,
+                originalStorageKey: true,
+                versionNumber: true,
+                source: { select: { name: true } }
+              }
+            },
+            snapshotSources: {
+              select: {
+                knowledgeBaseId: true,
+                snapshotId: true,
+                sourceId: true,
+                sourceVersionId: true
+              },
+              where: snapshotWhere
+            }
+          },
+          where: {
+            id: { in: requestedArtifactIds },
+            normalizedTextByteSize: { not: null },
+            normalizedTextChecksum: { not: null },
+            normalizedTextStorageKey: { not: null },
+            state: "ready",
+            snapshotSources: { some: snapshotWhere }
+          }
+        });
+        const candidates = artifacts.flatMap((artifact) => {
+          const profile = knowledgeVisionProfileFromConfiguration(
+            artifact.profileRevision.profileConfiguration
+          );
+          if (profile.kind === "invalid") return [];
+          const destination = profile.kind === "configured" ? profile.destination : null;
+          const egressApproved = Boolean(destination && knowledgeVisionEgressApproved(
+            artifact.profileRevision.egressPolicy,
+            destination.providerModelId
+          ));
+          return artifact.snapshotSources.flatMap((snapshot) => {
+            const binding = bindingBySnapshot.get(
+              `${snapshot.knowledgeBaseId}:${snapshot.snapshotId}`
+            );
+            const sourceVersion = artifact.sourceVersion;
+            if (!binding || !artifact.normalizedTextStorageKey ||
+              artifact.normalizedTextByteSize === null || !artifact.normalizedTextChecksum ||
+              !/^[0-9a-f]{64}$/u.test(artifact.normalizedTextChecksum.trim()) ||
+              !/^[0-9a-f]{64}$/u.test(sourceVersion.checksum.trim()) ||
+              sourceVersion.byteSize < 1) return [];
+            const visionProviderModelId = destination && egressApproved &&
+              (sourceVersion.mimeType !== "application/pdf" || destination.supportsNativePdf)
+              ? destination.providerModelId
+              : null;
+            return [{
+              artifactId: artifact.id,
+              baseName: binding.baseName,
+              bindingOrdinal: binding.ordinal,
+              documentId: snapshot.sourceId,
+              documentVersionId: snapshot.sourceVersionId,
+              documentVersionNumber: sourceVersion.versionNumber,
+              fileName: sourceVersion.fileName,
+              knowledgeBaseId: snapshot.knowledgeBaseId,
+              mimeType: sourceVersion.mimeType,
+              normalizedTextByteSize: artifact.normalizedTextByteSize,
+              normalizedTextChecksum: artifact.normalizedTextChecksum.trim(),
+              normalizedTextStorageKey: artifact.normalizedTextStorageKey,
+              originalByteSize: sourceVersion.byteSize,
+              originalChecksum: sourceVersion.checksum.trim(),
+              originalStorageKey: sourceVersion.originalStorageKey,
+              profileRevisionId: artifact.profileRevisionId,
+              sourceName: sourceVersion.source.name,
+              visionEgressApproved: Boolean(visionProviderModelId),
+              visionProviderModelId
+            }];
+          });
+        });
+        return analyzeVisualKnowledgeSources({
+          candidates,
+          config: options.extractionConfig ?? getKnowledgeExtractionConfig(),
+          query: input.query,
+          ...(options.visualRuntime ? { runtime: options.visualRuntime } : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+          storage: structuredStorage
+        });
+      }
+    } : {}),
     async invocationOrdinal(input) {
+      const toolNames = Prisma.sql`ARRAY[${Prisma.join(
+        [...KNOWLEDGE_EXECUTION_TOOL_NAMES]
+      )}]::text[]`;
       const rows = await client.$queryRaw<Array<{ ordinal: number }>>(Prisma.sql`
         SELECT count(preceding."id")::integer AS ordinal
         FROM "ModelRunToolCall" AS target
         INNER JOIN "ModelRun" AS run ON run."id" = target."modelRunId"
         INNER JOIN "ModelRunToolCall" AS preceding
           ON preceding."modelRunId" = target."modelRunId"
-         AND preceding."toolName" = ${input.toolName}
+         AND preceding."toolName" = ANY(${toolNames})
          AND (
            preceding."roundIndex" < target."roundIndex"
            OR (preceding."roundIndex" = target."roundIndex"
@@ -469,9 +581,12 @@ export function createPrismaKnowledgeRetrievalStore(
           embeddingProviderModelId: true,
           indexedContentRevision: true,
           indexGenerationId: true,
+          includeWholeBase: true,
           knowledgeBase: { select: { name: true } },
           knowledgeBaseId: true,
+          knowledgeBaseSnapshotId: true,
           ordinal: true,
+          selectedSourceIds: true,
           targetDimension: true,
           vectorSpaceFingerprint: true
         },
@@ -479,7 +594,11 @@ export function createPrismaKnowledgeRetrievalStore(
           modelRun: { id: input.runId, userId: input.userId }
         }
       });
-      return rows.map((row): KnowledgeAcceptedBinding => ({
+      return rows.map((row): KnowledgeAcceptedBinding => {
+        if (!row.knowledgeBaseSnapshotId) {
+          throw new Error("knowledge_run_snapshot_unavailable");
+        }
+        return {
         baseContentRevision: row.baseContentRevision,
         baseName: row.knowledgeBase.name,
         embeddingConnectionId: row.embeddingConnectionId,
@@ -490,21 +609,117 @@ export function createPrismaKnowledgeRetrievalStore(
         embeddingProviderModelId: row.embeddingProviderModelId,
         indexedContentRevision: row.indexedContentRevision,
         indexGenerationId: row.indexGenerationId,
+        includeWholeBase: row.includeWholeBase,
         knowledgeBaseId: row.knowledgeBaseId,
+        knowledgeBaseSnapshotId: row.knowledgeBaseSnapshotId,
         ordinal: row.ordinal,
+        selectedSourceIds: [...row.selectedSourceIds],
         targetDimension: row.targetDimension as 1024 | 1536,
         vectorSpaceFingerprint: row.vectorSpaceFingerprint.trim()
-      }));
+        };
+      });
+    },
+    async loadScopeAliases(input): Promise<readonly KnowledgeScopeAlias[]> {
+      const rows = await client.$queryRaw<Array<{
+        alias: string;
+        bindingOrdinal: number;
+        kind: string;
+        label: string;
+        sourceArtifactId: string | null;
+        sourceId: string | null;
+      }>>(Prisma.sql`
+        WITH admitted_bindings AS MATERIALIZED (
+          SELECT
+            binding."ordinal",
+            binding."knowledgeBaseId",
+            binding."knowledgeBaseSnapshotId",
+            binding."includeWholeBase",
+            binding."selectedSourceIds",
+            base."name" AS "baseName"
+          FROM "ModelRun" AS run
+          INNER JOIN "KnowledgeRunBinding" AS binding ON binding."modelRunId" = run."id"
+          INNER JOIN "KnowledgeBase" AS base ON base."id" = binding."knowledgeBaseId"
+          WHERE run."id" = ${input.runId}
+            AND run."userId" = ${input.userId}
+        ),
+        admitted_sources AS MATERIALIZED (
+          SELECT
+            binding."ordinal" AS "bindingOrdinal",
+            snapshot_source."artifactId" AS "sourceArtifactId",
+            snapshot_source."sourceId",
+            source."name" AS label,
+            row_number() OVER (
+              ORDER BY binding."ordinal", snapshot_source."ordinal", snapshot_source."sourceId"
+            )::integer AS "sourceOrdinal"
+          FROM admitted_bindings AS binding
+          INNER JOIN "KnowledgeBaseSnapshotSource" AS snapshot_source
+            ON snapshot_source."snapshotId" = binding."knowledgeBaseSnapshotId"
+           AND (
+             binding."includeWholeBase" = true
+             OR snapshot_source."sourceId" = ANY(binding."selectedSourceIds")
+           )
+          INNER JOIN "KnowledgeSource" AS source ON source."id" = snapshot_source."sourceId"
+        )
+        SELECT
+          ('B' || (binding."ordinal" + 1)::text) AS alias,
+          binding."ordinal" AS "bindingOrdinal",
+          'base'::text AS kind,
+          binding."baseName" AS label,
+          NULL::text AS "sourceArtifactId",
+          NULL::text AS "sourceId"
+        FROM admitted_bindings AS binding
+        UNION ALL
+        SELECT
+          ('S' || source."sourceOrdinal"::text) AS alias,
+          source."bindingOrdinal",
+          'source'::text AS kind,
+          source.label,
+          source."sourceArtifactId",
+          source."sourceId"
+        FROM admitted_sources AS source
+        WHERE source."sourceOrdinal" <= 999
+        ORDER BY "bindingOrdinal", kind, alias
+      `);
+      const aliases: KnowledgeScopeAlias[] = [];
+      for (const row of rows) {
+        if (!/^[BS][1-9]\d{0,2}$/u.test(row.alias) ||
+          !Number.isSafeInteger(row.bindingOrdinal) || row.bindingOrdinal < 0 ||
+          row.bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+          row.kind !== "base" && row.kind !== "source" || !row.label ||
+          (row.kind === "source" && (!row.sourceArtifactId || !row.sourceId))) {
+          throw new Error("knowledge_scope_alias_invalid");
+        }
+        aliases.push({
+          alias: row.alias,
+          bindingOrdinal: row.bindingOrdinal,
+          kind: row.kind,
+          label: row.label,
+          ...(row.sourceArtifactId ? { sourceArtifactId: row.sourceArtifactId } : {}),
+          ...(row.sourceId ? { sourceId: row.sourceId } : {})
+        });
+      }
+      if (new Set(aliases.map((alias) => alias.alias)).size !== aliases.length) {
+        throw new Error("knowledge_scope_alias_invalid");
+      }
+      return aliases;
     },
     async persistReceipt(input) {
-      await client.$transaction(async (tx) => {
+      return client.$transaction(async (tx) => {
+        const lockedRun = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT run."id"
+          FROM "ModelRun" AS run
+          WHERE run."id" = ${input.runId}
+            AND run."userId" = ${input.userId}
+          FOR UPDATE
+        `);
+        if (lockedRun.length !== 1) throw new Error("knowledge_run_context_unavailable");
         const call = await tx.modelRunToolCall.findFirst({
           select: { id: true },
           where: {
             id: input.modelRunToolCallId,
             modelRun: { id: input.runId, userId: input.userId },
             modelRunId: input.runId,
-            toolName: "retrieve_knowledge"
+            toolName: { in: [...KNOWLEDGE_EXECUTION_TOOL_NAMES] }
           }
         });
         if (!call) throw new Error("knowledge_run_context_unavailable");
@@ -513,27 +728,336 @@ export function createPrismaKnowledgeRetrievalStore(
           where: { modelRunToolCallId: input.modelRunToolCallId }
         });
         if (existing) throw new Error("knowledge_receipt_already_exists");
-        const evidence: KnowledgeRetrievalEvidence = input.evidence;
+        const context = await tx.modelRun.findUnique({
+          select: {
+            knowledgeRunScope: {
+              select: {
+                budgetPolicy: true,
+                exclusions: true,
+                resolvedBaseCount: true,
+                resolvedSourceCount: true,
+                selection: true
+              }
+            },
+            normalizedRequest: true
+          },
+          where: { id: input.runId }
+        });
+        const normalizedRequest = record(context?.normalizedRequest)
+          ? context.normalizedRequest
+          : null;
+        const planner = normalizedRequest
+          ? decodeKnowledgePlannerPlan(normalizedRequest.knowledgePlanner)
+          : null;
+        const scope = context?.knowledgeRunScope;
+        if (!scope) throw new Error("knowledge_evidence_context_invalid");
+        const plannerPlan = planner?.ok ? planner.plan : {
+          automaticRetrieval: true,
+          coverage: {
+            expectedPassageCount: null,
+            mode: "partial" as const,
+            namedTargets: [] as string[]
+          },
+          evidenceMode: "compact" as const,
+          failureCode: "classifier_unavailable" as const,
+          intent: "fact_lookup" as const,
+          originalQuery: input.evidence.query,
+          status: "degraded" as const,
+          strategy: "focused" as const
+        };
+        const structuredClarification = input.evidence.structured?.status === "needs_clarification"
+          ? input.evidence.structured.question
+          : null;
+
+        const exclusions = Array.isArray(scope.exclusions) ? scope.exclusions : [];
+        const excludedResources = exclusions.reduce<number>((total, value) => {
+          if (!record(value)) return total;
+          const count = nonNegativeInteger(value.count);
+          return total + (count ?? 0);
+        }, 0);
+        let session = await tx.knowledgeRetrievalSession.findUnique({
+          where: { modelRunId: input.runId }
+        });
+        if (!session) {
+          const degradedFlags = [
+            ...(plannerPlan.status === "degraded" ? ["planner_degraded"] : []),
+            ...(plannerPlan.failureCode ? [plannerPlan.failureCode] : []),
+            ...(excludedResources > 0 ? ["partial_readiness"] : [])
+          ];
+          session = await tx.knowledgeRetrievalSession.create({
+            data: {
+              citationContract: json(KNOWLEDGE_EVIDENCE_CITATION_CONTRACT),
+              coverageRequirements: json({ ...plannerPlan.coverage, verified: false }),
+              degradedFlags,
+              id: randomUUID(),
+              modelRunId: input.runId,
+              originalIntent: json({
+                intent: plannerPlan.intent,
+                query: plannerPlan.originalQuery
+              }),
+              readinessSummary: json({
+                excludedResources,
+                readyBases: scope.resolvedBaseCount,
+                readySources: scope.resolvedSourceCount
+              }),
+              scopeSnapshot: json({
+                budgetPolicy: scope.budgetPolicy,
+                exclusions: scope.exclusions,
+                resolvedBaseCount: scope.resolvedBaseCount,
+                resolvedSourceCount: scope.resolvedSourceCount,
+                selection: scope.selection
+              }),
+              strategySnapshot: json({
+                automaticRetrieval: plannerPlan.automaticRetrieval,
+                evidenceMode: plannerPlan.evidenceMode,
+                failureCode: plannerPlan.failureCode ?? null,
+                status: plannerPlan.status,
+                strategy: plannerPlan.strategy,
+                ...(structuredClarification
+                  ? { structuredClarifications: [structuredClarification] }
+                  : {})
+              }),
+              version: 2
+            }
+          });
+        }
+        if (session.acceptedAt || session.receiptHash) {
+          throw new Error("knowledge_evidence_already_accepted");
+        }
+
+        const artifactIds = [...new Set(input.evidence.results.flatMap((result) =>
+          result.sourceArtifactId ? [result.sourceArtifactId] : []))];
+        const artifacts = artifactIds.length > 0
+          ? await tx.knowledgeSourceIndexArtifact.findMany({
+              select: {
+                id: true,
+                sourceVersion: {
+                  select: { id: true, sourceId: true, versionNumber: true }
+                }
+              },
+              where: { id: { in: artifactIds } }
+            })
+          : [];
+        const sourceByArtifact = new Map(artifacts.map((artifact) => [artifact.id, {
+          sourceId: artifact.sourceVersion.sourceId,
+          sourceVersionId: artifact.sourceVersion.id,
+          sourceVersionNumber: artifact.sourceVersion.versionNumber
+        }]));
+        const keyedResults = input.evidence.results.map((result) => {
+          const source = result.sourceArtifactId
+            ? sourceByArtifact.get(result.sourceArtifactId)
+            : null;
+          if (!source) throw new Error("knowledge_evidence_source_identity_unavailable");
+          return {
+            evidenceKey: knowledgeEvidenceKey({
+              documentVersionId: result.documentVersionId,
+              excerpt: result.includedText,
+              knowledgeBaseId: result.knowledgeBaseId,
+              passageId: result.chunkId,
+              sourceVersionId: source.sourceVersionId
+            }),
+            result,
+            source
+          };
+        });
+        const existingItems = keyedResults.length > 0
+          ? await tx.knowledgeEvidenceItem.findMany({
+              where: {
+                evidenceKey: { in: keyedResults.map((entry) => entry.evidenceKey) },
+                retrievalSessionId: session.id,
+                state: "available"
+              }
+            })
+          : [];
+        const byEvidenceKey = new Map(existingItems.flatMap((item) =>
+          item.evidenceKey ? [[item.evidenceKey, item] as const] : []));
+        let nextEvidenceOrdinal = session.nextEvidenceOrdinal;
+        const acceptedResults: Array<KnowledgeRetrievalEvidence["results"][number]> = [];
+        const evidenceItems: Array<Readonly<{
+          id: string;
+          result: KnowledgeRetrievalEvidence["results"][number];
+          resultOrdinal: number;
+        }>> = [];
+        for (const [resultOrdinal, entry] of keyedResults.entries()) {
+          let item = byEvidenceKey.get(entry.evidenceKey);
+          if (!item) {
+            if (nextEvidenceOrdinal > KNOWLEDGE_CITATION_V2_MAX) {
+              throw new Error("knowledge_evidence_budget_exceeded");
+            }
+            const id = randomUUID();
+            const handle = `K${nextEvidenceOrdinal}`;
+            item = await tx.knowledgeEvidenceItem.create({
+              data: {
+                baseName: entry.result.baseName,
+                contentHash: entry.result.contentHash ?? null,
+                contextBoundaries: json({
+                  expanded: entry.result.textTruncated,
+                  excerptBytes: entry.result.includedTextBytes,
+                  sourceTextBytes: entry.result.sourceTextBytes,
+                  ...(entry.result.structuredAnalysis
+                    ? { structuredAnalysis: entry.result.structuredAnalysis }
+                    : {}),
+                  ...(entry.result.visualAnalysis
+                    ? { visualAnalysis: entry.result.visualAnalysis }
+                    : {})
+                }),
+                documentId: entry.result.documentId,
+                documentVersionId: entry.result.documentVersionId,
+                evidenceKey: entry.evidenceKey,
+                excerpt: entry.result.includedText,
+                excerptBytes: entry.result.includedTextBytes,
+                fileName: entry.result.fileName,
+                handle,
+                headingPath: [...(entry.result.headingPath ?? [])],
+                id,
+                knowledgeBaseId: entry.result.knowledgeBaseId,
+                locator: json({
+                  page: entry.result.page,
+                  ...(entry.result.structuredAnalysis
+                    ? { ranges: entry.result.structuredAnalysis.receipt.inputRanges }
+                    : {})
+                }),
+                ordinal: nextEvidenceOrdinal,
+                page: entry.result.page,
+                passageId: entry.result.chunkId,
+                retrievalSessionId: session.id,
+                sectionId: entry.result.sectionId ?? null,
+                sourceArtifactId: entry.result.sourceArtifactId ?? null,
+                sourceId: entry.source.sourceId,
+                sourceName: entry.result.sourceName ?? entry.result.fileName,
+                sourceTextBytes: entry.result.sourceTextBytes,
+                sourceVersionId: entry.source.sourceVersionId,
+                sourceVersionNumber: entry.source.sourceVersionNumber,
+                state: "available",
+                textTruncated: entry.result.textTruncated
+              }
+            });
+            byEvidenceKey.set(entry.evidenceKey, item);
+            nextEvidenceOrdinal += 1;
+          }
+          acceptedResults.push({ ...entry.result, handle: item.handle });
+          evidenceItems.push({ id: item.id, result: entry.result, resultOrdinal });
+        }
+        const degradedFlags = new Set(session.degradedFlags);
+        if (input.evidence.failureCode) degradedFlags.add(input.evidence.failureCode);
+        if (input.evidence.outcome !== "complete") {
+          degradedFlags.add(`retrieval_${input.evidence.outcome}`);
+        }
+        if (input.evidence.budget?.stopReason) degradedFlags.add("budget_exhausted");
+        if (input.evidence.visual?.status === "unavailable") {
+          degradedFlags.add("visual_analysis_unavailable");
+        }
+        const strategySnapshot = record(session.strategySnapshot)
+          ? session.strategySnapshot
+          : null;
+        const rawStructuredClarifications = strategySnapshot?.structuredClarifications;
+        const storedStructuredClarifications = rawStructuredClarifications === undefined
+          ? []
+          : Array.isArray(rawStructuredClarifications) &&
+              rawStructuredClarifications.length <= 16 &&
+              rawStructuredClarifications.every((question) =>
+                typeof question === "string" && question.length > 0 && question.length <= 2_000 &&
+                !/\u0000/u.test(question))
+            ? rawStructuredClarifications as string[]
+            : null;
+        if (!strategySnapshot || !storedStructuredClarifications) {
+          throw new Error("knowledge_evidence_context_invalid");
+        }
+        const structuredClarifications = [...new Set([
+          ...storedStructuredClarifications,
+          ...(structuredClarification ? [structuredClarification] : [])
+        ])];
+        if (structuredClarifications.length > 16) {
+          throw new Error("knowledge_evidence_context_invalid");
+        }
+        const nextStrategySnapshot = { ...strategySnapshot };
+        delete nextStrategySnapshot.structuredClarifications;
+        if (structuredClarifications.length > 0) {
+          nextStrategySnapshot.structuredClarifications = structuredClarifications;
+        }
+        await tx.knowledgeRetrievalSession.update({
+          data: {
+            degradedFlags: [...degradedFlags].sort(),
+            nextEvidenceOrdinal,
+            strategySnapshot: json(nextStrategySnapshot)
+          },
+          where: { id: session.id }
+        });
+
+        const draftEvidence: KnowledgeRetrievalEvidence = {
+          ...input.evidence,
+          providerText: "pending",
+          results: acceptedResults
+        };
+        const evidence: KnowledgeRetrievalEvidence = {
+          ...draftEvidence,
+          providerText: knowledgeToolResultText(draftEvidence)
+        };
+        const knowledgeRunId = randomUUID();
         await tx.knowledgeRun.create({
           data: {
             baseEvidence: json(evidence.bases),
+            budgetEvidence: json(evidence.budget ?? {}),
             candidateCount: evidence.candidateCount,
             candidateLimit: evidence.candidateLimit,
             durationMs: evidence.durationMs,
             embeddingUsage: json(evidence.embeddingExecutions),
             failureCode: evidence.failureCode,
             fusion: evidence.fusion,
+            id: knowledgeRunId,
             invocationOrdinal: evidence.invocationOrdinal,
             modelRunId: input.runId,
             modelRunToolCallId: input.modelRunToolCallId,
+            retrievalSessionId: session.id,
+            operation: evidence.operation ?? "automatic_search",
             outcome: evidence.outcome,
             providerText: evidence.providerText,
             query: evidence.query,
+            rerankerBinding: evidence.rerankerBinding === null
+              ? Prisma.JsonNull
+              : json(evidence.rerankerBinding),
             resultLimit: evidence.resultLimit,
             results: json(evidence.results),
+            postRerankOrder: evidence.postRerankOrder === null
+              ? Prisma.JsonNull
+              : json(evidence.postRerankOrder),
+            preRerankOrder: evidence.preRerankOrder === null
+              ? Prisma.JsonNull
+              : json(evidence.preRerankOrder),
+            stopReason: evidence.budget?.stopReason ?? null,
             threshold: evidence.threshold
           }
         });
+        if (evidenceItems.length > 0) {
+          await tx.knowledgeRunEvidence.createMany({
+            data: evidenceItems.map((item) => ({
+              evidenceItemId: item.id,
+              knowledgeRunId,
+              resultOrdinal: item.resultOrdinal,
+              retrievalProvenance: json({
+                confidence: item.result.confidence ?? null,
+                confidenceBucket: knowledgeEvidenceConfidenceBucket(item.result.confidence),
+                fusion: evidence.fusion,
+                invocationOrdinal: evidence.invocationOrdinal,
+                operation: evidence.operation ?? "automatic_search",
+                postRerankRank: evidenceRank(
+                  evidence.postRerankOrder,
+                  item.result.chunkId,
+                  item.resultOrdinal
+                ),
+                preRerankRank: evidenceRank(
+                  evidence.preRerankOrder,
+                  item.result.chunkId,
+                  item.resultOrdinal
+                ),
+                rerankScore: item.result.rerankScore ?? null,
+                signals: [...(item.result.signalProvenance ?? [])],
+                version: KNOWLEDGE_EVIDENCE_PROVENANCE_VERSION
+              })
+            }))
+          });
+        }
+        return evidence;
       });
     }
   };

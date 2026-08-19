@@ -20,7 +20,7 @@ import {
 
 const PDF_MARKER = "AIQSA PDF parser fixture";
 const DOCX_MARKER = "AIQSA DOCX parser fixture";
-const DOC_MARKER = "AIQSA binary DOC parser fixture";
+const DOC_MARKER = "AIQSA legacy parser fixture";
 let smokeStage = "startup";
 
 // A tiny one-page OLE Compound File produced as Word 97 format from the marker
@@ -144,11 +144,25 @@ function pdfFixture(): Buffer {
 }
 
 function assertOnePage(result: ParsedDocument, engine: "docling" | "tika", marker: string): void {
+  if (result.engine !== engine) smokeStage = `${smokeStage}-engine`;
   assert.equal(result.engine, engine);
+  if (result.pageCount !== 1) smokeStage = `${smokeStage}-page-count`;
   assert.equal(result.pageCount, 1);
+  if (result.blocks.length === 0) smokeStage = `${smokeStage}-empty-blocks`;
   assert(result.blocks.length > 0);
+  if (!result.blocks.every((block) => block.page === 1)) {
+    smokeStage = `${smokeStage}-page-anchors`;
+  }
   assert(result.blocks.every((block) => block.page === 1));
-  assert(result.text.includes(marker));
+  const normalizedResultText = result.text.replace(/\s+/gu, " ");
+  const normalizedMarker = marker.replace(/\s+/gu, " ");
+  if (!normalizedResultText.includes(normalizedMarker)) {
+    const missingTokens = normalizedMarker.split(" ").filter((token) =>
+      !normalizedResultText.includes(token)
+    );
+    smokeStage = `${smokeStage}-marker-${missingTokens.join("-") || "order"}`;
+  }
+  assert(normalizedResultText.includes(normalizedMarker));
 }
 
 function processingRecord(
@@ -245,6 +259,48 @@ async function unavailableSmoke(): Promise<void> {
   })}\n`);
 }
 
+async function fallbackSmoke(): Promise<void> {
+  smokeStage = "fallback-readiness";
+  const readinessUrl = process.env.AIQSA_PARSER_SMOKE_READINESS_URL?.trim();
+  const readiness = readinessUrl
+    ? await fetch(readinessUrl, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5_000)
+      })
+    : await (await import("../app/api/health/ready/route")).GET(
+        new Request("http://localhost/api/health/ready")
+      );
+  assert(readiness.ok);
+
+  const boundary = createDocumentParserBoundary();
+  const probe = await boundary.probe();
+  assert.equal(probe.docling.available, false);
+  assert.equal(probe.tika.available, true);
+  smokeStage = "fallback-docx";
+  const result = await boundary.parse({
+    bytes: docxFixture(),
+    fileName: "fixture.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  });
+  assertOnePage(result, "tika", DOCX_MARKER);
+  assert.deepEqual(result.attempts.map((attempt) => ({
+    engine: attempt.engine,
+    outcome: attempt.outcome
+  })), [
+    { engine: "docling", outcome: "retryable_failure" },
+    { engine: "tika", outcome: "complete" }
+  ]);
+
+  process.stdout.write(`${JSON.stringify({
+    appReady: true,
+    fallbackEngine: "tika",
+    fallbackMarkerPresent: true,
+    mode: "fallback",
+    primaryAvailable: false,
+    secondaryAvailable: true
+  })}\n`);
+}
+
 async function availableSmoke(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "aiqsa-parser-smoke-"));
   try {
@@ -308,11 +364,10 @@ async function availableSmoke(): Promise<void> {
       };
     }
 
-    // Knowledge ingestion deliberately pins OCR-capable inputs to Docling and
-    // fails closed instead of accepting a text-only Tika fallback. Keep this
-    // smoke on the same boundary so a Docling failure cannot be hidden behind
-    // a successful fallback response.
-    const knowledgeBoundary = createDocumentParserBoundary({ sidecarFallback: false });
+    // OCR-capable inputs should use Docling while it produces a complete,
+    // useful result. The same boundary may fall back later when that primary
+    // result is unavailable or unusable; fallback mode is smoked separately.
+    const knowledgeBoundary = createDocumentParserBoundary();
     const ocrInputs = [
       {
         bytes: ocrFixtures.imageOnlyPdf,
@@ -388,6 +443,10 @@ async function availableSmoke(): Promise<void> {
 async function main(): Promise<void> {
   if (process.env.AIQSA_PARSER_SMOKE_EXPECT_UNAVAILABLE === "1") {
     await unavailableSmoke();
+    return;
+  }
+  if (process.env.AIQSA_PARSER_SMOKE_EXPECT_FALLBACK === "1") {
+    await fallbackSmoke();
     return;
   }
   await availableSmoke();

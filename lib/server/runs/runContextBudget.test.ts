@@ -22,7 +22,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       }],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       contextWindow: 100,
@@ -187,11 +187,51 @@ describe("provider request context budget", () => {
     expect(budgeted).toMatchObject({
       error: {
         code: "context_too_large",
-        message: expect.stringContaining("Remove a Skill")
+        message: expect.stringContaining("Reduce selected context")
       },
       ok: false
     });
     expect(skillText).toHaveLength(400);
+  });
+
+  it("keeps hidden Knowledge evidence directly before the current user message", () => {
+    const evidenceText = "k".repeat(120);
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
+        context: {
+          messages: [
+            {
+              content: { blocks: [{ text: "h".repeat(240), type: "text" }] },
+              id: "history-user",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: evidenceText, type: "text" }] },
+              id: "knowledge-evidence:v1",
+              purpose: "knowledge_evidence",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
+              id: "current",
+              role: "user"
+            }
+          ],
+          mode: "branch_path"
+        }
+      })
+    });
+
+    expect(budgeted.ok).toBe(true);
+    if (!budgeted.ok) throw new Error("unexpected budget rejection");
+    expect(budgeted.request.context?.messages.map(({ id }) => id)).toEqual([
+      "knowledge-evidence:v1",
+      "current"
+    ]);
+    expect(budgeted.request.context?.messages[0]?.content).toEqual({
+      blocks: [{ text: evidenceText, type: "text" }]
+    });
   });
 
   it("truncates attachment text before considering the Skill context reducible", () => {

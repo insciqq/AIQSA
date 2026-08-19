@@ -49,7 +49,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
       const priorUserMessages = textConversationForRequest(request).filter(
         (message, index, messages) =>
           message.role === "user" &&
-          message.purpose !== "skill_context" &&
+          message.purpose === undefined &&
           index < messages.length - 1
       );
       const contextSuffix =

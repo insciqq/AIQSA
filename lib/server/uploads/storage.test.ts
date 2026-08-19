@@ -1,10 +1,16 @@
-import { GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  GetObjectCommand,
+  UploadPartCommand
+} from "@aws-sdk/client-s3";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { s3Send } = vi.hoisted(() => ({ s3Send: vi.fn() }));
+const { presign, s3Send } = vi.hoisted(() => ({ presign: vi.fn(), s3Send: vi.fn() }));
 
 vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@aws-sdk/client-s3")>();
@@ -16,6 +22,8 @@ vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
     }
   };
 });
+
+vi.mock("@aws-sdk/s3-request-presigner", () => ({ getSignedUrl: presign }));
 
 import {
   createFileSystemStorageAdapter,
@@ -44,6 +52,7 @@ function object(body: string, storageKey = "owned/object.bin"): StoredObjectInpu
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
+  presign.mockReset();
   s3Send.mockReset();
 
   await Promise.all(
@@ -132,6 +141,37 @@ describe("filesystem storage bounded reads", () => {
     controller.abort(reason);
 
     await expect(storage.getObject(input.storageKey, { maxBytes: 4, signal: controller.signal })).rejects.toBe(reason);
+  });
+
+  it("streams writes and inspects hashes and markers across read chunks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aiqsa-storage-test-"));
+    temporaryRoots.push(root);
+    const storage = createFileSystemStorageAdapter(root);
+    const body = Buffer.from(`${"a".repeat(65_534)}MARKER-tail`);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(body.subarray(0, 7));
+        controller.enqueue(body.subarray(7));
+        controller.close();
+      }
+    });
+
+    await storage.putObjectStream!({
+      body: stream,
+      byteSize: body.byteLength,
+      contentType: "application/octet-stream",
+      storageKey: "owned/stream.bin"
+    });
+    await expect(storage.inspectObject!("owned/stream.bin", {
+      maxBytes: body.byteLength,
+      needles: ["MARKER"],
+      sampleBytes: 8
+    })).resolves.toMatchObject({
+      byteSize: body.byteLength,
+      checksum: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      foundNeedles: ["MARKER"],
+      sample: Buffer.from("aaaaaaaa")
+    });
   });
 });
 
@@ -282,5 +322,63 @@ describe("S3 storage bounded reads", () => {
       "unsupported_stored_object_body"
     );
     expect(transformToByteArray).not.toHaveBeenCalled();
+  });
+
+  it("exposes direct multipart authority only for an explicit public endpoint", async () => {
+    expect(createS3StorageAdapter(s3Env).directMultipartUpload).toBeUndefined();
+    s3Send.mockResolvedValueOnce({ UploadId: "upload-1" });
+    presign.mockResolvedValue("https://objects.example.test/signed-part");
+    const storage = createS3StorageAdapter({
+      ...s3Env,
+      S3_PUBLIC_ENDPOINT: "https://objects.example.test"
+    });
+    const direct = storage.directMultipartUpload!;
+
+    await expect(direct.createMultipartUpload({
+      contentType: "application/pdf",
+      storageKey: "owned/object.pdf"
+    })).resolves.toEqual({ uploadId: "upload-1" });
+    expect(s3Send.mock.calls[0]?.[0]).toBeInstanceOf(CreateMultipartUploadCommand);
+
+    await expect(direct.presignMultipartPart({
+      expiresInSeconds: 900,
+      partNumber: 1,
+      storageKey: "owned/object.pdf",
+      uploadId: "upload-1"
+    })).resolves.toBe("https://objects.example.test/signed-part");
+    expect(presign.mock.calls[0]?.[1]).toBeInstanceOf(UploadPartCommand);
+
+    s3Send.mockResolvedValue({});
+    await direct.completeMultipartUpload({
+      parts: [{ etag: '"etag-1"', partNumber: 1 }],
+      storageKey: "owned/object.pdf",
+      uploadId: "upload-1"
+    });
+    await direct.abortMultipartUpload({
+      storageKey: "owned/object.pdf",
+      uploadId: "upload-2"
+    });
+    expect(s3Send.mock.calls.at(-2)?.[0]).toBeInstanceOf(CompleteMultipartUploadCommand);
+    expect(s3Send.mock.calls.at(-1)?.[0]).toBeInstanceOf(AbortMultipartUploadCommand);
+  });
+
+  it("treats an already-finished multipart abort as idempotent", async () => {
+    const storage = createS3StorageAdapter({
+      ...s3Env,
+      S3_PUBLIC_ENDPOINT: "https://objects.example.test"
+    });
+    const direct = storage.directMultipartUpload!;
+    s3Send.mockRejectedValueOnce({ name: "NoSuchUpload" });
+
+    await expect(direct.abortMultipartUpload({
+      storageKey: "owned/already-finished.pdf",
+      uploadId: "upload-finished"
+    })).resolves.toBeUndefined();
+
+    s3Send.mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(direct.abortMultipartUpload({
+      storageKey: "owned/pending.pdf",
+      uploadId: "upload-pending"
+    })).rejects.toThrow("storage unavailable");
   });
 });

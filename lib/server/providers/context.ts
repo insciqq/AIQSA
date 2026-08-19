@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { SKILL_CONTEXT_PREVIEW_PLACEHOLDER } from "../skills/userContext";
+import { KNOWLEDGE_EVIDENCE_PREVIEW_PLACEHOLDER } from "../knowledge/evidenceContext";
 import type { ProviderConversationMessage, ProviderRunRequest } from "./types";
 
 export type TextConversationMessage = {
   content: string;
   id: string;
-  purpose?: "skill_context";
+  purpose?: "knowledge_evidence" | "skill_context";
   role: "assistant" | "user";
 };
 
@@ -46,9 +47,11 @@ export function textConversationForRequest(
 ): TextConversationMessage[] {
   return conversationMessagesForRequest(request)
     .map((message) => ({
-      content: message.purpose === "skill_context" && options.redactSkillContext
+      content: options.redactSkillContext && message.purpose === "skill_context"
         ? SKILL_CONTEXT_PREVIEW_PLACEHOLDER
-        : textFromConversationMessage(message),
+        : options.redactSkillContext && message.purpose === "knowledge_evidence"
+          ? KNOWLEDGE_EVIDENCE_PREVIEW_PLACEHOLDER
+          : textFromConversationMessage(message),
       hasAttachmentContent: hasAttachmentContent(message),
       id: message.id,
       ...(message.purpose ? { purpose: message.purpose } : {}),

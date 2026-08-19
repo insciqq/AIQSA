@@ -51,11 +51,38 @@ export function updateAdminKnowledgePolicy(input: Readonly<{
   }, fetcher);
 }
 
+export function activateAdminKnowledgeProfile(input: Readonly<{
+  deploymentId: string;
+  expectedVersion: number;
+  visionDeploymentId: string | null;
+}>, fetcher: Fetcher = fetch) {
+  return request({
+    body: JSON.stringify({ action: "activate_profile", ...input }),
+    headers: { "content-type": "application/json" },
+    method: "PATCH"
+  }, fetcher);
+}
+
+export function rollbackAdminKnowledgeProfile(input: Readonly<{
+  expectedVersion: number;
+  revisionId: string;
+}>, fetcher: Fetcher = fetch) {
+  return request({
+    body: JSON.stringify({ action: "rollback_profile", ...input }),
+    headers: { "content-type": "application/json" },
+    method: "PATCH"
+  }, fetcher);
+}
+
 export function adminKnowledgeErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     knowledge_policy_admin_action_failed: "Knowledge settings could not be updated.",
     knowledge_policy_response_invalid: "The Knowledge settings response was invalid.",
     knowledge_policy_stale: "Knowledge settings changed elsewhere. Refresh before saving again.",
+    knowledge_profile_destination_unavailable: "That processing destination is no longer ready. Check its provider connection and refresh.",
+    knowledge_profile_input_invalid: "The processing profile request was invalid. Refresh and try again.",
+    knowledge_profile_revision_unavailable: "That earlier processing profile can no longer be activated.",
+    knowledge_profile_stale: "The processing profile changed elsewhere. Refresh before activating it.",
     network_error: "Knowledge settings could not be reached."
   };
   return messages[code] ?? code.replaceAll("_", " ");

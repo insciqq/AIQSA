@@ -60,7 +60,16 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "answer-outputs") {
     const state = fixtureState(
       query.state,
-      ["approval", "complete", "empty", "reasoning"] as const,
+      [
+        "approval",
+        "citation-assistant",
+        "citation-personal",
+        "citation-project",
+        "citation-visual",
+        "complete",
+        "empty",
+        "reasoning"
+      ] as const,
       "complete"
     );
     const { AnswerOutputsV2Gallery } = await import("./_fixtures/AnswerOutputsV2Gallery");

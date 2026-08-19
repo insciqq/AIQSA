@@ -72,26 +72,26 @@ export function applyRunContextBudget(input: Readonly<{
   prompt: NormalizedRunRequest["prompt"];
   provider: string;
 }>): RunContextBudgetResult {
-  const skillContextMessages = input.contextMessages.filter(
-    (message) => message.purpose === "skill_context"
+  const internalContextMessages = input.contextMessages.filter(
+    (message) => message.purpose !== undefined
   );
   const budgetMessages = input.contextMessages.filter(
-    (message) => message.purpose !== "skill_context"
+    (message) => message.purpose === undefined
   );
   const currentMessage = budgetMessages.at(-1);
-  const skillContextTokens = skillContextMessages.reduce((total, message) => {
+  const internalContextTokens = internalContextMessages.reduce((total, message) => {
     const extra = input.messageExtraTokens?.[message.id] ?? 0;
     return total + estimateApproxTokens(message.content) +
       (Number.isFinite(extra) && extra > 0 ? Math.ceil(extra) : 0);
   }, 0);
-  const messageExtraTokens = currentMessage && skillContextTokens > 0
+  const messageExtraTokens = currentMessage && internalContextTokens > 0
     ? {
         ...input.messageExtraTokens,
         [currentMessage.id]:
           (Number.isFinite(input.messageExtraTokens?.[currentMessage.id]) &&
           (input.messageExtraTokens?.[currentMessage.id] ?? 0) > 0
             ? Math.ceil(input.messageExtraTokens![currentMessage.id]!)
-            : 0) + skillContextTokens
+            : 0) + internalContextTokens
       }
     : input.messageExtraTokens;
   const budget = applyContextBudget({
@@ -106,8 +106,8 @@ export function applyRunContextBudget(input: Readonly<{
     return {
       error: {
         code: "context_too_large",
-        message: skillContextMessages.length > 0
-          ? `Prompt, selected Skills, and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available). Remove a Skill or choose a model with a larger context window.`
+        message: internalContextMessages.length > 0
+          ? `Prompt, selected private context, and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available). Reduce selected context or choose a model with a larger context window.`
           : `Prompt and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
       },
       ok: false,
@@ -115,17 +115,17 @@ export function applyRunContextBudget(input: Readonly<{
     };
   }
 
-  const messages = skillContextMessages.length > 0 && budget.messages.length > 0
+  const messages = internalContextMessages.length > 0 && budget.messages.length > 0
     ? [
         ...budget.messages.slice(0, -1),
-        ...skillContextMessages,
+        ...internalContextMessages,
         budget.messages.at(-1)!
       ]
     : budget.messages;
   const truncation = budget.truncation
     ? {
         ...budget.truncation,
-        keptMessages: budget.truncation.keptMessages + skillContextMessages.length
+        keptMessages: budget.truncation.keptMessages + internalContextMessages.length
       }
     : null;
   const context: NonNullable<NormalizedRunRequest["context"]> = {
@@ -257,8 +257,8 @@ function fitProviderAttachmentText(input: Readonly<{
     const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
     const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
       estimateApproxTokens(input.request.prompt.developer ?? "");
-    const skillContextTokens = (input.request.context?.messages ?? [])
-      .filter((message) => message.purpose === "skill_context")
+    const internalContextTokens = (input.request.context?.messages ?? [])
+      .filter((message) => message.purpose !== undefined)
       .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
     const fixedAttachments = attachments.map((attachment) =>
       textModeAttachment(attachment, input.request.modelCapabilities)
@@ -267,7 +267,7 @@ function fitProviderAttachmentText(input: Readonly<{
     );
     const fixedTokens = promptTokens +
       estimateApproxTokens(currentContent) +
-      skillContextTokens +
+      internalContextTokens +
       input.fixedExtraTokens +
       providerAttachmentBudgetTokens({
         attachments: fixedAttachments,

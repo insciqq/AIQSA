@@ -2,6 +2,9 @@ import type { ModelRunStatus } from "@prisma/client";
 import type { SearchPlan } from "../../domain/search";
 import type { NormalizedTokenUsage } from "../../domain/usage";
 import type { NormalizedRunRequest } from "../providers/types";
+import type { KnowledgePlan } from "../../contracts/knowledge";
+import type { KnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
+import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
 
 export type ToolLoopJsonValue =
   | boolean
@@ -12,6 +15,8 @@ export type ToolLoopJsonValue =
   | { [key: string]: ToolLoopJsonValue };
 
 export type ToolLoopCheckpointPhase = "provider_running" | "tools_pending" | "tools_running";
+
+export const AUTOMATIC_KNOWLEDGE_CALL_PREFIX = "knowledge-planner-v1-";
 
 export type PersistedAnswerRoundUsage = Readonly<{
   completeness: "partial" | "terminal";
@@ -62,6 +67,20 @@ export type ProjectRunRecoveryAuthority = Readonly<{
   providerSearchPlan: SearchPlan;
 }>;
 
+export type KnowledgeRunRecoveryScope = Readonly<{
+  bindings: readonly Readonly<{
+    includeWholeBase: boolean;
+    indexGenerationId: string;
+    knowledgeBaseId: string;
+    ordinal: number;
+    selectedSourceIds: readonly string[];
+    vectorSpaceFingerprint: string;
+  }>[];
+  budgetPolicy: KnowledgeBudgetPolicy;
+  exclusions: readonly KnowledgeRunAdmissionExclusion[];
+  knowledgePlan: KnowledgePlan;
+}>;
+
 export type CheckpointedToolLoopRun = Readonly<{
   assistantMessageId: string | null;
   assistantText: string | null;
@@ -69,6 +88,7 @@ export type CheckpointedToolLoopRun = Readonly<{
   chatId: string;
   checkpoint: ToolLoopCheckpoint;
   id: string;
+  knowledgeScope?: KnowledgeRunRecoveryScope;
   modelId: string;
   normalizedRequest: NormalizedRunRequest;
   project?: ProjectRunRecoveryAuthority;
@@ -108,6 +128,25 @@ export type PersistToolLoopCallBatchResult =
   | Readonly<{
     kind: "conflict" | "cancelled" | "not_found";
   }>;
+
+export type PrepareAutomaticKnowledgeCallBatchInput = Readonly<{
+  calls: readonly Readonly<{
+    ordinal: number;
+    providerCallId: string;
+    query: string;
+  }>[];
+  runId: string;
+  userId: string;
+}>;
+
+export type PrepareAutomaticKnowledgeCallBatchResult =
+  | Readonly<{
+      calls: readonly PersistedToolLoopCall[];
+      kind: "prepared" | "reused";
+    }>
+  | Readonly<{
+      kind: "cancelled" | "conflict" | "not_found";
+    }>;
 
 export type ClaimToolLoopCallResult =
   | Readonly<{ call: PersistedToolLoopCall; kind: "claimed" | "settled" | "ambiguous" | "cancelled" }>

@@ -95,15 +95,15 @@ describe("Prisma attachment processing repository", () => {
   });
 
   it("claims, heartbeats, releases, and reclaims one due job through its lease", async () => {
-    const firstDue = new Date("1900-01-01T00:00:00.000Z");
-    const retryDue = new Date("1900-01-01T00:01:00.000Z");
+    const firstDue = new Date("2097-01-01T00:00:00.000Z");
+    const retryDue = new Date("2097-01-01T00:01:00.000Z");
     const { attachment, user } = await createProcessingAttachment(firstDue);
 
     try {
       const first = await attachmentProcessingRepository.claim({
         claimToken: "attachment-processing-lease-1",
         now: firstDue,
-        staleBefore: new Date("1800-01-01T00:00:00.000Z")
+        staleBefore: new Date("2096-01-01T00:00:00.000Z")
       });
       expect(first).toMatchObject({
         attemptCount: 1,
@@ -130,13 +130,13 @@ describe("Prisma attachment processing repository", () => {
 
       await expect(attachmentProcessingRepository.claim({
         claimToken: "attachment-processing-too-early",
-        now: new Date("1900-01-01T00:00:59.999Z"),
-        staleBefore: new Date("1800-01-01T00:00:00.000Z")
+        now: new Date("2097-01-01T00:00:59.999Z"),
+        staleBefore: new Date("2096-01-01T00:00:00.000Z")
       })).resolves.toBeNull();
       await expect(attachmentProcessingRepository.claim({
         claimToken: "attachment-processing-lease-2",
         now: retryDue,
-        staleBefore: new Date("1800-01-01T00:00:00.000Z")
+        staleBefore: new Date("2096-01-01T00:00:00.000Z")
       })).resolves.toMatchObject({
         attemptCount: 2,
         claimToken: "attachment-processing-lease-2",
@@ -148,15 +148,15 @@ describe("Prisma attachment processing repository", () => {
   });
 
   it("publishes terminal state only through the active database lease", async () => {
-    const due = new Date("1901-01-01T00:00:00.000Z");
-    const settledAt = new Date("1901-01-01T00:00:01.000Z");
+    const due = new Date("2097-02-01T00:00:00.000Z");
+    const settledAt = new Date("2097-02-01T00:00:01.000Z");
     const { attachment, user } = await createProcessingAttachment(due);
 
     try {
       const claim = await attachmentProcessingRepository.claim({
         claimToken: "attachment-processing-settle-lease",
         now: due,
-        staleBefore: new Date("1800-01-01T00:00:00.000Z")
+        staleBefore: new Date("2096-01-01T00:00:00.000Z")
       });
       expect(claim).not.toBeNull();
       expect(await attachmentProcessingRepository.settleReady({

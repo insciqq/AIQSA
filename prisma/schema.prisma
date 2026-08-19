@@ -89,6 +89,8 @@ enum KnowledgeRunOutcome {
   base_empty
   base_indexing
   embedding_model_unavailable
+  budget_exhausted
+  structured_clarification_required
 }
 
 enum AttachmentStatus {
@@ -551,7 +553,10 @@ model User {
   groups                         UserGroup[]
   knowledgeBasePublications      KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
   knowledgeBases                 KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
+  knowledgeIndexProfileUpdates   KnowledgeIndexProfile[]            @relation("KnowledgeIndexProfileUpdater")
   knowledgePolicyUpdates         KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
+  knowledgeSources               KnowledgeSource[]                  @relation("KnowledgeSourceOwner")
+  knowledgeUploadBatches         KnowledgeUploadBatch[]
   memoryEgressPolicyUpdates      MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
   mcpGrants                      McpGrant[]
   mcpActivationJobs              McpActivationJob[]
@@ -958,6 +963,80 @@ enum KnowledgeIndexGenerationStatus {
   failed
 }
 
+enum KnowledgeIndexProfileExecutionAuthority {
+  installation
+  legacy_user
+}
+
+enum KnowledgeIndexProfilePreflightStatus {
+  ready
+  failed
+}
+
+enum KnowledgeSourceArtifactState {
+  pending
+  processing
+  ready
+  failed
+}
+
+enum KnowledgeSourceArtifactProcessingStage {
+  queued
+  parsing
+  chunking
+  embedding
+}
+
+enum KnowledgeHierarchicalIndexState {
+  building
+  ready
+  failed
+}
+
+enum KnowledgeExactEntryKind {
+  date
+  filename
+  heading
+  identifier
+  number
+  tag
+  title
+}
+
+enum KnowledgeUploadTransport {
+  PROXY
+  MULTIPART
+}
+
+enum KnowledgeUploadItemState {
+  QUEUED
+  UPLOADING
+  STORED
+  PROCESSING
+  NEEDS_ATTENTION
+  CANCELLED
+  REUSED
+}
+
+enum KnowledgeDeletionTargetType {
+  SOURCE
+  BASE
+}
+
+enum KnowledgeDeletionState {
+  PENDING
+  RUNNING
+  RETRY_WAIT
+  BLOCKED_REQUIRES_ADMIN
+  SUCCEEDED
+}
+
+enum KnowledgeDeletionObjectDisposition {
+  PENDING
+  DELETED
+  RETAINED
+}
+
 model AssistantDefinition {
   id                String                    @id @default(uuid())
   ownerUserId       String
@@ -980,32 +1059,32 @@ model AssistantDefinition {
 }
 
 model AssistantRevision {
-  id               String                    @id @default(uuid())
-  assistantId      String
-  revisionNumber   Int
-  schemaVersion    Int                       @default(1)
-  name             String
-  description      String                    @default("")
-  category         String?
-  avatar           Json
-  providerModelId  String
-  systemPrompt     String
-  developerPrompt  String?
-  runControls      Json                      @default("{}")
-  searchPlan       Json
-  mcpServerIds     String[]                  @default([])
-  knowledgeBaseIds String[]                  @default([])
-  starterPrompts   String[]                  @default([])
-  authorUserId     String?
-  createdAt        DateTime                  @default(now())
-  assistant        AssistantDefinition       @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
-  author           User?                     @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  currentFor       AssistantDefinition?      @relation("AssistantCurrentRevision")
-  modelRuns        ModelRun[]                @relation("ModelRunAssistantRevision")
-  projectBindings  ProjectAssistantBinding[] @relation("ProjectAssistantBindingRevision")
-  providerModel    ProviderModel             @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  publications     AssistantPublication[]    @relation("AssistantPublicationRevision")
-  skillLinks       AssistantRevisionSkill[]
+  id                 String                    @id @default(uuid())
+  assistantId        String
+  revisionNumber     Int
+  schemaVersion      Int                       @default(1)
+  name               String
+  description        String                    @default("")
+  category           String?
+  avatar             Json
+  providerModelId    String
+  systemPrompt       String
+  developerPrompt    String?
+  runControls        Json                      @default("{}")
+  searchPlan         Json
+  mcpServerIds       String[]                  @default([])
+  knowledgeSelection Json                      @default("{\"baseIds\":[],\"mode\":\"none\",\"sourceIds\":[],\"version\":1}")
+  starterPrompts     String[]                  @default([])
+  authorUserId       String?
+  createdAt          DateTime                  @default(now())
+  assistant          AssistantDefinition       @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
+  author             User?                     @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  currentFor         AssistantDefinition?      @relation("AssistantCurrentRevision")
+  modelRuns          ModelRun[]                @relation("ModelRunAssistantRevision")
+  projectBindings    ProjectAssistantBinding[] @relation("ProjectAssistantBindingRevision")
+  providerModel      ProviderModel             @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  publications       AssistantPublication[]    @relation("AssistantPublicationRevision")
+  skillLinks         AssistantRevisionSkill[]
 
   @@unique([assistantId, revisionNumber])
   @@unique([assistantId, id])
@@ -1117,82 +1196,620 @@ model AssistantRevisionSkill {
   @@index([skillId])
 }
 
+model KnowledgeIndexProfile {
+  id               String                          @id
+  activeRevisionId String?                         @unique
+  version          Int                             @default(1)
+  updatedByUserId  String?
+  createdAt        DateTime                        @default(now())
+  updatedAt        DateTime                        @updatedAt
+  /// The composite relation proves the active revision belongs to this installation profile.
+  activeRevision   KnowledgeIndexProfileRevision?  @relation("KnowledgeIndexProfileActiveRevision", fields: [id, activeRevisionId], references: [profileId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeIndexProfile_activeRevision_fkey")
+  revisions        KnowledgeIndexProfileRevision[] @relation("KnowledgeIndexProfileRevisions")
+  updatedBy        User?                           @relation("KnowledgeIndexProfileUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([id, activeRevisionId])
+  @@index([updatedByUserId])
+}
+
+model KnowledgeIndexProfileRevision {
+  id                       String                                  @id @default(uuid())
+  profileId                String
+  revisionNumber           Int
+  embeddingProviderModelId String
+  embeddingConfiguration   Json
+  vectorSpaceFingerprint   String                                  @db.Char(64)
+  targetDimension          Int
+  chunkingProfileVersion   Int
+  executionAuthority       KnowledgeIndexProfileExecutionAuthority
+  profileConfiguration     Json
+  egressPolicy             Json
+  preflightStatus          KnowledgeIndexProfilePreflightStatus
+  preflightErrorCode       String?                                 @db.VarChar(64)
+  preflightCheckedAt       DateTime
+  activatedAt              DateTime
+  createdAt                DateTime                                @default(now())
+  activeFor                KnowledgeIndexProfile?                  @relation("KnowledgeIndexProfileActiveRevision")
+  embeddingProviderModel   ProviderModel                           @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
+  baseSnapshots            KnowledgeBaseSnapshot[]
+  generations              KnowledgeIndexGeneration[]
+  profile                  KnowledgeIndexProfile                   @relation("KnowledgeIndexProfileRevisions", fields: [profileId], references: [id], onDelete: Restrict)
+  sourceArtifacts          KnowledgeSourceIndexArtifact[]
+
+  @@unique([profileId, revisionNumber])
+  @@unique([profileId, id])
+  @@index([embeddingProviderModelId])
+  @@index([profileId, activatedAt])
+}
+
 model KnowledgeBase {
-  id                      String                        @id @default(uuid())
+  id                      String                         @id @default(uuid())
   ownerUserId             String
   name                    String
-  description             String                        @default("")
-  activeIndexGenerationId String?                       @unique
-  contentRevision         Int                           @default(0)
-  version                 Int                           @default(1)
+  description             String                         @default("")
+  activeIndexGenerationId String?                        @unique
+  contentRevision         Int                            @default(0)
+  sourceRevision          Int                            @default(0)
+  version                 Int                            @default(1)
   archivedAt              DateTime?
-  createdAt               DateTime                      @default(now())
-  updatedAt               DateTime                      @updatedAt
+  trashedAt               DateTime?
+  deletionRequestedAt     DateTime?
+  createdAt               DateTime                       @default(now())
+  updatedAt               DateTime                       @updatedAt
   /// The composite relation proves the active generation belongs to this base.
-  activeIndexGeneration   KnowledgeIndexGeneration?     @relation("KnowledgeBaseActiveIndexGeneration", fields: [id, activeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBase_activeIndexGeneration_fkey")
+  activeIndexGeneration   KnowledgeIndexGeneration?      @relation("KnowledgeBaseActiveIndexGeneration", fields: [id, activeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBase_activeIndexGeneration_fkey")
   documents               KnowledgeDocument[]
-  documentVersions        KnowledgeDocumentVersion[]    @relation("KnowledgeDocumentVersionOwner")
-  generationDocuments     KnowledgeGenerationDocument[] @relation("KnowledgeGenerationDocumentOwner")
-  indexGenerations        KnowledgeIndexGeneration[]    @relation("KnowledgeBaseIndexGenerations")
+  documentVersions        KnowledgeDocumentVersion[]     @relation("KnowledgeDocumentVersionOwner")
+  generationDocuments     KnowledgeGenerationDocument[]  @relation("KnowledgeGenerationDocumentOwner")
+  indexGenerations        KnowledgeIndexGeneration[]     @relation("KnowledgeBaseIndexGenerations")
   runBindings             KnowledgeRunBinding[]
-  owner                   User                          @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  owner                   User                           @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   projectBindings         ProjectKnowledgeBaseBinding[]
   publications            KnowledgeBasePublication[]
-  usageEvents             UsageEvent[]                  @relation("KnowledgeUsageBase")
+  sourceMemberships       KnowledgeBaseSource[]
+  sourceSnapshots         KnowledgeBaseSnapshot[]
+  usageEvents             UsageEvent[]                   @relation("KnowledgeUsageBase")
+  uploadBatches           KnowledgeUploadBatch[]
+  v1DocumentSourceMaps    KnowledgeV1DocumentSourceMap[]
 
   @@unique([id, activeIndexGenerationId])
   @@unique([id, ownerUserId])
-  @@index([ownerUserId, archivedAt])
+  @@index([ownerUserId, trashedAt, archivedAt])
+  @@index([trashedAt, deletionRequestedAt, id])
+}
+
+model KnowledgeUploadBatch {
+  id              String                @id @default(uuid())
+  ownerUserId     String
+  knowledgeBaseId String
+  clientBatchId   String                @db.VarChar(128)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  items           KnowledgeUploadItem[]
+  knowledgeBase   KnowledgeBase         @relation(fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeUploadBatch_base_owner_fkey")
+  owner           User                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([ownerUserId, clientBatchId])
+  @@unique([id, ownerUserId])
+  @@index([knowledgeBaseId, updatedAt, id])
+  @@index([ownerUserId, updatedAt, id])
+}
+
+model KnowledgeUploadItem {
+  id                 String                   @id @default(uuid())
+  batchId            String
+  clientFileId       String                   @db.VarChar(128)
+  attemptNumber      Int                      @default(1)
+  fileName           String
+  declaredMimeType   String
+  normalizedMimeType String
+  declaredByteSize   Int
+  checksumHint       String?                  @db.Char(64)
+  storageKey         String?
+  transport          KnowledgeUploadTransport
+  multipartUploadId  String?
+  sessionExpiresAt   DateTime
+  state              KnowledgeUploadItemState @default(QUEUED)
+  uploadedByteSize   Int                      @default(0)
+  errorCode          String?                  @db.VarChar(64)
+  sourceId           String?
+  sourceVersionId    String?
+  documentId         String?
+  documentVersionId  String?
+  settledAt          DateTime?
+  cancelledAt        DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  batch              KnowledgeUploadBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  parts              KnowledgeUploadPart[]
+
+  @@unique([batchId, clientFileId])
+  @@unique([batchId, id])
+  @@index([storageKey])
+  @@index([sourceId])
+  @@index([state, sessionExpiresAt, updatedAt, id])
+}
+
+model KnowledgeUploadPart {
+  uploadItemId String
+  partNumber   Int
+  byteOffset   Int
+  byteSize     Int
+  etag         String?
+  completedAt  DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  uploadItem   KnowledgeUploadItem @relation(fields: [uploadItemId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([uploadItemId, partNumber])
+  @@index([uploadItemId, completedAt, partNumber])
 }
 
 model KnowledgeIndexGeneration {
-  id                       String                         @id @default(uuid())
+  id                       String                             @id @default(uuid())
   knowledgeBaseId          String
+  profileRevisionId        String?
   embeddingProviderModelId String
   sourceIndexGenerationId  String?
   sourceBaseVersion        Int?
   targetContentRevision    Int?
+  targetSourceRevision     Int?
   embeddingConfiguration   Json
-  vectorSpaceFingerprint   String                         @db.Char(64)
+  vectorSpaceFingerprint   String                             @db.Char(64)
   targetDimension          Int
   chunkingProfileVersion   Int
-  indexedContentRevision   Int                            @default(0)
-  status                   KnowledgeIndexGenerationStatus @default(building)
-  lastErrorCode            String?                        @db.VarChar(64)
+  indexedContentRevision   Int                                @default(0)
+  status                   KnowledgeIndexGenerationStatus     @default(building)
+  lastErrorCode            String?                            @db.VarChar(64)
   readyAt                  DateTime?
   activatedAt              DateTime?
   retiredAt                DateTime?
   failedAt                 DateTime?
-  createdAt                DateTime                       @default(now())
-  updatedAt                DateTime                       @updatedAt
-  activeFor                KnowledgeBase?                 @relation("KnowledgeBaseActiveIndexGeneration")
+  createdAt                DateTime                           @default(now())
+  updatedAt                DateTime                           @updatedAt
+  activeFor                KnowledgeBase?                     @relation("KnowledgeBaseActiveIndexGeneration")
+  baseSnapshots            KnowledgeBaseSnapshot[]
   chunks                   KnowledgeChunk[]
-  derivedIndexGenerations  KnowledgeIndexGeneration[]     @relation("KnowledgeIndexGenerationSource")
-  embeddingProviderModel   ProviderModel                  @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
+  derivedIndexGenerations  KnowledgeIndexGeneration[]         @relation("KnowledgeIndexGenerationSource")
+  embeddingProviderModel   ProviderModel                      @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
   generationDocuments      KnowledgeGenerationDocument[]
-  ingestDocumentVersions   KnowledgeDocumentVersion[]     @relation("KnowledgeDocumentVersionIngestGeneration")
-  knowledgeBase            KnowledgeBase                  @relation("KnowledgeBaseIndexGenerations", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  ingestDocumentVersions   KnowledgeDocumentVersion[]         @relation("KnowledgeDocumentVersionIngestGeneration")
+  knowledgeBase            KnowledgeBase                      @relation("KnowledgeBaseIndexGenerations", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  profileRevision          KnowledgeIndexProfileRevision?     @relation(fields: [profileRevisionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   runBindings              KnowledgeRunBinding[]
-  sourceIndexGeneration    KnowledgeIndexGeneration?      @relation("KnowledgeIndexGenerationSource", fields: [knowledgeBaseId, sourceIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeIndexGeneration_source_fkey")
-  usageEvents              UsageEvent[]                   @relation("KnowledgeUsageGeneration")
+  sourceIndexGeneration    KnowledgeIndexGeneration?          @relation("KnowledgeIndexGenerationSource", fields: [knowledgeBaseId, sourceIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeIndexGeneration_source_fkey")
+  usageEvents              UsageEvent[]                       @relation("KnowledgeUsageGeneration")
+  v1SourceArtifactMaps     KnowledgeV1GenerationArtifactMap[]
 
   @@unique([knowledgeBaseId, id])
   @@index([embeddingProviderModelId])
   @@index([knowledgeBaseId, status])
+  @@index([profileRevisionId])
+  @@index([profileRevisionId, status], map: "KnowledgeIndexGeneration_profile_status_idx")
   @@index([sourceIndexGenerationId])
 }
 
+model KnowledgeSource {
+  id                  String                         @id @default(uuid())
+  ownerUserId         String
+  name                String
+  description         String                         @default("")
+  tags                String[]                       @default([])
+  currentVersionId    String?                        @unique
+  pendingVersionId    String?                        @unique
+  version             Int                            @default(1)
+  trashedAt           DateTime?
+  deletionRequestedAt DateTime?
+  createdAt           DateTime                       @default(now())
+  updatedAt           DateTime                       @updatedAt
+  baseMemberships     KnowledgeBaseSource[]
+  currentVersion      KnowledgeSourceVersion?        @relation("KnowledgeSourceCurrentVersion", fields: [id, currentVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSource_currentVersion_fkey")
+  owner               User                           @relation("KnowledgeSourceOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  pendingVersion      KnowledgeSourceVersion?        @relation("KnowledgeSourcePendingVersion", fields: [id, pendingVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSource_pendingVersion_fkey")
+  snapshotSources     KnowledgeBaseSnapshotSource[]
+  v1DocumentMaps      KnowledgeV1DocumentSourceMap[]
+  versions            KnowledgeSourceVersion[]       @relation("KnowledgeSourceVersions")
+
+  @@unique([id, ownerUserId])
+  @@unique([id, currentVersionId])
+  @@unique([id, pendingVersionId])
+  @@index([ownerUserId, trashedAt, name])
+  @@index([trashedAt, deletionRequestedAt, id])
+}
+
+model KnowledgeDeletionJob {
+  id              String                      @id @default(uuid())
+  ownerUserId     String
+  targetType      KnowledgeDeletionTargetType
+  targetId        String
+  state           KnowledgeDeletionState      @default(PENDING)
+  manifestVersion Int                         @default(1)
+  claimToken      String?
+  claimedAt       DateTime?
+  leaseExpiresAt  DateTime?
+  attemptCount    Int                         @default(0)
+  nextAttemptAt   DateTime                    @default(now())
+  lastAttemptAt   DateTime?
+  completedAt     DateTime?
+  lastErrorCode   String?                     @db.VarChar(64)
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+  objects         KnowledgeDeletionObject[]
+
+  @@unique([targetType, targetId])
+  @@index([state, nextAttemptAt, leaseExpiresAt, createdAt, id])
+  @@index([ownerUserId, state, createdAt, id])
+}
+
+model KnowledgeDeletionObject {
+  knowledgeDeletionJobId String
+  storageKey             String
+  disposition            KnowledgeDeletionObjectDisposition @default(PENDING)
+  settledAt              DateTime?
+  createdAt              DateTime                           @default(now())
+  updatedAt              DateTime                           @updatedAt
+  job                    KnowledgeDeletionJob               @relation(fields: [knowledgeDeletionJobId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([knowledgeDeletionJobId, storageKey])
+  @@index([storageKey, disposition])
+}
+
+model KnowledgeSourceVersion {
+  id                 String                                @id @default(uuid())
+  sourceId           String
+  ownerUserId        String
+  versionNumber      Int
+  fileName           String
+  mimeType           String
+  byteSize           Int
+  checksum           String                                @db.Char(64)
+  originalStorageKey String?
+  createdAt          DateTime                              @default(now())
+  artifacts          KnowledgeSourceIndexArtifact[]
+  currentFor         KnowledgeSource?                      @relation("KnowledgeSourceCurrentVersion")
+  pendingFor         KnowledgeSource?                      @relation("KnowledgeSourcePendingVersion")
+  snapshotSources    KnowledgeBaseSnapshotSource[]
+  source             KnowledgeSource                       @relation("KnowledgeSourceVersions", fields: [sourceId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSourceVersion_source_owner_fkey")
+  v1VersionMaps      KnowledgeV1DocumentVersionSourceMap[]
+
+  @@unique([sourceId, versionNumber])
+  @@unique([sourceId, id])
+  @@unique([id, ownerUserId])
+  @@unique([sourceId, id, ownerUserId])
+  @@index([originalStorageKey])
+}
+
+model KnowledgeSourceIndexArtifact {
+  id                       String                                  @id @default(uuid())
+  sourceVersionId          String
+  profileRevisionId        String
+  state                    KnowledgeSourceArtifactState            @default(pending)
+  processingStage          KnowledgeSourceArtifactProcessingStage?
+  normalizedTextStorageKey String?
+  normalizedTextByteSize   Int?
+  normalizedTextChecksum   String?                                 @db.Char(64)
+  pageCount                Int?
+  chunkCount               Int?
+  embeddedPassageCount     Int                                     @default(0)
+  warningCodes             String[]                                @default([])
+  errorCode                String?                                 @db.VarChar(64)
+  claimToken               String?                                 @db.VarChar(128)
+  claimedAt                DateTime?
+  attemptCount             Int                                     @default(0)
+  nextAttemptAt            DateTime                                @default(now())
+  processingStartedAt      DateTime?
+  readyAt                  DateTime?
+  createdAt                DateTime                                @default(now())
+  updatedAt                DateTime                                @updatedAt
+  profileRevision          KnowledgeIndexProfileRevision           @relation(fields: [profileRevisionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  hierarchicalIndexes      KnowledgeHierarchicalIndexArtifact[]
+  snapshotSources          KnowledgeBaseSnapshotSource[]
+  sourceVersion            KnowledgeSourceVersion                  @relation(fields: [sourceVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  v1GenerationMaps         KnowledgeV1GenerationArtifactMap[]
+
+  @@unique([sourceVersionId, profileRevisionId])
+  @@unique([sourceVersionId, id])
+  @@index([profileRevisionId, state])
+  @@index([state, nextAttemptAt, claimedAt, createdAt], map: "KnowledgeSourceIndexArtifact_queue_idx")
+}
+
+model KnowledgeHierarchicalIndexArtifact {
+  id               String                          @id
+  sourceArtifactId String
+  sourceVersionId  String
+  schemaVersion    Int
+  derivationMode   String                          @db.VarChar(32)
+  state            KnowledgeHierarchicalIndexState @default(building)
+  checksum         String?                         @db.Char(64)
+  documentCount    Int                             @default(0)
+  sectionCount     Int                             @default(0)
+  passageCount     Int                             @default(0)
+  exactEntryCount  Int                             @default(0)
+  lastErrorCode    String?                         @db.VarChar(64)
+  readyAt          DateTime?
+  createdAt        DateTime                        @default(now())
+  updatedAt        DateTime                        @updatedAt
+  sourceArtifact   KnowledgeSourceIndexArtifact    @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KHI_source_artifact_fkey")
+  documentIndex    KnowledgeArtifactDocumentIndex?
+  sectionIndexes   KnowledgeArtifactSectionIndex[]
+  passageIndexes   KnowledgeArtifactPassageIndex[]
+  exactEntries     KnowledgeArtifactExactEntry[]
+
+  @@unique([sourceArtifactId, schemaVersion], map: "KHI_source_artifact_version_key")
+  @@index([sourceVersionId, sourceArtifactId], map: "KHI_source_version_artifact_idx")
+  @@index([state, schemaVersion, createdAt], map: "KHI_state_version_created_idx")
+}
+
+model KnowledgeArtifactDocumentIndex {
+  indexArtifactId     String                             @id
+  sourceName          String
+  fileName            String
+  title               String?
+  description         String                             @default("")
+  tags                String[]                           @default([])
+  tagsText            String                             @default("")
+  languages           String[]                           @default([])
+  languageConfig      String                             @db.VarChar(16)
+  documentType        String                             @db.VarChar(255)
+  pageCount           Int
+  summary             String                             @default("")
+  outline             String[]                           @default([])
+  outlineText         String                             @default("")
+  keywords            String[]                           @default([])
+  keywordsText        String                             @default("")
+  entities            String[]                           @default([])
+  entitiesText        String                             @default("")
+  metadataText        String                             @default("")
+  contentHash         String                             @db.Char(64)
+  simpleSearchVector  Unsupported("tsvector")?
+  englishSearchVector Unsupported("tsvector")?
+  russianSearchVector Unsupported("tsvector")?
+  createdAt           DateTime                           @default(now())
+  indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KADI_index_artifact_fkey")
+}
+
+model KnowledgeArtifactSectionIndex {
+  id                  String                             @id
+  indexArtifactId     String
+  ordinal             Int
+  label               String
+  headingPath         String[]                           @default([])
+  headingText         String                             @default("")
+  page                Int
+  pageEnd             Int
+  summary             String                             @default("")
+  keywords            String[]                           @default([])
+  keywordsText        String                             @default("")
+  entities            String[]                           @default([])
+  entitiesText        String                             @default("")
+  languages           String[]                           @default([])
+  languageConfig      String                             @db.VarChar(16)
+  passageStart        Int
+  passageEnd          Int
+  fileName            String
+  documentTitle       String                             @default("")
+  sourceDescription   String                             @default("")
+  tags                String[]                           @default([])
+  tagsText            String                             @default("")
+  contentHash         String                             @db.Char(64)
+  simpleSearchVector  Unsupported("tsvector")?
+  englishSearchVector Unsupported("tsvector")?
+  russianSearchVector Unsupported("tsvector")?
+  createdAt           DateTime                           @default(now())
+  indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KASI_index_artifact_fkey")
+  passages            KnowledgeArtifactPassageIndex[]
+  exactEntries        KnowledgeArtifactExactEntry[]
+
+  @@unique([indexArtifactId, ordinal], map: "KASI_artifact_ordinal_key")
+  @@unique([indexArtifactId, id], map: "KASI_artifact_id_key")
+  @@index([indexArtifactId, page, ordinal], map: "KASI_artifact_page_ordinal_idx")
+}
+
+model KnowledgeArtifactPassageIndex {
+  id                  String                             @id
+  indexArtifactId     String
+  sectionId           String
+  ordinal             Int
+  page                Int
+  pageEnd             Int
+  headingPath         String[]                           @default([])
+  headingText         String                             @default("")
+  text                String
+  contextPrefix       String                             @default("")
+  fileName            String
+  sourceName          String
+  documentTitle       String                             @default("")
+  sourceDescription   String                             @default("")
+  tags                String[]                           @default([])
+  tagsText            String                             @default("")
+  languages           String[]                           @default([])
+  languageConfig      String                             @db.VarChar(16)
+  contentHash         String                             @db.Char(64)
+  embeddingTextHash   String                             @db.Char(64)
+  sourceBlockStart    Int
+  sourceBlockEnd      Int
+  sourceBlockIds      String[]                           @default([])
+  tokenCount          Int
+  simpleSearchVector  Unsupported("tsvector")?
+  englishSearchVector Unsupported("tsvector")?
+  russianSearchVector Unsupported("tsvector")?
+  createdAt           DateTime                           @default(now())
+  indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAPI_index_artifact_fkey")
+  section             KnowledgeArtifactSectionIndex      @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageIndex_section_fkey")
+  embedding           KnowledgeArtifactPassageEmbedding?
+  exactEntries        KnowledgeArtifactExactEntry[]
+
+  @@unique([indexArtifactId, ordinal], map: "KAPI_artifact_ordinal_key")
+  @@unique([indexArtifactId, id], map: "KAPI_artifact_id_key")
+  @@index([sectionId, ordinal], map: "KAPI_section_ordinal_idx")
+  @@index([indexArtifactId, contentHash], map: "KAPI_artifact_content_hash_idx")
+  @@index([indexArtifactId, embeddingTextHash], map: "KAPI_artifact_embedding_hash_idx")
+}
+
+model KnowledgeArtifactPassageEmbedding {
+  passageId          String                        @id
+  indexArtifactId    String
+  embeddingTextHash  String                        @db.Char(64)
+  embeddingDimension Int
+  embedding          Unsupported("vector")
+  createdAt          DateTime                      @default(now())
+  passage            KnowledgeArtifactPassageIndex @relation(fields: [indexArtifactId, passageId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageEmbedding_passage_fkey")
+
+  @@unique([indexArtifactId, passageId])
+  @@index([indexArtifactId, embeddingTextHash], map: "KAPE_artifact_embedding_hash_idx")
+}
+
+model KnowledgeArtifactExactEntry {
+  id              String                             @id
+  indexArtifactId String
+  ordinal         Int
+  kind            KnowledgeExactEntryKind
+  value           String
+  normalizedValue String
+  valueHash       String                             @db.Char(64)
+  sectionId       String?
+  passageId       String?
+  page            Int?
+  pageEnd         Int?
+  createdAt       DateTime                           @default(now())
+  indexArtifact   KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAEI_index_artifact_fkey")
+  section         KnowledgeArtifactSectionIndex?     @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactExactEntry_section_fkey")
+  passage         KnowledgeArtifactPassageIndex?     @relation(fields: [indexArtifactId, passageId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactExactEntry_passage_fkey")
+
+  @@unique([indexArtifactId, ordinal], map: "KAEI_artifact_ordinal_key")
+  @@index([indexArtifactId, kind, normalizedValue], map: "KAEI_artifact_kind_value_idx")
+  @@index([passageId], map: "KAEI_passage_idx")
+  @@index([sectionId], map: "KAEI_section_idx")
+}
+
+model KnowledgeBaseSource {
+  knowledgeBaseId String
+  sourceId        String
+  ownerUserId     String
+  removedAt       DateTime?
+  createdAt       DateTime                       @default(now())
+  updatedAt       DateTime                       @updatedAt
+  knowledgeBase   KnowledgeBase                  @relation(fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSource_base_owner_fkey")
+  snapshotSources KnowledgeBaseSnapshotSource[]
+  source          KnowledgeSource                @relation(fields: [sourceId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSource_source_owner_fkey")
+  v1DocumentMaps  KnowledgeV1DocumentSourceMap[]
+
+  @@id([knowledgeBaseId, sourceId])
+  @@unique([knowledgeBaseId, sourceId, ownerUserId])
+  @@index([sourceId, removedAt])
+}
+
+model KnowledgeBaseSnapshot {
+  id                  String                        @id @default(uuid())
+  knowledgeBaseId     String
+  ownerUserId         String
+  profileRevisionId   String
+  indexGenerationId   String
+  sourceRevision      Int
+  sourceCount         Int
+  readySourceCount    Int
+  evidenceFingerprint String                        @db.Char(64)
+  createdAt           DateTime                      @default(now())
+  indexGeneration     KnowledgeIndexGeneration      @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSnapshot_generation_fkey")
+  knowledgeBase       KnowledgeBase                 @relation(fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSnapshot_base_owner_fkey")
+  profileRevision     KnowledgeIndexProfileRevision @relation(fields: [profileRevisionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  runBindings         KnowledgeRunBinding[]
+  sources             KnowledgeBaseSnapshotSource[]
+
+  @@unique([knowledgeBaseId, id])
+  @@unique([knowledgeBaseId, evidenceFingerprint])
+  @@index([indexGenerationId])
+  @@index([profileRevisionId])
+}
+
+model KnowledgeBaseSnapshotSource {
+  snapshotId      String
+  knowledgeBaseId String
+  ownerUserId     String
+  sourceId        String
+  sourceVersionId String
+  artifactId      String
+  ordinal         Int
+  createdAt       DateTime                     @default(now())
+  artifact        KnowledgeSourceIndexArtifact @relation(fields: [sourceVersionId, artifactId], references: [sourceVersionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSnapshotSource_artifact_fkey")
+  membership      KnowledgeBaseSource          @relation(fields: [knowledgeBaseId, sourceId, ownerUserId], references: [knowledgeBaseId, sourceId, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSnapshotSource_membership_fkey")
+  snapshot        KnowledgeBaseSnapshot        @relation(fields: [knowledgeBaseId, snapshotId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSnapshotSource_snapshot_fkey")
+  source          KnowledgeSource              @relation(fields: [sourceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sourceVersion   KnowledgeSourceVersion       @relation(fields: [sourceId, sourceVersionId, ownerUserId], references: [sourceId, id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBaseSnapshotSource_version_owner_fkey")
+
+  @@id([snapshotId, sourceId])
+  @@unique([snapshotId, ordinal])
+  @@unique([snapshotId, artifactId])
+  @@index([sourceId, sourceVersionId])
+}
+
+model KnowledgeV1DocumentSourceMap {
+  knowledgeBaseId String
+  documentId      String
+  sourceId        String
+  ownerUserId     String
+  createdAt       DateTime                              @default(now())
+  document        KnowledgeDocument                     @relation(fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1DocumentSourceMap_document_fkey")
+  membership      KnowledgeBaseSource                   @relation(fields: [knowledgeBaseId, sourceId, ownerUserId], references: [knowledgeBaseId, sourceId, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1DocumentSourceMap_membership_fkey")
+  source          KnowledgeSource                       @relation(fields: [sourceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  versionMaps     KnowledgeV1DocumentVersionSourceMap[]
+  knowledgeBase   KnowledgeBase                         @relation(fields: [knowledgeBaseId], references: [id])
+
+  @@id([knowledgeBaseId, documentId])
+  @@unique([documentId])
+  @@unique([knowledgeBaseId, documentId, sourceId, ownerUserId])
+  @@index([sourceId])
+}
+
+model KnowledgeV1DocumentVersionSourceMap {
+  knowledgeBaseId   String
+  documentId        String
+  documentVersionId String
+  sourceId          String
+  sourceVersionId   String
+  ownerUserId       String
+  createdAt         DateTime                           @default(now())
+  documentMap       KnowledgeV1DocumentSourceMap       @relation(fields: [knowledgeBaseId, documentId, sourceId, ownerUserId], references: [knowledgeBaseId, documentId, sourceId, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1DocumentVersionSourceMap_document_map_fkey")
+  documentVersion   KnowledgeDocumentVersion           @relation(fields: [knowledgeBaseId, documentId, documentVersionId], references: [knowledgeBaseId, documentId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1DocumentVersionSourceMap_version_fkey")
+  generationMaps    KnowledgeV1GenerationArtifactMap[]
+  sourceVersion     KnowledgeSourceVersion             @relation(fields: [sourceId, sourceVersionId, ownerUserId], references: [sourceId, id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1DocumentVersionSourceMap_source_version_fkey")
+
+  @@id([knowledgeBaseId, documentVersionId])
+  @@unique([documentVersionId])
+  @@unique([knowledgeBaseId, documentId, documentVersionId], map: "KnowledgeV1VersionMap_document_version_key")
+  @@unique([knowledgeBaseId, documentVersionId, sourceVersionId], map: "KnowledgeV1VersionMap_source_version_key")
+  @@index([sourceId, sourceVersionId])
+}
+
+model KnowledgeV1GenerationArtifactMap {
+  knowledgeBaseId   String
+  indexGenerationId String
+  documentVersionId String
+  sourceVersionId   String
+  artifactId        String
+  createdAt         DateTime                            @default(now())
+  artifact          KnowledgeSourceIndexArtifact        @relation(fields: [sourceVersionId, artifactId], references: [sourceVersionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1GenerationArtifactMap_artifact_fkey")
+  documentVersion   KnowledgeDocumentVersion            @relation(fields: [knowledgeBaseId, documentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1GenerationArtifactMap_version_fkey")
+  indexGeneration   KnowledgeIndexGeneration            @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1GenerationArtifactMap_generation_fkey")
+  versionMap        KnowledgeV1DocumentVersionSourceMap @relation(fields: [knowledgeBaseId, documentVersionId, sourceVersionId], references: [knowledgeBaseId, documentVersionId, sourceVersionId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeV1GenerationArtifactMap_version_map_fkey")
+
+  @@id([indexGenerationId, documentVersionId])
+  @@index([artifactId])
+  @@index([knowledgeBaseId, documentVersionId])
+}
+
 model KnowledgeDocument {
-  id               String                     @id @default(uuid())
+  id               String                        @id @default(uuid())
   knowledgeBaseId  String
-  currentVersionId String?                    @unique
+  currentVersionId String?                       @unique
   archivedAt       DateTime?
-  createdAt        DateTime                   @default(now())
-  updatedAt        DateTime                   @updatedAt
+  createdAt        DateTime                      @default(now())
+  updatedAt        DateTime                      @updatedAt
   /// The composite relation proves the current pointer targets a version of this document.
-  currentVersion   KnowledgeDocumentVersion?  @relation("KnowledgeDocumentCurrentVersion", fields: [id, currentVersionId], references: [documentId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocument_currentVersion_fkey")
-  knowledgeBase    KnowledgeBase              @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
-  versions         KnowledgeDocumentVersion[] @relation("KnowledgeDocumentVersions")
+  currentVersion   KnowledgeDocumentVersion?     @relation("KnowledgeDocumentCurrentVersion", fields: [id, currentVersionId], references: [documentId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocument_currentVersion_fkey")
+  knowledgeBase    KnowledgeBase                 @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  sourceMapping    KnowledgeV1DocumentSourceMap?
+  versions         KnowledgeDocumentVersion[]    @relation("KnowledgeDocumentVersions")
 
   @@unique([knowledgeBaseId, id])
   @@unique([id, currentVersionId])
@@ -1200,7 +1817,7 @@ model KnowledgeDocument {
 }
 
 model KnowledgeDocumentVersion {
-  id                       String                        @id @default(uuid())
+  id                       String                               @id @default(uuid())
   knowledgeBaseId          String
   documentId               String
   ingestGenerationId       String?
@@ -1209,39 +1826,43 @@ model KnowledgeDocumentVersion {
   fileName                 String
   mimeType                 String
   byteSize                 Int
-  checksum                 String                        @db.Char(64)
+  checksum                 String                               @db.Char(64)
   originalStorageKey       String?
   normalizedTextStorageKey String?
   normalizedTextByteSize   Int?
-  normalizedTextChecksum   String?                       @db.Char(64)
+  normalizedTextChecksum   String?                              @db.Char(64)
   pageCount                Int?
   visibleFromRevision      Int?
   visibleUntilRevision     Int?
-  ingestState              KnowledgeDocumentIngestState  @default(queued)
-  ingestErrorCode          String?                       @db.VarChar(64)
-  ingestClaimToken         String?                       @db.VarChar(128)
+  ingestState              KnowledgeDocumentIngestState         @default(queued)
+  ingestErrorCode          String?                              @db.VarChar(64)
+  ingestWarningCodes       String[]                             @default([])
+  ingestClaimToken         String?                              @db.VarChar(128)
   ingestClaimedAt          DateTime?
-  ingestAttemptCount       Int                           @default(0)
-  ingestNextAttemptAt      DateTime                      @default(now())
+  ingestAttemptCount       Int                                  @default(0)
+  ingestNextAttemptAt      DateTime                             @default(now())
   ingestChunkCount         Int?
-  ingestEmbeddedChunkCount Int                           @default(0)
+  ingestEmbeddedChunkCount Int                                  @default(0)
   ingestStartedAt          DateTime?
   ingestCompletedAt        DateTime?
   payloadPurgedAt          DateTime?
-  createdAt                DateTime                      @default(now())
-  updatedAt                DateTime                      @updatedAt
+  createdAt                DateTime                             @default(now())
+  updatedAt                DateTime                             @updatedAt
   chunks                   KnowledgeChunk[]
-  currentFor               KnowledgeDocument?            @relation("KnowledgeDocumentCurrentVersion")
-  document                 KnowledgeDocument             @relation("KnowledgeDocumentVersions", fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_document_fkey")
+  currentFor               KnowledgeDocument?                   @relation("KnowledgeDocumentCurrentVersion")
+  document                 KnowledgeDocument                    @relation("KnowledgeDocumentVersions", fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_document_fkey")
   generationDocuments      KnowledgeGenerationDocument[]
-  ingestGeneration         KnowledgeIndexGeneration?     @relation("KnowledgeDocumentVersionIngestGeneration", fields: [knowledgeBaseId, ingestGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_ingestGeneration_fkey")
+  ingestGeneration         KnowledgeIndexGeneration?            @relation("KnowledgeDocumentVersionIngestGeneration", fields: [knowledgeBaseId, ingestGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_ingestGeneration_fkey")
   /// The composite relation makes the denormalized queue owner immutable and proves it matches the owning base.
-  knowledgeBase            KnowledgeBase                 @relation("KnowledgeDocumentVersionOwner", fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_knowledgeBase_owner_fkey")
-  usageEvents              UsageEvent[]                  @relation("KnowledgeUsageDocumentVersion")
+  knowledgeBase            KnowledgeBase                        @relation("KnowledgeDocumentVersionOwner", fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_knowledgeBase_owner_fkey")
+  usageEvents              UsageEvent[]                         @relation("KnowledgeUsageDocumentVersion")
+  sourceVersionMapping     KnowledgeV1DocumentVersionSourceMap?
+  v1ArtifactMappings       KnowledgeV1GenerationArtifactMap[]
 
   @@unique([documentId, versionNumber])
   @@unique([documentId, id])
   @@unique([knowledgeBaseId, id])
+  @@unique([knowledgeBaseId, documentId, id])
   @@index([knowledgeBaseId, ingestState, ingestNextAttemptAt])
   @@index([ingestGenerationId])
   @@index([originalStorageKey])
@@ -1282,17 +1903,27 @@ model KnowledgeChunk {
   indexGenerationId  String
   chunkIndex         Int
   page               Int
+  pageEnd            Int
   headingPath        String[]                 @default([])
   text               String
+  contextPrefix      String                   @default("")
+  contentHash        String                   @db.Char(64)
+  embeddingTextHash  String                   @db.Char(64)
+  sourceBlockStart   Int
+  sourceBlockEnd     Int
+  sourceBlockIds     String[]                 @default([])
+  tokenCount         Int
   embeddingDimension Int
   embedding          Unsupported("vector")?
   searchVector       Unsupported("tsvector")?
+  retrievalBucket    Unsupported("smallint")?
   createdAt          DateTime                 @default(now())
   documentVersion    KnowledgeDocumentVersion @relation(fields: [knowledgeBaseId, documentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeChunk_documentVersion_fkey")
   indexGeneration    KnowledgeIndexGeneration @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeChunk_indexGeneration_fkey")
 
   @@unique([indexGenerationId, documentVersionId, chunkIndex])
   @@index([documentVersionId])
+  @@index([indexGenerationId, embeddingTextHash])
   @@index([knowledgeBaseId, indexGenerationId])
 }
 
@@ -1314,44 +1945,45 @@ model KnowledgeBasePublication {
 }
 
 model ProviderModel {
-  id                        String                         @id @default(uuid())
+  id                        String                          @id @default(uuid())
   connectionId              String
-  templateKey               String?                        @unique
+  templateKey               String?                         @unique
   provider                  String
   modelId                   String
   displayName               String
-  modelClass                ProviderModelClass             @default(answer)
-  inputTokenPriceMicros     Int                            @default(0)
-  outputTokenPriceMicros    Int                            @default(0)
-  supportsVision            Boolean                        @default(false)
-  supportsPdf               Boolean                        @default(false)
-  supportsReasoning         Boolean                        @default(false)
-  supportsNativeSearch      Boolean                        @default(false)
-  enabled                   Boolean                        @default(true)
-  draftConfig               Json                           @default("{}")
-  draftVersion              Int                            @default(1)
+  modelClass                ProviderModelClass              @default(answer)
+  inputTokenPriceMicros     Int                             @default(0)
+  outputTokenPriceMicros    Int                             @default(0)
+  supportsVision            Boolean                         @default(false)
+  supportsPdf               Boolean                         @default(false)
+  supportsReasoning         Boolean                         @default(false)
+  supportsNativeSearch      Boolean                         @default(false)
+  enabled                   Boolean                         @default(true)
+  draftConfig               Json                            @default("{}")
+  draftVersion              Int                             @default(1)
   activeConfig              Json?
-  activeVersion             Int                            @default(0)
+  activeVersion             Int                             @default(0)
   activatedAt               DateTime?
   capabilities              Json
   defaultParams             Json
-  createdAt                 DateTime                       @default(now())
-  updatedAt                 DateTime                       @updatedAt
+  createdAt                 DateTime                        @default(now())
+  updatedAt                 DateTime                        @updatedAt
   accessGrants              AccessGrant[]
   activeCredentialChecks    ProviderModelCredentialCheck[]
   assistantRevisions        AssistantRevision[]
-  connection                ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  connection                ProviderConnection              @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   draftChecks               ProviderDraftCheck[]
   providerRunBindings       ProviderRunBinding[]
   projectBindings           ProjectModelBinding[]
   searchStrategies          SearchStrategy[]
   searchRevisions           SearchIntegrationRevision[]
-  chatDefaults              Chat[]                         @relation("ChatDefaultProviderModel")
-  installationDefaults      ModelPolicy[]                  @relation("InstallationDefaultProviderModel")
+  chatDefaults              Chat[]                          @relation("ChatDefaultProviderModel")
+  installationDefaults      ModelPolicy[]                   @relation("InstallationDefaultProviderModel")
   knowledgeIndexGenerations KnowledgeIndexGeneration[]
+  knowledgeProfileRevisions KnowledgeIndexProfileRevision[]
   knowledgeRunBindings      KnowledgeRunBinding[]
-  systemUtilityRoles        SystemModelPolicy[]            @relation("SystemUtilityProviderModel")
-  userDefaults              UserSettings[]                 @relation("UserDefaultProviderModel")
+  systemUtilityRoles        SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
+  userDefaults              UserSettings[]                  @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])
   @@index([provider, modelId])
@@ -1385,20 +2017,20 @@ model ProviderConnection {
 }
 
 model SearchOption {
-  id                  String                 @id @default(uuid())
-  optionId            String                 @unique
-  displayName         String
-  description         String
-  kind                String
-  templateKey         String?                @unique
-  sourceConnectionId  String?
-  enabled             Boolean                @default(true)
-  archivedAt          DateTime?
-  createdAt           DateTime               @default(now())
-  updatedAt           DateTime               @updatedAt
-  sourceConnection    ProviderConnection?    @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
-  projectBindings     ProjectSearchBinding[]
-  strategies          SearchStrategy[]
+  id                 String                 @id @default(uuid())
+  optionId           String                 @unique
+  displayName        String
+  description        String
+  kind               String
+  templateKey        String?                @unique
+  sourceConnectionId String?
+  enabled            Boolean                @default(true)
+  archivedAt         DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  sourceConnection   ProviderConnection?    @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  projectBindings    ProjectSearchBinding[]
+  strategies         SearchStrategy[]
 
   @@unique([sourceConnectionId, kind])
   @@index([sourceConnectionId])
@@ -1559,6 +2191,9 @@ model KnowledgeRunBinding {
   id                           String                    @id @default(uuid())
   modelRunId                   String
   knowledgeBaseId              String
+  knowledgeBaseSnapshotId      String?
+  includeWholeBase             Boolean                   @default(true)
+  selectedSourceIds            String[]                  @default([])
   ordinal                      Int
   baseContentRevision          Int
   indexGenerationId            String
@@ -1577,11 +2212,13 @@ model KnowledgeRunBinding {
   embeddingModel               ProviderModel             @relation(fields: [embeddingConnectionId, embeddingProviderModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_embeddingModel_fkey")
   indexGeneration              KnowledgeIndexGeneration  @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_generation_fkey")
   knowledgeBase                KnowledgeBase             @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  knowledgeBaseSnapshot        KnowledgeBaseSnapshot?    @relation(fields: [knowledgeBaseId, knowledgeBaseSnapshotId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_snapshot_fkey")
   modelRun                     ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
 
   @@unique([modelRunId, ordinal])
   @@unique([modelRunId, knowledgeBaseId])
   @@index([knowledgeBaseId, indexGenerationId])
+  @@index([knowledgeBaseSnapshotId])
   @@index([embeddingConnectionId, embeddingProviderModelId], map: "KnowledgeRunBinding_embedding_model_idx")
   @@index([embeddingCredentialId, embeddingCredentialVersionId], map: "KnowledgeRunBinding_credential_version_idx")
 }
@@ -1729,46 +2366,48 @@ model Message {
 }
 
 model ModelRun {
-  id                       String                    @id @default(uuid())
-  chatId                   String
-  userId                   String
-  userMessageId            String
-  assistantMessageId       String?
-  assistantId              String?
-  assistantRevisionId      String?
-  provider                 String
-  modelId                  String
-  status                   ModelRunStatus
-  normalizedRequest        Json?
-  providerResponseId       String?
-  inputTokens              Int                       @default(0)
-  cachedInputTokens        Int                       @default(0)
-  cacheWriteInputTokens    Int                       @default(0)
-  outputTokens             Int                       @default(0)
-  reasoningTokens          Int                       @default(0)
-  totalTokens              Int                       @default(0)
-  estimatedCostMicros      Int                       @default(0)
-  errorPayload             Json?
-  toolLoopState            Json?
-  createdAt                DateTime                  @default(now())
-  updatedAt                DateTime                  @updatedAt
-  assistantMessage         Message?                  @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  id                        String                     @id @default(uuid())
+  chatId                    String
+  userId                    String
+  userMessageId             String
+  assistantMessageId        String?
+  assistantId               String?
+  assistantRevisionId       String?
+  provider                  String
+  modelId                   String
+  status                    ModelRunStatus
+  normalizedRequest         Json?
+  providerResponseId        String?
+  inputTokens               Int                        @default(0)
+  cachedInputTokens         Int                        @default(0)
+  cacheWriteInputTokens     Int                        @default(0)
+  outputTokens              Int                        @default(0)
+  reasoningTokens           Int                        @default(0)
+  totalTokens               Int                        @default(0)
+  estimatedCostMicros       Int                        @default(0)
+  errorPayload              Json?
+  toolLoopState             Json?
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+  assistantMessage          Message?                   @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
-  assistantRevision        AssistantRevision?        @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
-  chat                     Chat                      @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  events                   ModelRunEvent[]
-  mcpRunBindings           McpRunBinding[]
-  knowledgeRunBindings     KnowledgeRunBinding[]
-  knowledgeRuns            KnowledgeRun[]
-  memoryHistoryRuns        MemoryHistoryRun[]
-  memoryToolEgressReceipts MemoryToolEgressReceipt[]
-  providerRunBindings      ProviderRunBinding[]
-  projectRunBinding        ProjectRunBinding?
-  searchRuns               SearchRun[]
-  skillRunBindings         ModelRunSkillBinding[]
-  toolCalls                ModelRunToolCall[]
-  userMessage              Message                   @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
-  usageEvents              UsageEvent[]
+  assistantRevision         AssistantRevision?         @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
+  chat                      Chat                       @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  events                    ModelRunEvent[]
+  mcpRunBindings            McpRunBinding[]
+  knowledgeRunBindings      KnowledgeRunBinding[]
+  knowledgeRunScope         KnowledgeRunScope?
+  knowledgeRetrievalSession KnowledgeRetrievalSession?
+  knowledgeRuns             KnowledgeRun[]
+  memoryHistoryRuns         MemoryHistoryRun[]
+  memoryToolEgressReceipts  MemoryToolEgressReceipt[]
+  providerRunBindings       ProviderRunBinding[]
+  projectRunBinding         ProjectRunBinding?
+  searchRuns                SearchRun[]
+  skillRunBindings          ModelRunSkillBinding[]
+  toolCalls                 ModelRunToolCall[]
+  userMessage               Message                    @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  usageEvents               UsageEvent[]
 
   @@unique([userId, id])
   @@unique([userId, chatId, id])
@@ -2021,13 +2660,15 @@ model ModelRunToolCall {
 }
 
 model KnowledgeRun {
-  id                 String              @id @default(uuid())
+  id                 String                     @id @default(uuid())
   modelRunId         String
-  modelRunToolCallId String              @unique
+  modelRunToolCallId String                     @unique
+  retrievalSessionId String?
   invocationOrdinal  Int
-  query              String              @db.VarChar(500)
+  operation          String                     @default("search") @db.VarChar(32)
+  query              String                     @db.VarChar(500)
   outcome            KnowledgeRunOutcome
-  fusion             String              @db.VarChar(32)
+  fusion             String                     @db.VarChar(32)
   candidateLimit     Int
   resultLimit        Int
   candidateCount     Int
@@ -2037,17 +2678,120 @@ model KnowledgeRun {
   providerText       String
   embeddingUsage     Json
   durationMs         Int
-  failureCode        String?             @db.VarChar(128)
+  failureCode        String?                    @db.VarChar(128)
+  budgetEvidence     Json                       @default("{}")
+  stopReason         String?                    @db.VarChar(64)
   rerankerBinding    Json?
   preRerankOrder     Json?
   postRerankOrder    Json?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  modelRun           ModelRun            @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  modelRunToolCall   ModelRunToolCall    @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  modelRun           ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall   ModelRunToolCall           @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
+  retrievalSession   KnowledgeRetrievalSession? @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceLinks      KnowledgeRunEvidence[]
 
   @@unique([modelRunId, modelRunToolCallId])
   @@index([modelRunId, createdAt])
+  @@index([retrievalSessionId])
+}
+
+model KnowledgeRunScope {
+  modelRunId          String   @id
+  selection           Json
+  resolvedBaseCount   Int
+  resolvedSourceCount Int
+  exclusions          Json     @default("[]")
+  budgetPolicy        Json
+  createdAt           DateTime @default(now())
+  modelRun            ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+}
+
+model KnowledgeRetrievalSession {
+  id                   String                    @id @default(uuid())
+  modelRunId           String                    @unique
+  version              Int                       @default(2)
+  originalIntent       Json
+  scopeSnapshot        Json
+  strategySnapshot     Json
+  readinessSummary     Json
+  coverageRequirements Json
+  degradedFlags        String[]                  @default([])
+  citationContract     Json
+  nextEvidenceOrdinal  Int                       @default(1)
+  acceptedAt           DateTime?
+  receiptHash          String?                   @db.Char(64)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  modelRun             ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  operations           KnowledgeRun[]
+  evidenceItems        KnowledgeEvidenceItem[]
+  groundingResult      KnowledgeGroundingResult?
+}
+
+model KnowledgeEvidenceItem {
+  id                  String                    @id @default(uuid())
+  retrievalSessionId  String
+  ordinal             Int
+  handle              String                    @db.VarChar(8)
+  evidenceKey         String?                   @db.Char(64)
+  state               String                    @default("available") @db.VarChar(16)
+  knowledgeBaseId     String?
+  sourceId            String?
+  sourceVersionId     String?
+  sourceArtifactId    String?
+  documentId          String?
+  documentVersionId   String?
+  sectionId           String?
+  passageId           String?
+  baseName            String?                   @db.VarChar(1024)
+  sourceName          String?                   @db.VarChar(1024)
+  fileName            String?                   @db.VarChar(1024)
+  sourceVersionNumber Int?
+  excerpt             String?
+  excerptBytes        Int?
+  sourceTextBytes     Int?
+  textTruncated       Boolean?
+  page                Int?
+  headingPath         String[]                  @default([])
+  locator             Json?
+  contextBoundaries   Json?
+  contentHash         String?                   @db.Char(64)
+  createdAt           DateTime                  @default(now())
+  retrievalSession    KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  operationLinks      KnowledgeRunEvidence[]
+
+  @@unique([retrievalSessionId, ordinal])
+  @@unique([retrievalSessionId, handle])
+  @@unique([retrievalSessionId, evidenceKey])
+  @@index([knowledgeBaseId])
+  @@index([sourceId, sourceVersionId])
+  @@index([documentVersionId])
+}
+
+model KnowledgeRunEvidence {
+  knowledgeRunId      String
+  evidenceItemId      String
+  resultOrdinal       Int
+  retrievalProvenance Json
+  createdAt           DateTime              @default(now())
+  knowledgeRun        KnowledgeRun          @relation(fields: [knowledgeRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceItem        KnowledgeEvidenceItem @relation(fields: [evidenceItemId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([knowledgeRunId, evidenceItemId])
+  @@unique([knowledgeRunId, resultOrdinal])
+  @@index([evidenceItemId])
+}
+
+model KnowledgeGroundingResult {
+  retrievalSessionId String                    @id
+  outcome            String                    @db.VarChar(32)
+  originalAnswerHash String                    @db.Char(64)
+  finalAnswerHash    String                    @db.Char(64)
+  issues             Json
+  repairCount        Int
+  createdAt          DateTime                  @default(now())
+  retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 }
 
 model SearchRun {
@@ -2132,15 +2876,16 @@ model AttachmentProcessingJob {
 }
 
 model AttachmentDeletionJob {
-  id            String    @id @default(uuid())
-  storageKey    String    @unique
-  claimToken    String?
-  claimedAt     DateTime?
-  attemptCount  Int       @default(0)
-  lastAttemptAt DateTime?
-  lastErrorCode String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id                String    @id @default(uuid())
+  storageKey        String    @unique
+  multipartUploadId String?
+  claimToken        String?
+  claimedAt         DateTime?
+  attemptCount      Int       @default(0)
+  lastAttemptAt     DateTime?
+  lastErrorCode     String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@index([claimedAt, createdAt])
 }
