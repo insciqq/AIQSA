@@ -105,7 +105,7 @@ describe("Knowledge grounded answer contract", () => {
       finalText: "Atlas retains completed exports for 30 days [K1][K2].",
       outcome: "repaired",
       repairCount: 1,
-      version: 3
+      version: 4
     });
 
     expect(groundKnowledgeAnswer({
@@ -167,11 +167,11 @@ describe("Knowledge grounded answer contract", () => {
 
   it("reports a Russian citation-binding failure separately from missing evidence", () => {
     const result = groundKnowledgeAnswer({
-      answer: "Общий холестерин снижался во всех трёх анализах.",
+      answer: "Показатель Альфа снижался во всех трёх отчётах.",
       evidence: evidence({
         originalIntent: {
           intent: "structured_data_analysis",
-          query: "Какая динамика по холестерину?"
+          query: "Какая динамика показателя Альфа?"
         }
       })
     });
@@ -189,7 +189,7 @@ describe("Knowledge grounded answer contract", () => {
       evidence: evidence({
         originalIntent: {
           intent: "structured_data_analysis",
-          query: "Какая динамика по холестерину?"
+          query: "Какая динамика показателя Альфа?"
         }
       })
     }).diagnostics.issueCodes).toEqual([]);
@@ -252,29 +252,28 @@ describe("Knowledge grounded answer contract", () => {
   it("keeps dated measurements as a timeline instead of treating them as a conflict", () => {
     const result = groundKnowledgeAnswer({
       answer: [
-        "Общий холестерин снижался:",
-        "6,7 ммоль/л в сентябре 2025 [K1],",
-        "5,6 ммоль/л в декабре 2025 [K2]",
-        "и 5,3 ммоль/л в феврале 2026 [K3].",
-        "Последний результат на 1,4 ммоль/л ниже первого [K1] [K3]."
-      ].join(" "),
+        "Показатель Альфа снижался:",
+        "03.01.2030: 41,2 ед/л [K1].",
+        "04.02.2030: 37,8 ед/л [K2].",
+        "05.03.2030: 35,4 ед/л [K3]."
+      ].join("\n"),
       evidence: evidence({
         items: [
           item({
-            excerpt: "Дата: 07.09.2025. Холестерин общий 6.7 ммоль/л.",
-            fileName: "09.09.2025-холестерин.pdf"
+            excerpt: "Дата измерения: 02.01.2030. Показатель Альфа 41.2 ед/л.",
+            fileName: "03.01.2030-synthetic-alpha.pdf"
           }),
           item({
-            excerpt: "Дата: 08.12.2025. Холестерин общий 5.6 ммоль/л.",
-            fileName: "09.12.2025-холестерин.pdf",
+            excerpt: "Дата измерения: 03.02.2030. Показатель Альфа 37.8 ед/л.",
+            fileName: "04.02.2030-synthetic-alpha.pdf",
             handle: "K2",
             id: "evidence-2",
             ordinal: 2,
             sourceVersionId: "source-version-2"
           }),
           item({
-            excerpt: "Дата: 22.02.2026. Холестерин общий 5.3 ммоль/л.",
-            fileName: "22.02.2026-холестерин.pdf",
+            excerpt: "Дата измерения: 05.03.2030. Показатель Альфа 35.4 ед/л.",
+            fileName: "05.03.2030-synthetic-alpha.pdf",
             handle: "K3",
             id: "evidence-3",
             ordinal: 3,
@@ -283,7 +282,7 @@ describe("Knowledge grounded answer contract", () => {
         ],
         originalIntent: {
           intent: "structured_data_analysis",
-          query: "Какая динамика по холестерину?"
+          query: "Какая динамика показателя Альфа?"
         }
       })
     });
@@ -293,8 +292,120 @@ describe("Knowledge grounded answer contract", () => {
       outcome: "passed",
       repairCount: 0
     });
-    expect(result.finalText).toContain("6,7 ммоль/л");
-    expect(result.finalText).toContain("1,4 ммоль/л");
+    expect(result.finalText).toContain("41,2 ед/л");
+    expect(result.finalText).toContain("35,4 ед/л");
+  });
+
+  it("does not mistake comparison wording for a Source label", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "К марту показатель Альфа снизился до 35,4 ед/л [K1].",
+      evidence: evidence({
+        items: [item({
+          excerpt: "Показатель Альфа 35.4 ед/л.",
+          fileName: "05.03.2030-synthetic-alpha.pdf"
+        })],
+        originalIntent: {
+          intent: "structured_data_analysis",
+          query: "Какая динамика показателя Альфа?"
+        }
+      })
+    });
+
+    expect(result).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("rejects cross-Source date/value mixing even when every handle is valid", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "05.03.2030: показатель Альфа 41,2 ед/л [K1][K2].",
+      evidence: evidence({
+        items: [
+          item({
+            excerpt: "Показатель Альфа 41,2 ед/л.",
+            fileName: "03.01.2030-synthetic-alpha.pdf"
+          }),
+          item({
+            excerpt: "Показатель Альфа 35,4 ед/л.",
+            fileName: "05.03.2030-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ],
+        originalIntent: {
+          intent: "structured_data_analysis",
+          query: "Какая динамика показателя Альфа?"
+        }
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(result.finalText).not.toContain("41,2 ед/л");
+  });
+
+  it("rejects an obvious label/value swap inside one dated Source", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "05.03.2030: METRIC-B is 12.4 [K1].",
+      evidence: evidence({
+        items: [item({
+          excerpt: "METRIC-A 12.4 units.",
+          fileName: "05.03.2030-synthetic-metric-b.pdf"
+        })]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("does not treat a number present only in Source metadata as an observed value", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "The recorded result is 99 [K1].",
+      evidence: evidence({
+        items: [item({ excerpt: "The recorded result is 30.", fileName: "report-99.pdf" })]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects uncited or newly calculated numeric claims", () => {
+    const uncited = groundKnowledgeAnswer({
+      answer: "Atlas retains exports for 30 days [K1]. The comparison value is 45 days.",
+      evidence: evidence()
+    });
+    const calculated = groundKnowledgeAnswer({
+      answer: "The decrease is 21% [K1].",
+      evidence: evidence()
+    });
+
+    expect(uncited.diagnostics.issueCodes).toContain("unsupported_claim");
+    expect(uncited.finalText).not.toContain("45 days");
+    expect(calculated.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(calculated.finalText).not.toContain("21%");
+  });
+
+  it("does not ground a numeric claim in an ambiguous table layout", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "The recorded value is 30 [K1].",
+      evidence: evidence({
+        items: [item({
+          contextBoundaries: {
+            expanded: false,
+            excerptBytes: 61,
+            layoutKind: "table_ambiguous",
+            sourceTextBytes: 61
+          }
+        })]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
   });
 
   it("blocks a Source prompt-injection payload even when it is cited or mislabeled as general knowledge", () => {

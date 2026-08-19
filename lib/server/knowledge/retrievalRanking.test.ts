@@ -46,6 +46,7 @@ function candidate(input: Readonly<{
     fileName: input.fileName ?? `${input.chunkId}.txt`,
     headingPath: ["Policy"],
     knowledgeBaseId: "base-1",
+    layoutKind: "body",
     page: 1,
     sectionId: `section-${input.chunkId}`,
     signals: input.signals,

@@ -45,6 +45,7 @@ type Segment = Readonly<{
   blockIds: readonly string[];
   blockStart: number;
   headingPath: readonly string[];
+  layoutKind: "body" | "table_ambiguous" | "table_row";
   pageEnd: number;
   pageStart: number;
   text: string;
@@ -154,10 +155,35 @@ function tableRows(block: KnowledgeNormalizedBlock): string[] {
 function tableSegments(block: KnowledgeNormalizedBlock): Segment[] {
   const rows = tableRows(block);
   if (rows.length === 0) return [];
+  return rows.flatMap((row) => {
+    const parts = splitTextByTokens(row);
+    if (block.table && parts.length !== 1) {
+      // A recognized row is one atomic evidence unit. Splitting it would make
+      // cell association unverifiable, so an oversized row fails closed.
+      throw new KnowledgeChunkingError("chunking_failed");
+    }
+    if (parts.length === 0) throw new KnowledgeChunkingError("chunking_failed");
+    return parts.map((part) => Object.freeze({
+      blockEnd: block.order,
+      blockIds: Object.freeze([block.id]),
+      blockStart: block.order,
+      headingPath: block.headingPath,
+      layoutKind: block.table ? "table_row" as const : "table_ambiguous" as const,
+      pageEnd: block.locator.pageEnd,
+      pageStart: block.locator.pageStart,
+      text: part.text,
+      tokenCount: part.tokenCount,
+      type: block.type
+    }));
+  });
+}
+
+function profile2TableSegments(block: KnowledgeNormalizedBlock): Segment[] {
+  const rows = tableRows(block);
+  if (rows.length === 0) return [];
   const header = rows[0]!;
   const result: Segment[] = [];
   let current: string[] = [];
-
   const flush = () => {
     if (current.length === 0) return;
     const text = current.join("\n");
@@ -167,6 +193,7 @@ function tableSegments(block: KnowledgeNormalizedBlock): Segment[] {
         blockIds: Object.freeze([block.id]),
         blockStart: block.order,
         headingPath: block.headingPath,
+        layoutKind: "body",
         pageEnd: block.locator.pageEnd,
         pageStart: block.locator.pageStart,
         text: split.text,
@@ -176,17 +203,15 @@ function tableSegments(block: KnowledgeNormalizedBlock): Segment[] {
     }
     current = [];
   };
-
   for (const [index, row] of rows.entries()) {
     const candidateRows = current.length === 0
       ? index === 0 ? [row] : [header, row]
       : [...current, row];
-    const candidate = candidateRows.join("\n");
-    if (
-      current.length > 0 &&
-      (approximateKnowledgeTokenCount(candidate) > KNOWLEDGE_CHUNK_MAX_TOKENS ||
-        candidate.length > KNOWLEDGE_CHUNK_MAX_CHARS)
-    ) {
+    const text = candidateRows.join("\n");
+    if (current.length > 0 && (
+      approximateKnowledgeTokenCount(text) > KNOWLEDGE_CHUNK_MAX_TOKENS ||
+      text.length > KNOWLEDGE_CHUNK_MAX_CHARS
+    )) {
       flush();
       current = index === 0 ? [row] : [header, row];
     } else {
@@ -213,13 +238,18 @@ function repeatedFurniture(blocks: readonly KnowledgeNormalizedBlock[]): Set<str
   return new Set([...pagesByKey].filter(([, pages]) => pages.size >= 3).map(([key]) => key));
 }
 
-function structuralSegments(blocks: readonly KnowledgeNormalizedBlock[]): Segment[] {
+function structuralSegments(
+  blocks: readonly KnowledgeNormalizedBlock[],
+  profileVersion: number
+): Segment[] {
   const excluded = repeatedFurniture(blocks);
   const result: Segment[] = [];
   for (const block of blocks) {
     if (!block.text || excluded.has(furnitureKey(block)) || block.type === "image") continue;
     if (block.type === "table") {
-      result.push(...tableSegments(block));
+      result.push(...(profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION
+        ? tableSegments(block)
+        : profile2TableSegments(block)));
       continue;
     }
     for (const split of splitTextByTokens(block.text)) {
@@ -228,6 +258,7 @@ function structuralSegments(blocks: readonly KnowledgeNormalizedBlock[]): Segmen
         blockIds: Object.freeze([block.id]),
         blockStart: block.order,
         headingPath: block.headingPath,
+        layoutKind: "body",
         pageEnd: block.locator.pageEnd,
         pageStart: block.locator.pageStart,
         text: split.text,
@@ -252,6 +283,7 @@ function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
     const candidateText: string = `${current.text}\n\n${segment.text}`;
     const canMerge =
       sameHeading(current.headingPath, segment.headingPath) &&
+      current.layoutKind === "body" && segment.layoutKind === "body" &&
       !cannotMerge.has(current.type) && !cannotMerge.has(segment.type) &&
       approximateKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
       candidateText.length <= KNOWLEDGE_CHUNK_MAX_CHARS;
@@ -261,6 +293,7 @@ function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
         blockIds: Object.freeze([...current.blockIds, ...segment.blockIds]),
         blockStart: current.blockStart,
         headingPath: current.headingPath,
+        layoutKind: "body",
         pageEnd: Math.max(current.pageEnd, segment.pageEnd),
         pageStart: Math.min(current.pageStart, segment.pageStart),
         text: candidateText,
@@ -276,8 +309,17 @@ function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
   return result;
 }
 
-function contextPrefix(document: StoredKnowledgeNormalizedDocument, segment: Segment): string {
+function contextPrefix(
+  document: StoredKnowledgeNormalizedDocument,
+  segment: Segment,
+  withLayoutEvidence: boolean
+): string {
   const parts = [
+    withLayoutEvidence && segment.layoutKind === "table_ambiguous"
+      ? "Evidence layout: table_ambiguous_v1"
+      : withLayoutEvidence && segment.layoutKind === "table_row"
+        ? "Evidence layout: table_row_v1"
+        : null,
     document.source.displayName
       ? `Source: ${normalizedContextValue(document.source.displayName)}`
       : null,
@@ -296,14 +338,16 @@ function planEntry(
   document: StoredKnowledgeNormalizedDocument,
   segment: Segment,
   index: number,
-  withContext: boolean
+  withContext: boolean,
+  withLayoutEvidence: boolean
 ): KnowledgeChunkPlanEntry {
-  const prefix = withContext ? contextPrefix(document, segment) : "";
+  const prefix = withContext ? contextPrefix(document, segment, withLayoutEvidence) : "";
   const embeddingText = prefix ? `${prefix}\n\n${segment.text}` : segment.text;
   return Object.freeze({
     contentHash: sha256(JSON.stringify({
       blockIds: segment.blockIds,
       headingPath: segment.headingPath,
+      ...(withLayoutEvidence ? { layoutKind: segment.layoutKind } : {}),
       text: segment.text
     })),
     contextPrefix: prefix,
@@ -370,6 +414,7 @@ function legacyCharacterSegments(document: StoredKnowledgeNormalizedDocument): S
         blockIds: Object.freeze([...group.blockIds]),
         blockStart: group.blockStart,
         headingPath: group.headingPath,
+        layoutKind: "body",
         pageEnd: group.page,
         pageStart: group.page,
         text: value,
@@ -390,13 +435,13 @@ export function chunkKnowledgeDocument(input: Readonly<{
   profileVersion: number;
 }>): KnowledgeChunkPlanEntry[] {
   if (
-    ![1, KNOWLEDGE_CHUNKING_PROFILE_VERSION].includes(input.profileVersion) ||
+    ![1, 2, KNOWLEDGE_CHUNKING_PROFILE_VERSION].includes(input.profileVersion) ||
     !Number.isSafeInteger(input.maxChunks) || input.maxChunks < 1
   ) throw new KnowledgeChunkingError("chunking_failed");
 
   const segments = input.profileVersion === 1
     ? legacyCharacterSegments(input.document)
-    : mergeStructuralSegments(structuralSegments(input.document.blocks));
+    : mergeStructuralSegments(structuralSegments(input.document.blocks, input.profileVersion));
   if (segments.length === 0) throw new KnowledgeChunkingError("chunking_failed");
   if (segments.length > input.maxChunks) {
     throw new KnowledgeChunkingError("knowledge_chunk_limit_exceeded");
@@ -405,6 +450,7 @@ export function chunkKnowledgeDocument(input: Readonly<{
     input.document,
     segment,
     index,
+    input.profileVersion >= 2,
     input.profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION
   ));
 }

@@ -11,7 +11,10 @@ import {
 import { createPrismaKnowledgeRetrievalStore } from "../../lib/server/knowledge/prismaRetrievalRepository";
 import { buildAndPersistKnowledgeHierarchicalIndex } from "../../lib/server/knowledge/hierarchicalIndexRepository";
 import type { KnowledgeChunkPlanEntry } from "../../lib/server/knowledge/chunking";
-import type { KnowledgeHybridSearchResult } from "../../lib/server/knowledge/retrievalTypes";
+import type {
+  KnowledgeAcceptedBinding,
+  KnowledgeHybridSearchResult
+} from "../../lib/server/knowledge/retrievalTypes";
 import { knowledgeToolResultText } from "../../lib/server/knowledge/toolResult";
 import { knowledgeEvalQueryVector } from "./baseline";
 import {
@@ -516,6 +519,76 @@ async function evaluateFallbacks(
     )),
     rerankerOutageMode: outage.rankingEvidence?.rerankerBinding.status ?? "missing",
     rerankerOutageResultCount: outage.passages.length
+  });
+}
+
+async function evaluateDeterministicSourceRead(
+  client: PrismaClient,
+  state: KnowledgeHierarchicalEvaluationFixture,
+  fixture: RuntimeFixture
+) {
+  const source = state.entries.find((entry) =>
+    entry.ownerUserId === state.ownerUserId && entry.logicalSourceId === "source-001")!;
+  const outOfScope = state.entries.find((entry) => entry.ownerUserId === state.foreignUserId)!;
+  const binding = {
+    baseContentRevision: 2,
+    baseName: "Knowledge retrieval golden base",
+    embeddingConnectionId: state.connectionId,
+    embeddingCredentialId: fixture.credentialId,
+    embeddingCredentialSource: "default",
+    embeddingCredentialVersionId: fixture.credentialVersionId,
+    embeddingExecutionSnapshot: { synthetic: true },
+    embeddingProviderModelId: state.modelId,
+    includeWholeBase: true,
+    indexedContentRevision: 1,
+    indexGenerationId: fixture.generationId,
+    knowledgeBaseId: fixture.baseId,
+    knowledgeBaseSnapshotId: fixture.snapshotId,
+    ordinal: 0,
+    selectedSourceIds: [],
+    targetDimension: 1_024,
+    vectorSpaceFingerprint
+  } satisfies KnowledgeAcceptedBinding;
+  const readSource = createPrismaKnowledgeRetrievalStore(client).readSource;
+  if (!readSource) throw new Error("knowledge_source_read_eval_unavailable");
+  const common = {
+    binding,
+    runId: fixture.modelRunId,
+    userId: state.ownerUserId,
+    window: 1
+  } as const;
+  const [page, heading, rejected] = await Promise.all([
+    readSource({
+      ...common,
+      direction: "around",
+      locator: `page ${source.source.page}`,
+      sourceArtifactId: source.artifactId,
+      sourceId: source.sourceId
+    }),
+    readSource({
+      ...common,
+      direction: "after",
+      locator: `heading: ${source.source.headingPath.join(" › ")}`,
+      sourceArtifactId: source.artifactId,
+      sourceId: source.sourceId
+    }),
+    readSource({
+      ...common,
+      direction: "around",
+      locator: `page ${outOfScope.source.page}`,
+      sourceArtifactId: outOfScope.artifactId,
+      sourceId: outOfScope.sourceId
+    })
+  ]);
+  const exact = (result: KnowledgeHybridSearchResult): boolean =>
+    result.bindingCount === 1 && result.candidateCount === 1 &&
+    result.passages.length === 1 &&
+    result.passages[0]?.sourceArtifactId === source.artifactId &&
+    result.passages[0]?.layoutKind === "body";
+  return Object.freeze({
+    headingReadExact: exact(heading) && heading.passages[0]?.chunkId === page.passages[0]?.chunkId,
+    outOfScopeReadRejected: rejected.candidateCount === 0 && rejected.passages.length === 0,
+    pageReadExact: exact(page)
   });
 }
 
@@ -1077,6 +1150,7 @@ export async function runKnowledgeRetrievalCoreEvaluation(client: PrismaClient) 
     const ann = await evaluateAnn(client, state, annFixture);
     const rows = await evaluateGoldenRetrieval(client, state, runtime);
     const fallback = await evaluateFallbacks(client, state, runtime);
+    const sourceRead = await evaluateDeterministicSourceRead(client, state, runtime);
     const factRows = rows.filter((row) => [
       "fact_lookup",
       "paraphrase",
@@ -1127,8 +1201,11 @@ export async function runKnowledgeRetrievalCoreEvaluation(client: PrismaClient) 
         sectionHeadingRecallAt8: round(heading.sourceRecallAt8)
       }),
       safety: Object.freeze({
+        deterministicSourceHeadingRead: sourceRead.headingReadExact,
+        deterministicSourcePageRead: sourceRead.pageReadExact,
         ordinaryProjectionTechnicalLeakage: rows.some((row) =>
           row.ordinaryProjectionTechnicalLeakage),
+        outOfScopeSourceReadRejected: sourceRead.outOfScopeReadRejected,
         snapshotReadySourceCount: state.entries.filter((entry) =>
           entry.ownerUserId === state.ownerUserId && entry.logicalSourceId.startsWith("source-")).length,
         snapshotSourceCountIncludesProcessing: true
@@ -1176,7 +1253,10 @@ export function assertKnowledgeRetrievalCoreEvaluation(
     report.fallback.rerankerOutageMode === "degraded" &&
     report.fallback.rerankerOutageResultCount > 0 &&
     report.profileBenchmark.p95LatencyMs <= retrievalP95LatencyGateMs &&
+    report.safety.deterministicSourceHeadingRead &&
+    report.safety.deterministicSourcePageRead &&
     !report.safety.ordinaryProjectionTechnicalLeakage &&
+    report.safety.outOfScopeSourceReadRejected &&
     report.safety.snapshotSourceCountIncludesProcessing;
   if (!passed) throw new Error("knowledge_retrieval_core_eval_gate_failed");
 }

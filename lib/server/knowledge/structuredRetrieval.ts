@@ -211,6 +211,7 @@ export async function analyzeStructuredKnowledgeSources(input: Readonly<{
         ...analysis.receipt.inputRanges.map((range) => range.range)
       ],
       knowledgeBaseId: selected.candidate.knowledgeBaseId,
+      layoutKind: "table_row",
       page,
       rerankScore: null,
       sectionId: anchor.sectionId,

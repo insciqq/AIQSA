@@ -238,6 +238,9 @@ describe("automatic Knowledge evidence", () => {
     expect(JSON.stringify(message.content)).toContain(
       "A Source-derived answer with zero exact [K…] handles is invalid"
     );
+    expect(JSON.stringify(message.content)).toContain(
+      "Never combine a date or label from one SOURCE with a value from another"
+    );
     expect(JSON.stringify(message.content)).toContain("[K1][K2]");
     expect(materialized.context?.messages.map(({ id }) => id)).toEqual([
       "knowledge-evidence:v2",

@@ -113,6 +113,16 @@ export type KnowledgeRetrievalStore = Readonly<{
     runId: string;
     userId: string;
   }>): Promise<readonly KnowledgeScopeAlias[]>;
+  readSource?(input: Readonly<{
+    binding: KnowledgeAcceptedBinding;
+    direction: "after" | "around" | "before";
+    locator: string;
+    runId: string;
+    sourceArtifactId: string;
+    sourceId: string;
+    userId: string;
+    window: number;
+  }>): Promise<KnowledgeHybridSearchResult>;
   persistReceipt(input: Readonly<{
     evidence: KnowledgeRetrievalEvidence;
     modelRunToolCallId: string;
@@ -201,7 +211,8 @@ function errorResult(call: ModelToolCall, code: string, message?: string): ToolE
 function baseEvidence(
   bindings: readonly KnowledgeAcceptedBinding[],
   candidateCounts: Readonly<Record<number, number>> = {},
-  vectorSearchEvidence: readonly KnowledgeVectorSearchEvidence[] = []
+  vectorSearchEvidence: readonly KnowledgeVectorSearchEvidence[] = [],
+  readyWhenEmpty = false
 ): KnowledgeBaseRetrievalEvidence[] {
   const vectorByBinding = new Map(vectorSearchEvidence.map((entry) => [
     entry.bindingOrdinal,
@@ -220,7 +231,7 @@ function baseEvidence(
       ordinal: binding.ordinal,
       state: binding.indexedContentRevision < binding.baseContentRevision
         ? "indexing"
-        : candidateCount === 0 ? "empty" : "ready",
+        : candidateCount === 0 && !readyWhenEmpty ? "empty" : "ready",
       targetDimension: binding.targetDimension,
       ...(vectorSearch ? { vectorSearch } : {}),
       vectorSpaceFingerprint: binding.vectorSpaceFingerprint
@@ -248,25 +259,39 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 function includedPassages(
   passages: KnowledgeHybridSearchResult["passages"],
   evidenceOffset: number,
+  aliases: readonly KnowledgeScopeAlias[],
   maximumBytes = KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES
 ): KnowledgeRetrievedPassageEvidence[] {
   if (passages.length === 0) return [];
-  // Four KiB is reserved for fixed instructions, handles, pages, separators,
-  // and honest truncation markers. The remaining byte budget is divided so
-  // every selected result reaches the model rather than one chunk monopolizing it.
+  // Source boundaries deliberately repeat bounded provenance next to every
+  // handle. Reserve enough room for those headers and instructions before
+  // dividing the remaining byte budget between excerpts.
+  const metadataReserveBytes = 16 * 1024;
   const perPassageBytes = Math.max(
     1,
-    Math.floor((Math.max(4 * 1024 + 1, maximumBytes) - 4 * 1024) / passages.length)
+    Math.floor((Math.max(metadataReserveBytes + 1, maximumBytes) - metadataReserveBytes) /
+      passages.length)
   );
+  const sourceAliasByArtifact = new Map(aliases.flatMap((alias) =>
+    alias.kind === "source" && alias.sourceArtifactId
+      ? [[`${alias.bindingOrdinal}\u0000${alias.sourceArtifactId}`, alias.alias] as const]
+      : []));
   return passages.map(({ text, ...passage }, index) => {
     const includedText = truncateUtf8(text, perPassageBytes);
     const includedTextBytes = Buffer.byteLength(includedText, "utf8");
     const sourceTextBytes = Buffer.byteLength(text, "utf8");
+    const sourceAlias = passage.sourceArtifactId
+      ? sourceAliasByArtifact.get(`${passage.bindingOrdinal}\u0000${passage.sourceArtifactId}`)
+      : undefined;
+    if (passage.sourceArtifactId && !sourceAlias) {
+      throw new Error("knowledge_evidence_source_alias_unavailable");
+    }
     return {
       ...passage,
       handle: `K${evidenceOffset + index + 1}`,
       includedText,
       includedTextBytes,
+      ...(sourceAlias ? { sourceAlias } : {}),
       sourceTextBytes,
       textTruncated: includedTextBytes < sourceTextBytes
     };
@@ -316,11 +341,14 @@ function evidenceAliases(
   passages: readonly KnowledgeRetrievedPassageEvidence[],
   bindings: readonly KnowledgeAcceptedBinding[]
 ): readonly Readonly<{ alias: string; kind: "base" | "source"; label: string }>[] {
-  const artifactIds = new Set(passages.flatMap((passage) =>
-    passage.sourceArtifactId ? [passage.sourceArtifactId] : []));
+  const sourceArtifacts = new Set(passages.flatMap((passage) =>
+    passage.sourceArtifactId
+      ? [`${passage.bindingOrdinal}\u0000${passage.sourceArtifactId}`]
+      : []));
   const bindingOrdinals = new Set(passages.map((passage) => passage.bindingOrdinal));
   const selected = aliases.filter((alias) => alias.kind === "source"
-    ? Boolean(alias.sourceArtifactId && artifactIds.has(alias.sourceArtifactId))
+    ? Boolean(alias.sourceArtifactId &&
+      sourceArtifacts.has(`${alias.bindingOrdinal}\u0000${alias.sourceArtifactId}`))
     : bindingOrdinals.has(alias.bindingOrdinal));
   if (selected.length === 0) {
     const admitted = new Set(bindings.map((binding) => binding.ordinal));
@@ -582,6 +610,105 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         }));
       }
 
+      if (request.operation === "read_source") {
+        const read = request.read;
+        const sourceAlias = read
+          ? aliases.find((alias) => alias.alias === read.sourceAlias && alias.kind === "source")
+          : undefined;
+        const binding = sourceAlias
+          ? scopedBindings.find((candidate) => candidate.ordinal === sourceAlias.bindingOrdinal)
+          : undefined;
+        if (!read || !sourceAlias?.sourceArtifactId || !sourceAlias.sourceId || !binding ||
+          !input.store.readSource) {
+          return errorResult(call, "knowledge_source_location_unavailable");
+        }
+        const search = await input.store.readSource({
+          binding,
+          direction: read.direction,
+          locator: read.locator,
+          runId,
+          sourceArtifactId: sourceAlias.sourceArtifactId,
+          sourceId: sourceAlias.sourceId,
+          userId: context.userId,
+          window: read.window
+        });
+        const candidateEntries = Object.entries(search.candidateCounts);
+        if (
+          search.bindingCount !== 1 || candidateEntries.length !== 1 ||
+          candidateEntries[0]?.[0] !== String(binding.ordinal) ||
+          candidateEntries[0]?.[1] !== search.candidateCount ||
+          !Number.isSafeInteger(search.candidateCount) || search.candidateCount < 0 ||
+          search.candidateCount < search.passages.length ||
+          (search.vectorSearchEvidence?.length ?? 0) !== 0 ||
+          search.passages.some((passage) =>
+            passage.bindingOrdinal !== binding.ordinal ||
+            passage.knowledgeBaseId !== binding.knowledgeBaseId ||
+            passage.sourceArtifactId !== sourceAlias.sourceArtifactId ||
+            passage.documentId !== sourceAlias.sourceId)
+        ) {
+          throw new Error("knowledge_source_read_result_invalid");
+        }
+        const readResultLimit = Math.min(resultLimit, read.window);
+        const results = includedPassages(
+          search.passages.slice(0, readResultLimit),
+          budgetState.evidenceCount ??
+            (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
+          aliases
+        );
+        const durationMs = Date.now() - startedAt;
+        const priorContentHashes = new Set(budgetState.priorContentHashes);
+        const contentHashes = results.flatMap((result) =>
+          result.contentHash ? [result.contentHash] : []);
+        const noveltyRatio = results.length === 0
+          ? null
+          : contentHashes.length === 0
+            ? 1
+            : contentHashes.filter((hash) => !priorContentHashes.has(hash)).length /
+              contentHashes.length;
+        const usage = completedBudgetUsage({
+          candidateCount: search.candidateCount,
+          durationMs,
+          embeddingExecutions: [],
+          noveltyRatio,
+          policy: budgetState.policy,
+          rerankerCalled: false,
+          resultBytes: results.reduce((total, result) => total + result.includedTextBytes, 0),
+          usage: budgetState.usage
+        });
+        return persist(finalizedEvidence({
+          bases: baseEvidence(
+            scopedBindings,
+            search.candidateCounts,
+            search.vectorSearchEvidence ?? [],
+            true
+          ),
+          budget: {
+            noveltyRatio,
+            operation: request.operation,
+            stopReason: knowledgeBudgetStopReason(budgetState.policy, usage),
+            usage,
+            version: 1
+          },
+          candidateCount: search.candidateCount,
+          candidateLimit,
+          durationMs,
+          embeddingExecutions: [],
+          fusion: "rrf_k60",
+          invocationOrdinal: budgetState.invocationOrdinal,
+          operation: request.operation,
+          outcome: results.length > 0 ? "complete" : "source_location_unavailable",
+          postRerankOrder: null,
+          preRerankOrder: null,
+          query: request.query,
+          rerankerBinding: null,
+          resultLimit: readResultLimit,
+          results,
+          scopeAliases: evidenceAliases(aliases, results, scopedBindings),
+          threshold,
+          version: KNOWLEDGE_RESULT_VERSION
+        }));
+      }
+
       if (request.operation === "automatic_search" && input.store.structuredSearch &&
         isStructuredDataQuery(request.query)) {
         let structured: StructuredKnowledgeSearchResult | null = null;
@@ -650,7 +777,8 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           const results = includedPassages(
             [structured.passage],
             budgetState.evidenceCount ??
-              (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT
+              (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
+            aliases
           );
           const durationMs = Date.now() - startedAt;
           const priorContentHashes = new Set(budgetState.priorContentHashes);
@@ -719,7 +847,8 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           const results = includedPassages(
             [visual.passage],
             budgetState.evidenceCount ??
-              (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT
+              (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
+            aliases
           );
           const durationMs = Date.now() - startedAt;
           const priorContentHashes = new Set(budgetState.priorContentHashes);
@@ -864,6 +993,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         search.passages,
         budgetState.evidenceCount ??
           (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
+        aliases,
         Math.min(
           KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
           4 * 1_024 + remainingRetrievedTokens * 4

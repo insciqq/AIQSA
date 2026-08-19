@@ -89,6 +89,7 @@ enum KnowledgeRunOutcome {
   base_empty
   base_indexing
   embedding_model_unavailable
+  source_location_unavailable
   budget_exhausted
   structured_clarification_required
 }

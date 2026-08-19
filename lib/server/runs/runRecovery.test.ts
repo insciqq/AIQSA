@@ -3574,7 +3574,7 @@ describe("run recovery", () => {
       receiptHash: "c".repeat(64),
       repairCount: 1 as const,
       sessionId: "knowledge-evidence-session-1",
-      version: 3 as const
+      version: 4 as const
     }));
     const harness = createHarness({
       groundKnowledgeAnswer,

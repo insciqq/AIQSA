@@ -49,7 +49,7 @@ function document(blocks: readonly ParsedDocumentBlock[], sourceDisplayName = "r
     mediaType: "application/pdf",
     pageCount: Math.max(...blocks.map((item) => item.pageEnd), 1),
     status: "complete"
-  }), config, { sourceDisplayName }).document;
+  }), config, { layoutAwareTables: true, sourceDisplayName }).document;
 }
 
 describe("Knowledge chunk profile v2", () => {
@@ -143,15 +143,118 @@ describe("Knowledge chunk profile v2", () => {
     })]);
     const chunks = chunkKnowledgeDocument({
       document: normalized,
-      maxChunks: 20,
+      maxChunks: 50,
       profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
     });
 
-    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks).toHaveLength(40);
     expect(chunks.every((chunk) => chunk.sourceBlockStart === 0 && chunk.sourceBlockEnd === 0))
       .toBe(true);
-    expect(chunks.every((chunk) => chunk.text.split("\n").every((row) => row.includes("\t"))))
+    expect(chunks.every((chunk) => chunk.text.includes("\t") && !chunk.text.includes("\n")))
       .toBe(true);
+    expect(chunks.every((chunk) =>
+      chunk.contextPrefix.startsWith("Evidence layout: table_row_v1"))).toBe(true);
+  });
+
+  it("retains the immutable profile 2 table projection", () => {
+    const cells = [
+      { column: 0, columnSpan: 1, row: 0, rowSpan: 1, text: "Metric" },
+      { column: 1, columnSpan: 1, row: 0, rowSpan: 1, text: "Value" },
+      { column: 0, columnSpan: 1, row: 1, rowSpan: 1, text: "Alpha" },
+      { column: 1, columnSpan: 1, row: 1, rowSpan: 1, text: "30" }
+    ];
+    const normalized = document([block(0, "Metric\tValue\nAlpha\t30", {
+      isTable: true,
+      table: { cells, columnCount: 2, rowCount: 2 },
+      type: "table"
+    })]);
+    const chunks = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 10,
+      profileVersion: 2
+    });
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.text).toBe("Metric\tValue\nAlpha\t30");
+    expect(chunks[0]!.contextPrefix).not.toContain("Evidence layout:");
+  });
+
+  it("reconstructs only stable positioned rows and keeps every reconstructed row atomic", () => {
+    const boxes = [10, 30, 50].flatMap((top, row) => [{
+      bottom: top + 10,
+      coordinateOrigin: "top_left" as const,
+      left: 10,
+      page: 1,
+      right: 90,
+      top
+    }, {
+      bottom: top + 10,
+      coordinateOrigin: "top_left" as const,
+      left: 140 - row * 10,
+      page: 1,
+      right: 180,
+      top
+    }]);
+    const normalized = document(boxes.map((box, index) => block(
+      index,
+      index % 2 === 0 ? `Metric ${index / 2 + 1}` : `${index / 2 + 0.5}`,
+      { boundingBoxes: [box] }
+    )));
+    const chunks = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+
+    expect(normalized.blocks).toHaveLength(1);
+    expect(normalized.blocks[0]).toMatchObject({
+      table: { columnCount: 2, rowCount: 3 },
+      type: "table"
+    });
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      "Metric 1\t1",
+      "Metric 2\t2",
+      "Metric 3\t3"
+    ]);
+    expect(chunks.every((chunk) =>
+      chunk.contextPrefix.startsWith("Evidence layout: table_row_v1"))).toBe(true);
+  });
+
+  it("isolates ambiguous positioned cells instead of joining labels and values", () => {
+    const valueLefts = [120, 155, 120];
+    const blocks = [10, 30, 50].flatMap((top, row) => [
+      block(row * 2, `Metric ${row + 1}`, { boundingBoxes: [{
+        bottom: top + 10,
+        coordinateOrigin: "top_left",
+        left: 10,
+        page: 1,
+        right: 90,
+        top
+      }] }),
+      block(row * 2 + 1, `${row + 1}`, { boundingBoxes: [{
+        bottom: top + 10,
+        coordinateOrigin: "top_left",
+        left: valueLefts[row]!,
+        page: 1,
+        right: valueLefts[row]! + 50,
+        top
+      }] })
+    ]);
+    const normalized = document(blocks);
+    const chunks = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+
+    expect(normalized.warnings).toContain("table_extraction_degraded");
+    expect(normalized.blocks).toHaveLength(6);
+    expect(normalized.blocks.every((entry) => entry.type === "table" && entry.table === null))
+      .toBe(true);
+    expect(chunks).toHaveLength(6);
+    expect(chunks.every((chunk) =>
+      chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1"))).toBe(true);
+    expect(chunks.every((chunk) => !chunk.text.includes("\n"))).toBe(true);
   });
 
   it("filters repeated page furniture by text even though each locator is distinct", () => {

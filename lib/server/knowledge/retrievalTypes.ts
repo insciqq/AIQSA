@@ -42,8 +42,14 @@ export type KnowledgeRetrievalOutcome =
   | "budget_exhausted"
   | "complete"
   | "embedding_model_unavailable"
+  | "source_location_unavailable"
   | "structured_clarification_required"
   | "zero_above_threshold";
+
+export type KnowledgePassageLayoutKind =
+  | "body"
+  | "table_ambiguous"
+  | "table_row";
 
 export type KnowledgeStructuredRetrievalEvidence = Readonly<{
   question?: string;
@@ -133,6 +139,7 @@ export type KnowledgeHybridPassage = Readonly<{
   fusedScore: number;
   headingPath?: readonly string[];
   knowledgeBaseId: string;
+  layoutKind?: KnowledgePassageLayoutKind;
   page: number;
   rerankScore?: number | null;
   sectionId?: string | null;
@@ -150,6 +157,7 @@ export type KnowledgeRetrievedPassageEvidence = Omit<KnowledgeHybridPassage, "te
   handle: string;
   includedText: string;
   includedTextBytes: number;
+  sourceAlias?: string;
   sourceTextBytes: number;
   textTruncated: boolean;
 }>;

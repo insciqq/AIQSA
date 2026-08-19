@@ -326,6 +326,12 @@ function contextBoundaries(
   if (value === null) return null;
   if (!record(value) || typeof value.expanded !== "boolean") return undefined;
   const excerptBytes = integer(value.excerptBytes);
+  const layoutKind = value.layoutKind === undefined
+    ? undefined
+    : value.layoutKind === "body" || value.layoutKind === "table_ambiguous" ||
+      value.layoutKind === "table_row"
+      ? value.layoutKind
+      : null;
   const sourceTextBytes = integer(value.sourceTextBytes);
   const structuredAnalysis = value.structuredAnalysis === undefined
     ? undefined
@@ -333,13 +339,15 @@ function contextBoundaries(
   const visualAnalysis = value.visualAnalysis === undefined
     ? undefined
     : decodeKnowledgeVisualAnalysisResult(value.visualAnalysis) ?? null;
-  return excerptBytes === null || sourceTextBytes === null || sourceTextBytes < excerptBytes
+  return excerptBytes === null || layoutKind === null || sourceTextBytes === null ||
+    sourceTextBytes < excerptBytes
     || structuredAnalysis === null || visualAnalysis === null ||
       structuredAnalysis !== undefined && visualAnalysis !== undefined
     ? undefined
     : {
         expanded: value.expanded,
         excerptBytes,
+        ...(layoutKind !== undefined ? { layoutKind } : {}),
         sourceTextBytes,
         ...(structuredAnalysis ? { structuredAnalysis } : {}),
         ...(visualAnalysis ? { visualAnalysis } : {})

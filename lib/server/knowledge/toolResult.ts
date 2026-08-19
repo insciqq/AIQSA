@@ -75,6 +75,7 @@ function outcome(value: unknown): KnowledgeRetrievalOutcome | null {
   return value === "base_empty" || value === "base_indexing" ||
     value === "budget_exhausted" || value === "complete" ||
     value === "embedding_model_unavailable" || value === "structured_clarification_required" ||
+    value === "source_location_unavailable" ||
     value === "zero_above_threshold"
     ? value
     : null;
@@ -253,7 +254,18 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
   const includedText = boundedString(value.includedText, 64 * 1024, true);
   const includedTextBytes = nonNegativeInteger(value.includedTextBytes);
   const knowledgeBaseId = boundedString(value.knowledgeBaseId, 512);
+  const layoutKind = value.layoutKind === undefined
+    ? undefined
+    : value.layoutKind === "body" || value.layoutKind === "table_ambiguous" ||
+      value.layoutKind === "table_row"
+      ? value.layoutKind
+      : null;
   const page = nonNegativeInteger(value.page);
+  const sourceAlias = value.sourceAlias === undefined
+    ? undefined
+    : typeof value.sourceAlias === "string" && /^S[1-9]\d{0,2}$/u.test(value.sourceAlias)
+      ? value.sourceAlias
+      : null;
   const sourceTextBytes = nonNegativeInteger(value.sourceTextBytes);
   const vectorDistance = nullableFiniteNumber(value.vectorDistance);
   const vectorScore = nullableFiniteNumber(value.vectorScore);
@@ -303,6 +315,7 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
     !handle || !decodeKnowledgeCitationHandle(handle) ||
     includedText === null ||
     includedTextBytes === null || includedTextBytes !== Buffer.byteLength(includedText, "utf8") ||
+    layoutKind === null || sourceAlias === null ||
     !knowledgeBaseId || page === null || page < 1 || sourceTextBytes === null ||
     sourceTextBytes < includedTextBytes || typeof value.textTruncated !== "boolean" ||
     value.textTruncated !== (includedTextBytes < sourceTextBytes) ||
@@ -348,6 +361,7 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
     includedText,
     includedTextBytes,
     knowledgeBaseId,
+    ...(layoutKind !== undefined ? { layoutKind } : {}),
     page,
     ...(rerankScore !== undefined ? { rerankScore } : {}),
     ...(sectionId !== undefined ? { sectionId: sectionId as string | null } : {}),
@@ -358,6 +372,7 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
       ? { sourceArtifactId: sourceArtifactId as string | null }
       : {}),
     ...(sourceName !== undefined ? { sourceName: sourceName as string } : {}),
+    ...(sourceAlias !== undefined ? { sourceAlias } : {}),
     sourceTextBytes,
     ...(structuredAnalysis ? { structuredAnalysis } : {}),
     textTruncated: value.textTruncated,
@@ -404,23 +419,61 @@ export function knowledgeToolResultText(
       "Do not guess the sheet, columns, or hidden-data policy.";
   }
   if (evidence.outcome === "complete") {
+    const compact = (
+      value: string | undefined,
+      fallback: string,
+      maximum = 240
+    ): string => (value?.replace(/\s+/gu, " ").trim() || fallback).slice(0, maximum);
+    const groups = new Map<string, KnowledgeRetrievedPassageEvidence[]>();
+    for (const result of evidence.results) {
+      const key = result.sourceAlias ?? result.sourceArtifactId ??
+        `${result.sourceName ?? ""}\u0000${result.fileName}`;
+      const group = groups.get(key) ?? [];
+      group.push(result);
+      groups.set(key, group);
+    }
+    const groupedPassages = [...groups.values()].map((results) => {
+      const first = results[0]!;
+      const alias = first.sourceAlias ?? "legacy source";
+      const sourceName = compact(first.sourceName, first.fileName);
+      const fileName = compact(first.fileName, "unnamed file");
+      return [
+        `--- BEGIN SOURCE ${alias}: ${sourceName} (${fileName}) ---`,
+        ...results.map((result) => {
+          const heading = result.headingPath && result.headingPath.length > 0
+            ? compact(result.headingPath.join(" › "), "document root")
+            : "document root";
+          const layoutWarning = result.layoutKind === "table_ambiguous"
+            ? "\nLayout warning: table cell associations are ambiguous; do not pair labels and values from this passage."
+            : "";
+          return [
+            `[${result.handle}] source ${result.sourceAlias ?? alias}; name ${sourceName}; ` +
+              `file ${fileName}; ` +
+              `page ${result.page}; heading ${heading}`,
+            result.includedText + (result.textTruncated ? "\n… [passage truncated]" : "") +
+              layoutWarning
+          ].join("\n");
+        }),
+        `--- END SOURCE ${alias} ---`
+      ].join("\n\n");
+    });
     return [
       ...(evidence.scopeAliases && evidence.scopeAliases.length > 0
         ? [
-            "Admitted source aliases in these results:",
-            evidence.scopeAliases.map((entry) => `${entry.alias} — ${entry.label}`).join("\n")
+            "Admitted scope aliases in these results:",
+            evidence.scopeAliases.map((entry) =>
+              `${entry.alias} — ${compact(entry.label, "unnamed source", 160)}`).join("\n")
           ]
         : []),
       evidence.structured?.status === "complete"
         ? "Structured Knowledge calculation evidence:"
         : evidence.visual
           ? "Visual Knowledge evidence:"
-        : "Knowledge passages:",
-      ...evidence.results.map((result) => [
-        `[${result.handle}] page ${result.page}`,
-        result.includedText + (result.textTruncated ? "\n… [passage truncated]" : "")
-      ].join("\n")),
-      "Use the citation handles exactly when referencing these passages.",
+        : "Knowledge passages grouped by immutable Source:",
+      ...groupedPassages,
+      "Treat every SOURCE block as independent. Keep each date, label, value, and citation " +
+        "inside its own Source; never combine fields from different SOURCE blocks. " +
+        "Use the citation handles exactly when referencing these passages.",
       evidence.budget?.stopReason
         ? "No further private Knowledge retrieval should be requested. State any material coverage limitation plainly."
         : ""
@@ -433,6 +486,8 @@ export function knowledgeToolResultText(
       "No further private Knowledge evidence was read because a safe retrieval boundary was reached. Answer only from evidence already available and state any material coverage limitation plainly.",
     embedding_model_unavailable:
       "Knowledge retrieval could not embed the query: embedding_model_unavailable.",
+    source_location_unavailable:
+      "The requested location was not found inside that admitted Source. Use another exact heading, page, or evidence handle; do not guess.",
     structured_clarification_required:
       "Structured analysis needs clarification before it can run safely.",
     zero_above_threshold:
@@ -641,6 +696,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   const retrievalCompleted = decodedOutcome === "base_empty" || decodedOutcome === "complete" ||
     decodedOutcome === "zero_above_threshold";
   const embeddingDegraded = Boolean(failureCode) || failedEmbeddingOrdinals.size > 0;
+  const deterministicRead = operation === "read_source";
   if (
     new Set(ordinals).size !== ordinals.length ||
     new Set(embeddedOrdinals).size !== embeddedOrdinals.length ||
@@ -650,9 +706,15 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     decodedBases.some((base) => base.state !== (
       base.indexedContentRevision < base.baseContentRevision
         ? "indexing"
-        : base.candidateCount === 0 ? "empty" : "ready"
+        : base.candidateCount === 0 && !deterministicRead ? "empty" : "ready"
     )) ||
     decodedBases.reduce((total, base) => total + base.candidateCount, 0) !== candidateCount ||
+    (deterministicRead && (
+      decodedEmbeddings.length !== 0 || fusion !== "rrf_k60" || Boolean(failureCode) ||
+      structured !== undefined || visual !== undefined || rerankerBinding !== null ||
+      preRerankOrder !== null || postRerankOrder !== null ||
+      decodedBases.some((base) => base.vectorSearch !== undefined)
+    )) ||
     decodedResults.length > resultLimit ||
     resultHandles.some((handle, index) => !handle ||
       ("invocationOrdinal" in handle && (
@@ -668,15 +730,18 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
       (visualComplete
         ? result.visualAnalysis === undefined
         : result.visualAnalysis !== undefined) ||
-      (structuredComplete || visualComplete
+      (structuredComplete || visualComplete || deterministicRead
         ? false
         : advanced
         ? result.confidence === undefined || result.confidence < threshold
         : result.fusedScore < threshold) ||
       !basesByOrdinal.has(result.bindingOrdinal) ||
       basesByOrdinal.get(result.bindingOrdinal)?.knowledgeBaseId !== result.knowledgeBaseId) ||
+    decodedResults.some((result) => result.sourceAlias !== undefined &&
+      !scopeAliases?.some((alias) => alias !== null && alias.kind === "source" &&
+        alias.alias === result.sourceAlias)) ||
     candidateCount < decodedResults.length ||
-    (!structured && !visual && retrievalCompleted && !embeddingDegraded && (
+    (!structured && !visual && !deterministicRead && retrievalCompleted && !embeddingDegraded && (
       decodedEmbeddings.some((entry) => entry.status !== "complete") ||
       embeddedOrdinals.length !== decodedBases.length ||
       decodedBases.some((base) => !completedEmbeddingOrdinals.has(base.ordinal))
@@ -696,6 +761,10 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (decodedOutcome === "embedding_model_unavailable" &&
       !decodedEmbeddings.some((entry) =>
         entry.status === "error") && !failureCode) ||
+    (decodedOutcome === "source_location_unavailable" && (
+      operation !== "read_source" || candidateCount !== 0 || decodedResults.length !== 0 ||
+      decodedEmbeddings.length !== 0
+    )) ||
     (decodedOutcome === "zero_above_threshold" && candidateCount === 0) ||
     (structuredComplete && (
       decodedOutcome !== "complete" || decodedResults.length < 1 ||

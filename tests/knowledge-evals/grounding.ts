@@ -230,16 +230,42 @@ function fixtures(): Fixture[] {
       expectPass: true
     },
     {
-      answer: "Холестерин снижался: 6,7 ммоль/л [K1], 5,6 ммоль/л [K2] и 5,3 ммоль/л [K3].",
+      answer: "Показатель Альфа снижался: 41,2 ед/л [K1], 37,8 ед/л [K2] и 35,4 ед/л [K3].",
       evidence: evidence({
         items: [
-          item(1, "07.09.2025: Холестерин общий 6.7 ммоль/л."),
-          item(2, "08.12.2025: Холестерин общий 5.6 ммоль/л."),
-          item(3, "22.02.2026: Холестерин общий 5.3 ммоль/л.")
+          item(1, "03.01.2030: Показатель Альфа 41.2 ед/л."),
+          item(2, "04.02.2030: Показатель Альфа 37.8 ед/л."),
+          item(3, "05.03.2030: Показатель Альфа 35.4 ед/л.")
         ],
-        query: "Какая динамика по холестерину?"
+        query: "Какая динамика показателя Альфа?"
       }),
       expectPass: true
+    },
+    {
+      answer: "05.03.2030: показатель Альфа 41,2 [K1][K2].",
+      evidence: evidence({
+        items: [
+          item(1, "Показатель Альфа 41,2.", { fileName: "03.01.2030-synthetic.pdf" }),
+          item(2, "Показатель Альфа 35,4.", { fileName: "05.03.2030-synthetic.pdf" })
+        ],
+        query: "Сравни показатель по датам"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "The recorded table value is 30 [K1].",
+      evidence: evidence({
+        items: [item(1, "Metric\n30", {
+          contextBoundaries: {
+            expanded: false,
+            excerptBytes: Buffer.byteLength("Metric\n30"),
+            layoutKind: "table_ambiguous",
+            sourceTextBytes: Buffer.byteLength("Metric\n30")
+          }
+        })],
+        query: "What value is shown in the results table?"
+      }),
+      expectNoAnswer: true
     },
     {
       answer: "General knowledge: retention periods often depend on regulation.",

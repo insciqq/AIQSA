@@ -174,6 +174,78 @@ describe("Knowledge visual evidence", () => {
       .toBe(regions[0]?.id);
   });
 
+  it("offers one bounded original-page fallback for an ambiguous positioned table", async () => {
+    const valueLefts = [120, 155, 120];
+    const blocks = [20, 40, 60].flatMap((top, row) => [
+      {
+        assetIds: [],
+        boundingBoxes: [{ ...box, bottom: top + 10, left: 10, page: 2, right: 90, top }],
+        headingPath: ["Results"],
+        index: row * 2,
+        isTable: false,
+        languageHints: ["en"],
+        page: 2,
+        pageEnd: 2,
+        readingOrder: row * 2,
+        table: null,
+        text: `Metric ${row + 1}`,
+        type: "paragraph" as const
+      },
+      {
+        assetIds: [],
+        boundingBoxes: [{
+          ...box,
+          bottom: top + 10,
+          left: valueLefts[row]!,
+          page: 2,
+          right: valueLefts[row]! + 50,
+          top
+        }],
+        headingPath: ["Results"],
+        index: row * 2 + 1,
+        isTable: false,
+        languageHints: ["en"],
+        page: 2,
+        pageEnd: 2,
+        readingOrder: row * 2 + 1,
+        table: null,
+        text: `${row + 1}`,
+        type: "paragraph" as const
+      }
+    ]);
+    const encoded = encodeKnowledgeNormalizedDocument(parsedVisual({ assets: [], blocks }), config, {
+      layoutAwareTables: true
+    });
+    const regions = indexKnowledgeVisualRegions(encoded.document);
+    const getObject = vi.fn(async (storageKey: string) => ({
+      body: encoded.body,
+      contentType: "application/json",
+      storageKey
+    }));
+    const result = await analyzeVisualKnowledgeSources({
+      candidates: [candidate({ normalized: encoded.body })],
+      config,
+      query: "What is the trend in these results?",
+      storage: { getObject }
+    });
+
+    expect(encoded.document.warnings).toContain("table_extraction_degraded");
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toMatchObject({
+      kind: "table",
+      label: "Ambiguous table layout on page 2",
+      page: 2
+    });
+    expect(result).toMatchObject({
+      kind: "complete",
+      passage: {
+        page: 2,
+        visualAnalysis: { status: "unavailable", warnings: ["analysis_unavailable"] }
+      }
+    });
+    expect(getObject).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed when a visual query is ambiguous", () => {
     const first = encodeKnowledgeNormalizedDocument(parsedVisual(), config).document;
     const originalRegion = indexKnowledgeVisualRegions(first)[0]!;
@@ -183,6 +255,24 @@ describe("Knowledge visual evidence", () => {
     ];
 
     expect(selectKnowledgeVisualRegion("Show the chart", regions)).toBeNull();
+  });
+
+  it("uses broad result/trend cues only for ambiguous table fallback", () => {
+    const normalized = encodeKnowledgeNormalizedDocument(parsedVisual(), config).document;
+    const chart = indexKnowledgeVisualRegions(normalized)[0]!;
+    const recognizedTable = { ...chart, id: "table:recognized", kind: "table" as const };
+    const ambiguousTable = {
+      ...recognizedTable,
+      id: "table-ambiguous:cell-1",
+      label: "Ambiguous table layout on page 2"
+    };
+
+    expect(selectKnowledgeVisualRegion("What is the trend in these results?", [recognizedTable]))
+      .toBeNull();
+    expect(selectKnowledgeVisualRegion("What is the trend in these results?", [ambiguousTable]))
+      .toMatchObject({ id: "table-ambiguous:cell-1" });
+    expect(selectKnowledgeVisualRegion("Show the table", [recognizedTable]))
+      .toMatchObject({ id: "table:recognized" });
   });
 
   it("returns the original locator without reading private source bytes in asset-only mode", async () => {

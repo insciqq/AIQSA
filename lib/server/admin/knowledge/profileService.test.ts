@@ -121,7 +121,7 @@ describe("administrator Knowledge profile service", () => {
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         activatedAt: NOW,
-        chunkingProfileVersion: 2,
+        chunkingProfileVersion: 3,
         embeddingProviderModelId: "embedding-1",
         executionAuthority: "installation",
         preflightStatus: "ready",

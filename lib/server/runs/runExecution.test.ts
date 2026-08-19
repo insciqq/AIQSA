@@ -2283,7 +2283,7 @@ describe("run execution", () => {
       receiptHash: "c".repeat(64),
       repairCount: 1,
       sessionId: "evidence-session-1",
-      version: 3
+      version: 4
     };
     const repository = createRepository({ groundingResult });
     const adapter = createAdapter(async function* () {
@@ -2445,7 +2445,10 @@ describe("run execution", () => {
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["retrieve_knowledge"]);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
-      .toContain("[K1.1] page 2");
+      .toContain(
+        "[K1.1] source legacy source; name private.pdf; file private.pdf; " +
+          "page 2; heading document root"
+      );
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         data: expect.objectContaining({

@@ -20,6 +20,7 @@ const MAX_SEARCH_TEXT_CHARACTERS = 4_000;
 const MAX_VISUAL_BOXES = 16;
 const VISUAL_QUERY_CUE = /(?:\bchart\b|\bdiagram\b|\bfigure\b|\bimage\b|\bphoto(?:graph)?\b|\bplot\b|\bgraph\b|\bvisual\b|\billustration\b|график|диаграм|рисунк|изображен|фотограф|схем|иллюстрац|визуал)/iu;
 const TABLE_QUERY_CUE = /(?:\btable\b|таблиц)/iu;
+const LAYOUT_QUERY_CUE = /(?:\b(?:compare|comparison|measurements?|metrics?|results?|trend)\b|анализ|динамик|измерен|показател|результат|сравн)/iu;
 
 export type KnowledgeVisualRegionKind = "chart" | "diagram" | "image" | "table";
 
@@ -299,8 +300,44 @@ export function indexKnowledgeVisualRegions(
 ): readonly KnowledgeVisualRegion[] {
   const assets = new Map(document.assets.map((asset) => [asset.id, asset]));
   const result: KnowledgeVisualRegion[] = [];
+  const ambiguousIds = new Set<string>();
+  const ambiguousByPage = new Map<number, KnowledgeNormalizedBlock[]>();
+  for (const block of document.blocks) {
+    if (block.type !== "table" || block.table) continue;
+    const blocks = ambiguousByPage.get(block.locator.pageStart) ?? [];
+    blocks.push(block);
+    ambiguousByPage.set(block.locator.pageStart, blocks);
+  }
+  for (const [page, blocks] of ambiguousByPage) {
+    if (result.length >= KNOWLEDGE_VISUAL_MAX_REGIONS || blocks.length < 2) continue;
+    blocks.forEach((block) => ambiguousIds.add(block.id));
+    const first = blocks[0]!;
+    const caption = nearestCaption(document.blocks, first);
+    const label = `Ambiguous table layout on page ${page}`;
+    result.push(Object.freeze({
+      assetId: null,
+      blockId: first.id,
+      boundingBoxes: Object.freeze(blocks.flatMap((block) => block.boundingBoxes)
+        .slice(0, MAX_VISUAL_BOXES)),
+      caption,
+      headingPath: Object.freeze([...first.headingPath]),
+      id: `table-ambiguous:${first.id}`,
+      kind: "table",
+      label,
+      order: Math.min(...blocks.map((block) => block.order)),
+      page,
+      searchText: searchText({
+        caption,
+        headingPath: first.headingPath,
+        kind: "table",
+        label,
+        neighborText: blocks.map((block) => block.text).join("\n")
+      })
+    }));
+  }
   for (const block of document.blocks) {
     if (result.length >= KNOWLEDGE_VISUAL_MAX_REGIONS) break;
+    if (ambiguousIds.has(block.id)) continue;
     const caption = nearestCaption(document.blocks, block);
     const neighborText = document.blocks
       .filter((candidate) => candidate.locator.pageStart === block.locator.pageStart &&
@@ -365,7 +402,7 @@ export function indexKnowledgeVisualRegions(
 }
 
 export function isVisualKnowledgeQuery(query: string): boolean {
-  return VISUAL_QUERY_CUE.test(query) || TABLE_QUERY_CUE.test(query);
+  return VISUAL_QUERY_CUE.test(query) || TABLE_QUERY_CUE.test(query) || LAYOUT_QUERY_CUE.test(query);
 }
 
 function queryTokens(query: string): readonly string[] {
@@ -393,7 +430,7 @@ function requestedKinds(query: string): ReadonlySet<KnowledgeVisualRegionKind> {
   if (/(?:\bimage\b|\bphoto(?:graph)?\b|\bfigure\b|рисунк|изображен|фотограф|иллюстрац)/iu.test(query)) {
     result.add("image");
   }
-  if (TABLE_QUERY_CUE.test(query)) result.add("table");
+  if (TABLE_QUERY_CUE.test(query) || LAYOUT_QUERY_CUE.test(query)) result.add("table");
   return result;
 }
 
@@ -402,10 +439,16 @@ export function selectKnowledgeVisualRegion(
   regions: readonly KnowledgeVisualRegion[]
 ): KnowledgeVisualRegion | null {
   if (!isVisualKnowledgeQuery(query) || regions.length === 0) return null;
+  const layoutOnly = LAYOUT_QUERY_CUE.test(query) &&
+    !VISUAL_QUERY_CUE.test(query) && !TABLE_QUERY_CUE.test(query);
+  const eligibleRegions = layoutOnly
+    ? regions.filter((region) => region.id.startsWith("table-ambiguous:"))
+    : regions;
+  if (eligibleRegions.length === 0) return null;
   const tokens = queryTokens(query);
   const page = requestedPage(query);
   const kinds = requestedKinds(query);
-  const ranked = regions.map((region) => {
+  const ranked = eligibleRegions.map((region) => {
     const haystack = normalized(region.searchText);
     let score = tokens.reduce((total, token) => total + (haystack.includes(token) ? 8 : 0), 0);
     if (page !== null && region.page === page) score += 100;
@@ -416,7 +459,7 @@ export function selectKnowledgeVisualRegion(
     left.region.id.localeCompare(right.region.id));
   const first = ranked[0]!;
   const second = ranked[1];
-  if (first.score === 0 && regions.length !== 1) return null;
+  if (first.score === 0 && eligibleRegions.length !== 1) return null;
   if (second && second.score === first.score && first.region.id !== second.region.id) return null;
   return first.region;
 }
@@ -625,6 +668,7 @@ export async function analyzeVisualKnowledgeSources(input: Readonly<{
       fusedScore: 0,
       headingPath: region.headingPath,
       knowledgeBaseId: candidate.knowledgeBaseId,
+      layoutKind: "body",
       page: region.page,
       rerankScore: null,
       sectionId: null,

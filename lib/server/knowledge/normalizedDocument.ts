@@ -33,6 +33,7 @@ import {
 import { isSpreadsheetDateValue } from "../parsing/spreadsheetDate";
 import { utils as spreadsheetUtils } from "xlsx";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
+import { withLayoutAwareTables } from "./layoutTables";
 
 export type KnowledgeNormalizedLocator = Readonly<{
   kind: "page";
@@ -600,9 +601,16 @@ function assertWithinLimits(
 export function encodeKnowledgeNormalizedDocument(
   parsed: ParsedDocument,
   config: KnowledgeExtractionConfig,
-  metadata: Readonly<{ sourceDisplayName?: string | null; sourceMediaType?: string }> = {}
+  metadata: Readonly<{
+    layoutAwareTables?: boolean;
+    sourceDisplayName?: string | null;
+    sourceMediaType?: string;
+  }> = {}
 ): EncodedKnowledgeNormalizedDocument {
-  const document = buildStoredDocument(parsed, metadata);
+  const document = buildStoredDocument(
+    metadata.layoutAwareTables ? withLayoutAwareTables(parsed) : parsed,
+    metadata
+  );
   assertWithinLimits(document, config);
   const body = Buffer.from(JSON.stringify(document), "utf8");
   if (body.byteLength > config.maxNormalizedObjectBytes) {
