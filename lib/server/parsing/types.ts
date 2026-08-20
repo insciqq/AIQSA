@@ -36,6 +36,61 @@ export type ParsedBoundingBox = Readonly<{
   top: number;
 }>;
 
+export type ParsedFieldCellLabel =
+  | "checkbox"
+  | "key"
+  | "unspecified"
+  | "value";
+
+export type ParsedFieldLinkLabel =
+  | "to_child"
+  | "to_key"
+  | "to_parent"
+  | "to_value"
+  | "unspecified";
+
+/**
+ * One parser-authored cell inside a form or key/value graph. Cell IDs are
+ * local to their group and links are the only authority for relationships;
+ * array order and geometry never imply a pairing.
+ */
+export type ParsedFieldCell = Readonly<{
+  boundingBoxes: readonly ParsedBoundingBox[];
+  confidence: number | null;
+  id: number;
+  itemRef: string | null;
+  label: ParsedFieldCellLabel;
+  order: number;
+  originalText: string;
+  text: string;
+}>;
+
+export type ParsedFieldLink = Readonly<{
+  confidence: number | null;
+  label: ParsedFieldLinkLabel;
+  order: number;
+  sourceCellId: number;
+  targetCellId: number;
+}>;
+
+/**
+ * A lossless bounded projection of one parser-authored form/key-value graph.
+ * `readingOrder` is the insertion point in the parser block array: the group
+ * occurred before that block index, or after the last block when equal to the
+ * block count. Equal insertion points retain field-group array order.
+ */
+export type ParsedFieldGroup = Readonly<{
+  boundingBoxes: readonly ParsedBoundingBox[];
+  cells: readonly ParsedFieldCell[];
+  confidence: number | null;
+  kind: "form" | "key_value";
+  links: readonly ParsedFieldLink[];
+  page: number;
+  pageEnd: number;
+  readingOrder: number;
+  sourceRef: string;
+}>;
+
 export type ParsedTableCell = Readonly<{
   column: number;
   columnSpan: number;
@@ -173,6 +228,7 @@ export type ParsedDocument = Readonly<{
   attempts: readonly ParsedDocumentParserAttempt[];
   blocks: readonly ParsedDocumentBlock[];
   engine: DocumentParserEngine;
+  fieldGroups: readonly ParsedFieldGroup[];
   languages: readonly string[];
   mediaType: string;
   pageCount: number;

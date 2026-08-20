@@ -79,6 +79,8 @@ export type KnowledgeRunRecoveryScope = Readonly<{
   budgetPolicy: KnowledgeBudgetPolicy;
   exclusions: readonly KnowledgeRunAdmissionExclusion[];
   knowledgePlan: KnowledgePlan;
+  /** Present for H2 scopes. Undefined is reserved for historical fixtures. */
+  resolvedSourceCount?: number;
 }>;
 
 export type CheckpointedToolLoopRun = Readonly<{
@@ -131,9 +133,9 @@ export type PersistToolLoopCallBatchResult =
 
 export type PrepareAutomaticKnowledgeCallBatchInput = Readonly<{
   calls: readonly Readonly<{
+    arguments: Readonly<Record<string, ToolLoopJsonValue>>;
     ordinal: number;
     providerCallId: string;
-    query: string;
   }>[];
   runId: string;
   userId: string;

@@ -59,6 +59,10 @@ export type ProviderToolLoopInput = Readonly<{
   ): Promise<void> | void;
   parallelToolCalls: boolean;
   prepareRequest?(request: ProviderRunRequest, round: number): Promise<ProviderRunRequest> | ProviderRunRequest;
+  projectToolResultForProvider?(
+    result: ToolExecutionResult,
+    context: Readonly<{ round: number }>
+  ): ToolExecutionResult;
   beforeProviderRound?(input: Readonly<{
     continuation: ProviderToolLoopContinuation;
     request: ProviderRunRequest;
@@ -128,16 +132,21 @@ function settledExecutionResult(
 function continuationForRound(
   bridge: ProviderToolBridge,
   continuation: ProviderToolLoopContinuation,
-  previousToolResults: readonly ToolLoopSettledCall<ToolExecutionResult>[]
+  previousToolResults: readonly ToolLoopSettledCall<ToolExecutionResult>[],
+  projectToolResultForProvider?: ProviderToolLoopInput["projectToolResultForProvider"]
 ): ProviderToolLoopContinuation {
   if (previousToolResults.length === 0) return continuation;
   return {
     ...continuation,
     providerToolMessages: [
       ...continuation.providerToolMessages,
-      ...previousToolResults.map((entry) =>
-        bridge.appendToolResult(undefined, settledExecutionResult(entry))
-      )
+      ...previousToolResults.map((entry) => {
+        const result = settledExecutionResult(entry);
+        return bridge.appendToolResult(
+          undefined,
+          projectToolResultForProvider?.(result, { round: entry.round }) ?? result
+        );
+      })
     ]
   };
 }
@@ -171,7 +180,12 @@ export async function runProviderToolLoop(
       ...(input.resume.seenCallIds ? { seenCallIds: input.resume.seenCallIds } : {})
     } : undefined,
     async runProviderRound({ continuation, emitText, previousToolResults, progress, round, signal }) {
-      const effectiveContinuation = continuationForRound(input.bridge, continuation, previousToolResults);
+      const effectiveContinuation = continuationForRound(
+        input.bridge,
+        continuation,
+        previousToolResults,
+        input.projectToolResultForProvider
+      );
       const toolChoice = progress.toolRounds >= input.budgets.maxToolRounds ||
         progress.toolCalls >= input.budgets.maxToolCalls
         ? "none"

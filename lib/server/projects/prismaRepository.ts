@@ -43,6 +43,7 @@ import {
   type CatalogProviderModelRow,
   type CatalogSearchOptionRow
 } from "../catalog/prismaCatalogData";
+import { KNOWLEDGE_INDEX_PROFILE_ID } from "../knowledge/knowledgeProfile";
 import {
   getRunAttachmentLimits,
   toCatalogAttachmentLimits
@@ -64,6 +65,14 @@ export type ProjectRepositoryResult<Value> =
   | Readonly<{ kind: "ok"; value: Value }>;
 
 export type ProjectRepository = ReturnType<typeof createPrismaProjectRepository>;
+
+const activeProjectSourceArtifactWhere = {
+  profileRevision: {
+    activeFor: { is: { id: KNOWLEDGE_INDEX_PROFILE_ID } },
+    preflightErrorCode: null,
+    preflightStatus: "ready"
+  }
+} satisfies Prisma.KnowledgeSourceIndexArtifactWhereInput;
 
 const projectListInclude = {
   _count: { select: { chats: true } },
@@ -175,6 +184,35 @@ const projectDetailInclude = {
               source: { deletionRequestedAt: null, trashedAt: null }
             }
           }
+        }
+      }
+    }
+  },
+  knowledgeSourceBindings: {
+    include: {
+      source: {
+        select: {
+          currentVersion: {
+            select: {
+              artifacts: {
+                select: {
+                  hierarchicalIndexes: {
+                    orderBy: { schemaVersion: "desc" as const },
+                    select: { state: true },
+                    take: 1
+                  },
+                  profileRevisionId: true,
+                  state: true
+                },
+                where: activeProjectSourceArtifactWhere
+              }
+            }
+          },
+          deletionRequestedAt: true,
+          description: true,
+          id: true,
+          name: true,
+          trashedAt: true
         }
       }
     }
@@ -357,6 +395,30 @@ function projectKnowledgeSources(
       if (!current || priority[next.readiness] > priority[current.readiness]) {
         sources.set(source.id, next);
       }
+    }
+  }
+  for (const binding of row.knowledgeSourceBindings) {
+    const source = binding.source;
+    if (source.deletionRequestedAt !== null || source.trashedAt !== null) continue;
+    const artifact = source.currentVersion?.artifacts[0];
+    const hierarchyState = artifact?.hierarchicalIndexes[0]?.state;
+    const readiness: ProjectKnowledgeSourceWire["readiness"] =
+      artifact?.state === "ready" && hierarchyState === "ready"
+        ? "ready"
+        : artifact?.state === "pending" || artifact?.state === "processing" ||
+            artifact?.state === "ready" && hierarchyState === "building"
+          ? "processing"
+          : "needs_attention";
+    const next = {
+      description: source.description,
+      id: source.id,
+      name: source.name,
+      owned: false,
+      readiness
+    } satisfies ProjectKnowledgeSourceWire;
+    const current = sources.get(source.id);
+    if (!current || priority[next.readiness] > priority[current.readiness]) {
+      sources.set(source.id, next);
     }
   }
   return [...sources.values()].sort((left, right) =>
@@ -1447,11 +1509,13 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       eligibleModels,
       searchOptions,
       knowledgeBases,
+      knowledgeSources,
       skills,
       mcpServers,
       activeModels,
       activeSearch,
       activeKnowledge,
+      activeKnowledgeSources,
       activeSkills,
       activeMcp
     ] = await Promise.all([
@@ -1485,7 +1549,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             }
           })
         : Promise.resolve([]),
-      requiredKnowledgeIds.length > 0 || requiredKnowledgeSourceIds.length > 0
+      requiredKnowledgeIds.length > 0
         ? db.knowledgeBase.findMany({
             include: {
               activeIndexGeneration: {
@@ -1498,31 +1562,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
                     }
                   },
                   profileRevision: { select: { id: true } }
-                }
-              },
-              sourceMemberships: {
-                include: {
-                  source: {
-                    include: {
-                      currentVersion: {
-                        include: {
-                          artifacts: {
-                            include: {
-                              hierarchicalIndexes: {
-                                orderBy: { schemaVersion: "desc" },
-                                take: 1
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                },
-                where: {
-                  removedAt: null,
-                  sourceId: { in: requiredKnowledgeSourceIds },
-                  source: { deletionRequestedAt: null, trashedAt: null }
                 }
               }
             },
@@ -1539,24 +1578,44 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
                   ]
                 },
                 {
-                  OR: [
-                    ...(requiredKnowledgeIds.length > 0
-                      ? [{ id: { in: requiredKnowledgeIds } }]
-                      : []),
-                    ...(requiredKnowledgeSourceIds.length > 0
-                      ? [{
-                          sourceMemberships: {
-                            some: {
-                              removedAt: null,
-                              sourceId: { in: requiredKnowledgeSourceIds },
-                              source: { deletionRequestedAt: null, trashedAt: null }
-                            }
-                          }
-                        }]
-                      : [])
-                  ]
+                  id: { in: requiredKnowledgeIds }
                 }
               ]
+            }
+          })
+        : Promise.resolve([]),
+      requiredKnowledgeSourceIds.length > 0
+        ? db.knowledgeSource.findMany({
+            orderBy: { id: "asc" },
+            select: {
+              currentVersion: {
+                select: {
+                  artifacts: {
+                    select: {
+                      hierarchicalIndexes: {
+                        orderBy: { schemaVersion: "desc" },
+                        select: { state: true },
+                        take: 1
+                      },
+                      profileRevisionId: true,
+                      state: true
+                    },
+                    where: activeProjectSourceArtifactWhere
+                  },
+                  id: true
+                }
+              },
+              id: true,
+              name: true
+            },
+            where: {
+              deletionRequestedAt: null,
+              id: { in: requiredKnowledgeSourceIds },
+              OR: [
+                { ownerUserId: input.userId },
+                { projectBindings: { some: { projectId: input.projectId } } }
+              ],
+              trashedAt: null
             }
           })
         : Promise.resolve([]),
@@ -1595,6 +1654,15 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       db.projectKnowledgeBaseBinding.findMany({
         select: { knowledgeBaseId: true }, where: { projectId: input.projectId }
       }),
+      requiredKnowledgeSourceIds.length > 0
+        ? db.projectKnowledgeSourceBinding.findMany({
+            select: { sourceId: true },
+            where: {
+              projectId: input.projectId,
+              sourceId: { in: requiredKnowledgeSourceIds }
+            }
+          })
+        : Promise.resolve([]),
       db.projectSkillBinding.findMany({
         select: { skillId: true }, where: { projectId: input.projectId }
       }),
@@ -1605,6 +1673,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
 
     const active = {
       knowledge: new Set(activeKnowledge.map((binding) => binding.knowledgeBaseId)),
+      knowledgeSource: new Set(activeKnowledgeSources.map((binding) => binding.sourceId)),
       mcp: new Set(activeMcp.map((binding) => binding.serverId)),
       model: new Set(activeModels.map((binding) => binding.providerModelId)),
       search: new Set(activeSearch.map((binding) => binding.searchOptionId)),
@@ -1656,36 +1725,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       if (base && eligible) eligibleKnowledgeIds.add(base.id);
     }
     const knowledgeById = new Map(knowledgeBases.map((base) => [base.id, base]));
-    const resolvedKnowledgeIds = new Set(requiredKnowledgeIds);
-    for (const sourceId of requiredKnowledgeSourceIds) {
-      const candidateBases = knowledgeBases.filter((base) => {
-        if (!eligibleKnowledgeIds.has(base.id)) return false;
-        const profileRevisionId = base.activeIndexGeneration?.profileRevisionId;
-        const membership = base.sourceMemberships.find((entry) => entry.sourceId === sourceId);
-        return Boolean(profileRevisionId && membership?.source.currentVersion?.artifacts.some((artifact) =>
-          artifact.profileRevisionId === profileRevisionId && artifact.state === "ready" &&
-          artifact.hierarchicalIndexes.some((hierarchy) => hierarchy.state === "ready")));
-      }).sort((left, right) => {
-        const rank = (baseId: string) => requiredKnowledgeIds.includes(baseId)
-          ? 0
-          : active.knowledge.has(baseId) ? 1 : 2;
-        return rank(left.id) - rank(right.id) || left.id.localeCompare(right.id);
-      });
-      const selectedBase = candidateBases[0];
-      if (selectedBase) {
-        resolvedKnowledgeIds.add(selectedBase.id);
-      } else {
-        const source = knowledgeBases.flatMap((base) => base.sourceMemberships)
-          .find((membership) => membership.sourceId === sourceId)?.source;
-        dependencies.push({
-          label: source?.name ?? "Required Knowledge Source",
-          reason: "Not available through a publishable Knowledge Base.",
-          state: "ineligible",
-          type: "knowledge"
-        });
-      }
-    }
-    for (const baseId of resolvedKnowledgeIds) {
+    for (const baseId of requiredKnowledgeIds) {
       const base = knowledgeById.get(baseId);
       const eligible = Boolean(base && eligibleKnowledgeIds.has(base.id));
       dependencies.push(base && eligible ? {
@@ -1696,6 +1736,28 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       } : {
         label: base?.name ?? "Required Knowledge Base",
         reason: "Not publishable with an active shared embedding configuration.",
+        state: "ineligible",
+        type: "knowledge"
+      });
+    }
+    const eligibleKnowledgeSourceIds = new Set(knowledgeSources.flatMap((source) =>
+      source.currentVersion?.artifacts.some((artifact) =>
+        artifact.state === "ready" &&
+        artifact.hierarchicalIndexes.some((hierarchy) => hierarchy.state === "ready"))
+        ? [source.id]
+        : []));
+    const knowledgeSourceById = new Map(knowledgeSources.map((source) => [source.id, source]));
+    for (const sourceId of requiredKnowledgeSourceIds) {
+      const source = knowledgeSourceById.get(sourceId);
+      const eligible = Boolean(source && eligibleKnowledgeSourceIds.has(source.id));
+      dependencies.push(source && eligible ? {
+        label: source.name,
+        reason: null,
+        state: active.knowledgeSource.has(source.id) ? "active" : "will_add",
+        type: "knowledge"
+      } : {
+        label: source?.name ?? "Required Knowledge Source",
+        reason: "Not publishable as a ready Source for the active installation Knowledge Profile.",
         state: "ineligible",
         type: "knowledge"
       });
@@ -1743,7 +1805,9 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       canCommit: dependencies.every((dependency) => dependency.state !== "ineligible"),
       dependencies,
       knowledgeBases: knowledgeBases.filter((base) =>
-        eligibleKnowledgeIds.has(base.id) && resolvedKnowledgeIds.has(base.id)),
+        eligibleKnowledgeIds.has(base.id) && requiredKnowledgeIds.includes(base.id)),
+      knowledgeSources: knowledgeSources.filter((source) =>
+        eligibleKnowledgeSourceIds.has(source.id)),
       mcpServers: mcpServers.filter((server) => eligibleMcpIds.has(server.id)),
       revision,
       searchOptions,
@@ -2901,7 +2965,14 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             // Preview and commit share this exact plan. The serializable
             // transaction plus policy/revision checks makes Assistant and all
             // newly delegated dependencies one atomic publication.
-            const { knowledgeBases, mcpServers, revision, searchOptions, skills } = plan;
+            const {
+              knowledgeBases,
+              knowledgeSources,
+              mcpServers,
+              revision,
+              searchOptions,
+              skills
+            } = plan;
 
             await tx.projectModelBinding.createMany({
               data: [{ addedByUserId: input.userId, projectId: input.projectId, providerModelId: revision.providerModelId }],
@@ -2920,6 +2991,14 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
                 addedByUserId: input.userId,
                 knowledgeBaseId: base.id,
                 projectId: input.projectId
+              })),
+              skipDuplicates: true
+            });
+            if (knowledgeSources.length > 0) await tx.projectKnowledgeSourceBinding.createMany({
+              data: knowledgeSources.map((source) => ({
+                addedByUserId: input.userId,
+                projectId: input.projectId,
+                sourceId: source.id
               })),
               skipDuplicates: true
             });

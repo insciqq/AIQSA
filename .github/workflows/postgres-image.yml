@@ -43,9 +43,18 @@ jobs:
             exit 1
           fi
 
+  quality:
+    name: Release quality gates
+    needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/knowledge-quality.yml
+
   build:
     name: Build Postgres ${{ matrix.platform }}
-    needs: prepare
+    needs:
+      - prepare
+      - quality
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -113,6 +122,7 @@ jobs:
     name: Publish verified Postgres manifest
     needs:
       - prepare
+      - quality
       - build
     runs-on: ubuntu-24.04
     permissions:

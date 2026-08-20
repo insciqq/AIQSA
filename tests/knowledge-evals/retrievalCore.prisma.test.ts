@@ -24,6 +24,12 @@ describe("Knowledge retrieval core PostgreSQL evaluation", () => {
       retrieval: {
         comparisonTargetCoverage: 1,
         noAnswerFalsePositiveRate: 0
+      },
+      vectorEvidence: {
+        fixture: "deterministic-source-oracle-v1",
+        purpose: "retrieval_plumbing",
+        qualityGateEligible: false,
+        realEmbeddingExecution: "not_measured"
       }
     });
     expect(JSON.stringify(report)).not.toMatch(/knowledge-hierarchical-eval-/u);

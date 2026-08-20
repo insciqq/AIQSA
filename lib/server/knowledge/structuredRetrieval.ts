@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { StorageAdapter } from "../uploads/storage";
+import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
 import { decodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import type { KnowledgeHybridPassage } from "./retrievalTypes";
@@ -37,7 +38,11 @@ export type StructuredKnowledgePassageAnchor = Readonly<{
 }>;
 
 export type StructuredKnowledgeSearchResult =
-  | Readonly<{ kind: "complete"; passage: KnowledgeHybridPassage }>
+  | Readonly<{
+      canonicalSourceProvenance?: readonly KnowledgeCanonicalSourceProvenance[];
+      kind: "complete";
+      passage: KnowledgeHybridPassage;
+    }>
   | Readonly<{ kind: "needs_clarification"; question: string }>
   | Readonly<{ kind: "not_applicable" }>;
 

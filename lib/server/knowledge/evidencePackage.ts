@@ -5,10 +5,17 @@ import type { KnowledgePlannerIntent, KnowledgePlannerStrategy } from "./planner
 import type { KnowledgeCandidateSignal } from "./retrievalRanking";
 import type { StructuredAnalysisResult, StructuredInputRange } from "./structuredData";
 import type { KnowledgeVisualAnalysisResult } from "./visualEvidence";
+import type { KnowledgeDocumentContextV1 } from "./documentContext";
 import type { KnowledgePassageLayoutKind } from "./retrievalTypes";
+import {
+  decodeKnowledgeStrategyCoverageReceiptV1,
+  type KnowledgeMeasuredStrategy,
+  type KnowledgeStrategyCoverageReceiptV1
+} from "./knowledgeStrategyExecution";
 
 export const KNOWLEDGE_EVIDENCE_PACKAGE_VERSION = 2 as const;
 export const KNOWLEDGE_EVIDENCE_PROVENANCE_VERSION = 1 as const;
+export const KNOWLEDGE_STORED_EVIDENCE_PROVENANCE_VERSION = 2 as const;
 
 export type KnowledgeEvidenceConfidenceBucket =
   | "high"
@@ -19,7 +26,7 @@ export type KnowledgeEvidenceConfidenceBucket =
 export type KnowledgeEvidenceRetrievalProvenance = Readonly<{
   confidence: number | null;
   confidenceBucket: KnowledgeEvidenceConfidenceBucket;
-  fusion: "rrf_k60" | "weighted_rrf_v2";
+  fusion: "none" | "rrf_k60" | "weighted_rrf_v2";
   invocationOrdinal: number;
   operation: KnowledgeOperationKind;
   operationId: string;
@@ -36,6 +43,7 @@ export type KnowledgeEvidencePackageItem = Readonly<{
   contentHash: string | null;
   contextBoundaries: Readonly<{
     expanded: boolean;
+    documentContext?: KnowledgeDocumentContextV1;
     excerptBytes: number;
     layoutKind?: KnowledgePassageLayoutKind;
     sourceTextBytes: number;
@@ -98,10 +106,16 @@ export type KnowledgeEvidencePackage = Readonly<{
     readyBases: number;
     readySources: number;
   }>;
+  groundingDispatch?: Readonly<{
+    manifestHash: string;
+    providerAttemptOrdinal: number;
+    version: 1;
+  }>;
   runId: string;
   scopeSnapshot: unknown;
   sessionId: string;
   strategy: KnowledgePlannerStrategy;
+  strategyCoverage?: KnowledgeStrategyCoverageReceiptV1;
   structuredClarifications?: readonly string[];
   version: typeof KNOWLEDGE_EVIDENCE_PACKAGE_VERSION;
 }>;
@@ -138,6 +152,18 @@ export function knowledgeEvidenceKey(input: Readonly<{
   return createHash("sha256").update(canonicalJson(input), "utf8").digest("hex");
 }
 
+/** Current Source-bound identity deliberately excludes Base membership. */
+export function knowledgeSourceEvidenceKey(input: Readonly<{
+  documentVersionId: string;
+  excerpt: string;
+  passageId: string;
+  sourceArtifactId: string;
+  sourceId: string;
+  sourceVersionId: string;
+}>): string {
+  return createHash("sha256").update(canonicalJson(input), "utf8").digest("hex");
+}
+
 export function knowledgeEvidenceReceiptHash(
   evidence: KnowledgeEvidencePackage
 ): string {
@@ -148,13 +174,65 @@ export function knowledgeEvidenceReceiptHash(
     items: evidence.items,
     originalIntent: evidence.originalIntent,
     readiness: evidence.readiness,
+    ...(evidence.groundingDispatch
+      ? { groundingDispatch: evidence.groundingDispatch }
+      : {}),
     runId: evidence.runId,
     scopeSnapshot: evidence.scopeSnapshot,
     sessionId: evidence.sessionId,
     strategy: evidence.strategy,
+    ...(evidence.strategyCoverage
+      ? { strategyCoverage: evidence.strategyCoverage }
+      : {}),
     structuredClarifications: evidence.structuredClarifications ?? [],
     version: evidence.version
   }), "utf8").digest("hex");
+}
+
+export function knowledgeMeasuredStrategyForPlannerStrategy(
+  strategy: KnowledgePlannerStrategy
+): KnowledgeMeasuredStrategy | null {
+  switch (strategy) {
+    case "comparison":
+    case "corpus_summary":
+    case "exhaustive":
+    case "full_context":
+      return strategy;
+    case "multi_pass":
+      return "multi_hop";
+    default:
+      return null;
+  }
+}
+
+/**
+ * A measured strategy is complete only when its sealed receipt is bound to
+ * the exact provider-visible manifest. Counts without this hash binding are
+ * deliberately insufficient.
+ */
+export function knowledgeStrategyCoverageVerifiedForDispatch(input: Readonly<{
+  coverage: unknown;
+  dispatchManifestHash: string;
+  plannerStrategy: KnowledgePlannerStrategy;
+}>): boolean {
+  const coverage = decodeKnowledgeStrategyCoverageReceiptV1(input.coverage);
+  const measuredStrategy = knowledgeMeasuredStrategyForPlannerStrategy(input.plannerStrategy);
+  const completeCorpusRequired = coverage?.strategy === "full_context" ||
+    coverage?.strategy === "exhaustive" || coverage?.strategy === "corpus_summary";
+  const strategyCoverageComplete = completeCorpusRequired
+    ? coverage!.processedSourceCount === coverage!.totalSourceCount &&
+      coverage!.processedPassageCount === coverage!.totalPassageCount
+    : coverage?.strategy === "comparison"
+      ? coverage.settledTargetCount === coverage.totalTargetCount
+      : coverage?.strategy === "multi_hop";
+  return Boolean(coverage && measuredStrategy && coverage.status === "verified" &&
+    coverage.strategy === measuredStrategy &&
+    coverage.dispatchManifestHash === input.dispatchManifestHash &&
+    coverage.sourceSetHash === coverage.observedSourceSetHash &&
+    coverage.requiredStepCount === coverage.terminalRequiredStepCount &&
+    strategyCoverageComplete &&
+    coverage.dispatchExpectedItemCount === coverage.dispatchIncludedItemCount &&
+    coverage.expectedItemsHash === coverage.includedItemsHash);
 }
 
 export const KNOWLEDGE_EVIDENCE_CITATION_CONTRACT = Object.freeze({

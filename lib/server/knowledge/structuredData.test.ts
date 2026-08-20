@@ -4,7 +4,9 @@ import { parseSpreadsheetDocument, type ParsedWorkbook } from "../parsing";
 import {
   decodeStructuredPlan,
   executeStructuredPlan,
+  STRUCTURED_ARITHMETIC_SIGNIFICANT_DIGITS,
   STRUCTURED_PLAN_VERSION,
+  verifyStructuredAnalysisResult,
   type StructuredPlan
 } from "./structuredData";
 
@@ -83,6 +85,37 @@ function overflowWorkbook(): ParsedWorkbook {
     fileName: "overflow.xlsx",
     mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   }).workbook!;
+}
+
+function decimalArithmeticWorkbook(englishRight = "0.2"): ParsedWorkbook {
+  const sheet = utils.aoa_to_sheet([
+    ["Locale", "Left", "Right"],
+    ["EN point", "0.1", englishRight],
+    ["RU comma", "0,1", "0,2"]
+  ]);
+  const value = utils.book_new();
+  utils.book_append_sheet(value, sheet, "Arithmetic");
+  return parseSpreadsheetDocument({
+    bytes: write(value, { bookType: "xlsx", type: "buffer" }),
+    fileName: "decimal-arithmetic.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  }).workbook!;
+}
+
+function decimalArithmeticPlan(): StructuredPlan {
+  return {
+    filters: [],
+    includeHidden: false,
+    leftColumn: "Left",
+    limit: 20,
+    operation: "arithmetic",
+    operator: "add",
+    resultLabel: "Total",
+    rightColumn: "Right",
+    select: ["Locale"],
+    target: { range: "A1:C3", sheet: "Arithmetic" },
+    version: STRUCTURED_PLAN_VERSION
+  };
 }
 
 function sparseJoinWorkbook(rowsPerSheet: number): ParsedWorkbook {
@@ -185,6 +218,50 @@ describe("bounded structured workbook execution", () => {
       ["Central", 40],
       ["East", null]
     ]);
+  });
+
+  it("recomputes persisted decimal arithmetic and rejects any result or receipt tamper", () => {
+    const source = decimalArithmeticWorkbook();
+    const result = executeStructuredPlan(source, decimalArithmeticPlan());
+
+    expect(STRUCTURED_ARITHMETIC_SIGNIFICANT_DIGITS).toBe(15);
+    expect(result.rows).toEqual([
+      ["EN point", 0.3],
+      ["RU comma", 0.3]
+    ]);
+    expect(result.receipt.warnings).toEqual(["locale_numeric_text_coerced"]);
+    expect(verifyStructuredAnalysisResult(source, result)).toBe(true);
+
+    const [firstRange, ...remainingRanges] = result.receipt.inputRanges;
+    expect(firstRange).toBeDefined();
+    const tamperedValues: readonly unknown[] = [
+      {
+        ...result,
+        rows: result.rows.map((row, index) => index === 0 ? [row[0]!, 0.30000000000000004] : row)
+      },
+      { ...result, columns: ["Locale", "Changed"] },
+      {
+        ...result,
+        receipt: { ...result.receipt, plan: { ...result.receipt.plan, operator: "subtract" } }
+      },
+      {
+        ...result,
+        receipt: {
+          ...result.receipt,
+          inputRanges: [{ ...firstRange!, range: "A1:A1" }, ...remainingRanges]
+        }
+      },
+      { ...result, receipt: { ...result.receipt, warnings: [] } },
+      {
+        ...result,
+        receipt: { ...result.receipt, rowsScanned: result.receipt.rowsScanned + 1 }
+      },
+      { ...result, unexpected: true }
+    ];
+    for (const tampered of tamperedValues) {
+      expect(verifyStructuredAnalysisResult(source, tampered)).toBe(false);
+    }
+    expect(verifyStructuredAnalysisResult(decimalArithmeticWorkbook("0.4"), result)).toBe(false);
   });
 
   it("uses cached formula values as data and records that use", () => {

@@ -6,6 +6,10 @@ import { createPrismaKnowledgeSourceLibraryRepository } from "./sourceLibraryRep
 const checksum = "a".repeat(64);
 const normalizedChecksum = "b".repeat(64);
 const fingerprint = "c".repeat(64);
+const fixtureConnectionId = "source-library-test-connection-v1";
+const fixtureModelId = "source-library-test-model-v1";
+const fixtureProfileId = "source-library-test-profile-v1";
+const fixtureProfileRevisionId = "source-library-test-profile-revision-v1";
 
 type Fixture = Readonly<{
   baseAId: string;
@@ -17,6 +21,63 @@ type Fixture = Readonly<{
   sharedUserId: string;
   sourceId: string;
 }>;
+
+async function cleanupFixture(fixture: Fixture): Promise<void> {
+  const baseIds = [fixture.baseAId, fixture.baseBId, fixture.baseCId];
+  const ownerUserIds = [fixture.ownerUserId, fixture.intruderUserId];
+  const ownedBases = await prisma.knowledgeBase.findMany({
+    select: { id: true },
+    where: { ownerUserId: { in: ownerUserIds } }
+  });
+  const allBaseIds = [...new Set([
+    ...baseIds,
+    ...ownedBases.map(({ id }) => id)
+  ])];
+
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+    await tx.knowledgeBasePublication.deleteMany({
+      where: { knowledgeBaseId: { in: allBaseIds } }
+    });
+    await tx.knowledgeBaseSnapshotSource.deleteMany({
+      where: { knowledgeBaseId: { in: allBaseIds } }
+    });
+    await tx.knowledgeBaseSnapshot.deleteMany({
+      where: { knowledgeBaseId: { in: allBaseIds } }
+    });
+    await tx.knowledgeBaseSource.deleteMany({
+      where: { knowledgeBaseId: { in: allBaseIds } }
+    });
+    await tx.knowledgeBase.updateMany({
+      data: { activeIndexGenerationId: null },
+      where: { id: { in: allBaseIds } }
+    });
+    await tx.knowledgeIndexGeneration.deleteMany({
+      where: { knowledgeBaseId: { in: allBaseIds } }
+    });
+    await tx.knowledgeBase.deleteMany({ where: { id: { in: allBaseIds } } });
+    await tx.knowledgeSource.updateMany({
+      data: { currentVersionId: null, pendingVersionId: null },
+      where: { ownerUserId: { in: ownerUserIds } }
+    });
+    await tx.knowledgeSourceIndexArtifact.deleteMany({
+      where: { sourceVersion: { ownerUserId: { in: ownerUserIds } } }
+    });
+    await tx.knowledgeSourceVersion.deleteMany({
+      where: { ownerUserId: { in: ownerUserIds } }
+    });
+    await tx.knowledgeSource.deleteMany({
+      where: { ownerUserId: { in: ownerUserIds } }
+    });
+    await tx.user.deleteMany({
+      where: {
+        id: {
+          in: [fixture.ownerUserId, fixture.sharedUserId, fixture.intruderUserId]
+        }
+      }
+    });
+  });
+}
 
 async function createReadySource(input: Readonly<{
   name: string;
@@ -92,10 +153,7 @@ async function createFixture(): Promise<Fixture> {
   const ownerUserId = `source-library-owner-${suffix}`;
   const sharedUserId = `source-library-shared-${suffix}`;
   const intruderUserId = `source-library-intruder-${suffix}`;
-  const connectionId = `source-library-connection-${suffix}`;
-  const modelId = `source-library-model-${suffix}`;
-  const profileId = `source-library-profile-${suffix}`;
-  const profileRevisionId = `source-library-profile-revision-${suffix}`;
+  const profileRevisionId = fixtureProfileRevisionId;
   await prisma.user.createMany({
     data: [
       { displayName: "Source owner", id: ownerUserId, status: "active" },
@@ -103,40 +161,58 @@ async function createFixture(): Promise<Fixture> {
       { displayName: "Unrelated viewer", id: intruderUserId, status: "active" }
     ]
   });
-  await prisma.providerConnection.create({
-    data: { displayName: "Source Library embeddings", family: "test", id: connectionId }
+  await prisma.providerConnection.upsert({
+    create: {
+      displayName: "Source Library embeddings",
+      family: "test",
+      id: fixtureConnectionId
+    },
+    update: {},
+    where: { id: fixtureConnectionId }
   });
-  await prisma.providerModel.create({
-    data: {
+  await prisma.providerModel.upsert({
+    create: {
       capabilities: {},
-      connectionId,
+      connectionId: fixtureConnectionId,
       defaultParams: {},
       displayName: "Source Library embedding model",
-      id: modelId,
+      id: fixtureModelId,
       modelClass: "embedding",
-      modelId: `embedding-${suffix}`,
+      modelId: "source-library-test-embedding-v1",
       provider: "test"
-    }
+    },
+    update: {},
+    where: { id: fixtureModelId }
   });
-  await prisma.knowledgeIndexProfile.create({ data: { id: profileId } });
-  await prisma.knowledgeIndexProfileRevision.create({
-    data: {
-      activatedAt: new Date(),
-      chunkingProfileVersion: 1,
-      egressPolicy: {},
-      embeddingConfiguration: {},
-      embeddingProviderModelId: modelId,
-      executionAuthority: "installation",
-      id: profileRevisionId,
-      preflightCheckedAt: new Date(),
-      preflightStatus: "ready",
-      profileConfiguration: {},
-      profileId,
-      revisionNumber: 1,
-      targetDimension: 1024,
-      vectorSpaceFingerprint: fingerprint
-    }
+  await prisma.knowledgeIndexProfile.upsert({
+    create: { id: fixtureProfileId },
+    update: {},
+    where: { id: fixtureProfileId }
   });
+  const existingProfileRevision = await prisma.knowledgeIndexProfileRevision.findUnique({
+    select: { id: true },
+    where: { id: fixtureProfileRevisionId }
+  });
+  if (!existingProfileRevision) {
+    await prisma.knowledgeIndexProfileRevision.create({
+      data: {
+        activatedAt: new Date(0),
+        chunkingProfileVersion: 1,
+        egressPolicy: {},
+        embeddingConfiguration: {},
+        embeddingProviderModelId: fixtureModelId,
+        executionAuthority: "installation",
+        id: profileRevisionId,
+        preflightCheckedAt: new Date(0),
+        preflightStatus: "ready",
+        profileConfiguration: {},
+        profileId: fixtureProfileId,
+        revisionNumber: 1,
+        targetDimension: 1024,
+        vectorSpaceFingerprint: fingerprint
+      }
+    });
+  }
   const [baseA, baseB, baseC, otherBase] = await Promise.all([
     prisma.knowledgeBase.create({
       data: { name: "Product", ownerUserId },
@@ -161,7 +237,7 @@ async function createFixture(): Promise<Fixture> {
         activatedAt: new Date(),
         chunkingProfileVersion: 1,
         embeddingConfiguration: {},
-        embeddingProviderModelId: modelId,
+        embeddingProviderModelId: fixtureModelId,
         indexedContentRevision: 0,
         knowledgeBaseId: base.id,
         profileRevisionId,
@@ -225,6 +301,7 @@ describe("Prisma Knowledge Source Library", () => {
   });
 
   afterAll(async () => {
+    if (fixture) await cleanupFixture(fixture);
     await prisma.$disconnect();
   });
 
@@ -279,6 +356,7 @@ describe("Prisma Knowledge Source Library", () => {
     ]));
 
     const sharedList = await repository.listForUser({
+      baseId: fixture.baseAId,
       filter: "shared",
       page: 1,
       pageSize: 25,

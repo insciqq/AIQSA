@@ -3,7 +3,6 @@ import type { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "../prisma";
 import { createPrismaAdminRepository } from "./adminRepository";
-import { DEFAULT_BOOTSTRAP_USER_ID } from "./config";
 import { loadEntitlementsForUser } from "./dbEntitlements";
 import { hashPassword, isPlausibleEmail } from "./password";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
@@ -378,7 +377,7 @@ describe("Prisma-backed admin repository", () => {
     });
   });
 
-  it("serializes reciprocal fixture-admin disables without revoking seeded operator sessions", async () => {
+  it("serializes reciprocal fixture-admin disables without revoking an unrelated user session", async () => {
     await withAdminData(async ({ adminId, domain, repository }) => {
       const peerAdmin = await prisma.user.create({
         data: {
@@ -388,12 +387,20 @@ describe("Prisma-backed admin repository", () => {
           status: "active"
         }
       });
-      const sentinelTokenHash = hashToken(`seeded-operator-session-${domain}`);
+      const sentinelUser = await prisma.user.create({
+        data: {
+          displayName: "Unrelated Session Sentinel",
+          email: `session-sentinel@${domain}`,
+          role: "user",
+          status: "active"
+        }
+      });
+      const sentinelTokenHash = hashToken(`unrelated-user-session-${domain}`);
       await prisma.authSession.create({
         data: {
           expiresAt: new Date("2099-01-01T00:00:00.000Z"),
           tokenHash: sentinelTokenHash,
-          userId: DEFAULT_BOOTSTRAP_USER_ID
+          userId: sentinelUser.id
         }
       });
 
@@ -443,6 +450,11 @@ describe("Prisma-backed admin repository", () => {
         await prisma.authSession.deleteMany({
           where: {
             tokenHash: sentinelTokenHash
+          }
+        });
+        await prisma.user.deleteMany({
+          where: {
+            id: sentinelUser.id
           }
         });
       }

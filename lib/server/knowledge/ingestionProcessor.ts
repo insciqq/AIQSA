@@ -33,7 +33,7 @@ import {
 import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
 import {
   createKnowledgeVectorSpacePin,
-  KNOWLEDGE_CHUNKING_PROFILE_VERSION
+  KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import {
   decodeKnowledgeNormalizedDocument,
@@ -364,7 +364,8 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       try {
         encoded = encodeKnowledgeNormalizedDocument(parsed, config, {
           layoutAwareTables:
-            claim.artifact.chunkingProfileVersion >= KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+            claim.artifact.chunkingProfileVersion >=
+              KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
           sourceDisplayName: claim.fileName,
           sourceMediaType: claim.mimeType
         });

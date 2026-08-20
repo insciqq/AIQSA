@@ -1,10 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
-import {
-  createPrismaRetentionRepository,
-  drainDeletionObligations
-} from "../retention/prune";
+import { createPrismaRetentionRepository } from "../retention/prune";
+import { createPrismaKnowledgeDeletionProcessor } from "./deletionProcessor";
 import { createPrismaKnowledgeLifecycleRepository } from "./lifecycleRepository";
 import {
   backfillV1KnowledgeSources,
@@ -16,10 +14,16 @@ import {
 const checksum = "b".repeat(64);
 const normalizedChecksum = "c".repeat(64);
 const vectorSpaceFingerprint = "d".repeat(64);
+const fixtureConnectionId = "knowledge-source-persistence-test-connection-v1";
+const fixtureProfileId = "knowledge-source-persistence-test-profile-v1";
+const fixtureProfileRevisionId = "knowledge-source-persistence-test-profile-revision-v1";
+const fixtureProfileRevisionV2Id = "knowledge-source-persistence-test-profile-revision-v2";
+const fixtureProviderModelId = "knowledge-source-persistence-test-model-v1";
 
 type Fixture = Readonly<{
   baseId: string;
   generationId: string;
+  ownerUserId: string;
   processingDocumentId: string;
   profileId: string;
   profileRevisionId: string;
@@ -27,13 +31,185 @@ type Fixture = Readonly<{
   readyDocumentId: string;
 }>;
 
+type ReconciliationReport = Awaited<
+  ReturnType<typeof reconcileKnowledgeSourcePersistence>
+>;
+
+function scopedSnapshotBackfillClient(fixture: Fixture): typeof prisma {
+  return {
+    $queryRaw: async () => [{
+      indexGenerationId: fixture.generationId,
+      knowledgeBaseId: fixture.baseId
+    }],
+    $transaction: prisma.$transaction.bind(prisma)
+  } as unknown as typeof prisma;
+}
+
+async function cleanupFixture(fixture: Fixture): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+    const [documentStorage, sourceStorage, artifactStorage] = await Promise.all([
+      tx.knowledgeDocumentVersion.findMany({
+        select: { normalizedTextStorageKey: true, originalStorageKey: true },
+        where: { knowledgeBaseId: fixture.baseId }
+      }),
+      tx.knowledgeSourceVersion.findMany({
+        select: { originalStorageKey: true },
+        where: { ownerUserId: fixture.ownerUserId }
+      }),
+      tx.knowledgeSourceIndexArtifact.findMany({
+        select: { normalizedTextStorageKey: true },
+        where: { sourceVersion: { ownerUserId: fixture.ownerUserId } }
+      })
+    ]);
+    const storageKeys = [...new Set([
+      ...documentStorage.flatMap((row) => [
+        row.normalizedTextStorageKey,
+        row.originalStorageKey
+      ]),
+      ...sourceStorage.map((row) => row.originalStorageKey),
+      ...artifactStorage.map((row) => row.normalizedTextStorageKey)
+    ].filter((value): value is string => Boolean(value)))];
+
+    await tx.knowledgeDeletionJob.deleteMany({
+      where: { ownerUserId: fixture.ownerUserId }
+    });
+    if (storageKeys.length > 0) {
+      await tx.attachmentDeletionJob.deleteMany({
+        where: { storageKey: { in: storageKeys } }
+      });
+    }
+    await tx.knowledgeBaseSnapshotSource.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeBaseSnapshot.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeV1GenerationArtifactMap.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeV1DocumentVersionSourceMap.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeV1DocumentSourceMap.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeBaseSource.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeDocument.updateMany({
+      data: { currentVersionId: null },
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeGenerationDocument.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeChunk.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeDocumentVersion.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeDocument.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeBase.updateMany({
+      data: { activeIndexGenerationId: null },
+      where: { id: fixture.baseId }
+    });
+    await tx.knowledgeIndexGeneration.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeBase.deleteMany({ where: { id: fixture.baseId } });
+    await tx.knowledgeSource.updateMany({
+      data: { currentVersionId: null, pendingVersionId: null },
+      where: { ownerUserId: fixture.ownerUserId }
+    });
+    await tx.knowledgeSourceIndexArtifact.deleteMany({
+      where: { sourceVersion: { ownerUserId: fixture.ownerUserId } }
+    });
+    await tx.knowledgeSourceVersion.deleteMany({
+      where: { ownerUserId: fixture.ownerUserId }
+    });
+    await tx.knowledgeSource.deleteMany({
+      where: { ownerUserId: fixture.ownerUserId }
+    });
+    await tx.user.deleteMany({ where: { id: fixture.ownerUserId } });
+  });
+}
+
+async function claimOwnedKnowledgeDeletionJob(jobId: string) {
+  const claimToken = randomUUID();
+  const now = new Date();
+  const claimed = await prisma.knowledgeDeletionJob.updateMany({
+    data: {
+      attemptCount: { increment: 1 },
+      claimedAt: now,
+      claimToken,
+      lastAttemptAt: now,
+      lastErrorCode: null,
+      leaseExpiresAt: new Date(now.getTime() + 60_000),
+      state: "RUNNING"
+    },
+    where: { id: jobId, state: { in: ["PENDING", "RETRY_WAIT"] } }
+  });
+  expect(claimed.count).toBe(1);
+  const job = await prisma.knowledgeDeletionJob.findUniqueOrThrow({
+    select: { id: true, ownerUserId: true, targetId: true, targetType: true },
+    where: { id: jobId }
+  });
+  return { ...job, claimToken };
+}
+
+async function drainOwnedKnowledgeDeletionJob(jobId: string): Promise<string[]> {
+  const processor = createPrismaKnowledgeDeletionProcessor(prisma);
+  const firstClaim = await claimOwnedKnowledgeDeletionJob(jobId);
+  await expect(processor.process(firstClaim)).resolves.toBe("waiting_for_objects");
+  const pendingObjects = await prisma.knowledgeDeletionObject.findMany({
+    orderBy: { storageKey: "asc" },
+    select: { storageKey: true },
+    where: { disposition: "PENDING", knowledgeDeletionJobId: jobId }
+  });
+  expect(pendingObjects.length).toBeGreaterThan(0);
+
+  const retention = createPrismaRetentionRepository(prisma);
+  const deletedKeys: string[] = [];
+  for (const { storageKey } of pendingObjects) {
+    const attachmentJob = await prisma.attachmentDeletionJob.findUniqueOrThrow({
+      select: { id: true },
+      where: { storageKey }
+    });
+    const claimToken = randomUUID();
+    const now = new Date();
+    const claimed = await prisma.attachmentDeletionJob.updateMany({
+      data: {
+        attemptCount: { increment: 1 },
+        claimedAt: now,
+        claimToken,
+        lastAttemptAt: now,
+        lastErrorCode: null
+      },
+      where: { id: attachmentJob.id }
+    });
+    expect(claimed.count).toBe(1);
+    deletedKeys.push(storageKey);
+    await expect(retention.completeAttachmentDeletionJob({
+      claimToken,
+      id: attachmentJob.id
+    })).resolves.toBe(true);
+  }
+
+  const finalClaim = await claimOwnedKnowledgeDeletionJob(jobId);
+  await expect(processor.process(finalClaim)).resolves.toBe("completed");
+  return deletedKeys;
+}
+
 async function createFixture(): Promise<Fixture> {
   const suffix = randomUUID();
   const ownerUserId = `knowledge-source-owner-${suffix}`;
-  const connectionId = `knowledge-source-connection-${suffix}`;
-  const providerModelId = `knowledge-source-model-${suffix}`;
-  const profileId = `knowledge-source-profile-${suffix}`;
-  const profileRevisionId = `knowledge-source-profile-revision-${suffix}`;
+  const providerModelId = fixtureProviderModelId;
+  const profileId = fixtureProfileId;
+  const profileRevisionId = fixtureProfileRevisionId;
   await prisma.user.create({
     data: {
       displayName: "Knowledge source owner",
@@ -41,46 +217,58 @@ async function createFixture(): Promise<Fixture> {
       status: "active"
     }
   });
-  await prisma.providerConnection.create({
-    data: {
+  await prisma.providerConnection.upsert({
+    create: {
       displayName: "Knowledge source embeddings",
       family: "test",
-      id: connectionId
-    }
+      id: fixtureConnectionId
+    },
+    update: {},
+    where: { id: fixtureConnectionId }
   });
-  await prisma.providerModel.create({
-    data: {
+  await prisma.providerModel.upsert({
+    create: {
       capabilities: {},
-      connectionId,
+      connectionId: fixtureConnectionId,
       defaultParams: {},
       displayName: "Knowledge source embedding model",
       id: providerModelId,
       modelClass: "embedding",
-      modelId: `embedding-${suffix}`,
+      modelId: "knowledge-source-persistence-test-embedding-v1",
       provider: "test"
-    }
+    },
+    update: {},
+    where: { id: providerModelId }
   });
-  await prisma.knowledgeIndexProfile.create({
-    data: { id: profileId }
+  await prisma.knowledgeIndexProfile.upsert({
+    create: { id: profileId },
+    update: {},
+    where: { id: profileId }
   });
-  await prisma.knowledgeIndexProfileRevision.create({
-    data: {
-      activatedAt: new Date(),
-      chunkingProfileVersion: 1,
-      egressPolicy: {},
-      embeddingConfiguration: {},
-      embeddingProviderModelId: providerModelId,
-      executionAuthority: "installation",
-      id: profileRevisionId,
-      preflightCheckedAt: new Date(),
-      preflightStatus: "ready",
-      profileConfiguration: {},
-      profileId,
-      revisionNumber: 1,
-      targetDimension: 1024,
-      vectorSpaceFingerprint
-    }
+  const existingProfileRevision = await prisma.knowledgeIndexProfileRevision.findUnique({
+    select: { id: true },
+    where: { id: profileRevisionId }
   });
+  if (!existingProfileRevision) {
+    await prisma.knowledgeIndexProfileRevision.create({
+      data: {
+        activatedAt: new Date(0),
+        chunkingProfileVersion: 1,
+        egressPolicy: {},
+        embeddingConfiguration: {},
+        embeddingProviderModelId: providerModelId,
+        executionAuthority: "installation",
+        id: profileRevisionId,
+        preflightCheckedAt: new Date(0),
+        preflightStatus: "ready",
+        profileConfiguration: {},
+        profileId,
+        revisionNumber: 1,
+        targetDimension: 1024,
+        vectorSpaceFingerprint
+      }
+    });
+  }
   const base = await prisma.knowledgeBase.create({
     data: {
       description: "Source persistence fixture",
@@ -166,6 +354,7 @@ async function createFixture(): Promise<Fixture> {
   return {
     baseId: base.id,
     generationId: generation.id,
+    ownerUserId,
     processingDocumentId: processingDocument.id,
     profileId,
     profileRevisionId,
@@ -176,12 +365,15 @@ async function createFixture(): Promise<Fixture> {
 
 describe("Knowledge Source V1 persistence and snapshots", () => {
   let fixture: Fixture;
+  let reconciliationBeforeFixture: ReconciliationReport;
 
   beforeAll(async () => {
+    reconciliationBeforeFixture = await reconcileKnowledgeSourcePersistence(prisma);
     fixture = await createFixture();
   });
 
   afterAll(async () => {
+    if (fixture) await cleanupFixture(fixture);
     await prisma.$disconnect();
   });
 
@@ -327,8 +519,18 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
     ]);
     expect(report.mappedDocuments).toBeGreaterThanOrEqual(2);
     expect(report.mappedVersions).toBeGreaterThanOrEqual(2);
-    expect(report.discrepancies).toBe(0);
-    await expect(materializeKnowledgeBackfillSnapshots(prisma)).resolves.toMatchObject({
+    expect(report.discrepancies).toBe(reconciliationBeforeFixture.discrepancies);
+    expect(report.invalidArtifactMappings).toBe(
+      reconciliationBeforeFixture.invalidArtifactMappings
+    );
+    expect(report.invalidDocumentMappings).toBe(
+      reconciliationBeforeFixture.invalidDocumentMappings
+    );
+    expect(report.invalidVersionMappings).toBe(
+      reconciliationBeforeFixture.invalidVersionMappings
+    );
+    const snapshotClient = scopedSnapshotBackfillClient(fixture);
+    await expect(materializeKnowledgeBackfillSnapshots(snapshotClient)).resolves.toMatchObject({
       materializedBases: expect.any(Number),
       readySources: expect.any(Number),
       sources: expect.any(Number)
@@ -336,7 +538,7 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
     const snapshotCount = await prisma.knowledgeBaseSnapshot.count({
       where: { knowledgeBaseId: fixture.baseId }
     });
-    await materializeKnowledgeBackfillSnapshots(prisma);
+    await materializeKnowledgeBackfillSnapshots(snapshotClient);
     await expect(prisma.knowledgeBaseSnapshot.count({
       where: { knowledgeBaseId: fixture.baseId }
     })).resolves.toBe(snapshotCount);
@@ -382,25 +584,31 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
     expect(second).toMatchObject({ readySourceCount: 0, sourceCount: 1 });
     expect(second.snapshotId).not.toBe(first.snapshotId);
 
-    const nextProfileRevisionId = `knowledge-source-profile-revision-${randomUUID()}`;
-    await prisma.knowledgeIndexProfileRevision.create({
-      data: {
-        activatedAt: new Date(),
-        chunkingProfileVersion: 2,
-        egressPolicy: {},
-        embeddingConfiguration: {},
-        embeddingProviderModelId: fixture.providerModelId,
-        executionAuthority: "installation",
-        id: nextProfileRevisionId,
-        preflightCheckedAt: new Date(),
-        preflightStatus: "ready",
-        profileConfiguration: {},
-        profileId: fixture.profileId,
-        revisionNumber: 2,
-        targetDimension: 1024,
-        vectorSpaceFingerprint: "e".repeat(64)
-      }
+    const nextProfileRevisionId = fixtureProfileRevisionV2Id;
+    const existingNextProfileRevision = await prisma.knowledgeIndexProfileRevision.findUnique({
+      select: { id: true },
+      where: { id: nextProfileRevisionId }
     });
+    if (!existingNextProfileRevision) {
+      await prisma.knowledgeIndexProfileRevision.create({
+        data: {
+          activatedAt: new Date(0),
+          chunkingProfileVersion: 2,
+          egressPolicy: {},
+          embeddingConfiguration: {},
+          embeddingProviderModelId: fixture.providerModelId,
+          executionAuthority: "installation",
+          id: nextProfileRevisionId,
+          preflightCheckedAt: new Date(0),
+          preflightStatus: "ready",
+          profileConfiguration: {},
+          profileId: fixture.profileId,
+          revisionNumber: 2,
+          targetDimension: 1024,
+          vectorSpaceFingerprint: "e".repeat(64)
+        }
+      });
+    }
     const nextGeneration = await prisma.$transaction(async (tx) => {
       await tx.knowledgeIndexGeneration.update({
         data: { retiredAt: new Date(), status: "retired" },
@@ -486,16 +694,13 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
       mapping.sourceId,
       source.version + 1
     )).resolves.toEqual({ kind: "pending" });
-    const deletedKeys: string[] = [];
-    const drained = await drainDeletionObligations({
-      repository: createPrismaRetentionRepository(prisma),
-      storage: {
-        async deleteObject(storageKey) {
-          deletedKeys.push(storageKey);
-        }
+    const deletionJob = await prisma.knowledgeDeletionJob.findUniqueOrThrow({
+      select: { id: true },
+      where: {
+        targetType_targetId: { targetId: mapping.sourceId, targetType: "SOURCE" }
       }
     });
-    expect(drained.knowledgeJobs.failed).toBe(0);
+    const deletedKeys = await drainOwnedKnowledgeDeletionJob(deletionJob.id);
     expect(deletedKeys).not.toEqual([]);
     await expect(prisma.knowledgeSource.findUnique({ where: { id: mapping.sourceId } }))
       .resolves.toBeNull();

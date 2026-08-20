@@ -142,6 +142,62 @@ describe("Docling normalization", () => {
     expect(parsed.assets).toMatchObject([{ id: "docling-picture-0", page: 1 }]);
   });
 
+  it("derives a multipage table range from all Docling provenance entries", () => {
+    const parsed = normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: { children: [{ $ref: "#/tables/0" }] },
+          pages: { "1": { page_no: 1 } },
+          schema_name: "DoclingDocument",
+          tables: [{
+            content_layer: "body",
+            data: {
+              table_cells: [{
+                end_col_offset_idx: 1,
+                end_row_offset_idx: 1,
+                start_col_offset_idx: 0,
+                start_row_offset_idx: 0,
+                text: "Metric"
+              }]
+            },
+            prov: [{
+              bbox: { b: 20, coord_origin: "TOPLEFT", l: 2, r: 100, t: 4 },
+              page_no: 1
+            }, {
+              bbox: { b: 20, coord_origin: "TOPLEFT", l: 2, r: 100, t: 4 },
+              page_no: 2
+            }]
+          }]
+        }
+      },
+      status: "success"
+    }, "application/pdf");
+
+    expect(parsed.pageCount).toBe(2);
+    expect(parsed.blocks).toMatchObject([{
+      boundingBoxes: [{ page: 1 }, { page: 2 }],
+      isTable: true,
+      page: 1,
+      pageEnd: 2,
+      text: "Metric"
+    }]);
+  });
+
+  it("rejects a picture whose provenance spans multiple pages", () => {
+    expect(() => normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: { children: [{ $ref: "#/pictures/0" }] },
+          pictures: [{
+            prov: [{ page_no: 1 }, { page_no: 2 }]
+          }],
+          schema_name: "DoclingDocument"
+        }
+      },
+      status: "success"
+    }, "application/pdf")).toThrow(expect.objectContaining({ code: "parser_invalid_output" }));
+  });
+
   it("rejects a success envelope without a Docling document", () => {
     expect(() => normalizeDoclingResponse({
       document: { json_content: { schema_name: "unknown" } },
@@ -172,13 +228,15 @@ describe("Docling normalization", () => {
           form_items: [{
             content_layer: "body",
             graph: { cells: [], links: [] },
-            prov: [{ page_no: 2 }]
+            prov: [{ page_no: 2 }],
+            self_ref: "#/form_items/0"
           }],
           groups: [],
           key_value_items: [{
             content_layer: "body",
             graph: { cells: [], links: [] },
-            prov: [{ page_no: 1 }]
+            prov: [{ page_no: 1 }],
+            self_ref: "#/key_value_items/0"
           }],
           pictures: [],
           schema_name: "DoclingDocument",
@@ -194,6 +252,191 @@ describe("Docling normalization", () => {
 
     expect(parsed.text).toBe("Opening\n\nField value");
     expect(parsed.blocks).toHaveLength(2);
+    expect(parsed.fieldGroups).toMatchObject([
+      { cells: [], kind: "key_value", links: [], readingOrder: 1 },
+      { cells: [], kind: "form", links: [], readingOrder: 1 }
+    ]);
+  });
+
+  it("preserves bounded form and key/value graphs without inventing pairs", () => {
+    const parsed = normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: {
+            children: [
+              { $ref: "#/texts/0" },
+              { $ref: "#/key_value_items/0" },
+              { $ref: "#/form_items/0" }
+            ]
+          },
+          form_items: [{
+            graph: {
+              cells: [{
+                cell_id: 7,
+                confidence: 0.92,
+                item_ref: null,
+                label: "checkbox",
+                orig: "[x]",
+                prov: null,
+                text: "checked"
+              }],
+              links: []
+            },
+            self_ref: "#/form_items/0"
+          }],
+          key_value_items: [{
+            graph: {
+              cells: [{
+                cell_id: 10,
+                item_ref: { $ref: "#/texts/0" },
+                label: "key",
+                orig: " Pressure ",
+                prov: {
+                  bbox: { b: 20, coord_origin: "TOPLEFT", l: 10, r: 90, t: 10 },
+                  page_no: 2
+                },
+                text: "Pressure  reading"
+              }, {
+                cell_id: 20,
+                label: "value",
+                orig: "1 013 kPa",
+                prov: {
+                  bbox: { b: 20, coord_origin: "TOPLEFT", l: 100, r: 180, t: 10 },
+                  page_no: 2
+                },
+                text: "1 013 kPa"
+              }],
+              links: [{
+                label: "to_value",
+                source_cell_id: 10,
+                target_cell_id: 20
+              }]
+            },
+            prov: [{
+              bbox: { b: 24, coord_origin: "TOPLEFT", l: 5, r: 185, t: 5 },
+              page_no: 2
+            }],
+            self_ref: "#/key_value_items/0"
+          }],
+          schema_name: "DoclingDocument",
+          texts: [{
+            content_layer: "body",
+            label: "paragraph",
+            prov: [{ page_no: 1 }],
+            text: "Report"
+          }]
+        }
+      },
+      status: "success"
+    }, "application/pdf");
+
+    expect(parsed.fieldGroups).toMatchObject([{
+      cells: [{
+        confidence: null,
+        id: 10,
+        itemRef: "#/texts/0",
+        label: "key",
+        order: 0,
+        originalText: " Pressure ",
+        text: "Pressure  reading"
+      }, {
+        confidence: null,
+        id: 20,
+        label: "value",
+        order: 1
+      }],
+      confidence: null,
+      kind: "key_value",
+      links: [{
+        confidence: null,
+        label: "to_value",
+        order: 0,
+        sourceCellId: 10,
+        targetCellId: 20
+      }],
+      page: 2,
+      pageEnd: 2,
+      readingOrder: 1,
+      sourceRef: "#/key_value_items/0"
+    }, {
+      cells: [{ confidence: 0.92, id: 7, label: "checkbox" }],
+      kind: "form",
+      links: [],
+      readingOrder: 1
+    }]);
+    expect(parsed.fieldGroups[0]?.cells[0]?.boundingBoxes).toHaveLength(1);
+    expect(parsed.text).toContain("Pressure  reading\n\n1 013 kPa\n\nchecked");
+  });
+
+  it.each([
+    {
+      graph: {
+        cells: [
+          { cell_id: 1, label: "key", orig: "a", text: "a" },
+          { cell_id: 1, label: "value", orig: "b", text: "b" }
+        ],
+        links: []
+      },
+      name: "duplicate cell IDs"
+    },
+    {
+      graph: {
+        cells: [{ cell_id: 1, label: "key", orig: "a", text: "a" }],
+        links: [{ label: "to_value", source_cell_id: 1, target_cell_id: 2 }]
+      },
+      name: "dangling links"
+    },
+    {
+      graph: {
+        cells: [
+          { cell_id: 1, label: "key", orig: "a", text: "a" },
+          { cell_id: 2, label: "value", orig: "b", text: "b" }
+        ],
+        links: [
+          { label: "to_value", source_cell_id: 1, target_cell_id: 2 },
+          { label: "to_value", source_cell_id: 1, target_cell_id: 2 }
+        ]
+      },
+      name: "duplicate links"
+    },
+    {
+      graph: {
+        cells: [{ cell_id: 1, confidence: 2, label: "key", orig: "a", text: "a" }],
+        links: []
+      },
+      name: "invalid confidence"
+    },
+    {
+      graph: {
+        cells: [{
+          cell_id: 1,
+          label: "key",
+          orig: "a",
+          prov: {
+            bbox: { b: 2, coord_origin: "SIDEWAYS", l: 0, r: 2, t: 0 },
+            page_no: 1
+          },
+          text: "a"
+        }],
+        links: []
+      },
+      name: "invalid positioned provenance"
+    },
+    {
+      graph: { cells: Array(10_001).fill(null), links: [] },
+      name: "cell caps"
+    }
+  ])("rejects form graphs with $name", ({ graph }) => {
+    expect(() => normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: { children: [{ $ref: "#/form_items/0" }] },
+          form_items: [{ graph, self_ref: "#/form_items/0" }],
+          schema_name: "DoclingDocument"
+        }
+      },
+      status: "success"
+    }, "application/pdf")).toThrow(expect.objectContaining({ code: "parser_invalid_output" }));
   });
 
   it.each([

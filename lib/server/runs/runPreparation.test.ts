@@ -6,6 +6,10 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import { knowledgeFollowUpTools } from "../knowledge/knowledgeTools";
+import {
+  KNOWLEDGE_PLANNER_VERSION,
+  planKnowledgeRequest
+} from "../knowledge/planner";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import {
   ProviderAdmissionError,
@@ -2174,9 +2178,87 @@ describe("run preparation", () => {
       evidenceMode: "fuller",
       intent: "single_source_summary",
       strategy: "full_context",
-      version: 1
+      version: KNOWLEDGE_PLANNER_VERSION
     });
     expect(prepared.providerRequest.tools).toBeUndefined();
+  });
+
+  it("does not double-count one canonical Source selected through a Base and directly", async () => {
+    const sourceId = "00000000-0000-4000-8000-000000000001";
+    const selection: KnowledgeSelection = {
+      baseIds: ["knowledge-base-1"],
+      mode: "explicit",
+      sourceIds: [sourceId],
+      version: 1
+    };
+    const planner = vi.fn(async (input) => planKnowledgeRequest(input));
+    const harness = createHarness();
+    const prepared = preparedFrom(await prepareRun(
+      {
+        ...harness.deps,
+        knowledgeAdmission: {
+          async load(input) {
+            return {
+              ...admittedKnowledge(input, "9"),
+              profiles: [{
+                embeddingCredentialSource: "default" as const,
+                embeddingExecutionSnapshot: {} as never,
+                embeddingProviderModelId: "embedding-model-1",
+                ordinal: 0,
+                profileRevisionId: "profile-revision-1",
+                targetDimension: 1024,
+                vectorSpaceFingerprint: "a".repeat(64)
+              }],
+              resolvedSourceCount: 1,
+              sources: [{
+                approxTokens: 1_200,
+                authority: {
+                  knowledgeBaseIds: ["knowledge-base-1"],
+                  owner: true,
+                  projectId: null
+                },
+                baseProvenance: [{
+                  indexGenerationId: "generation-1",
+                  knowledgeBaseId: "knowledge-base-1"
+                }],
+                directSelected: true,
+                ordinal: 0,
+                passageCount: 6,
+                privateLabels: { fileName: "source-1.md", sourceName: "Source 1" },
+                profileOrdinal: 0,
+                profileRevisionId: "profile-revision-1",
+                selectionProvenance: ["base" as const, "explicit_source" as const],
+                sourceAlias: "S1",
+                sourceArtifactId: "artifact-1",
+                sourceId,
+                sourceVersionId: "source-version-1",
+                sourceVersionNumber: 1
+              }]
+            };
+          }
+        },
+        knowledgePlanner: { plan: planner }
+      },
+      sendInput(successBody({
+        content: textMessageContent("Summarize this source"),
+        knowledgePlan: selection
+      }))
+    ));
+
+    expect(planner).toHaveBeenCalledOnce();
+    expect(planner.mock.calls[0]?.[0].directSources).toEqual([]);
+    expect(planner.mock.calls[0]?.[0].sources).toEqual([{
+      fileName: "source-1.md",
+      sourceAlias: "S1",
+      sourceId,
+      sourceName: "Source 1",
+      versionNumber: 1
+    }]);
+    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
+      automaticRetrieval: true,
+      intent: "single_source_summary",
+      strategy: "full_context"
+    });
   });
 
   it("records a deterministic degraded planner decision when an injected planner is unavailable", async () => {
@@ -2217,9 +2299,19 @@ describe("run preparation", () => {
         ...harness.deps,
         knowledgeAdmission: {
           async load(input) {
+            const admitted = admittedKnowledge(input, "7");
             return {
-              ...admittedKnowledge(input, "7", []),
-              exclusions: [{ count: 1, reason: "not_ready" as const, resourceType: "base" as const }]
+              ...admitted,
+              bindings: admitted.bindings.map((binding) => ({
+                ...binding,
+                approxTokens: null,
+                passageCount: null,
+                readySourceCount: 0,
+                sourceCount: 1
+              })),
+              exclusions: [{ count: 1, reason: "not_ready" as const, resourceType: "source" as const }],
+              profiles: [],
+              sources: []
             };
           }
         }

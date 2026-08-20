@@ -58,6 +58,19 @@ describe("administrator Knowledge contract", () => {
     expect(decodeAdminKnowledgeResponse({
       knowledge: {
         ...response.knowledge,
+        profile: {
+          ...response.knowledge.profile,
+          egress: {
+            ...response.knowledge.profile.egress,
+            roles: response.knowledge.profile.egress.roles.map((role) =>
+              role.operation === "query_planning" ? { ...role, mode: "external" } : role)
+          }
+        }
+      }
+    })).toBeNull();
+    expect(decodeAdminKnowledgeResponse({
+      knowledge: {
+        ...response.knowledge,
         operations: {
           ...response.knowledge.operations,
           alerts: [{ code: "private_filename", severity: "critical" }]

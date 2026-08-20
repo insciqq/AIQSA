@@ -82,8 +82,13 @@ type LockedUploadBase = Readonly<{
   trashedAt: Date | null;
 }>;
 
+const SERIALIZABLE_ATTEMPTS = 5;
+
 function serializationConflict(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
+  return error instanceof Prisma.PrismaClientKnownRequestError && (
+    error.code === "P2034" ||
+    error.code === "P2010" && error.meta?.code === "40001"
+  );
 }
 
 function uniqueConflict(error: unknown): boolean {
@@ -91,11 +96,11 @@ function uniqueConflict(error: unknown): boolean {
 }
 
 async function serializable<T>(operation: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
-      if (attempt < 2 && serializationConflict(error)) continue;
+      if (attempt < SERIALIZABLE_ATTEMPTS - 1 && serializationConflict(error)) continue;
       throw error;
     }
   }

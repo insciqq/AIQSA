@@ -6,6 +6,7 @@ import type {
   ParsedDocumentParserAttempt,
   ParsedDocumentQuality,
   ParsedDocumentWarningCode,
+  ParsedFieldGroup,
   ParsedWorkbook
 } from "./types";
 
@@ -16,6 +17,7 @@ type ParsedDocumentDraft = Readonly<{
   attempts?: readonly ParsedDocumentParserAttempt[];
   blocks: readonly ParsedDocumentBlock[];
   engine: ParsedDocument["engine"];
+  fieldGroups?: readonly ParsedFieldGroup[];
   languages?: readonly string[];
   mediaType: string;
   ocrConfidence?: number | null;
@@ -39,13 +41,19 @@ export function parsedLanguageHints(text: string): readonly string[] {
 
 function qualityFor(
   blocks: readonly ParsedDocumentBlock[],
+  fieldGroups: readonly ParsedFieldGroup[],
   pageCount: number,
   ocrConfidence: number | null
 ): ParsedDocumentQuality {
   const usable = blocks.filter((block) => block.text.trim().length > 0);
+  const usableFieldGroups = fieldGroups.filter((group) =>
+    group.cells.some((cell) => cell.text.trim().length > 0));
   const coveredPages = new Set<number>();
   for (const block of usable) {
     for (let page = block.page; page <= block.pageEnd; page += 1) coveredPages.add(page);
+  }
+  for (const group of usableFieldGroups) {
+    for (let page = group.page; page <= group.pageEnd; page += 1) coveredPages.add(page);
   }
 
   const repeated = new Map<string, Set<number>>();
@@ -60,7 +68,9 @@ function qualityFor(
     const key = block.text.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
     return (repeated.get(key)?.size ?? 0) >= 2;
   }).length;
-  const characterCount = usable.reduce((total, block) => total + block.text.length, 0);
+  const characterCount = usable.reduce((total, block) => total + block.text.length, 0) +
+    usableFieldGroups.reduce((total, group) => total + group.cells.reduce((cellTotal, cell) =>
+      cellTotal + cell.text.length, 0), 0);
   const safePageCount = Math.max(1, pageCount);
   const pageCoverage = boundedRatio(coveredPages.size / safePageCount);
 
@@ -69,12 +79,14 @@ function qualityFor(
     coveredPageCount: coveredPages.size,
     duplicateFurnitureRatio: boundedRatio(duplicateBlocks / Math.max(1, usable.length)),
     emptyPageRatio: boundedRatio(1 - pageCoverage),
-    encodingValid: usable.every((block) => !/[\u0000\uFFFD]/u.test(block.text)),
+    encodingValid: usable.every((block) => !/[\u0000\uFFFD]/u.test(block.text)) &&
+      usableFieldGroups.every((group) => group.cells.every((cell) =>
+        !/[\u0000\uFFFD]/u.test(cell.text) && !/[\u0000\uFFFD]/u.test(cell.originalText))),
     headingCount: usable.filter((block) => block.type === "heading" || block.type === "title").length,
     ocrConfidence: ocrConfidence === null ? null : boundedRatio(ocrConfidence),
     pageCoverage,
     tableCount: usable.filter((block) => block.type === "table").length,
-    usableBlockCount: usable.length
+    usableBlockCount: usable.length + usableFieldGroups.length
   });
 }
 
@@ -107,8 +119,12 @@ function canonicalWarnings(
 
 export function finalizeParsedDocument(input: ParsedDocumentDraft): ParsedDocument {
   const pageCount = Math.max(1, input.pageCount);
-  const text = input.text ?? input.blocks.map((block) => block.text).filter(Boolean).join("\n\n");
-  const quality = qualityFor(input.blocks, pageCount, input.ocrConfidence ?? null);
+  const fieldGroups = input.fieldGroups ?? [];
+  const text = input.text ?? [
+    ...input.blocks.map((block) => block.text),
+    ...fieldGroups.flatMap((group) => group.cells.map((cell) => cell.text))
+  ].filter(Boolean).join("\n\n");
+  const quality = qualityFor(input.blocks, fieldGroups, pageCount, input.ocrConfidence ?? null);
   const languages = input.languages ?? parsedLanguageHints(text);
   const warnings = canonicalWarnings(input.warnings ?? [], quality, input.status, input.blocks);
 
@@ -117,6 +133,7 @@ export function finalizeParsedDocument(input: ParsedDocumentDraft): ParsedDocume
     attempts: Object.freeze([...(input.attempts ?? [])]),
     blocks: Object.freeze([...input.blocks]),
     engine: input.engine,
+    fieldGroups: Object.freeze([...fieldGroups]),
     languages: Object.freeze([...languages]),
     mediaType: input.mediaType,
     pageCount,
@@ -159,6 +176,7 @@ export function withParserEvidence(
     attempts,
     blocks: document.blocks,
     engine: document.engine,
+    fieldGroups: document.fieldGroups,
     languages: document.languages,
     mediaType: document.mediaType,
     ocrConfidence: document.quality.ocrConfidence,

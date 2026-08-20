@@ -5,7 +5,9 @@ export const knowledgeOperationKinds = [
   "discover_sources",
   "find_exact",
   "read_source",
-  "search_knowledge"
+  "search_knowledge",
+  "structured_analysis",
+  "visual_analysis"
 ] as const;
 
 export type KnowledgeOperationKind = typeof knowledgeOperationKinds[number];
@@ -167,6 +169,14 @@ export function knowledgeBudgetPolicyFromProfileConfiguration(
 export function isKnowledgeOperationKind(value: unknown): value is KnowledgeOperationKind {
   return typeof value === "string" &&
     knowledgeOperationKinds.includes(value as KnowledgeOperationKind);
+}
+
+/** Round-zero structured and visual lanes share automatic-retrieval accounting. */
+export function isAutomaticKnowledgeOperation(
+  operation: KnowledgeOperationKind
+): boolean {
+  return operation === "automatic_search" || operation === "structured_analysis" ||
+    operation === "visual_analysis";
 }
 
 export function knowledgeBudgetStopReason(

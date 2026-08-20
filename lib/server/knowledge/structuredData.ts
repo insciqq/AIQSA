@@ -12,6 +12,8 @@ export const STRUCTURED_MAX_FILTERS = 8;
 export const STRUCTURED_MAX_RESULT_ROWS = 200;
 export const STRUCTURED_MAX_SCAN_ROWS = 100_000;
 export const STRUCTURED_MAX_SERIALIZED_BYTES = 64 * 1_024;
+// Arithmetic stays a JSON number; 15 significant decimal digits remove binary tail noise.
+export const STRUCTURED_ARITHMETIC_SIGNIFICANT_DIGITS = 15;
 
 export type StructuredScalar = string | number | boolean | null;
 export type StructuredFilterOperator =
@@ -199,6 +201,15 @@ const FILTER_OPERATORS = new Set<StructuredFilterOperator>([
 
 function fail(code: StructuredDataErrorCode): never {
   throw new StructuredDataError(code);
+}
+
+function canonicalArithmeticNumber(value: number): number {
+  if (!Number.isFinite(value)) fail("structured_numeric_overflow");
+  if (Object.is(value, -0)) return 0;
+  if (Number.isSafeInteger(value)) return value;
+  const canonical = Number(value.toPrecision(STRUCTURED_ARITHMETIC_SIGNIFICANT_DIGITS));
+  if (!Number.isFinite(canonical)) fail("structured_numeric_overflow");
+  return Object.is(canonical, -0) ? 0 : canonical;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -691,6 +702,7 @@ function executeArithmetic(
       else if (plan.operator === "divide") result = leftValue / rightValue;
       else result = (leftValue - rightValue) / Math.abs(rightValue) * 100;
     }
+    if (result !== null) result = canonicalArithmeticNumber(result);
     return Object.freeze([...rowValues(row, selected.indexes, state), result]);
   });
   if (zeroDivisors > 0) state.warnings.add(`division_by_zero:${zeroDivisors}`);
@@ -1075,4 +1087,32 @@ export function decodeStructuredAnalysisResult(value: unknown): StructuredAnalys
     }),
     rows: Object.freeze((rows as StructuredScalar[][]).map((row) => Object.freeze([...row])))
   });
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail("structured_plan_invalid");
+    return Object.is(value, -0) ? "0" : String(value);
+  }
+  if (typeof value === "string") return JSON.stringify(value) as string;
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (!record(value)) fail("structured_plan_invalid");
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+export function verifyStructuredAnalysisResult(
+  workbook: ParsedWorkbook,
+  value: unknown
+): boolean {
+  try {
+    const decoded = decodeStructuredAnalysisResult(value);
+    if (!decoded || canonicalJson(value) !== canonicalJson(decoded)) return false;
+    const recomputed = executeStructuredPlan(workbook, decoded.receipt.plan);
+    return canonicalJson(decoded) === canonicalJson(recomputed);
+  } catch {
+    return false;
+  }
 }

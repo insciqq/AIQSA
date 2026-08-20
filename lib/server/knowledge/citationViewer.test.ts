@@ -8,6 +8,10 @@ import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import { executeStructuredPlan, STRUCTURED_PLAN_VERSION } from "./structuredData";
 import {
+  createKnowledgeFieldContextSegments,
+  createKnowledgeTableDocumentContext
+} from "./documentContext";
+import {
   readKnowledgeViewerOriginal,
   resolveKnowledgeCitationViewer,
   resolveKnowledgeSourceViewer
@@ -74,6 +78,145 @@ function parsedDocument(): ParsedDocument {
 const encoded = encodeKnowledgeNormalizedDocument(parsedDocument(), config, {
   sourceDisplayName: "policy.pdf"
 });
+
+const rowEncoded = encodeKnowledgeNormalizedDocument(finalizeParsedDocument({
+  blocks: [{
+    assetIds: [],
+    boundingBoxes: [],
+    headingPath: ["Measurements"],
+    index: 0,
+    isTable: true,
+    languageHints: ["en"],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 0,
+    table: {
+      cells: [
+        { column: 0, columnSpan: 1, row: 0, rowSpan: 1, text: "Metric" },
+        { column: 1, columnSpan: 1, row: 0, rowSpan: 1, text: "Actual" },
+        { column: 0, columnSpan: 1, row: 1, rowSpan: 1, text: "Temperature" },
+        { column: 1, columnSpan: 1, row: 1, rowSpan: 1, text: "10" },
+        { column: 0, columnSpan: 1, row: 2, rowSpan: 1, text: "Pressure" },
+        { column: 1, columnSpan: 1, row: 2, rowSpan: 1, text: "20" }
+      ],
+      columnCount: 2,
+      rowCount: 3
+    },
+    text: "Metric\tActual\nTemperature\t10\nPressure\t20",
+    type: "table"
+  }],
+  engine: "docling",
+  mediaType: "application/pdf",
+  pageCount: 1,
+  status: "complete"
+}), config, { sourceDisplayName: "measurements.pdf" });
+
+const fieldEncoded = encodeKnowledgeNormalizedDocument(finalizeParsedDocument({
+  blocks: [{
+    assetIds: [],
+    boundingBoxes: [],
+    headingPath: ["Intake"],
+    index: 0,
+    isTable: false,
+    languageHints: ["en"],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 0,
+    table: null,
+    text: "Form notes.",
+    type: "paragraph"
+  }],
+  engine: "docling",
+  fieldGroups: [{
+    boundingBoxes: [],
+    cells: [
+      {
+        boundingBoxes: [], confidence: 0.98, id: 1, itemRef: "#/texts/0",
+        label: "key", order: 0, originalText: "Actual pressure", text: "Actual pressure"
+      },
+      {
+        boundingBoxes: [], confidence: 0.97, id: 2, itemRef: "#/texts/1",
+        label: "value", order: 1, originalText: "20 kPa", text: "20 kPa"
+      }
+    ],
+    confidence: 0.97,
+    kind: "form",
+    links: [{
+      confidence: 0.97,
+      label: "to_value",
+      order: 0,
+      sourceCellId: 1,
+      targetCellId: 2
+    }],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 0,
+    sourceRef: "#/form_items/0"
+  }],
+  mediaType: "application/pdf",
+  pageCount: 1,
+  status: "complete"
+}), config, { sourceDisplayName: "intake.pdf" });
+
+const fieldBoundaryEncoded = encodeKnowledgeNormalizedDocument(finalizeParsedDocument({
+  blocks: [{
+    assetIds: [],
+    boundingBoxes: [],
+    headingPath: ["Section A"],
+    index: 0,
+    isTable: false,
+    languageHints: ["en"],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 0,
+    table: null,
+    text: "Section A notes.",
+    type: "paragraph"
+  }, {
+    assetIds: [],
+    boundingBoxes: [],
+    headingPath: ["Section B"],
+    index: 1,
+    isTable: false,
+    languageHints: ["en"],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 1,
+    table: null,
+    text: "Section B notes.",
+    type: "paragraph"
+  }],
+  engine: "docling",
+  fieldGroups: [{
+    boundingBoxes: [],
+    cells: [
+      {
+        boundingBoxes: [], confidence: 0.98, id: 1, itemRef: "#/texts/0",
+        label: "key", order: 0, originalText: "Actual pressure", text: "Actual pressure"
+      },
+      {
+        boundingBoxes: [], confidence: 0.97, id: 2, itemRef: "#/texts/1",
+        label: "value", order: 1, originalText: "20 kPa", text: "20 kPa"
+      }
+    ],
+    confidence: 0.97,
+    kind: "form",
+    links: [{
+      confidence: 0.97,
+      label: "to_value",
+      order: 0,
+      sourceCellId: 1,
+      targetCellId: 2
+    }],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 1,
+    sourceRef: "#/form_items/0"
+  }],
+  mediaType: "application/pdf",
+  pageCount: 1,
+  status: "complete"
+}), config, { sourceDisplayName: "section-boundary-form.pdf" });
 
 const visualBox = {
   bottom: 160,
@@ -168,20 +311,44 @@ function storage(body = encoded.body): StorageAdapter {
   };
 }
 
-function personalClient(input: Readonly<{
-  baseVisible?: boolean;
-  evidence?: Record<string, unknown>;
-  versionVisible?: boolean;
-}> = {}) {
-  const evidenceFindFirst = vi.fn().mockResolvedValue(input.evidence ?? {
+const PASSAGE_CONTENT_HASH = createHash("sha256")
+  .update("Maximum file size: 25 MB.")
+  .digest("hex");
+const STRUCTURED_PASSAGE_CONTENT_HASH = createHash("sha256")
+  .update("Sales workbook passage")
+  .digest("hex");
+
+function defaultEvidence(): Record<string, unknown> {
+  return {
     baseName: "Engineering handbook",
+    contentHash: PASSAGE_CONTENT_HASH,
+    contextBoundaries: null,
+    documentId: "source-1",
+    documentVersionId: "version-1",
     excerpt: "Maximum file size: 25 MB.",
     fileName: "policy.pdf",
     handle: "K1",
     headingPath: ["Policy", "Limits"],
-    knowledgeBaseId: "base-1",
+    knowledgeBaseId: "profile-binding-1",
+    locator: { internal: "private-source-locator-viewer-sentinel" },
     page: 2,
     passageId: "passage-1",
+    provenance: [{
+      source: {
+        artifactId: "artifact-1",
+        bindings: [
+          { baseName: "Primary", bindingOrdinal: 0, knowledgeBaseId: "base-1" },
+          {
+            baseName: "Mirror",
+            bindingOrdinal: 1,
+            knowledgeBaseId: "private-secondary-base-viewer-sentinel"
+          }
+        ],
+        primaryBindingOrdinal: 0,
+        sourceId: "source-1",
+        sourceVersionId: "version-1"
+      }
+    }],
     sourceArtifactId: "artifact-1",
     sourceId: "source-1",
     sourceName: "Upload policy",
@@ -189,16 +356,15 @@ function personalClient(input: Readonly<{
     sourceVersionNumber: 1,
     state: "available",
     textTruncated: false
-  });
-  const baseFindFirst = vi.fn().mockResolvedValue(input.baseVisible === false ? null : {
-    name: "Engineering handbook",
-    ownerUserId: "user-1",
-    trashedAt: null
-  });
-  const versionFindFirst = vi.fn().mockResolvedValue(input.versionVisible === false ? null : {
+  };
+}
+
+function defaultVersion() {
+  return {
     artifacts: [{
       hierarchicalIndexes: [{
         passageIndexes: [{
+          contentHash: PASSAGE_CONTENT_HASH,
           headingPath: ["Policy", "Limits"],
           page: 2,
           pageEnd: 2,
@@ -207,6 +373,7 @@ function personalClient(input: Readonly<{
           sourceBlockStart: 1
         }]
       }],
+      id: "artifact-1",
       normalizedTextByteSize: encoded.body.byteLength,
       normalizedTextChecksum: encoded.checksum,
       normalizedTextStorageKey: "normalized/source.json",
@@ -219,7 +386,10 @@ function personalClient(input: Readonly<{
     mimeType: "application/pdf",
     originalStorageKey: "original/policy.pdf",
     source: {
-      baseMemberships: [{ removedAt: new Date("2026-08-18T00:00:00Z") }],
+      baseMemberships: [{
+        knowledgeBaseId: "base-1",
+        removedAt: new Date("2026-08-18T00:00:00Z")
+      }],
       currentVersionId: "version-2",
       deletionRequestedAt: null,
       name: "Upload policy",
@@ -227,8 +397,66 @@ function personalClient(input: Readonly<{
       trashedAt: null
     },
     versionNumber: 1
+  };
+}
+
+function personalClient(input: Readonly<{
+  baseProvenance?: readonly Readonly<{
+    indexGenerationId: string;
+    knowledgeBaseId: string;
+  }>[];
+  baseVisible?: boolean;
+  bindingOwnerUserId?: string;
+  bindingTuple?: Readonly<{
+    sourceArtifactId: string;
+    sourceId: string;
+    sourceVersionId: string;
+  }>;
+  bindingVisible?: boolean;
+  evidence?: Record<string, unknown>;
+  versionVisible?: boolean;
+}> = {}) {
+  const evidenceFindFirst = vi.fn().mockResolvedValue(input.evidence ?? defaultEvidence());
+  const baseFindFirst = vi.fn().mockResolvedValue(input.baseVisible === false ? null : {
+    name: "Engineering handbook",
+    ownerUserId: "user-1",
+    trashedAt: null
   });
+  const versionFindFirst = vi.fn().mockResolvedValue(
+    input.versionVisible === false ? null : defaultVersion()
+  );
+  const bindingTuple = input.bindingTuple ?? {
+    sourceArtifactId: "artifact-1",
+    sourceId: "source-1",
+    sourceVersionId: "version-1"
+  };
+  const bindingFindFirst = vi.fn().mockImplementation((query: Readonly<{
+    where: Readonly<{
+      modelRunId: string;
+      sourceArtifactId: string;
+      sourceId: string;
+      sourceVersionId: string;
+    }>;
+  }>) => Promise.resolve(
+    input.bindingVisible === false ||
+      query.where.modelRunId !== "run-1" ||
+      query.where.sourceArtifactId !== bindingTuple.sourceArtifactId ||
+      query.where.sourceId !== bindingTuple.sourceId ||
+      query.where.sourceVersionId !== bindingTuple.sourceVersionId
+      ? null
+      : {
+          baseProvenance: input.baseProvenance ?? [{
+            indexGenerationId: "generation-1",
+            knowledgeBaseId: "base-1"
+          }],
+          profileBindingId: "profile-binding-1",
+          source: { ownerUserId: input.bindingOwnerUserId ?? "user-1" },
+          sourceVersionNumber: 1
+        }
+  ));
   return {
+    baseFindFirst,
+    bindingFindFirst,
     evidenceFindFirst,
     value: {
       chat: {
@@ -241,6 +469,7 @@ function personalClient(input: Readonly<{
       },
       knowledgeBase: { findFirst: baseFindFirst },
       knowledgeEvidenceItem: { findFirst: evidenceFindFirst },
+      knowledgeRunSourceBinding: { findFirst: bindingFindFirst },
       knowledgeSourceVersion: { findFirst: versionFindFirst },
       modelRun: {
         findFirst: vi.fn().mockResolvedValue({ chatId: "chat-1", id: "run-1" })
@@ -295,18 +524,291 @@ describe("Knowledge citation viewer authorization and projection", () => {
         storageKey: "original/policy.pdf"
       }
     });
+    const clientCitation = JSON.stringify(resolved?.citation);
+    for (const privateId of [
+      "artifact-1",
+      "base-1",
+      "source-1",
+      "version-1",
+      "private-source-locator-viewer-sentinel",
+      "private-secondary-base-viewer-sentinel"
+    ]) {
+      expect(clientCitation).not.toContain(privateId);
+    }
+  });
+
+  it("opens only the exact original table row with its repeated header lineage", async () => {
+    const block = rowEncoded.document.blocks[0]!;
+    const context = createKnowledgeTableDocumentContext({
+      blockId: block.id,
+      cells: [
+        { columnEnd: 0, columnStart: 0, text: "Pressure" },
+        { columnEnd: 1, columnStart: 1, text: "20" }
+      ],
+      headerLineage: [
+        { columnEnd: 0, columnStart: 0, rowIndex: 0, text: "Metric" },
+        { columnEnd: 1, columnStart: 1, rowIndex: 0, text: "Actual" }
+      ],
+      rowIndex: 2
+    });
+    const excerpt = "Pressure\t20";
+    const contentHash = createHash("sha256").update(excerpt).digest("hex");
+    const fixture = personalClient({
+      evidence: {
+        ...defaultEvidence(),
+        contentHash,
+        contextBoundaries: { documentContext: context },
+        excerpt,
+        headingPath: ["Measurements"],
+        page: 1
+      }
+    });
+    fixture.versionFindFirst.mockResolvedValueOnce({
+      ...defaultVersion(),
+      artifacts: [{
+        hierarchicalIndexes: [{
+          passageIndexes: [{
+            contentHash,
+            headingPath: ["Measurements"],
+            page: 1,
+            pageEnd: 1,
+            sourceBlockEnd: 0,
+            sourceBlockIds: [block.id],
+            sourceBlockStart: 0
+          }]
+        }],
+        id: "artifact-1",
+        normalizedTextByteSize: rowEncoded.body.byteLength,
+        normalizedTextChecksum: rowEncoded.checksum,
+        normalizedTextStorageKey: "normalized/measurements.json",
+        state: "ready"
+      }]
+    });
+
+    const resolved = await resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(rowEncoded.body),
+      request
+    );
+
+    expect(resolved?.citation).toMatchObject({ blocks: [
+      expect.objectContaining({
+        relation: "target",
+        table: expect.objectContaining({
+          cells: [
+            expect.objectContaining({ row: 0, text: "Metric" }),
+            expect.objectContaining({ row: 0, text: "Actual" }),
+            expect.objectContaining({ row: 2, text: "Pressure" }),
+            expect.objectContaining({ row: 2, text: "20" })
+          ],
+          truncated: true
+        }),
+        text: "Metric\tActual\nPressure\t20"
+      })
+    ] });
+    expect(JSON.stringify(resolved?.citation)).not.toContain("Temperature");
+  });
+
+  it("opens the complete original row for one overflow projection citation", async () => {
+    const block = rowEncoded.document.blocks[0]!;
+    const context = createKnowledgeTableDocumentContext({
+      blockId: block.id,
+      cells: [{ columnEnd: 1, columnStart: 1, text: "20" }],
+      columnEnd: 1,
+      columnStart: 1,
+      headerLineage: [{ columnEnd: 1, columnStart: 1, rowIndex: 0, text: "Actual" }],
+      projectionCount: 2,
+      projectionIndex: 1,
+      rowIndex: 2
+    });
+    const excerpt = "Actual\n20";
+    const contentHash = createHash("sha256").update(excerpt).digest("hex");
+    const fixture = personalClient({
+      evidence: {
+        ...defaultEvidence(),
+        contentHash,
+        contextBoundaries: { documentContext: context },
+        excerpt,
+        headingPath: ["Measurements"],
+        page: 1
+      }
+    });
+    fixture.versionFindFirst.mockResolvedValueOnce({
+      ...defaultVersion(),
+      artifacts: [{
+        hierarchicalIndexes: [{
+          passageIndexes: [{
+            contentHash,
+            headingPath: ["Measurements"],
+            page: 1,
+            pageEnd: 1,
+            sourceBlockEnd: 0,
+            sourceBlockIds: [block.id],
+            sourceBlockStart: 0
+          }]
+        }],
+        id: "artifact-1",
+        normalizedTextByteSize: rowEncoded.body.byteLength,
+        normalizedTextChecksum: rowEncoded.checksum,
+        normalizedTextStorageKey: "normalized/measurements.json",
+        state: "ready"
+      }]
+    });
+
+    const resolved = await resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(rowEncoded.body),
+      request
+    );
+
+    expect(resolved?.citation).toMatchObject({ blocks: [expect.objectContaining({
+      table: expect.objectContaining({
+        cells: [
+          expect.objectContaining({ column: 0, row: 0, text: "Metric" }),
+          expect.objectContaining({ column: 1, row: 0, text: "Actual" }),
+          expect.objectContaining({ column: 0, row: 2, text: "Pressure" }),
+          expect.objectContaining({ column: 1, row: 2, text: "20" })
+        ],
+        truncated: true
+      }),
+      text: "Metric\tActual\nPressure\t20"
+    })] });
+    expect(JSON.stringify(resolved?.citation)).not.toContain("Temperature");
+  });
+
+  it("opens an explicitly linked form pair without exposing graph identities", async () => {
+    const group = fieldEncoded.document.fieldGroups[0]!;
+    const context = createKnowledgeFieldContextSegments(group)[0]!.context;
+    const excerpt = "Actual pressure\t20 kPa";
+    const contentHash = createHash("sha256").update(excerpt).digest("hex");
+    const fixture = personalClient({
+      evidence: {
+        ...defaultEvidence(),
+        contentHash,
+        contextBoundaries: { documentContext: context },
+        excerpt,
+        headingPath: ["Intake"],
+        page: 1
+      }
+    });
+    fixture.versionFindFirst.mockResolvedValueOnce({
+      ...defaultVersion(),
+      artifacts: [{
+        hierarchicalIndexes: [{
+          passageIndexes: [{
+            contentHash,
+            headingPath: ["Intake"],
+            page: 1,
+            pageEnd: 1,
+            sourceBlockEnd: 0,
+            sourceBlockIds: [group.id],
+            sourceBlockStart: 0
+          }]
+        }],
+        id: "artifact-1",
+        normalizedTextByteSize: fieldEncoded.body.byteLength,
+        normalizedTextChecksum: fieldEncoded.checksum,
+        normalizedTextStorageKey: "normalized/intake.json",
+        state: "ready"
+      }]
+    });
+
+    const resolved = await resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(fieldEncoded.body),
+      request
+    );
+
+    expect(resolved?.citation).toMatchObject({
+      blocks: [
+        {
+          relation: "target",
+          table: {
+            cells: [
+              expect.objectContaining({ column: 0, row: 0, text: "Actual pressure" }),
+              expect.objectContaining({ column: 1, row: 0, text: "20 kPa" })
+            ],
+            columnCount: 2,
+            rowCount: 1,
+            truncated: false
+          },
+          text: excerpt,
+          type: "table"
+        },
+        expect.objectContaining({ relation: "after", text: "Form notes." })
+      ]
+    });
+    expect(JSON.stringify(resolved?.citation)).not.toContain(group.id);
+    expect(JSON.stringify(resolved?.citation)).not.toContain("#/form_items/0");
+  });
+
+  it("attributes a form inserted before a new section to the preceding section", async () => {
+    const group = fieldBoundaryEncoded.document.fieldGroups[0]!;
+    const context = createKnowledgeFieldContextSegments(group)[0]!.context;
+    const excerpt = "Actual pressure\t20 kPa";
+    const contentHash = createHash("sha256").update(excerpt).digest("hex");
+    const fixture = personalClient({
+      evidence: {
+        ...defaultEvidence(),
+        contentHash,
+        contextBoundaries: { documentContext: context },
+        excerpt,
+        headingPath: ["Section A"],
+        page: 1
+      }
+    });
+    fixture.versionFindFirst.mockResolvedValueOnce({
+      ...defaultVersion(),
+      artifacts: [{
+        hierarchicalIndexes: [{
+          passageIndexes: [{
+            contentHash,
+            headingPath: ["Section A"],
+            page: 1,
+            pageEnd: 1,
+            sourceBlockEnd: 1,
+            sourceBlockIds: [group.id],
+            sourceBlockStart: 1
+          }]
+        }],
+        id: "artifact-1",
+        normalizedTextByteSize: fieldBoundaryEncoded.body.byteLength,
+        normalizedTextChecksum: fieldBoundaryEncoded.checksum,
+        normalizedTextStorageKey: "normalized/section-boundary-form.json",
+        state: "ready"
+      }]
+    });
+
+    const resolved = await resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(fieldBoundaryEncoded.body),
+      request
+    );
+
+    expect(resolved?.citation.state).toBe("available");
+    if (!resolved || resolved.citation.state !== "available") throw new Error("viewer unavailable");
+    expect(resolved.citation.blocks.find((block) => block.relation === "target"))
+      .toMatchObject({ headingPath: ["Section A"], text: excerpt });
   });
 
   it("reconstructs structured operation evidence from the immutable workbook artifact", async () => {
     const fixture = personalClient({
+      bindingTuple: {
+        sourceArtifactId: "artifact-sales",
+        sourceId: "source-sales",
+        sourceVersionId: "version-sales"
+      },
       evidence: {
         baseName: "Finance",
+        contentHash: STRUCTURED_PASSAGE_CONTENT_HASH,
         contextBoundaries: { structuredAnalysis },
+        documentId: "source-sales",
+        documentVersionId: "version-sales",
         excerpt: "Calculated sum Revenue: 300.",
         fileName: "sales.xlsx",
         handle: "K1",
         headingPath: ["Sales"],
-        knowledgeBaseId: "base-1",
+        knowledgeBaseId: "profile-binding-1",
         locator: { ranges: structuredAnalysis.receipt.inputRanges },
         page: 1,
         passageId: "passage-sales",
@@ -323,6 +825,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
       artifacts: [{
         hierarchicalIndexes: [{
           passageIndexes: [{
+            contentHash: STRUCTURED_PASSAGE_CONTENT_HASH,
             headingPath: ["Sales"],
             page: 1,
             pageEnd: 1,
@@ -331,6 +834,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
             sourceBlockStart: 0
           }]
         }],
+        id: "artifact-sales",
         normalizedTextByteSize: structuredEncoded.body.byteLength,
         normalizedTextChecksum: structuredEncoded.checksum,
         normalizedTextStorageKey: "normalized/sales.json",
@@ -343,7 +847,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       originalStorageKey: "original/sales.xlsx",
       source: {
-        baseMemberships: [{ removedAt: null }],
+        baseMemberships: [{ knowledgeBaseId: "base-1", removedAt: null }],
         currentVersionId: "version-sales",
         deletionRequestedAt: null,
         name: "Quarterly sales",
@@ -407,14 +911,22 @@ describe("Knowledge citation viewer authorization and projection", () => {
       warnings: []
     };
     const fixture = personalClient({
+      bindingTuple: {
+        sourceArtifactId: "artifact-visual",
+        sourceId: "source-visual",
+        sourceVersionId: "version-visual"
+      },
       evidence: {
         baseName: "Reports",
+        contentHash: null,
         contextBoundaries: { visualAnalysis: analysis },
+        documentId: "source-visual",
+        documentVersionId: "version-visual",
         excerpt: "Visual evidence: Quarterly revenue",
         fileName: "chart.png",
         handle: "K1",
         headingPath: ["Results"],
-        knowledgeBaseId: "base-1",
+        knowledgeBaseId: "profile-binding-1",
         page: 1,
         passageId: `visual:${visualBlock.id}:${visualAsset.id}`,
         sourceArtifactId: "artifact-visual",
@@ -429,6 +941,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
     fixture.versionFindFirst.mockResolvedValueOnce({
       artifacts: [{
         hierarchicalIndexes: [{ passageIndexes: [] }],
+        id: "artifact-visual",
         normalizedTextByteSize: visualEncoded.body.byteLength,
         normalizedTextChecksum: visualEncoded.checksum,
         normalizedTextStorageKey: "normalized/chart.json",
@@ -441,7 +954,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
       mimeType: "image/png",
       originalStorageKey: "original/chart.png",
       source: {
-        baseMemberships: [{ removedAt: null }],
+        baseMemberships: [{ knowledgeBaseId: "base-1", removedAt: null }],
         currentVersionId: "version-visual",
         deletionRequestedAt: null,
         name: "Quarterly report",
@@ -484,6 +997,10 @@ describe("Knowledge citation viewer authorization and projection", () => {
     const fixture = personalClient({
       evidence: {
         baseName: null,
+        contentHash: null,
+        contextBoundaries: null,
+        documentId: null,
+        documentVersionId: null,
         excerpt: null,
         fileName: null,
         handle: "K1",
@@ -519,6 +1036,154 @@ describe("Knowledge citation viewer authorization and projection", () => {
       request
     )).resolves.toBeNull();
     expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("reauthorizes a direct personal Source without treating its profile binding as a Base", async () => {
+    const fixture = personalClient({
+      baseProvenance: [],
+      evidence: {
+        ...defaultEvidence(),
+        baseName: null,
+        knowledgeBaseId: "profile-binding-1"
+      }
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: {
+        handle: "K1",
+        source: { baseName: null, name: "Upload policy" },
+        state: "available"
+      }
+    });
+    expect(fixture.baseFindFirst).not.toHaveBeenCalled();
+    expect(fixture.bindingFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        modelRunId: "run-1",
+        readinessState: "ready",
+        sourceArtifactId: "artifact-1",
+        sourceId: "source-1",
+        sourceVersionId: "version-1",
+        tombstonedAt: null
+      })
+    }));
+  });
+
+  it("denies a direct personal Source owned by another user", async () => {
+    const fixture = personalClient({
+      baseProvenance: [],
+      bindingOwnerUserId: "other-user"
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toBeNull();
+    expect(fixture.baseFindFirst).not.toHaveBeenCalled();
+    expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to block zero when the accepted passage is missing", async () => {
+    const fixture = personalClient();
+    const missingPassageVersion = defaultVersion();
+    missingPassageVersion.artifacts[0]!.hierarchicalIndexes[0]!.passageIndexes = [];
+    fixture.versionFindFirst.mockResolvedValueOnce(missingPassageVersion);
+    const adapter = storage();
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      adapter,
+      request
+    )).resolves.toBeNull();
+    expect(adapter.getObject).not.toHaveBeenCalled();
+  });
+
+  it("selects the ready hierarchy that owns the accepted historical passage", async () => {
+    const fixture = personalClient();
+    fixture.versionFindFirst.mockImplementationOnce(async (query) => {
+      const passageId = query.select.artifacts.select.hierarchicalIndexes.where
+        .passageIndexes?.some?.id;
+      const version = defaultVersion();
+      version.artifacts[0]!.hierarchicalIndexes = passageId === "passage-1"
+        ? version.artifacts[0]!.hierarchicalIndexes
+        : [{ passageIndexes: [] }, ...version.artifacts[0]!.hierarchicalIndexes];
+      return version;
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({ citation: { handle: "K1", state: "available" } });
+    expect(fixture.versionFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({
+        artifacts: expect.objectContaining({
+          select: expect.objectContaining({
+            hierarchicalIndexes: expect.objectContaining({
+              where: {
+                passageIndexes: { some: { id: "passage-1" } },
+                state: "ready"
+              }
+            })
+          })
+        })
+      })
+    }));
+  });
+
+  it("denies evidence when the accepted source version no longer matches", async () => {
+    const fixture = personalClient();
+    fixture.versionFindFirst.mockResolvedValueOnce({
+      ...defaultVersion(),
+      id: "version-other"
+    });
+    const adapter = storage();
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      adapter,
+      request
+    )).resolves.toBeNull();
+    expect(adapter.getObject).not.toHaveBeenCalled();
+  });
+
+  it("denies evidence whose artifact is not in the accepted run binding", async () => {
+    const fixture = personalClient({
+      evidence: {
+        ...defaultEvidence(),
+        sourceArtifactId: "artifact-other"
+      }
+    });
+    const adapter = storage();
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      adapter,
+      request
+    )).resolves.toBeNull();
+    expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+    expect(adapter.getObject).not.toHaveBeenCalled();
+  });
+
+  it("denies evidence when the immutable passage content hash differs", async () => {
+    const fixture = personalClient({
+      evidence: {
+        ...defaultEvidence(),
+        contentHash: createHash("sha256").update("different passage").digest("hex")
+      }
+    });
+    const adapter = storage();
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      adapter,
+      request
+    )).resolves.toBeNull();
+    expect(adapter.getObject).not.toHaveBeenCalled();
   });
 
   it("does not inspect evidence after current Project access is lost", async () => {

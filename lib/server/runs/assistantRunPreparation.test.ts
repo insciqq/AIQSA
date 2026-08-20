@@ -3,7 +3,10 @@ import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
-import { KnowledgeRunAdmissionError } from "../knowledge/runAdmission";
+import {
+  KnowledgeRunAdmissionError,
+  type KnowledgeRunAdmissionPlan
+} from "../knowledge/runAdmission";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { ProviderAdapter, ProviderModelCapabilities } from "../providers/types";
@@ -504,6 +507,92 @@ describe("assistant run admission", () => {
     }
   });
 
+  it("admits an Assistant direct Source through ordinary user authority", async () => {
+    const sourceId = "00000000-0000-4000-8000-000000000001";
+    const selection: KnowledgeSelection = {
+      baseIds: [],
+      mode: "explicit",
+      sourceIds: [sourceId],
+      version: 1
+    };
+    const load = vi.fn(async (
+      input: KnowledgeAdmissionInput
+    ): Promise<KnowledgeRunAdmissionPlan> => ({
+      bindings: [],
+      budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      exclusions: [],
+      fingerprint: "e".repeat(64),
+      knowledgePlan: input.knowledgePlan,
+      profiles: [{
+        embeddingCredentialSource: "default",
+        embeddingExecutionSnapshot: {} as never,
+        embeddingProviderModelId: "embedding-model-1",
+        ordinal: 0,
+        profileRevisionId: "profile-revision-1",
+        targetDimension: 1024,
+        vectorSpaceFingerprint: "f".repeat(64)
+      }],
+      resolvedSourceCount: 1,
+      sources: [{
+        approxTokens: 1_000,
+        authority: { knowledgeBaseIds: [], owner: true, projectId: null },
+        baseProvenance: [],
+        directSelected: true,
+        ordinal: 0,
+        privateLabels: { fileName: "source-1.md", sourceName: "Source 1" },
+        passageCount: 4,
+        profileOrdinal: 0,
+        profileRevisionId: "profile-revision-1",
+        selectionProvenance: ["explicit_source"],
+        sourceAlias: "S1",
+        sourceArtifactId: "artifact-1",
+        sourceId,
+        sourceVersionId: "source-version-1",
+        sourceVersionNumber: 1
+      }],
+      userId: input.userId
+    }));
+    const result = await prepareRun(
+      deps({
+        assistants: {
+          resolveForRun: async () => assistantResolution({ knowledgeSelection: selection })
+        },
+        knowledgeAdmission: { load }
+      }),
+      {
+        body: { assistantId: "assistant-1", text: "Review this" },
+        source: sendSource(),
+        userId: "user-1"
+      }
+    );
+
+    expect(load).toHaveBeenCalledOnce();
+    expect(load).toHaveBeenCalledWith({
+      knowledgePlan: selection,
+      userId: "user-1"
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prepared.assistant).toEqual({
+        assistantId: "assistant-1",
+        revisionId: "revision-1"
+      });
+      expect(result.prepared.knowledgeAdmissionPlan?.sources).toEqual([
+        expect.objectContaining({
+          authority: { knowledgeBaseIds: [], owner: true, projectId: null },
+          directSelected: true,
+          sourceId
+        })
+      ]);
+      expect(result.prepared.normalizedRequest.knowledgePlanner).toMatchObject({
+        automaticRetrieval: true,
+        strategy: "focused"
+      });
+      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name))
+        .toContain("search_knowledge");
+    }
+  });
+
   it("merges Assistant and manual Skills in deterministic order and deduplicates by id", async () => {
     const resolveSkills = vi.fn(async (_userId: string, skillIds: readonly string[]) => ({
       ok: true as const,
@@ -608,17 +697,22 @@ describe("assistant run admission", () => {
     expect(resolveForRun).not.toHaveBeenCalled();
   });
 
-  it("keeps unavailable Assistant Knowledge dependencies privacy-neutral", async () => {
+  it("keeps a published non-owner Assistant direct Source failure privacy-neutral", async () => {
+    const selection: KnowledgeSelection = {
+      baseIds: [],
+      mode: "explicit",
+      sourceIds: ["hidden-source"],
+      version: 1
+    };
+    const load = vi.fn(async () => { throw new KnowledgeRunAdmissionError(); });
     const result = await prepareRun(
       deps({
         assistants: {
           resolveForRun: async () => assistantResolution({
-            knowledgeSelection: knowledgeSelection(["hidden-base"])
+            knowledgeSelection: selection
           })
         },
-        knowledgeAdmission: {
-          load: async () => { throw new KnowledgeRunAdmissionError(); }
-        }
+        knowledgeAdmission: { load }
       }),
       {
         body: { assistantId: "assistant-1", text: "Review this" },
@@ -631,6 +725,10 @@ describe("assistant run admission", () => {
       code: "knowledge_base_not_available",
       ok: false,
       status: 404
+    });
+    expect(load).toHaveBeenCalledWith({
+      knowledgePlan: selection,
+      userId: "user-1"
     });
   });
 

@@ -2,18 +2,34 @@ import type {
   KnowledgeExactEntryKind,
   KnowledgeLexicalLanguage
 } from "./hierarchicalIndex";
+import type {
+  KnowledgeExactSearchField,
+  KnowledgeSourceDiscoveryField
+} from "./retrievalTypes";
 
 export const KNOWLEDGE_HIERARCHICAL_QUERY_MAX_CHARACTERS = 500;
-export const KNOWLEDGE_HIERARCHICAL_SCOPE_MAX_ARTIFACTS = 500;
+export const KNOWLEDGE_HIERARCHICAL_SCOPE_MAX_ARTIFACTS = 999;
 export const KNOWLEDGE_HIERARCHICAL_RESULT_LIMIT_MAX = 100;
 export const KNOWLEDGE_EXACT_REGEX_MAX_CHARACTERS = 128;
 export const KNOWLEDGE_EXACT_SCAN_MAX_BYTES = 4 * 1024 * 1024;
 export const KNOWLEDGE_EXACT_CURSOR_MAX_OFFSET = 10_000;
 
-export type KnowledgeHierarchicalScope = Readonly<{
+export type KnowledgeOwnerHierarchicalScope = Readonly<{
   ownerUserId: string;
+  scopeKind?: "owner";
   sourceArtifactIds: readonly string[];
 }>;
+
+export type KnowledgeAdmittedRunHierarchicalScope = Readonly<{
+  runId: string;
+  scopeKind: "admitted_run";
+  sourceArtifactIds: readonly string[];
+  userId: string;
+}>;
+
+export type KnowledgeHierarchicalScope =
+  | KnowledgeAdmittedRunHierarchicalScope
+  | KnowledgeOwnerHierarchicalScope;
 
 export type KnowledgeLexicalTargetLevel = "document" | "passage" | "section";
 export type KnowledgeLexicalMatchedField =
@@ -47,6 +63,7 @@ export type KnowledgeLexicalIndexHit = Readonly<{
 export type KnowledgeExactOperation = KnowledgeExactEntryKind | "phrase" | "regex" | "token";
 
 export type KnowledgeExactIndexHit = Readonly<{
+  field: Exclude<KnowledgeExactSearchField, "any">;
   indexArtifactId: string;
   kind: KnowledgeExactOperation;
   page: number | null;
@@ -66,10 +83,22 @@ export type KnowledgeExactSearchPage = Readonly<{
 
 export type KnowledgeMetadataDiscoveryHit = Readonly<{
   indexArtifactId: string;
-  kind: "filename" | "heading" | "tag" | "title";
+  kind: KnowledgeSourceDiscoveryField;
   similarity: number;
   sourceArtifactId: string;
   value: string;
+}>;
+
+export type KnowledgeSourceMetadataDiscoveryHit = Readonly<{
+  indexArtifactId: string;
+  matchedFields: readonly KnowledgeSourceDiscoveryField[];
+  similarity: number;
+  sourceArtifactId: string;
+}>;
+
+export type KnowledgeMetadataDiscoveryPage = Readonly<{
+  nextCursor: string | null;
+  results: readonly KnowledgeSourceMetadataDiscoveryHit[];
 }>;
 
 export type KnowledgeHierarchicalRetrievalRepository = Readonly<{
@@ -81,6 +110,12 @@ export type KnowledgeHierarchicalRetrievalRepository = Readonly<{
     limit: number;
     query: string;
   }): Promise<readonly KnowledgeMetadataDiscoveryHit[]>;
+  discoverSourceMetadata(input: KnowledgeHierarchicalScope & {
+    cursor?: string;
+    fields?: readonly KnowledgeSourceDiscoveryField[];
+    limit: number;
+    query: string;
+  }): Promise<KnowledgeMetadataDiscoveryPage>;
   discoverSections(input: KnowledgeHierarchicalScope & {
     limit: number;
     query: string;
@@ -89,6 +124,7 @@ export type KnowledgeHierarchicalRetrievalRepository = Readonly<{
     caseSensitive?: boolean;
     cursor?: string;
     limit: number;
+    field?: KnowledgeExactSearchField;
     operation: KnowledgeExactOperation;
     query: string;
   }): Promise<KnowledgeExactSearchPage>;
@@ -124,16 +160,34 @@ function normalizedInput(value: string, maximum: number): string {
 
 export function decodeKnowledgeHierarchicalScope(
   input: KnowledgeHierarchicalScope
-): Readonly<{ ownerUserId: string; sourceArtifactIds: readonly string[] }> {
-  const ownerUserId = input.ownerUserId.trim();
+): KnowledgeHierarchicalScope {
   const sourceArtifactIds = [...new Set(input.sourceArtifactIds.map((value) => value.trim()))];
   if (
-    !ownerUserId || ownerUserId.length > 256 ||
     sourceArtifactIds.length < 1 ||
     sourceArtifactIds.length > KNOWLEDGE_HIERARCHICAL_SCOPE_MAX_ARTIFACTS ||
     sourceArtifactIds.some((value) => !value || value.length > 256)
   ) throw new KnowledgeHierarchicalQueryError("knowledge_index_scope_invalid");
-  return Object.freeze({ ownerUserId, sourceArtifactIds: Object.freeze(sourceArtifactIds) });
+  if (input.scopeKind === "admitted_run") {
+    const runId = input.runId.trim();
+    const userId = input.userId.trim();
+    if (!runId || runId.length > 256 || !userId || userId.length > 256) {
+      throw new KnowledgeHierarchicalQueryError("knowledge_index_scope_invalid");
+    }
+    return Object.freeze({
+      runId,
+      scopeKind: "admitted_run" as const,
+      sourceArtifactIds: Object.freeze(sourceArtifactIds),
+      userId
+    });
+  }
+  const ownerUserId = input.ownerUserId.trim();
+  if (!ownerUserId || ownerUserId.length > 256) {
+    throw new KnowledgeHierarchicalQueryError("knowledge_index_scope_invalid");
+  }
+  return Object.freeze({
+    ownerUserId,
+    sourceArtifactIds: Object.freeze(sourceArtifactIds)
+  });
 }
 
 export function decodeKnowledgeHierarchicalQuery(query: string): string {

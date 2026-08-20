@@ -107,7 +107,27 @@ describe("summarizeMessageRunArtifacts", () => {
             handle: "K12.1",
             includedText: "private-passage-sentinel",
             knowledgeBaseId: "private-base-id",
-            page: 12
+            locator: "private-source-locator-sentinel",
+            page: 12,
+            provenance: [{
+              source: {
+                artifactId: "private-source-artifact-id-sentinel",
+                bindings: [
+                  { baseName: "Policies", bindingOrdinal: 0, knowledgeBaseId: "private-base-id" },
+                  {
+                    baseName: "Mirror",
+                    bindingOrdinal: 1,
+                    knowledgeBaseId: "private-secondary-base-id-sentinel"
+                  }
+                ],
+                primaryBindingOrdinal: 0,
+                sourceId: "private-source-id-sentinel",
+                sourceVersionId: "private-source-version-id-sentinel"
+              }
+            }],
+            sourceArtifactId: "private-source-artifact-id-sentinel",
+            sourceId: "private-source-id-sentinel",
+            sourceVersionId: "private-source-version-id-sentinel"
           },
           {
             baseName: "Policies",
@@ -133,7 +153,7 @@ describe("summarizeMessageRunArtifacts", () => {
       sources: []
     });
     expect(JSON.stringify(summary)).not.toMatch(
-      /private-passage-sentinel|handbook\.pdf|unused\.pdf|Policies|private-base-id|documentVersionNumber/
+      /private-passage-sentinel|handbook\.pdf|unused\.pdf|Policies|private-base-id|documentVersionNumber|private-source-locator-sentinel|private-secondary-base-id-sentinel|private-source-artifact-id-sentinel|private-source-id-sentinel|private-source-version-id-sentinel/
     );
   });
 
@@ -142,15 +162,44 @@ describe("summarizeMessageRunArtifacts", () => {
       events: [],
       knowledgeRetrievalSession: {
         evidenceItems: [
-          { handle: "K1", state: "available" },
+          Object.assign({ handle: "K1", state: "available" }, {
+            provenance: [{
+              source: {
+                artifactId: "private-v2-source-artifact-id-sentinel",
+                bindings: [
+                  { baseName: "Primary", bindingOrdinal: 0, knowledgeBaseId: "private-primary" },
+                  {
+                    baseName: "Mirror",
+                    bindingOrdinal: 1,
+                    knowledgeBaseId: "private-v2-secondary-base-id-sentinel"
+                  }
+                ],
+                primaryBindingOrdinal: 0,
+                sourceId: "private-v2-source-id-sentinel",
+                sourceVersionId: "private-v2-source-version-id-sentinel"
+              }
+            }],
+            sourceArtifactId: "private-v2-source-artifact-id-sentinel",
+            sourceId: "private-v2-source-id-sentinel",
+            sourceVersionId: "private-v2-source-version-id-sentinel"
+          }),
           { handle: "K2", state: "deleted" },
           { handle: "K3", state: "available" }
         ]
       },
-      knowledgeRuns: [{
+      knowledgeRuns: [Object.assign({
         invocationOrdinal: 1,
         results: [{ handle: "K1.1", fileName: "legacy-must-not-project.pdf" }]
-      }],
+      }, {
+        readReceipt: {
+          locator: "private-v2-read-locator-sentinel",
+          resolvedSource: {
+            sourceArtifactId: "private-v2-source-artifact-id-sentinel",
+            sourceId: "private-v2-source-id-sentinel",
+            sourceVersionId: "private-v2-source-version-id-sentinel"
+          }
+        }
+      })],
       searchRuns: []
     }, {
       blocks: [{ text: "Supported [K1], removed [K2], but not unused K3.", type: "text" }]
@@ -160,7 +209,9 @@ describe("summarizeMessageRunArtifacts", () => {
       { handle: "K1" },
       { deleted: true, handle: "K2" }
     ]);
-    expect(JSON.stringify(summary)).not.toContain("legacy-must-not-project.pdf");
+    expect(JSON.stringify(summary)).not.toMatch(
+      /legacy-must-not-project\.pdf|private-v2-secondary-base-id-sentinel|private-v2-source-artifact-id-sentinel|private-v2-source-id-sentinel|private-v2-source-version-id-sentinel|private-v2-read-locator-sentinel/
+    );
   });
 
   it("keeps only a committed Memory action", () => {

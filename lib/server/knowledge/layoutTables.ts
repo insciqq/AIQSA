@@ -19,6 +19,8 @@ type VisualRow = Readonly<{
   height: number;
 }>;
 
+const MIN_LAYOUT_RECONSTRUCTION_OCR_CONFIDENCE = 0.65;
+
 function candidate(block: ParsedDocumentBlock): PositionedBlock | null {
   if (
     block.table || block.isTable || block.assetIds.length > 0 || !block.text.trim() ||
@@ -75,7 +77,7 @@ function rowRuns(rows: readonly VisualRow[]): VisualRow[][] {
   const result: VisualRow[][] = [];
   let current: VisualRow[] = [];
   const flush = () => {
-    if (current.length >= 3) result.push(current);
+    if (current.length >= 2) result.push(current);
     current = [];
   };
   for (const row of rows) {
@@ -100,9 +102,9 @@ function median(values: readonly number[]): number {
     : sorted[middle]!;
 }
 
-function confidentTable(rows: readonly VisualRow[]): boolean {
+function alignedTableCells(rows: readonly VisualRow[]): boolean {
   const columnCount = rows[0]?.cells.length ?? 0;
-  if (rows.length < 3 || columnCount < 2 ||
+  if (rows.length < 2 || columnCount < 2 ||
     rows.some((row) => row.cells.length !== columnCount)) return false;
   const all = rows.flatMap((row) => row.cells);
   const pageSpan = Math.max(...all.map((cell) => cell.box.right)) -
@@ -129,6 +131,10 @@ function confidentTable(rows: readonly VisualRow[]): boolean {
     if (alignmentSpan > tolerance) return false;
   }
   return true;
+}
+
+function confidentTable(rows: readonly VisualRow[]): boolean {
+  return rows.length >= 3 && alignedTableCells(rows);
 }
 
 function commonHeadingPath(blocks: readonly ParsedDocumentBlock[]): readonly string[] {
@@ -203,6 +209,8 @@ function reindex(blocks: readonly ParsedDocumentBlock[]): readonly ParsedDocumen
  * cannot silently merge unrelated labels and values.
  */
 export function withLayoutAwareTables(document: ParsedDocument): ParsedDocument {
+  const insufficientOcrConfidence = document.quality.ocrConfidence === null ||
+    document.quality.ocrConfidence < MIN_LAYOUT_RECONSTRUCTION_OCR_CONFIDENCE;
   const positioned = document.blocks.flatMap((block) => {
     const value = candidate(block);
     return value ? [value] : [];
@@ -221,7 +229,7 @@ export function withLayoutAwareTables(document: ParsedDocument): ParsedDocument 
     for (const rows of rowRuns(visualRows(group))) {
       const indexes = rows.flatMap((row) => row.cells.map((cell) => cell.block.index));
       if (indexes.some((index) => consumed.has(index))) continue;
-      if (confidentTable(rows)) {
+      if (!insufficientOcrConfidence && confidentTable(rows)) {
         replacements.push(reconstructedTable(rows));
         indexes.forEach((index) => consumed.add(index));
         continue;

@@ -281,7 +281,7 @@ describe("Knowledge launch-scale catalog", () => {
         filter: "all",
         page: 1,
         pageSize: 50,
-        query: "",
+        query: "Launch Source",
         userId: fixture.ownerUserId
       });
 
@@ -295,6 +295,13 @@ describe("Knowledge launch-scale catalog", () => {
         .toHaveLength(fixture.ownerBaseIds.length);
       expect(warmBases.some(({ id }) => fixture.allBaseIds
         .slice(fixture.ownerBaseIds.length).includes(id))).toBe(false);
+      await expect(sourceRepository.listForUser({
+        filter: "all",
+        page: 1,
+        pageSize: 50,
+        query: "Private Source",
+        userId: fixture.ownerUserId
+      })).resolves.toMatchObject({ pagination: { totalItems: 0 }, sources: [] });
       expect(warmBases.find(({ id }) => id === fixture.ownerBaseIds[0])).toMatchObject({
         readiness: { readySources: SOURCE_COUNT, state: "ready", totalSources: SOURCE_COUNT },
         sourceCount: SOURCE_COUNT

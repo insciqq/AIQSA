@@ -7,6 +7,9 @@ import { createKnowledgeVectorSpacePin } from "../../lib/server/knowledge/indexP
 import {
   createPrismaKnowledgeHierarchicalIndexRepository
 } from "../../lib/server/knowledge/hierarchicalIndexRepository";
+import {
+  materializeKnowledgeBaseSnapshot
+} from "../../lib/server/knowledge/sourcePersistence";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../../lib/server/knowledge/knowledgeBudget";
 import { createPrismaKnowledgeRetrievalStore } from "../../lib/server/knowledge/prismaRetrievalRepository";
 import {
@@ -487,33 +490,12 @@ async function createGoldenFixture(
       sourceId: goldenSourceId(state.prefix, source.id)
     }))
   });
-  const snapshotId = `${state.prefix}-golden-snapshot`;
-  await client.$transaction(async (tx) => {
-    await tx.knowledgeBaseSnapshot.create({
-      data: {
-        evidenceFingerprint: sha256(`${snapshotId}\0${sources.length}`),
-        id: snapshotId,
-        indexGenerationId: base.generationId,
-        knowledgeBaseId: base.baseId,
-        ownerUserId: state.ownerUserId,
-        profileRevisionId: BASELINE_PROFILE_REVISION_ID,
-        readySourceCount: sources.length,
-        sourceCount: sources.length,
-        sourceRevision: sources.length
-      }
-    });
-    await tx.knowledgeBaseSnapshotSource.createMany({
-      data: sources.map((source, ordinal) => ({
-        artifactId: goldenSourceArtifactId(state.prefix, source.id),
-        knowledgeBaseId: base.baseId,
-        ordinal,
-        ownerUserId: state.ownerUserId,
-        snapshotId,
-        sourceId: goldenSourceId(state.prefix, source.id),
-        sourceVersionId: goldenSourceVersionId(state.prefix, source.id)
-      }))
-    });
-  });
+  const snapshot = await client.$transaction((tx) =>
+    materializeKnowledgeBaseSnapshot(tx, {
+      indexGenerationId: base.generationId,
+      knowledgeBaseId: base.baseId
+    }));
+  const snapshotId = snapshot.snapshotId;
   await client.knowledgeDocument.createMany({
     data: sources.map((source) => ({
       id: `${state.prefix}-golden-document-${source.id}`,
@@ -720,6 +702,24 @@ async function createBenchmarkBase(
   return { ...base, rowCount: input.count };
 }
 
+function automaticArguments(query: string) {
+  return {
+    coverage: { expectedPassageCount: null, mode: "partial" },
+    exactTerms: [],
+    lanes: ["exact", "lexical", "metadata", "semantic"],
+    operation: "automatic_search",
+    phaseOrdinal: 0,
+    plannerVersion: 2,
+    purpose: "answer",
+    query,
+    strategy: "focused",
+    subqueryOrdinal: 0,
+    targetNames: [],
+    targetResolution: null,
+    targetSourceIds: []
+  } as const;
+}
+
 async function createRun(
   client: PrismaClient,
   state: FixtureState,
@@ -787,7 +787,7 @@ async function createRun(
   });
   const toolCall = await client.modelRunToolCall.create({
     data: {
-      arguments: { query: "How long does Atlas retain completed exports?" },
+      arguments: automaticArguments("How long does Atlas retain completed exports?"),
       modelRunId: run.id,
       ordinal: 0,
       providerCallId: "knowledge-eval-provider-call",
@@ -890,6 +890,7 @@ async function currentRetrievalBaseline(
     const startedAt = performance.now();
     const result = await store.hybridSearch({
       candidateLimit: KNOWLEDGE_CANDIDATE_LIMIT,
+      operation: "automatic_search",
       query: query.question,
       resultLimit: KNOWLEDGE_RESULT_LIMIT,
       runId: state.modelRunId!,
@@ -1007,7 +1008,7 @@ async function citationBaseline(
     store: createPrismaKnowledgeRetrievalStore(client)
   });
   const result = await executor.execute({
-    arguments: { query: query.question },
+    arguments: automaticArguments(query.question),
     id: "knowledge-eval-provider-call",
     name: "retrieve_knowledge"
   }, {
@@ -1318,6 +1319,12 @@ export async function runKnowledgePostgresBaseline(client: PrismaClient) {
       retrieval,
       sanitizedAggregatesOnly: true,
       static: staticBaseline,
+      vectorEvidence: Object.freeze({
+        fixture: "deterministic-source-oracle-v1",
+        purpose: "database_plumbing",
+        qualityGateEligible: false,
+        realEmbeddingExecution: "not_measured"
+      }),
       vectorQualification: Object.freeze({
         global1024Rows: globalRows,
         incompatible1536Rows: incompatible.rowCount,

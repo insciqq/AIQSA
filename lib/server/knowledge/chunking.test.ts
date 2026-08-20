@@ -11,6 +11,14 @@ import {
 } from "./chunking";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
+import {
+  decodeKnowledgeDocumentContext,
+  isCompleteKnowledgeTableRowProjectionSequence,
+  KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS,
+  KNOWLEDGE_TABLE_HEADER_LINEAGE_MAX_CHARS,
+  KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS,
+  KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES
+} from "./documentContext";
 
 const config = {
   maxChunksPerDocument: 1_000,
@@ -42,17 +50,68 @@ function block(
   };
 }
 
-function document(blocks: readonly ParsedDocumentBlock[], sourceDisplayName = "runbook.pdf") {
+function document(
+  blocks: readonly ParsedDocumentBlock[],
+  sourceDisplayName = "runbook.pdf",
+  ocrConfidence: number | null = null
+) {
   return encodeKnowledgeNormalizedDocument(finalizeParsedDocument({
     blocks,
     engine: "docling",
     mediaType: "application/pdf",
+    ocrConfidence,
     pageCount: Math.max(...blocks.map((item) => item.pageEnd), 1),
     status: "complete"
   }), config, { layoutAwareTables: true, sourceDisplayName }).document;
 }
 
-describe("Knowledge chunk profile v2", () => {
+function fieldDocument(value: string) {
+  return {
+    ...document([block(0, "Form")]),
+    fieldGroups: [{
+      boundingBoxes: [],
+      cells: [
+        {
+          boundingBoxes: [],
+          confidence: 0.9,
+          id: 1,
+          itemRef: null,
+          label: "key" as const,
+          order: 0,
+          originalText: "Narrative",
+          text: "Narrative"
+        },
+        {
+          boundingBoxes: [],
+          confidence: 0.9,
+          id: 2,
+          itemRef: null,
+          label: "value" as const,
+          order: 1,
+          originalText: value,
+          text: value
+        }
+      ],
+      confidence: 0.9,
+      contentHash: "f".repeat(64),
+      id: "fg_overflow_1",
+      kind: "key_value" as const,
+      links: [{
+        confidence: 0.9,
+        label: "to_value" as const,
+        order: 0,
+        sourceCellId: 1,
+        targetCellId: 2
+      }],
+      locator: { kind: "page" as const, pageEnd: 1, pageStart: 1 },
+      order: 0,
+      readingOrder: 0,
+      sourceRef: "#/key_value_items/0"
+    }]
+  };
+}
+
+describe("Knowledge chunk profiles", () => {
   it("keeps a short logical section together across a page boundary with deterministic context", () => {
     const normalized = document([
       block(0, "Guide", { type: "title" }),
@@ -150,10 +209,771 @@ describe("Knowledge chunk profile v2", () => {
     expect(chunks).toHaveLength(40);
     expect(chunks.every((chunk) => chunk.sourceBlockStart === 0 && chunk.sourceBlockEnd === 0))
       .toBe(true);
+    expect(chunks[0]!.text).toBe(`row-0\t${"value ".repeat(20).trim()}`);
     expect(chunks.every((chunk) => chunk.text.includes("\t") && !chunk.text.includes("\n")))
       .toBe(true);
     expect(chunks.every((chunk) =>
       chunk.contextPrefix.startsWith("Evidence layout: table_row_v1"))).toBe(true);
+    expect(chunks.map((chunk) => chunk.documentContext?.locator).every((locator, rowIndex) =>
+      locator?.kind === "table_row" && locator.rowIndex === rowIndex)).toBe(true);
+  });
+
+  it("repeats a detected header and preserves its row lineage after a page-style repetition", () => {
+    const rows = [
+      ["Metric", "Date", "Actual", "Reference", "Unit"],
+      ["Glucose", "2026-08-20", "5.4", "3.9–6.1", "mmol/L"],
+      ["Metric", "Date", "Actual", "Reference", "Unit"],
+      ["Hemoglobin", "2026-08-21", "142", "120–160", "g/L"]
+    ];
+    const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+      column,
+      columnSpan: 1,
+      row: rowIndex,
+      rowSpan: 1,
+      text
+    })));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 5, rowCount: 4 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      rows[0]!.join("\t"),
+      `${rows[0]!.join("\t")}\n${rows[1]!.join("\t")}`,
+      rows[2]!.join("\t"),
+      `${rows[2]!.join("\t")}\n${rows[3]!.join("\t")}`
+    ]);
+    expect(chunks[3]!.documentContext?.locator).toMatchObject({
+      headerLineage: expect.arrayContaining([
+        { columnEnd: 2, columnStart: 2, rowIndex: 2, text: "Actual" },
+        { columnEnd: 3, columnStart: 3, rowIndex: 2, text: "Reference" }
+      ]),
+      kind: "table_row",
+      rowIndex: 3,
+      rowKind: "data"
+    });
+    expect(chunks[3]!.documentContext?.observations.find((observation) =>
+      observation.origin.kind === "table_cell" && observation.origin.columnStart === 2))
+      .toMatchObject({
+        date: "2026-08-21",
+        metric: "Hemoglobin",
+        role: "observation",
+        unit: "g/L"
+      });
+  });
+
+  it("recognizes a conservative dated-series header with year and quarter columns", () => {
+    const rows = [
+      ["Metric", "2024", "2025", "Q1 2026", "2025/Q1 2026"],
+      ["Revenue", "100", "120", "31", "40"]
+    ];
+    const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+      column,
+      columnSpan: 1,
+      row: rowIndex,
+      rowSpan: 1,
+      text
+    })));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 5, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      rows[0]!.join("\t"),
+      `${rows[0]!.join("\t")}\n${rows[1]!.join("\t")}`
+    ]);
+    expect(chunks[0]!.documentContext?.locator).toMatchObject({
+      kind: "table_row",
+      rowIndex: 0,
+      rowKind: "header"
+    });
+    expect(chunks[1]!.documentContext?.locator).toMatchObject({
+      headerLineage: expect.arrayContaining([
+        expect.objectContaining({ columnStart: 1, text: "2024" }),
+        expect.objectContaining({ columnStart: 3, text: "Q1 2026" }),
+        expect.objectContaining({ columnStart: 4, text: "2025/Q1 2026" })
+      ]),
+      kind: "table_row",
+      rowIndex: 1,
+      rowKind: "data"
+    });
+    const observationAt = (columnStart: number) => chunks[1]!.documentContext?.observations
+      .find((observation) => observation.origin.kind === "table_cell" &&
+        observation.origin.columnStart === columnStart);
+    expect(observationAt(1)).toMatchObject({
+      effectiveFrom: "2024-01-01",
+      effectiveTo: "2024-12-31",
+      metric: "Revenue",
+      normalizedValue: "100",
+      role: "observation"
+    });
+    expect(observationAt(2)).toMatchObject({
+      effectiveFrom: "2025-01-01",
+      effectiveTo: "2025-12-31",
+      metric: "Revenue",
+      normalizedValue: "120",
+      role: "observation"
+    });
+    expect(observationAt(3)).toMatchObject({
+      effectiveFrom: "2026-01-01",
+      effectiveTo: "2026-03-31",
+      metric: "Revenue",
+      normalizedValue: "31",
+      role: "observation"
+    });
+    expect(observationAt(4)).toMatchObject({
+      effectiveFrom: null,
+      effectiveTo: null,
+      role: "metadata"
+    });
+  });
+
+  it("does not promote an ordinary data row containing a year to table header", () => {
+    const rows = [
+      ["Invoice", "2024", "100"],
+      ["Order", "2025", "200"]
+    ];
+    const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+      column,
+      columnSpan: 1,
+      row: rowIndex,
+      rowSpan: 1,
+      text
+    })));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 3, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual(rows.map((row) => row.join("\t")));
+    expect(chunks.every((chunk) => chunk.documentContext?.locator.kind === "table_row" &&
+      chunk.documentContext.locator.rowKind === "data" &&
+      chunk.documentContext.locator.headerLineage.length === 0)).toBe(true);
+  });
+
+  it.each([
+    ["Dose", "5mg", "5", "mg"],
+    ["Temperature", "37°C", "37", "°C"],
+    ["Count", "1e3mg", "1000", "mg"]
+  ])("detects a header before attached/scientific evidence %s = %s", (
+    metric,
+    rawValue,
+    normalizedValue,
+    unit
+  ) => {
+    const rows = [["Metric", "Actual"], [metric!, rawValue!]];
+    const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+      column,
+      columnSpan: 1,
+      row: rowIndex,
+      rowSpan: 1,
+      text
+    })));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 2, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const valueObservation = chunks[1]?.documentContext?.observations.find((observation) =>
+      observation.origin.kind === "table_cell" && observation.origin.columnStart === 1);
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      "Metric\tActual",
+      `Metric\tActual\n${metric}\t${rawValue}`
+    ]);
+    expect(chunks[0]?.documentContext?.locator).toMatchObject({
+      kind: "table_row",
+      rowIndex: 0,
+      rowKind: "header"
+    });
+    expect(chunks[1]?.documentContext?.locator).toMatchObject({
+      kind: "table_row",
+      rowIndex: 1,
+      rowKind: "data"
+    });
+    expect(valueObservation).toMatchObject({
+      ambiguityReasons: [],
+      metric,
+      normalizedValue,
+      role: "observation",
+      unit
+    });
+  });
+
+  it("projects an oversized row by bounded column groups with one stable original-row identity", () => {
+    const headers = [
+      "Subject", "Date", "Actual", "Reference", "Unit", "Target", "Threshold", "Comment"
+    ];
+    const values = Array.from({ length: 8 }, (_, column) =>
+      `Value ${column} ${"word ".repeat(90).trim()}`);
+    const cells = [headers, values].flatMap((row, rowIndex) => row.map((text, column) => ({
+      column,
+      columnSpan: 1,
+      row: rowIndex,
+      rowSpan: 1,
+      text
+    })));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, [headers, values].map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 8, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const projections = chunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1);
+
+    expect(projections.length).toBeGreaterThan(1);
+    expect(projections.every((chunk) =>
+      chunk.tokenCount <= KNOWLEDGE_CHUNK_MAX_TOKENS && chunk.text.includes("\n"))).toBe(true);
+    expect(new Set(projections.map((chunk) => {
+      const locator = chunk.documentContext!.locator;
+      return locator.kind === "table_row_projection" ? locator.rowId : null;
+    })).size).toBe(1);
+    const columnRanges = projections.map((chunk) => {
+      const locator = chunk.documentContext!.locator;
+      return locator.kind === "table_row_projection"
+        ? [locator.columnStart, locator.columnEnd]
+        : null;
+    });
+    expect(columnRanges[0]?.[0]).toBe(0);
+    expect(columnRanges.at(-1)?.[1]).toBe(7);
+    expect(columnRanges.every((range, index) => index === 0 ||
+      range?.[0] === (columnRanges[index - 1]?.[1] ?? -1) + 1)).toBe(true);
+    const headerLineages = projections.map((chunk) => {
+      const locator = chunk.documentContext!.locator;
+      return locator.kind === "table_row_projection" ? locator.headerLineage : [];
+    });
+    expect(new Set(headerLineages.flatMap((headers) =>
+      headers.map((header) => header.rowIndex)))).toEqual(new Set([0]));
+    expect(new Set(headerLineages.map((headers) => JSON.stringify(headers))).size)
+      .toBe(projections.length);
+    expect(isCompleteKnowledgeTableRowProjectionSequence(projections.flatMap((chunk) => {
+      const locator = chunk.documentContext?.locator;
+      return locator?.kind === "table_row_projection" ? [locator] : [];
+    }))).toBe(true);
+  });
+
+  it("splits one oversized cell into an ordered repeated-column projection group", () => {
+    const header = "Narrative";
+    const value = ["42", ...Array.from({ length: 649 }, (_, index) => `value${index}`)]
+      .join(" ");
+    const cells = [header, value].map((text, row) => ({
+      column: 0,
+      columnSpan: 1,
+      row,
+      rowSpan: 1,
+      text
+    }));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${header}\n${value}`, {
+        isTable: true,
+        table: { cells, columnCount: 1, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const projections = chunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1);
+    const locators = projections.flatMap((chunk) => {
+      const locator = chunk.documentContext?.locator;
+      return locator?.kind === "table_row_projection" ? [locator] : [];
+    });
+
+    expect(projections).toHaveLength(2);
+    expect(locators.map((locator) => [locator.columnStart, locator.columnEnd])).toEqual([
+      [0, 0],
+      [0, 0]
+    ]);
+    expect(locators.map((locator) => locator.projectionIndex)).toEqual([0, 1]);
+    expect(isCompleteKnowledgeTableRowProjectionSequence(locators)).toBe(true);
+    expect(projections.every((chunk) => chunk.text.startsWith(`${header}\n`) &&
+      chunk.tokenCount <= KNOWLEDGE_CHUNK_MAX_TOKENS)).toBe(true);
+    expect(projections.map((chunk) => chunk.text.slice(header.length + 1)).join(" ")).toBe(value);
+  });
+
+  it("keeps one merged-cell span intact across projection boundaries", () => {
+    const headers = ["Group", "Detail", "Other", "Unit"];
+    const mergedValue = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]
+      .join(" ");
+    const trailingValue = "tail 7";
+    const cells = [
+      ...headers.map((text, column) => ({
+        column,
+        columnSpan: 1,
+        row: 0,
+        rowSpan: 1,
+        text
+      })),
+      { column: 0, columnSpan: 2, row: 1, rowSpan: 1, text: mergedValue },
+      { column: 2, columnSpan: 2, row: 1, rowSpan: 1, text: trailingValue }
+    ];
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${headers.join("\t")}\n${mergedValue}\t\t${trailingValue}`, {
+        isTable: true,
+        table: { cells, columnCount: 4, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const projections = chunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1);
+    const locators = projections.flatMap((chunk) => {
+      const locator = chunk.documentContext?.locator;
+      return locator?.kind === "table_row_projection" ? [locator] : [];
+    });
+    const firstCellPayloads = projections
+      .filter((_, index) => locators[index]?.columnStart === 0)
+      .map((chunk) => chunk.text.slice(chunk.text.indexOf("\n") + 1));
+    const trailingPayloads = projections
+      .filter((_, index) => locators[index]?.columnStart === 2)
+      .map((chunk) => chunk.text.slice(chunk.text.indexOf("\n") + 1));
+
+    expect(locators.map((locator) => [locator.columnStart, locator.columnEnd])).toEqual([
+      [0, 1],
+      [0, 1],
+      [2, 3]
+    ]);
+    expect(isCompleteKnowledgeTableRowProjectionSequence(locators)).toBe(true);
+    expect(firstCellPayloads.join(" ")).toBe(mergedValue);
+    expect(trailingPayloads).toEqual([trailingValue]);
+  });
+
+  it("degrades instead of duplicating a merged header across incompatible cell boundaries", () => {
+    const header = "Merged header";
+    const value = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]
+      .join(" ");
+    const cells = [
+      { column: 0, columnSpan: 2, row: 0, rowSpan: 1, text: header },
+      { column: 0, columnSpan: 1, row: 1, rowSpan: 1, text: value },
+      { column: 1, columnSpan: 1, row: 1, rowSpan: 1, text: "second 7" }
+    ];
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${header}\t\n${value}\tsecond 7`, {
+        isTable: true,
+        table: { cells, columnCount: 2, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const dataChunks = chunks.filter((chunk) => chunk.documentContext === null);
+
+    expect(dataChunks.length).toBeGreaterThan(0);
+    expect(dataChunks.every((chunk) => chunk.documentContext === null &&
+      chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1"))).toBe(true);
+    expect(chunks.some((chunk) => chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1)).toBe(false);
+    expect(dataChunks.at(-1)!.text).toContain("second 7");
+  });
+
+  it("projects sparse oversized rows across leading, internal, and trailing blank columns", () => {
+    const headers = ["Unused", "Narrative", "Blank", "Result", "Trailing"];
+    const value = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]
+      .join(" ");
+    const cells = [
+      ...headers.map((text, column) => ({
+        column,
+        columnSpan: 1,
+        row: 0,
+        rowSpan: 1,
+        text
+      })),
+      { column: 1, columnSpan: 1, row: 1, rowSpan: 1, text: value },
+      { column: 3, columnSpan: 1, row: 1, rowSpan: 1, text: "complete 7" }
+    ];
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${headers.join("\t")}\n\t${value}\t\tcomplete 7\t`, {
+        isTable: true,
+        table: { cells, columnCount: 5, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const projections = chunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1);
+    const locators = projections.flatMap((chunk) => {
+      const locator = chunk.documentContext?.locator;
+      return locator?.kind === "table_row_projection" ? [locator] : [];
+    });
+
+    expect(locators.map((locator) => [locator.columnStart, locator.columnEnd])).toEqual([
+      [0, 1],
+      [0, 1],
+      [2, 4]
+    ]);
+    expect(isCompleteKnowledgeTableRowProjectionSequence(locators)).toBe(true);
+    expect(projections.slice(0, 2).map((chunk) =>
+      chunk.text.slice(chunk.text.indexOf("\n") + 1)).join(" ")).toBe(value);
+    expect(projections[2]!.text.slice(projections[2]!.text.indexOf("\n") + 1))
+      .toBe("\tcomplete 7");
+  });
+
+  it.each([4_097, 7_003, 12_000])(
+    "splits a %i-character low-token cell without losing source text",
+    (valueLength) => {
+      const header = "Narrative";
+      const value = `42 ${"x".repeat(valueLength - 3)}`;
+      const cells = [header, value].map((text, row) => ({
+        column: 0,
+        columnSpan: 1,
+        row,
+        rowSpan: 1,
+        text
+      }));
+      const chunks = chunkKnowledgeDocument({
+        document: document([block(0, `${header}\n${value}`, {
+          isTable: true,
+          table: { cells, columnCount: 1, rowCount: 2 },
+          type: "table"
+        })]),
+        maxChunks: 20,
+        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+      });
+      const projections = chunks.filter((chunk) =>
+        chunk.documentContext?.locator.kind === "table_row_projection" &&
+        chunk.documentContext.locator.rowIndex === 1);
+      const locators = projections.flatMap((chunk) => {
+        const locator = chunk.documentContext?.locator;
+        return locator?.kind === "table_row_projection" ? [locator] : [];
+      });
+
+      expect(value).toHaveLength(valueLength);
+      expect(projections.length).toBeGreaterThan(1);
+      expect(isCompleteKnowledgeTableRowProjectionSequence(locators)).toBe(true);
+      expect(projections.every((chunk) => chunk.text.length <= KNOWLEDGE_CHUNK_MAX_CHARS &&
+        chunk.tokenCount <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
+        chunk.documentContext!.observations.every((observation) =>
+          observation.rawValue.length <= KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS))).toBe(true);
+      expect(projections.map((chunk) => chunk.text.slice(header.length + 1)).join(""))
+        .toBe(value);
+    }
+  );
+
+  it("omits an oversized authoritative header while retaining its full source text", () => {
+    const header = `${"h".repeat(1_023)}😀tail`;
+    const value = ["42", ...Array.from({ length: 649 }, (_, index) => `value${index}`)]
+      .join(" ");
+    const cells = [header, value].map((text, row) => ({
+      column: 0,
+      columnSpan: 1,
+      row,
+      rowSpan: 1,
+      text
+    }));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${header}\n${value}`, {
+        isTable: true,
+        table: { cells, columnCount: 1, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const projections = chunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1);
+    const headerLineage = projections.flatMap((chunk) => {
+      const locator = chunk.documentContext?.locator;
+      return locator?.kind === "table_row_projection" ? locator.headerLineage : [];
+    });
+
+    expect(projections).toHaveLength(2);
+    expect(header.length).toBeGreaterThan(KNOWLEDGE_TABLE_HEADER_LINEAGE_MAX_CHARS);
+    expect(projections.every((chunk) => chunk.text.startsWith(`${header}\n`))).toBe(true);
+    expect(headerLineage).toEqual([]);
+    expect(projections.every((chunk) =>
+      chunk.documentContext!.ambiguityReasons.includes("missing_header"))).toBe(true);
+  });
+
+  it("degrades a data row when its full source header cannot fit any bounded projection", () => {
+    const header = Array.from({ length: 401 }, (_, index) => `header${index}`).join(" ");
+    const value = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]
+      .join(" ");
+    const cells = [header, value].map((text, row) => ({
+      column: 0,
+      columnSpan: 1,
+      row,
+      rowSpan: 1,
+      text
+    }));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${header}\n${value}`, {
+        isTable: true,
+        table: { cells, columnCount: 1, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const degraded = chunks.filter((chunk) => chunk.documentContext === null);
+
+    expect(degraded.length).toBeGreaterThan(1);
+    expect(degraded.every((chunk) =>
+      chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1") &&
+      chunk.tokenCount <= KNOWLEDGE_CHUNK_MAX_TOKENS)).toBe(true);
+    expect(chunks.some((chunk) => chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1)).toBe(false);
+  });
+
+  it("degrades a row whose complete UTF-8 projection group exceeds the dispatch budget", () => {
+    const header = "Narrative";
+    const value = `42 ${"界".repeat(11_500)}`;
+    const cells = [header, value].map((text, row) => ({
+      column: 0,
+      columnSpan: 1,
+      row,
+      rowSpan: 1,
+      text
+    }));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, `${header}\n${value}`, {
+        isTable: true,
+        table: { cells, columnCount: 1, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const dataChunks = chunks.filter((chunk) => chunk.text.includes("42"));
+
+    expect(Buffer.byteLength(`${header}\n${value}`, "utf8"))
+      .toBeGreaterThan(KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES);
+    expect(dataChunks.length).toBeGreaterThan(0);
+    expect(dataChunks.every((chunk) => chunk.documentContext === null &&
+      chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1"))).toBe(true);
+  });
+
+  it("degrades rows beyond the atomic read cap without publishing unreachable row locators", () => {
+    const headers = Array.from({ length: 9 }, (_, column) => `Header${column}`);
+    const values = Array.from({ length: 9 }, (_, column) =>
+      [`column${column}`, String(column + 1), ...Array<string>(397).fill("word")].join(" "));
+    const cells = [headers, values].flatMap((row, rowIndex) => row.map((text, column) => ({
+      column,
+      columnSpan: 1,
+      row: rowIndex,
+      rowSpan: 1,
+      text
+    })));
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, [headers, values].map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 9, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 30,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const degraded = chunks.filter((chunk) => chunk.documentContext === null);
+
+    expect(degraded.length).toBeGreaterThan(KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS);
+    expect(degraded.every((chunk) =>
+      chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1") &&
+      chunk.tokenCount <= KNOWLEDGE_CHUNK_MAX_TOKENS)).toBe(true);
+    expect(chunks.some((chunk) => chunk.documentContext?.locator.kind === "table_row_projection" &&
+      chunk.documentContext.locator.rowIndex === 1)).toBe(false);
+  });
+
+  it("retains immutable profile 3 rows without header repetition or typed document context", () => {
+    const cells = [
+      { column: 0, columnSpan: 1, row: 0, rowSpan: 1, text: "Metric" },
+      { column: 1, columnSpan: 1, row: 0, rowSpan: 1, text: "Actual" },
+      { column: 0, columnSpan: 1, row: 1, rowSpan: 1, text: "Alpha" },
+      { column: 1, columnSpan: 1, row: 1, rowSpan: 1, text: "30" }
+    ];
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, "Metric\tActual\nAlpha\t30", {
+        isTable: true,
+        table: { cells, columnCount: 2, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 10,
+      profileVersion: 3
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual(["Metric\tActual", "Alpha\t30"]);
+    expect(chunks.every((chunk) => chunk.documentContext === null)).toBe(true);
+    expect(chunks.every((chunk) =>
+      chunk.contextPrefix.startsWith("Evidence layout: table_row_v1"))).toBe(true);
+  });
+
+  it("chunks only parser-linked field pairs atomically and isolates competing cells", () => {
+    const normalized = {
+      ...document([block(0, "Form")]),
+      fieldGroups: [{
+        boundingBoxes: [],
+        cells: [
+          { boundingBoxes: [], confidence: 0.9, id: 1, itemRef: null, label: "key" as const, order: 0, originalText: "Actual", text: "Actual" },
+          { boundingBoxes: [], confidence: 0.9, id: 2, itemRef: null, label: "value" as const, order: 1, originalText: "5,4", text: "5,4" },
+          { boundingBoxes: [], confidence: null, id: 3, itemRef: null, label: "key" as const, order: 2, originalText: "Reference", text: "Reference" },
+          { boundingBoxes: [], confidence: null, id: 4, itemRef: null, label: "key" as const, order: 3, originalText: "Target", text: "Target" },
+          { boundingBoxes: [], confidence: null, id: 5, itemRef: null, label: "value" as const, order: 4, originalText: "6,0", text: "6,0" }
+        ],
+        confidence: 0.8,
+        contentHash: "f".repeat(64),
+        id: "fg_form_1",
+        kind: "key_value" as const,
+        links: [
+          { confidence: 0.8, label: "to_value" as const, order: 0, sourceCellId: 1, targetCellId: 2 },
+          { confidence: null, label: "to_value" as const, order: 1, sourceCellId: 3, targetCellId: 5 },
+          { confidence: null, label: "to_value" as const, order: 2, sourceCellId: 4, targetCellId: 5 }
+        ],
+        locator: { kind: "page" as const, pageEnd: 1, pageStart: 1 },
+        order: 0,
+        readingOrder: 0,
+        sourceRef: "#/key_value_items/0"
+      }]
+    };
+    const chunks = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      "Actual\t5,4",
+      "Reference",
+      "Target",
+      "6,0",
+      "Form"
+    ]);
+    expect(chunks[0]!.documentContext).toMatchObject({
+      locator: { kind: "field_pair", labelCellId: 1, valueCellId: 2 },
+      observations: [{ normalizedValue: "5.4", role: "observation" }]
+    });
+    expect(chunks.slice(1, 4).every((chunk) =>
+      chunk.documentContext?.locator.kind === "field_ambiguous" &&
+      chunk.documentContext.ambiguityReasons.includes("competing_pair"))).toBe(true);
+    expect(chunks.slice(0, 4).every((chunk) =>
+      chunk.contextPrefix.startsWith(`Evidence layout: field_${
+        chunk.documentContext?.locator.kind === "field_pair" ? "pair" : "ambiguous"
+      }_v1`))).toBe(true);
+  });
+
+  it("uses the heading active before a field-group insertion point", () => {
+    const normalized = {
+      ...document([
+        block(0, "Section A", { headingPath: ["A"], type: "heading" }),
+        block(1, "Section B", { headingPath: ["B"], type: "heading" })
+      ]),
+      fieldGroups: [{
+        boundingBoxes: [],
+        cells: [
+          { boundingBoxes: [], confidence: 0.9, id: 1, itemRef: null, label: "key" as const, order: 0, originalText: "Actual", text: "Actual" },
+          { boundingBoxes: [], confidence: 0.9, id: 2, itemRef: null, label: "value" as const, order: 1, originalText: "5", text: "5" }
+        ],
+        confidence: 0.9,
+        contentHash: "a".repeat(64),
+        id: "fg_between_a_and_b",
+        kind: "key_value" as const,
+        links: [{
+          confidence: 0.9,
+          label: "to_value" as const,
+          order: 0,
+          sourceCellId: 1,
+          targetCellId: 2
+        }],
+        locator: { kind: "page" as const, pageEnd: 1, pageStart: 1 },
+        order: 0,
+        readingOrder: 1,
+        sourceRef: "#/key_value_items/0"
+      }]
+    };
+    const chunks = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const fieldChunk = chunks.find((chunk) =>
+      chunk.sourceBlockIds.includes("fg_between_a_and_b"));
+
+    expect(fieldChunk).toMatchObject({
+      headingPath: ["A"],
+      text: "Actual\t5"
+    });
+    expect(fieldChunk?.contextPrefix).toContain("Section: A");
+    expect(fieldChunk?.contextPrefix).not.toContain("Section: B");
+  });
+
+  it("keeps a 4097-character form value searchable as bounded ambiguous cell evidence", () => {
+    const value = `42 ${"x".repeat(4_094)}`;
+    const chunks = chunkKnowledgeDocument({
+      document: fieldDocument(value),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const fieldChunks = chunks.filter((chunk) =>
+      chunk.sourceBlockIds.includes("fg_overflow_1"));
+    const valueChunks = fieldChunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "field_ambiguous" &&
+      chunk.documentContext.locator.cellId === 2);
+
+    expect(value).toHaveLength(KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS + 1);
+    expect(valueChunks.length).toBeGreaterThan(1);
+    expect(valueChunks.map((chunk) => chunk.text).join("")).toBe(value);
+    expect(fieldChunks.every((chunk) =>
+      chunk.documentContext?.locator.kind === "field_ambiguous" &&
+      chunk.documentContext.ambiguityReasons.includes("ambiguous_role") &&
+      chunk.documentContext.observations.every((observation) =>
+        observation.rawValue.length <= KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS) &&
+      chunk.contextPrefix.startsWith("Evidence layout: field_ambiguous_v1"))).toBe(true);
+    expect(fieldChunks.every((chunk) => decodeKnowledgeDocumentContext(
+      JSON.parse(JSON.stringify(chunk.documentContext))
+    ) !== null)).toBe(true);
+    expect(fieldChunks.some((chunk) =>
+      chunk.documentContext?.locator.kind === "field_pair")).toBe(false);
+  });
+
+  it("splits a large-token form pair into searchable ambiguous cell chunks", () => {
+    const value = Array.from({ length: 650 }, (_, index) => `value${index}`).join(" ");
+    const chunks = chunkKnowledgeDocument({
+      document: fieldDocument(value),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    });
+    const fieldChunks = chunks.filter((chunk) =>
+      chunk.sourceBlockIds.includes("fg_overflow_1"));
+    const valueChunks = fieldChunks.filter((chunk) =>
+      chunk.documentContext?.locator.kind === "field_ambiguous" &&
+      chunk.documentContext.locator.cellId === 2);
+
+    expect(valueChunks.length).toBeGreaterThan(1);
+    expect(fieldChunks.every((chunk) =>
+      chunk.documentContext?.locator.kind === "field_ambiguous" &&
+      chunk.tokenCount <= KNOWLEDGE_CHUNK_MAX_TOKENS)).toBe(true);
+    expect(fieldChunks.some((chunk) => chunk.text === "Narrative")).toBe(true);
+    expect(valueChunks[0]!.text).toContain("value0");
+    expect(valueChunks.at(-1)!.text).toContain("value649");
+    expect(valueChunks.map((chunk) => chunk.text).join(" ")).toBe(value);
   });
 
   it("retains the immutable profile 2 table projection", () => {
@@ -199,7 +1019,7 @@ describe("Knowledge chunk profile v2", () => {
       index,
       index % 2 === 0 ? `Metric ${index / 2 + 1}` : `${index / 2 + 0.5}`,
       { boundingBoxes: [box] }
-    )));
+    )), "runbook.pdf", 0.9);
     const chunks = chunkKnowledgeDocument({
       document: normalized,
       maxChunks: 10,
@@ -240,7 +1060,7 @@ describe("Knowledge chunk profile v2", () => {
         top
       }] })
     ]);
-    const normalized = document(blocks);
+    const normalized = document(blocks, "runbook.pdf", 0.9);
     const chunks = chunkKnowledgeDocument({
       document: normalized,
       maxChunks: 10,
@@ -254,6 +1074,7 @@ describe("Knowledge chunk profile v2", () => {
     expect(chunks).toHaveLength(6);
     expect(chunks.every((chunk) =>
       chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1"))).toBe(true);
+    expect(chunks.every((chunk) => chunk.documentContext === null)).toBe(true);
     expect(chunks.every((chunk) => !chunk.text.includes("\n"))).toBe(true);
   });
 

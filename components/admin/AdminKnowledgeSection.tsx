@@ -303,6 +303,10 @@ export function AdminKnowledgeSection({
                     ? `${activeProfile.visionDestination.connectionDisplayName} / ${activeProfile.visionDestination.modelDisplayName} receives bounded original visual bytes and the visual question.`
                     : "asset-only; original figures remain viewable, but no visual bytes leave the installation for analysis."}
                 </p>
+                <p className="mt-2 text-xs leading-5 text-ink-muted">
+                  Policy modes: {settings.profile.egress.roles.slice(2).map((role) =>
+                    `${role.operation.replaceAll("_", " ")}: ${role.mode}`).join(" · ")}
+                </p>
               </div>
 
               {settings.profile.health.code === "knowledge_profile_legacy_authority" ? (

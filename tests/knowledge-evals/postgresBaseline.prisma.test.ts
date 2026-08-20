@@ -37,6 +37,12 @@ describe("Knowledge Engine current PostgreSQL baseline", () => {
       static: {
         corpus: { queryCount: 18, sourceCount: 50 }
       },
+      vectorEvidence: {
+        fixture: "deterministic-source-oracle-v1",
+        purpose: "database_plumbing",
+        qualityGateEligible: false,
+        realEmbeddingExecution: "not_measured"
+      },
       vectorQualification: {
         global1024Rows: 5_697,
         incompatible1536Rows: 128

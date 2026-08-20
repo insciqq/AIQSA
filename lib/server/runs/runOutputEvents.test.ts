@@ -141,4 +141,40 @@ describe("durable run output events", () => {
       }
     ])).toEqual([]);
   });
+
+  it("drops private Knowledge read receipts, Source identities, and Base provenance", () => {
+    const privateKnowledgeArtifact: ModelRunSseEvent = {
+      data: {
+        artifactType: "tool_result",
+        payload: {
+          canonicalSourceProvenance: [{
+            artifactId: "private-source-artifact-id-sentinel",
+            bindings: [
+              { baseName: "Primary", bindingOrdinal: 0, knowledgeBaseId: "primary-base" },
+              {
+                baseName: "Mirror",
+                bindingOrdinal: 1,
+                knowledgeBaseId: "private-secondary-base-id-sentinel"
+              }
+            ],
+            primaryBindingOrdinal: 0,
+            sourceId: "private-source-id-sentinel",
+            sourceVersionId: "private-source-version-id-sentinel"
+          }],
+          readReceipt: {
+            locator: "private-source-locator-sentinel",
+            resolvedSource: {
+              sourceArtifactId: "private-source-artifact-id-sentinel",
+              sourceId: "private-source-id-sentinel",
+              sourceVersionId: "private-source-version-id-sentinel"
+            }
+          }
+        }
+      },
+      type: "artifact"
+    };
+
+    expect(projectRunOutputArtifactEvent(privateKnowledgeArtifact)).toBeNull();
+    expect(runOutputArtifactEvents([privateKnowledgeArtifact])).toEqual([]);
+  });
 });

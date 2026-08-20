@@ -1,0 +1,411 @@
+import type { PrismaClient } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
+import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
+import type { NormalizedRunRequest } from "../providers/types";
+import { createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+
+type ToolCallRow = {
+  completedAt: Date | null;
+  id: string;
+  state: "cancelled" | "pending";
+};
+
+type ReservationRow = {
+  ambiguousAt: Date | null;
+  dispatchAttemptKey: string | null;
+  failureCode: string | null;
+  leaseExpiresAt: Date | null;
+  leaseToken: string | null;
+  modelRunId: string;
+  modelRunToolCallId: string;
+  purgedAt: Date | null;
+  releasedAt: Date | null;
+  state: "ambiguous" | "dispatched" | "expired" | "released" | "reserved" | "settled";
+};
+
+type BudgetUpdate = {
+  data: Partial<ReservationRow>;
+  where: {
+    modelRunId: string;
+    modelRunToolCallId: { in: string[] };
+    purgedAt: null | { not: null };
+    state: ReservationRow["state"];
+  };
+};
+
+type ToolCallUpdate = {
+  data: Partial<ToolCallRow>;
+  where: {
+    id: { in: string[] };
+    modelRunId: string;
+    state: ToolCallRow["state"];
+  };
+};
+
+function cancellationHarness(options: Readonly<{
+  failToolCallUpdate?: boolean;
+  ownerFound?: boolean;
+}> = {}) {
+  const runId = "run-one";
+  const pendingIds = [
+    "reserved-call",
+    "dispatched-call",
+    "purged-reserved-call",
+    "purged-dispatched-call",
+    "settled-call",
+    "released-call",
+    "ambiguous-call",
+    "expired-call"
+  ];
+  const calls: ToolCallRow[] = [
+    ...pendingIds.map((id) => ({ completedAt: null, id, state: "pending" as const })),
+    { completedAt: new Date("2026-08-19T11:59:00.000Z"), id: "old-call", state: "cancelled" }
+  ];
+  const leaseExpiresAt = new Date("2026-08-19T12:10:00.000Z");
+  const reservations: ReservationRow[] = [
+    {
+      ambiguousAt: null,
+      dispatchAttemptKey: null,
+      failureCode: null,
+      leaseExpiresAt,
+      leaseToken: "lease:reserved:one",
+      modelRunId: runId,
+      modelRunToolCallId: "reserved-call",
+      purgedAt: null,
+      releasedAt: null,
+      state: "reserved"
+    },
+    {
+      ambiguousAt: null,
+      dispatchAttemptKey: "dispatch:attempt:one",
+      failureCode: null,
+      leaseExpiresAt,
+      leaseToken: "lease:dispatched:one",
+      modelRunId: runId,
+      modelRunToolCallId: "dispatched-call",
+      purgedAt: null,
+      releasedAt: null,
+      state: "dispatched"
+    },
+    ...(["reserved", "dispatched"] as const).map((state) => ({
+      ambiguousAt: null,
+      dispatchAttemptKey: null,
+      failureCode: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      modelRunId: runId,
+      modelRunToolCallId: `purged-${state}-call`,
+      purgedAt: new Date("2026-08-19T11:56:00.000Z"),
+      releasedAt: null,
+      state
+    })),
+    ...(["settled", "released", "ambiguous", "expired"] as const).map((state) => ({
+      ambiguousAt: state === "ambiguous" ? new Date("2026-08-19T11:58:00.000Z") : null,
+      dispatchAttemptKey: state === "settled" || state === "ambiguous"
+        ? `dispatch:${state}:one`
+        : null,
+      failureCode: state === "settled" ? null : `${state}_reason`,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      modelRunId: runId,
+      modelRunToolCallId: `${state}-call`,
+      purgedAt: null,
+      releasedAt: state === "released" ? new Date("2026-08-19T11:57:00.000Z") : null,
+      state
+    })),
+    {
+      ambiguousAt: null,
+      dispatchAttemptKey: null,
+      failureCode: null,
+      leaseExpiresAt,
+      leaseToken: "lease:old:one",
+      modelRunId: runId,
+      modelRunToolCallId: "old-call",
+      purgedAt: null,
+      releasedAt: null,
+      state: "reserved"
+    }
+  ];
+  let queryOrdinal = 0;
+  const transaction = vi.fn(async (consume: (tx: unknown) => Promise<number>) => {
+    const callSnapshot = calls.map((row) => ({ ...row }));
+    const reservationSnapshot = reservations.map((row) => ({ ...row }));
+    try {
+      return await consume(tx);
+    } catch (error) {
+      calls.splice(0, calls.length, ...callSnapshot);
+      reservations.splice(0, reservations.length, ...reservationSnapshot);
+      throw error;
+    }
+  });
+  const tx = {
+    $queryRaw: vi.fn(async () => {
+      queryOrdinal += 1;
+      if (queryOrdinal % 2 === 1) {
+        return options.ownerFound === false
+          ? []
+          : [{
+              assistantMessageId: null,
+              errorPayload: null,
+              providerResponseId: null,
+              status: "in_progress",
+              toolLoopState: null
+            }];
+      }
+      return calls.filter((call) => call.state === "pending").map(({ id }) => ({ id }));
+    }),
+    knowledgeBudgetReservation: {
+      updateMany: vi.fn(async (input: BudgetUpdate) => {
+        const ids = new Set(input.where.modelRunToolCallId.in);
+        const matching = reservations.filter((row) =>
+          row.modelRunId === input.where.modelRunId &&
+          ids.has(row.modelRunToolCallId) &&
+          (input.where.purgedAt === null ? row.purgedAt === null : row.purgedAt !== null) &&
+          row.state === input.where.state);
+        matching.forEach((row) => Object.assign(row, input.data));
+        return { count: matching.length };
+      })
+    },
+    modelRunToolCall: {
+      updateMany: vi.fn(async (input: ToolCallUpdate) => {
+        if (options.failToolCallUpdate) throw new Error("tool_call_write_failed");
+        const ids = new Set(input.where.id.in);
+        const matching = calls.filter((row) => ids.has(row.id) && row.state === input.where.state);
+        matching.forEach((row) => Object.assign(row, input.data));
+        return { count: matching.length };
+      })
+    }
+  };
+  const client = { $transaction: transaction } as unknown as PrismaClient;
+  return {
+    calls,
+    operations: createPrismaRunToolLoopOperations(
+      client,
+      NOOP_MEMORY_SOURCE_MUTATION_HOOKS
+    ),
+    reservations,
+    runId,
+    transaction,
+    tx
+  };
+}
+
+describe("Prisma run tool-loop cancellation", () => {
+  it("releases reserved Knowledge capacity and fences dispatched work as ambiguous", async () => {
+    const harness = cancellationHarness();
+    const terminalBefore = harness.reservations.slice(4, 8).map((row) => ({ ...row }));
+
+    await expect(harness.operations.cancelPendingToolLoopCalls({
+      runId: harness.runId,
+      userId: "owner-one"
+    })).resolves.toBe(8);
+
+    expect(harness.reservations[0]).toMatchObject({
+      failureCode: "operation_cancelled",
+      leaseExpiresAt: null,
+      leaseToken: null,
+      releasedAt: expect.any(Date),
+      state: "released"
+    });
+    expect(harness.reservations[1]).toMatchObject({
+      ambiguousAt: expect.any(Date),
+      dispatchAttemptKey: "dispatch:attempt:one",
+      failureCode: "operation_cancelled_after_dispatch",
+      leaseExpiresAt: null,
+      leaseToken: null,
+      state: "ambiguous"
+    });
+    expect(harness.reservations[2]).toMatchObject({
+      failureCode: null,
+      purgedAt: expect.any(Date),
+      releasedAt: expect.any(Date),
+      state: "released"
+    });
+    expect(harness.reservations[3]).toMatchObject({
+      ambiguousAt: expect.any(Date),
+      failureCode: null,
+      purgedAt: expect.any(Date),
+      state: "ambiguous"
+    });
+    expect(harness.reservations.slice(4, 8)).toEqual(terminalBefore);
+    expect(harness.reservations[8]).toMatchObject({
+      leaseToken: "lease:old:one",
+      state: "reserved"
+    });
+    expect(harness.calls.slice(0, 8)).toEqual(pendingCallsWithOneTimestamp(harness.calls, 8));
+    expect(harness.calls[8]).toMatchObject({ state: "cancelled" });
+
+    const budgetWrites = harness.tx.knowledgeBudgetReservation.updateMany.mock.calls.length;
+    const callWrites = harness.tx.modelRunToolCall.updateMany.mock.calls.length;
+    await expect(harness.operations.cancelPendingToolLoopCalls({
+      runId: harness.runId,
+      userId: "owner-one"
+    })).resolves.toBe(0);
+    expect(harness.tx.knowledgeBudgetReservation.updateMany).toHaveBeenCalledTimes(budgetWrites);
+    expect(harness.tx.modelRunToolCall.updateMany).toHaveBeenCalledTimes(callWrites);
+  });
+
+  it("rolls budget transitions back when call cancellation cannot commit", async () => {
+    const harness = cancellationHarness({ failToolCallUpdate: true });
+    const reservationsBefore = harness.reservations.map((row) => ({ ...row }));
+
+    await expect(harness.operations.cancelPendingToolLoopCalls({
+      runId: harness.runId,
+      userId: "owner-one"
+    })).rejects.toThrow("tool_call_write_failed");
+
+    expect(harness.reservations).toEqual(reservationsBefore);
+    expect(harness.calls.slice(0, 8).every((call) => call.state === "pending")).toBe(true);
+    expect(harness.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mutate calls when the owning run is unavailable", async () => {
+    const harness = cancellationHarness({ ownerFound: false });
+
+    await expect(harness.operations.cancelPendingToolLoopCalls({
+      runId: harness.runId,
+      userId: "different-owner"
+    })).resolves.toBe(0);
+
+    expect(harness.tx.knowledgeBudgetReservation.updateMany).not.toHaveBeenCalled();
+    expect(harness.tx.modelRunToolCall.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("provider dispatch recovery request loading", () => {
+  const normalizedRequest = {
+    attachmentIds: [],
+    chatId: "chat-one",
+    content: { blocks: [{ text: "private question", type: "text" }] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+    modelCapabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      vision: false
+    },
+    modelId: "model-one",
+    params: {},
+    prompt: { developer: null, system: null },
+    provider: "provider-one",
+    searchPlan: { mode: "all_selected", options: [] },
+    toolMode: "none"
+  } satisfies NormalizedRunRequest;
+
+  it("selects only the accepted request and ownership fields", async () => {
+    const findUnique = vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" },
+      chatId: "chat-one",
+      modelId: "model-one",
+      normalizedRequest,
+      provider: "provider-one"
+    }));
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: { findUnique }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).resolves.toEqual(normalizedRequest);
+    expect(findUnique).toHaveBeenCalledWith({
+      select: {
+        chat: { select: { projectId: true, userId: true } },
+        chatId: true,
+        modelId: true,
+        normalizedRequest: true,
+        provider: true
+      },
+      where: { id: "run-one" }
+    });
+  });
+
+  it("accepts a persisted MCP server-only snapshot", async () => {
+    const acceptedRequest: NormalizedRunRequest = {
+      ...normalizedRequest,
+      mcp: {
+        servers: [{
+          fingerprint: "a".repeat(64),
+          revisionId: "revision-one",
+          serverId: "server-one",
+          serverName: "Server one"
+        }],
+        tools: [],
+        version: 1
+      }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: {
+        findUnique: vi.fn(async () => ({
+          chat: { projectId: null, userId: "owner-one" },
+          chatId: "chat-one",
+          modelId: "model-one",
+          normalizedRequest: acceptedRequest,
+          provider: "provider-one"
+        }))
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).resolves.toEqual(acceptedRequest);
+  });
+
+  it("rejects a stored request with an unrecognized private projection", async () => {
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: {
+        findUnique: vi.fn(async () => ({
+          chat: { projectId: null, userId: "owner-one" },
+          chatId: "chat-one",
+          modelId: "model-one",
+          normalizedRequest: { ...normalizedRequest, unexpectedPrivateField: "must not pass" },
+          provider: "provider-one"
+        }))
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  it("rejects unrecognized fields inside a persisted MCP snapshot", async () => {
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: {
+        findUnique: vi.fn(async () => ({
+          chat: { projectId: null, userId: "owner-one" },
+          chatId: "chat-one",
+          modelId: "model-one",
+          normalizedRequest: {
+            ...normalizedRequest,
+            mcp: {
+              privateRuntimeProjection: "must not pass",
+              servers: [],
+              tools: [],
+              version: 1
+            }
+          },
+          provider: "provider-one"
+        }))
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+});
+
+function pendingCallsWithOneTimestamp(calls: ToolCallRow[], count: number): ToolCallRow[] {
+  const completedAt = calls[0]?.completedAt;
+  expect(completedAt).toBeInstanceOf(Date);
+  return calls.slice(0, count).map((call) => ({
+    completedAt: completedAt ?? null,
+    id: call.id,
+    state: "cancelled"
+  }));
+}

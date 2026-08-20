@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_KNOWLEDGE_BUDGET_POLICY,
   decodeKnowledgeBudgetPolicy,
+  isAutomaticKnowledgeOperation,
+  isKnowledgeOperationKind,
   knowledgeBudgetStopReason,
   knowledgeBudgetPolicyFromProfileConfiguration,
   type KnowledgeBudgetUsage
@@ -50,5 +52,43 @@ describe("Knowledge execution budgets", () => {
       lowNoveltyStreak: DEFAULT_KNOWLEDGE_BUDGET_POLICY.maxConsecutiveLowNoveltyOperations,
       operations: 4
     }))).toBe("low_novelty");
+  });
+
+  it.each([4, 8, 14])(
+    "allows operation ordinal %i under the versioned default policy",
+    (operations) => {
+      expect(knowledgeBudgetStopReason(
+        DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        usage({ operations })
+      )).toBeNull();
+    }
+  );
+
+  it("rejects operation 15 under the versioned default policy", () => {
+    expect(DEFAULT_KNOWLEDGE_BUDGET_POLICY.maxOperations).toBe(14);
+    expect(knowledgeBudgetStopReason(
+      DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      usage({ operations: 15 })
+    )).toBe("operation_budget");
+  });
+
+  it("keeps the structural decoding ceiling separate from the default policy", () => {
+    expect(decodeKnowledgeBudgetPolicy({
+      ...DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      maxOperations: 256
+    })?.maxOperations).toBe(256);
+    expect(decodeKnowledgeBudgetPolicy({
+      ...DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      maxOperations: 257
+    })).toBeNull();
+  });
+
+  it("accounts structured and visual analysis as automatic operation kinds", () => {
+    expect(isKnowledgeOperationKind("structured_analysis")).toBe(true);
+    expect(isKnowledgeOperationKind("visual_analysis")).toBe(true);
+    expect(isAutomaticKnowledgeOperation("structured_analysis")).toBe(true);
+    expect(isAutomaticKnowledgeOperation("visual_analysis")).toBe(true);
+    expect(isAutomaticKnowledgeOperation("automatic_search")).toBe(true);
+    expect(isAutomaticKnowledgeOperation("find_exact")).toBe(false);
   });
 });

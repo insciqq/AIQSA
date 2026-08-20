@@ -7,6 +7,7 @@ import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository"
 import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
 import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
+import { knowledgeProviderDispatchLifecycle } from "@/lib/server/knowledge/defaultEvidenceDispatch";
 import { defaultMemoryToolEgressReceiptService } from "@/lib/server/memory/egress/receipts";
 import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAdmission";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
@@ -32,6 +33,7 @@ export const POST = createSendMessageHandler({
   getConfig: () => getAuthConfig(),
   knowledgeAdmission: knowledgeRunAdmissionService,
   knowledgeExecutor: knowledgeToolExecutor,
+  knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
   providerAdmission: providerAdmissionService,

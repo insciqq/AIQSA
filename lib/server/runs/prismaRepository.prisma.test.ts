@@ -29,7 +29,10 @@ import {
   type ProjectRunAdmission,
   type RunRepository
 } from "./runRepositoryContract";
-import { parseToolLoopCheckpoint } from "./toolLoopPersistence";
+import {
+  parseToolLoopCheckpoint,
+  type ToolLoopJsonValue
+} from "./toolLoopPersistence";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -815,11 +818,26 @@ describe("Prisma-backed run repository", () => {
       const prepare = repository.prepareAutomaticKnowledgeCallBatch;
       const claim = repository.claimAutomaticKnowledgeCall;
       if (!prepare || !claim) throw new Error("automatic Knowledge persistence unavailable");
+      const semanticArguments: Record<string, ToolLoopJsonValue> = {
+        coverage: { expectedPassageCount: null, mode: "partial" },
+        exactTerms: ["AX-2026-0842"],
+        lanes: ["exact"],
+        operation: "automatic_search",
+        phaseOrdinal: 0,
+        plannerVersion: 2,
+        purpose: "answer",
+        query: "accepted automatic query AX-2026-0842",
+        strategy: "focused",
+        subqueryOrdinal: 0,
+        targetNames: [],
+        targetResolution: null,
+        targetSourceIds: []
+      };
       const input = {
         calls: [{
+          arguments: semanticArguments,
           ordinal: 0,
-          providerCallId: "knowledge-planner-v1-1",
-          query: "accepted automatic query"
+          providerCallId: "knowledge-planner-v1-1"
         }],
         runId: created.runId,
         userId
@@ -844,10 +862,14 @@ describe("Prisma-backed run repository", () => {
       const prepared = await prepare(input);
       expect(prepared).toMatchObject({ kind: "prepared" });
       if (prepared.kind !== "prepared") throw new Error("automatic Knowledge call not prepared");
+      expect(prepared.calls[0]?.arguments).toEqual(semanticArguments);
       await expect(prepare(input)).resolves.toMatchObject({ kind: "reused" });
       await expect(prepare({
         ...input,
-        calls: [{ ...input.calls[0]!, query: "different query" }]
+        calls: [{
+          ...input.calls[0]!,
+          arguments: { ...semanticArguments, query: "different query AX-2026-0842" }
+        }]
       })).resolves.toEqual({ kind: "conflict" });
 
       const claimed = await claim({

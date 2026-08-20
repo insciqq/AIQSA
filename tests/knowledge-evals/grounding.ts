@@ -253,6 +253,165 @@ function fixtures(): Fixture[] {
       expectNoAnswer: true
     },
     {
+      answer: "05.03.2030 [K2], показатель Альфа 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item(1, "Показатель Альфа 41,2 ед/л.", {
+            fileName: "03.01.2030-synthetic.pdf"
+          }),
+          item(2, "Показатель Альфа 35,4 ед/л.", {
+            fileName: "05.03.2030-synthetic.pdf"
+          })
+        ],
+        query: "Сравни показатель по датам"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "Показатель Альфа [K2] равен 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item(1, "Показатель Бета 41,2 ед/л."),
+          item(2, "Показатель Альфа 35,4 ед/л.")
+        ],
+        query: "Чему равен показатель Альфа?"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "41.2 mg/l [K1] — date 2030-03-05 [K2].",
+      evidence: evidence({
+        items: [
+          item(1, "The Alpha metric was 41.2 mg/l.", {
+            fileName: "2030-01-03-synthetic.pdf"
+          }),
+          item(2, "The Alpha metric was 35.4 mg/l.", {
+            fileName: "2030-03-05-synthetic.pdf"
+          })
+        ],
+        query: "When was the 41.2 measurement recorded?"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "Показатель Альфа [K2] равен 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item(1, "Показатель Альфа равен 41,2 ед/л."),
+          item(2, "Показатель Альфа равен 41,2 ед/л.", {
+            sourceArtifactId: "synthetic-artifact-1",
+            sourceId: "synthetic-source-1",
+            sourceVersionId: "synthetic-source-version-1"
+          })
+        ],
+        query: "Чему равен показатель Альфа?"
+      }),
+      expectPass: true
+    },
+    {
+      answer: "41.2 mg/l [K1] for the Alpha metric [K2].",
+      evidence: evidence({
+        items: [
+          item(1, "The Beta metric was 41.2 mg/l."),
+          item(2, "The Alpha metric was 35.4 mg/l.")
+        ],
+        query: "What is the Alpha metric?"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "41.2 mg/l [K1] for the Alpha metric.",
+      evidence: evidence({
+        items: [item(1, "The Beta metric was 41.2 mg/l.")],
+        query: "What is the Alpha metric?"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "41,2 ед/л [K1] для показателя Альфа.",
+      evidence: evidence({
+        items: [item(1, "Показатель Бета равен 41,2 ед/л.")],
+        query: "Чему равен показатель Альфа?"
+      }),
+      expectNoAnswer: true
+    },
+    {
+      answer: "41.2 mg/l [K1] for the Alpha metric.",
+      evidence: evidence({
+        items: [item(1, "The Alpha metric was 41.2 mg/l.")],
+        query: "What is the Alpha metric?"
+      }),
+      expectPass: true
+    },
+    {
+      answer: "41,2 ед/л [K1] для показателя Альфа.",
+      evidence: evidence({
+        items: [item(1, "Показатель Альфа равен 41,2 ед/л.")],
+        query: "Чему равен показатель Альфа?"
+      }),
+      expectPass: true
+    },
+    {
+      answer: "41.2 mg/l [K1] — date 2030-03-05 [K2].",
+      evidence: evidence({
+        items: [
+          item(1, "Measurement date: 2030-03-05. The Alpha metric was 41.2 mg/l.", {
+            fileName: "2030-03-05-synthetic.pdf"
+          }),
+          item(2, "Measurement date: 2030-03-05. The Alpha metric was 41.2 mg/l.", {
+            fileName: "2030-03-05-synthetic.pdf",
+            sourceArtifactId: "synthetic-artifact-1",
+            sourceId: "synthetic-source-1",
+            sourceVersionId: "synthetic-source-version-1"
+          })
+        ],
+        query: "When was the 41.2 measurement recorded?"
+      }),
+      expectPass: true
+    },
+    {
+      answer: "Alpha metric [K1] equals 41.2 mg/l [K3], while Beta metric [K2] equals 35.4 mg/l [K4].",
+      evidence: evidence({
+        items: [
+          item(1, "Alpha metric equals 41.2 mg/l."),
+          item(2, "Beta metric equals 35.4 mg/l."),
+          item(3, "Alpha metric equals 41.2 mg/l.", {
+            sourceArtifactId: "synthetic-artifact-1",
+            sourceId: "synthetic-source-1",
+            sourceVersionId: "synthetic-source-version-1"
+          }),
+          item(4, "Beta metric equals 35.4 mg/l.", {
+            sourceArtifactId: "synthetic-artifact-2",
+            sourceId: "synthetic-source-2",
+            sourceVersionId: "synthetic-source-version-2"
+          })
+        ],
+        query: "Compare the Alpha and Beta metrics."
+      }),
+      expectPass: true
+    },
+    {
+      answer: "Показатель Альфа [K1] равен 41,2 ед/л [K3], а показатель Бета [K2] равен 35,4 ед/л [K4].",
+      evidence: evidence({
+        items: [
+          item(1, "Показатель Альфа равен 41,2 ед/л."),
+          item(2, "Показатель Бета равен 35,4 ед/л."),
+          item(3, "Показатель Альфа равен 41,2 ед/л.", {
+            sourceArtifactId: "synthetic-artifact-1",
+            sourceId: "synthetic-source-1",
+            sourceVersionId: "synthetic-source-version-1"
+          }),
+          item(4, "Показатель Бета равен 35,4 ед/л.", {
+            sourceArtifactId: "synthetic-artifact-2",
+            sourceId: "synthetic-source-2",
+            sourceVersionId: "synthetic-source-version-2"
+          })
+        ],
+        query: "Сравни показатели Альфа и Бета."
+      }),
+      expectPass: true
+    },
+    {
       answer: "The recorded table value is 30 [K1].",
       evidence: evidence({
         items: [item(1, "Metric\n30", {

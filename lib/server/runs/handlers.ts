@@ -21,6 +21,7 @@ import type {
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDispatchLifecycle";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
 import {
@@ -70,6 +71,7 @@ export type RunHandlerDeps = {
   getConfig?: () => AuthConfig;
   knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
   knowledgeExecutor?: KnowledgeToolExecutor;
+  knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunPreparationDeps["mcp"];
   providerAdmission?: RunPreparationDeps["providerAdmission"];
@@ -145,6 +147,7 @@ function recoveryDeps(
     | "getAttachmentLimits"
     | "knowledgeAdmission"
     | "knowledgeExecutor"
+    | "knowledgeProviderDispatch"
     | "memoryEgress"
     | "mcp"
     | "providerAdmission"
@@ -159,6 +162,9 @@ function recoveryDeps(
     ...(deps.getAttachmentLimits ? { getAttachmentLimits: deps.getAttachmentLimits } : {}),
     ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
     ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
+    ...(deps.knowledgeProviderDispatch
+      ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
+      : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -533,6 +539,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       repository: deps.repository,
       ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
+      ...(deps.knowledgeProviderDispatch
+        ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
+        : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -681,6 +690,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       repository: deps.repository,
       ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
+      ...(deps.knowledgeProviderDispatch
+        ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
+        : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -698,6 +710,7 @@ export function createGetModelRunHandler(
     | "getAttachmentLimits"
     | "knowledgeAdmission"
     | "knowledgeExecutor"
+    | "knowledgeProviderDispatch"
     | "memoryEgress"
     | "mcp"
     | "providerAdmission"

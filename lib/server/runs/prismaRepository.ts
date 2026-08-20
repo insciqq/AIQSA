@@ -56,6 +56,7 @@ import {
 } from "./prismaRepositoryShared";
 import {
   appendRunOutputEvents,
+  cancelPendingToolLoopCallsInTransaction,
   createPrismaRunToolLoopOperations,
   isRecoveredRunTerminalPayload,
   recoveredRunErrorPayload
@@ -70,6 +71,8 @@ import {
   groundKnowledgeRunAnswer,
   settleKnowledgeGrounding
 } from "../knowledge/evidenceRepository";
+import type { KnowledgeSemanticLocalValidatorExecutor } from
+  "../knowledge/semanticShadow";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -141,6 +144,7 @@ export function createPrismaRunRepository(
     memoryExecutionAuthority?: MemoryExecutionAuthorityDependencies;
     memoryRetrieval?: MemoryRunRetrievalService;
     memorySourceHooks?: MemorySourceMutationHooks;
+    semanticShadowExecutor?: KnowledgeSemanticLocalValidatorExecutor;
   }> = {}
 ): RunRepository {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
@@ -329,7 +333,9 @@ export function createPrismaRunRepository(
 
   return {
     groundKnowledgeAnswer: (input) =>
-      groundKnowledgeRunAnswer(prismaClient, input),
+      groundKnowledgeRunAnswer(prismaClient, input, {
+        semanticShadowExecutor: options.semanticShadowExecutor
+      }),
     admitPreparingRun: (input) =>
       admitPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     beginPreparingRunAttempt: (input) =>
@@ -492,16 +498,7 @@ export function createPrismaRunRepository(
           } as const;
         }
 
-        await tx.modelRunToolCall.updateMany({
-          data: {
-            completedAt: new Date(),
-            state: "cancelled"
-          },
-          where: {
-            modelRunId: input.runId,
-            state: "pending"
-          }
-        });
+        await cancelPendingToolLoopCallsInTransaction(tx, input.runId);
 
         if (run.assistantMessageId) {
           await tx.message.updateMany({
@@ -823,16 +820,7 @@ export function createPrismaRunRepository(
           return false;
         }
 
-        await tx.modelRunToolCall.updateMany({
-          data: {
-            completedAt: new Date(),
-            state: "cancelled"
-          },
-          where: {
-            modelRunId: runId,
-            state: "pending"
-          }
-        });
+        await cancelPendingToolLoopCallsInTransaction(tx, runId);
 
         if (groundedLiveOnly) {
           await tx.modelRunEvent.deleteMany({

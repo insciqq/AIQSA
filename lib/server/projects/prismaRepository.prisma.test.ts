@@ -51,6 +51,222 @@ async function withProjectFixture<T>(
   }
 }
 
+type AssistantSourceFixture = ProjectFixture & Readonly<{
+  createAssistant: (sourceId: string) => Promise<Readonly<{
+    assistantId: string;
+    revisionId: string;
+  }>>;
+  foreignSourceId: string;
+  notReadySourceId: string;
+  readySourceId: string;
+}>;
+
+// Profile revisions are immutable, so the serialized stateful lane reuses one
+// deterministic disposable revision instead of accumulating one per test.
+const projectSourceProfileRevisionId = "project-assistant-direct-source-test-profile-v1";
+
+async function withAssistantSourceFixture<T>(
+  run: (fixture: AssistantSourceFixture) => Promise<T>
+): Promise<T> {
+  return withProjectFixture(async (project) => {
+    const suffix = randomUUID();
+    const foreignOwnerId = project.userIds[1]!;
+    const readySourceId = `project-ready-source-${suffix}`;
+    const notReadySourceId = `project-pending-source-${suffix}`;
+    const foreignSourceId = `project-foreign-source-${suffix}`;
+    const sourceIds = [readySourceId, notReadySourceId, foreignSourceId];
+    const sourceVersionIds = sourceIds.map((sourceId) => `${sourceId}-v1`);
+    const artifactIds = sourceIds.map((sourceId) => `${sourceId}-artifact`);
+    const assistantIds: string[] = [];
+
+    const previousProfile = await prisma.knowledgeIndexProfile.findUniqueOrThrow({
+      select: { activeRevisionId: true },
+      where: { id: "installation" }
+    });
+    try {
+      const fixtureProfileRevision = await prisma.knowledgeIndexProfileRevision.findUnique({
+        select: { id: true },
+        where: { id: projectSourceProfileRevisionId }
+      });
+      if (!fixtureProfileRevision) {
+        const latestRevision = await prisma.knowledgeIndexProfileRevision.findFirst({
+          orderBy: { revisionNumber: "desc" },
+          select: { revisionNumber: true },
+          where: { profileId: "installation" }
+        });
+        await prisma.knowledgeIndexProfileRevision.create({
+          data: {
+            activatedAt: new Date(),
+            chunkingProfileVersion: 1,
+            egressPolicy: {},
+            embeddingConfiguration: {},
+            embeddingProviderModelId: providerTemplateIds.fakeModel,
+            executionAuthority: "installation",
+            id: projectSourceProfileRevisionId,
+            preflightCheckedAt: new Date(),
+            preflightStatus: "ready",
+            profileConfiguration: {},
+            profileId: "installation",
+            revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+            targetDimension: 8,
+            vectorSpaceFingerprint: "9".repeat(64)
+          }
+        });
+      }
+      await prisma.knowledgeIndexProfile.update({
+        data: { activeRevisionId: projectSourceProfileRevisionId },
+        where: { id: "installation" }
+      });
+
+      const owners = [project.ownerId, project.ownerId, foreignOwnerId];
+      for (const [index, sourceId] of sourceIds.entries()) {
+        const ownerUserId = owners[index]!;
+        const sourceVersionId = sourceVersionIds[index]!;
+        const artifactId = artifactIds[index]!;
+        await prisma.knowledgeSource.create({
+          data: {
+            description: `Direct Source fixture ${index}`,
+            id: sourceId,
+            name: index === 0
+              ? "Ready direct Project Source"
+              : index === 1 ? "Pending direct Project Source" : "Foreign direct Project Source",
+            ownerUserId
+          }
+        });
+        await prisma.knowledgeSourceVersion.create({
+          data: {
+            byteSize: 128,
+            checksum: String(index + 1).repeat(64),
+            fileName: `project-source-${index}.md`,
+            id: sourceVersionId,
+            mimeType: "text/markdown",
+            ownerUserId,
+            sourceId,
+            versionNumber: 1
+          }
+        });
+        await prisma.knowledgeSource.update({
+          data: { currentVersionId: sourceVersionId },
+          where: { id: sourceId }
+        });
+        await prisma.knowledgeSourceIndexArtifact.create({
+          data: index === 1
+            ? {
+                id: artifactId,
+                processingStage: "queued",
+                profileRevisionId: projectSourceProfileRevisionId,
+                sourceVersionId,
+                state: "pending"
+              }
+            : {
+                chunkCount: 1,
+                embeddedPassageCount: 1,
+                id: artifactId,
+                normalizedTextByteSize: 64,
+                normalizedTextChecksum: "a".repeat(64),
+                normalizedTextStorageKey: `project-source/${sourceId}/normalized`,
+                pageCount: 1,
+                profileRevisionId: projectSourceProfileRevisionId,
+                readyAt: new Date(),
+                sourceVersionId,
+                state: "ready"
+              }
+        });
+        if (index !== 1) {
+          await prisma.knowledgeHierarchicalIndexArtifact.create({
+            data: {
+              checksum: "b".repeat(64),
+              derivationMode: "normalized_v2",
+              documentCount: 1,
+              exactEntryCount: 1,
+              id: `${artifactId}-hierarchy`,
+              passageCount: 1,
+              readyAt: new Date(),
+              schemaVersion: 2,
+              sectionCount: 1,
+              sourceArtifactId: artifactId,
+              sourceVersionId,
+              state: "ready"
+            }
+          });
+        }
+      }
+
+      const createAssistant = async (sourceId: string) => {
+        const assistant = await prisma.assistantDefinition.create({
+          data: { ownerUserId: project.ownerId },
+          select: { id: true }
+        });
+        assistantIds.push(assistant.id);
+        const revision = await prisma.assistantRevision.create({
+          data: {
+            assistantId: assistant.id,
+            authorUserId: project.ownerId,
+            avatar: {
+              accents: [0, 4],
+              backgroundShape: "circle",
+              foregroundShape: "diamond",
+              kind: "generated",
+              paletteId: "ocean",
+              recipeVersion: 1,
+              rotations: [0, 2]
+            },
+            knowledgeSelection: {
+              baseIds: [],
+              mode: "explicit",
+              sourceIds: [sourceId],
+              version: 1
+            },
+            name: `Direct Source Assistant ${assistantIds.length}`,
+            providerModelId: providerTemplateIds.fakeModel,
+            revisionNumber: 1,
+            runControls: {},
+            searchPlan: { mode: "all_selected", optionIds: [] },
+            systemPrompt: "Use the explicitly selected direct Source."
+          },
+          select: { id: true }
+        });
+        await prisma.assistantDefinition.update({
+          data: { currentRevisionId: revision.id },
+          where: { id: assistant.id }
+        });
+        return { assistantId: assistant.id, revisionId: revision.id };
+      };
+
+      return await run({
+        ...project,
+        createAssistant,
+        foreignSourceId,
+        notReadySourceId,
+        readySourceId
+      });
+    } finally {
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+        await tx.projectAssistantBinding.deleteMany({ where: { projectId: project.projectId } });
+        await tx.projectKnowledgeSourceBinding.deleteMany({ where: { projectId: project.projectId } });
+        await tx.assistantDefinition.updateMany({
+          data: { currentRevisionId: null },
+          where: { id: { in: assistantIds } }
+        });
+        await tx.assistantRevision.deleteMany({ where: { assistantId: { in: assistantIds } } });
+        await tx.assistantDefinition.deleteMany({ where: { id: { in: assistantIds } } });
+        await tx.knowledgeSource.updateMany({
+          data: { currentVersionId: null, pendingVersionId: null },
+          where: { id: { in: sourceIds } }
+        });
+        await tx.knowledgeSourceIndexArtifact.deleteMany({ where: { id: { in: artifactIds } } });
+        await tx.knowledgeSourceVersion.deleteMany({ where: { id: { in: sourceVersionIds } } });
+        await tx.knowledgeSource.deleteMany({ where: { id: { in: sourceIds } } });
+        await tx.knowledgeIndexProfile.update({
+          data: { activeRevisionId: previousProfile.activeRevisionId },
+          where: { id: "installation" }
+        });
+      });
+    }
+  }, 1, providerTemplateIds.fakeModel);
+}
+
 describe("Prisma-backed Project repository", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -261,6 +477,176 @@ describe("Prisma-backed Project repository", () => {
         await prisma.skillDefinition.delete({ where: { id: skill.id } });
       }
     }, 1);
+  });
+
+  it("publishes an Assistant direct Source without creating a proxy Base and remains idempotent", async () => {
+    await withAssistantSourceFixture(async ({
+      createAssistant,
+      ownerId,
+      projectId,
+      readySourceId
+    }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      const assistant = await createAssistant(readySourceId);
+      const initial = await repository.getDetail(ownerId, projectId);
+      if (!initial) throw new Error("project_source_fixture_detail_missing");
+      const initialBaseCount = await prisma.projectKnowledgeBaseBinding.count({
+        where: { projectId }
+      });
+
+      const preview = await repository.previewResourceChange({
+        action: "add",
+        expectedPolicyRevision: initial.policyRevision,
+        projectId,
+        resourceId: assistant.assistantId,
+        type: "assistant",
+        userId: ownerId
+      });
+      expect(preview).toMatchObject({
+        kind: "ok",
+        value: {
+          canCommit: true,
+          dependencies: expect.arrayContaining([{
+            label: "Ready direct Project Source",
+            reason: null,
+            state: "will_add",
+            type: "knowledge"
+          }]),
+          revisionId: assistant.revisionId
+        }
+      });
+
+      const added = await repository.addResource({
+        actorDisplayName: "Project Owner",
+        expectedPolicyRevision: initial.policyRevision,
+        projectId,
+        resourceId: assistant.assistantId,
+        revisionId: assistant.revisionId,
+        type: "assistant",
+        userId: ownerId
+      });
+      expect(added.kind).toBe("ok");
+      if (added.kind !== "ok") throw new Error(`project_source_add_${added.kind}`);
+      expect(added.value).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          resourceId: assistant.assistantId,
+          revisionId: assistant.revisionId,
+          type: "assistant"
+        })
+      ]));
+      await expect(prisma.projectKnowledgeSourceBinding.findUnique({
+        where: { projectId_sourceId: { projectId, sourceId: readySourceId } }
+      })).resolves.toMatchObject({ addedByUserId: ownerId, projectId, sourceId: readySourceId });
+      await expect(prisma.projectKnowledgeBaseBinding.count({
+        where: { projectId }
+      })).resolves.toBe(initialBaseCount);
+
+      const afterFirstCommit = await repository.getDetail(ownerId, projectId);
+      if (!afterFirstCommit) throw new Error("project_source_fixture_detail_after_add_missing");
+      expect(afterFirstCommit.composer?.knowledgeSources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: readySourceId, readiness: "ready" })
+      ]));
+      await expect(repository.previewResourceChange({
+        action: "add",
+        expectedPolicyRevision: afterFirstCommit.policyRevision,
+        projectId,
+        resourceId: assistant.assistantId,
+        type: "assistant",
+        userId: ownerId
+      })).resolves.toMatchObject({
+        kind: "ok",
+        value: {
+          canCommit: true,
+          dependencies: expect.arrayContaining([expect.objectContaining({
+            label: "Ready direct Project Source",
+            state: "active"
+          })])
+        }
+      });
+
+      await expect(repository.addResource({
+        actorDisplayName: "Project Owner",
+        expectedPolicyRevision: afterFirstCommit.policyRevision,
+        projectId,
+        resourceId: assistant.assistantId,
+        revisionId: assistant.revisionId,
+        type: "assistant",
+        userId: ownerId
+      })).resolves.toMatchObject({ kind: "ok" });
+      await expect(prisma.projectKnowledgeSourceBinding.count({
+        where: { projectId, sourceId: readySourceId }
+      })).resolves.toBe(1);
+      await expect(prisma.projectKnowledgeBaseBinding.count({
+        where: { projectId }
+      })).resolves.toBe(initialBaseCount);
+    });
+  });
+
+  it("fails closed for invalid, foreign, and not-ready Assistant direct Sources", async () => {
+    await withAssistantSourceFixture(async ({
+      createAssistant,
+      foreignSourceId,
+      notReadySourceId,
+      ownerId,
+      projectId
+    }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      const initial = await repository.getDetail(ownerId, projectId);
+      if (!initial) throw new Error("project_source_fixture_detail_missing");
+      const cases = [
+        { label: "invalid", sourceId: `missing-source-${randomUUID()}` },
+        { label: "foreign", sourceId: foreignSourceId },
+        { label: "not_ready", sourceId: notReadySourceId }
+      ];
+
+      for (const candidate of cases) {
+        const assistant = await createAssistant(candidate.sourceId);
+        const preview = await repository.previewResourceChange({
+          action: "add",
+          expectedPolicyRevision: initial.policyRevision,
+          projectId,
+          resourceId: assistant.assistantId,
+          type: "assistant",
+          userId: ownerId
+        });
+        expect(preview, candidate.label).toMatchObject({
+          kind: "ok",
+          value: {
+            canCommit: false,
+            dependencies: expect.arrayContaining([expect.objectContaining({
+              state: "ineligible",
+              type: "knowledge"
+            })])
+          }
+        });
+        await expect(repository.addResource({
+          actorDisplayName: "Project Owner",
+          expectedPolicyRevision: initial.policyRevision,
+          projectId,
+          resourceId: assistant.assistantId,
+          revisionId: assistant.revisionId,
+          type: "assistant",
+          userId: ownerId
+        }), candidate.label).resolves.toEqual({
+          kind: "unavailable",
+          reason: "project_assistant_dependency_unavailable"
+        });
+      }
+
+      await expect(prisma.projectKnowledgeSourceBinding.count({
+        where: { projectId }
+      })).resolves.toBe(0);
+      await expect(prisma.projectAssistantBinding.count({
+        where: { projectId }
+      })).resolves.toBe(0);
+      await expect(prisma.projectKnowledgeBaseBinding.count({
+        where: { projectId }
+      })).resolves.toBe(0);
+      await expect(prisma.project.findUniqueOrThrow({
+        select: { policyRevision: true },
+        where: { id: projectId }
+      })).resolves.toEqual({ policyRevision: initial.policyRevision });
+    });
   });
 
   it("rolls back stale unlink and atomically clears Project and chat defaults on commit", async () => {

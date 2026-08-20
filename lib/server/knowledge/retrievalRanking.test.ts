@@ -112,6 +112,14 @@ describe("Knowledge retrieval ranking", () => {
     });
     expect(result.selected.map((entry) => entry.chunkId)).toEqual(["russian"]);
     expect(result.selected[0]!.confidence).toBeGreaterThanOrEqual(KNOWLEDGE_MIN_CONFIDENCE);
+    expect(result.evidence.rerankerBinding).toEqual({
+      egress: "none",
+      kind: "deterministic_token_vector_heuristic",
+      languages: ["en", "ru"],
+      profile: "deterministic-token-vector-heuristic-v1",
+      status: "complete",
+      version: 1
+    });
   });
 
   it("covers every explicitly named comparison target before filling more passages", async () => {
@@ -206,6 +214,8 @@ describe("Knowledge retrieval ranking", () => {
     });
     expect(first.evidence.rerankerBinding).toMatchObject({
       failureCode: "knowledge_reranker_unavailable",
+      kind: "deterministic_weighted_rrf_fallback",
+      profile: "weighted-rrf-v2",
       status: "degraded"
     });
     expect(first.evidence.postRerankOrder).toEqual(first.evidence.preRerankOrder);

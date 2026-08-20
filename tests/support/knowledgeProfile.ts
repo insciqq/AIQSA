@@ -87,8 +87,17 @@ export function adminKnowledgeProfileFixture(
     availableVisionDestinations: [],
     egress: {
       destination: "Local embeddings / Multilingual embed",
-      policyVersion: "knowledge-profile-egress-v2",
+      policyVersion: "knowledge-profile-egress-v3",
       representations: ["document_text_chunks", "search_queries"],
+      roles: [
+        { mode: "external", operation: "embeddings" },
+        { mode: "disabled", operation: "vision_analysis" },
+        { mode: "disabled", operation: "query_planning" },
+        { mode: "local", operation: "reranking" },
+        { mode: "local", operation: "grounding_validation" },
+        { mode: "local", operation: "citation_repair" },
+        { mode: "disabled", operation: "answer_citation_retry" }
+      ],
       visualAnalysis: null
     },
     health: { checkedAt: "2026-08-18T00:00:00.000Z", code: null, state: "ready" },

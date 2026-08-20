@@ -9,6 +9,7 @@ import {
   KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES
 } from "../../lib/server/knowledge/prismaRetrievalCore";
 import { createPrismaKnowledgeRetrievalStore } from "../../lib/server/knowledge/prismaRetrievalRepository";
+import { normalizeReadSourceRequest } from "../../lib/server/knowledge/readSourceLocator";
 import { buildAndPersistKnowledgeHierarchicalIndex } from "../../lib/server/knowledge/hierarchicalIndexRepository";
 import type { KnowledgeChunkPlanEntry } from "../../lib/server/knowledge/chunking";
 import type {
@@ -392,7 +393,7 @@ function ordinaryProjectionTechnicalLeakage(result: KnowledgeHybridSearchResult)
     passage.sourceArtifactId
   ]).filter((value): value is string => Boolean(value));
   const technicalMarkers = [
-    "aiqsa-multilingual-hybrid-v1",
+    "deterministic-token-vector-heuristic-v1",
     "weighted_rrf_v2",
     "fusedScore",
     "rerankScore",
@@ -426,6 +427,7 @@ async function evaluateGoldenRetrieval(
     const startedAt = performance.now();
     const result = await store.hybridSearch({
       candidateLimit: 40,
+      operation: "automatic_search",
       query: query.question,
       resultLimit: 8,
       runId: fixture.modelRunId,
@@ -478,6 +480,7 @@ async function evaluateFallbacks(
   const lexical = await Promise.all([exactQuery, russianQuery].map((query) =>
     lexicalStore.hybridSearch({
       candidateLimit: 40,
+      operation: "automatic_search",
       query: query.question,
       resultLimit: 8,
       runId: fixture.modelRunId,
@@ -497,6 +500,7 @@ async function evaluateFallbacks(
   });
   const outage = await outageStore.hybridSearch({
     candidateLimit: 40,
+    operation: "automatic_search",
     query: comparisonQuery.question,
     resultLimit: 8,
     runId: fixture.modelRunId,
@@ -554,28 +558,29 @@ async function evaluateDeterministicSourceRead(
   const common = {
     binding,
     runId: fixture.modelRunId,
-    userId: state.ownerUserId,
-    window: 1
+    userId: state.ownerUserId
   } as const;
+  const read = (locator: string, direction: "after" | "around") => {
+    const request = normalizeReadSourceRequest({ direction, locator, window: 1 });
+    if (!request) throw new Error("knowledge_source_read_eval_locator_invalid");
+    return request;
+  };
   const [page, heading, rejected] = await Promise.all([
     readSource({
       ...common,
-      direction: "around",
-      locator: `page ${source.source.page}`,
+      read: read(`page ${source.source.page}`, "around"),
       sourceArtifactId: source.artifactId,
       sourceId: source.sourceId
     }),
     readSource({
       ...common,
-      direction: "after",
-      locator: `heading: ${source.source.headingPath.join(" › ")}`,
+      read: read(`heading: ${source.source.headingPath.join(" › ")}`, "after"),
       sourceArtifactId: source.artifactId,
       sourceId: source.sourceId
     }),
     readSource({
       ...common,
-      direction: "around",
-      locator: `page ${outOfScope.source.page}`,
+      read: read(`page ${outOfScope.source.page}`, "around"),
       sourceArtifactId: outOfScope.artifactId,
       sourceId: outOfScope.sourceId
     })
@@ -720,6 +725,7 @@ async function createAnnBase(
       return {
         contentHash,
         contextPrefix: "",
+        documentContext: null,
         embeddingText: text,
         embeddingTextHash,
         headingPath: ["ANN qualification"],
@@ -1118,6 +1124,7 @@ async function evaluateAnn(
   const store = createPrismaKnowledgeRetrievalStore(client);
   const adaptive = await store.hybridSearch({
     candidateLimit: 40,
+    operation: "automatic_search",
     query: "vector-only qualification zxqv",
     resultLimit: 8,
     runId: fixture.modelRunId,
@@ -1179,7 +1186,7 @@ export async function runKnowledgeRetrievalCoreEvaluation(client: PrismaClient) 
         memory: "O(candidate pool), bounded at 100 candidates per lane",
         p50LatencyMs: round(percentile(latencies, 0.5)),
         p95LatencyMs: round(percentile(latencies, 0.95)),
-        profile: "aiqsa-multilingual-hybrid-v1",
+        profile: "deterministic-token-vector-heuristic-v1",
         throughputQueriesPerSecond: round(1_000 / Math.max(0.001, mean(latencies))),
         version: 1
       }),
@@ -1210,7 +1217,13 @@ export async function runKnowledgeRetrievalCoreEvaluation(client: PrismaClient) 
           entry.ownerUserId === state.ownerUserId && entry.logicalSourceId.startsWith("source-")).length,
         snapshotSourceCountIncludesProcessing: true
       }),
-      sanitizedAggregatesOnly: true
+      sanitizedAggregatesOnly: true,
+      vectorEvidence: Object.freeze({
+        fixture: "deterministic-source-oracle-v1",
+        purpose: "retrieval_plumbing",
+        qualityGateEligible: false,
+        realEmbeddingExecution: "not_measured"
+      })
     });
     return report;
   } finally {

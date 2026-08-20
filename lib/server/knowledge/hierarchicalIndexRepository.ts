@@ -195,6 +195,9 @@ async function persistPlan(
       contentHash: passage.contentHash,
       contextPrefix: passage.contextPrefix,
       createdAt: now,
+      documentContext: passage.documentContext === null
+        ? Prisma.DbNull
+        : passage.documentContext as Prisma.InputJsonValue,
       documentTitle: document.title ?? "",
       embeddingTextHash: passage.embeddingTextHash,
       fileName: document.fileName,

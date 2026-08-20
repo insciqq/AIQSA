@@ -9,9 +9,10 @@ describe("Knowledge structured-data golden evaluation", () => {
     const report = await runKnowledgeStructuredEval();
     expect(() => assertKnowledgeStructuredEvalGates(report)).not.toThrow();
     expect(report).toMatchObject({
-      fixtureCount: 18,
+      fixtureCount: 25,
       metrics: {
         ambiguitySafety: 1,
+        arithmeticCorrectness: 1,
         boundedFailure: 1,
         cachedFormula: 1,
         dateExactness: 1,
@@ -26,7 +27,7 @@ describe("Knowledge structured-data golden evaluation", () => {
         plannerRouting: 1
       },
       passed: true,
-      version: 1
+      version: 2
     });
     expect(report.metrics.executionP95Ms).toBeLessThanOrEqual(
       report.gates.maximumExecutionP95Ms

@@ -2751,6 +2751,14 @@ describe("model run route handlers", () => {
   });
 
   it("serializes an owner-private run outcome from an explicit recursive allowlist", async () => {
+    const privateKnowledgeValues = [
+      "forbidden-read-receipt-sentinel",
+      "forbidden-source-artifact-id-sentinel",
+      "forbidden-source-id-sentinel",
+      "forbidden-source-version-id-sentinel",
+      "forbidden-source-locator-sentinel",
+      "forbidden-secondary-base-id-sentinel"
+    ];
     const { repository } = createMemoryRepository();
     const POST = createSendMessageHandler({
       ...authDeps,
@@ -2791,7 +2799,39 @@ describe("model run route handlers", () => {
               text: "forbidden-response-preview-sentinel"
             },
             inspection: { acceptedAt: "forbidden-inspection-sentinel" },
-            knowledgeRuns: [{ query: "forbidden-knowledge-query-sentinel" }],
+            knowledgeRuns: [{
+              query: "forbidden-knowledge-query-sentinel",
+              readReceipt: {
+                locator: "forbidden-source-locator-sentinel",
+                receipt: "forbidden-read-receipt-sentinel",
+                resolvedSource: {
+                  sourceArtifactId: "forbidden-source-artifact-id-sentinel",
+                  sourceId: "forbidden-source-id-sentinel",
+                  sourceVersionId: "forbidden-source-version-id-sentinel"
+                }
+              },
+              results: [{
+                provenance: [{
+                  source: {
+                    artifactId: "forbidden-source-artifact-id-sentinel",
+                    bindings: [
+                      { baseName: "Primary", bindingOrdinal: 0, knowledgeBaseId: "primary-base" },
+                      {
+                        baseName: "Mirror",
+                        bindingOrdinal: 1,
+                        knowledgeBaseId: "forbidden-secondary-base-id-sentinel"
+                      }
+                    ],
+                    primaryBindingOrdinal: 0,
+                    sourceId: "forbidden-source-id-sentinel",
+                    sourceVersionId: "forbidden-source-version-id-sentinel"
+                  }
+                }],
+                sourceArtifactId: "forbidden-source-artifact-id-sentinel",
+                sourceId: "forbidden-source-id-sentinel",
+                sourceVersionId: "forbidden-source-version-id-sentinel"
+              }]
+            }],
             memoryReceipt: { includedText: "forbidden-memory-sentinel" },
             normalizedRequest: {
               content: "forbidden-normalized-request-sentinel"
@@ -2829,13 +2869,17 @@ describe("model run route handlers", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
-    await expect(response.json()).resolves.toEqual({
+    const body = await response.json();
+    expect(body).toEqual({
       run: {
         id: "run-1",
         status: "complete"
       },
       version: 1
     });
+    for (const privateValue of privateKnowledgeValues) {
+      expect(JSON.stringify(body)).not.toContain(privateValue);
+    }
   });
 
   it("scopes model-run reads to the authenticated user and maps a missing run to 404", async () => {

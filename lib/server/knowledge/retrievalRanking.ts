@@ -1,5 +1,9 @@
+import type { KnowledgeDocumentContextV1 } from "./documentContext";
+
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
-export const KNOWLEDGE_RERANKER_PROFILE = "aiqsa-multilingual-hybrid-v1" as const;
+export const KNOWLEDGE_RERANKER_PROFILE =
+  "deterministic-token-vector-heuristic-v1" as const;
+export const KNOWLEDGE_RERANKER_FALLBACK_PROFILE = "weighted-rrf-v2" as const;
 export const KNOWLEDGE_RERANKER_VERSION = 1;
 export const KNOWLEDGE_RRF_K = 60;
 export const KNOWLEDGE_MIN_CONFIDENCE = 0.22;
@@ -34,10 +38,17 @@ export type KnowledgeRetrievalCandidate = Readonly<{
   documentId: string;
   documentVersionId: string;
   documentVersionNumber: number;
+  documentContext?: KnowledgeDocumentContextV1 | null;
   fileName: string;
   headingPath: readonly string[];
   knowledgeBaseId: string;
-  layoutKind: "body" | "table_ambiguous" | "table_row";
+  layoutKind:
+    | "body"
+    | "field_ambiguous"
+    | "field_pair"
+    | "table_ambiguous"
+    | "table_row"
+    | "table_row_projection";
   page: number;
   sectionId: string | null;
   signals: readonly KnowledgeCandidateSignal[];
@@ -52,15 +63,24 @@ export type KnowledgeRankedCandidate = KnowledgeRetrievalCandidate & Readonly<{
   rerankScore: number | null;
 }>;
 
-export type KnowledgeRerankerBindingEvidence = Readonly<{
-  egress: "none";
-  failureCode?: "knowledge_reranker_unavailable";
-  kind: "local_hybrid_policy";
-  languages: readonly ["en", "ru"];
-  profile: typeof KNOWLEDGE_RERANKER_PROFILE;
-  status: "complete" | "degraded";
-  version: typeof KNOWLEDGE_RERANKER_VERSION;
-}>;
+export type KnowledgeRerankerBindingEvidence =
+  | Readonly<{
+      egress: "none";
+      kind: "deterministic_token_vector_heuristic";
+      languages: readonly ["en", "ru"];
+      profile: typeof KNOWLEDGE_RERANKER_PROFILE;
+      status: "complete";
+      version: typeof KNOWLEDGE_RERANKER_VERSION;
+    }>
+  | Readonly<{
+      egress: "none";
+      failureCode: "knowledge_reranker_unavailable";
+      kind: "deterministic_weighted_rrf_fallback";
+      languages: readonly ["en", "ru"];
+      profile: typeof KNOWLEDGE_RERANKER_FALLBACK_PROFILE;
+      status: "degraded";
+      version: typeof KNOWLEDGE_RERANKER_VERSION;
+    }>;
 
 export type KnowledgeRankingEvidence = Readonly<{
   fusion: typeof KNOWLEDGE_RETRIEVAL_FUSION;
@@ -363,7 +383,7 @@ export async function rankKnowledgeCandidates(input: Readonly<{
     }).sort(candidateOrder);
     binding = Object.freeze({
       egress: "none",
-      kind: "local_hybrid_policy",
+      kind: "deterministic_token_vector_heuristic",
       languages: Object.freeze(["en", "ru"] as const),
       profile: KNOWLEDGE_RERANKER_PROFILE,
       status: "complete",
@@ -379,9 +399,9 @@ export async function rankKnowledgeCandidates(input: Readonly<{
     binding = Object.freeze({
       egress: "none",
       failureCode: "knowledge_reranker_unavailable",
-      kind: "local_hybrid_policy",
+      kind: "deterministic_weighted_rrf_fallback",
       languages: Object.freeze(["en", "ru"] as const),
-      profile: KNOWLEDGE_RERANKER_PROFILE,
+      profile: KNOWLEDGE_RERANKER_FALLBACK_PROFILE,
       status: "degraded",
       version: KNOWLEDGE_RERANKER_VERSION
     });

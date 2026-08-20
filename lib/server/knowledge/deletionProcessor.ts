@@ -36,7 +36,59 @@ type KnowledgeRunRow = Readonly<{
   id: string;
   modelRunId: string;
   modelRunToolCallId: string;
+  providerCallId: string;
+  query: string;
+  readReceipt: unknown;
+  retrievalSessionId: string | null;
   results: unknown;
+}>;
+
+type TombstonedKnowledgeRuns = Readonly<{
+  modelRunIds: string[];
+  privateValues: string[];
+  providerCalls: Array<Readonly<{ modelRunId: string; providerCallId: string }>>;
+  retrievalSessionIds: string[];
+}>;
+
+type KnowledgeRunSourceBindingRow = Readonly<{
+  fileNameSnapshot: string | null;
+  id: string;
+  modelRunId: string;
+  profileBindingId: string;
+  sourceAlias: string;
+  sourceArtifactId: string;
+  sourceId: string;
+  sourceNameSnapshot: string | null;
+  sourceVersionId: string;
+}>;
+
+type KnowledgeBaseSourceIdentity = Readonly<{
+  modelRunId: string;
+  profileBindingId: string;
+  sourceArtifactId: string;
+  sourceId: string;
+  sourceVersionId: string;
+}>;
+
+type TombstonedRunSourceBindings = Readonly<{
+  modelRunIds: string[];
+  privateValues: string[];
+  sourceAliases: Array<Readonly<{ modelRunId: string; sourceAlias: string }>>;
+}>;
+
+type TombstonedEvidenceItems = Readonly<{
+  evidenceItemIds: string[];
+  modelRunIds: string[];
+}>;
+
+type KnowledgeEvidenceItemDeletionRow = Readonly<{
+  id: string;
+  retrievalSessionId: string;
+}>;
+
+type KnowledgeStrategyExecutionPurgeTarget = Readonly<{
+  id: string;
+  modelRunId: string;
 }>;
 
 type ProcessResult = "blocked" | "completed" | "waiting_for_objects";
@@ -65,6 +117,147 @@ function uniqueStrings(values: readonly (string | null | undefined)[]): string[]
   return [...new Set(values.filter((value): value is string => Boolean(value)))].sort();
 }
 
+export function buildKnowledgeStrategyStepPurgeMutation(
+  purgedAt: Date
+): Prisma.KnowledgeStrategyStepUncheckedUpdateManyInput {
+  return {
+    comparisonDimensionHash: null,
+    cursor: Prisma.DbNull,
+    cursorHash: null,
+    evidenceInputHash: null,
+    failureCode: null,
+    idempotencyKey: null,
+    inputHash: null,
+    leaseExpiresAt: null,
+    leaseToken: null,
+    materializedAt: null,
+    modelRunToolCallId: null,
+    processedItemsHash: null,
+    providerAttemptId: null,
+    purgedAt,
+    request: Prisma.DbNull,
+    requestHash: null,
+    result: Prisma.DbNull,
+    resultHash: null,
+    sourceBindingId: null,
+    sourceSetHash: null,
+    state: "purged",
+    stateVersion: { increment: 1 },
+    streamId: null,
+    templateHash: null
+  };
+}
+
+export function buildKnowledgeStrategyMapOutputPurgeMutation(
+  purgedAt: Date
+): Prisma.KnowledgeStrategyMapOutputUncheckedUpdateManyInput {
+  return {
+    inputPageReceiptsHash: null,
+    inputPassageItemsHash: null,
+    inputSectionHashesHash: null,
+    mapInputHash: null,
+    output: Prisma.DbNull,
+    outputHash: null,
+    purgedAt,
+    receipt: Prisma.DbNull,
+    receiptHash: null,
+    sourceBindingId: null,
+    state: "purged",
+    summaryItemsHash: null
+  };
+}
+
+export function buildKnowledgeStrategyExecutionPurgeMutation(
+  purgedAt: Date
+): Prisma.KnowledgeStrategyExecutionUpdateManyMutationInput {
+  return {
+    coverageReceipt: Prisma.DbNull,
+    coverageReceiptHash: null,
+    dispatchManifestHash: null,
+    dispatchSetHash: null,
+    executionHash: null,
+    executionRequest: Prisma.DbNull,
+    includedSetHash: null,
+    planHash: null,
+    processedSetHash: null,
+    purgedAt,
+    sourceSetHash: null
+  };
+}
+
+async function lockAffectedKnowledgeStrategyExecutions(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    sourceBindingIds: readonly string[];
+  }>
+): Promise<KnowledgeStrategyExecutionPurgeTarget[]> {
+  if (input.sourceBindingIds.length === 0) return [];
+  return tx.$queryRaw<KnowledgeStrategyExecutionPurgeTarget[]>(Prisma.sql`
+    SELECT execution."id", execution."modelRunId"
+    FROM "KnowledgeStrategyExecution" AS execution
+    WHERE execution."purgedAt" IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(execution."executionRequest" -> 'sourceSet') = 'array'
+              THEN execution."executionRequest" -> 'sourceSet'
+            ELSE '[]'::jsonb
+          END
+        ) AS accepted_source
+        WHERE accepted_source ->> 'bindingId' IN (
+          ${Prisma.join(input.sourceBindingIds)}
+        )
+      )
+    ORDER BY execution."id"
+    FOR UPDATE
+  `);
+}
+
+async function purgeKnowledgeStrategyExecutions(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    executions: readonly KnowledgeStrategyExecutionPurgeTarget[];
+    purgedAt: Date;
+  }>
+): Promise<void> {
+  if (input.executions.length === 0) return;
+  const executionIds = input.executions.map(({ id }) => id);
+  const modelRunIds = uniqueStrings(input.executions.map(({ modelRunId }) => modelRunId));
+  await tx.knowledgeStrategyMapOutput.updateMany({
+    data: buildKnowledgeStrategyMapOutputPurgeMutation(input.purgedAt),
+    where: { executionId: { in: executionIds }, purgedAt: null }
+  });
+  await tx.knowledgeStrategyStep.updateMany({
+    data: buildKnowledgeStrategyStepPurgeMutation(input.purgedAt),
+    where: { executionId: { in: executionIds } }
+  });
+  await tx.knowledgeRun.updateMany({
+    data: {
+      candidateCount: 0,
+      candidateLimit: 1,
+      outcome: "base_empty",
+      providerText: providerTextForTombstonedResults([]),
+      resultLimit: 1,
+      results: json([]),
+      strategyStepEvidence: Prisma.DbNull
+    },
+    where: {
+      modelRunId: { in: modelRunIds },
+      OR: executionIds.map((executionId) => ({
+        strategyStepEvidence: { equals: executionId, path: ["executionId"] }
+      }))
+    }
+  });
+  const executions = await tx.knowledgeStrategyExecution.updateMany({
+    data: buildKnowledgeStrategyExecutionPurgeMutation(input.purgedAt),
+    where: { id: { in: executionIds }, purgedAt: null }
+  });
+  if (executions.count !== input.executions.length) {
+    throw new KnowledgeDeletionInvariantError();
+  }
+}
+
 function tombstoneResults(
   value: unknown,
   matches: (entry: Record<string, unknown>) => boolean
@@ -78,6 +271,22 @@ function tombstoneResults(
     return handle ? { deleted: true, handle } : { deleted: true };
   });
   return { changed, results };
+}
+
+function matchesKnowledgeBaseSourceIdentity(
+  entry: Record<string, unknown>,
+  identity: KnowledgeBaseSourceIdentity
+): boolean {
+  const sourceId = typeof entry.sourceId === "string"
+    ? entry.sourceId
+    : entry.documentId;
+  const sourceVersionId = typeof entry.sourceVersionId === "string"
+    ? entry.sourceVersionId
+    : entry.documentVersionId;
+  return entry.knowledgeBaseId === identity.profileBindingId &&
+    sourceId === identity.sourceId &&
+    sourceVersionId === identity.sourceVersionId &&
+    entry.sourceArtifactId === identity.sourceArtifactId;
 }
 
 function providerTextForTombstonedResults(results: readonly unknown[]): string {
@@ -100,88 +309,212 @@ function withoutBaseEvidence(value: unknown, knowledgeBaseId: string): unknown[]
   return retained.length > 0 ? retained : [{ deleted: true }];
 }
 
-function redactIdentifier(value: unknown, identifier: string): unknown {
-  if (value === identifier) return "deleted_knowledge_base";
+const deletedKnowledgeResource = "deleted_knowledge_resource";
+const privateKnowledgeFieldNames = new Set([
+  "documentid",
+  "documentversionid",
+  "filename",
+  "locator",
+  "sourceartifactid",
+  "sourceid",
+  "sourcename",
+  "sourceversionid"
+]);
+
+function collectPrivateKnowledgeValues(value: unknown, values: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) collectPrivateKnowledgeValues(entry, values);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    if (privateKnowledgeFieldNames.has(key.toLocaleLowerCase("und")) &&
+      typeof entry === "string" && entry.length > 0) values.add(entry);
+    collectPrivateKnowledgeValues(entry, values);
+  }
+}
+
+function redactPrivateKnowledgeValues(value: unknown, values: ReadonlySet<string>): unknown {
+  if (typeof value === "string" && values.has(value)) return deletedKnowledgeResource;
   if (Array.isArray(value)) {
     return value
-      .filter((entry) => entry !== identifier)
-      .map((entry) => redactIdentifier(entry, identifier));
+      .filter((entry) => typeof entry !== "string" || !values.has(entry))
+      .map((entry) => redactPrivateKnowledgeValues(entry, values));
   }
   if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) =>
+    [key, redactPrivateKnowledgeValues(entry, values)]));
+}
+
+const removedProviderToolMessage = Symbol("removed_provider_tool_message");
+const providerCallReferenceKeys = new Set(["call_id", "id", "tool_call_id", "tool_use_id"]);
+
+function scrubProviderToolMessage(
+  value: unknown,
+  providerCallIds: ReadonlySet<string>
+): unknown | typeof removedProviderToolMessage {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => {
+      const scrubbed = scrubProviderToolMessage(entry, providerCallIds);
+      return scrubbed === removedProviderToolMessage ? [] : [scrubbed];
+    });
+  }
+  if (!isRecord(value)) return value;
+  if (Object.entries(value).some(([key, entry]) =>
+    providerCallReferenceKeys.has(key) && typeof entry === "string" &&
+    providerCallIds.has(entry))) return removedProviderToolMessage;
   return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => {
-    if (entry === identifier && /(?:knowledge)?baseid$/iu.test(key)) return [];
-    return [[key, redactIdentifier(entry, identifier)]];
+    const scrubbed = scrubProviderToolMessage(entry, providerCallIds);
+    return scrubbed === removedProviderToolMessage ? [] : [[key, scrubbed]];
   }));
 }
 
-function scrubRunNormalizedRequest(value: unknown, knowledgeBaseId: string): unknown {
-  const redacted = redactIdentifier(value, knowledgeBaseId);
+function scrubProviderToolMessageContainers(
+  value: unknown,
+  providerCallIds: ReadonlySet<string>
+): unknown {
+  if (providerCallIds.size === 0) return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => scrubProviderToolMessageContainers(entry, providerCallIds));
+  }
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    if (key !== "providerToolMessages" || !Array.isArray(entry)) {
+      return [key, scrubProviderToolMessageContainers(entry, providerCallIds)];
+    }
+    return [key, entry.flatMap((message) => {
+      const scrubbed = scrubProviderToolMessage(message, providerCallIds);
+      return scrubbed === removedProviderToolMessage ? [] : [scrubbed];
+    })];
+  }));
+}
+
+function scrubRunNormalizedRequest(
+  value: unknown,
+  input: Readonly<{
+    privateValues: ReadonlySet<string>;
+    resourceId: string;
+    resourceType: "base" | "source";
+  }>
+): unknown {
+  const redacted = redactPrivateKnowledgeValues(value, input.privateValues);
   if (!isRecord(value) || !Object.hasOwn(value, "knowledgePlan") || !isRecord(redacted)) {
     return redacted;
   }
   return {
     ...redacted,
-    knowledgePlan: selectionWithoutResource(value.knowledgePlan, knowledgeBaseId, "base")
+    knowledgePlan: selectionWithoutResource(
+      value.knowledgePlan,
+      input.resourceId,
+      input.resourceType
+    )
   };
 }
 
 async function tombstoneEvidenceItems(
   tx: Prisma.TransactionClient,
   input: Readonly<{
+    baseSourceIdentities?: readonly KnowledgeBaseSourceIdentity[];
     documentVersionIds?: readonly string[];
+    purgedAt: Date;
+    retrievalSessionIds?: readonly string[];
     resourceId: string;
     resourceType: "base" | "source";
   }>
-): Promise<void> {
-  const where: Prisma.KnowledgeEvidenceItemWhereInput = input.resourceType === "base"
-    ? { knowledgeBaseId: input.resourceId }
-    : {
-        OR: [
-          { sourceId: input.resourceId },
-          ...((input.documentVersionIds?.length ?? 0) > 0
-            ? [{ documentVersionId: { in: [...input.documentVersionIds!] } }]
-            : [])
-        ]
-      };
-  const rows = await tx.knowledgeEvidenceItem.findMany({
-    select: { id: true, retrievalSessionId: true },
-    where
-  });
-  if (rows.length === 0) return;
-  await tx.knowledgeRunEvidence.deleteMany({
-    where: { evidenceItemId: { in: rows.map(({ id }) => id) } }
-  });
-  await tx.knowledgeEvidenceItem.updateMany({
-    data: {
-      baseName: null,
-      contentHash: null,
-      contextBoundaries: Prisma.DbNull,
-      documentId: null,
-      documentVersionId: null,
-      evidenceKey: null,
-      excerpt: null,
-      excerptBytes: null,
-      fileName: null,
-      headingPath: [],
-      knowledgeBaseId: null,
-      locator: Prisma.DbNull,
-      page: null,
-      passageId: null,
-      sectionId: null,
-      sourceArtifactId: null,
-      sourceId: null,
-      sourceName: null,
-      sourceTextBytes: null,
-      sourceVersionId: null,
-      sourceVersionNumber: null,
-      state: "deleted",
-      textTruncated: null
-    },
-    where
-  });
-  for (const retrievalSessionId of uniqueStrings(
-    rows.map((row) => row.retrievalSessionId)
-  )) {
+): Promise<TombstonedEvidenceItems> {
+  const rows: KnowledgeEvidenceItemDeletionRow[] = input.resourceType === "base"
+    ? await tx.$queryRaw<KnowledgeEvidenceItemDeletionRow[]>(Prisma.sql`
+        WITH affected_source AS MATERIALIZED (
+          SELECT *
+          FROM jsonb_to_recordset(
+            ${JSON.stringify(input.baseSourceIdentities ?? [])}::jsonb
+          ) AS identity(
+            "modelRunId" text,
+            "profileBindingId" text,
+            "sourceArtifactId" text,
+            "sourceId" text,
+            "sourceVersionId" text
+          )
+        )
+        SELECT evidence_item."id", evidence_item."retrievalSessionId"
+        FROM "KnowledgeEvidenceItem" AS evidence_item
+        INNER JOIN "KnowledgeRetrievalSession" AS retrieval_session
+          ON retrieval_session."id" = evidence_item."retrievalSessionId"
+        LEFT JOIN affected_source
+          ON affected_source."modelRunId" = retrieval_session."modelRunId"
+         AND affected_source."profileBindingId" = evidence_item."knowledgeBaseId"
+         AND affected_source."sourceArtifactId" = evidence_item."sourceArtifactId"
+         AND affected_source."sourceId" = evidence_item."sourceId"
+         AND affected_source."sourceVersionId" = evidence_item."sourceVersionId"
+        WHERE evidence_item."knowledgeBaseId" = ${input.resourceId}
+           OR affected_source."modelRunId" IS NOT NULL
+        ORDER BY evidence_item."id"
+        FOR UPDATE OF evidence_item
+      `)
+    : await tx.knowledgeEvidenceItem.findMany({
+        select: { id: true, retrievalSessionId: true },
+        where: {
+          OR: [
+            { sourceId: input.resourceId },
+            ...((input.documentVersionIds?.length ?? 0) > 0
+              ? [{ documentVersionId: { in: [...input.documentVersionIds!] } }]
+              : [])
+          ]
+        }
+      });
+  if (rows.length > 0) {
+    await tx.knowledgeRunEvidence.deleteMany({
+      where: { evidenceItemId: { in: rows.map(({ id }) => id) } }
+    });
+    await tx.knowledgeEvidenceItem.updateMany({
+      data: {
+        baseName: null,
+        contentHash: null,
+        contextBoundaries: Prisma.DbNull,
+        documentId: null,
+        documentVersionId: null,
+        evidenceKey: null,
+        excerpt: null,
+        excerptBytes: null,
+        fileName: null,
+        headingPath: [],
+        knowledgeBaseId: null,
+        locator: Prisma.DbNull,
+        page: null,
+        passageId: null,
+        sectionId: null,
+        sourceArtifactId: null,
+        sourceId: null,
+        sourceName: null,
+        sourceTextBytes: null,
+        sourceVersionId: null,
+        sourceVersionNumber: null,
+        state: "deleted",
+        textTruncated: null
+      },
+      where: { id: { in: rows.map(({ id }) => id) } }
+    });
+  }
+  const retrievalSessionIds = uniqueStrings([
+    ...rows.map((row) => row.retrievalSessionId),
+    ...(input.retrievalSessionIds ?? [])
+  ]);
+  if (retrievalSessionIds.length > 0) {
+    await tx.knowledgeSemanticShadowResult.updateMany({
+      data: {
+        diagnostic: Prisma.DbNull,
+        profileRevisionIds: [],
+        purgedAt: input.purgedAt,
+        receiptHash: null
+      },
+      where: {
+        purgedAt: null,
+        retrievalSessionId: { in: retrievalSessionIds }
+      }
+    });
+  }
+  const modelRunIds: string[] = [];
+  for (const retrievalSessionId of retrievalSessionIds) {
     const session = await tx.knowledgeRetrievalSession.findUnique({
       select: {
         acceptedAt: true,
@@ -193,7 +526,11 @@ async function tombstoneEvidenceItems(
       where: { id: retrievalSessionId }
     });
     if (!session) continue;
-    const redacted = redactIdentifier(session.scopeSnapshot, input.resourceId);
+    modelRunIds.push(session.modelRunId);
+    const redacted = redactPrivateKnowledgeValues(
+      session.scopeSnapshot,
+      new Set([input.resourceId])
+    );
     const scopeSnapshot = isRecord(redacted) && isRecord(session.scopeSnapshot) &&
       Object.hasOwn(session.scopeSnapshot, "selection")
       ? {
@@ -223,29 +560,267 @@ async function tombstoneEvidenceItems(
       where: { id: retrievalSessionId }
     });
   }
+  return {
+    evidenceItemIds: rows.map(({ id }) => id),
+    modelRunIds: uniqueStrings(modelRunIds)
+  };
+}
+
+async function lockAffectedRunSourceBindings(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    resourceId: string;
+    resourceType: "base" | "source";
+  }>
+): Promise<KnowledgeRunSourceBindingRow[]> {
+  return input.resourceType === "source"
+    ? await tx.$queryRaw<KnowledgeRunSourceBindingRow[]>(Prisma.sql`
+        SELECT
+          "id",
+          "modelRunId",
+          "profileBindingId",
+          "sourceAlias",
+          "sourceId",
+          "sourceVersionId",
+          "sourceArtifactId",
+          "sourceNameSnapshot",
+          "fileNameSnapshot"
+        FROM "KnowledgeRunSourceBinding"
+        WHERE "sourceId" = ${input.resourceId}
+          AND "tombstonedAt" IS NULL
+        ORDER BY "id"
+        FOR UPDATE
+      `)
+    : await tx.$queryRaw<KnowledgeRunSourceBindingRow[]>(Prisma.sql`
+        SELECT
+          "id",
+          "modelRunId",
+          "profileBindingId",
+          "sourceAlias",
+          "sourceId",
+          "sourceVersionId",
+          "sourceArtifactId",
+          "sourceNameSnapshot",
+          "fileNameSnapshot"
+        FROM "KnowledgeRunSourceBinding"
+        WHERE "tombstonedAt" IS NULL
+          AND jsonb_typeof("baseProvenance") = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements("baseProvenance") AS provenance
+            WHERE provenance->>'knowledgeBaseId' = ${input.resourceId}
+          )
+        ORDER BY "id"
+        FOR UPDATE
+      `);
+}
+
+async function tombstoneRunSourceBindings(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    purgedAt: Date;
+    rows: readonly KnowledgeRunSourceBindingRow[];
+  }>
+): Promise<TombstonedRunSourceBindings> {
+  const rows = input.rows;
+  if (rows.length === 0) return { modelRunIds: [], privateValues: [], sourceAliases: [] };
+  const updated = await tx.knowledgeRunSourceBinding.updateMany({
+    data: {
+      accessProvenance: Prisma.DbNull,
+      baseProvenance: Prisma.DbNull,
+      fileNameSnapshot: null,
+      readinessState: "deleted",
+      sourceArtifactId: null,
+      sourceId: null,
+      sourceNameSnapshot: null,
+      sourceVersionId: null,
+      tombstonedAt: input.purgedAt
+    },
+    where: { id: { in: rows.map(({ id }) => id) }, tombstonedAt: null }
+  });
+  if (updated.count !== rows.length) throw new KnowledgeDeletionInvariantError();
+  return {
+    modelRunIds: uniqueStrings(rows.map(({ modelRunId }) => modelRunId)),
+    privateValues: uniqueStrings(rows.flatMap((row) => [
+      row.fileNameSnapshot,
+      row.sourceArtifactId,
+      row.sourceId,
+      row.sourceNameSnapshot,
+      row.sourceVersionId
+    ])),
+    sourceAliases: [...new Map(rows.map((row) => [
+      `${row.modelRunId}\u0000${row.sourceAlias}`,
+      { modelRunId: row.modelRunId, sourceAlias: row.sourceAlias }
+    ])).values()].sort((left, right) =>
+      left.modelRunId.localeCompare(right.modelRunId) ||
+      left.sourceAlias.localeCompare(right.sourceAlias))
+  };
+}
+
+async function purgeDispatchManifests(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    evidenceItemIds: readonly string[];
+    modelRunIds: readonly string[];
+    purgedAt: Date;
+  }>
+): Promise<string[]> {
+  if (input.evidenceItemIds.length === 0 && input.modelRunIds.length === 0) return [];
+  const manifests = await tx.knowledgeEvidenceDispatchManifest.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      excludedCount: true,
+      id: true,
+      itemCount: true,
+      modelRunId: true,
+      purgedAt: true
+    },
+    where: {
+      OR: [
+        ...(input.modelRunIds.length > 0
+          ? [{ modelRunId: { in: [...input.modelRunIds] } }]
+          : []),
+        ...(input.evidenceItemIds.length > 0
+          ? [
+              { items: { some: { evidenceItemId: { in: [...input.evidenceItemIds] } } } },
+              { exclusions: { some: { evidenceItemId: { in: [...input.evidenceItemIds] } } } }
+            ]
+          : [])
+      ]
+    }
+  });
+  const pending = manifests.filter(({ purgedAt }) => purgedAt === null);
+  for (let offset = 0; offset < pending.length; offset += 4_096) {
+    const batch = pending.slice(offset, offset + 4_096);
+    const manifestIds = batch.map(({ id }) => id);
+    const purgedItems = await tx.knowledgeEvidenceDispatchManifestItem.updateMany({
+      data: {
+        contextBoundaries: Prisma.DbNull,
+        evidenceItemId: null,
+        exactExcerpt: null,
+        excerptHash: null,
+        handle: null,
+        renderedBlock: null,
+        renderedBlockHash: null,
+        representation: "purged",
+        safeMetadata: Prisma.DbNull,
+        sourceAlias: null,
+        sourceArtifactId: null,
+        sourceVersionId: null
+      },
+      where: { manifestId: { in: manifestIds } }
+    });
+    const purgedExclusions = await tx.knowledgeEvidenceDispatchManifestExclusion.updateMany({
+      data: { evidenceItemId: null, handle: null, reason: "purged" },
+      where: { manifestId: { in: manifestIds } }
+    });
+    if (purgedItems.count !== batch.reduce((count, manifest) =>
+      count + manifest.itemCount, 0) ||
+      purgedExclusions.count !== batch.reduce((count, manifest) =>
+        count + manifest.excludedCount, 0)) {
+      throw new KnowledgeDeletionInvariantError();
+    }
+    const purged = await tx.knowledgeEvidenceDispatchManifest.updateMany({
+      data: {
+        coverage: Prisma.DbNull,
+        messageHash: null,
+        messageText: null,
+        profileRevisionIds: [],
+        purgedAt: input.purgedAt
+      },
+      where: { id: { in: manifestIds }, purgedAt: null }
+    });
+    if (purged.count !== batch.length) throw new KnowledgeDeletionInvariantError();
+  }
+  return uniqueStrings(manifests.map(({ modelRunId }) => modelRunId));
+}
+
+async function purgeBudgetReservations(
+  tx: Prisma.TransactionClient,
+  modelRunIds: readonly string[],
+  purgedAt: Date
+): Promise<void> {
+  if (modelRunIds.length === 0) return;
+  await tx.knowledgeBudgetReservation.updateMany({
+    data: {
+      dispatchAttemptKey: null,
+      failureCode: null,
+      idempotencyKey: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      operationRequest: Prisma.DbNull,
+      operationRequestHash: null,
+      purgedAt,
+      receiptHash: null
+    },
+    where: { modelRunId: { in: [...modelRunIds] }, purgedAt: null }
+  });
 }
 
 async function tombstoneKnowledgeRuns(
   tx: Prisma.TransactionClient,
   input: Readonly<{
+    affectedModelRunIds?: readonly string[];
+    baseSourceIdentities?: readonly KnowledgeBaseSourceIdentity[];
     documentVersionIds?: readonly string[];
     knowledgeBaseId?: string;
+    privateIdentifiers?: readonly string[];
+    sourceAliases?: readonly Readonly<{ modelRunId: string; sourceAlias: string }>[];
+    sourceId?: string;
+    sourceVersionIds?: readonly string[];
   }>
-): Promise<string[]> {
+): Promise<TombstonedKnowledgeRuns> {
+  const versionIds = new Set([
+    ...(input.documentVersionIds ?? []),
+    ...(input.sourceVersionIds ?? [])
+  ]);
+  const versionPredicate = versionIds.size > 0
+    ? Prisma.sql`OR result->>'documentVersionId' IN (${Prisma.join([...versionIds])})`
+    : Prisma.empty;
+  const discoveryReceiptPredicate = (input.sourceAliases?.length ?? 0) > 0
+    ? Prisma.sql`(
+        knowledge_run."operation" = 'discover_sources'
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(knowledge_run."readReceipt" -> 'sources') = 'array'
+                THEN knowledge_run."readReceipt" -> 'sources'
+              ELSE '[]'::jsonb
+            END
+          ) AS discovered_source
+          WHERE ${Prisma.join(input.sourceAliases!.map((binding) => Prisma.sql`(
+            knowledge_run."modelRunId" = ${binding.modelRunId}
+            AND discovered_source ->> 'sourceAlias' = ${binding.sourceAlias}
+          )`), " OR ")}
+        )
+      )`
+    : Prisma.sql`false`;
+  const affectedRunPredicate = (input.affectedModelRunIds?.length ?? 0) > 0
+    ? Prisma.sql`knowledge_run."modelRunId" IN (${Prisma.join(input.affectedModelRunIds!)})`
+    : Prisma.sql`false`;
   const rows = input.knowledgeBaseId
     ? await tx.$queryRaw<KnowledgeRunRow[]>(Prisma.sql`
         SELECT
           knowledge_run."id",
           knowledge_run."modelRunId",
           knowledge_run."modelRunToolCallId",
+          model_run_tool_call."providerCallId",
+          knowledge_run."query",
           knowledge_run."baseEvidence",
+          knowledge_run."readReceipt",
+          knowledge_run."retrievalSessionId",
           knowledge_run."results",
           model_run."chatId"
         FROM "KnowledgeRun" AS knowledge_run
         INNER JOIN "ModelRun" AS model_run ON model_run."id" = knowledge_run."modelRunId"
+        INNER JOIN "ModelRunToolCall" AS model_run_tool_call
+          ON model_run_tool_call."id" = knowledge_run."modelRunToolCallId"
+         AND model_run_tool_call."modelRunId" = knowledge_run."modelRunId"
         WHERE jsonb_typeof(knowledge_run."results") = 'array'
           AND (
-            EXISTS (
+            ${affectedRunPredicate}
+            OR EXISTS (
               SELECT 1
               FROM jsonb_array_elements(knowledge_run."results") AS result
               WHERE result->>'knowledgeBaseId' = ${input.knowledgeBaseId}
@@ -254,36 +829,56 @@ async function tombstoneKnowledgeRuns(
               FROM jsonb_array_elements(knowledge_run."baseEvidence") AS evidence
               WHERE evidence->>'knowledgeBaseId' = ${input.knowledgeBaseId}
             )
+            OR ${discoveryReceiptPredicate}
           )
         FOR UPDATE OF knowledge_run
       `)
-    : input.documentVersionIds && input.documentVersionIds.length > 0
+    : input.sourceId
       ? await tx.$queryRaw<KnowledgeRunRow[]>(Prisma.sql`
           SELECT
             knowledge_run."id",
             knowledge_run."modelRunId",
             knowledge_run."modelRunToolCallId",
+            model_run_tool_call."providerCallId",
+            knowledge_run."query",
             knowledge_run."baseEvidence",
+            knowledge_run."readReceipt",
+            knowledge_run."retrievalSessionId",
             knowledge_run."results",
             model_run."chatId"
           FROM "KnowledgeRun" AS knowledge_run
           INNER JOIN "ModelRun" AS model_run ON model_run."id" = knowledge_run."modelRunId"
+          INNER JOIN "ModelRunToolCall" AS model_run_tool_call
+            ON model_run_tool_call."id" = knowledge_run."modelRunToolCallId"
+           AND model_run_tool_call."modelRunId" = knowledge_run."modelRunId"
           WHERE jsonb_typeof(knowledge_run."results") = 'array'
-            AND EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(knowledge_run."results") AS result
-              WHERE result->>'documentVersionId' IN (${Prisma.join(input.documentVersionIds)})
+            AND (
+              ${affectedRunPredicate}
+              OR knowledge_run."readReceipt" #>> '{resolvedSource,sourceId}' = ${input.sourceId}
+              OR EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(knowledge_run."results") AS result
+                WHERE result->>'sourceId' = ${input.sourceId}
+                   OR result->>'documentId' = ${input.sourceId}
+                   ${versionPredicate}
+              )
+              OR ${discoveryReceiptPredicate}
             )
           FOR UPDATE OF knowledge_run
         `)
       : [];
 
-  const versionIds = new Set(input.documentVersionIds ?? []);
+  const privateValues = new Set(input.privateIdentifiers ?? []);
   for (const row of rows) {
+    collectPrivateKnowledgeValues(row.readReceipt, privateValues);
+    privateValues.add(row.query);
     const tombstoned = tombstoneResults(row.results, (entry) => input.knowledgeBaseId
-      ? entry.knowledgeBaseId === input.knowledgeBaseId
-      : typeof entry.documentVersionId === "string" && versionIds.has(entry.documentVersionId));
-    if (!input.knowledgeBaseId && !tombstoned.changed) continue;
+      ? entry.knowledgeBaseId === input.knowledgeBaseId ||
+        (input.baseSourceIdentities ?? []).some((identity) =>
+          identity.modelRunId === row.modelRunId &&
+          matchesKnowledgeBaseSourceIdentity(entry, identity))
+      : entry.sourceId === input.sourceId || entry.documentId === input.sourceId ||
+        typeof entry.documentVersionId === "string" && versionIds.has(entry.documentVersionId));
     await tx.knowledgeRun.update({
       data: {
         baseEvidence: json(input.knowledgeBaseId
@@ -291,18 +886,20 @@ async function tombstoneKnowledgeRuns(
           : row.baseEvidence),
         postRerankOrder: Prisma.JsonNull,
         preRerankOrder: Prisma.JsonNull,
+        providerText: tombstoned.changed
+          ? providerTextForTombstonedResults(tombstoned.results)
+          : providerTextForTombstonedResults([]),
+        query: deletedKnowledgeResource,
+        readReceipt: Prisma.DbNull,
         rerankerBinding: Prisma.JsonNull,
         ...(tombstoned.changed
-          ? {
-              providerText: providerTextForTombstonedResults(tombstoned.results),
-              results: json(tombstoned.results)
-            }
+          ? { results: json(tombstoned.results) }
           : {})
       },
       where: { id: row.id }
     });
     await tx.modelRunToolCall.updateMany({
-      data: { result: Prisma.DbNull },
+      data: { arguments: json({ deleted: true }), result: Prisma.DbNull },
       where: { id: row.modelRunToolCallId, modelRunId: row.modelRunId }
     });
   }
@@ -314,7 +911,16 @@ async function tombstoneKnowledgeRuns(
       where: { chatId: { in: chatIds }, revokedAt: null }
     });
   }
-  return uniqueStrings(rows.map((row) => row.modelRunId));
+  return {
+    modelRunIds: uniqueStrings(rows.map((row) => row.modelRunId)),
+    privateValues: uniqueStrings([...privateValues]),
+    providerCalls: rows.map((row) => ({
+      modelRunId: row.modelRunId,
+      providerCallId: row.providerCallId
+    })).sort((left, right) => left.modelRunId.localeCompare(right.modelRunId) ||
+      left.providerCallId.localeCompare(right.providerCallId)),
+    retrievalSessionIds: uniqueStrings(rows.map((row) => row.retrievalSessionId))
+  };
 }
 
 function selectionWithoutResource(
@@ -373,32 +979,84 @@ async function scrubConfigurationReferences(
 
 async function scrubModelRuns(
   tx: Prisma.TransactionClient,
-  modelRunIds: readonly string[],
-  knowledgeBaseId: string
+  input: Readonly<{
+    modelRunIds: readonly string[];
+    privateValues: readonly string[];
+    providerCalls: readonly Readonly<{ modelRunId: string; providerCallId: string }>[];
+    resourceId: string;
+    resourceType: "base" | "source";
+  }>
 ): Promise<void> {
-  if (modelRunIds.length === 0) return;
+  if (input.modelRunIds.length === 0) return;
+  const privateValues = new Set([input.resourceId, ...input.privateValues]);
+  const providerCallIdsByRun = new Map<string, Set<string>>();
+  for (const call of input.providerCalls) {
+    const ids = providerCallIdsByRun.get(call.modelRunId) ?? new Set<string>();
+    ids.add(call.providerCallId);
+    providerCallIdsByRun.set(call.modelRunId, ids);
+  }
   const rows = await tx.modelRun.findMany({
     select: { errorPayload: true, id: true, normalizedRequest: true, toolLoopState: true },
-    where: { id: { in: [...modelRunIds] } }
+    where: { id: { in: [...input.modelRunIds] } }
   });
   for (const row of rows) {
     await tx.modelRun.update({
       data: {
         ...(row.errorPayload === null
           ? {}
-          : { errorPayload: json(redactIdentifier(row.errorPayload, knowledgeBaseId)) }),
+          : { errorPayload: json(redactPrivateKnowledgeValues(row.errorPayload, privateValues)) }),
         ...(row.normalizedRequest === null
           ? {}
           : { normalizedRequest: json(scrubRunNormalizedRequest(
               row.normalizedRequest,
-              knowledgeBaseId
+              {
+                privateValues,
+                resourceId: input.resourceId,
+                resourceType: input.resourceType
+              }
             )) }),
         ...(row.toolLoopState === null
           ? {}
-          : { toolLoopState: json(redactIdentifier(row.toolLoopState, knowledgeBaseId)) })
+          : { toolLoopState: json(scrubProviderToolMessageContainers(
+              redactPrivateKnowledgeValues(row.toolLoopState, privateValues),
+              providerCallIdsByRun.get(row.id) ?? new Set<string>()
+            )) })
       },
       where: { id: row.id }
     });
+  }
+  const scopes = await tx.knowledgeRunScope.findMany({
+    select: { modelRunId: true, selection: true },
+    where: { modelRunId: { in: [...input.modelRunIds] } }
+  });
+  for (const scope of scopes) {
+    await tx.knowledgeRunScope.update({
+      data: {
+        selection: json(selectionWithoutResource(
+          scope.selection,
+          input.resourceId,
+          input.resourceType
+        ))
+      },
+      where: { modelRunId: scope.modelRunId }
+    });
+  }
+  if (input.resourceType === "source") {
+    const bindings = await tx.knowledgeRunBinding.findMany({
+      select: { id: true, selectedSourceIds: true },
+      where: {
+        modelRunId: { in: [...input.modelRunIds] },
+        selectedSourceIds: { has: input.resourceId }
+      }
+    });
+    for (const binding of bindings) {
+      await tx.knowledgeRunBinding.update({
+        data: {
+          selectedSourceIds: binding.selectedSourceIds.filter((id) => id !== input.resourceId)
+        },
+        where: { id: binding.id }
+      });
+    }
   }
 }
 
@@ -482,10 +1140,11 @@ async function purgeSource(
 ): Promise<number> {
   const sources = await tx.$queryRaw<Array<{
     deletionRequestedAt: Date | null;
+    name: string;
     ownerUserId: string;
     trashedAt: Date | null;
   }>>`
-    SELECT "ownerUserId", "trashedAt", "deletionRequestedAt"
+    SELECT "ownerUserId", "name", "trashedAt", "deletionRequestedAt"
     FROM "KnowledgeSource"
     WHERE "id" = ${claim.targetId}
     FOR UPDATE
@@ -516,16 +1175,25 @@ async function purgeSource(
       `)
     : [];
   const sourceVersions = await tx.$queryRaw<Array<{
+    artifactId: string | null;
+    fileName: string;
+    id: string;
     normalizedTextStorageKey: string | null;
     originalStorageKey: string | null;
   }>>`
-    SELECT version."originalStorageKey", artifact."normalizedTextStorageKey"
+    SELECT
+      version."id",
+      version."fileName",
+      version."originalStorageKey",
+      artifact."id" AS "artifactId",
+      artifact."normalizedTextStorageKey"
     FROM "KnowledgeSourceVersion" AS version
     LEFT JOIN "KnowledgeSourceIndexArtifact" AS artifact
       ON artifact."sourceVersionId" = version."id"
     WHERE version."sourceId" = ${claim.targetId}
   `;
   const documentVersionIds = uniqueStrings(versions.map((row) => row.id));
+  const sourceVersionIds = uniqueStrings(sourceVersions.map((row) => row.id));
   const uploadReceipts = await tx.knowledgeUploadItem.findMany({
     select: { batchId: true, id: true },
     where: { sourceId: claim.targetId }
@@ -535,11 +1203,83 @@ async function purgeSource(
     ...versions.flatMap((row) => [row.originalStorageKey, row.normalizedTextStorageKey]),
     ...sourceVersions.flatMap((row) => [row.originalStorageKey, row.normalizedTextStorageKey])
   ]);
+  const boundRuns = await tx.knowledgeRunBinding.findMany({
+    select: { modelRunId: true },
+    where: {
+      OR: [
+        { selectedSourceIds: { has: claim.targetId } },
+        { knowledgeBaseSnapshot: { sources: { some: { sourceId: claim.targetId } } } }
+      ]
+    }
+  });
+  const sourceBindingRows = await lockAffectedRunSourceBindings(tx, {
+    resourceId: claim.targetId,
+    resourceType: "source"
+  });
+  const strategyExecutions = await lockAffectedKnowledgeStrategyExecutions(tx, {
+    sourceBindingIds: sourceBindingRows.map(({ id }) => id)
+  });
 
   await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
-  await tombstoneKnowledgeRuns(tx, { documentVersionIds });
-  await tombstoneEvidenceItems(tx, {
+  await purgeKnowledgeStrategyExecutions(tx, {
+    executions: strategyExecutions,
+    purgedAt: now
+  });
+  const sourceBindingRuns = await tombstoneRunSourceBindings(tx, {
+    purgedAt: now,
+    rows: sourceBindingRows
+  });
+  const resultRuns = await tombstoneKnowledgeRuns(tx, {
+    affectedModelRunIds: uniqueStrings([
+      ...boundRuns.map((row) => row.modelRunId),
+      ...sourceBindingRuns.modelRunIds
+    ]),
     documentVersionIds,
+    privateIdentifiers: uniqueStrings([
+      claim.targetId,
+      source.name,
+      ...documentIds,
+      ...documentVersionIds,
+      ...sourceVersionIds,
+      ...sourceVersions.flatMap((row) => [
+        row.artifactId,
+        row.fileName,
+        row.normalizedTextStorageKey,
+        row.originalStorageKey
+      ]),
+      ...sourceBindingRuns.privateValues
+    ]),
+    sourceAliases: sourceBindingRuns.sourceAliases,
+    sourceId: claim.targetId,
+    sourceVersionIds
+  });
+  const evidenceItems = await tombstoneEvidenceItems(tx, {
+    documentVersionIds,
+    purgedAt: now,
+    retrievalSessionIds: resultRuns.retrievalSessionIds,
+    resourceId: claim.targetId,
+    resourceType: "source"
+  });
+  const modelRunIds = uniqueStrings([
+    ...boundRuns.map((row) => row.modelRunId),
+    ...resultRuns.modelRunIds,
+    ...sourceBindingRuns.modelRunIds,
+    ...evidenceItems.modelRunIds
+  ]);
+  const dispatchModelRunIds = await purgeDispatchManifests(tx, {
+    evidenceItemIds: evidenceItems.evidenceItemIds,
+    modelRunIds,
+    purgedAt: now
+  });
+  await purgeBudgetReservations(
+    tx,
+    uniqueStrings([...modelRunIds, ...dispatchModelRunIds]),
+    now
+  );
+  await scrubModelRuns(tx, {
+    modelRunIds,
+    privateValues: resultRuns.privateValues,
+    providerCalls: resultRuns.providerCalls,
     resourceId: claim.targetId,
     resourceType: "source"
   });
@@ -590,6 +1330,7 @@ async function purgeSource(
     data: { currentVersionId: null, pendingVersionId: null },
     where: { id: claim.targetId }
   });
+  await tx.projectKnowledgeSourceBinding.deleteMany({ where: { sourceId: claim.targetId } });
   await tx.knowledgeBaseSource.deleteMany({ where: { sourceId: claim.targetId } });
   await tx.knowledgeSourceIndexArtifact.deleteMany({
     where: { sourceVersion: { sourceId: claim.targetId } }
@@ -644,17 +1385,77 @@ async function purgeBase(
     select: { modelRunId: true },
     where: { knowledgeBaseId: claim.targetId }
   });
+  const sourceBindingRows = await lockAffectedRunSourceBindings(tx, {
+    resourceId: claim.targetId,
+    resourceType: "base"
+  });
+  const baseSourceIdentities: KnowledgeBaseSourceIdentity[] = sourceBindingRows.map((row) => ({
+    modelRunId: row.modelRunId,
+    profileBindingId: row.profileBindingId,
+    sourceArtifactId: row.sourceArtifactId,
+    sourceId: row.sourceId,
+    sourceVersionId: row.sourceVersionId
+  }));
+  const strategyExecutions = await lockAffectedKnowledgeStrategyExecutions(tx, {
+    sourceBindingIds: sourceBindingRows.map(({ id }) => id)
+  });
   await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
-  const resultRuns = await tombstoneKnowledgeRuns(tx, { knowledgeBaseId: claim.targetId });
-  await tombstoneEvidenceItems(tx, {
+  await purgeKnowledgeStrategyExecutions(tx, {
+    executions: strategyExecutions,
+    purgedAt: now
+  });
+  const sourceBindingRuns = await tombstoneRunSourceBindings(tx, {
+    purgedAt: now,
+    rows: sourceBindingRows
+  });
+  const resultRuns = await tombstoneKnowledgeRuns(tx, {
+    affectedModelRunIds: uniqueStrings([
+      ...boundRuns.map((row) => row.modelRunId),
+      ...sourceBindingRuns.modelRunIds
+    ]),
+    baseSourceIdentities,
+    knowledgeBaseId: claim.targetId,
+    privateIdentifiers: uniqueStrings([
+      claim.targetId,
+      ...versions.flatMap((row) => [
+        row.id,
+        row.normalizedTextStorageKey,
+        row.originalStorageKey
+      ]),
+      ...sourceBindingRuns.privateValues
+    ]),
+    sourceAliases: sourceBindingRuns.sourceAliases
+  });
+  const evidenceItems = await tombstoneEvidenceItems(tx, {
+    baseSourceIdentities,
+    purgedAt: now,
+    retrievalSessionIds: resultRuns.retrievalSessionIds,
     resourceId: claim.targetId,
     resourceType: "base"
   });
   const modelRunIds = uniqueStrings([
     ...boundRuns.map((row) => row.modelRunId),
-    ...resultRuns
+    ...resultRuns.modelRunIds,
+    ...sourceBindingRuns.modelRunIds,
+    ...evidenceItems.modelRunIds
   ]);
-  await scrubModelRuns(tx, modelRunIds, claim.targetId);
+  const dispatchModelRunIds = await purgeDispatchManifests(tx, {
+    evidenceItemIds: evidenceItems.evidenceItemIds,
+    modelRunIds,
+    purgedAt: now
+  });
+  await purgeBudgetReservations(
+    tx,
+    uniqueStrings([...modelRunIds, ...dispatchModelRunIds]),
+    now
+  );
+  await scrubModelRuns(tx, {
+    modelRunIds,
+    privateValues: resultRuns.privateValues,
+    providerCalls: resultRuns.providerCalls,
+    resourceId: claim.targetId,
+    resourceType: "base"
+  });
   await scrubConfigurationReferences(tx, claim.targetId, "base");
 
   await tx.usageEvent.updateMany({
