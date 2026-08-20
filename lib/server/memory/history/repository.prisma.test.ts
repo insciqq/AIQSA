@@ -37,7 +37,6 @@ import { purgeMemoryHistoryReceiptDerivatives } from "./purge";
 import {
   MEMORY_HISTORY_BACKFILL_WINDOW,
   readMemoryHistoryIndexingProgress,
-  reconcileMemoryHistoryBackfills,
   seedMemoryHistoryBackfill
 } from "./backfill";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
@@ -331,7 +330,7 @@ describe("Memory lexical history index persistence", () => {
         });
         if (queued === 0) break;
         await processHistoryJob(userId);
-        await reconcileMemoryHistoryBackfills(prisma);
+        await seedHistoryBackfill(userId);
       }
 
       await expect(readMemoryHistoryIndexingProgress(
@@ -393,8 +392,8 @@ describe("Memory lexical history index persistence", () => {
         },
         where: { id: catchupChat.id }
       });
-      await reconcileMemoryHistoryBackfills(prisma);
-      await reconcileMemoryHistoryBackfills(prisma);
+      await seedHistoryBackfill(userId);
+      await seedHistoryBackfill(userId);
       await expect(prisma.memoryJob.count({
         where: { kind: "INDEX_HISTORY", userId }
       })).resolves.toBe(eligible.length + 1);

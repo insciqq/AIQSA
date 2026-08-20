@@ -49,9 +49,18 @@ jobs:
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
+  quality:
+    name: Release quality gates
+    needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/knowledge-quality.yml
+
   build:
     name: Build ${{ matrix.platform }}
-    needs: prepare
+    needs:
+      - prepare
+      - quality
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -170,6 +179,7 @@ jobs:
     name: Publish multi-platform images and GitHub Release
     needs:
       - prepare
+      - quality
       - build
     runs-on: ubuntu-24.04
     permissions:

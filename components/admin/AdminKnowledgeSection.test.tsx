@@ -58,6 +58,7 @@ describe("administrator Knowledge section", () => {
     render(<AdminKnowledgeSection active onMutationCommitted={onMutationCommitted} />);
     expect(await screen.findByText("25 MB")).toBeVisible();
     expect(screen.getByText(/never lists private bases/i)).toBeVisible();
+    expect(screen.getByText(/query planning: disabled · reranking: local/iu)).toBeVisible();
     expect(screen.getByRole("heading", { name: "Operations health" })).toBeVisible();
     expect(screen.getByText("No active alerts")).toBeVisible();
     expect(screen.getByText(/V1 reconciliation · clean/)).toBeVisible();

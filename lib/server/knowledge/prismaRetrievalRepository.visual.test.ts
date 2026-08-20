@@ -75,7 +75,7 @@ const vision: KnowledgeVisionProfileDestination = {
   supportsNativePdf: true
 };
 
-function binding(): KnowledgeAcceptedBinding {
+function binding(overrides: Partial<KnowledgeAcceptedBinding> = {}): KnowledgeAcceptedBinding {
   return {
     baseContentRevision: 1,
     baseName: "Reports",
@@ -93,11 +93,15 @@ function binding(): KnowledgeAcceptedBinding {
     ordinal: 0,
     selectedSourceIds: [],
     targetDimension: 1024,
-    vectorSpaceFingerprint: "a".repeat(64)
+    vectorSpaceFingerprint: "a".repeat(64),
+    ...overrides
   };
 }
 
-function artifact(egressPolicy: unknown = knowledgeProfileEgressPolicy(vision)) {
+function artifact(egressPolicy: unknown = knowledgeProfileEgressPolicy({
+  embeddingProviderModelId: "embedding-model-1",
+  visionDestination: vision
+})) {
   return {
     id: "artifact-1",
     normalizedTextByteSize: encoded.body.byteLength,
@@ -107,6 +111,7 @@ function artifact(egressPolicy: unknown = knowledgeProfileEgressPolicy(vision)) 
       egressPolicy,
       profileConfiguration: knowledgeProfileConfiguration({
         candidateLimit: 40,
+        embeddingProviderModelId: "embedding-model-1",
         resultLimit: 8,
         scoreThreshold: 0.01,
         visionDestination: vision
@@ -134,7 +139,14 @@ function artifact(egressPolicy: unknown = knowledgeProfileEgressPolicy(vision)) 
 
 describe("Prisma Knowledge visual retrieval scope", () => {
   it("derives candidates only from admitted artifact mappings and the pinned profile", async () => {
-    const findMany = vi.fn(async () => [artifact()]);
+    const sharedArtifact = artifact();
+    sharedArtifact.snapshotSources.push({
+      knowledgeBaseId: "base-2",
+      snapshotId: "snapshot-2",
+      sourceId: "source-1",
+      sourceVersionId: "source-version-1"
+    });
+    const findMany = vi.fn(async () => [sharedArtifact]);
     const analyze = vi.fn(async () => ({
       description: "North increased.",
       modelId: "vision-upstream-1",
@@ -156,7 +168,16 @@ describe("Prisma Knowledge visual retrieval scope", () => {
     });
 
     const result = await store.visualSearch!({
-      bindings: [binding()],
+      bindings: [
+        binding(),
+        binding({
+          baseName: "Archive reports",
+          indexGenerationId: "generation-2",
+          knowledgeBaseId: "base-2",
+          knowledgeBaseSnapshotId: "snapshot-2",
+          ordinal: 1
+        })
+      ],
       query: "What does the quarterly revenue chart show?",
       sourceArtifactIds: ["artifact-1"]
     });
@@ -169,7 +190,18 @@ describe("Prisma Knowledge visual retrieval scope", () => {
     }));
     expect(result).toMatchObject({
       kind: "complete",
+      canonicalSourceProvenance: [{
+        artifactId: "artifact-1",
+        bindings: [
+          { baseName: "Reports", bindingOrdinal: 0, knowledgeBaseId: "base-1" },
+          { baseName: "Archive reports", bindingOrdinal: 1, knowledgeBaseId: "base-2" }
+        ],
+        primaryBindingOrdinal: 0,
+        sourceId: "source-1",
+        sourceVersionId: "source-version-1"
+      }],
       passage: {
+        bindingOrdinal: 0,
         sourceArtifactId: "artifact-1",
         visualAnalysis: {
           provider: { profileRevisionId: "profile-revision-1" },
@@ -181,6 +213,7 @@ describe("Prisma Knowledge visual retrieval scope", () => {
       profileRevisionId: "profile-revision-1",
       providerModelId: "vision-model-1"
     }));
+    expect(analyze).toHaveBeenCalledOnce();
   });
 
   it("does not read original bytes when the immutable egress receipt is missing", async () => {

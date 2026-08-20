@@ -1,8 +1,9 @@
 # Production maintenance timers
 
-Render the three path placeholders in `aiqsa-backup.service.template`, install
-the result as `/etc/systemd/system/aiqsa-backup.service`, and install the timer
-beside it. Validate before enabling:
+Render the current-directory, environment-file, backup-directory, and shared
+operation-lock placeholders in `aiqsa-backup.service.template`, install the
+result as `/etc/systemd/system/aiqsa-backup.service`, and install the timer beside
+it. Validate before enabling:
 
 ```bash
 systemd-analyze verify /etc/systemd/system/aiqsa-backup.service /etc/systemd/system/aiqsa-backup.timer
@@ -12,9 +13,10 @@ systemctl list-timers aiqsa-backup.timer
 ```
 
 The timer runs daily at 03:30 with up to 15 minutes of jitter and catches up
-after downtime. The backup script briefly stops the single application writer,
-publishes a checksum-verified mode-0700 bundle, and restarts the app only if it
-was previously running.
+after downtime. The unit takes the same operation lock as deployment and prune
+before the backup script stops the application and Memory writers, publishes a
+checksum-verified mode-0700 bundle, and restores only roles that were previously
+running. A lock timeout fails the unit without starting a backup.
 
 There is deliberately no automatic deletion. Copy verified bundles to
 encrypted access-restricted off-host storage, keep at least three known-good

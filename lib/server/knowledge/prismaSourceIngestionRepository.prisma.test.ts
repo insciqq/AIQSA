@@ -261,6 +261,7 @@ describe("Prisma Knowledge Source ingestion claims", () => {
     const chunk = {
       contentHash: "d".repeat(64),
       contextPrefix: "",
+      documentContext: null,
       embeddingText: "A persisted embedding passage.",
       embeddingTextHash: "e".repeat(64),
       headingPath: [] as string[],

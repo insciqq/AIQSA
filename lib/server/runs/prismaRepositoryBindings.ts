@@ -558,11 +558,23 @@ export async function assertCurrentSkillRunBindings(
 export async function lockKnowledgeRunAdmissionSources(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   input: Readonly<{ plan: KnowledgeRunAdmissionPlan; userId: string }>
-): Promise<void> {
-  for (const { knowledgeBaseId } of input.plan.bindings) {
+): Promise<ReadonlyMap<string, Readonly<{
+  indexGenerationId: string;
+  profileRevisionId: string | null;
+}>>> {
+  const lockedProfiles = new Map<string, Readonly<{
+    indexGenerationId: string;
+    profileRevisionId: string | null;
+  }>>();
+  for (const { indexGenerationId, knowledgeBaseId } of input.plan.bindings) {
     if (input.plan.projectId) {
-      const projectBindings = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT project_binding."id"
+      const projectBindings = await tx.$queryRaw<Array<{
+        indexGenerationId: string;
+        profileRevisionId: string | null;
+      }>>`
+        SELECT
+          generation."id" AS "indexGenerationId",
+          generation."profileRevisionId"
         FROM "ProjectKnowledgeBaseBinding" AS project_binding
         INNER JOIN "KnowledgeBase" AS base
           ON base."id" = project_binding."knowledgeBaseId"
@@ -575,18 +587,23 @@ export async function lockKnowledgeRunAdmissionSources(
          AND generation."status" = 'active'
         WHERE project_binding."projectId" = ${input.plan.projectId}
           AND project_binding."knowledgeBaseId" = ${knowledgeBaseId}
+          AND generation."id" = ${indexGenerationId}
         FOR SHARE OF project_binding, base, generation
       `;
-      if (!projectBindings[0]) throw new KnowledgeRunPlanConflictError();
+      const projectBinding = projectBindings[0];
+      if (!projectBinding) throw new KnowledgeRunPlanConflictError();
+      lockedProfiles.set(knowledgeBaseId, projectBinding);
       continue;
     }
     const bases = await tx.$queryRaw<Array<{
       indexGenerationId: string;
       ownerUserId: string;
+      profileRevisionId: string | null;
     }>>`
       SELECT
         base."ownerUserId",
-        generation."id" AS "indexGenerationId"
+        generation."id" AS "indexGenerationId",
+        generation."profileRevisionId"
       FROM "KnowledgeBase" AS base
       INNER JOIN "KnowledgeIndexGeneration" AS generation
         ON generation."knowledgeBaseId" = base."id"
@@ -596,10 +613,15 @@ export async function lockKnowledgeRunAdmissionSources(
         AND base."archivedAt" IS NULL
         AND base."trashedAt" IS NULL
         AND base."deletionRequestedAt" IS NULL
+        AND generation."id" = ${indexGenerationId}
       FOR SHARE OF base, generation
     `;
     const base = bases[0];
     if (!base) throw new KnowledgeRunPlanConflictError();
+    lockedProfiles.set(knowledgeBaseId, {
+      indexGenerationId: base.indexGenerationId,
+      profileRevisionId: base.profileRevisionId
+    });
     if (base.ownerUserId === input.userId) continue;
 
     const installation = await tx.$queryRaw<Array<{ id: string }>>`
@@ -627,6 +649,219 @@ export async function lockKnowledgeRunAdmissionSources(
     `;
     if (!group[0]) throw new KnowledgeRunPlanConflictError();
   }
+  for (const source of input.plan.sources ?? []) {
+    const rows = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
+      SELECT source."ownerUserId"
+      FROM "KnowledgeSource" AS source
+      INNER JOIN "KnowledgeSourceVersion" AS version
+        ON version."sourceId" = source."id"
+       AND version."id" = ${source.sourceVersionId}
+      INNER JOIN "KnowledgeSourceIndexArtifact" AS artifact
+        ON artifact."sourceVersionId" = version."id"
+       AND artifact."id" = ${source.sourceArtifactId}
+      INNER JOIN "KnowledgeIndexProfileRevision" AS profile
+        ON profile."id" = artifact."profileRevisionId"
+      WHERE source."id" = ${source.sourceId}
+        AND source."currentVersionId" = version."id"
+        AND source."trashedAt" IS NULL
+        AND source."deletionRequestedAt" IS NULL
+        AND artifact."profileRevisionId" = ${source.profileRevisionId}
+        AND artifact."state" = 'ready'
+      FOR SHARE OF source, version, artifact, profile
+    `;
+    const lockedSource = rows[0];
+    if (!lockedSource || source.authority.owner && lockedSource.ownerUserId !== input.userId) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    if (source.authority.projectId) {
+      const projectBindings = await tx.$queryRaw<Array<{ sourceId: string }>>`
+        SELECT binding."sourceId"
+        FROM "ProjectKnowledgeSourceBinding" AS binding
+        WHERE binding."projectId" = ${source.authority.projectId}
+          AND binding."sourceId" = ${source.sourceId}
+        FOR SHARE OF binding
+      `;
+      if (projectBindings.length !== 1) throw new KnowledgeRunPlanConflictError();
+    }
+  }
+  return lockedProfiles;
+}
+
+type CanonicalKnowledgeBindingState = Readonly<{
+  baseProfileBindingIds: ReadonlyMap<string, string>;
+  profiles: readonly Readonly<{
+    id: string;
+    value: NonNullable<KnowledgeRunAdmissionPlan["profiles"]>[number];
+  }>[];
+  sources: readonly Readonly<{
+    profileBindingId: string;
+    selectionKind: "all_my_knowledge" | "assistant" | "base" | "direct" | "project";
+    value: NonNullable<KnowledgeRunAdmissionPlan["sources"]>[number];
+  }>[];
+}>;
+
+function canonicalJsonForComparison(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJsonForComparison).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJsonForComparison(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function profileMatchesLegacyBinding(
+  profile: NonNullable<KnowledgeRunAdmissionPlan["profiles"]>[number],
+  binding: KnowledgeRunAdmissionPlan["bindings"][number]
+): boolean {
+  const profileSnapshot = profile.embeddingExecutionSnapshot;
+  const bindingSnapshot = binding.embeddingExecutionSnapshot;
+  return profile.embeddingCredentialSource === binding.embeddingCredentialSource &&
+    profile.embeddingProviderModelId === binding.embeddingProviderModelId &&
+    profile.targetDimension === binding.targetDimension &&
+    profile.vectorSpaceFingerprint === binding.vectorSpaceFingerprint &&
+    profileSnapshot.connectionId === bindingSnapshot.connectionId &&
+    profileSnapshot.credentialId === bindingSnapshot.credentialId &&
+    profileSnapshot.credentialVersionId === bindingSnapshot.credentialVersionId &&
+    profileSnapshot.providerModelId === bindingSnapshot.providerModelId &&
+    canonicalJsonForComparison(profileSnapshot) === canonicalJsonForComparison(bindingSnapshot);
+}
+
+function sourceSelectionKind(
+  plan: KnowledgeRunAdmissionPlan,
+  source: NonNullable<KnowledgeRunAdmissionPlan["sources"]>[number]
+): CanonicalKnowledgeBindingState["sources"][number]["selectionKind"] {
+  if (plan.knowledgePlan.mode === "inherited") {
+    return plan.knowledgePlan.inheritedFrom === "assistant" ? "assistant" : "project";
+  }
+  if (plan.projectId) return "project";
+  if (source.selectionProvenance.includes("all_my_knowledge")) {
+    return "all_my_knowledge";
+  }
+  return source.directSelected ? "direct" : "base";
+}
+
+function prepareCanonicalKnowledgeBindings(
+  plan: KnowledgeRunAdmissionPlan,
+  lockedProfiles: ReadonlyMap<string, Readonly<{
+    indexGenerationId: string;
+    profileRevisionId: string | null;
+  }>>
+): CanonicalKnowledgeBindingState | null {
+  if (plan.profiles === undefined && plan.sources === undefined) return null;
+  if (plan.profiles === undefined || plan.sources === undefined) {
+    throw new KnowledgeRunPlanConflictError();
+  }
+  if (plan.sources.length !== plan.resolvedSourceCount) {
+    throw new KnowledgeRunPlanConflictError();
+  }
+
+  const profileIdsByOrdinal = new Map<number, string>();
+  const profileIdsByRevision = new Map<string, string>();
+  const profiles = plan.profiles.map((profile, ordinal) => {
+    const snapshot = profile.embeddingExecutionSnapshot;
+    if (
+      profile.ordinal !== ordinal ||
+      !isNonemptyString(profile.profileRevisionId) ||
+      profileIdsByRevision.has(profile.profileRevisionId) ||
+      !isNonemptyString(snapshot.connectionId) ||
+      !isNonemptyString(snapshot.credentialId) ||
+      !isNonemptyString(snapshot.credentialVersionId) ||
+      snapshot.providerModelId !== profile.embeddingProviderModelId
+    ) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    const id = randomUUID();
+    profileIdsByOrdinal.set(ordinal, id);
+    profileIdsByRevision.set(profile.profileRevisionId, id);
+    return { id, value: profile };
+  });
+
+  const baseProfileBindingIds = new Map<string, string>();
+  for (const binding of plan.bindings) {
+    const locked = lockedProfiles.get(binding.knowledgeBaseId);
+    if (
+      !locked ||
+      locked.indexGenerationId !== binding.indexGenerationId ||
+      !locked.profileRevisionId
+    ) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    const matchingProfiles = profiles.filter(({ value }) =>
+      value.profileRevisionId === locked.profileRevisionId &&
+      profileMatchesLegacyBinding(value, binding));
+    if (matchingProfiles.length !== 1) throw new KnowledgeRunPlanConflictError();
+    baseProfileBindingIds.set(binding.knowledgeBaseId, matchingProfiles[0]!.id);
+  }
+
+  const tupleKeys = new Set<string>();
+  const aliases = new Set<string>();
+  const sources = plan.sources.map((source, ordinal) => {
+    const profile = plan.profiles?.[source.profileOrdinal];
+    const profileBindingId = profileIdsByOrdinal.get(source.profileOrdinal);
+    const tupleKey = canonicalJsonForComparison([
+      source.sourceId,
+      source.sourceVersionId,
+      source.sourceArtifactId
+    ]);
+    const authorityBaseIds = new Set(source.authority.knowledgeBaseIds);
+    const baseProvenanceIds = new Set<string>();
+    const projectAuthorityMatches = plan.projectId
+      ? source.authority.projectId === plan.projectId
+      : source.authority.projectId === null;
+    if (
+      source.ordinal !== ordinal ||
+      source.sourceAlias !== `S${ordinal + 1}` ||
+      aliases.has(source.sourceAlias) ||
+      tupleKeys.has(tupleKey) ||
+      !profile ||
+      !profileBindingId ||
+      source.profileRevisionId !== profile.profileRevisionId ||
+      !isNonemptyString(source.sourceId) ||
+      !isNonemptyString(source.sourceVersionId) ||
+      !isNonemptyString(source.sourceArtifactId) ||
+      !Number.isSafeInteger(source.approxTokens) ||
+      source.approxTokens < 1 ||
+      !Number.isSafeInteger(source.passageCount) ||
+      source.passageCount < 1 ||
+      !Number.isSafeInteger(source.sourceVersionNumber) ||
+      source.sourceVersionNumber < 1 ||
+      source.selectionProvenance.length === 0 ||
+      new Set(source.selectionProvenance).size !== source.selectionProvenance.length ||
+      authorityBaseIds.size !== source.authority.knowledgeBaseIds.length ||
+      !projectAuthorityMatches ||
+      (!source.authority.owner && !source.authority.projectId && authorityBaseIds.size === 0)
+    ) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    for (const provenance of source.baseProvenance) {
+      const acceptedBase = plan.bindings.find((binding) =>
+        binding.knowledgeBaseId === provenance.knowledgeBaseId);
+      if (
+        baseProvenanceIds.has(provenance.knowledgeBaseId) ||
+        !authorityBaseIds.has(provenance.knowledgeBaseId) ||
+        !acceptedBase ||
+        acceptedBase.indexGenerationId !== provenance.indexGenerationId
+      ) {
+        throw new KnowledgeRunPlanConflictError();
+      }
+      baseProvenanceIds.add(provenance.knowledgeBaseId);
+    }
+    aliases.add(source.sourceAlias);
+    tupleKeys.add(tupleKey);
+    return {
+      profileBindingId,
+      selectionKind: sourceSelectionKind(plan, source),
+      value: source
+    };
+  });
+
+  return { baseProfileBindingIds, profiles, sources };
 }
 
 export async function insertAcceptedKnowledgeRunBindings(
@@ -638,7 +873,7 @@ export async function insertAcceptedKnowledgeRunBindings(
   }>
 ): Promise<void> {
   if (!input.plan) return;
-  await lockKnowledgeRunAdmissionSources(tx, {
+  const lockedProfiles = await lockKnowledgeRunAdmissionSources(tx, {
     plan: input.plan,
     userId: input.userId
   });
@@ -659,6 +894,7 @@ export async function insertAcceptedKnowledgeRunBindings(
   if (!sameKnowledgeRunAdmissionPlan(input.plan, current)) {
     throw new KnowledgeRunPlanConflictError();
   }
+  const canonicalBindings = prepareCanonicalKnowledgeBindings(current, lockedProfiles);
   await tx.knowledgeRunScope.create({
     data: {
       budgetPolicy: json(current.budgetPolicy),
@@ -669,6 +905,25 @@ export async function insertAcceptedKnowledgeRunBindings(
       selection: json(current.knowledgePlan)
     }
   });
+  for (const profile of canonicalBindings?.profiles ?? []) {
+    const snapshot = profile.value.embeddingExecutionSnapshot;
+    await tx.knowledgeRunProfileBinding.create({
+      data: {
+        embeddingConnectionId: snapshot.connectionId,
+        embeddingCredentialId: snapshot.credentialId!,
+        embeddingCredentialSource: profile.value.embeddingCredentialSource,
+        embeddingCredentialVersionId: snapshot.credentialVersionId!,
+        embeddingExecutionSnapshot: json(snapshot),
+        embeddingProviderModelId: profile.value.embeddingProviderModelId,
+        id: profile.id,
+        modelRunId: input.runId,
+        ordinal: profile.value.ordinal,
+        profileRevisionId: profile.value.profileRevisionId,
+        targetDimension: profile.value.targetDimension,
+        vectorSpaceFingerprint: profile.value.vectorSpaceFingerprint
+      }
+    });
+  }
   for (const binding of current.bindings) {
     const snapshot = binding.embeddingExecutionSnapshot;
     if (!snapshot.credentialId || !snapshot.credentialVersionId) {
@@ -702,9 +957,40 @@ export async function insertAcceptedKnowledgeRunBindings(
         knowledgeBaseSnapshotId: sourceSnapshot.snapshotId,
         modelRunId: input.runId,
         ordinal: binding.ordinal,
+        ...(canonicalBindings
+          ? {
+              profileBindingId: canonicalBindings.baseProfileBindingIds.get(
+                binding.knowledgeBaseId
+              )!
+            }
+          : {}),
         selectedSourceIds: [...binding.selectedSourceIds],
         targetDimension: binding.targetDimension,
         vectorSpaceFingerprint: binding.vectorSpaceFingerprint
+      }
+    });
+  }
+  for (const source of canonicalBindings?.sources ?? []) {
+    await tx.knowledgeRunSourceBinding.create({
+      data: {
+        accessProvenance: json({
+          authority: source.value.authority,
+          selectionProvenance: [...source.value.selectionProvenance]
+        }),
+        baseProvenance: json([...source.value.baseProvenance]),
+        directSelected: source.value.directSelected,
+        fileNameSnapshot: source.value.privateLabels.fileName,
+        modelRunId: input.runId,
+        ordinal: source.value.ordinal,
+        profileBindingId: source.profileBindingId,
+        readinessState: "ready",
+        selectionKind: source.selectionKind,
+        sourceAlias: source.value.sourceAlias,
+        sourceArtifactId: source.value.sourceArtifactId,
+        sourceId: source.value.sourceId,
+        sourceNameSnapshot: source.value.privateLabels.sourceName,
+        sourceVersionId: source.value.sourceVersionId,
+        sourceVersionNumber: source.value.sourceVersionNumber
       }
     });
   }

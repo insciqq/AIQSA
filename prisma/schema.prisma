@@ -94,6 +94,23 @@ enum KnowledgeRunOutcome {
   structured_clarification_required
 }
 
+enum KnowledgeBudgetReservationState {
+  reserved
+  dispatched
+  settled
+  released
+  ambiguous
+  expired
+}
+
+enum KnowledgeProviderAttemptState {
+  reserved
+  dispatched
+  settled
+  released
+  ambiguous
+}
+
 enum AttachmentStatus {
   processing
   ready
@@ -529,70 +546,71 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
-  id                             String                             @id @default(uuid())
-  email                          String?                            @unique
-  displayName                    String
-  role                           UserRole                           @default(user)
-  status                         UserStatus                         @default(pending)
-  createdAt                      DateTime                           @default(now())
-  updatedAt                      DateTime                           @updatedAt
-  accessGrants                   AccessGrant[]
-  attachments                    Attachment[]
-  authAccessRulesCreated         AuthAccessRule[]                   @relation("AuthAccessRuleCreator")
-  authFlowTokens                 AuthFlowToken[]
-  authIdentities                 AuthIdentity[]
-  authInvitesAccepted            AuthInvite[]                       @relation("AuthInviteAcceptedUser")
-  authInvitesCreated             AuthInvite[]                       @relation("AuthInviteCreator")
-  authSessions                   AuthSession[]
-  authSessionsRevoked            AuthSession[]                      @relation("AuthSessionRevoker")
-  assistantDefinitions           AssistantDefinition[]              @relation("AssistantDefinitionOwner")
-  assistantPins                  AssistantPin[]
-  assistantPublications          AssistantPublication[]             @relation("AssistantPublicationPublisher")
-  assistantRevisionsAuthored     AssistantRevision[]                @relation("AssistantRevisionAuthor")
-  chats                          Chat[]
-  folders                        Folder[]
-  groups                         UserGroup[]
-  knowledgeBasePublications      KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
-  knowledgeBases                 KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
-  knowledgeIndexProfileUpdates   KnowledgeIndexProfile[]            @relation("KnowledgeIndexProfileUpdater")
-  knowledgePolicyUpdates         KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
-  knowledgeSources               KnowledgeSource[]                  @relation("KnowledgeSourceOwner")
-  knowledgeUploadBatches         KnowledgeUploadBatch[]
-  memoryEgressPolicyUpdates      MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
-  mcpGrants                      McpGrant[]
-  mcpActivationJobs              McpActivationJob[]
-  mcpOAuthConnections            McpOAuthConnection[]
-  mcpUserServers                 McpUserServer[]
-  modelPolicyUpdates             ModelPolicy[]                      @relation("ModelPolicyUpdater")
-  providerCredentialAssignments  ProviderUserCredentialAssignment[]
-  projectAssistantBindingsAdded  ProjectAssistantBinding[]          @relation("ProjectAssistantBindingAdder")
-  projectAttachmentsUploaded     Attachment[]                       @relation("ProjectAttachmentUploader")
-  projectAuditEvents             ProjectAuditEvent[]                @relation("ProjectAuditActor")
-  projectChatsCreated            Chat[]                             @relation("ProjectChatCreator")
-  projectFoldersCreated          ProjectFolder[]                    @relation("ProjectFolderCreator")
-  projectGrants                  ProjectGrant[]
-  projectGrantsCreated           ProjectGrant[]                     @relation("ProjectGrantCreator")
-  projectKnowledgeBindingsAdded  ProjectKnowledgeBaseBinding[]      @relation("ProjectKnowledgeBindingAdder")
-  projectMcpBindingsAdded        ProjectMcpBinding[]                @relation("ProjectMcpBindingAdder")
-  projectMemoryFactsCreated      ProjectMemoryFact[]                @relation("ProjectMemoryFactCreator")
-  projectMemoryProposals         ProjectMemoryProposal[]            @relation("ProjectMemoryProposalAuthor")
-  projectMemoryProposalsReviewed ProjectMemoryProposal[]            @relation("ProjectMemoryProposalReviewer")
-  projectMemoryVersionsAuthored  ProjectMemoryFactVersion[]         @relation("ProjectMemoryVersionAuthor")
-  projectMessagesAuthored        Message[]                          @relation("ProjectMessageAuthor")
-  projectModelBindingsAdded      ProjectModelBinding[]              @relation("ProjectModelBindingAdder")
-  projectSearchBindingsAdded     ProjectSearchBinding[]             @relation("ProjectSearchBindingAdder")
-  projectSkillBindingsAdded      ProjectSkillBinding[]              @relation("ProjectSkillBindingAdder")
-  projectsCreated                Project[]                          @relation("ProjectCreator")
-  searchPolicyUpdates            SearchPolicy[]                     @relation("SearchPolicyUpdater")
-  settings                       UserSettings?
-  sharedSnapshots                SharedChatSnapshot[]
-  skillDefinitions               SkillDefinition[]                  @relation("SkillDefinitionOwner")
-  skillPublications              SkillPublication[]                 @relation("SkillPublicationPublisher")
-  skillRevisionsAuthored         SkillRevision[]                    @relation("SkillRevisionAuthor")
-  smtpActivations                SmtpControl[]                      @relation("SmtpControlActivator")
-  smtpConfigurationEdits         SmtpControl[]                      @relation("SmtpControlUpdater")
-  systemModelPolicyUpdates       SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
-  usageEvents                    UsageEvent[]
+  id                                  String                             @id @default(uuid())
+  email                               String?                            @unique
+  displayName                         String
+  role                                UserRole                           @default(user)
+  status                              UserStatus                         @default(pending)
+  createdAt                           DateTime                           @default(now())
+  updatedAt                           DateTime                           @updatedAt
+  accessGrants                        AccessGrant[]
+  attachments                         Attachment[]
+  authAccessRulesCreated              AuthAccessRule[]                   @relation("AuthAccessRuleCreator")
+  authFlowTokens                      AuthFlowToken[]
+  authIdentities                      AuthIdentity[]
+  authInvitesAccepted                 AuthInvite[]                       @relation("AuthInviteAcceptedUser")
+  authInvitesCreated                  AuthInvite[]                       @relation("AuthInviteCreator")
+  authSessions                        AuthSession[]
+  authSessionsRevoked                 AuthSession[]                      @relation("AuthSessionRevoker")
+  assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
+  assistantPins                       AssistantPin[]
+  assistantPublications               AssistantPublication[]             @relation("AssistantPublicationPublisher")
+  assistantRevisionsAuthored          AssistantRevision[]                @relation("AssistantRevisionAuthor")
+  chats                               Chat[]
+  folders                             Folder[]
+  groups                              UserGroup[]
+  knowledgeBasePublications           KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
+  knowledgeBases                      KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
+  knowledgeIndexProfileUpdates        KnowledgeIndexProfile[]            @relation("KnowledgeIndexProfileUpdater")
+  knowledgePolicyUpdates              KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
+  knowledgeSources                    KnowledgeSource[]                  @relation("KnowledgeSourceOwner")
+  knowledgeUploadBatches              KnowledgeUploadBatch[]
+  memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
+  mcpGrants                           McpGrant[]
+  mcpActivationJobs                   McpActivationJob[]
+  mcpOAuthConnections                 McpOAuthConnection[]
+  mcpUserServers                      McpUserServer[]
+  modelPolicyUpdates                  ModelPolicy[]                      @relation("ModelPolicyUpdater")
+  providerCredentialAssignments       ProviderUserCredentialAssignment[]
+  projectAssistantBindingsAdded       ProjectAssistantBinding[]          @relation("ProjectAssistantBindingAdder")
+  projectAttachmentsUploaded          Attachment[]                       @relation("ProjectAttachmentUploader")
+  projectAuditEvents                  ProjectAuditEvent[]                @relation("ProjectAuditActor")
+  projectChatsCreated                 Chat[]                             @relation("ProjectChatCreator")
+  projectFoldersCreated               ProjectFolder[]                    @relation("ProjectFolderCreator")
+  projectGrants                       ProjectGrant[]
+  projectGrantsCreated                ProjectGrant[]                     @relation("ProjectGrantCreator")
+  projectKnowledgeBindingsAdded       ProjectKnowledgeBaseBinding[]      @relation("ProjectKnowledgeBindingAdder")
+  projectKnowledgeSourceBindingsAdded ProjectKnowledgeSourceBinding[]    @relation("ProjectKnowledgeSourceBindingAdder")
+  projectMcpBindingsAdded             ProjectMcpBinding[]                @relation("ProjectMcpBindingAdder")
+  projectMemoryFactsCreated           ProjectMemoryFact[]                @relation("ProjectMemoryFactCreator")
+  projectMemoryProposals              ProjectMemoryProposal[]            @relation("ProjectMemoryProposalAuthor")
+  projectMemoryProposalsReviewed      ProjectMemoryProposal[]            @relation("ProjectMemoryProposalReviewer")
+  projectMemoryVersionsAuthored       ProjectMemoryFactVersion[]         @relation("ProjectMemoryVersionAuthor")
+  projectMessagesAuthored             Message[]                          @relation("ProjectMessageAuthor")
+  projectModelBindingsAdded           ProjectModelBinding[]              @relation("ProjectModelBindingAdder")
+  projectSearchBindingsAdded          ProjectSearchBinding[]             @relation("ProjectSearchBindingAdder")
+  projectSkillBindingsAdded           ProjectSkillBinding[]              @relation("ProjectSkillBindingAdder")
+  projectsCreated                     Project[]                          @relation("ProjectCreator")
+  searchPolicyUpdates                 SearchPolicy[]                     @relation("SearchPolicyUpdater")
+  settings                            UserSettings?
+  sharedSnapshots                     SharedChatSnapshot[]
+  skillDefinitions                    SkillDefinition[]                  @relation("SkillDefinitionOwner")
+  skillPublications                   SkillPublication[]                 @relation("SkillPublicationPublisher")
+  skillRevisionsAuthored              SkillRevision[]                    @relation("SkillRevisionAuthor")
+  smtpActivations                     SmtpControl[]                      @relation("SmtpControlActivator")
+  smtpConfigurationEdits              SmtpControl[]                      @relation("SmtpControlUpdater")
+  systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
+  usageEvents                         UsageEvent[]
 }
 
 model SmtpControl {
@@ -1236,6 +1254,7 @@ model KnowledgeIndexProfileRevision {
   generations              KnowledgeIndexGeneration[]
   profile                  KnowledgeIndexProfile                   @relation("KnowledgeIndexProfileRevisions", fields: [profileId], references: [id], onDelete: Restrict)
   sourceArtifacts          KnowledgeSourceIndexArtifact[]
+  runProfileBindings       KnowledgeRunProfileBinding[]
 
   @@unique([profileId, revisionNumber])
   @@unique([profileId, id])
@@ -1391,25 +1410,27 @@ model KnowledgeIndexGeneration {
 }
 
 model KnowledgeSource {
-  id                  String                         @id @default(uuid())
+  id                  String                          @id @default(uuid())
   ownerUserId         String
   name                String
-  description         String                         @default("")
-  tags                String[]                       @default([])
-  currentVersionId    String?                        @unique
-  pendingVersionId    String?                        @unique
-  version             Int                            @default(1)
+  description         String                          @default("")
+  tags                String[]                        @default([])
+  currentVersionId    String?                         @unique
+  pendingVersionId    String?                         @unique
+  version             Int                             @default(1)
   trashedAt           DateTime?
   deletionRequestedAt DateTime?
-  createdAt           DateTime                       @default(now())
-  updatedAt           DateTime                       @updatedAt
+  createdAt           DateTime                        @default(now())
+  updatedAt           DateTime                        @updatedAt
   baseMemberships     KnowledgeBaseSource[]
-  currentVersion      KnowledgeSourceVersion?        @relation("KnowledgeSourceCurrentVersion", fields: [id, currentVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSource_currentVersion_fkey")
-  owner               User                           @relation("KnowledgeSourceOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  pendingVersion      KnowledgeSourceVersion?        @relation("KnowledgeSourcePendingVersion", fields: [id, pendingVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSource_pendingVersion_fkey")
+  currentVersion      KnowledgeSourceVersion?         @relation("KnowledgeSourceCurrentVersion", fields: [id, currentVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSource_currentVersion_fkey")
+  owner               User                            @relation("KnowledgeSourceOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  pendingVersion      KnowledgeSourceVersion?         @relation("KnowledgeSourcePendingVersion", fields: [id, pendingVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSource_pendingVersion_fkey")
+  projectBindings     ProjectKnowledgeSourceBinding[]
+  runSourceBindings   KnowledgeRunSourceBinding[]
   snapshotSources     KnowledgeBaseSnapshotSource[]
   v1DocumentMaps      KnowledgeV1DocumentSourceMap[]
-  versions            KnowledgeSourceVersion[]       @relation("KnowledgeSourceVersions")
+  versions            KnowledgeSourceVersion[]        @relation("KnowledgeSourceVersions")
 
   @@unique([id, ownerUserId])
   @@unique([id, currentVersionId])
@@ -1469,6 +1490,7 @@ model KnowledgeSourceVersion {
   artifacts          KnowledgeSourceIndexArtifact[]
   currentFor         KnowledgeSource?                      @relation("KnowledgeSourceCurrentVersion")
   pendingFor         KnowledgeSource?                      @relation("KnowledgeSourcePendingVersion")
+  runSourceBindings  KnowledgeRunSourceBinding[]
   snapshotSources    KnowledgeBaseSnapshotSource[]
   source             KnowledgeSource                       @relation("KnowledgeSourceVersions", fields: [sourceId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeSourceVersion_source_owner_fkey")
   v1VersionMaps      KnowledgeV1DocumentVersionSourceMap[]
@@ -1503,6 +1525,7 @@ model KnowledgeSourceIndexArtifact {
   createdAt                DateTime                                @default(now())
   updatedAt                DateTime                                @updatedAt
   profileRevision          KnowledgeIndexProfileRevision           @relation(fields: [profileRevisionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  runSourceBindings        KnowledgeRunSourceBinding[]
   hierarchicalIndexes      KnowledgeHierarchicalIndexArtifact[]
   snapshotSources          KnowledgeBaseSnapshotSource[]
   sourceVersion            KnowledgeSourceVersion                  @relation(fields: [sourceVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
@@ -1617,6 +1640,7 @@ model KnowledgeArtifactPassageIndex {
   headingText         String                             @default("")
   text                String
   contextPrefix       String                             @default("")
+  documentContext     Json?
   fileName            String
   sourceName          String
   documentTitle       String                             @default("")
@@ -1946,45 +1970,46 @@ model KnowledgeBasePublication {
 }
 
 model ProviderModel {
-  id                        String                          @id @default(uuid())
-  connectionId              String
-  templateKey               String?                         @unique
-  provider                  String
-  modelId                   String
-  displayName               String
-  modelClass                ProviderModelClass              @default(answer)
-  inputTokenPriceMicros     Int                             @default(0)
-  outputTokenPriceMicros    Int                             @default(0)
-  supportsVision            Boolean                         @default(false)
-  supportsPdf               Boolean                         @default(false)
-  supportsReasoning         Boolean                         @default(false)
-  supportsNativeSearch      Boolean                         @default(false)
-  enabled                   Boolean                         @default(true)
-  draftConfig               Json                            @default("{}")
-  draftVersion              Int                             @default(1)
-  activeConfig              Json?
-  activeVersion             Int                             @default(0)
-  activatedAt               DateTime?
-  capabilities              Json
-  defaultParams             Json
-  createdAt                 DateTime                        @default(now())
-  updatedAt                 DateTime                        @updatedAt
-  accessGrants              AccessGrant[]
-  activeCredentialChecks    ProviderModelCredentialCheck[]
-  assistantRevisions        AssistantRevision[]
-  connection                ProviderConnection              @relation(fields: [connectionId], references: [id], onDelete: Restrict)
-  draftChecks               ProviderDraftCheck[]
-  providerRunBindings       ProviderRunBinding[]
-  projectBindings           ProjectModelBinding[]
-  searchStrategies          SearchStrategy[]
-  searchRevisions           SearchIntegrationRevision[]
-  chatDefaults              Chat[]                          @relation("ChatDefaultProviderModel")
-  installationDefaults      ModelPolicy[]                   @relation("InstallationDefaultProviderModel")
-  knowledgeIndexGenerations KnowledgeIndexGeneration[]
-  knowledgeProfileRevisions KnowledgeIndexProfileRevision[]
-  knowledgeRunBindings      KnowledgeRunBinding[]
-  systemUtilityRoles        SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
-  userDefaults              UserSettings[]                  @relation("UserDefaultProviderModel")
+  id                          String                          @id @default(uuid())
+  connectionId                String
+  templateKey                 String?                         @unique
+  provider                    String
+  modelId                     String
+  displayName                 String
+  modelClass                  ProviderModelClass              @default(answer)
+  inputTokenPriceMicros       Int                             @default(0)
+  outputTokenPriceMicros      Int                             @default(0)
+  supportsVision              Boolean                         @default(false)
+  supportsPdf                 Boolean                         @default(false)
+  supportsReasoning           Boolean                         @default(false)
+  supportsNativeSearch        Boolean                         @default(false)
+  enabled                     Boolean                         @default(true)
+  draftConfig                 Json                            @default("{}")
+  draftVersion                Int                             @default(1)
+  activeConfig                Json?
+  activeVersion               Int                             @default(0)
+  activatedAt                 DateTime?
+  capabilities                Json
+  defaultParams               Json
+  createdAt                   DateTime                        @default(now())
+  updatedAt                   DateTime                        @updatedAt
+  accessGrants                AccessGrant[]
+  activeCredentialChecks      ProviderModelCredentialCheck[]
+  assistantRevisions          AssistantRevision[]
+  connection                  ProviderConnection              @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  draftChecks                 ProviderDraftCheck[]
+  providerRunBindings         ProviderRunBinding[]
+  projectBindings             ProjectModelBinding[]
+  searchStrategies            SearchStrategy[]
+  searchRevisions             SearchIntegrationRevision[]
+  chatDefaults                Chat[]                          @relation("ChatDefaultProviderModel")
+  installationDefaults        ModelPolicy[]                   @relation("InstallationDefaultProviderModel")
+  knowledgeIndexGenerations   KnowledgeIndexGeneration[]
+  knowledgeProfileRevisions   KnowledgeIndexProfileRevision[]
+  knowledgeRunBindings        KnowledgeRunBinding[]
+  knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
+  systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
+  userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])
   @@index([provider, modelId])
@@ -2039,27 +2064,28 @@ model SearchOption {
 }
 
 model ProviderCredential {
-  id                     String                              @id @default(uuid())
-  connectionId           String
-  label                  String
-  enabled                Boolean                             @default(false)
-  draftSecretEnvelope    String?
-  draftVersion           Int                                 @default(0)
-  activeVersionId        String?
-  testedAt               DateTime?
-  activatedAt            DateTime?
-  createdAt              DateTime                            @default(now())
-  updatedAt              DateTime                            @updatedAt
-  activeCredentialChecks ProviderModelCredentialCheck[]
-  activeVersion          ProviderCredentialVersion?          @relation("ProviderCredentialActiveVersion", fields: [id, activeVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderCredential_activeVersion_fkey")
-  connection             ProviderConnection                  @relation("ProviderConnectionCredentials", fields: [connectionId], references: [id], onDelete: Restrict)
-  defaultForConnections  ProviderConnection[]                @relation("ProviderConnectionDefaultCredential")
-  draftChecks            ProviderDraftCheck[]
-  groupAssignments       ProviderGroupCredentialAssignment[]
-  userAssignments        ProviderUserCredentialAssignment[]
-  providerRunBindings    ProviderRunBinding[]
-  knowledgeRunBindings   KnowledgeRunBinding[]
-  versions               ProviderCredentialVersion[]         @relation("ProviderCredentialVersions")
+  id                          String                              @id @default(uuid())
+  connectionId                String
+  label                       String
+  enabled                     Boolean                             @default(false)
+  draftSecretEnvelope         String?
+  draftVersion                Int                                 @default(0)
+  activeVersionId             String?
+  testedAt                    DateTime?
+  activatedAt                 DateTime?
+  createdAt                   DateTime                            @default(now())
+  updatedAt                   DateTime                            @updatedAt
+  activeCredentialChecks      ProviderModelCredentialCheck[]
+  activeVersion               ProviderCredentialVersion?          @relation("ProviderCredentialActiveVersion", fields: [id, activeVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderCredential_activeVersion_fkey")
+  connection                  ProviderConnection                  @relation("ProviderConnectionCredentials", fields: [connectionId], references: [id], onDelete: Restrict)
+  defaultForConnections       ProviderConnection[]                @relation("ProviderConnectionDefaultCredential")
+  draftChecks                 ProviderDraftCheck[]
+  groupAssignments            ProviderGroupCredentialAssignment[]
+  userAssignments             ProviderUserCredentialAssignment[]
+  providerRunBindings         ProviderRunBinding[]
+  knowledgeRunBindings        KnowledgeRunBinding[]
+  knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
+  versions                    ProviderCredentialVersion[]         @relation("ProviderCredentialVersions")
 
   @@unique([connectionId, id])
   @@unique([connectionId, label])
@@ -2068,21 +2094,22 @@ model ProviderCredential {
 }
 
 model ProviderCredentialVersion {
-  id                     String                         @id @default(uuid())
-  credentialId           String
-  version                Int
-  secretEnvelope         String?
-  testEvidence           Json
-  testedAt               DateTime
-  activatedAt            DateTime
-  revokedAt              DateTime?
-  createdAt              DateTime                       @default(now())
-  activeFor              ProviderCredential?            @relation("ProviderCredentialActiveVersion")
-  activeCredentialChecks ProviderModelCredentialCheck[]
-  credential             ProviderCredential             @relation("ProviderCredentialVersions", fields: [credentialId], references: [id], onDelete: Restrict)
-  draftChecks            ProviderDraftCheck[]
-  providerRunBindings    ProviderRunBinding[]
-  knowledgeRunBindings   KnowledgeRunBinding[]
+  id                          String                         @id @default(uuid())
+  credentialId                String
+  version                     Int
+  secretEnvelope              String?
+  testEvidence                Json
+  testedAt                    DateTime
+  activatedAt                 DateTime
+  revokedAt                   DateTime?
+  createdAt                   DateTime                       @default(now())
+  activeFor                   ProviderCredential?            @relation("ProviderCredentialActiveVersion")
+  activeCredentialChecks      ProviderModelCredentialCheck[]
+  credential                  ProviderCredential             @relation("ProviderCredentialVersions", fields: [credentialId], references: [id], onDelete: Restrict)
+  draftChecks                 ProviderDraftCheck[]
+  providerRunBindings         ProviderRunBinding[]
+  knowledgeRunBindings        KnowledgeRunBinding[]
+  knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
 
   @@unique([credentialId, id])
   @@unique([credentialId, version])
@@ -2164,22 +2191,23 @@ model ProviderModelCredentialCheck {
 }
 
 model ProviderRunBinding {
-  id                  String                     @id @default(uuid())
-  modelRunId          String
-  bindingKey          String                     @default("answer")
-  role                ProviderRunRole
-  connectionId        String?
-  providerModelId     String?
-  credentialId        String?
-  credentialVersionId String?
-  credentialSource    ProviderCredentialSource
-  executionSnapshot   Json
-  recoverableUntil    DateTime?
-  createdAt           DateTime                   @default(now())
-  credential          ProviderCredential?        @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_credential_fkey")
-  credentialVersion   ProviderCredentialVersion? @relation(fields: [credentialId, credentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_version_fkey")
-  model               ProviderModel?             @relation(fields: [connectionId, providerModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_model_fkey")
-  modelRun            ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  id                        String                     @id @default(uuid())
+  modelRunId                String
+  bindingKey                String                     @default("answer")
+  role                      ProviderRunRole
+  connectionId              String?
+  providerModelId           String?
+  credentialId              String?
+  credentialVersionId       String?
+  credentialSource          ProviderCredentialSource
+  executionSnapshot         Json
+  recoverableUntil          DateTime?
+  createdAt                 DateTime                   @default(now())
+  credential                ProviderCredential?        @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_credential_fkey")
+  credentialVersion         ProviderCredentialVersion? @relation(fields: [credentialId, credentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_version_fkey")
+  model                     ProviderModel?             @relation(fields: [connectionId, providerModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_model_fkey")
+  modelRun                  ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  knowledgeProviderAttempts KnowledgeProviderAttempt[]
 
   @@unique([modelRunId, bindingKey])
   @@index([modelRunId, role])
@@ -2189,17 +2217,18 @@ model ProviderRunBinding {
 }
 
 model KnowledgeRunBinding {
-  id                           String                    @id @default(uuid())
+  id                           String                      @id @default(uuid())
   modelRunId                   String
   knowledgeBaseId              String
   knowledgeBaseSnapshotId      String?
-  includeWholeBase             Boolean                   @default(true)
-  selectedSourceIds            String[]                  @default([])
+  profileBindingId             String?
+  includeWholeBase             Boolean                     @default(true)
+  selectedSourceIds            String[]                    @default([])
   ordinal                      Int
   baseContentRevision          Int
   indexGenerationId            String
   indexedContentRevision       Int
-  vectorSpaceFingerprint       String                    @db.Char(64)
+  vectorSpaceFingerprint       String                      @db.Char(64)
   targetDimension              Int
   embeddingConnectionId        String
   embeddingProviderModelId     String
@@ -2207,19 +2236,21 @@ model KnowledgeRunBinding {
   embeddingCredentialVersionId String
   embeddingCredentialSource    ProviderCredentialSource
   embeddingExecutionSnapshot   Json
-  createdAt                    DateTime                  @default(now())
-  embeddingCredential          ProviderCredential        @relation(fields: [embeddingConnectionId, embeddingCredentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_credential_fkey")
-  embeddingCredentialVersion   ProviderCredentialVersion @relation(fields: [embeddingCredentialId, embeddingCredentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_credentialVersion_fkey")
-  embeddingModel               ProviderModel             @relation(fields: [embeddingConnectionId, embeddingProviderModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_embeddingModel_fkey")
-  indexGeneration              KnowledgeIndexGeneration  @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_generation_fkey")
-  knowledgeBase                KnowledgeBase             @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  knowledgeBaseSnapshot        KnowledgeBaseSnapshot?    @relation(fields: [knowledgeBaseId, knowledgeBaseSnapshotId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_snapshot_fkey")
-  modelRun                     ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  createdAt                    DateTime                    @default(now())
+  embeddingCredential          ProviderCredential          @relation(fields: [embeddingConnectionId, embeddingCredentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_credential_fkey")
+  embeddingCredentialVersion   ProviderCredentialVersion   @relation(fields: [embeddingCredentialId, embeddingCredentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_credentialVersion_fkey")
+  embeddingModel               ProviderModel               @relation(fields: [embeddingConnectionId, embeddingProviderModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_embeddingModel_fkey")
+  indexGeneration              KnowledgeIndexGeneration    @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_generation_fkey")
+  knowledgeBase                KnowledgeBase               @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  knowledgeBaseSnapshot        KnowledgeBaseSnapshot?      @relation(fields: [knowledgeBaseId, knowledgeBaseSnapshotId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_snapshot_fkey")
+  profileBinding               KnowledgeRunProfileBinding? @relation(fields: [modelRunId, profileBindingId], references: [modelRunId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_profile_fkey")
+  modelRun                     ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
 
   @@unique([modelRunId, ordinal])
   @@unique([modelRunId, knowledgeBaseId])
   @@index([knowledgeBaseId, indexGenerationId])
   @@index([knowledgeBaseSnapshotId])
+  @@index([profileBindingId])
   @@index([embeddingConnectionId, embeddingProviderModelId], map: "KnowledgeRunBinding_embedding_model_idx")
   @@index([embeddingCredentialId, embeddingCredentialVersionId], map: "KnowledgeRunBinding_credential_version_idx")
 }
@@ -2367,48 +2398,55 @@ model Message {
 }
 
 model ModelRun {
-  id                        String                     @id @default(uuid())
-  chatId                    String
-  userId                    String
-  userMessageId             String
-  assistantMessageId        String?
-  assistantId               String?
-  assistantRevisionId       String?
-  provider                  String
-  modelId                   String
-  status                    ModelRunStatus
-  normalizedRequest         Json?
-  providerResponseId        String?
-  inputTokens               Int                        @default(0)
-  cachedInputTokens         Int                        @default(0)
-  cacheWriteInputTokens     Int                        @default(0)
-  outputTokens              Int                        @default(0)
-  reasoningTokens           Int                        @default(0)
-  totalTokens               Int                        @default(0)
-  estimatedCostMicros       Int                        @default(0)
-  errorPayload              Json?
-  toolLoopState             Json?
-  createdAt                 DateTime                   @default(now())
-  updatedAt                 DateTime                   @updatedAt
-  assistantMessage          Message?                   @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  id                          String                              @id @default(uuid())
+  chatId                      String
+  userId                      String
+  userMessageId               String
+  assistantMessageId          String?
+  assistantId                 String?
+  assistantRevisionId         String?
+  provider                    String
+  modelId                     String
+  status                      ModelRunStatus
+  normalizedRequest           Json?
+  providerResponseId          String?
+  inputTokens                 Int                                 @default(0)
+  cachedInputTokens           Int                                 @default(0)
+  cacheWriteInputTokens       Int                                 @default(0)
+  outputTokens                Int                                 @default(0)
+  reasoningTokens             Int                                 @default(0)
+  totalTokens                 Int                                 @default(0)
+  estimatedCostMicros         Int                                 @default(0)
+  errorPayload                Json?
+  toolLoopState               Json?
+  createdAt                   DateTime                            @default(now())
+  updatedAt                   DateTime                            @updatedAt
+  assistantMessage            Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
-  assistantRevision         AssistantRevision?         @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
-  chat                      Chat                       @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  events                    ModelRunEvent[]
-  mcpRunBindings            McpRunBinding[]
-  knowledgeRunBindings      KnowledgeRunBinding[]
-  knowledgeRunScope         KnowledgeRunScope?
-  knowledgeRetrievalSession KnowledgeRetrievalSession?
-  knowledgeRuns             KnowledgeRun[]
-  memoryHistoryRuns         MemoryHistoryRun[]
-  memoryToolEgressReceipts  MemoryToolEgressReceipt[]
-  providerRunBindings       ProviderRunBinding[]
-  projectRunBinding         ProjectRunBinding?
-  searchRuns                SearchRun[]
-  skillRunBindings          ModelRunSkillBinding[]
-  toolCalls                 ModelRunToolCall[]
-  userMessage               Message                    @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
-  usageEvents               UsageEvent[]
+  assistantRevision           AssistantRevision?                  @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
+  chat                        Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  events                      ModelRunEvent[]
+  mcpRunBindings              McpRunBinding[]
+  knowledgeRunBindings        KnowledgeRunBinding[]
+  knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
+  knowledgeRunSourceBindings  KnowledgeRunSourceBinding[]
+  knowledgeRunScope           KnowledgeRunScope?
+  knowledgeRetrievalSession   KnowledgeRetrievalSession?
+  knowledgeRuns               KnowledgeRun[]
+  knowledgeBudgetReservations KnowledgeBudgetReservation[]
+  knowledgeProviderAttempts   KnowledgeProviderAttempt[]
+  knowledgeDispatchManifests  KnowledgeEvidenceDispatchManifest[]
+  knowledgeStrategyExecution  KnowledgeStrategyExecution?
+  knowledgeStrategySteps      KnowledgeStrategyStep[]
+  memoryHistoryRuns           MemoryHistoryRun[]
+  memoryToolEgressReceipts    MemoryToolEgressReceipt[]
+  providerRunBindings         ProviderRunBinding[]
+  projectRunBinding           ProjectRunBinding?
+  searchRuns                  SearchRun[]
+  skillRunBindings            ModelRunSkillBinding[]
+  toolCalls                   ModelRunToolCall[]
+  userMessage                 Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  usageEvents                 UsageEvent[]
 
   @@unique([userId, id])
   @@unique([userId, chatId, id])
@@ -2633,25 +2671,27 @@ model McpRunBinding {
 }
 
 model ModelRunToolCall {
-  id                       String                    @id @default(uuid())
-  modelRunId               String
-  mcpRunBindingId          String?
-  roundIndex               Int
-  ordinal                  Int
-  providerCallId           String
-  toolName                 String
-  arguments                Json
-  state                    ModelRunToolCallState     @default(pending)
-  result                   Json?
-  startedAt                DateTime?
-  completedAt              DateTime?
-  createdAt                DateTime                  @default(now())
-  updatedAt                DateTime                  @updatedAt
-  mcpRunBinding            McpRunBinding?            @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
-  modelRun                 ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  knowledgeRun             KnowledgeRun?
-  memoryHistoryRun         MemoryHistoryRun?
-  memoryToolEgressReceipts MemoryToolEgressReceipt[]
+  id                         String                      @id @default(uuid())
+  modelRunId                 String
+  mcpRunBindingId            String?
+  roundIndex                 Int
+  ordinal                    Int
+  providerCallId             String
+  toolName                   String
+  arguments                  Json
+  state                      ModelRunToolCallState       @default(pending)
+  result                     Json?
+  startedAt                  DateTime?
+  completedAt                DateTime?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  mcpRunBinding              McpRunBinding?              @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
+  modelRun                   ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  knowledgeRun               KnowledgeRun?
+  knowledgeBudgetReservation KnowledgeBudgetReservation?
+  knowledgeStrategyStep      KnowledgeStrategyStep?
+  memoryHistoryRun           MemoryHistoryRun?
+  memoryToolEgressReceipts   MemoryToolEgressReceipt[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
@@ -2661,40 +2701,278 @@ model ModelRunToolCall {
 }
 
 model KnowledgeRun {
-  id                 String                     @id @default(uuid())
-  modelRunId         String
-  modelRunToolCallId String                     @unique
-  retrievalSessionId String?
-  invocationOrdinal  Int
-  operation          String                     @default("search") @db.VarChar(32)
-  query              String                     @db.VarChar(500)
-  outcome            KnowledgeRunOutcome
-  fusion             String                     @db.VarChar(32)
-  candidateLimit     Int
-  resultLimit        Int
-  candidateCount     Int
-  threshold          Float
-  baseEvidence       Json
-  results            Json
-  providerText       String
-  embeddingUsage     Json
-  durationMs         Int
-  failureCode        String?                    @db.VarChar(128)
-  budgetEvidence     Json                       @default("{}")
-  stopReason         String?                    @db.VarChar(64)
-  rerankerBinding    Json?
-  preRerankOrder     Json?
-  postRerankOrder    Json?
-  createdAt          DateTime                   @default(now())
-  updatedAt          DateTime                   @updatedAt
-  modelRun           ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  modelRunToolCall   ModelRunToolCall           @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
-  retrievalSession   KnowledgeRetrievalSession? @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  evidenceLinks      KnowledgeRunEvidence[]
+  id                   String                      @id @default(uuid())
+  modelRunId           String
+  modelRunToolCallId   String                      @unique
+  retrievalSessionId   String?
+  invocationOrdinal    Int
+  operation            String                      @default("search") @db.VarChar(32)
+  query                String                      @db.VarChar(500)
+  outcome              KnowledgeRunOutcome
+  fusion               String                      @db.VarChar(32)
+  candidateLimit       Int
+  resultLimit          Int
+  candidateCount       Int
+  threshold            Float
+  baseEvidence         Json
+  results              Json
+  providerText         String
+  embeddingUsage       Json
+  durationMs           Int
+  failureCode          String?                     @db.VarChar(128)
+  budgetEvidence       Json                        @default("{}")
+  readReceipt          Json?
+  strategyStepEvidence Json?
+  stopReason           String?                     @db.VarChar(64)
+  receiptVersion       Int?
+  budgetReservationId  String?                     @unique
+  rerankerBinding      Json?
+  preRerankOrder       Json?
+  postRerankOrder      Json?
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  modelRun             ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall     ModelRunToolCall            @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
+  retrievalSession     KnowledgeRetrievalSession?  @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceLinks        KnowledgeRunEvidence[]
+  budgetReservation    KnowledgeBudgetReservation? @relation(fields: [modelRunId, modelRunToolCallId, budgetReservationId], references: [modelRunId, modelRunToolCallId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRun_budgetReservation_fkey")
 
   @@unique([modelRunId, modelRunToolCallId])
+  @@unique([modelRunId, budgetReservationId])
+  @@unique([modelRunId, modelRunToolCallId, budgetReservationId])
   @@index([modelRunId, createdAt])
   @@index([retrievalSessionId])
+  @@index([budgetReservationId])
+}
+
+model KnowledgeRunProfileBinding {
+  id                           String                        @id @default(uuid())
+  modelRunId                   String
+  ordinal                      Int
+  profileRevisionId            String
+  vectorSpaceFingerprint       String                        @db.Char(64)
+  targetDimension              Int
+  embeddingConnectionId        String
+  embeddingProviderModelId     String
+  embeddingCredentialId        String
+  embeddingCredentialVersionId String
+  embeddingCredentialSource    ProviderCredentialSource
+  embeddingExecutionSnapshot   Json
+  createdAt                    DateTime                      @default(now())
+  modelRun                     ModelRun                      @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  profileRevision              KnowledgeIndexProfileRevision @relation(fields: [profileRevisionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  embeddingCredential          ProviderCredential            @relation(fields: [embeddingConnectionId, embeddingCredentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunProfileBinding_credential_fkey")
+  embeddingCredentialVersion   ProviderCredentialVersion     @relation(fields: [embeddingCredentialId, embeddingCredentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunProfileBinding_credentialVersion_fkey")
+  embeddingModel               ProviderModel                 @relation(fields: [embeddingConnectionId, embeddingProviderModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunProfileBinding_embeddingModel_fkey")
+  baseBindings                 KnowledgeRunBinding[]
+  sourceBindings               KnowledgeRunSourceBinding[]
+
+  @@unique([modelRunId, id])
+  @@unique([modelRunId, ordinal])
+  @@unique([modelRunId, profileRevisionId])
+  @@index([profileRevisionId])
+  @@index([embeddingConnectionId, embeddingProviderModelId], map: "KnowledgeRunProfileBinding_embedding_model_idx")
+  @@index([embeddingCredentialId, embeddingCredentialVersionId], map: "KnowledgeRunProfileBinding_credential_version_idx")
+}
+
+model KnowledgeRunSourceBinding {
+  id                  String                        @id @default(uuid())
+  modelRunId          String
+  profileBindingId    String
+  sourceId            String?
+  sourceVersionId     String?
+  sourceArtifactId    String?
+  ordinal             Int
+  sourceAlias         String                        @db.VarChar(8)
+  directSelected      Boolean                       @default(false)
+  selectionKind       String                        @db.VarChar(32)
+  readinessState      String                        @default("ready") @db.VarChar(16)
+  sourceNameSnapshot  String?                       @db.VarChar(1024)
+  fileNameSnapshot    String?                       @db.VarChar(1024)
+  sourceVersionNumber Int
+  accessProvenance    Json?
+  baseProvenance      Json?
+  tombstonedAt        DateTime?
+  createdAt           DateTime                      @default(now())
+  modelRun            ModelRun                      @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  profileBinding      KnowledgeRunProfileBinding    @relation(fields: [modelRunId, profileBindingId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRunSourceBinding_profile_fkey")
+  source              KnowledgeSource?              @relation(fields: [sourceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sourceVersion       KnowledgeSourceVersion?       @relation(fields: [sourceId, sourceVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunSourceBinding_version_fkey")
+  sourceArtifact      KnowledgeSourceIndexArtifact? @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunSourceBinding_artifact_fkey")
+  strategySteps       KnowledgeStrategyStep[]
+  strategyMapOutputs  KnowledgeStrategyMapOutput[]
+
+  @@unique([modelRunId, sourceId, sourceVersionId, sourceArtifactId], map: "KnowledgeRunSourceBinding_source_key")
+  @@unique([modelRunId, ordinal])
+  @@unique([modelRunId, sourceAlias])
+  @@index([profileBindingId])
+  @@index([sourceId, sourceVersionId])
+  @@index([sourceArtifactId])
+}
+
+model KnowledgeBudgetReservation {
+  id                       String                          @id @default(uuid())
+  modelRunId               String
+  modelRunToolCallId       String                          @unique
+  operationOrdinal         Int
+  phaseOrdinal             Int
+  subqueryOrdinal          Int
+  operation                String                          @db.VarChar(32)
+  policyVersion            Int
+  idempotencyKey           String?                         @db.VarChar(128)
+  operationRequest         Json?
+  operationRequestHash     String?                         @db.Char(64)
+  state                    KnowledgeBudgetReservationState @default(reserved)
+  estimatedCandidates      Int
+  estimatedRetrievedTokens Int
+  estimatedEmbeddingCalls  Int
+  estimatedRerankerCalls   Int
+  estimatedLatencyMs       Int
+  estimatedCostMicros      Int
+  estimatedValidationSlots Int                             @default(0)
+  estimatedRepairSlots     Int                             @default(0)
+  actualCandidates         Int?
+  actualRetrievedTokens    Int?
+  actualEmbeddingCalls     Int?
+  actualRerankerCalls      Int?
+  actualLatencyMs          Int?
+  actualCostMicros         Int?
+  actualValidationSlots    Int?
+  actualRepairSlots        Int?
+  leaseToken               String?                         @db.VarChar(128)
+  leaseExpiresAt           DateTime?
+  dispatchAttemptKey       String?                         @db.VarChar(128)
+  receiptHash              String?                         @db.Char(64)
+  failureCode              String?                         @db.VarChar(128)
+  dispatchedAt             DateTime?
+  settledAt                DateTime?
+  releasedAt               DateTime?
+  ambiguousAt              DateTime?
+  expiredAt                DateTime?
+  purgedAt                 DateTime?
+  createdAt                DateTime                        @default(now())
+  updatedAt                DateTime                        @updatedAt
+  modelRun                 ModelRun                        @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall         ModelRunToolCall                @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeBudgetReservation_toolCall_fkey")
+  knowledgeRun             KnowledgeRun?
+
+  @@unique([modelRunId, id])
+  @@unique([modelRunId, modelRunToolCallId])
+  @@unique([modelRunId, modelRunToolCallId, id])
+  @@unique([modelRunId, operationOrdinal])
+  @@unique([modelRunId, idempotencyKey])
+  @@index([modelRunId, state])
+  @@index([state, leaseExpiresAt])
+}
+
+model KnowledgeProviderAttempt {
+  id                 String                             @id @default(uuid())
+  modelRunId         String
+  providerBindingKey String                             @default("answer")
+  ordinal            Int
+  roundIndex         Int
+  purpose            String                             @default("answer") @db.VarChar(32)
+  idempotencyKey     String                             @db.VarChar(128)
+  checkpointHash     String                             @db.Char(64)
+  requestHash        String                             @db.Char(64)
+  state              KnowledgeProviderAttemptState      @default(reserved)
+  estimatedUsage     Json
+  actualUsage        Json?
+  providerResponseId String?
+  leaseToken         String?                            @db.VarChar(128)
+  leaseExpiresAt     DateTime?
+  failureCode        String?                            @db.VarChar(128)
+  dispatchedAt       DateTime?
+  settledAt          DateTime?
+  releasedAt         DateTime?
+  ambiguousAt        DateTime?
+  createdAt          DateTime                           @default(now())
+  updatedAt          DateTime                           @updatedAt
+  modelRun           ModelRun                           @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  providerBinding    ProviderRunBinding                 @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeProviderAttempt_providerBinding_fkey")
+  manifest           KnowledgeEvidenceDispatchManifest?
+  strategyStep       KnowledgeStrategyStep?
+
+  @@unique([modelRunId, id])
+  @@unique([modelRunId, ordinal])
+  @@unique([modelRunId, idempotencyKey])
+  @@index([modelRunId, state])
+  @@index([state, leaseExpiresAt])
+}
+
+model KnowledgeEvidenceDispatchManifest {
+  id                    String                                       @id @default(uuid())
+  modelRunId            String
+  retrievalSessionId    String
+  providerAttemptId     String                                       @unique
+  version               Int                                          @default(1)
+  packingVersion        String                                       @db.VarChar(64)
+  promptFragmentVersion String                                       @db.VarChar(64)
+  profileRevisionIds    String[]                                     @default([])
+  coverage              Json?
+  messageText           String?
+  messageHash           String?                                      @db.Char(64)
+  totalBytes            Int
+  totalTokens           Int
+  itemCount             Int
+  excludedCount         Int
+  shortenedCount        Int
+  sealedAt              DateTime                                     @default(now())
+  purgedAt              DateTime?
+  createdAt             DateTime                                     @default(now())
+  modelRun              ModelRun                                     @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  retrievalSession      KnowledgeRetrievalSession                    @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  providerAttempt       KnowledgeProviderAttempt                     @relation(fields: [modelRunId, providerAttemptId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeEvidenceDispatchManifest_attempt_fkey")
+  items                 KnowledgeEvidenceDispatchManifestItem[]
+  exclusions            KnowledgeEvidenceDispatchManifestExclusion[]
+
+  @@unique([modelRunId, id])
+  @@unique([modelRunId, providerAttemptId])
+  @@index([modelRunId, createdAt])
+  @@index([retrievalSessionId])
+}
+
+model KnowledgeEvidenceDispatchManifestItem {
+  id                String                            @id @default(uuid())
+  manifestId        String
+  ordinal           Int
+  evidenceItemId    String?
+  handle            String?                           @db.VarChar(8)
+  sourceAlias       String?                           @db.VarChar(8)
+  sourceVersionId   String?
+  sourceArtifactId  String?
+  representation    String                            @db.VarChar(16)
+  safeMetadata      Json?
+  exactExcerpt      String?
+  renderedBlock     String?
+  excerptHash       String?                           @db.Char(64)
+  renderedBlockHash String?                           @db.Char(64)
+  excerptBytes      Int
+  renderedBytes     Int
+  renderedTokens    Int
+  contextBoundaries Json?
+  createdAt         DateTime                          @default(now())
+  manifest          KnowledgeEvidenceDispatchManifest @relation(fields: [manifestId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceItem      KnowledgeEvidenceItem?            @relation(fields: [evidenceItemId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+
+  @@unique([manifestId, ordinal])
+  @@unique([manifestId, evidenceItemId])
+  @@index([evidenceItemId])
+}
+
+model KnowledgeEvidenceDispatchManifestExclusion {
+  id             String                            @id @default(uuid())
+  manifestId     String
+  ordinal        Int
+  evidenceItemId String?
+  handle         String?                           @db.VarChar(8)
+  reason         String                            @db.VarChar(32)
+  createdAt      DateTime                          @default(now())
+  manifest       KnowledgeEvidenceDispatchManifest @relation(fields: [manifestId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceItem   KnowledgeEvidenceItem?            @relation(fields: [evidenceItemId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+
+  @@unique([manifestId, ordinal])
+  @@index([evidenceItemId])
 }
 
 model KnowledgeRunScope {
@@ -2709,58 +2987,225 @@ model KnowledgeRunScope {
 }
 
 model KnowledgeRetrievalSession {
-  id                   String                    @id @default(uuid())
-  modelRunId           String                    @unique
-  version              Int                       @default(2)
+  id                   String                              @id @default(uuid())
+  modelRunId           String                              @unique
+  version              Int                                 @default(2)
   originalIntent       Json
   scopeSnapshot        Json
   strategySnapshot     Json
   readinessSummary     Json
   coverageRequirements Json
-  degradedFlags        String[]                  @default([])
+  degradedFlags        String[]                            @default([])
   citationContract     Json
-  nextEvidenceOrdinal  Int                       @default(1)
+  nextEvidenceOrdinal  Int                                 @default(1)
   acceptedAt           DateTime?
-  receiptHash          String?                   @db.Char(64)
-  createdAt            DateTime                  @default(now())
-  updatedAt            DateTime                  @updatedAt
-  modelRun             ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  receiptHash          String?                             @db.Char(64)
+  createdAt            DateTime                            @default(now())
+  updatedAt            DateTime                            @updatedAt
+  modelRun             ModelRun                            @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
   operations           KnowledgeRun[]
   evidenceItems        KnowledgeEvidenceItem[]
   groundingResult      KnowledgeGroundingResult?
+  semanticShadowResult KnowledgeSemanticShadowResult?
+  dispatchManifests    KnowledgeEvidenceDispatchManifest[]
+  strategyExecution    KnowledgeStrategyExecution?
+}
+
+model KnowledgeStrategyExecution {
+  id                     String                       @id @default(uuid())
+  modelRunId             String                       @unique
+  retrievalSessionId     String                       @unique
+  version                Int                          @default(1)
+  plannerVersion         Int
+  strategy               String                       @db.VarChar(32)
+  state                  String                       @default("planned") @db.VarChar(16)
+  executionRequest       Json?
+  planHash               String?                      @db.Char(64)
+  executionHash          String?                      @db.Char(64)
+  sourceSetHash          String?                      @db.Char(64)
+  expectedSourceCount    Int
+  expectedPassageCount   Int
+  processedSourceCount   Int                          @default(0)
+  processedPassageCount  Int                          @default(0)
+  includedPassageCount   Int                          @default(0)
+  dispatchedPassageCount Int                          @default(0)
+  processedSetHash       String?                      @db.Char(64)
+  includedSetHash        String?                      @db.Char(64)
+  dispatchSetHash        String?                      @db.Char(64)
+  dispatchManifestHash   String?                      @db.Char(64)
+  coverageStatus         String?                      @db.VarChar(16)
+  coverageReceipt        Json?
+  coverageReceiptHash    String?                      @db.Char(64)
+  failureCode            String?                      @db.VarChar(64)
+  startedAt              DateTime?
+  settledAt              DateTime?
+  failedAt               DateTime?
+  ambiguousAt            DateTime?
+  cancelledAt            DateTime?
+  purgedAt               DateTime?
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+  modelRun               ModelRun                     @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  retrievalSession       KnowledgeRetrievalSession    @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  steps                  KnowledgeStrategyStep[]
+  mapOutputs             KnowledgeStrategyMapOutput[]
+
+  @@unique([modelRunId, id])
+  @@index([state, updatedAt])
+}
+
+model KnowledgeStrategyStep {
+  id                      String                            @id @default(uuid())
+  executionId             String
+  modelRunId              String
+  modelRunToolCallId      String?                           @unique
+  sourceBindingId         String?
+  providerAttemptId       String?                           @unique
+  ordinal                 Int
+  kind                    String                            @db.VarChar(32)
+  phaseOrdinal            Int
+  streamId                String?                           @db.VarChar(128)
+  pageOrdinal             Int
+  targetOrdinal           Int?
+  required                Boolean                           @default(true)
+  state                   String                            @default("pending") @db.VarChar(16)
+  materializationMode     String                            @db.VarChar(32)
+  templateHash            String?                           @db.Char(64)
+  materializedAt          DateTime?
+  idempotencyKey          String?                           @db.VarChar(128)
+  request                 Json?
+  requestHash             String?                           @db.Char(64)
+  inputHash               String?                           @db.Char(64)
+  evidenceInputHash       String?                           @db.Char(64)
+  comparisonDimensionHash String?                           @db.Char(64)
+  sourceSetHash           String?                           @db.Char(64)
+  cursor                  Json?
+  cursorHash              String?                           @db.Char(64)
+  result                  Json?
+  resultHash              String?                           @db.Char(64)
+  processedItemsHash      String?                           @db.Char(64)
+  processedSourceCount    Int                               @default(0)
+  processedPassageCount   Int                               @default(0)
+  includedPassageCount    Int                               @default(0)
+  attemptCount            Int                               @default(0)
+  stateVersion            Int                               @default(0)
+  irreversibleDispatch    Boolean                           @default(false)
+  leaseToken              String?                           @db.VarChar(128)
+  leaseExpiresAt          DateTime?
+  failureCode             String?                           @db.VarChar(64)
+  startedAt               DateTime?
+  ioStartedAt             DateTime?
+  settledAt               DateTime?
+  failedAt                DateTime?
+  ambiguousAt             DateTime?
+  cancelledAt             DateTime?
+  purgedAt                DateTime?
+  createdAt               DateTime                          @default(now())
+  updatedAt               DateTime                          @updatedAt
+  execution               KnowledgeStrategyExecution        @relation(fields: [modelRunId, executionId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyStep_execution_fkey")
+  modelRun                ModelRun                          @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall        ModelRunToolCall?                 @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeStrategyStep_toolCall_fkey")
+  providerAttempt         KnowledgeProviderAttempt?         @relation(fields: [providerAttemptId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sourceBinding           KnowledgeRunSourceBinding?        @relation(fields: [sourceBindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  dependencies            KnowledgeStrategyStepDependency[] @relation("KnowledgeStrategyStepDependencies")
+  dependents              KnowledgeStrategyStepDependency[] @relation("KnowledgeStrategyStepDependents")
+  mapOutput               KnowledgeStrategyMapOutput?       @relation("KnowledgeStrategyTerminalMapOutput")
+
+  @@unique([executionId, id])
+  @@unique([executionId, ordinal])
+  @@unique([executionId, idempotencyKey])
+  @@unique([executionId, modelRunToolCallId])
+  @@unique([modelRunId, modelRunToolCallId])
+  @@unique([executionId, kind, sourceBindingId, phaseOrdinal, pageOrdinal], map: "KnowledgeStrategyStep_source_page_key")
+  @@index([executionId, state, leaseExpiresAt])
+  @@index([sourceBindingId])
+  @@index([providerAttemptId])
+}
+
+model KnowledgeStrategyStepDependency {
+  executionId     String
+  stepId          String
+  dependsOnStepId String
+  createdAt       DateTime              @default(now())
+  step            KnowledgeStrategyStep @relation("KnowledgeStrategyStepDependencies", fields: [executionId, stepId], references: [executionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyStepDependency_step_fkey")
+  dependsOnStep   KnowledgeStrategyStep @relation("KnowledgeStrategyStepDependents", fields: [executionId, dependsOnStepId], references: [executionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyStepDependency_dependsOn_fkey")
+
+  @@id([executionId, stepId, dependsOnStepId])
+  @@index([executionId, dependsOnStepId])
+}
+
+model KnowledgeStrategyMapOutput {
+  id                     String                     @id @default(uuid())
+  executionId            String
+  modelRunId             String
+  terminalStepId         String                     @unique
+  sourceBindingId        String?
+  sourceOrdinal          Int
+  version                Int                        @default(2)
+  state                  String                     @default("available") @db.VarChar(16)
+  output                 Json?
+  receipt                Json?
+  mapInputHash           String?                    @db.Char(64)
+  outputHash             String?                    @db.Char(64)
+  receiptHash            String?                    @db.Char(64)
+  inputPageReceiptCount  Int
+  inputPageReceiptsHash  String?                    @db.Char(64)
+  inputPassageCount      Int
+  inputPassageItemsHash  String?                    @db.Char(64)
+  inputSectionCount      Int
+  inputSectionHashesHash String?                    @db.Char(64)
+  processedPassageCount  Int
+  summaryItemCount       Int
+  summaryItemsHash       String?                    @db.Char(64)
+  settledAt              DateTime
+  purgedAt               DateTime?
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  execution              KnowledgeStrategyExecution @relation(fields: [modelRunId, executionId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyMapOutput_execution_fkey")
+  terminalStep           KnowledgeStrategyStep      @relation("KnowledgeStrategyTerminalMapOutput", fields: [executionId, terminalStepId], references: [executionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyMapOutput_terminalStep_fkey")
+  sourceBinding          KnowledgeRunSourceBinding? @relation(fields: [sourceBindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([executionId, sourceOrdinal])
+  @@unique([executionId, sourceBindingId])
+  @@unique([executionId, terminalStepId])
+  @@index([modelRunId])
+  @@index([sourceBindingId])
+  @@index([executionId, state, sourceOrdinal])
 }
 
 model KnowledgeEvidenceItem {
-  id                  String                    @id @default(uuid())
-  retrievalSessionId  String
-  ordinal             Int
-  handle              String                    @db.VarChar(8)
-  evidenceKey         String?                   @db.Char(64)
-  state               String                    @default("available") @db.VarChar(16)
-  knowledgeBaseId     String?
-  sourceId            String?
-  sourceVersionId     String?
-  sourceArtifactId    String?
-  documentId          String?
-  documentVersionId   String?
-  sectionId           String?
-  passageId           String?
-  baseName            String?                   @db.VarChar(1024)
-  sourceName          String?                   @db.VarChar(1024)
-  fileName            String?                   @db.VarChar(1024)
-  sourceVersionNumber Int?
-  excerpt             String?
-  excerptBytes        Int?
-  sourceTextBytes     Int?
-  textTruncated       Boolean?
-  page                Int?
-  headingPath         String[]                  @default([])
-  locator             Json?
-  contextBoundaries   Json?
-  contentHash         String?                   @db.Char(64)
-  createdAt           DateTime                  @default(now())
-  retrievalSession    KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  operationLinks      KnowledgeRunEvidence[]
+  id                         String                                       @id @default(uuid())
+  retrievalSessionId         String
+  ordinal                    Int
+  handle                     String                                       @db.VarChar(8)
+  evidenceKey                String?                                      @db.Char(64)
+  state                      String                                       @default("available") @db.VarChar(16)
+  knowledgeBaseId            String?
+  sourceId                   String?
+  sourceVersionId            String?
+  sourceArtifactId           String?
+  documentId                 String?
+  documentVersionId          String?
+  sectionId                  String?
+  passageId                  String?
+  baseName                   String?                                      @db.VarChar(1024)
+  sourceName                 String?                                      @db.VarChar(1024)
+  fileName                   String?                                      @db.VarChar(1024)
+  sourceVersionNumber        Int?
+  excerpt                    String?
+  excerptBytes               Int?
+  sourceTextBytes            Int?
+  textTruncated              Boolean?
+  page                       Int?
+  headingPath                String[]                                     @default([])
+  locator                    Json?
+  contextBoundaries          Json?
+  contentHash                String?                                      @db.Char(64)
+  createdAt                  DateTime                                     @default(now())
+  retrievalSession           KnowledgeRetrievalSession                    @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  operationLinks             KnowledgeRunEvidence[]
+  dispatchManifestItems      KnowledgeEvidenceDispatchManifestItem[]
+  dispatchManifestExclusions KnowledgeEvidenceDispatchManifestExclusion[]
 
   @@unique([retrievalSessionId, ordinal])
   @@unique([retrievalSessionId, handle])
@@ -2791,6 +3236,24 @@ model KnowledgeGroundingResult {
   finalAnswerHash    String                    @db.Char(64)
   issues             Json
   repairCount        Int
+  createdAt          DateTime                  @default(now())
+  retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+}
+
+model KnowledgeSemanticShadowResult {
+  retrievalSessionId String                    @id
+  version            Int                       @default(1)
+  mode               String                    @default("shadow") @db.VarChar(16)
+  executionStatus    String                    @db.VarChar(16)
+  validatorProfile   String                    @db.VarChar(80)
+  validatorVersion   Int
+  semanticProof      Boolean                   @default(false)
+  egressMode         String                    @db.VarChar(16)
+  profileRevisionIds String[]                  @default([])
+  diagnostic         Json?
+  contentFreeMetrics Json
+  receiptHash        String?                   @db.Char(64)
+  purgedAt           DateTime?
   createdAt          DateTime                  @default(now())
   retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 }
@@ -2949,49 +3412,64 @@ model UsageEvent {
 }
 
 model Project {
-  id                    String                        @id @default(uuid())
-  name                  String
-  description           String                        @default("")
-  status                ProjectStatus                 @default(ACTIVE)
-  instructions          String                        @default("")
-  instructionsRevision  Int                           @default(1)
-  policy                Json                          @default("{}")
-  policyRevision        Int                           @default(1)
-  defaults              Json                          @default("{}")
-  accessRevision        Int                           @default(1)
-  memoryEnabled         Boolean                       @default(true)
-  memoryPolicy          Json                          @default("{\"automatic\":\"OFF\"}")
-  memoryRevision        Int                           @default(0)
-  publicSharingEnabled  Boolean                       @default(false)
-  createdByUserId       String?
-  createdByDisplayName  String
-  createdAt             DateTime                      @default(now())
-  updatedAt             DateTime                      @updatedAt
-  archivedAt            DateTime?
-  deletionRequestedAt   DateTime?
-  assistantBindings     ProjectAssistantBinding[]
-  attachments           Attachment[]
-  auditEvents           ProjectAuditEvent[]
-  chats                 Chat[]
-  createdBy             User?                         @relation("ProjectCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  folders               ProjectFolder[]
-  grants                ProjectGrant[]
-  knowledgeBaseBindings ProjectKnowledgeBaseBinding[]
-  mcpBindings           ProjectMcpBinding[]
-  memoryFacts           ProjectMemoryFact[]
-  memoryFactVersions    ProjectMemoryFactVersion[]
-  memoryProposals       ProjectMemoryProposal[]
-  memoryRunItems        ProjectMemoryRunItem[]
-  modelBindings         ProjectModelBinding[]
-  runBindings           ProjectRunBinding[]
-  searchBindings        ProjectSearchBinding[]
-  skillBindings         ProjectSkillBinding[]
-  events                ProjectEvent[]
-  sharedSnapshots       SharedChatSnapshot[]
-  usageEvents           UsageEvent[]
+  id                      String                          @id @default(uuid())
+  name                    String
+  description             String                          @default("")
+  status                  ProjectStatus                   @default(ACTIVE)
+  instructions            String                          @default("")
+  instructionsRevision    Int                             @default(1)
+  policy                  Json                            @default("{}")
+  policyRevision          Int                             @default(1)
+  defaults                Json                            @default("{}")
+  accessRevision          Int                             @default(1)
+  memoryEnabled           Boolean                         @default(true)
+  memoryPolicy            Json                            @default("{\"automatic\":\"OFF\"}")
+  memoryRevision          Int                             @default(0)
+  publicSharingEnabled    Boolean                         @default(false)
+  createdByUserId         String?
+  createdByDisplayName    String
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  archivedAt              DateTime?
+  deletionRequestedAt     DateTime?
+  assistantBindings       ProjectAssistantBinding[]
+  attachments             Attachment[]
+  auditEvents             ProjectAuditEvent[]
+  chats                   Chat[]
+  createdBy               User?                           @relation("ProjectCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  folders                 ProjectFolder[]
+  grants                  ProjectGrant[]
+  knowledgeBaseBindings   ProjectKnowledgeBaseBinding[]
+  knowledgeSourceBindings ProjectKnowledgeSourceBinding[]
+  mcpBindings             ProjectMcpBinding[]
+  memoryFacts             ProjectMemoryFact[]
+  memoryFactVersions      ProjectMemoryFactVersion[]
+  memoryProposals         ProjectMemoryProposal[]
+  memoryRunItems          ProjectMemoryRunItem[]
+  modelBindings           ProjectModelBinding[]
+  runBindings             ProjectRunBinding[]
+  searchBindings          ProjectSearchBinding[]
+  skillBindings           ProjectSkillBinding[]
+  events                  ProjectEvent[]
+  sharedSnapshots         SharedChatSnapshot[]
+  usageEvents             UsageEvent[]
 
   @@index([createdByUserId])
   @@index([status, updatedAt])
+}
+
+model ProjectKnowledgeSourceBinding {
+  projectId     String
+  sourceId      String
+  addedByUserId String?
+  createdAt     DateTime        @default(now())
+  addedBy       User?           @relation("ProjectKnowledgeSourceBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  source        KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+
+  @@id([projectId, sourceId])
+  @@index([addedByUserId])
+  @@index([sourceId])
 }
 
 model ProjectGrant {

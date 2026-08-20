@@ -14,6 +14,7 @@ import type {
 } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import { knowledgeTrashPurgeScheduledAt } from "./lifecyclePolicy";
+import { KNOWLEDGE_INDEX_PROFILE_ID } from "./knowledgeProfile";
 import { knowledgeSourceNormalizedTextStorageKey } from "./sourceArtifactKeys";
 import { knowledgeSupportReference } from "./supportReference";
 
@@ -306,35 +307,43 @@ async function requiredProfileRevisionIds(
   ownerUserId: string
 ): Promise<string[]> {
   const rows = await tx.$queryRaw<Array<{ profileRevisionId: string }>>`
-    SELECT DISTINCT generation."profileRevisionId"
-    FROM "KnowledgeBaseSource" AS membership
-    INNER JOIN "KnowledgeBase" AS base
-      ON base."id" = membership."knowledgeBaseId"
-     AND base."ownerUserId" = membership."ownerUserId"
-    INNER JOIN "KnowledgeIndexGeneration" AS generation
-      ON generation."knowledgeBaseId" = base."id"
-     AND (
-       generation."id" = base."activeIndexGenerationId"
-         AND generation."status" = 'active'::"KnowledgeIndexGenerationStatus"
-       OR generation."status" = 'building'::"KnowledgeIndexGenerationStatus"
-         AND generation."sourceIndexGenerationId" = base."activeIndexGenerationId"
-         AND generation."sourceBaseVersion" = base."version"
-         AND generation."targetContentRevision" = base."contentRevision"
-         AND generation."targetSourceRevision" = base."sourceRevision"
-         AND EXISTS (
-           SELECT 1
-           FROM "KnowledgeIndexProfile" AS active_profile
-           WHERE active_profile."activeRevisionId" = generation."profileRevisionId"
-         )
-     )
-    WHERE membership."sourceId" = ${sourceId}
-      AND membership."ownerUserId" = ${ownerUserId}
-      AND membership."removedAt" IS NULL
-      AND base."archivedAt" IS NULL
-      AND base."trashedAt" IS NULL
-      AND base."deletionRequestedAt" IS NULL
-      AND generation."profileRevisionId" IS NOT NULL
-    ORDER BY generation."profileRevisionId"
+    SELECT required."profileRevisionId"
+    FROM (
+      SELECT profile."activeRevisionId" AS "profileRevisionId"
+      FROM "KnowledgeIndexProfile" AS profile
+      WHERE profile."id" = ${KNOWLEDGE_INDEX_PROFILE_ID}
+        AND profile."activeRevisionId" IS NOT NULL
+      UNION
+      SELECT generation."profileRevisionId"
+      FROM "KnowledgeBaseSource" AS membership
+      INNER JOIN "KnowledgeBase" AS base
+        ON base."id" = membership."knowledgeBaseId"
+       AND base."ownerUserId" = membership."ownerUserId"
+      INNER JOIN "KnowledgeIndexGeneration" AS generation
+        ON generation."knowledgeBaseId" = base."id"
+       AND (
+         generation."id" = base."activeIndexGenerationId"
+           AND generation."status" = 'active'::"KnowledgeIndexGenerationStatus"
+         OR generation."status" = 'building'::"KnowledgeIndexGenerationStatus"
+           AND generation."sourceIndexGenerationId" = base."activeIndexGenerationId"
+           AND generation."sourceBaseVersion" = base."version"
+           AND generation."targetContentRevision" = base."contentRevision"
+           AND generation."targetSourceRevision" = base."sourceRevision"
+           AND EXISTS (
+             SELECT 1
+             FROM "KnowledgeIndexProfile" AS active_profile
+             WHERE active_profile."activeRevisionId" = generation."profileRevisionId"
+           )
+       )
+      WHERE membership."sourceId" = ${sourceId}
+        AND membership."ownerUserId" = ${ownerUserId}
+        AND membership."removedAt" IS NULL
+        AND base."archivedAt" IS NULL
+        AND base."trashedAt" IS NULL
+        AND base."deletionRequestedAt" IS NULL
+        AND generation."profileRevisionId" IS NOT NULL
+    ) AS required
+    ORDER BY required."profileRevisionId"
   `;
   return rows.map(({ profileRevisionId }) => profileRevisionId);
 }

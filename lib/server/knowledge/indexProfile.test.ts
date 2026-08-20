@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createKnowledgeVectorSpacePin, isKnowledgeIndexDimension } from "./indexProfile";
+import {
+  createKnowledgeVectorSpacePin,
+  isKnowledgeIndexDimension,
+  KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
+} from "./indexProfile";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 
 function embeddingConfiguration(
@@ -33,6 +38,11 @@ function embeddingConfiguration(
 }
 
 describe("Knowledge vector-space profiles", () => {
+  it("activates document context in profile 4 without changing profile-3 layout reconstruction", () => {
+    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(4);
+    expect(KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION).toBe(3);
+  });
+
   it("accepts only committed dimensions and fingerprints exact vector inputs", () => {
     expect(isKnowledgeIndexDimension(1024)).toBe(true);
     expect(isKnowledgeIndexDimension(1536)).toBe(true);

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ParsedBoundingBox } from "../parsing";
 import type { StorageAdapter } from "../uploads/storage";
+import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
 import {
   decodeKnowledgeNormalizedDocument,
   type KnowledgeNormalizedBlock,
@@ -102,7 +103,11 @@ export type KnowledgeVisualAnalysisRuntime = Readonly<{
 }>;
 
 export type KnowledgeVisualSearchResult =
-  | Readonly<{ kind: "complete"; passage: KnowledgeHybridPassage }>
+  | Readonly<{
+      canonicalSourceProvenance?: readonly KnowledgeCanonicalSourceProvenance[];
+      kind: "complete";
+      passage: KnowledgeHybridPassage;
+    }>
   | Readonly<{ kind: "not_applicable" }>;
 
 function cleanText(value: string, maximum: number): string {

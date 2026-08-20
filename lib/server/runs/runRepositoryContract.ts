@@ -17,7 +17,7 @@ import type {
   McpRunPlanSnapshot
 } from "../mcp/runPlan";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
-import type { KnowledgeGroundingResult } from "../knowledge/grounding";
+import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   SearchAdapterKind,
@@ -455,7 +455,7 @@ export type RunRepository = {
     chatId: string;
     estimatedCostMicros: number | null;
     finalText: string;
-    knowledgeGrounding?: KnowledgeGroundingResult;
+    knowledgeGrounding?: KnowledgeRunFinalizationEnvelope;
     modelId: string;
     provider: string;
     providerResponseId?: string;
@@ -469,7 +469,7 @@ export type RunRepository = {
     answer: string;
     runId: string;
     userId: string;
-  }>): Promise<KnowledgeGroundingResult | null>;
+  }>): Promise<KnowledgeRunFinalizationEnvelope | null>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -571,6 +571,12 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<CheckpointedToolLoopRun | null>;
+  /** Purpose-bound, server-only loader for replaying an evidence-bearing
+   * provider request after a crash before the first provider dispatch. */
+  loadProviderDispatchRecoveryRequest?(input: {
+    runId: string;
+    userId: string;
+  }): Promise<NormalizedRunRequest | null>;
   markAssistantMessageGroundedLiveOnly(input: {
     assistantMessageId: string;
     groundedAt: Date;

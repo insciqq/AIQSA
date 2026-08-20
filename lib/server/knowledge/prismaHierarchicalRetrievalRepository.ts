@@ -13,6 +13,7 @@ import {
   decodeKnowledgeHierarchicalScope,
   decodeKnowledgeSafeRegex,
   encodeKnowledgeExactCursor,
+  KNOWLEDGE_EXACT_CURSOR_MAX_OFFSET,
   KNOWLEDGE_EXACT_SCAN_MAX_BYTES,
   KnowledgeHierarchicalQueryError,
   type KnowledgeExactIndexHit,
@@ -23,8 +24,13 @@ import {
   type KnowledgeLexicalIndexHit,
   type KnowledgeLexicalMatchedField,
   type KnowledgeLexicalTargetLevel,
-  type KnowledgeMetadataDiscoveryHit
+  type KnowledgeMetadataDiscoveryHit,
+  type KnowledgeSourceMetadataDiscoveryHit
 } from "./hierarchicalRetrieval";
+import type {
+  KnowledgeExactSearchField,
+  KnowledgeSourceDiscoveryField
+} from "./retrievalTypes";
 
 type HierarchicalRetrievalClient = Pick<PrismaClient, "$queryRaw" | "$transaction">;
 
@@ -59,6 +65,22 @@ const exactEntryKinds = new Set<KnowledgeExactEntryKind>([
 const metadataKinds = new Set<KnowledgeMetadataDiscoveryHit["kind"]>([
   "filename",
   "heading",
+  "source_name",
+  "tag",
+  "title"
+]);
+const exactSearchFields = new Set<KnowledgeExactSearchField>([
+  "any",
+  "body",
+  "filename",
+  "heading",
+  "tag",
+  "title"
+]);
+const exactResultFields = new Set<Exclude<KnowledgeExactSearchField, "any">>([
+  "body",
+  "filename",
+  "heading",
   "tag",
   "title"
 ]);
@@ -75,10 +97,32 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function authorizedArtifactsSql(scope: Readonly<{
-  ownerUserId: string;
-  sourceArtifactIds: readonly string[];
-}>): Prisma.Sql {
+function authorizedArtifactsSql(scope: KnowledgeHierarchicalScope): Prisma.Sql {
+  if (scope.scopeKind === "admitted_run") return Prisma.sql`
+    SELECT DISTINCT
+      hierarchy."id" AS "indexArtifactId",
+      source_artifact."id" AS "sourceArtifactId"
+    FROM "ModelRun" AS run
+    INNER JOIN "KnowledgeRunSourceBinding" AS source_binding
+      ON source_binding."modelRunId" = run."id"
+     AND source_binding."readinessState" = 'ready'
+     AND source_binding."tombstonedAt" IS NULL
+     AND source_binding."sourceId" IS NOT NULL
+     AND source_binding."sourceVersionId" IS NOT NULL
+     AND source_binding."sourceArtifactId" IS NOT NULL
+    INNER JOIN "KnowledgeSourceIndexArtifact" AS source_artifact
+      ON source_artifact."id" = source_binding."sourceArtifactId"
+     AND source_artifact."sourceVersionId" = source_binding."sourceVersionId"
+    INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
+      ON hierarchy."sourceArtifactId" = source_artifact."id"
+     AND hierarchy."sourceVersionId" = source_artifact."sourceVersionId"
+    WHERE run."id" = ${scope.runId}
+      AND run."userId" = ${scope.userId}
+      AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
+      AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
+      AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
+      AND source_artifact."id" IN (${Prisma.join([...scope.sourceArtifactIds])})
+  `;
   return Prisma.sql`
     SELECT
       hierarchy."id" AS "indexArtifactId",
@@ -217,7 +261,7 @@ export function knowledgeHierarchicalLexicalSearchSql(input: Readonly<{
   level: KnowledgeLexicalTargetLevel;
   limit: number;
   query: string;
-  scope: Readonly<{ ownerUserId: string; sourceArtifactIds: readonly string[] }>;
+  scope: KnowledgeHierarchicalScope;
 }>): Prisma.Sql {
   const authorized = authorizedArtifactsSql(input.scope);
   const indexed = indexedRowsSql(input.level);
@@ -333,11 +377,12 @@ function timeoutError(error: unknown): boolean {
 
 async function boundedQuery<T>(
   client: HierarchicalRetrievalClient,
+  statementTimeoutMs: number,
   operation: (tx: Prisma.TransactionClient) => Promise<T>
 ): Promise<T> {
   try {
     return await client.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL statement_timeout = '250ms'`;
+      await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(statementTimeoutMs)}, true)`;
       return operation(tx);
     });
   } catch (error) {
@@ -354,9 +399,14 @@ function entryExactSql(input: Readonly<{
   offset: number;
   operation: KnowledgeExactEntryKind;
   query: string;
-  scope: Readonly<{ ownerUserId: string; sourceArtifactIds: readonly string[] }>;
+  scope: KnowledgeHierarchicalScope;
 }>): Prisma.Sql {
   const authorized = authorizedArtifactsSql(input.scope);
+  const field: Exclude<KnowledgeExactSearchField, "any"> =
+    input.operation === "filename" || input.operation === "heading" ||
+      input.operation === "tag" || input.operation === "title"
+      ? input.operation
+      : "body";
   const comparison = input.caseSensitive
     ? Prisma.sql`entry."value" = ${input.query}`
     : Prisma.sql`entry."normalizedValue" = ${knowledgeExactNormalizedValue(input.query)}`;
@@ -372,6 +422,7 @@ function entryExactSql(input: Readonly<{
         entry."page",
         entry."pageEnd",
         entry."value",
+        ${field}::text AS field,
         entry."ordinal"
       FROM "KnowledgeArtifactExactEntry" AS entry
       INNER JOIN authorized_artifacts AS authorized
@@ -392,6 +443,7 @@ function entryExactSql(input: Readonly<{
         'passageId', matches."passageId",
         'page', matches."page",
         'pageEnd', matches."pageEnd",
+        'field', matches.field,
         'value', matches."value"
       ) ORDER BY matches."sourceArtifactId", matches."ordinal"), '[]'::jsonb) AS results
     FROM matches
@@ -404,11 +456,12 @@ function escapedRegexLiteral(value: string): string {
 
 function scannedExactSql(input: Readonly<{
   caseSensitive: boolean;
+  field: KnowledgeExactSearchField;
   limit: number;
   offset: number;
   operation: "phrase" | "regex" | "token";
   query: string;
-  scope: Readonly<{ ownerUserId: string; sourceArtifactIds: readonly string[] }>;
+  scope: KnowledgeHierarchicalScope;
 }>): Prisma.Sql {
   const authorized = authorizedArtifactsSql(input.scope);
   let condition: Prisma.Sql;
@@ -424,10 +477,12 @@ function scannedExactSql(input: Readonly<{
       ? Prisma.sql`bounded."text" ~ ${pattern}`
       : Prisma.sql`bounded."text" ~* ${pattern}`;
   }
-  return Prisma.sql`
-    WITH
-    authorized_artifacts AS MATERIALIZED (${authorized}),
-    scoped AS MATERIALIZED (
+  const includeBody = input.field === "any" || input.field === "body";
+  const metadataFields: readonly Exclude<KnowledgeExactSearchField, "any" | "body">[] =
+    input.field === "any"
+      ? ["filename", "heading", "tag", "title"]
+      : input.field === "body" ? [] : [input.field];
+  const bodyRows = includeBody ? Prisma.sql`
       SELECT
         authorized."sourceArtifactId",
         passage."indexArtifactId",
@@ -436,17 +491,52 @@ function scannedExactSql(input: Readonly<{
         passage."page",
         passage."pageEnd",
         passage."text",
-        passage."ordinal",
+        'body'::text AS field,
+        0::integer AS "fieldOrder",
+        passage."ordinal" AS "rowOrdinal",
         octet_length(passage."text") AS "textBytes"
       FROM "KnowledgeArtifactPassageIndex" AS passage
       INNER JOIN authorized_artifacts AS authorized
         ON authorized."indexArtifactId" = passage."indexArtifactId"
-      ORDER BY authorized."sourceArtifactId", passage."ordinal"
+  ` : Prisma.empty;
+  const metadataRows = metadataFields.length > 0 ? Prisma.sql`
+      SELECT
+        authorized."sourceArtifactId",
+        entry."indexArtifactId",
+        entry."sectionId",
+        entry."passageId",
+        entry."page",
+        entry."pageEnd",
+        entry."value" AS text,
+        entry."kind"::text AS field,
+        CASE entry."kind"
+          WHEN 'filename'::"KnowledgeExactEntryKind" THEN 1
+          WHEN 'title'::"KnowledgeExactEntryKind" THEN 2
+          WHEN 'heading'::"KnowledgeExactEntryKind" THEN 3
+          ELSE 4
+        END AS "fieldOrder",
+        entry."ordinal" AS "rowOrdinal",
+        octet_length(entry."value") AS "textBytes"
+      FROM "KnowledgeArtifactExactEntry" AS entry
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = entry."indexArtifactId"
+      WHERE entry."kind" IN (${Prisma.join(metadataFields.map((field) =>
+        Prisma.sql`${field}::"KnowledgeExactEntryKind"`))})
+  ` : Prisma.empty;
+  const scopedRows = includeBody && metadataFields.length > 0
+    ? Prisma.sql`${bodyRows} UNION ALL ${metadataRows}`
+    : includeBody ? bodyRows : metadataRows;
+  return Prisma.sql`
+    WITH
+    authorized_artifacts AS MATERIALIZED (${authorized}),
+    scoped AS MATERIALIZED (
+      ${scopedRows}
+      ORDER BY "sourceArtifactId", "fieldOrder", "rowOrdinal"
     ),
     measured AS MATERIALIZED (
       SELECT scoped.*,
         COALESCE(sum(scoped."textBytes") OVER (
-          ORDER BY scoped."sourceArtifactId", scoped."ordinal"
+          ORDER BY scoped."sourceArtifactId", scoped."fieldOrder", scoped."rowOrdinal"
           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
         ), 0)::bigint AS "bytesBefore"
       FROM scoped
@@ -459,7 +549,7 @@ function scannedExactSql(input: Readonly<{
       SELECT *
       FROM bounded
       WHERE ${condition}
-      ORDER BY "sourceArtifactId", "ordinal"
+      ORDER BY "sourceArtifactId", "fieldOrder", "rowOrdinal"
       OFFSET ${input.offset}
       LIMIT ${input.limit + 1}
     ),
@@ -481,8 +571,9 @@ function scannedExactSql(input: Readonly<{
           'passageId', matches."passageId",
           'page', matches."page",
           'pageEnd', matches."pageEnd",
+          'field', matches.field,
           'value', matches."text"
-        ) ORDER BY matches."sourceArtifactId", matches."ordinal")
+        ) ORDER BY matches."sourceArtifactId", matches."fieldOrder", matches."rowOrdinal")
         FROM matches
       ), '[]'::jsonb) AS results
     FROM scan_stats
@@ -496,6 +587,8 @@ function decodeExactHit(value: unknown, operation: KnowledgeExactOperation): Kno
   if (
     typeof value.sourceArtifactId !== "string" || !value.sourceArtifactId ||
     typeof value.indexArtifactId !== "string" || !value.indexArtifactId ||
+    typeof value.field !== "string" ||
+    !exactResultFields.has(value.field as Exclude<KnowledgeExactSearchField, "any">) ||
     typeof value.value !== "string" || !value.value ||
     (value.sectionId !== null && typeof value.sectionId !== "string") ||
     (value.passageId !== null && typeof value.passageId !== "string") ||
@@ -503,6 +596,7 @@ function decodeExactHit(value: unknown, operation: KnowledgeExactOperation): Kno
     page !== null && (page < 1 || pageEnd! < page)
   ) return null;
   return Object.freeze({
+    field: value.field as Exclude<KnowledgeExactSearchField, "any">,
     indexArtifactId: value.indexArtifactId,
     kind: operation,
     page,
@@ -530,7 +624,8 @@ function decodeExactPage(
     scanned > KNOWLEDGE_EXACT_SCAN_MAX_BYTES ||
     decoded.some((value) => value === null)
   ) throw new Error("knowledge_exact_result_invalid");
-  const hasMore = decoded.length > input.limit;
+  const hasMore = decoded.length > input.limit &&
+    input.offset + input.limit <= KNOWLEDGE_EXACT_CURSOR_MAX_OFFSET;
   return Object.freeze({
     nextCursor: hasMore ? encodeKnowledgeExactCursor(input.offset + input.limit) : null,
     results: Object.freeze((decoded as KnowledgeExactIndexHit[]).slice(0, input.limit)),
@@ -540,31 +635,167 @@ function decodeExactPage(
 }
 
 export function knowledgeHierarchicalMetadataDiscoverySql(input: Readonly<{
+  fields?: readonly KnowledgeSourceDiscoveryField[];
   limit: number;
+  offset?: number;
   query: string;
-  scope: Readonly<{ ownerUserId: string; sourceArtifactIds: readonly string[] }>;
+  scope: KnowledgeHierarchicalScope;
+}>): Prisma.Sql {
+  const authorized = authorizedArtifactsSql(input.scope);
+  const normalized = knowledgeExactNormalizedValue(input.query);
+  const fields = input.fields ?? [...metadataKinds];
+  const offset = input.offset ?? 0;
+  return Prisma.sql`
+    WITH
+    authorized_artifacts AS MATERIALIZED (${authorized}),
+    metadata AS MATERIALIZED (
+      SELECT
+        authorized."sourceArtifactId",
+        document."indexArtifactId",
+        'filename'::text AS kind,
+        document."fileName" AS value,
+        lower(document."fileName") AS "normalizedValue"
+      FROM "KnowledgeArtifactDocumentIndex" AS document
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = document."indexArtifactId"
+      UNION ALL
+      SELECT
+        authorized."sourceArtifactId",
+        document."indexArtifactId",
+        'source_name'::text AS kind,
+        document."sourceName" AS value,
+        lower(document."sourceName") AS "normalizedValue"
+      FROM "KnowledgeArtifactDocumentIndex" AS document
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = document."indexArtifactId"
+      UNION ALL
+      SELECT
+        authorized."sourceArtifactId",
+        document."indexArtifactId",
+        'title'::text AS kind,
+        document."title" AS value,
+        lower(document."title") AS "normalizedValue"
+      FROM "KnowledgeArtifactDocumentIndex" AS document
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = document."indexArtifactId"
+      WHERE document."title" IS NOT NULL AND document."title" <> ''
+      UNION ALL
+      SELECT
+        authorized."sourceArtifactId",
+        entry."indexArtifactId",
+        entry."kind"::text AS kind,
+        entry."value",
+        entry."normalizedValue"
+      FROM "KnowledgeArtifactExactEntry" AS entry
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = entry."indexArtifactId"
+      WHERE entry."kind" IN (
+        'heading'::"KnowledgeExactEntryKind",
+        'tag'::"KnowledgeExactEntryKind"
+      )
+    )
+    SELECT
+      metadata."sourceArtifactId",
+      metadata."indexArtifactId",
+      metadata.kind,
+      metadata.value,
+      similarity(metadata."normalizedValue", ${normalized}) AS similarity
+    FROM metadata
+    WHERE metadata.kind = ANY(ARRAY[${Prisma.join(fields)}]::text[])
+      AND metadata."normalizedValue" % ${normalized}
+    ORDER BY similarity DESC, metadata."sourceArtifactId", metadata.kind, metadata.value
+    OFFSET ${offset}
+    LIMIT ${input.limit}
+  `;
+}
+
+export function knowledgeHierarchicalSourceMetadataDiscoverySql(input: Readonly<{
+  fields: readonly KnowledgeSourceDiscoveryField[];
+  limit: number;
+  offset: number;
+  query: string;
+  scope: KnowledgeHierarchicalScope;
 }>): Prisma.Sql {
   const authorized = authorizedArtifactsSql(input.scope);
   const normalized = knowledgeExactNormalizedValue(input.query);
   return Prisma.sql`
-    WITH authorized_artifacts AS MATERIALIZED (${authorized})
-    SELECT
-      authorized."sourceArtifactId",
-      entry."indexArtifactId",
-      entry."kind"::text AS kind,
-      entry."value",
-      similarity(entry."normalizedValue", ${normalized}) AS similarity
-    FROM "KnowledgeArtifactExactEntry" AS entry
-    INNER JOIN authorized_artifacts AS authorized
-      ON authorized."indexArtifactId" = entry."indexArtifactId"
-    WHERE entry."kind" IN (
-      'filename'::"KnowledgeExactEntryKind",
-      'heading'::"KnowledgeExactEntryKind",
-      'tag'::"KnowledgeExactEntryKind",
-      'title'::"KnowledgeExactEntryKind"
+    WITH
+    authorized_artifacts AS MATERIALIZED (${authorized}),
+    metadata AS MATERIALIZED (
+      SELECT
+        authorized."sourceArtifactId",
+        document."indexArtifactId",
+        'filename'::text AS kind,
+        lower(document."fileName") AS "normalizedValue"
+      FROM "KnowledgeArtifactDocumentIndex" AS document
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = document."indexArtifactId"
+      UNION ALL
+      SELECT
+        authorized."sourceArtifactId",
+        document."indexArtifactId",
+        'source_name'::text AS kind,
+        lower(document."sourceName") AS "normalizedValue"
+      FROM "KnowledgeArtifactDocumentIndex" AS document
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = document."indexArtifactId"
+      UNION ALL
+      SELECT
+        authorized."sourceArtifactId",
+        document."indexArtifactId",
+        'title'::text AS kind,
+        lower(document."title") AS "normalizedValue"
+      FROM "KnowledgeArtifactDocumentIndex" AS document
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = document."indexArtifactId"
+      WHERE document."title" IS NOT NULL AND document."title" <> ''
+      UNION ALL
+      SELECT
+        authorized."sourceArtifactId",
+        entry."indexArtifactId",
+        entry."kind"::text AS kind,
+        entry."normalizedValue"
+      FROM "KnowledgeArtifactExactEntry" AS entry
+      INNER JOIN authorized_artifacts AS authorized
+        ON authorized."indexArtifactId" = entry."indexArtifactId"
+      WHERE entry."kind" IN (
+        'heading'::"KnowledgeExactEntryKind",
+        'tag'::"KnowledgeExactEntryKind"
+      )
+    ),
+    matched AS MATERIALIZED (
+      SELECT
+        metadata."sourceArtifactId",
+        metadata."indexArtifactId",
+        metadata.kind,
+        similarity(metadata."normalizedValue", ${normalized}) AS similarity
+      FROM metadata
+      WHERE metadata.kind = ANY(ARRAY[${Prisma.join([...input.fields])}]::text[])
+        AND metadata."normalizedValue" % ${normalized}
+    ),
+    source_matches AS MATERIALIZED (
+      SELECT
+        matched."sourceArtifactId",
+        min(matched."indexArtifactId") AS "indexArtifactId",
+        max(matched.similarity) AS similarity,
+        array_remove(ARRAY[
+          CASE WHEN bool_or(matched.kind = 'filename') THEN 'filename'::text END,
+          CASE WHEN bool_or(matched.kind = 'heading') THEN 'heading'::text END,
+          CASE WHEN bool_or(matched.kind = 'source_name') THEN 'source_name'::text END,
+          CASE WHEN bool_or(matched.kind = 'tag') THEN 'tag'::text END,
+          CASE WHEN bool_or(matched.kind = 'title') THEN 'title'::text END
+        ], NULL) AS "matchedFields"
+      FROM matched
+      GROUP BY matched."sourceArtifactId"
     )
-      AND entry."normalizedValue" % ${normalized}
-    ORDER BY similarity DESC, authorized."sourceArtifactId", entry."ordinal"
+    SELECT
+      source_matches."sourceArtifactId",
+      source_matches."indexArtifactId",
+      source_matches."matchedFields",
+      source_matches.similarity
+    FROM source_matches
+    ORDER BY source_matches.similarity DESC, source_matches."sourceArtifactId"
+    OFFSET ${input.offset}
     LIMIT ${input.limit}
   `;
 }
@@ -589,9 +820,39 @@ function decodeMetadataHit(value: unknown): KnowledgeMetadataDiscoveryHit | null
   });
 }
 
+function decodeSourceMetadataHit(value: unknown): KnowledgeSourceMetadataDiscoveryHit | null {
+  if (!record(value)) return null;
+  const similarity = finite(value.similarity);
+  if (
+    typeof value.sourceArtifactId !== "string" || !value.sourceArtifactId ||
+    typeof value.indexArtifactId !== "string" || !value.indexArtifactId ||
+    !Array.isArray(value.matchedFields) || value.matchedFields.length < 1 ||
+    value.matchedFields.length > metadataKinds.size ||
+    value.matchedFields.some((field) => typeof field !== "string" ||
+      !metadataKinds.has(field as KnowledgeSourceDiscoveryField)) ||
+    new Set(value.matchedFields).size !== value.matchedFields.length ||
+    similarity === null || similarity < 0 || similarity > 1
+  ) return null;
+  const selected = new Set(value.matchedFields as KnowledgeSourceDiscoveryField[]);
+  return Object.freeze({
+    indexArtifactId: value.indexArtifactId,
+    matchedFields: Object.freeze(
+      [...metadataKinds].filter((field) => selected.has(field))
+    ),
+    similarity,
+    sourceArtifactId: value.sourceArtifactId
+  });
+}
+
 export function createPrismaKnowledgeHierarchicalRetrievalRepository(
-  client: HierarchicalRetrievalClient = prisma
+  client: HierarchicalRetrievalClient = prisma,
+  options: Readonly<{ statementTimeoutMs?: number }> = {}
 ): KnowledgeHierarchicalRetrievalRepository {
+  const statementTimeoutMs = options.statementTimeoutMs ?? 250;
+  if (!Number.isSafeInteger(statementTimeoutMs) || statementTimeoutMs < 1 ||
+    statementTimeoutMs > 5_000) {
+    throw new Error("knowledge_hierarchical_statement_timeout_invalid");
+  }
   async function lexical(
     level: KnowledgeLexicalTargetLevel,
     input: KnowledgeHierarchicalScope & { limit: number; query: string }
@@ -610,6 +871,44 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
     return Object.freeze(decoded as KnowledgeLexicalIndexHit[]);
   }
 
+  async function discoverSourceMetadata(
+    input: KnowledgeHierarchicalScope & {
+      cursor?: string;
+      fields?: readonly KnowledgeSourceDiscoveryField[];
+      limit: number;
+      query: string;
+    }
+  ) {
+    const scope = decodeKnowledgeHierarchicalScope(input);
+    const query = decodeKnowledgeHierarchicalQuery(input.query);
+    const limit = decodeKnowledgeHierarchicalLimit(input.limit);
+    const offset = decodeKnowledgeExactCursor(input.cursor);
+    const fields = input.fields ?? [...metadataKinds];
+    if (query.length < 2 || fields.length < 1 || fields.length > metadataKinds.size ||
+      fields.some((field) => !metadataKinds.has(field)) ||
+      new Set(fields).size !== fields.length) {
+      throw new KnowledgeHierarchicalQueryError("knowledge_index_query_invalid");
+    }
+    const rows = await boundedQuery(client, statementTimeoutMs, async (tx) => {
+      await tx.$executeRaw`SET LOCAL pg_trgm.similarity_threshold = 0.2`;
+      return tx.$queryRaw<unknown[]>(knowledgeHierarchicalSourceMetadataDiscoverySql({
+        fields,
+        limit: limit + 1,
+        offset,
+        query,
+        scope
+      }));
+    });
+    const decoded = rows.map(decodeSourceMetadataHit);
+    if (decoded.some((row) => row === null)) throw new Error("knowledge_metadata_result_invalid");
+    const hasMore = decoded.length > limit &&
+      offset + limit <= KNOWLEDGE_EXACT_CURSOR_MAX_OFFSET;
+    return Object.freeze({
+      nextCursor: hasMore ? encodeKnowledgeExactCursor(offset + limit) : null,
+      results: Object.freeze((decoded as KnowledgeSourceMetadataDiscoveryHit[]).slice(0, limit))
+    });
+  }
+
   return {
     discoverDocuments: (input) => lexical("document", input),
     async discoverMetadata(input): Promise<readonly KnowledgeMetadataDiscoveryHit[]> {
@@ -619,7 +918,7 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
       if (query.length < 2) {
         throw new KnowledgeHierarchicalQueryError("knowledge_index_query_invalid");
       }
-      const rows = await boundedQuery(client, async (tx) => {
+      const rows = await boundedQuery(client, statementTimeoutMs, async (tx) => {
         await tx.$executeRaw`SET LOCAL pg_trgm.similarity_threshold = 0.2`;
         return tx.$queryRaw<unknown[]>(knowledgeHierarchicalMetadataDiscoverySql({
           limit,
@@ -628,9 +927,12 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
         }));
       });
       const decoded = rows.map(decodeMetadataHit);
-      if (decoded.some((row) => row === null)) throw new Error("knowledge_metadata_result_invalid");
+      if (decoded.some((row) => row === null)) {
+        throw new Error("knowledge_metadata_result_invalid");
+      }
       return Object.freeze(decoded as KnowledgeMetadataDiscoveryHit[]);
     },
+    discoverSourceMetadata,
     discoverSections: (input) => lexical("section", input),
     async findExact(input): Promise<KnowledgeExactSearchPage> {
       const scope = decodeKnowledgeHierarchicalScope(input);
@@ -639,7 +941,12 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
       const offset = decodeKnowledgeExactCursor(input.cursor);
       const operation = input.operation;
       const caseSensitive = input.caseSensitive ?? false;
+      const field = input.field ?? "body";
       if (![...exactEntryKinds, "phrase", "regex", "token"].includes(operation)) {
+        throw new KnowledgeHierarchicalQueryError("knowledge_index_query_invalid");
+      }
+      if (!exactSearchFields.has(field) ||
+        exactEntryKinds.has(operation as KnowledgeExactEntryKind) && input.field !== undefined) {
         throw new KnowledgeHierarchicalQueryError("knowledge_index_query_invalid");
       }
       const sql = exactEntryKinds.has(operation as KnowledgeExactEntryKind)
@@ -653,13 +960,18 @@ export function createPrismaKnowledgeHierarchicalRetrievalRepository(
           })
         : scannedExactSql({
             caseSensitive,
+            field,
             limit,
             offset,
             operation: operation as "phrase" | "regex" | "token",
             query: operation === "regex" ? decodeKnowledgeSafeRegex(query) : query,
             scope
           });
-      const rows = await boundedQuery(client, (tx) => tx.$queryRaw<unknown[]>(sql));
+      const rows = await boundedQuery(
+        client,
+        statementTimeoutMs,
+        (tx) => tx.$queryRaw<unknown[]>(sql)
+      );
       return decodeExactPage(rows[0], { limit, offset, operation });
     },
     searchPassages: (input) => lexical("passage", input)

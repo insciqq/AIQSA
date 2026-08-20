@@ -171,7 +171,14 @@ describe("run finalization", () => {
       sessionId: "evidence-session-1",
       version: 1 as const
     };
-    const groundKnowledgeAnswer = vi.fn(async () => grounding);
+    const groundKnowledgeAnswer = vi.fn(async () => ({
+      grounding,
+      semanticShadow: {
+        contentFreeMetrics: {} as never,
+        diagnostic: {} as never,
+        profileRevisionIds: ["profile-revision-1"]
+      }
+    }));
     const repository = {
       completeRun,
       groundKnowledgeAnswer,
@@ -191,7 +198,7 @@ describe("run finalization", () => {
     });
     expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({
       finalText: grounding.finalText,
-      knowledgeGrounding: grounding
+      knowledgeGrounding: expect.objectContaining({ grounding })
     }));
   });
 });

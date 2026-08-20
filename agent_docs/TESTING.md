@@ -61,6 +61,14 @@ npm run eval:knowledge:baseline
 
 The command owns and cleans its fixtures, starts only the disposable development dependencies, validates the corpus/query labels, and fails closed for any non-disposable database. It records current quality rather than treating the current values as launch gates; later retrieval stages define regression tolerances and production gates against the versioned report contract.
 
+Knowledge remediation starts from the deterministic, content-free seam inventory:
+
+```bash
+npm run eval:knowledge:remediation-baseline
+```
+
+The report binds every H0 regression to PRD acceptance IDs and executable-owner hashes, and classifies it as protected, partially protected, or a known gap. A successful command proves that the frozen baseline is internally consistent; it does not turn partial/gap findings green and is not semantic or production release evidence.
+
 Hierarchical lexical/exact index changes run their Stage 4 quality and plan gates with:
 
 ```bash
@@ -77,6 +85,8 @@ npm run eval:knowledge:retrieval
 
 The disposable evaluation compares exact and ANN results across measured scope slices, requires the intended HNSW plans and scope isolation, and gates multilingual/exact/comparison quality, no-answer and duplicate rates, processing-Source behavior, embedding and reranker outages, latency, and private-evidence projection. It owns and removes its synthetic fixtures and emits only sanitized aggregates, limits, and plan evidence.
 
+The baseline and retrieval fixtures use deterministic Source-oracle vectors for database/retrieval plumbing. Their reports must declare `qualityGateEligible: false` and `realEmbeddingExecution: not_measured`; they cannot be cited as real-embedding quality evidence. Real embedding/model candidates require a separately identified, same-corpus report with provider/profile, cost/egress, latency, and EN/RU slices.
+
 Release-scale catalog changes run the disposable Source/Base latency and isolation gate with:
 
 ```bash
@@ -92,6 +102,53 @@ npm run eval:knowledge:grounding
 ```
 
 The gate covers English/Russian cited answers, v2 handle validity and evidence availability, deterministic normalization of handle-only grouped/alternate citation syntax, Source-local numeric/date binding, cross-Source field-mixing rejection, ambiguous-table abstention, novel or calculated numeric literals, no-ready and partial-readiness no-answer, truthful citation-binding failure, unverified coverage claims, general-knowledge separation when no Source citation exists, deleted evidence, internal identities, prompt injection, dated-comparison non-regression, and the one-repair ceiling. This cheap runtime gate intentionally does not score general semantic entailment, guess citations for uncited claims, or infer generic contradictions between evidence passages. Its report contains only counts, thresholds, and aggregate metrics.
+
+Ingestion release-contract changes run the deterministic aggregate-only gate with:
+
+```bash
+npm run eval:knowledge:ingestion
+```
+
+The gate measures admission, complete/partial/failed classification, normalized page/block coverage, OCR and fallback routing, table/heading preservation, truncation detection, locator validity, retry/reuse behavior, and purge-settlement invariants. Destructive object/database purge latency and removed-byte measurements remain a disposable-container concern and must be reported unavailable when that lane was not run.
+
+Table, form/key-value, OCR-fragment, numeric/temporal context, or row-locator changes also run:
+
+```bash
+npm run eval:knowledge:document-context
+```
+
+This aggregate-only deterministic gate covers atomic normal and overflow table rows, repeated headers, explicit and competing field graphs, high- and low-confidence positioned OCR fragments, EN/RU decimal/date/role/effective-interval normalization, row locator integrity, and structured arithmetic re-execution/tamper rejection. It uses repository-generated synthetic structural oracles and therefore must report `retrievalQualityGateEligible: false` and `independentHumanLabelsUsed: false`; it is document-contract evidence, not independent retrieval-quality acceptance. Durable PostgreSQL context round trips and real parser-sidecar execution remain separate disposable lanes.
+
+Semantic claim segmentation or validation changes run the versioned shadow benchmark with:
+
+```bash
+npm run eval:knowledge:semantic-grounding
+```
+
+The command validates the frozen EN/RU calibration/held-out corpus, citation-local neighborhoods, label-exclusion/import contracts, aggregate slices, and content-free report contract. It is intentionally shadow-only: a successful command means the benchmark contract executed, not that semantic quality or release eligibility passed. Release automation separately requires `semanticProof`, `blockingEligible`, and `releaseGatePassed` to be true and therefore remains red while the report declares them false.
+
+`npm run eval:knowledge:semantic-grounding -- --help` lists the explicit loopback local-runner, paid System Model, and private blind-review prepare/import lanes. External execution is off by default; review artifacts stay owner-only under a fresh allowlisted `/tmp` directory, and generating or importing implementation-authored labels never satisfies the independent-human gate.
+
+The CLI also requires an owner-only candidate-identity manifest before label scoring and a separate calibration-only output/selected-threshold freeze before final scoring. Final candidate outputs are not yet frozen before blind labels are imported, so the current blinded-review slice remains diagnostic and ineligible as independent release evidence.
+
+Knowledge ranking/profile changes compare the current local candidate and its real degraded fallback on the same fixed corpus with:
+
+```bash
+npm run eval:knowledge:profiles
+```
+
+The default report is contract/plumbing evidence: it freezes the corpus and candidate-pool identity, exercises deterministic ranking and typed unavailable candidates, and reports latency, throughput, execution resources, cost/egress, and failure behavior without claiming quality selection. `contractValid` must not imply `qualityGatePassed` or `selectionEligible`. Quality selection additionally requires one approved real-embedding pool shared unchanged by every candidate, two distinct independent-human label submissions, completed adjudication, and the resulting EN/RU/no-answer metrics. Generated, oracle-derived, implementation-agent, or model-self labels remain ineligible; until the independent artifacts are imported the command must retain the deterministic fallback and report `qualityGatePassed: false` and `selectionEligible: false`.
+
+`npm run eval:knowledge:profiles -- --help` lists the opt-in local-runner, active-profile real-embedding, System Model, and private review-import lanes. External execution remains off by default; the paid flags require the current operator permission above, and review artifacts remain owner-only files under the allowlisted private `/tmp` packet directory while stdout stays aggregate-only.
+
+The reproducible mixed-format release corpus and its opt-in real-stack browser journey run with:
+
+```bash
+npm run test:knowledge:release-corpus
+npm run test:e2e:knowledge:release
+```
+
+The browser journey requires the explicitly enabled disposable Compose topology with real PostgreSQL, object storage, and parser sidecars. It must never target the default persistent installation. It covers the 50-document upload/reload/readiness/retry/cancel path, real retrieval and grounded citation viewers, context reuse, no-answer, responsive keyboard behavior, and deletion redaction.
 
 Spreadsheet normalization, planning, execution, or range-receipt changes run the deterministic aggregate-only gate with:
 
@@ -129,6 +186,18 @@ These are routing rules, not a cumulative release matrix. Do not run unrelated e
 ## External And Opt-In Checks
 
 Fake providers are the automation default. `npm run smoke:custom-openai-compatible` is a local credential-free fixture. `npm run smoke:gemini` may run only with the current operator-provided key, bounded request, and sanitized output; missing key skips. Anthropic, OpenAI, OpenRouter, hosted Search, OAuth/registry, or other real-provider smokes require explicit operator authorization for that provider and the smallest useful call. Never print keys, prompts, answers, sources/URLs, private IDs, or raw payloads.
+
+With explicit paid-call authorization, representative answer generation can use the bounded native-adapter lane:
+
+```bash
+review_dir="$(mktemp -d /tmp/aiqsa-knowledge-provider-review-XXXXXX)"
+chmod 700 "$review_dir"
+npm run eval:knowledge:provider-answers -- --execute-paid --review-dir "$review_dir"
+```
+
+The command reads only the three allowlisted credentials from the process environment or local `.env`, runs at most the fixed sequential call matrix, and writes `review-packet.json`, the separately permissioned `review-mapping.json`, and a canonical `output-freeze.json` only into the fresh owned directory. Its stdout is aggregate-only. The packet contains the deterministic grounded final answer and client-decodable citation-viewer projections; synthetic viewer projections remain explicitly release-ineligible until a stateful persisted-route capture replaces them. Review the packet without opening the mapping, record decisions through the strict two-reviewer/adjudication import contract, then unblind. An agent-delegated or self-attested review is explicitly non-independent and cannot be promoted to semantic release proof or the independent production review required by the remediation program.
+
+`.github/workflows/knowledge-quality.yml` is the reusable scheduled/release matrix for deterministic, migration/container, golden-corpus, sidecar, operations, browser, and performance evidence. Publishing workflows must depend on its successful result; ordinary focused development still follows the proportional selection rules above.
 
 `npm run security:deps` is the approved external npm advisory check during dependency work. Network failure may be retried with the required sandbox escalation. Its remediation suggestions are evidence, not authority for a breaking upgrade.
 

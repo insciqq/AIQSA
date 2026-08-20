@@ -8,6 +8,13 @@ import {
   isDocumentParserError,
   type ParsedDocument
 } from "../lib/server/parsing";
+import { chunkKnowledgeDocument } from "../lib/server/knowledge/chunking";
+import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "../lib/server/knowledge/indexProfile";
+import { getKnowledgeExtractionConfig } from "../lib/server/knowledge/knowledgeExtractionConfig";
+import {
+  decodeKnowledgeNormalizedDocument,
+  encodeKnowledgeNormalizedDocument
+} from "../lib/server/knowledge/normalizedDocument";
 import {
   AttachmentProcessingError,
   createAttachmentProcessor,
@@ -368,6 +375,7 @@ async function availableSmoke(): Promise<void> {
     // useful result. The same boundary may fall back later when that primary
     // result is unavailable or unusable; fallback mode is smoked separately.
     const knowledgeBoundary = createDocumentParserBoundary();
+    const knowledgeExtractionConfig = getKnowledgeExtractionConfig({});
     const ocrInputs = [
       {
         bytes: ocrFixtures.imageOnlyPdf,
@@ -425,11 +433,56 @@ async function availableSmoke(): Promise<void> {
         smokeStage = `${fixture.evidenceKey}-evidence-${missing.join("-")}`;
       }
       assert.equal(textEvidence.useful, true);
+      const encodedDocument = encodeKnowledgeNormalizedDocument(
+        result,
+        knowledgeExtractionConfig,
+        {
+          layoutAwareTables: true,
+          sourceDisplayName: "Synthetic parser smoke",
+          sourceMediaType: fixture.mimeType
+        }
+      );
+      const normalizedDocument = decodeKnowledgeNormalizedDocument(
+        encodedDocument.body,
+        knowledgeExtractionConfig
+      );
+      if (normalizedDocument.schemaVersion !== 4) {
+        smokeStage = `${fixture.evidenceKey}-normalized-schema`;
+      }
+      assert.equal(normalizedDocument.schemaVersion, 4);
+      if (normalizedDocument.fieldGroups.length !== result.fieldGroups.length) {
+        smokeStage = `${fixture.evidenceKey}-field-groups`;
+      }
+      assert.equal(normalizedDocument.fieldGroups.length, result.fieldGroups.length);
+      const structuredTableBlocks = normalizedDocument.blocks.filter(
+        (block) => block.table !== null
+      ).length;
+      if (structuredTableBlocks === 0) {
+        smokeStage = `${fixture.evidenceKey}-structured-table`;
+      }
+      assert(structuredTableBlocks > 0);
+      const chunks = chunkKnowledgeDocument({
+        document: normalizedDocument,
+        maxChunks: knowledgeExtractionConfig.maxChunksPerDocument,
+        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+      });
+      const tableRowContextCount = chunks.filter(
+        (chunk) => chunk.documentContext?.locator.kind === "table_row"
+      ).length;
+      if (tableRowContextCount === 0) {
+        smokeStage = `${fixture.evidenceKey}-table-row-context`;
+      }
+      assert(tableRowContextCount > 0);
       evidence[fixture.evidenceKey] = {
         blocks: result.blocks.length,
+        chunkProfileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
         engine: result.engine,
+        normalizedFieldGroups: normalizedDocument.fieldGroups.length,
+        normalizedSchemaVersion: normalizedDocument.schemaVersion,
         pageAnchorsValid: true,
         pageCount: result.pageCount,
+        structuredTableBlocks,
+        tableRowContextCount,
         ...textEvidence
       };
     }

@@ -151,7 +151,13 @@ describe("share snapshots", () => {
       "private-document-version-id",
       "private-included-passage",
       "private-generated-query",
-      "private-vector-fingerprint"
+      "private-vector-fingerprint",
+      "private-read-receipt",
+      "private-source-artifact-id",
+      "private-source-id",
+      "private-source-version-id",
+      "private-source-locator",
+      "private-secondary-base-id"
     ];
     const snapshot = buildPublicShareSnapshot({
       activeLeafMessageId: "knowledge-answer",
@@ -162,16 +168,50 @@ describe("share snapshots", () => {
             {
               includedText: privateSentinels[2],
               knowledgeBaseId: privateSentinels[0],
+              locator: privateSentinels[9],
+              provenance: [{
+                source: {
+                  artifactId: privateSentinels[6],
+                  bindings: [
+                    { baseName: "Primary", bindingOrdinal: 0, knowledgeBaseId: privateSentinels[0] },
+                    {
+                      baseName: "Mirror",
+                      bindingOrdinal: 1,
+                      knowledgeBaseId: privateSentinels[10]
+                    }
+                  ],
+                  primaryBindingOrdinal: 0,
+                  sourceId: privateSentinels[7],
+                  sourceVersionId: privateSentinels[8]
+                }
+              }],
+              sourceArtifactId: privateSentinels[6],
+              sourceId: privateSentinels[7],
+              sourceVersionId: privateSentinels[8],
               type: "knowledge_evidence"
             }
           ],
           knowledgeBindings: [{ vectorSpaceFingerprint: privateSentinels[4] }],
-          knowledgeCitations: [{ documentVersionId: privateSentinels[1] }]
+          knowledgeCitations: [{
+            documentVersionId: privateSentinels[1],
+            sourceArtifactId: privateSentinels[6],
+            sourceId: privateSentinels[7],
+            sourceVersionId: privateSentinels[8]
+          }]
         },
         groundedAt: null,
         id: "knowledge-answer",
         knowledgeEvidence: {
           query: privateSentinels[3],
+          readReceipt: {
+            locator: privateSentinels[9],
+            receipt: privateSentinels[5],
+            resolvedSource: {
+              sourceArtifactId: privateSentinels[6],
+              sourceId: privateSentinels[7],
+              sourceVersionId: privateSentinels[8]
+            }
+          },
           results: privateSentinels
         },
         parentMessageId: null,

@@ -191,7 +191,7 @@ describe("Knowledge ingestion processor", () => {
     await process(claim("parsing"));
 
     const normalized = storage.objects.get("normalized.json")!;
-    expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({ schemaVersion: 3 });
+    expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({ schemaVersion: 4 });
     expect(repo.completeParsing).toHaveBeenCalledWith(expect.objectContaining({
       normalizedTextByteSize: normalized.body.byteLength,
       normalizedTextChecksum: digest(normalized.body),
@@ -225,7 +225,7 @@ describe("Knowledge ingestion processor", () => {
 
     expect(repo.persistHierarchicalIndex).toHaveBeenCalledWith(expect.objectContaining({
       chunks: expect.arrayContaining([expect.objectContaining({ text: "document block 0" })]),
-      document: expect.objectContaining({ schemaVersion: 3 })
+      document: expect.objectContaining({ schemaVersion: 4 })
     }));
     expect(repo.completeChunking).toHaveBeenCalledWith(expect.objectContaining({
       chunkCount: 2

@@ -47,6 +47,7 @@ import {
   type MemoryInitialChatMode
 } from "../../contracts/memory";
 import {
+  knowledgeRunAdmissionHasReadySources,
   KnowledgeRunAdmissionError,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
@@ -1226,7 +1227,7 @@ export async function prepareRun(
   const admittedKnowledgeToolsEnabled =
     body?.tools !== "none" &&
     modelConfiguration.capabilities.toolCalling === true &&
-    Boolean(knowledgeAdmissionPlan);
+    knowledgeRunAdmissionHasReadySources(knowledgeAdmissionPlan);
   const mcpToolsEnabled = mcpDiscoveryEnabled ||
     Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
   const memoryHistoryToolsRequested = !project &&
@@ -1315,7 +1316,7 @@ export async function prepareRun(
   const knowledgeToolsEnabled =
     body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
-    Boolean(knowledgeAdmissionPlan?.bindings.length);
+    knowledgeRunAdmissionHasReadySources(knowledgeAdmissionPlan);
   const executionAdapterKind = modelConfiguration.adapterKind;
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
@@ -1370,9 +1371,23 @@ export async function prepareRun(
       ? { budgetPolicy: knowledgeAdmissionPlan.budgetPolicy }
       : {}),
     conversation: plannerConversation(conversationMessages.slice(0, -1)),
+    directSources: (knowledgeAdmissionPlan?.sources ?? [])
+      .filter((source) => source.baseProvenance.length === 0)
+      .map((source) => ({
+        approxTokens: source.approxTokens,
+        passageCount: source.passageCount,
+        sourceOrdinal: source.ordinal
+      })),
     modelCapabilities,
     originalQuery: currentKnowledgeQuery,
     scopeRequested: decodedKnowledgePlan.plan.mode !== "none",
+    sources: (knowledgeAdmissionPlan?.sources ?? []).map((source) => ({
+      fileName: source.privateLabels.fileName,
+      sourceAlias: source.sourceAlias,
+      sourceId: source.sourceId,
+      sourceName: source.privateLabels.sourceName,
+      versionNumber: source.sourceVersionNumber
+    })),
     version: KNOWLEDGE_PLANNER_VERSION
   };
   let knowledgePlanner: KnowledgePlannerPlan;

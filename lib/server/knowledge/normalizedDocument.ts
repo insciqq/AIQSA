@@ -19,6 +19,13 @@ import type {
   ParsedWorkbookSheet,
   ParsedWorkbookWarningCode
 } from "../parsing";
+import type {
+  ParsedFieldCell,
+  ParsedFieldCellLabel,
+  ParsedFieldGroup,
+  ParsedFieldLink,
+  ParsedFieldLinkLabel
+} from "../parsing/types";
 import { finalizeParsedDocument, parsedLanguageHints } from "../parsing/assessment";
 import {
   SPREADSHEET_MAX_CELL_TEXT,
@@ -50,6 +57,20 @@ export type KnowledgeNormalizedAsset = Readonly<{
   locator: KnowledgeNormalizedLocator;
 }>;
 
+export type KnowledgeNormalizedFieldGroup = Readonly<{
+  boundingBoxes: readonly ParsedBoundingBox[];
+  cells: readonly ParsedFieldCell[];
+  confidence: number | null;
+  contentHash: string;
+  id: string;
+  kind: ParsedFieldGroup["kind"];
+  links: readonly ParsedFieldLink[];
+  locator: KnowledgeNormalizedLocator;
+  order: number;
+  readingOrder: number;
+  sourceRef: string;
+}>;
+
 export type KnowledgeNormalizedBlock = Readonly<{
   assetIds: readonly string[];
   boundingBoxes: readonly ParsedBoundingBox[];
@@ -68,6 +89,7 @@ export type StoredKnowledgeNormalizedDocument = Readonly<{
   assets: readonly KnowledgeNormalizedAsset[];
   blocks: readonly KnowledgeNormalizedBlock[];
   contentHash: string;
+  fieldGroups: readonly KnowledgeNormalizedFieldGroup[];
   languages: readonly string[];
   pageCount: number;
   parser: Readonly<{
@@ -75,7 +97,7 @@ export type StoredKnowledgeNormalizedDocument = Readonly<{
     engine: DocumentParserEngine;
   }>;
   quality: ParsedDocumentQuality;
-  schemaVersion: 3;
+  schemaVersion: 4;
   source: Readonly<{
     displayName: string | null;
     mediaType: string;
@@ -130,6 +152,26 @@ const PARSER_ERROR_CODES = [
   "parser_timeout",
   "parser_unavailable"
 ] as const;
+const FIELD_CELL_LABELS: readonly ParsedFieldCellLabel[] = [
+  "checkbox",
+  "key",
+  "unspecified",
+  "value"
+];
+const FIELD_LINK_LABELS: readonly ParsedFieldLinkLabel[] = [
+  "to_child",
+  "to_key",
+  "to_parent",
+  "to_value",
+  "unspecified"
+];
+const MAX_FIELD_CELLS = 100_000;
+const MAX_FIELD_CELLS_PER_GROUP = 10_000;
+const MAX_FIELD_GROUPS = 10_000;
+const MAX_FIELD_LINKS = 200_000;
+const MAX_FIELD_LINKS_PER_GROUP = 20_000;
+const MAX_FIELD_REF_LENGTH = 512;
+const MAX_FIELD_TEXT_LENGTH = 32_767;
 const WORKBOOK_WARNING_CODES: readonly ParsedWorkbookWarningCode[] = [
   "duplicate_headers",
   "external_links_ignored",
@@ -200,6 +242,149 @@ function normalizedBoundingBoxes(values: readonly ParsedBoundingBox[]): readonly
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
   return Object.freeze(boxes as ParsedBoundingBox[]);
+}
+
+function normalizedConfidence(value: number | null): number | null {
+  if (value === null) return null;
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return value;
+}
+
+function normalizedFieldRef(value: string, allowRoot = false): string {
+  const pattern = allowRoot
+    ? /^#(?:\/(?:[\w-]+)(?:\/(?:0|[1-9]\d*))?)?$/u
+    : /^#\/(?:form_items|key_value_items)\/(?:0|[1-9]\d*)$/u;
+  if (!value || value.length > MAX_FIELD_REF_LENGTH || !pattern.test(value)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return value;
+}
+
+function normalizedFieldText(value: string): string {
+  if (typeof value !== "string" || value.length > MAX_FIELD_TEXT_LENGTH || /\u0000/u.test(value)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return value;
+}
+
+function normalizedFieldCell(value: ParsedFieldCell, order: number): ParsedFieldCell {
+  if (
+    value.order !== order || !Number.isSafeInteger(value.id) || value.id < 0 ||
+    !FIELD_CELL_LABELS.includes(value.label)
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze({
+    boundingBoxes: normalizedBoundingBoxes(value.boundingBoxes),
+    confidence: normalizedConfidence(value.confidence),
+    id: value.id,
+    itemRef: value.itemRef === null ? null : normalizedFieldRef(value.itemRef, true),
+    label: value.label,
+    order,
+    originalText: normalizedFieldText(value.originalText),
+    text: normalizedFieldText(value.text)
+  });
+}
+
+function normalizedFieldLink(value: ParsedFieldLink, order: number): ParsedFieldLink {
+  if (
+    value.order !== order || !Number.isSafeInteger(value.sourceCellId) || value.sourceCellId < 0 ||
+    !Number.isSafeInteger(value.targetCellId) || value.targetCellId < 0 ||
+    !FIELD_LINK_LABELS.includes(value.label)
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  return Object.freeze({
+    confidence: normalizedConfidence(value.confidence),
+    label: value.label,
+    order,
+    sourceCellId: value.sourceCellId,
+    targetCellId: value.targetCellId
+  });
+}
+
+function fieldGroupContent(
+  value: ParsedFieldGroup,
+  blockCount: number
+): Omit<KnowledgeNormalizedFieldGroup, "contentHash" | "id" | "order"> {
+  if (
+    !["form", "key_value"].includes(value.kind) ||
+    !Number.isSafeInteger(value.page) || value.page < 1 ||
+    !Number.isSafeInteger(value.pageEnd) || value.pageEnd < value.page ||
+    !Number.isSafeInteger(value.readingOrder) || value.readingOrder < 0 ||
+    value.readingOrder > blockCount || value.cells.length > MAX_FIELD_CELLS_PER_GROUP ||
+    value.links.length > MAX_FIELD_LINKS_PER_GROUP
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const sourceRef = normalizedFieldRef(value.sourceRef);
+  if (
+    value.kind === "form" && !sourceRef.startsWith("#/form_items/") ||
+    value.kind === "key_value" && !sourceRef.startsWith("#/key_value_items/")
+  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const cells = value.cells.map(normalizedFieldCell);
+  const cellIds = new Set(cells.map((cell) => cell.id));
+  if (cellIds.size !== cells.length) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  const links = value.links.map(normalizedFieldLink);
+  const linkKeys = new Set<string>();
+  for (const link of links) {
+    if (!cellIds.has(link.sourceCellId) || !cellIds.has(link.targetCellId)) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+    const key = `${link.label}:${link.sourceCellId}:${link.targetCellId}`;
+    if (linkKeys.has(key)) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    linkKeys.add(key);
+  }
+  const boundingBoxes = normalizedBoundingBoxes(value.boundingBoxes);
+  if ([...boundingBoxes, ...cells.flatMap((cell) => cell.boundingBoxes)].some((box) =>
+    box.page < value.page || box.page > value.pageEnd)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  return {
+    boundingBoxes,
+    cells: Object.freeze(cells),
+    confidence: normalizedConfidence(value.confidence),
+    kind: value.kind,
+    links: Object.freeze(links),
+    locator: Object.freeze({ kind: "page", pageEnd: value.pageEnd, pageStart: value.page }),
+    readingOrder: value.readingOrder,
+    sourceRef
+  };
+}
+
+function normalizedFieldGroups(
+  input: readonly ParsedFieldGroup[],
+  blockCount: number
+): readonly KnowledgeNormalizedFieldGroup[] {
+  if (input.length > MAX_FIELD_GROUPS) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
+  const sourceRefs = new Set<string>();
+  const occurrences = new Map<string, number>();
+  let cellCount = 0;
+  let linkCount = 0;
+  let previousReadingOrder = -1;
+  return Object.freeze(input.map((value, order) => {
+    const content = fieldGroupContent(value, blockCount);
+    if (content.readingOrder < previousReadingOrder) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+    previousReadingOrder = content.readingOrder;
+    if (sourceRefs.has(content.sourceRef)) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+    sourceRefs.add(content.sourceRef);
+    cellCount += content.cells.length;
+    linkCount += content.links.length;
+    if (cellCount > MAX_FIELD_CELLS || linkCount > MAX_FIELD_LINKS) {
+      throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    }
+    const contentHash = canonicalHash(content);
+    const occurrence = occurrences.get(contentHash) ?? 0;
+    occurrences.set(contentHash, occurrence + 1);
+    return Object.freeze({
+      ...content,
+      contentHash,
+      id: `fg_${contentHash.slice(0, 24)}_${occurrence}`,
+      order
+    });
+  }));
 }
 
 function normalizedTable(table: ParsedTable | null): ParsedTable | null {
@@ -431,8 +616,12 @@ function assetContent(asset: ParsedDocumentAsset): Omit<KnowledgeNormalizedAsset
   if (!Number.isSafeInteger(asset.page) || asset.page < 1) {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
+  const boundingBoxes = normalizedBoundingBoxes(asset.boundingBoxes);
+  if (boundingBoxes.some((box) => box.page !== asset.page)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
   return {
-    boundingBoxes: normalizedBoundingBoxes(asset.boundingBoxes),
+    boundingBoxes,
     caption: asset.caption ? normalizedText(asset.caption, 2_000) || null : null,
     kind: asset.kind,
     locator: Object.freeze({ kind: "page", pageEnd: asset.page, pageStart: asset.page })
@@ -480,9 +669,13 @@ function blockContent(
   if ((block.type === "table") !== block.isTable || (table && block.type !== "table")) {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
+  const boundingBoxes = normalizedBoundingBoxes(block.boundingBoxes);
+  if (boundingBoxes.some((box) => box.page < block.page || box.page > block.pageEnd)) {
+    throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  }
   return {
     assetIds: Object.freeze(assetIds as string[]),
-    boundingBoxes: normalizedBoundingBoxes(block.boundingBoxes),
+    boundingBoxes,
     headingPath: normalizedHeadingPath(block.headingPath),
     languageHints: normalizedLanguages(block.languageHints.length > 0
       ? block.languageHints
@@ -542,8 +735,10 @@ function buildStoredDocument(
   ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
   const { assets, idMap } = normalizedAssets(parsed.assets);
   const blocks = normalizedBlocks(parsed.blocks, idMap);
+  const fieldGroups = normalizedFieldGroups(parsed.fieldGroups, blocks.length);
   if (blocks.some((block) => block.locator.pageEnd > parsed.pageCount) ||
-    assets.some((asset) => asset.locator.pageEnd > parsed.pageCount)) {
+    assets.some((asset) => asset.locator.pageEnd > parsed.pageCount) ||
+    fieldGroups.some((group) => group.locator.pageEnd > parsed.pageCount)) {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
   const warnings = Object.freeze(WARNING_CODES.filter((warning) => parsed.warnings.includes(warning)));
@@ -558,6 +753,7 @@ function buildStoredDocument(
   const contentHash = canonicalHash({
     assets: assets.map((asset) => asset.contentHash),
     blocks: blocks.map((block) => block.contentHash),
+    fieldGroups: fieldGroups.map((group) => group.contentHash),
     status: parsed.status,
     workbook
   });
@@ -565,11 +761,12 @@ function buildStoredDocument(
     assets,
     blocks,
     contentHash,
+    fieldGroups,
     languages: normalizedLanguages(parsed.languages),
     pageCount: parsed.pageCount,
     parser: Object.freeze({ attempts: attemptEvidence(parsed), engine: parsed.engine }),
     quality: normalizedQuality(parsed.quality),
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     source: Object.freeze({
       displayName: sourceDisplayName || null,
       mediaType: metadata.sourceMediaType ?? parsed.mediaType
@@ -588,14 +785,85 @@ function assertWithinLimits(
   if (document.pageCount > config.maxPages) {
     throw new KnowledgeNormalizedDocumentError("knowledge_page_limit_exceeded");
   }
-  if (document.blocks.length === 0 || document.quality.usableBlockCount === 0) {
+  if (
+    document.blocks.length === 0 && document.fieldGroups.length === 0 ||
+    document.quality.usableBlockCount === 0
+  ) {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
-  const characterCount = document.blocks.reduce((total, block) => total + block.text.length, 0);
+  const characterCount = document.blocks.reduce((total, block) => total + block.text.length, 0) +
+    document.fieldGroups.reduce((total, group) => total + group.cells.reduce((cellTotal, cell) =>
+      cellTotal + cell.text.length + cell.originalText.length, 0), 0);
   if (
     characterCount > config.maxNormalizedChars ||
-    document.blocks.length > config.maxChunksPerDocument * 4
+    document.blocks.length + document.fieldGroups.length > config.maxChunksPerDocument * 4
   ) throw new KnowledgeNormalizedDocumentError("knowledge_text_limit_exceeded");
+}
+
+function layoutAwareBlockSegment(
+  document: ParsedDocument,
+  blocks: readonly ParsedDocumentBlock[]
+): readonly ParsedDocumentBlock[] {
+  if (blocks.length === 0) return Object.freeze([]);
+  return withLayoutAwareTables(finalizeParsedDocument({
+    assets: document.assets,
+    attempts: document.attempts,
+    blocks,
+    engine: document.engine,
+    fieldGroups: [],
+    languages: document.languages,
+    mediaType: document.mediaType,
+    ocrConfidence: document.quality.ocrConfidence,
+    pageCount: document.pageCount,
+    status: document.status,
+    warnings: document.warnings,
+    workbook: document.workbook
+  })).blocks;
+}
+
+/**
+ * Field-group insertion points partition layout reconstruction. This keeps a
+ * table merge from swallowing a parser-authored form/key-value position while
+ * still allowing confident reconstruction inside each contiguous block run.
+ */
+function withLayoutAwareTablesAndFieldGroups(document: ParsedDocument): ParsedDocument {
+  if (document.fieldGroups.length === 0) return withLayoutAwareTables(document);
+
+  const blocks: ParsedDocumentBlock[] = [];
+  const fieldGroups: ParsedFieldGroup[] = [];
+  let sourceOffset = 0;
+  for (const group of document.fieldGroups) {
+    if (
+      !Number.isSafeInteger(group.readingOrder) || group.readingOrder < sourceOffset ||
+      group.readingOrder > document.blocks.length
+    ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+    blocks.push(...layoutAwareBlockSegment(
+      document,
+      document.blocks.slice(sourceOffset, group.readingOrder)
+    ));
+    fieldGroups.push(Object.freeze({ ...group, readingOrder: blocks.length }));
+    sourceOffset = group.readingOrder;
+  }
+  blocks.push(...layoutAwareBlockSegment(document, document.blocks.slice(sourceOffset)));
+  const reindexedBlocks = blocks.map((block, index) => Object.freeze({
+    ...block,
+    index,
+    readingOrder: index
+  }));
+  return finalizeParsedDocument({
+    assets: document.assets,
+    attempts: document.attempts,
+    blocks: reindexedBlocks,
+    engine: document.engine,
+    fieldGroups,
+    languages: document.languages,
+    mediaType: document.mediaType,
+    ocrConfidence: document.quality.ocrConfidence,
+    pageCount: document.pageCount,
+    status: document.status,
+    warnings: document.warnings,
+    workbook: document.workbook
+  });
 }
 
 export function encodeKnowledgeNormalizedDocument(
@@ -607,8 +875,11 @@ export function encodeKnowledgeNormalizedDocument(
     sourceMediaType?: string;
   }> = {}
 ): EncodedKnowledgeNormalizedDocument {
+  const preparedDocument = metadata.layoutAwareTables
+    ? withLayoutAwareTablesAndFieldGroups(parsed)
+    : parsed;
   const document = buildStoredDocument(
-    metadata.layoutAwareTables ? withLayoutAwareTables(parsed) : parsed,
+    preparedDocument,
     metadata
   );
   assertWithinLimits(document, config);
@@ -622,6 +893,101 @@ export function encodeKnowledgeNormalizedDocument(
 function parsedBox(value: unknown): ParsedBoundingBox | null {
   if (!isRecord(value)) return null;
   return normalizedBoundingBox(value as ParsedBoundingBox);
+}
+
+function parsedFieldCell(value: unknown, order: number): ParsedFieldCell | null {
+  if (
+    !isRecord(value) || !Array.isArray(value.boundingBoxes) || value.order !== order ||
+    !Number.isSafeInteger(value.id) || Number(value.id) < 0 ||
+    typeof value.originalText !== "string" || typeof value.text !== "string" ||
+    (value.itemRef !== null && typeof value.itemRef !== "string")
+  ) return null;
+  const boundingBoxes = value.boundingBoxes.map(parsedBox);
+  if (boundingBoxes.some((box) => box === null)) return null;
+  try {
+    return normalizedFieldCell({
+      boundingBoxes: boundingBoxes as ParsedBoundingBox[],
+      confidence: value.confidence as number | null,
+      id: value.id as number,
+      itemRef: value.itemRef as string | null,
+      label: value.label as ParsedFieldCellLabel,
+      order,
+      originalText: value.originalText,
+      text: value.text
+    }, order);
+  } catch {
+    return null;
+  }
+}
+
+function parsedFieldLink(value: unknown, order: number): ParsedFieldLink | null {
+  if (
+    !isRecord(value) || value.order !== order ||
+    !Number.isSafeInteger(value.sourceCellId) || Number(value.sourceCellId) < 0 ||
+    !Number.isSafeInteger(value.targetCellId) || Number(value.targetCellId) < 0
+  ) return null;
+  try {
+    return normalizedFieldLink({
+      confidence: value.confidence as number | null,
+      label: value.label as ParsedFieldLinkLabel,
+      order,
+      sourceCellId: value.sourceCellId as number,
+      targetCellId: value.targetCellId as number
+    }, order);
+  } catch {
+    return null;
+  }
+}
+
+function parsedV4FieldGroup(
+  value: unknown,
+  order: number,
+  blockCount: number
+): ParsedFieldGroup | null {
+  if (
+    !isRecord(value) || value.order !== order || typeof value.id !== "string" ||
+    typeof value.contentHash !== "string" || !isRecord(value.locator) ||
+    value.locator.kind !== "page" || !Array.isArray(value.boundingBoxes) ||
+    !Array.isArray(value.cells) || !Array.isArray(value.links) ||
+    !Number.isSafeInteger(value.locator.pageStart) ||
+    !Number.isSafeInteger(value.locator.pageEnd) ||
+    !Number.isSafeInteger(value.readingOrder) ||
+    typeof value.sourceRef !== "string"
+  ) return null;
+  const boundingBoxes = value.boundingBoxes.map(parsedBox);
+  const cells = value.cells.map(parsedFieldCell);
+  const links = value.links.map(parsedFieldLink);
+  if (
+    boundingBoxes.some((box) => box === null) || cells.some((cell) => cell === null) ||
+    links.some((link) => link === null)
+  ) return null;
+  const group: ParsedFieldGroup = {
+    boundingBoxes: boundingBoxes as ParsedBoundingBox[],
+    cells: cells as ParsedFieldCell[],
+    confidence: value.confidence as number | null,
+    kind: value.kind as ParsedFieldGroup["kind"],
+    links: links as ParsedFieldLink[],
+    page: value.locator.pageStart as number,
+    pageEnd: value.locator.pageEnd as number,
+    readingOrder: value.readingOrder as number,
+    sourceRef: value.sourceRef
+  };
+  try {
+    const normalized = fieldGroupContent(group, blockCount);
+    return Object.freeze({
+      boundingBoxes: normalized.boundingBoxes,
+      cells: normalized.cells,
+      confidence: normalized.confidence,
+      kind: normalized.kind,
+      links: normalized.links,
+      page: normalized.locator.pageStart,
+      pageEnd: normalized.locator.pageEnd,
+      readingOrder: normalized.readingOrder,
+      sourceRef: normalized.sourceRef
+    });
+  } catch {
+    return null;
+  }
 }
 
 function parsedTable(value: unknown): ParsedTable | null | undefined {
@@ -711,12 +1077,13 @@ function parsedWorkbook(value: unknown): ParsedWorkbook | null | undefined {
   }
 }
 
-function decodeV2OrV3(
+function decodeV2ToV4(
   value: Record<string, unknown>,
-  schemaVersion: 2 | 3
+  schemaVersion: 2 | 3 | 4
 ): StoredKnowledgeNormalizedDocument {
   if (
     !Array.isArray(value.blocks) || !Array.isArray(value.assets) ||
+    (schemaVersion === 4 && !Array.isArray(value.fieldGroups)) ||
     !Array.isArray(value.languages) || value.languages.some((item) => typeof item !== "string") ||
     !Array.isArray(value.warnings) || value.warnings.some((item) => !WARNING_CODES.includes(item as ParsedDocumentWarningCode)) ||
     !isRecord(value.parser) || !Array.isArray(value.parser.attempts) ||
@@ -730,9 +1097,14 @@ function decodeV2OrV3(
   const blocks = value.blocks.map(parsedV2Block);
   const assets = value.assets.map(parsedV2Asset);
   const attempts = value.parser.attempts.map(parsedAttempt);
-  const workbook = schemaVersion === 3 ? parsedWorkbook(value.workbook) : null;
+  const fieldGroups = schemaVersion === 4
+    ? (value.fieldGroups as unknown[]).map((group, index) =>
+        parsedV4FieldGroup(group, index, blocks.length))
+    : [];
+  const workbook = schemaVersion >= 3 ? parsedWorkbook(value.workbook) : null;
   if (blocks.some((block) => block === null) || assets.some((asset) => asset === null) ||
-    attempts.some((attempt) => attempt === null) || workbook === undefined) {
+    attempts.some((attempt) => attempt === null) || fieldGroups.some((group) => group === null) ||
+    workbook === undefined) {
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
   const parsed = finalizeParsedDocument({
@@ -740,6 +1112,7 @@ function decodeV2OrV3(
     attempts: attempts as ParsedDocumentParserAttempt[],
     blocks: blocks as ParsedDocumentBlock[],
     engine: value.parser.engine as DocumentParserEngine,
+    fieldGroups: fieldGroups as ParsedFieldGroup[],
     languages: value.languages as string[],
     mediaType: value.source.mediaType,
     ocrConfidence: typeof value.quality.ocrConfidence === "number"
@@ -756,9 +1129,19 @@ function decodeV2OrV3(
   });
   const storedBlockEvidence = value.blocks as Array<Record<string, unknown>>;
   const storedAssetEvidence = value.assets as Array<Record<string, unknown>>;
-  const expectedContentHash = schemaVersion === 3
+  const storedFieldGroupEvidence = schemaVersion === 4
+    ? value.fieldGroups as Array<Record<string, unknown>>
+    : [];
+  const expectedContentHash = schemaVersion === 4
     ? rebuilt.contentHash
-    : canonicalHash({
+    : schemaVersion === 3
+      ? canonicalHash({
+          assets: rebuilt.assets.map((asset) => asset.contentHash),
+          blocks: rebuilt.blocks.map((block) => block.contentHash),
+          status: rebuilt.status,
+          workbook: rebuilt.workbook
+        })
+      : canonicalHash({
         assets: rebuilt.assets.map((asset) => asset.contentHash),
         blocks: rebuilt.blocks.map((block) => block.contentHash),
         status: rebuilt.status
@@ -770,7 +1153,10 @@ function decodeV2OrV3(
       block.contentHash !== storedBlockEvidence[index]?.contentHash) ||
     rebuilt.assets.some((asset, index) =>
       asset.id !== storedAssetEvidence[index]?.id ||
-      asset.contentHash !== storedAssetEvidence[index]?.contentHash)
+      asset.contentHash !== storedAssetEvidence[index]?.contentHash) ||
+    schemaVersion === 4 && rebuilt.fieldGroups.some((group, index) =>
+      group.id !== storedFieldGroupEvidence[index]?.id ||
+      group.contentHash !== storedFieldGroupEvidence[index]?.contentHash)
   ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
   return rebuilt;
 }
@@ -828,10 +1214,12 @@ export function decodeKnowledgeNormalizedDocument(
     throw new KnowledgeNormalizedDocumentError("parser_rejected");
   }
   if (!isRecord(value)) throw new KnowledgeNormalizedDocumentError("parser_rejected");
-  const document = value.schemaVersion === 3
-    ? decodeV2OrV3(value, 3)
-    : value.schemaVersion === 2
-      ? decodeV2OrV3(value, 2)
+  const document = value.schemaVersion === 4
+    ? decodeV2ToV4(value, 4)
+    : value.schemaVersion === 3
+      ? decodeV2ToV4(value, 3)
+      : value.schemaVersion === 2
+        ? decodeV2ToV4(value, 2)
     : value.schemaVersion === 1
       ? decodeLegacyV1(value)
       : null;

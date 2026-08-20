@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import type { KnowledgeChunkPlanEntry } from "./chunking";
+import {
+  decodeKnowledgeDocumentContext,
+  type KnowledgeDocumentContextV1
+} from "./documentContext";
 import type { StoredKnowledgeNormalizedDocument } from "./normalizedDocument";
 
-export const KNOWLEDGE_HIERARCHICAL_INDEX_VERSION = 1;
+export const KNOWLEDGE_HIERARCHICAL_INDEX_VERSION = 2;
 export const KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES = 10_000;
+export const KNOWLEDGE_DOCUMENT_CONTEXT_MAX_BYTES = 256 * 1_024;
 
 const MAX_SUMMARY_CHARACTERS = 4_000;
 const MAX_METADATA_CHARACTERS = 16_384;
@@ -59,6 +64,7 @@ export type KnowledgeHierarchicalSectionPlan = Readonly<{
 export type KnowledgeHierarchicalPassagePlan = Readonly<{
   contentHash: string;
   contextPrefix: string;
+  documentContext: KnowledgeDocumentContextV1 | null;
   embeddingTextHash: string;
   headingPath: readonly string[];
   id: string;
@@ -239,6 +245,11 @@ function assertChunks(chunks: readonly KnowledgeChunkPlanEntry[]): void {
       !Number.isSafeInteger(chunk.sourceBlockEnd) || chunk.sourceBlockEnd < chunk.sourceBlockStart ||
       !Number.isSafeInteger(chunk.tokenCount) || chunk.tokenCount < 1 ||
       chunk.contextPrefix.length > 1_024 ||
+      chunk.documentContext !== null && (
+        decodeKnowledgeDocumentContext(chunk.documentContext) === null ||
+        Buffer.byteLength(JSON.stringify(chunk.documentContext), "utf8") >
+          KNOWLEDGE_DOCUMENT_CONTEXT_MAX_BYTES
+      ) ||
       !/^[0-9a-f]{64}$/u.test(chunk.contentHash) ||
       !/^[0-9a-f]{64}$/u.test(chunk.embeddingTextHash)
     )
@@ -484,6 +495,7 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
     return Object.freeze({
       contentHash: chunk.contentHash,
       contextPrefix: chunk.contextPrefix,
+      documentContext: chunk.documentContext,
       embeddingTextHash: chunk.embeddingTextHash,
       headingPath: Object.freeze([...chunk.headingPath]),
       id: stableId("kip", id, String(chunk.index), chunk.contentHash),

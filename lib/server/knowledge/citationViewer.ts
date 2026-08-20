@@ -21,10 +21,15 @@ import { getKnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import {
   decodeKnowledgeNormalizedDocument,
   type KnowledgeNormalizedBlock,
+  type KnowledgeNormalizedFieldGroup,
   type StoredKnowledgeNormalizedDocument
 } from "./normalizedDocument";
 import { decodeKnowledgeRetrievedPassage } from "./toolResult";
 import { decodeStructuredAnalysisResult, type StructuredAnalysisResult } from "./structuredData";
+import {
+  decodeKnowledgeDocumentContext,
+  type KnowledgeDocumentContextV1
+} from "./documentContext";
 import {
   decodeKnowledgeVisualAnalysisResult,
   type KnowledgeVisualAnalysisResult
@@ -61,6 +66,7 @@ type ViewerSourceVersion = Readonly<{
   artifacts: readonly Readonly<{
     hierarchicalIndexes: readonly Readonly<{
       passageIndexes: readonly Readonly<{
+        contentHash: string;
         headingPath: readonly string[];
         page: number;
         pageEnd: number;
@@ -81,7 +87,10 @@ type ViewerSourceVersion = Readonly<{
   mimeType: string;
   originalStorageKey: string | null;
   source: Readonly<{
-    baseMemberships: readonly Readonly<{ removedAt: Date | null }>[];
+    baseMemberships: readonly Readonly<{
+      knowledgeBaseId: string;
+      removedAt: Date | null;
+    }>[];
     currentVersionId: string | null;
     deletionRequestedAt: Date | null;
     name: string;
@@ -93,7 +102,10 @@ type ViewerSourceVersion = Readonly<{
 
 type EvidenceItem = Readonly<{
   baseName: string | null;
+  contentHash: string | null;
   contextBoundaries: Prisma.JsonValue | null;
+  documentId: string | null;
+  documentVersionId: string | null;
   excerpt: string | null;
   fileName: string | null;
   handle: string;
@@ -111,8 +123,26 @@ type EvidenceItem = Readonly<{
   textTruncated: boolean | null;
 }>;
 
+type EvidenceAuthority = Readonly<{
+  base: CurrentBase | null;
+  knowledgeBaseId: string | null;
+}>;
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function acceptedBaseIds(value: Prisma.JsonValue | null): readonly string[] | null {
+  if (!Array.isArray(value)) return value === null ? Object.freeze([]) : null;
+  const result: string[] = [];
+  for (const entry of value) {
+    if (!record(entry) || Object.keys(entry).sort().join("\u0000") !==
+      "indexGenerationId\u0000knowledgeBaseId" ||
+      typeof entry.indexGenerationId !== "string" || !entry.indexGenerationId ||
+      typeof entry.knowledgeBaseId !== "string" || !entry.knowledgeBaseId) return null;
+    result.push(entry.knowledgeBaseId);
+  }
+  return new Set(result).size === result.length ? Object.freeze(result) : null;
 }
 
 function installationOrGroupPublication(groupIds: readonly string[]): Prisma.KnowledgeBaseWhereInput {
@@ -245,21 +275,91 @@ async function normalizedDocument(
   }
 }
 
-function safeTable(block: KnowledgeNormalizedBlock): KnowledgeViewerBlock["table"] {
+function safeTable(
+  block: KnowledgeNormalizedBlock,
+  documentContext: KnowledgeDocumentContextV1 | null = null
+): KnowledgeViewerBlock["table"] {
   if (!block.table) return null;
-  const cells = block.table.cells.slice(0, KNOWLEDGE_VIEWER_MAX_TABLE_CELLS);
+  const locator = documentContext?.locator;
+  const tableLocator = locator?.kind === "table_row" || locator?.kind === "table_row_projection"
+    ? locator
+    : null;
+  const rows = tableLocator
+    ? new Set([tableLocator.rowIndex, ...tableLocator.headerLineage.map((header) => header.rowIndex)])
+    : null;
+  const sourceCells = rows
+    ? block.table.cells.filter((cell) => {
+        const rowMatch = [...rows].some((row) => row >= cell.row && row < cell.row + cell.rowSpan);
+        return rowMatch;
+      })
+    : block.table.cells;
+  const cells = sourceCells.slice(0, KNOWLEDGE_VIEWER_MAX_TABLE_CELLS);
   return {
     cells: cells.map((cell) => ({ ...cell })),
     columnCount: block.table.columnCount,
     rowCount: block.table.rowCount,
-    truncated: cells.length < block.table.cells.length
+    truncated: Boolean(rows) || cells.length < sourceCells.length
+  };
+}
+
+function tableText(table: NonNullable<KnowledgeViewerBlock["table"]>): string {
+  const rows = [...new Set(table.cells.map((cell) => cell.row))].sort((left, right) => left - right);
+  return rows.map((row) => table.cells.filter((cell) => cell.row === row)
+    .sort((left, right) => left.column - right.column)
+    .map((cell) => cell.text)
+    .join("\t")).join("\n");
+}
+
+function fieldGroupViewerBlock(
+  document: StoredKnowledgeNormalizedDocument,
+  group: KnowledgeNormalizedFieldGroup,
+  context: KnowledgeDocumentContextV1
+): KnowledgeViewerBlock | null {
+  const locator = context.locator;
+  if ((locator.kind !== "field_pair" && locator.kind !== "field_ambiguous") ||
+    locator.fieldGroupId !== group.id) return null;
+  const selectedIds = locator.kind === "field_pair"
+    ? [locator.labelCellId, locator.valueCellId]
+    : [locator.cellId, ...locator.candidateCellIds];
+  const selected = selectedIds.map((id) => group.cells.find((cell) => cell.id === id) ?? null);
+  if (selected.some((cell) => cell === null)) return null;
+  const cells = (selected as NonNullable<typeof selected[number]>[])
+    .slice(0, KNOWLEDGE_VIEWER_MAX_TABLE_CELLS);
+  const pair = locator.kind === "field_pair";
+  const tableCells = cells.map((cell, index) => ({
+    column: pair ? index : 0,
+    columnSpan: 1,
+    row: pair ? 0 : index,
+    rowSpan: 1,
+    text: cell.text
+  }));
+  const anchor = document.blocks
+    .filter((block) => block.order < group.readingOrder)
+    .at(-1) ?? null;
+  return {
+    boundingBoxes: cells.flatMap((cell) => cell.boundingBoxes)
+      .slice(0, KNOWLEDGE_VIEWER_MAX_BOXES).map((box) => ({ ...box })),
+    headingPath: anchor ? [...anchor.headingPath] : [],
+    pageEnd: group.locator.pageEnd,
+    pageStart: group.locator.pageStart,
+    relation: "target",
+    table: {
+      cells: tableCells,
+      columnCount: pair ? cells.length : 1,
+      rowCount: pair ? 1 : cells.length,
+      truncated: cells.length < selectedIds.length
+    },
+    text: pair ? cells.map((cell) => cell.text).join("\t") : cells.map((cell) => cell.text).join("\n"),
+    type: "table"
   };
 }
 
 function viewerBlock(
   block: KnowledgeNormalizedBlock,
-  relation: KnowledgeViewerBlock["relation"]
+  relation: KnowledgeViewerBlock["relation"],
+  documentContext: KnowledgeDocumentContextV1 | null = null
 ): KnowledgeViewerBlock {
+  const table = safeTable(block, documentContext);
   return {
     boundingBoxes: block.boundingBoxes.slice(0, KNOWLEDGE_VIEWER_MAX_BOXES).map((box) => ({
       ...box
@@ -268,8 +368,8 @@ function viewerBlock(
     pageEnd: block.locator.pageEnd,
     pageStart: block.locator.pageStart,
     relation,
-    table: safeTable(block),
-    text: block.text,
+    table,
+    text: documentContext && table ? tableText(table) : block.text,
     type: block.type
   };
 }
@@ -280,10 +380,25 @@ function contextBlocks(
     sourceBlockEnd?: number;
     sourceBlockIds?: readonly string[];
     sourceBlockStart?: number;
-  }> | null
+  }> | null,
+  documentContext: KnowledgeDocumentContextV1 | null = null
 ): readonly KnowledgeViewerBlock[] {
-  if (!document || document.blocks.length === 0) return [];
+  if (!document) return [];
   const targetIds = new Set(target?.sourceBlockIds ?? []);
+  const locator = documentContext?.locator;
+  if (locator?.kind === "field_pair" || locator?.kind === "field_ambiguous") {
+    if (!targetIds.has(locator.fieldGroupId)) return [];
+    const group = document.fieldGroups.find((candidate) => candidate.id === locator.fieldGroupId);
+    const exact = group ? fieldGroupViewerBlock(document, group, documentContext!) : null;
+    if (!group || !exact) return [];
+    const before = document.blocks.filter((block) => block.order < group.readingOrder)
+      .slice(-2).map((block) => viewerBlock(block, "before"));
+    const remaining = Math.max(0, KNOWLEDGE_VIEWER_MAX_BLOCKS - before.length - 1);
+    const after = document.blocks.filter((block) => block.order >= group.readingOrder)
+      .slice(0, remaining).map((block) => viewerBlock(block, "after"));
+    return [...before, exact, ...after];
+  }
+  if (document.blocks.length === 0) return [];
   const targetBlocks = document.blocks.filter((block) =>
     targetIds.size > 0
       ? targetIds.has(block.id)
@@ -291,6 +406,7 @@ function contextBlocks(
         ? block.order >= target.sourceBlockStart && block.order <= target.sourceBlockEnd
         : block.order === 0
   ).slice(0, 8);
+  if (target && targetBlocks.length === 0) return [];
   const selected = targetBlocks.length > 0 ? targetBlocks : document.blocks.slice(0, 1);
   const firstOrder = selected[0]?.order ?? 0;
   const lastOrder = selected.at(-1)?.order ?? firstOrder;
@@ -298,7 +414,14 @@ function contextBlocks(
     .filter((block) => block.order < firstOrder)
     .slice(-2)
     .map((block) => viewerBlock(block, "before"));
-  const exact = selected.map((block) => viewerBlock(block, "target"));
+  const exact = selected.map((block) => viewerBlock(
+    block,
+    "target",
+    documentContext && "blockId" in documentContext.locator &&
+      documentContext.locator.blockId === block.id
+      ? documentContext
+      : null
+  ));
   const remaining = Math.max(0, KNOWLEDGE_VIEWER_MAX_BLOCKS - before.length - exact.length);
   const after = document.blocks
     .filter((block) => block.order > lastOrder)
@@ -370,6 +493,13 @@ function visualAnalysis(item: EvidenceItem): KnowledgeVisualAnalysisResult | nul
     : null;
 }
 
+function documentContext(item: EvidenceItem): KnowledgeDocumentContextV1 | null | undefined {
+  if (!record(item.contextBoundaries) || item.contextBoundaries.documentContext === undefined) {
+    return null;
+  }
+  return decodeKnowledgeDocumentContext(item.contextBoundaries.documentContext) ?? undefined;
+}
+
 function visualViewer(
   analysis: KnowledgeVisualAnalysisResult | null
 ): KnowledgeViewerVisualEvidence | null {
@@ -434,9 +564,13 @@ function workbookViewer(
 
 async function sourceVersionForEvidence(
   client: CitationViewerClient,
-  item: EvidenceItem
+  input: Readonly<{
+    item: EvidenceItem;
+    knowledgeBaseId: string | null;
+  }>
 ): Promise<ViewerSourceVersion | null> {
-  if (!item.sourceId || !item.sourceVersionId || !item.knowledgeBaseId) return null;
+  const item = input.item;
+  if (!item.sourceId || !item.sourceVersionId || !item.sourceArtifactId) return null;
   return client.knowledgeSourceVersion.findFirst({
     select: {
       artifacts: {
@@ -446,6 +580,7 @@ async function sourceVersionForEvidence(
             select: {
               passageIndexes: {
                 select: {
+                  contentHash: true,
                   headingPath: true,
                   page: true,
                   pageEnd: true,
@@ -458,7 +593,12 @@ async function sourceVersionForEvidence(
               }
             },
             take: 1,
-            where: { state: "ready" }
+            where: {
+              state: "ready",
+              ...(item.passageId
+                ? { passageIndexes: { some: { id: item.passageId } } }
+                : {})
+            }
           },
           normalizedTextByteSize: true,
           normalizedTextChecksum: true,
@@ -477,8 +617,10 @@ async function sourceVersionForEvidence(
       source: {
         select: {
           baseMemberships: {
-            select: { removedAt: true },
-            where: { knowledgeBaseId: item.knowledgeBaseId }
+            select: { knowledgeBaseId: true, removedAt: true },
+            where: input.knowledgeBaseId
+              ? { knowledgeBaseId: input.knowledgeBaseId }
+              : { knowledgeBaseId: { in: [] } }
           },
           currentVersionId: true,
           deletionRequestedAt: true,
@@ -493,16 +635,80 @@ async function sourceVersionForEvidence(
   });
 }
 
+async function currentAuthorityForEvidence(
+  client: CitationViewerClient,
+  input: Readonly<{
+    access: ChatAccess;
+    item: EvidenceItem;
+    runId: string;
+    userId: string;
+  }>
+): Promise<EvidenceAuthority | null> {
+  if (!input.item.sourceId || !input.item.sourceVersionId || !input.item.sourceArtifactId) {
+    return null;
+  }
+  const binding = await client.knowledgeRunSourceBinding.findFirst({
+    select: {
+      baseProvenance: true,
+      profileBindingId: true,
+      sourceVersionNumber: true,
+      source: { select: { ownerUserId: true } }
+    },
+    where: {
+      modelRunId: input.runId,
+      readinessState: "ready",
+      sourceArtifactId: input.item.sourceArtifactId,
+      sourceId: input.item.sourceId,
+      sourceVersionId: input.item.sourceVersionId,
+      tombstonedAt: null
+    }
+  });
+  if (!binding?.source || binding.profileBindingId !== input.item.knowledgeBaseId ||
+    binding.sourceVersionNumber !== input.item.sourceVersionNumber) return null;
+  const baseIds = acceptedBaseIds(binding.baseProvenance);
+  if (baseIds === null) return null;
+  for (const knowledgeBaseId of baseIds) {
+    const base = await currentBaseForAccess(client, {
+      access: input.access,
+      knowledgeBaseId,
+      userId: input.userId
+    });
+    if (base) return Object.freeze({ base, knowledgeBaseId });
+  }
+  if (baseIds.length > 0) return null;
+  if (input.access.kind === "personal") {
+    return binding.source.ownerUserId === input.userId
+      ? Object.freeze({ base: null, knowledgeBaseId: null })
+      : null;
+  }
+  const projectBinding = await client.projectKnowledgeSourceBinding.findUnique({
+    select: { projectId: true },
+    where: {
+      projectId_sourceId: {
+        projectId: input.access.project.projectId,
+        sourceId: input.item.sourceId
+      }
+    }
+  });
+  return projectBinding
+    ? Object.freeze({ base: null, knowledgeBaseId: null })
+    : null;
+}
+
 function sourceStatuses(input: Readonly<{
-  base: CurrentBase;
+  base: CurrentBase | null;
+  knowledgeBaseId: string | null;
   userId: string;
   version: ViewerSourceVersion;
 }>): readonly KnowledgeViewerSourceStatus[] {
   const statuses: KnowledgeViewerSourceStatus[] = [];
   if (input.version.source.currentVersionId !== input.version.id) statuses.push("earlier_version");
-  const membership = input.version.source.baseMemberships[0];
-  if (!membership || membership.removedAt) statuses.push("removed");
-  if ((input.base.trashedAt || input.version.source.trashedAt) &&
+  const membership = input.knowledgeBaseId
+    ? input.version.source.baseMemberships.find((entry) =>
+        entry.knowledgeBaseId === input.knowledgeBaseId)
+    : null;
+  if (input.knowledgeBaseId && (!membership || membership.removedAt)) statuses.push("removed");
+  if ((input.base?.trashedAt || input.version.source.trashedAt) &&
     input.version.source.ownerUserId === input.userId) statuses.push("trash");
   return statuses;
 }
@@ -525,6 +731,7 @@ async function citationFromEvidence(
   input: Readonly<{
     access: ChatAccess;
     item: EvidenceItem;
+    runId: string;
     userId: string;
   }>
 ): Promise<ResolvedKnowledgeCitationViewer | null> {
@@ -535,31 +742,47 @@ async function citationFromEvidence(
     };
   }
   if (
-    input.item.state !== "available" || !input.item.knowledgeBaseId ||
-    !input.item.sourceArtifactId || !input.item.passageId ||
+    input.item.state !== "available" ||
+    !input.item.knowledgeBaseId || !input.item.sourceArtifactId || !input.item.passageId ||
     input.item.excerpt === null || !input.item.fileName || input.item.page === null
   ) return null;
-  const base = await currentBaseForAccess(client, {
+  const authority = await currentAuthorityForEvidence(client, {
     access: input.access,
-    knowledgeBaseId: input.item.knowledgeBaseId,
+    item: input.item,
+    runId: input.runId,
     userId: input.userId
   });
-  if (!base) return null;
-  const version = await sourceVersionForEvidence(client, input.item);
+  if (!authority) return null;
+  const version = await sourceVersionForEvidence(client, {
+    item: input.item,
+    knowledgeBaseId: authority.knowledgeBaseId
+  });
   if (!version || !sourceCurrentlyReadable(input.access, input.userId, version)) return null;
   const artifact = version.artifacts[0] ?? null;
   const passage = artifact?.hierarchicalIndexes[0]?.passageIndexes[0] ?? null;
-  const document = await normalizedDocument(storage, artifact);
   const visual = visualAnalysis(input.item);
+  const context = documentContext(input.item);
+  if (
+    !artifact || artifact.state !== "ready" ||
+    version.id !== input.item.sourceVersionId ||
+    version.versionNumber !== input.item.sourceVersionNumber ||
+    input.item.documentId !== input.item.sourceId ||
+    input.item.documentVersionId !== input.item.sourceVersionId ||
+    context === undefined ||
+    (!visual && (!passage || input.item.contentHash === null ||
+      passage.contentHash.trim() !== input.item.contentHash))
+  ) return null;
+  const document = await normalizedDocument(storage, artifact);
   const blocks = contextBlocks(document, visual
     ? { sourceBlockIds: [visual.blockId] }
-    : passage);
+    : passage, context);
+  if (blocks.length === 0) return null;
   const workbook = workbookViewer(document, structuredAnalysis(input.item));
   const original = originalReference(version);
   return {
     citation: {
       ...availableViewer({
-        baseName: input.item.baseName ?? base.name,
+        baseName: input.item.baseName ?? authority.base?.name ?? null,
         blocks,
         excerpt: input.item.excerpt,
         excerptTruncated: input.item.textTruncated === true,
@@ -575,7 +798,12 @@ async function citationFromEvidence(
         ...(visual ? { locatorBoxes: visual.boundingBoxes } : {}),
         pageEnd: passage?.pageEnd ?? input.item.page,
         pageStart: passage?.page ?? input.item.page,
-        statuses: sourceStatuses({ base, userId: input.userId, version }),
+        statuses: sourceStatuses({
+          base: authority.base,
+          knowledgeBaseId: authority.knowledgeBaseId,
+          userId: input.userId,
+          version
+        }),
         versionNumber: input.item.sourceVersionNumber ?? version.versionNumber,
         visual: visualViewer(visual),
         workbook
@@ -691,7 +919,10 @@ export async function resolveKnowledgeCitationViewer(
     const item = await client.knowledgeEvidenceItem.findFirst({
       select: {
         baseName: true,
+        contentHash: true,
         contextBoundaries: true,
+        documentId: true,
+        documentVersionId: true,
         excerpt: true,
         fileName: true,
         handle: true,
@@ -717,6 +948,7 @@ export async function resolveKnowledgeCitationViewer(
       ? citationFromEvidence(client, storage, {
           access,
           item,
+          runId: run.id,
           userId: input.userId
         })
       : null;

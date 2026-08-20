@@ -1,10 +1,54 @@
 import { describe, expect, it } from "vitest";
+import { finalizeParsedDocument } from "../parsing/assessment";
+import type { ParsedDocumentBlock } from "../parsing";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
   type KnowledgeEvidencePackage,
   type KnowledgeEvidencePackageItem
 } from "./evidencePackage";
+import {
+  createKnowledgeTableDocumentContext,
+  type KnowledgeDocumentContextV1
+} from "./documentContext";
+import { chunkKnowledgeDocument } from "./chunking";
 import { groundKnowledgeAnswer } from "./grounding";
+import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
+import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
+import {
+  KNOWLEDGE_STRATEGY_EXECUTION_VERSION,
+  sealKnowledgeStrategyCoverageReceiptV1,
+  type KnowledgeMeasuredStrategy
+} from "./knowledgeStrategyExecution";
+
+const VERIFIED_DISPATCH_MANIFEST_HASH = "9".repeat(64);
+
+function strategyCoverage(strategy: KnowledgeMeasuredStrategy) {
+  const exactItemsHash = "8".repeat(64);
+  return sealKnowledgeStrategyCoverageReceiptV1({
+    dispatchExpectedItemCount: 1,
+    dispatchIncludedItemCount: 1,
+    dispatchManifestHash: VERIFIED_DISPATCH_MANIFEST_HASH,
+    executionHash: "7".repeat(64),
+    executionId: "strategy-execution-1",
+    expectedItemsHash: exactItemsHash,
+    includedItemsHash: exactItemsHash,
+    observedSourceSetHash: "6".repeat(64),
+    processedItemsHash: "5".repeat(64),
+    processedPassageCount: 1,
+    processedSourceCount: 1,
+    reasonCodes: [],
+    requiredStepCount: 1,
+    settledTargetCount: 0,
+    sourceSetHash: "6".repeat(64),
+    status: "verified",
+    strategy,
+    terminalRequiredStepCount: 1,
+    totalPassageCount: 1,
+    totalSourceCount: 1,
+    totalTargetCount: 0,
+    version: KNOWLEDGE_STRATEGY_EXECUTION_VERSION
+  });
+}
 
 function item(overrides: Partial<KnowledgeEvidencePackageItem> = {}): KnowledgeEvidencePackageItem {
   return {
@@ -48,6 +92,51 @@ function item(overrides: Partial<KnowledgeEvidencePackageItem> = {}): KnowledgeE
   };
 }
 
+function observationContext(overrides: Readonly<{
+  actual?: string;
+  date?: string;
+  metric?: string;
+  reference?: string;
+  unit?: string;
+}> = {}): KnowledgeDocumentContextV1 {
+  return createKnowledgeTableDocumentContext({
+    blockId: `grounding-${overrides.metric ?? "Glucose"}-${overrides.date ?? "2026-08-20"}`,
+    cells: [
+      { columnEnd: 0, columnStart: 0, text: overrides.metric ?? "Glucose" },
+      { columnEnd: 1, columnStart: 1, text: overrides.date ?? "2026-08-20" },
+      { columnEnd: 2, columnStart: 2, text: overrides.actual ?? "10" },
+      { columnEnd: 3, columnStart: 3, text: overrides.reference ?? "20" },
+      { columnEnd: 4, columnStart: 4, text: overrides.unit ?? "mmol/L" }
+    ],
+    headerLineage: [
+      { columnEnd: 0, columnStart: 0, rowIndex: 0, text: "Metric" },
+      { columnEnd: 1, columnStart: 1, rowIndex: 0, text: "Date" },
+      { columnEnd: 2, columnStart: 2, rowIndex: 0, text: "Actual" },
+      { columnEnd: 3, columnStart: 3, rowIndex: 0, text: "Reference" },
+      { columnEnd: 4, columnStart: 4, rowIndex: 0, text: "Unit" }
+    ],
+    rowIndex: 1
+  });
+}
+
+function observationItem(
+  context: KnowledgeDocumentContextV1,
+  overrides: Partial<KnowledgeEvidencePackageItem> = {}
+): KnowledgeEvidencePackageItem {
+  const excerpt = overrides.excerpt ?? "Glucose: actual 10 mmol/L; reference 20 mmol/L; date 2026-08-20.";
+  return item({
+    contextBoundaries: {
+      documentContext: context,
+      expanded: false,
+      excerptBytes: Buffer.byteLength(excerpt, "utf8"),
+      layoutKind: context.locator.kind,
+      sourceTextBytes: Buffer.byteLength(excerpt, "utf8")
+    },
+    excerpt,
+    ...overrides
+  });
+}
+
 function evidence(overrides: Partial<KnowledgeEvidencePackage> = {}): KnowledgeEvidencePackage {
   return {
     citationContract: KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
@@ -68,6 +157,80 @@ function evidence(overrides: Partial<KnowledgeEvidencePackage> = {}): KnowledgeE
     version: 2,
     ...overrides
   };
+}
+
+function producedProjectionItems(): readonly KnowledgeEvidencePackageItem[] {
+  const headers = ["Metric", "Narrative", "Date", "Actual", "Reference", "Unit"];
+  const values = [
+    "Glucose",
+    Array.from({ length: 650 }, (_, index) => `context${index}`).join(" "),
+    "2026-08-20",
+    "5.4",
+    "3.9–6.1",
+    "mmol/L"
+  ];
+  const cells = [headers, values].flatMap((row, rowIndex) => row.map((text, column) => ({
+    column,
+    columnSpan: 1,
+    row: rowIndex,
+    rowSpan: 1,
+    text
+  })));
+  const block: ParsedDocumentBlock = {
+    assetIds: [],
+    boundingBoxes: [],
+    headingPath: ["Lab"],
+    index: 0,
+    isTable: true,
+    languageHints: ["und-Latn"],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: 0,
+    table: { cells, columnCount: headers.length, rowCount: 2 },
+    text: [headers, values].map((row) => row.join("\t")).join("\n"),
+    type: "table"
+  };
+  const normalized = encodeKnowledgeNormalizedDocument(finalizeParsedDocument({
+    blocks: [block],
+    engine: "docling",
+    mediaType: "application/pdf",
+    ocrConfidence: 0.99,
+    pageCount: 1,
+    status: "complete"
+  }), {
+    maxChunksPerDocument: 1_000,
+    maxFileBytes: 2_000_000,
+    maxNormalizedChars: 2_000_000,
+    maxNormalizedObjectBytes: 8_000_000,
+    maxPages: 1_000
+  }, { layoutAwareTables: true, sourceDisplayName: "lab.pdf" }).document;
+  const projections = chunkKnowledgeDocument({
+    document: normalized,
+    maxChunks: 32,
+    profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+  }).filter((chunk) => chunk.documentContext?.locator.kind === "table_row_projection" &&
+    chunk.documentContext.locator.rowIndex === 1);
+  if (projections.length < 2) throw new Error("projection_fixture_not_split");
+  return Object.freeze(projections.map((chunk, index) => {
+    const excerptBytes = Buffer.byteLength(chunk.text, "utf8");
+    return observationItem(chunk.documentContext!, {
+      contentHash: chunk.contentHash,
+      contextBoundaries: {
+        documentContext: chunk.documentContext!,
+        expanded: false,
+        excerptBytes,
+        layoutKind: "table_row_projection",
+        sourceTextBytes: excerptBytes
+      },
+      excerpt: chunk.text,
+      handle: `K${index + 1}`,
+      id: `projection-evidence-${index + 1}`,
+      locator: { page: chunk.page },
+      ordinal: index + 1,
+      passageId: `projection-passage-${index + 1}`,
+      sectionId: "projection-section"
+    });
+  }));
 }
 
 describe("Knowledge grounded answer contract", () => {
@@ -205,6 +368,101 @@ describe("Knowledge grounded answer contract", () => {
       "internal_identity"
     ]));
     expect(result.finalText).not.toContain("base-private-identity");
+  });
+
+  it.each([
+    "None of the selected documents mentions a retention exception [K1].",
+    "No selected sources contain a retention exception [K1].",
+    "Ни в одном выбранном документе не указано исключение из срока хранения [K1]."
+  ])("rejects an unverified negative-universal coverage claim: %s", (answer) => {
+    const result = groundKnowledgeAnswer({ answer, evidence: evidence() });
+
+    expect(result.diagnostics.issueCodes).toContain("coverage_overclaim");
+    expect(result.finalText).not.toBe(answer);
+  });
+
+  it.each([
+    "None of the selected documents mentions a retention exception [K1].",
+    "Ни в одном выбранном документе не указано исключение из срока хранения [K1]."
+  ])("allows a negative-universal claim only with exact verified coverage: %s", (answer) => {
+    const result = groundKnowledgeAnswer({
+      answer,
+      evidence: evidence({
+        coverage: {
+          expectedPassageCount: 1,
+          mode: "verified_only",
+          namedTargets: [],
+          verified: true
+        },
+        groundingDispatch: {
+          manifestHash: VERIFIED_DISPATCH_MANIFEST_HASH,
+          providerAttemptOrdinal: 1,
+          version: 1
+        },
+        items: [item({
+          excerpt: "The complete selected corpus contains the retention rule and no exception."
+        })],
+        strategy: "full_context",
+        strategyCoverage: strategyCoverage("full_context")
+      })
+    });
+
+    expect(result.diagnostics.issueCodes).not.toContain("coverage_overclaim");
+  });
+
+  it("allows positive corpus summaries but blocks negative universals for corpus_summary", () => {
+    const verifiedSummary = evidence({
+      coverage: {
+        expectedPassageCount: 1,
+        mode: "verified_only",
+        namedTargets: [],
+        verified: true
+      },
+      groundingDispatch: {
+        manifestHash: VERIFIED_DISPATCH_MANIFEST_HASH,
+        providerAttemptOrdinal: 1,
+        version: 1
+      },
+      items: [item({
+        excerpt: "Every selected document states that completed exports are retained for 30 days."
+      })],
+      strategy: "corpus_summary",
+      strategyCoverage: strategyCoverage("corpus_summary")
+    });
+    const positive = groundKnowledgeAnswer({
+      answer: "All selected documents state that exports are retained for 30 days [K1].",
+      evidence: verifiedSummary
+    });
+    const negative = groundKnowledgeAnswer({
+      answer: "None of the selected documents mentions a retention exception [K1].",
+      evidence: verifiedSummary
+    });
+
+    expect(positive.diagnostics.issueCodes).not.toContain("coverage_overclaim");
+    expect(negative.diagnostics.issueCodes).toContain("coverage_overclaim");
+  });
+
+  it("rejects a verified receipt bound to a different final dispatch", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "All selected documents retain exports for 30 days [K1].",
+      evidence: evidence({
+        coverage: {
+          expectedPassageCount: 1,
+          mode: "verified_only",
+          namedTargets: [],
+          verified: true
+        },
+        groundingDispatch: {
+          manifestHash: "4".repeat(64),
+          providerAttemptOrdinal: 1,
+          version: 1
+        },
+        strategy: "full_context",
+        strategyCoverage: strategyCoverage("full_context")
+      })
+    });
+
+    expect(result.diagnostics.issueCodes).toContain("coverage_overclaim");
   });
 
   it("does not infer a global contradiction from different evidence numbers", () => {
@@ -346,6 +604,348 @@ describe("Knowledge grounded answer contract", () => {
     expect(result.finalText).not.toContain("41,2 ед/л");
   });
 
+  it("rejects a date cited before a value when their handles resolve to different Sources", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "05.03.2030 [K2], показатель Альфа 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item({
+            excerpt: "Показатель Альфа 41,2 ед/л.",
+            fileName: "03.01.2030-synthetic-alpha.pdf"
+          }),
+          item({
+            excerpt: "Показатель Альфа 35,4 ед/л.",
+            fileName: "05.03.2030-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ],
+        originalIntent: {
+          intent: "structured_data_analysis",
+          query: "Какая динамика показателя Альфа?"
+        }
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(result.finalText).not.toContain("41,2 ед/л");
+  });
+
+  it("preserves a split Russian date/value observation when one cited item supports both", () => {
+    const sourceText = "Дата измерения: 05.03.2030. Показатель Альфа 41,2 ед/л.";
+    const result = groundKnowledgeAnswer({
+      answer: "05.03.2030 [K2], показатель Альфа 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: sourceText, fileName: "05.03.2030-synthetic-alpha.pdf" }),
+          item({
+            excerpt: sourceText,
+            fileName: "05.03.2030-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2
+          })
+        ],
+        originalIntent: {
+          intent: "structured_data_analysis",
+          query: "Какая динамика показателя Альфа?"
+        }
+      })
+    });
+
+    expect(result).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("rejects the same cross-Source field split in English", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "2030-03-05 [K2], the Alpha metric was 41.2 mg/l [K1].",
+      evidence: evidence({
+        items: [
+          item({
+            excerpt: "The Alpha metric was 41.2 mg/l.",
+            fileName: "2030-01-03-synthetic-alpha.pdf"
+          }),
+          item({
+            excerpt: "The Alpha metric was 35.4 mg/l.",
+            fileName: "2030-03-05-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects a Russian label cited to one Source and a value cited to another", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "Показатель Альфа [K2] равен 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: "Показатель Бета 41,2 ед/л." }),
+          item({
+            excerpt: "Показатель Альфа 35,4 ед/л.",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ],
+        originalIntent: { intent: "fact_lookup", query: "Чему равен показатель Альфа?" }
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects an English label cited to one Source and a value cited to another", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "Alpha metric [K2] equals 41.2 mg/l [K1].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: "Beta metric equals 41.2 mg/l." }),
+          item({
+            excerpt: "Alpha metric equals 35.4 mg/l.",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects a Russian value cited before a date from another Source", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "41,2 ед/л [K1] — дата 05.03.2030 [K2].",
+      evidence: evidence({
+        items: [
+          item({
+            excerpt: "Показатель Альфа 41,2 ед/л.",
+            fileName: "03.01.2030-synthetic-alpha.pdf"
+          }),
+          item({
+            excerpt: "Показатель Альфа 35,4 ед/л.",
+            fileName: "05.03.2030-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ],
+        originalIntent: { intent: "fact_lookup", query: "Когда получено значение 41,2?" }
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects an English value cited before a date from another Source", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "41.2 mg/l [K1] — date 2030-03-05 [K2].",
+      evidence: evidence({
+        items: [
+          item({
+            excerpt: "The Alpha metric was 41.2 mg/l.",
+            fileName: "2030-01-03-synthetic-alpha.pdf"
+          }),
+          item({
+            excerpt: "The Alpha metric was 35.4 mg/l.",
+            fileName: "2030-03-05-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects a value cited before its label when they come from different Sources", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "41.2 mg/l [K1] for the Alpha metric [K2].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: "The Beta metric was 41.2 mg/l." }),
+          item({
+            excerpt: "The Alpha metric was 35.4 mg/l.",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("preserves a value cited before its label with joint same-Source support", () => {
+    const sourceText = "The Alpha metric was 41.2 mg/l.";
+    const result = groundKnowledgeAnswer({
+      answer: "41.2 mg/l [K1] for the Alpha metric [K2].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: sourceText }),
+          item({ excerpt: sourceText, handle: "K2", id: "evidence-2", ordinal: 2 })
+        ]
+      })
+    });
+
+    expect(result).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("rejects an English terminal metric label unsupported by the preceding citation", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "41.2 mg/l [K1] for the Alpha metric.",
+      evidence: evidence({ items: [item({ excerpt: "The Beta metric was 41.2 mg/l." })] })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("rejects a Russian terminal metric label unsupported by the preceding citation", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "41,2 ед/л [K1] для показателя Альфа.",
+      evidence: evidence({
+        items: [item({ excerpt: "Показатель Бета равен 41,2 ед/л." })],
+        originalIntent: { intent: "fact_lookup", query: "Чему равен показатель Альфа?" }
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("preserves EN/RU terminal metric labels supported by the preceding citation", () => {
+    const english = groundKnowledgeAnswer({
+      answer: "41.2 mg/l [K1] for the Alpha metric.",
+      evidence: evidence({ items: [item({ excerpt: "The Alpha metric was 41.2 mg/l." })] })
+    });
+    const russian = groundKnowledgeAnswer({
+      answer: "41,2 ед/л [K1] для показателя Альфа.",
+      evidence: evidence({
+        items: [item({ excerpt: "Показатель Альфа равен 41,2 ед/л." })],
+        originalIntent: { intent: "fact_lookup", query: "Чему равен показатель Альфа?" }
+      })
+    });
+
+    expect(english).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+    expect(russian).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("preserves split label/value and value/date observations with joint same-Source support", () => {
+    const russianSource = "Показатель Альфа равен 41,2 ед/л.";
+    const russian = groundKnowledgeAnswer({
+      answer: "Показатель Альфа [K2] равен 41,2 ед/л [K1].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: russianSource }),
+          item({ excerpt: russianSource, handle: "K2", id: "evidence-2", ordinal: 2 })
+        ],
+        originalIntent: { intent: "fact_lookup", query: "Чему равен показатель Альфа?" }
+      })
+    });
+    const englishSource = "Measurement date: 2030-03-05. The Alpha metric was 41.2 mg/l.";
+    const english = groundKnowledgeAnswer({
+      answer: "41.2 mg/l [K1] — date 2030-03-05 [K2].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: englishSource, fileName: "2030-03-05-synthetic-alpha.pdf" }),
+          item({
+            excerpt: englishSource,
+            fileName: "2030-03-05-synthetic-alpha.pdf",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2
+          })
+        ]
+      })
+    });
+
+    expect(russian).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+    expect(english).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("preserves independently supported English observations in one comparison sentence", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "Alpha metric [K1] equals 41.2 mg/l [K1], while Beta metric [K2] equals 35.4 mg/l [K2].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: "Alpha metric equals 41.2 mg/l." }),
+          item({
+            excerpt: "Beta metric equals 35.4 mg/l.",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ]
+      })
+    });
+
+    expect(result).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("preserves independently supported Russian observations in one comparison sentence", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "Показатель Альфа [K1] равен 41,2 ед/л [K1], а показатель Бета [K2] равен 35,4 ед/л [K2].",
+      evidence: evidence({
+        items: [
+          item({ excerpt: "Показатель Альфа равен 41,2 ед/л." }),
+          item({
+            excerpt: "Показатель Бета равен 35,4 ед/л.",
+            handle: "K2",
+            id: "evidence-2",
+            ordinal: 2,
+            sourceArtifactId: "artifact-2",
+            sourceId: "source-2",
+            sourceVersionId: "source-version-2"
+          })
+        ],
+        originalIntent: { intent: "fact_lookup", query: "Сравни показатели Альфа и Бета." }
+      })
+    });
+
+    expect(result).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
   it("rejects an obvious label/value swap inside one dated Source", () => {
     const result = groundKnowledgeAnswer({
       answer: "05.03.2030: METRIC-B is 12.4 [K1].",
@@ -387,6 +987,306 @@ describe("Knowledge grounded answer contract", () => {
     expect(uncited.finalText).not.toContain("45 days");
     expect(calculated.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
     expect(calculated.finalText).not.toContain("21%");
+  });
+
+  it("uses typed roles instead of accepting an actual/reference lexical swap", () => {
+    const context = observationContext();
+    const accepted = groundKnowledgeAnswer({
+      answer: "Glucose actual is 10 mmol/L on 2026-08-20 [K1].",
+      evidence: evidence({ items: [observationItem(context)] })
+    });
+    const swapped = groundKnowledgeAnswer({
+      answer: "Glucose actual is 20 mmol/L on 2026-08-20 [K1].",
+      evidence: evidence({ items: [observationItem(context)] })
+    });
+
+    expect(accepted).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+    expect(swapped.outcome).toBe("no_answer");
+    expect(swapped.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("does not assemble a claimed range from actual and reference scalar roles", () => {
+    const split = groundKnowledgeAnswer({
+      answer: "Glucose actual ranges from 10 to 20 mmol/L [K1].",
+      evidence: evidence({ items: [observationItem(observationContext())] })
+    });
+    const exactRange = groundKnowledgeAnswer({
+      answer: "Glucose actual ranges from 10 to 20 mmol/L [K1].",
+      evidence: evidence({
+        items: [observationItem(observationContext({ actual: "10–20", reference: "30" }))]
+      })
+    });
+
+    expect(split.outcome).toBe("no_answer");
+    expect(split.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(exactRange).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("rejects combined unknown subject and metric labels in typed evidence", () => {
+    const context = createKnowledgeTableDocumentContext({
+      blockId: "grounding-subject-metric",
+      cells: [
+        { columnEnd: 0, columnStart: 0, text: "Alice" },
+        { columnEnd: 1, columnStart: 1, text: "Glucose" },
+        { columnEnd: 2, columnStart: 2, text: "10" },
+        { columnEnd: 3, columnStart: 3, text: "mmol/L" }
+      ],
+      headerLineage: [
+        { columnEnd: 0, columnStart: 0, rowIndex: 0, text: "Subject" },
+        { columnEnd: 1, columnStart: 1, rowIndex: 0, text: "Metric" },
+        { columnEnd: 2, columnStart: 2, rowIndex: 0, text: "Actual" },
+        { columnEnd: 3, columnStart: 3, rowIndex: 0, text: "Unit" }
+      ],
+      rowIndex: 1
+    });
+    const accepted = groundKnowledgeAnswer({
+      answer: "Alice Glucose actual is 10 mmol/L [K1].",
+      evidence: evidence({ items: [observationItem(context)] })
+    });
+    const rejected = groundKnowledgeAnswer({
+      answer: "Bob Temperature actual is 10 mmol/L [K1].",
+      evidence: evidence({ items: [observationItem(context)] })
+    });
+
+    expect(accepted).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+    expect(rejected.outcome).toBe("no_answer");
+    expect(rejected.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("grounds across one complete producer-generated row projection group only", () => {
+    const items = producedProjectionItems();
+    const citations = items.map((entry) => `[${entry.handle}]`).join("");
+    const answer = `Glucose actual is 5.4mmol/L on 2026-08-20 ${citations}.`;
+    const accepted = groundKnowledgeAnswer({
+      answer,
+      evidence: evidence({ items })
+    });
+
+    expect(new Set(items.map((entry) => {
+      const locator = entry.contextBoundaries?.documentContext?.locator;
+      return locator?.kind === "table_row_projection" ? locator.rowId : null;
+    })).size).toBe(1);
+    expect(accepted).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+
+    const rejectedVariants = [
+      items.slice(0, -1),
+      items.map((entry, index) => index === items.length - 1
+        ? { ...entry, textTruncated: true }
+        : entry),
+      items.map((entry, index) => index === items.length - 1
+        ? { ...entry, sourceId: "foreign-source" }
+        : entry),
+      items.map((entry, index) => index === items.length - 1
+        ? { ...entry, sourceVersionId: "foreign-source-version" }
+        : entry),
+      items.map((entry, index) => {
+        const context = entry.contextBoundaries?.documentContext;
+        return index === items.length - 1 && context?.locator.kind === "table_row_projection"
+          ? {
+              ...entry,
+              contextBoundaries: {
+                ...entry.contextBoundaries!,
+                documentContext: {
+                  ...context,
+                  locator: { ...context.locator, rowId: "foreign-row" }
+                }
+              }
+            }
+          : entry;
+      }),
+      items.map((entry, index) => {
+        const context = entry.contextBoundaries?.documentContext;
+        return index === items.length - 1 && context?.locator.kind === "table_row_projection"
+          ? {
+              ...entry,
+              contextBoundaries: {
+                ...entry.contextBoundaries!,
+                documentContext: {
+                  ...context,
+                  locator: { ...context.locator, blockId: "foreign-block" }
+                }
+              }
+            }
+          : entry;
+      })
+    ];
+    for (const variant of rejectedVariants) {
+      const variantCitations = variant.map((entry) => `[${entry.handle}]`).join("");
+      const result = groundKnowledgeAnswer({
+        answer: `Glucose actual is 5.4mmol/L on 2026-08-20 ${variantCitations}.`,
+        evidence: evidence({ items: variant })
+      });
+      expect(result.outcome).toBe("no_answer");
+      expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    }
+  });
+
+  it.each([
+    ["Glucose actual is 5.4mmol/L [K1].", "Glucose actual is 5.5mmol/L [K1].", {
+      actual: "5.4", metric: "Glucose", unit: "mmol/L"
+    }],
+    ["Hemoglobin actual is 142g/L [K1].", "Hemoglobin actual is 142mg/L [K1].", {
+      actual: "142", metric: "Hemoglobin", unit: "g/L"
+    }],
+    ["Temperature actual is 37°C [K1].", "Temperature actual is 38°C [K1].", {
+      actual: "37", metric: "Temperature", unit: "°C"
+    }],
+    ["Показатель Доза: факт 99мг [K1].", "Показатель Доза: факт 99мкг [K1].", {
+      actual: "99", metric: "Доза", unit: "мг"
+    }],
+    ["Count actual is 1e3mg [K1].", "Count actual is 1e4mg [K1].", {
+      actual: "1000", metric: "Count", unit: "mg"
+    }],
+    ["Temperature actual is −5°C [K1].", "Temperature actual is 5°C [K1].", {
+      actual: "-5", metric: "Temperature", unit: "°C"
+    }]
+  ] as const)("does not let attached units or scientific notation bypass grounding: %s", (
+    acceptedAnswer,
+    rejectedAnswer,
+    contextInput
+  ) => {
+    const typed = observationItem(observationContext(contextInput));
+    const accepted = groundKnowledgeAnswer({
+      answer: acceptedAnswer,
+      evidence: evidence({ items: [typed] })
+    });
+    const rejected = groundKnowledgeAnswer({
+      answer: rejectedAnswer,
+      evidence: evidence({ items: [typed] })
+    });
+
+    expect(accepted).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+    expect(rejected.outcome).toBe("no_answer");
+    expect(rejected.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it.each([
+    "Count actual is <5mg [K1].",
+    "Count actual is >5mg [K1].",
+    "Count actual is <=5mg [K1].",
+    "Count actual is >=5mg [K1].",
+    "Count actual is ≤5mg [K1].",
+    "Count actual is ≥5mg [K1]."
+  ])("fails closed for unsupported numeric comparison semantics: %s", (answer) => {
+    const result = groundKnowledgeAnswer({
+      answer,
+      evidence: evidence({
+        items: [observationItem(observationContext({
+          actual: "5",
+          metric: "Count",
+          unit: "mg"
+        }))]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("does not ground from typed values omitted by excerpt truncation", () => {
+    const context = observationContext();
+    const result = groundKnowledgeAnswer({
+      answer: "Glucose actual is 10 mmol/L on 2026-08-20 [K1].",
+      evidence: evidence({
+        items: [observationItem(context, {
+          excerpt: "Glucose evidence was truncated before the value.",
+          textTruncated: true
+        })]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("keeps same-unit observations separated by typed metric and date", () => {
+    const context = observationContext({ metric: "Beta" });
+    const typed = observationItem(context, {
+      excerpt: "Alpha is mentioned in a note. Beta actual 10 mmol/L; dates 2026-08-20 and 2026-08-21."
+    });
+    const wrongMetric = groundKnowledgeAnswer({
+      answer: "The Alpha metric actual is 10 mmol/L on 2026-08-20 [K1].",
+      evidence: evidence({ items: [typed] })
+    });
+    const wrongDate = groundKnowledgeAnswer({
+      answer: "The Beta metric actual is 10 mmol/L on 2026-08-21 [K1].",
+      evidence: evidence({ items: [typed] })
+    });
+
+    expect(wrongMetric.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(wrongDate.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("does not let an unrelated typed value satisfy an explicit EN/RU Source version", () => {
+    const context = observationContext({ actual: "2" });
+    const typed = observationItem(context, {
+      excerpt: "Source versions 2 and 3 are mentioned; Glucose actual is 2.",
+      sourceVersionNumber: 3
+    });
+    const englishMismatch = groundKnowledgeAnswer({
+      answer: "In source version 2, Glucose actual is 2 [K1].",
+      evidence: evidence({ items: [typed] })
+    });
+    const russianMismatch = groundKnowledgeAnswer({
+      answer: "В версии 2 факт для Glucose равен 2 [K1].",
+      evidence: evidence({
+        items: [typed],
+        originalIntent: { intent: "fact_lookup", query: "Каково значение в версии 2?" }
+      })
+    });
+    const exact = groundKnowledgeAnswer({
+      answer: "In source version 3, Glucose actual is 2 [K1].",
+      evidence: evidence({ items: [typed] })
+    });
+
+    expect(englishMismatch.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(russianMismatch.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+    expect(exact).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+  });
+
+  it("normalizes RU decimal comma but rejects locale-ambiguous thousands in typed context", () => {
+    const decimalContext = observationContext({
+      actual: "5,4",
+      metric: "Глюкоза",
+      unit: "ммоль/л"
+    });
+    const decimal = groundKnowledgeAnswer({
+      answer: "Показатель Глюкоза: факт 5,4 ммоль/л, дата 20.08.2026 [K1].",
+      evidence: evidence({
+        items: [observationItem(decimalContext)],
+        originalIntent: { intent: "fact_lookup", query: "Каков результат анализа?" }
+      })
+    });
+    const integerContext = observationContext({ actual: "1234" });
+    const ambiguous = groundKnowledgeAnswer({
+      answer: "Glucose actual is 1,234 [K1].",
+      evidence: evidence({
+        items: [observationItem(integerContext, {
+          excerpt: "The raw note contains 1,234; Glucose actual is 1234."
+        })]
+      })
+    });
+
+    expect(decimal).toMatchObject({ diagnostics: { issueCodes: [] }, outcome: "passed" });
+    expect(ambiguous.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
+  });
+
+  it("does not fall back to excerpt matching when typed context is ambiguous", () => {
+    const context = createKnowledgeTableDocumentContext({
+      blockId: "grounding-ambiguous",
+      cells: [{ columnEnd: 0, columnStart: 0, text: "30" }],
+      headerLineage: [],
+      rowIndex: 1
+    });
+    const result = groundKnowledgeAnswer({
+      answer: "The actual value is 30 [K1].",
+      evidence: evidence({
+        items: [observationItem(context, { excerpt: "The actual value is 30." })]
+      })
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.diagnostics.issueCodes).toContain("numeric_or_date_mismatch");
   });
 
   it("does not ground a numeric claim in an ambiguous table layout", () => {

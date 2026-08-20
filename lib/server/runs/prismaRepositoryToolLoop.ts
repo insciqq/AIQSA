@@ -8,15 +8,25 @@ import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
-import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import {
-  KNOWLEDGE_QUERY_MAX_CHARACTERS,
+  searchAdapterKinds,
+  searchCredentialModes,
+  searchPlanModes,
+  searchProtocols
+} from "../../domain/search";
+import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
+import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
+import {
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
+  KNOWLEDGE_SCOPE_MAX_SOURCES,
   KNOWLEDGE_TOOL_NAME
 } from "../knowledge/retrievalTypes";
 import { decodeKnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
 import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
+import type { NormalizedRunRequest } from "../providers/types";
+import { resolveProjectAccess } from "../projects/access";
+import { decodeKnowledgePlannerPlan } from "../knowledge/planner";
 import {
   parseToolLoopCheckpoint,
   AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
@@ -159,6 +169,9 @@ function sameCheckpoint(left: ToolLoopCheckpoint, right: ToolLoopCheckpoint): bo
 }
 
 const recoveredRunTerminalMarker = "recoveryTerminal";
+const knowledgeBudgetCancellationFailure = "operation_cancelled";
+const knowledgeBudgetPostDispatchCancellationFailure =
+  "operation_cancelled_after_dispatch";
 
 type LockedToolLoopRun = {
   assistantMessageId: string | null;
@@ -206,6 +219,102 @@ export function recoveredRunErrorPayload(error: { code: string; message: string 
   };
 }
 
+/**
+ * Cancels the run's still-pending calls and settles any attached Knowledge
+ * capacity in the same transaction. The caller must hold the owning ModelRun
+ * row lock before entering this helper.
+ */
+export async function cancelPendingToolLoopCallsInTransaction(
+  tx: Prisma.TransactionClient,
+  runId: string,
+  now = new Date()
+): Promise<number> {
+  const pendingCalls = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT call."id"
+    FROM "ModelRunToolCall" AS call
+    WHERE call."modelRunId" = ${runId}
+      AND call."state" = 'pending'
+    ORDER BY call."roundIndex" ASC, call."ordinal" ASC
+    FOR UPDATE
+  `);
+  if (pendingCalls.length === 0) return 0;
+
+  const pendingCallIds = pendingCalls.map((call) => call.id);
+  await tx.knowledgeBudgetReservation.updateMany({
+    data: {
+      failureCode: knowledgeBudgetCancellationFailure,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      releasedAt: now,
+      state: "released"
+    },
+    where: {
+      modelRunId: runId,
+      modelRunToolCallId: { in: pendingCallIds },
+      purgedAt: null,
+      state: "reserved"
+    }
+  });
+  await tx.knowledgeBudgetReservation.updateMany({
+    data: {
+      leaseExpiresAt: null,
+      leaseToken: null,
+      releasedAt: now,
+      state: "released"
+    },
+    where: {
+      modelRunId: runId,
+      modelRunToolCallId: { in: pendingCallIds },
+      purgedAt: { not: null },
+      state: "reserved"
+    }
+  });
+  await tx.knowledgeBudgetReservation.updateMany({
+    data: {
+      ambiguousAt: now,
+      failureCode: knowledgeBudgetPostDispatchCancellationFailure,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      state: "ambiguous"
+    },
+    where: {
+      modelRunId: runId,
+      modelRunToolCallId: { in: pendingCallIds },
+      purgedAt: null,
+      state: "dispatched"
+    }
+  });
+  await tx.knowledgeBudgetReservation.updateMany({
+    data: {
+      ambiguousAt: now,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      state: "ambiguous"
+    },
+    where: {
+      modelRunId: runId,
+      modelRunToolCallId: { in: pendingCallIds },
+      purgedAt: { not: null },
+      state: "dispatched"
+    }
+  });
+  const cancelled = await tx.modelRunToolCall.updateMany({
+    data: {
+      completedAt: now,
+      state: "cancelled"
+    },
+    where: {
+      id: { in: pendingCallIds },
+      modelRunId: runId,
+      state: "pending"
+    }
+  });
+  if (cancelled.count !== pendingCallIds.length) {
+    throw new Error("pending_tool_call_cancellation_conflict");
+  }
+  return cancelled.count;
+}
+
 export type PrismaRunToolLoopOperations = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
@@ -216,6 +325,7 @@ export type PrismaRunToolLoopOperations = Pick<
   | "claimAutomaticKnowledgeCall"
   | "claimToolLoopCall"
   | "loadCheckpointedToolLoopRun"
+  | "loadProviderDispatchRecoveryRequest"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
   | "recordRunUsageEvents"
@@ -224,6 +334,291 @@ export type PrismaRunToolLoopOperations = Pick<
   | "settleToolLoopCall"
   | "updateRunProviderResponseId"
 >;
+
+const normalizedRequestKeys = new Set([
+  "attachmentIds",
+  "chatId",
+  "content",
+  "context",
+  "knowledgePlanner",
+  "knowledgePlan",
+  "memoryActionTools",
+  "memoryHistoryTool",
+  "modelCapabilities",
+  "mcpDiscovery",
+  "mcp",
+  "modelId",
+  "params",
+  "personalContext",
+  "prompt",
+  "provider",
+  "searchPlan",
+  "skills",
+  "toolBudgets",
+  "toolMode"
+]);
+
+function onlyKnownKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function nonBlank(value: unknown, maximum = 512): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum &&
+    value === value.trim() && !value.includes("\u0000");
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function finiteJson(value: unknown): boolean {
+  try {
+    return JSON.stringify(value) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+function validCapabilities(value: unknown): boolean {
+  if (!isRecord(value) || !onlyKnownKeys(value, new Set([
+    "backgroundStreaming",
+    "contextWindow",
+    "defaultMaxOutputTokens",
+    "defaultReasoningEffort",
+    "defaultReasoningMode",
+    "nativeBackground",
+    "nativeImageGeneration",
+    "nativePdfInput",
+    "nativeSearch",
+    "parallelToolCalls",
+    "pdf",
+    "reasoning",
+    "reasoningEfforts",
+    "reasoningModes",
+    "streaming",
+    "streamUsage",
+    "structuredOutput",
+    "toolCalling",
+    "vision"
+  ]))) return false;
+  for (const key of ["nativePdfInput", "nativeSearch", "pdf", "reasoning", "vision"] as const) {
+    if (typeof value[key] !== "boolean") return false;
+  }
+  for (const key of [
+    "backgroundStreaming",
+    "nativeBackground",
+    "nativeImageGeneration",
+    "parallelToolCalls",
+    "streaming",
+    "streamUsage",
+    "structuredOutput",
+    "toolCalling"
+  ] as const) {
+    if (value[key] !== undefined && typeof value[key] !== "boolean") return false;
+  }
+  for (const key of ["contextWindow", "defaultMaxOutputTokens"] as const) {
+    if (value[key] !== undefined &&
+      (!Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) return false;
+  }
+  for (const key of ["defaultReasoningEffort", "defaultReasoningMode"] as const) {
+    if (value[key] !== undefined && typeof value[key] !== "string") return false;
+  }
+  for (const key of ["reasoningEfforts", "reasoningModes"] as const) {
+    if (value[key] !== undefined && (!Array.isArray(value[key]) ||
+      value[key].some((entry) => typeof entry !== "string"))) return false;
+  }
+  return true;
+}
+
+function validContext(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !onlyKnownKeys(value, new Set(["messages", "mode", "summary"])) ||
+    value.mode !== "branch_path" || !Array.isArray(value.messages)) return false;
+  for (const message of value.messages) {
+    if (!isRecord(message) || !onlyKnownKeys(message, new Set(["content", "id", "purpose", "role"])) ||
+      !nonBlank(message.id, 1_024) ||
+      (message.role !== "assistant" && message.role !== "user") ||
+      (message.purpose !== undefined && message.purpose !== "knowledge_evidence" &&
+        message.purpose !== "skill_context") ||
+      !isRecord(message.content) || !onlyKnownKeys(message.content, new Set(["blocks"])) ||
+      !Array.isArray(message.content.blocks) || !finiteJson(message.content.blocks)) return false;
+  }
+  if (value.summary !== undefined && (!isRecord(value.summary) ||
+    !onlyKnownKeys(value.summary, new Set(["truncation"])) ||
+    !isRecord(value.summary.truncation) ||
+    !onlyKnownKeys(value.summary.truncation, new Set([
+      "approxDroppedTokens",
+      "approxFinalTokens",
+      "approxOriginalTokens",
+      "budgetTokens",
+      "contextWindow",
+      "droppedMessages",
+      "keptMessages",
+      "maxOutputTokens",
+      "safetyMarginTokens"
+    ])) || Object.values(value.summary.truncation).some((entry) =>
+      !Number.isSafeInteger(entry) || Number(entry) < 0))) return false;
+  return true;
+}
+
+function validSearchPlan(value: unknown): boolean {
+  if (!isRecord(value) || !onlyKnownKeys(value, new Set(["mode", "options"])) ||
+    !searchPlanModes.includes(value.mode as (typeof searchPlanModes)[number]) ||
+    !Array.isArray(value.options) || value.options.length > 3) return false;
+  const optionIds = new Set<string>();
+  for (const option of value.options) {
+    if (!isRecord(option) || !onlyKnownKeys(option, new Set([
+      "adapterKind",
+      "config",
+      "credentialMode",
+      "displayName",
+      "executionModes",
+      "modelId",
+      "optionId",
+      "protocol",
+      "provider",
+      "providerModelId",
+      "revisionId",
+      "searchStrategyRowId"
+    ])) || !searchAdapterKinds.includes(option.adapterKind as (typeof searchAdapterKinds)[number]) ||
+      !searchCredentialModes.includes(option.credentialMode as (typeof searchCredentialModes)[number]) ||
+      !searchProtocols.includes(option.protocol as (typeof searchProtocols)[number]) ||
+      !isRecord(option.config) || !finiteJson(option.config) ||
+      !Array.isArray(option.executionModes) || option.executionModes.length < 1 ||
+      option.executionModes.some((mode) =>
+        !searchPlanModes.includes(mode as (typeof searchPlanModes)[number])) ||
+      !nonBlank(option.optionId, 160) || !nonBlank(option.provider) ||
+      !nonBlank(option.revisionId) || !nonBlank(option.searchStrategyRowId) ||
+      !(option.modelId === null || nonBlank(option.modelId)) ||
+      !(option.providerModelId === null || nonBlank(option.providerModelId)) ||
+      (option.displayName !== undefined && typeof option.displayName !== "string") ||
+      optionIds.has(option.optionId)) return false;
+    optionIds.add(option.optionId);
+  }
+  return true;
+}
+
+function validMcpSnapshot(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !onlyKnownKeys(value, new Set(["servers", "tools", "version"])) ||
+    value.version !== 1 || !Array.isArray(value.servers) || !Array.isArray(value.tools)) return false;
+  const servers = new Map<string, string>();
+  for (const server of value.servers) {
+    if (!isRecord(server) || !onlyKnownKeys(server, new Set([
+      "credentialSources",
+      "externalAccountLabel",
+      "fingerprint",
+      "revisionId",
+      "serverId",
+      "serverName"
+    ])) || !/^[0-9a-f]{64}$/u.test(String(server.fingerprint)) ||
+      !nonBlank(server.revisionId) || !nonBlank(server.serverId) ||
+      !nonBlank(server.serverName) || servers.has(server.serverId) ||
+      server.externalAccountLabel !== undefined &&
+        server.externalAccountLabel !== null &&
+        typeof server.externalAccountLabel !== "string" ||
+      server.credentialSources !== undefined && (
+        !Array.isArray(server.credentialSources) ||
+        new Set(server.credentialSources).size !== server.credentialSources.length ||
+        server.credentialSources.some((source) =>
+          source !== "oauth" && source !== "personal" && source !== "shared")
+      )) return false;
+    servers.set(server.serverId, server.serverName);
+  }
+  const namespacedNames = new Set<string>();
+  for (const tool of value.tools) {
+    if (!isRecord(tool) || !onlyKnownKeys(tool, new Set([
+      "annotations",
+      "definitionHash",
+      "description",
+      "inputSchema",
+      "name",
+      "namespacedName",
+      "originalName",
+      "outputSchema",
+      "serverId",
+      "serverName",
+      "title"
+    ])) || !/^[0-9a-f]{64}$/u.test(String(tool.definitionHash)) ||
+      !nullableString(tool.description) || !isRecord(tool.inputSchema) ||
+      !finiteJson(tool.inputSchema) || !nonBlank(tool.name) ||
+      !nonBlank(tool.namespacedName) || !nonBlank(tool.originalName) ||
+      tool.name !== tool.originalName || !nonBlank(tool.serverId) ||
+      !nonBlank(tool.serverName) || servers.get(tool.serverId) !== tool.serverName ||
+      namespacedNames.has(tool.namespacedName) ||
+      tool.outputSchema !== undefined &&
+        (!isRecord(tool.outputSchema) || !finiteJson(tool.outputSchema)) ||
+      tool.annotations !== undefined && (!isRecord(tool.annotations) ||
+        Object.values(tool.annotations).some((entry) =>
+          typeof entry !== "boolean" && typeof entry !== "string")) ||
+      tool.title !== undefined && typeof tool.title !== "string") return false;
+    namespacedNames.add(tool.namespacedName);
+  }
+  return true;
+}
+
+function decodeProviderDispatchRecoveryRequest(
+  value: unknown,
+  identity: Readonly<{ chatId: string; modelId: string; provider: string }>
+): NormalizedRunRequest | null {
+  if (!isRecord(value) || !onlyKnownKeys(value, normalizedRequestKeys) ||
+    value.chatId !== identity.chatId || value.modelId !== identity.modelId ||
+    value.provider !== identity.provider || !nonBlank(value.chatId) ||
+    !nonBlank(value.modelId) || !nonBlank(value.provider) ||
+    !Array.isArray(value.attachmentIds) ||
+    value.attachmentIds.some((id) => !nonBlank(id, 1_024)) ||
+    new Set(value.attachmentIds).size !== value.attachmentIds.length ||
+    !isRecord(value.content) || !onlyKnownKeys(value.content, new Set(["blocks"])) ||
+    !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
+    !validContext(value.context) || !validCapabilities(value.modelCapabilities) ||
+    !isRecord(value.params) || !finiteJson(value.params) ||
+    !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
+      "baseline", "developer", "system"
+    ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
+    !validSearchPlan(value.searchPlan) || !validMcpSnapshot(value.mcp) ||
+    (value.toolMode !== "auto" && value.toolMode !== "none")) return null;
+  if (value.prompt.baseline !== undefined && (!isRecord(value.prompt.baseline) ||
+    !onlyKnownKeys(value.prompt.baseline, new Set(["source", "timeZone", "timeZoneSource"])) ||
+    value.prompt.baseline.source !== "standard_chat" ||
+    typeof value.prompt.baseline.timeZone !== "string" ||
+    (value.prompt.baseline.timeZoneSource !== "client" &&
+      value.prompt.baseline.timeZoneSource !== "utc_fallback"))) return null;
+  if (!decodeKnowledgePlan(value.knowledgePlan).ok ||
+    value.knowledgePlanner !== undefined && !decodeKnowledgePlannerPlan(value.knowledgePlanner).ok ||
+    value.mcpDiscovery !== undefined && !decodeMcpDiscoveryState(value.mcpDiscovery, 100)) return null;
+  if (value.memoryActionTools !== undefined && (!isRecord(value.memoryActionTools) ||
+    !onlyKnownKeys(value.memoryActionTools, new Set(["version"])) ||
+    value.memoryActionTools.version !== "model-driven-v2")) return null;
+  if (value.memoryHistoryTool !== undefined && (!isRecord(value.memoryHistoryTool) ||
+    !onlyKnownKeys(value.memoryHistoryTool, new Set(["maxCalls", "pageSize"])) ||
+    value.memoryHistoryTool.maxCalls !== 2 || value.memoryHistoryTool.pageSize !== 20)) return null;
+  const personalContext = value.personalContext;
+  if (personalContext !== undefined && (!isRecord(personalContext) ||
+    !onlyKnownKeys(personalContext, new Set([
+      "approxTokens", "itemCount", "memoryGeneration", "memoryRevision", "mode", "text"
+    ])) || personalContext.mode !== "prefetched" ||
+    typeof personalContext.text !== "string" ||
+    ["approxTokens", "itemCount", "memoryGeneration", "memoryRevision"].some((key) =>
+      !Number.isSafeInteger(personalContext[key]) || Number(personalContext[key]) < 0))) return null;
+  if (value.skills !== undefined && (!Array.isArray(value.skills) || value.skills.some((skill) =>
+    !isRecord(skill) || !onlyKnownKeys(skill, new Set(["name", "revisionId", "skillId"])) ||
+    !nonBlank(skill.name) || !nonBlank(skill.revisionId) || !nonBlank(skill.skillId)))) return null;
+  const toolBudgets = value.toolBudgets;
+  if (toolBudgets !== undefined && (!isRecord(toolBudgets) ||
+    !onlyKnownKeys(toolBudgets, new Set([
+      "mcpAutoDiscoveryTimeoutSeconds",
+      "maxMcpToolsPerDiscovery",
+      "maxToolCalls",
+      "maxToolRounds"
+    ])) || ["maxToolCalls", "maxToolRounds"].some((key) =>
+      !Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1) ||
+    ["mcpAutoDiscoveryTimeoutSeconds", "maxMcpToolsPerDiscovery"].some((key) =>
+      toolBudgets[key] !== undefined &&
+      (!Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1)))) {
+    return null;
+  }
+  return value as unknown as NormalizedRunRequest;
+}
 
 export function createPrismaRunToolLoopOperations(
   prismaClient: PrismaClient,
@@ -324,17 +719,11 @@ export function createPrismaRunToolLoopOperations(
       });
     },
     cancelPendingToolLoopCalls: async (input) => {
-      const cancelled = await prismaClient.modelRunToolCall.updateMany({
-        data: {
-          completedAt: new Date(),
-          state: "cancelled"
-        },
-        where: {
-          modelRun: { id: input.runId, userId: input.userId },
-          state: "pending"
-        }
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return 0;
+        return cancelPendingToolLoopCallsInTransaction(tx, input.runId);
       });
-      return cancelled.count;
     },
     prepareAutomaticKnowledgeCallBatch: async (input) => {
       if (input.calls.length < 1 || input.calls.length > KNOWLEDGE_SCOPE_MAX_BINDINGS) {
@@ -342,11 +731,11 @@ export function createPrismaRunToolLoopOperations(
       }
       const providerCallIds = new Set<string>();
       for (const [index, call] of input.calls.entries()) {
+        const argumentsValue = toolLoopArguments(call.arguments);
         if (call.ordinal !== index ||
           call.providerCallId !== `${AUTOMATIC_KNOWLEDGE_CALL_PREFIX}${index + 1}` ||
           call.providerCallId.length > toolLoopPersistenceLimits.providerCallIdLength ||
-          providerCallIds.has(call.providerCallId) || !call.query.trim() ||
-          call.query.length > KNOWLEDGE_QUERY_MAX_CHARACTERS) {
+          providerCallIds.has(call.providerCallId) || !argumentsValue) {
           return { kind: "conflict" as const };
         }
         providerCallIds.add(call.providerCallId);
@@ -378,7 +767,7 @@ export function createPrismaRunToolLoopOperations(
             const args = toolLoopArguments(call.arguments);
             return Boolean(expected && call.ordinal === expected.ordinal &&
               call.providerCallId === expected.providerCallId && call.toolName === KNOWLEDGE_TOOL_NAME &&
-              args && Object.keys(args).length === 1 && args.query === expected.query);
+              args && canonicalJson(args) === canonicalJson(expected.arguments));
           });
           return same
             ? { calls: existing.map(persistedToolLoopCall), kind: "reused" as const }
@@ -387,7 +776,7 @@ export function createPrismaRunToolLoopOperations(
         for (const call of input.calls) {
           await tx.modelRunToolCall.create({
             data: {
-              arguments: json({ query: call.query }),
+              arguments: json(call.arguments),
               modelRunId: input.runId,
               ordinal: call.ordinal,
               providerCallId: call.providerCallId,
@@ -563,6 +952,7 @@ export function createPrismaRunToolLoopOperations(
             select: {
               budgetPolicy: true,
               exclusions: true,
+              resolvedSourceCount: true,
               selection: true
             }
           },
@@ -600,6 +990,9 @@ export function createPrismaRunToolLoopOperations(
         ? recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions)
         : null;
       if (run.knowledgeRunScope && (!selection?.ok || !budgetPolicy || !exclusions ||
+        !Number.isSafeInteger(run.knowledgeRunScope.resolvedSourceCount) ||
+        run.knowledgeRunScope.resolvedSourceCount < 0 ||
+        run.knowledgeRunScope.resolvedSourceCount > KNOWLEDGE_SCOPE_MAX_SOURCES ||
         run.knowledgeRunBindings.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
         run.knowledgeRunBindings.some((binding, index) =>
           binding.ordinal !== index || !/^[0-9a-f]{64}$/u.test(
@@ -631,7 +1024,8 @@ export function createPrismaRunToolLoopOperations(
                 })),
                 budgetPolicy,
                 exclusions,
-                knowledgePlan: selection.plan
+                knowledgePlan: selection.plan,
+                resolvedSourceCount: run.knowledgeRunScope.resolvedSourceCount
               }
             }
           : {}),
@@ -645,6 +1039,35 @@ export function createPrismaRunToolLoopOperations(
         status: run.status,
         userId: run.userId
       };
+    },
+    loadProviderDispatchRecoveryRequest: async (input) => {
+      const run = await prismaClient.modelRun.findUnique({
+        select: {
+          chat: {
+            select: {
+              projectId: true,
+              userId: true
+            }
+          },
+          chatId: true,
+          modelId: true,
+          normalizedRequest: true,
+          provider: true
+        },
+        where: { id: input.runId }
+      });
+      if (!run) return null;
+      if (run.chat.userId !== input.userId) {
+        if (!run.chat.projectId || !(await resolveProjectAccess(prismaClient, {
+          projectId: run.chat.projectId,
+          userId: input.userId
+        }))) return null;
+      }
+      const request = decodeProviderDispatchRecoveryRequest(run.normalizedRequest, run);
+      if (!request) {
+        throw new Error("provider_dispatch_recovery_request_invalid_in_storage");
+      }
+      return request;
     },
     persistToolLoopCallBatch: async (input: PersistToolLoopCallBatchInput) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||

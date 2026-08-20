@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ParsedDocumentBlock } from "../parsing";
 import { finalizeParsedDocument } from "../parsing/assessment";
 import { chunkKnowledgeDocument } from "./chunking";
+import { createKnowledgeTableDocumentContext } from "./documentContext";
 import {
   buildKnowledgeHierarchicalIndex,
   KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,
@@ -156,6 +157,55 @@ describe("Knowledge hierarchical index derivation", () => {
       languageConfig: "russian",
       text: russianChunk.text
     });
+  });
+
+  it("preserves typed document context in schema v2 and seals it into the checksum", () => {
+    const { chunks, document } = fixture();
+    const context = createKnowledgeTableDocumentContext({
+      blockId: "block-context-a",
+      cells: [{ columnEnd: 0, columnStart: 0, text: "5.4" }],
+      headerLineage: [{
+        columnEnd: 0,
+        columnStart: 0,
+        rowIndex: 0,
+        text: "Actual"
+      }],
+      rowIndex: 1
+    });
+    const alternateContext = createKnowledgeTableDocumentContext({
+      blockId: "block-context-b",
+      cells: [{ columnEnd: 0, columnStart: 0, text: "5.4" }],
+      headerLineage: [{
+        columnEnd: 0,
+        columnStart: 0,
+        rowIndex: 0,
+        text: "Actual"
+      }],
+      rowIndex: 1
+    });
+    const build = (documentContext: typeof context) => buildKnowledgeHierarchicalIndex({
+      chunks: [{ ...chunks[0]!, documentContext }, ...chunks.slice(1)],
+      document,
+      fileName: "atlas-policy.pdf",
+      mimeType: "application/pdf",
+      sourceArtifactId: "artifact-context-v2",
+      sourceName: "Atlas policy"
+    });
+
+    const contextual = build(context);
+    const alternate = build(alternateContext);
+
+    expect(contextual.schemaVersion).toBe(2);
+    expect(contextual.passages[0]!.documentContext).toEqual(context);
+    expect(contextual.checksum).not.toBe(alternate.checksum);
+    expect(contextual.passages[0]!.contentHash).toBe(alternate.passages[0]!.contentHash);
+
+    expect(() => build({
+      ...context,
+      locator: { ...context.locator, rowId: "ktr_invalid" }
+    } as never)).toThrowError(expect.objectContaining({
+      code: "knowledge_hierarchical_index_input_invalid"
+    }));
   });
 
   it("normalizes exact values without stemming identifiers and rejects malformed chunk plans", () => {

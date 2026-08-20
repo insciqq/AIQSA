@@ -20,6 +20,7 @@ import type {
   RunUsageAttribution,
   StaleRunControlRecord
 } from "./runRepositoryContract";
+import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
 import {
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
@@ -40,17 +41,42 @@ import {
   searchToolResultContent,
   type SearchExecutionEvidence
 } from "../search/toolResult";
-import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
+import {
+  knowledgeRetrievalTool,
+  type KnowledgeToolExecutor
+} from "../knowledge/toolExecutor";
 import {
   knowledgeToolResultContent,
   knowledgeToolResultText
 } from "../knowledge/toolResult";
 import {
+  KNOWLEDGE_READ_SOURCE_TOOL_NAME,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_TOOL_NAME,
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
+import {
+  automaticKnowledgeBranchesFromPersistedCalls,
+  automaticKnowledgeCallArguments,
+  automaticKnowledgeEvidenceDispatchDraft,
+  prepareAutomaticKnowledgeEvidenceVerifiedDispatchDraft
+} from "../knowledge/automaticEvidence";
+import type {
+  KnowledgePlannerPlanV2,
+  KnowledgePlannerSubqueryV2
+} from "../knowledge/planner";
+import {
+  packKnowledgeEvidenceDispatchManifest,
+  type KnowledgeEvidenceDispatchManifestDraft
+} from "../knowledge/evidenceDispatchManifest";
+import { sealKnowledgeStrategyCoverageReceiptV1 } from "../knowledge/knowledgeStrategyExecution";
+import type { StoredKnowledgeEvidenceDispatch } from "../knowledge/evidenceDispatchRepository";
+import type {
+  KnowledgeProviderDispatchLifecycle,
+  KnowledgeProviderDispatchRecovery,
+  PreparedKnowledgeProviderDispatch
+} from "../knowledge/providerDispatchLifecycle";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import {
@@ -192,6 +218,7 @@ function createHarness(options: Readonly<{
   liveRunIds?: readonly string[];
   knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
   knowledgeAdmission?: RunRecoveryDeps["knowledgeAdmission"];
+  knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   memoryEgress?: MemoryToolEgressReceiptService;
   memoryActionExecutor?: MemoryActionExecutor;
   memoryHistoryToolExecutor?: RunRecoveryDeps["memoryHistoryToolExecutor"];
@@ -199,6 +226,7 @@ function createHarness(options: Readonly<{
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
   projectAccessCurrent?: boolean;
   providerAdmission?: RunRecoveryDeps["providerAdmission"];
+  providerDispatchRecoveryRequest?: NormalizedRunRequest | null;
   pricing?: {
     inputTokenPriceMicros: number;
     outputTokenPriceMicros: number;
@@ -316,6 +344,8 @@ function createHarness(options: Readonly<{
       : {}),
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
+    loadProviderDispatchRecoveryRequest: async () =>
+      options.providerDispatchRecoveryRequest ?? null,
     isSearchStrategyEnabled: async () => options.searchStrategyEnabled ?? true,
     isProjectRunAccessCurrent: async () => options.projectAccessCurrent ?? true,
     loadEntitlements: async () => ({
@@ -390,6 +420,9 @@ function createHarness(options: Readonly<{
       : {}),
     ...(options.knowledgeAdmission ? { knowledgeAdmission: options.knowledgeAdmission } : {}),
     ...(options.knowledgeExecutor ? { knowledgeExecutor: options.knowledgeExecutor } : {}),
+    ...(options.knowledgeProviderDispatch
+      ? { knowledgeProviderDispatch: options.knowledgeProviderDispatch }
+      : {}),
     ...(options.memoryEgress ? { memoryEgress: options.memoryEgress } : {}),
     ...(options.memoryActionExecutor ? { memoryActionExecutor: options.memoryActionExecutor } : {}),
     ...(options.memoryHistoryToolExecutor
@@ -570,7 +603,8 @@ function knowledgeRecoveryScope(
     }],
     budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
     exclusions: [],
-    knowledgePlan: request.knowledgePlan
+    knowledgePlan: request.knowledgePlan,
+    resolvedSourceCount: 1
   };
 }
 
@@ -624,20 +658,635 @@ function recoveryKnowledgeEvidence(includedText: string): KnowledgeRetrievalEvid
       ftsRank: 1,
       ftsScore: 0.1,
       fusedScore: 2 / 61,
-      handle: "K1.1",
+      handle: "K1",
       includedText,
       includedTextBytes: Buffer.byteLength(includedText, "utf8"),
       knowledgeBaseId: "knowledge-base-1",
       page: 1,
+      sourceAlias: "S1",
+      sourceArtifactId: "knowledge-artifact-1",
+      sourceName: "Recovery source",
       sourceTextBytes: Buffer.byteLength(includedText, "utf8"),
       textTruncated: false,
       vectorDistance: 0,
       vectorScore: 1
     }],
+    scopeAliases: [{ alias: "S1", kind: "source", label: "Recovery source" }],
     threshold: 0.01,
     version: KNOWLEDGE_RESULT_VERSION
   };
   return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
+function recoveryKnowledgeReadEvidence(includedText: string): KnowledgeRetrievalEvidence {
+  const legacyFixture = recoveryKnowledgeEvidence(includedText);
+  const draft: KnowledgeRetrievalEvidence = {
+    ...legacyFixture,
+    budget: {
+      noveltyRatio: 1,
+      operation: "read_source",
+      stopReason: null,
+      usage: {
+        cumulativeCandidates: 1,
+        estimatedCostMicros: 0,
+        followUpOperations: 1,
+        latencyMs: 12,
+        lowNoveltyStreak: 0,
+        operations: 4,
+        queryEmbeddingCalls: 0,
+        rerankerCalls: 0,
+        retrievedTokens: 4,
+        searchPhases: 1,
+        subqueriesInCurrentPhase: 1
+      },
+      version: 1
+    },
+    embeddingExecutions: [],
+    invocationOrdinal: 4,
+    operation: "read_source",
+    providerText: "pending",
+    query: "page 1",
+    read: {
+      contractVersion: 1,
+      direction: "around",
+      embedding: "forbidden",
+      locator: "page 1",
+      resolution: "exact",
+      resolvedSource: {
+        sourceAlias: "S1",
+        sourceArtifactId: "knowledge-artifact-1",
+        sourceId: "knowledge-document-1",
+        sourceName: "Recovery source",
+        sourceVersionId: "knowledge-document-version-1"
+      },
+      target: { kind: "page", page: 1 },
+      version: 1,
+      window: 3
+    },
+    results: legacyFixture.results.map((result) => ({ ...result, handle: "K1" }))
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
+function recoveryKnowledgeExactEvidence(includedText: string): KnowledgeRetrievalEvidence {
+  const legacyFixture = recoveryKnowledgeEvidence(includedText);
+  const exactValue = "AX-2026-0842";
+  const draft: KnowledgeRetrievalEvidence = {
+    ...legacyFixture,
+    budget: {
+      noveltyRatio: 1,
+      operation: "find_exact",
+      stopReason: null,
+      usage: {
+        cumulativeCandidates: 1,
+        estimatedCostMicros: 0,
+        followUpOperations: 0,
+        latencyMs: 12,
+        lowNoveltyStreak: 0,
+        operations: 1,
+        queryEmbeddingCalls: 0,
+        rerankerCalls: 0,
+        retrievedTokens: 4,
+        searchPhases: 1,
+        subqueriesInCurrentPhase: 1
+      },
+      version: 1
+    },
+    candidateLimit: 50,
+    embeddingExecutions: [],
+    exact: {
+      caseMode: "insensitive",
+      cursor: null,
+      field: "body",
+      limit: 50,
+      match: "phrase",
+      matches: [{ field: "body", resultOrdinal: 0 }],
+      nextCursor: null,
+      scannedBytes: Buffer.byteLength(includedText, "utf8"),
+      scanTruncated: false,
+      value: exactValue,
+      version: 1
+    },
+    fusion: "none",
+    operation: "find_exact",
+    providerText: "pending",
+    query: exactValue,
+    resultLimit: 50,
+    results: legacyFixture.results.map((result) => ({
+      ...result,
+      annRank: null,
+      ftsRank: null,
+      ftsScore: null,
+      fusedScore: 0,
+      vectorDistance: null,
+      vectorScore: null
+    })),
+    threshold: 0
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
+function knowledgeProviderDispatchRecorder(
+  recoveryKind: "ambiguous" | "dispatch" | "resume" | "settled" | "settled_without_handle",
+  draftOverride?: KnowledgeEvidenceDispatchManifestDraft
+) {
+  const draft = draftOverride ?? packKnowledgeEvidenceDispatchManifest({
+    candidates: [{
+      ambiguity: "none",
+      evidenceId: "knowledge-planner-v1-1:result:1",
+      exactExcerpt: "PERSISTED_EXACT_RECOVERY_MANIFEST",
+      fileName: "recovery.txt",
+      handle: "K1",
+      locator: "page=1",
+      operationOrdinal: 1,
+      resultOrdinal: 1,
+      sourceAlias: "S1",
+      sourceLabel: "Recovery source",
+      sourceTruncated: false,
+      sourceVersionNumber: 1,
+      state: "available"
+    }],
+    coverageStatement: "Coverage verified: no.",
+    footer: "</private_knowledge_evidence>",
+    header: "<private_knowledge_evidence version=\"2\">",
+    maximumBytes: 16_384,
+    maximumTokens: 4_096,
+    plannerVersion: 1,
+    profileId: "openai:gpt-test",
+    promptFragmentVersion: 2
+  });
+  const state = recoveryKind === "dispatch"
+    ? "reserved" as const
+    : recoveryKind === "resume"
+      ? "dispatched" as const
+    : recoveryKind === "settled" || recoveryKind === "settled_without_handle"
+      ? "settled" as const
+      : "ambiguous" as const;
+  const dispatch: StoredKnowledgeEvidenceDispatch = {
+    attempt: {
+      actualUsage: state === "settled" ? {
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        estimatedCostMicros: null,
+        inputTokens: 2,
+        outputTokens: 3,
+        reasoningTokens: 0,
+        totalTokens: 5
+      } : null,
+      ambiguousAt: state === "ambiguous" ? new Date("2026-07-12T09:02:00.000Z") : null,
+      checkpointHash: "a".repeat(64),
+      dispatchedAt: state === "reserved" ? null : new Date("2026-07-12T09:01:00.000Z"),
+      estimatedUsage: {
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        estimatedCostMicros: null,
+        inputTokens: 2,
+        outputTokens: null,
+        reasoningTokens: null,
+        totalTokens: 2
+      },
+      failureCode: state === "ambiguous" ? "provider_response_handle_missing" : null,
+      id: "attempt-1",
+      idempotencyKey: "knowledge-answer:1:checkpoint",
+      leaseExpiresAt: state === "reserved" || state === "dispatched"
+        ? new Date("2026-07-12T09:30:00.000Z")
+        : null,
+      leaseToken: state === "reserved" || state === "dispatched"
+        ? "lease-token-original"
+        : null,
+      modelRunId: runId,
+      ordinal: 1,
+      providerBindingKey: "answer",
+      providerResponseId: state === "settled" && recoveryKind !== "settled_without_handle"
+        ? "response-tool-1"
+        : state === "dispatched"
+          ? "response-old"
+          : null,
+      purpose: "answer",
+      releasedAt: null,
+      requestHash: "b".repeat(64),
+      roundIndex: 0,
+      settledAt: state === "settled" ? new Date("2026-07-12T09:02:00.000Z") : null,
+      state
+    },
+    draft,
+    exclusions: [],
+    items: [{
+      dispatchEvidenceId: "knowledge-planner-v1-1:result:1",
+      evidenceItemId: "evidence-item-1",
+      handle: "K1",
+      sourceArtifactId: "knowledge-artifact-1",
+      sourceVersionId: "knowledge-document-version-1"
+    }],
+    manifestId: "manifest-1",
+    profileRevisionIds: ["profile-revision-1"],
+    retrievalSessionId: "knowledge-evidence-session-1"
+  };
+  const prepared: PreparedKnowledgeProviderDispatch = {
+    dispatch,
+    identity: {
+      attemptId: dispatch.attempt.id,
+      checkpointHash: dispatch.attempt.checkpointHash,
+      idempotencyKey: dispatch.attempt.idempotencyKey,
+      manifestHash: draft.manifestHash,
+      modelRunId: runId,
+      providerBindingKey: dispatch.attempt.providerBindingKey,
+      requestHash: dispatch.attempt.requestHash
+    },
+    leaseToken: "lease-token-recovery"
+  };
+  const recovery: KnowledgeProviderDispatchRecovery = recoveryKind === "dispatch"
+    ? { kind: "dispatch", prepared, providerResponseId: null }
+    : recoveryKind === "resume"
+      ? { kind: "resume", prepared, providerResponseId: "response-old" }
+    : recoveryKind === "settled"
+      ? { dispatch, kind: "settled", providerResponseId: "response-tool-1" }
+    : recoveryKind === "settled_without_handle"
+      ? { dispatch, kind: "settled", providerResponseId: null }
+      : { dispatch, kind: "ambiguous" };
+  const lifecycle: KnowledgeProviderDispatchLifecycle = {
+    dispatch: vi.fn(async () => undefined),
+    inspect: vi.fn(async () => dispatch),
+    markAmbiguous: vi.fn(async () => undefined),
+    prepare: vi.fn(async () => prepared),
+    recover: vi.fn(async (input) =>
+      recoveryKind === "dispatch" && input.requestPreview === undefined
+        ? { dispatch, kind: "request_required" as const }
+        : recovery),
+    release: vi.fn(async () => undefined),
+    settle: vi.fn(async () => undefined)
+  };
+  return { dispatch, draft, lifecycle, prepared };
+}
+
+function automaticKnowledgeProviderRecoveryFixture() {
+  const evidence = recoveryKnowledgeEvidence("RECOMPUTED_RECOVERY_EVIDENCE");
+  const result = snapshotToolExecutionResult({
+    callId: "knowledge-planner-v1-1",
+    content: knowledgeToolResultContent(evidence),
+    name: KNOWLEDGE_TOOL_NAME,
+    rawPreview: {
+      knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+      knowledgeRetrieval: evidence,
+      providerCall: true
+    },
+    status: "complete",
+    usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+  }, 32_000);
+  if (!result) throw new Error("invalid_automatic_provider_recovery_fixture");
+  const knowledgePlanner: KnowledgePlannerPlanV2 = {
+    automaticRetrieval: true,
+    coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
+    evidenceMode: "compact",
+    intent: "fact_lookup",
+    originalQuery: "remember this",
+    rewrite: { exactTerms: [], query: "remember this" },
+    status: "ready",
+    strategy: "focused",
+    subqueries: [{
+      exact: null,
+      exactTerms: [],
+      lanes: ["semantic", "lexical", "exact", "metadata"],
+      operation: "automatic_search",
+      ordinal: 0,
+      purpose: "answer",
+      query: "direct recovery query",
+      targetNames: [],
+      targetResolution: null,
+      targetSourceIds: []
+    }],
+    targetResolution: null,
+    targetSourceIds: [],
+    version: 2
+  };
+  const automaticCall: PersistedToolLoopCall = {
+    arguments: automaticKnowledgeCallArguments(
+      knowledgePlanner,
+      knowledgePlanner.subqueries[0]!
+    ),
+    completedAt: "2026-07-12T08:59:00.000Z",
+    id: "automatic-call-1",
+    mcpBinding: null,
+    ordinal: 0,
+    providerCallId: "knowledge-planner-v1-1",
+    result,
+    roundIndex: 0,
+    startedAt: "2026-07-12T08:58:59.000Z",
+    state: "complete",
+    toolName: KNOWLEDGE_TOOL_NAME
+  };
+  const normalizedRequest: NormalizedRunRequest = {
+    ...normalizedKnowledgeRequest(),
+    knowledgePlanner
+  };
+  return { automaticCall, normalizedRequest };
+}
+
+function automaticMeasuredKnowledgeProviderRecoveryFixture() {
+  const base = automaticKnowledgeProviderRecoveryFixture();
+  const subquery = {
+    ...base.normalizedRequest.knowledgePlanner!.subqueries[0]!,
+    exact: null,
+    operation: "automatic_search" as const,
+    targetResolution: null,
+    targetSourceIds: []
+  };
+  const knowledgePlanner: KnowledgePlannerPlanV2 = {
+    ...base.normalizedRequest.knowledgePlanner!,
+    coverage: { expectedPassageCount: 1, mode: "verified_only", namedTargets: [] },
+    evidenceMode: "fuller",
+    strategy: "full_context",
+    subqueries: [subquery],
+    targetResolution: null,
+    targetSourceIds: [],
+    version: 2
+  };
+  const automaticCall: PersistedToolLoopCall = {
+    ...base.automaticCall,
+    arguments: automaticKnowledgeCallArguments(knowledgePlanner, subquery)
+  };
+  const normalizedRequest: NormalizedRunRequest = {
+    ...base.normalizedRequest,
+    knowledgePlanner
+  };
+  const branches = automaticKnowledgeBranchesFromPersistedCalls({
+    calls: [automaticCall],
+    plan: knowledgePlanner
+  });
+  if (!branches) throw new Error("invalid_measured_automatic_recovery_fixture");
+  const request: ProviderRunRequest = { ...normalizedRequest, attachments: [] };
+  const evidence = {
+    branches,
+    exclusions: knowledgeRecoveryScope(normalizedRequest).exclusions,
+    plan: knowledgePlanner,
+    request
+  } as const;
+  const candidate = prepareAutomaticKnowledgeEvidenceVerifiedDispatchDraft(evidence);
+  if (!candidate) throw new Error("measured_automatic_recovery_candidate_missing");
+  return {
+    automaticCall,
+    candidate,
+    evidence,
+    normalizedRequest,
+    unverified: automaticKnowledgeEvidenceDispatchDraft(evidence)
+  };
+}
+
+function automaticMultiHopKnowledgeProviderRecoveryFixture(
+  followUpState: "pending" | "running" = "pending"
+) {
+  const base = automaticKnowledgeProviderRecoveryFixture();
+  const rootSubquery: KnowledgePlannerSubqueryV2 = {
+    ...base.normalizedRequest.knowledgePlanner!.subqueries[0]!,
+    exact: null,
+    operation: "automatic_search",
+    ordinal: 0,
+    purpose: "answer",
+    query: "first recovery fact",
+    targetResolution: null,
+    targetSourceIds: []
+  };
+  const followUpSubquery: KnowledgePlannerSubqueryV2 = {
+    ...rootSubquery,
+    ordinal: 1,
+    purpose: "follow_up",
+    query: "dependent recovery fact"
+  };
+  const knowledgePlanner: KnowledgePlannerPlanV2 = {
+    ...base.normalizedRequest.knowledgePlanner!,
+    coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
+    intent: "multi_hop_reasoning",
+    strategy: "multi_pass",
+    subqueries: [rootSubquery, followUpSubquery],
+    targetResolution: null,
+    targetSourceIds: [],
+    version: 2
+  };
+  const rootCall: PersistedToolLoopCall = {
+    ...base.automaticCall,
+    arguments: automaticKnowledgeCallArguments(knowledgePlanner, rootSubquery)
+  };
+  const followUpCall: PersistedToolLoopCall = {
+    arguments: automaticKnowledgeCallArguments(knowledgePlanner, followUpSubquery),
+    completedAt: null,
+    id: "automatic-call-2",
+    mcpBinding: null,
+    ordinal: 1,
+    providerCallId: "knowledge-planner-v1-2",
+    result: null,
+    roundIndex: 0,
+    startedAt: followUpState === "running"
+      ? "2026-07-12T08:59:30.000Z"
+      : null,
+    state: followUpState,
+    toolName: KNOWLEDGE_TOOL_NAME
+  };
+  const normalizedRequest: NormalizedRunRequest = {
+    ...base.normalizedRequest,
+    knowledgePlanner
+  };
+  const followUpEvidence = recoveryKnowledgeEvidence("DEPENDENT_RECOVERY_EVIDENCE");
+  const followUpResult = {
+    callId: followUpCall.providerCallId,
+    content: knowledgeToolResultContent(followUpEvidence),
+    name: KNOWLEDGE_TOOL_NAME,
+    rawPreview: {
+      knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+      knowledgeRetrieval: followUpEvidence,
+      providerCall: true
+    },
+    status: "complete" as const,
+    usage: { inputTokens: 5, outputTokens: 0, reasoningTokens: 0, totalTokens: 5 }
+  };
+  return {
+    followUpCall,
+    followUpResult,
+    knowledgePlanner,
+    normalizedRequest,
+    rootCall
+  };
+}
+
+function recoveredVerifiedStrategyCoverage(
+  draft: KnowledgeEvidenceDispatchManifestDraft
+) {
+  const sourceSetHash = "c".repeat(64);
+  const itemSetHash = "d".repeat(64);
+  return {
+    coverage: sealKnowledgeStrategyCoverageReceiptV1({
+      dispatchExpectedItemCount: draft.items.length,
+      dispatchIncludedItemCount: draft.items.length,
+      dispatchManifestHash: draft.manifestHash,
+      executionHash: "b".repeat(64),
+      executionId: "strategy-execution-1",
+      expectedItemsHash: itemSetHash,
+      includedItemsHash: itemSetHash,
+      observedSourceSetHash: sourceSetHash,
+      processedItemsHash: "e".repeat(64),
+      processedPassageCount: 1,
+      processedSourceCount: 1,
+      reasonCodes: [],
+      requiredStepCount: 1,
+      settledTargetCount: 0,
+      sourceSetHash,
+      status: "verified",
+      strategy: "full_context",
+      terminalRequiredStepCount: 1,
+      totalPassageCount: 1,
+      totalSourceCount: 1,
+      totalTargetCount: 0,
+      version: 1
+    }),
+    execution: {
+      executionHash: "b".repeat(64),
+      executionId: "strategy-execution-1",
+      sourceSetHash
+    },
+    kind: "finalized" as const
+  };
+}
+
+function recoveredPartialMultiHopStrategyCoverage(
+  draft: KnowledgeEvidenceDispatchManifestDraft
+) {
+  const sourceSetHash = "c".repeat(64);
+  const itemSetHash = "d".repeat(64);
+  return {
+    coverage: sealKnowledgeStrategyCoverageReceiptV1({
+      dispatchExpectedItemCount: draft.items.length,
+      dispatchIncludedItemCount: draft.items.length,
+      dispatchManifestHash: draft.manifestHash,
+      executionHash: "b".repeat(64),
+      executionId: "strategy-execution-multi-hop",
+      expectedItemsHash: itemSetHash,
+      includedItemsHash: itemSetHash,
+      observedSourceSetHash: sourceSetHash,
+      processedItemsHash: "e".repeat(64),
+      processedPassageCount: 2,
+      processedSourceCount: 1,
+      reasonCodes: ["coverage_partial"],
+      requiredStepCount: 2,
+      settledTargetCount: 0,
+      sourceSetHash,
+      status: "partial",
+      strategy: "multi_hop",
+      terminalRequiredStepCount: 2,
+      totalPassageCount: 2,
+      totalSourceCount: 1,
+      totalTargetCount: 0,
+      version: 1
+    }),
+    execution: {
+      executionHash: "b".repeat(64),
+      executionId: "strategy-execution-multi-hop",
+      sourceSetHash
+    },
+    kind: "finalized" as const
+  };
+}
+
+function automaticExactKnowledgeProviderRecoveryFixture() {
+  const includedText = "Identifier AX-2026-0842 belongs to the recovery fixture.";
+  const evidence = recoveryKnowledgeExactEvidence(includedText);
+  const result = snapshotToolExecutionResult({
+    callId: "knowledge-planner-v1-1",
+    content: knowledgeToolResultContent(evidence),
+    name: KNOWLEDGE_TOOL_NAME,
+    rawPreview: {
+      knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+      knowledgeRetrieval: evidence,
+      providerCall: true
+    },
+    status: "complete",
+    usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+  }, 32_000);
+  if (!result) throw new Error("invalid_automatic_exact_provider_recovery_fixture");
+  const knowledgePlanner: KnowledgePlannerPlanV2 = {
+    automaticRetrieval: true,
+    coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
+    evidenceMode: "compact",
+    intent: "fact_lookup",
+    originalQuery: "Find identifier AX-2026-0842 exactly",
+    rewrite: {
+      exactTerms: ["\"AX-2026-0842\""],
+      query: "Find identifier \"AX-2026-0842\" exactly"
+    },
+    status: "ready",
+    strategy: "focused",
+    subqueries: [{
+      exact: {
+        caseMode: "insensitive",
+        field: "body",
+        match: "phrase",
+        value: "AX-2026-0842"
+      },
+      exactTerms: ["\"AX-2026-0842\""],
+      lanes: ["exact"],
+      operation: "find_exact",
+      ordinal: 0,
+      purpose: "answer",
+      query: "AX-2026-0842",
+      targetNames: [],
+      targetResolution: null,
+      targetSourceIds: []
+    }],
+    targetResolution: null,
+    targetSourceIds: [],
+    version: 2
+  };
+  const automaticCall: PersistedToolLoopCall = {
+    arguments: automaticKnowledgeCallArguments(
+      knowledgePlanner,
+      knowledgePlanner.subqueries[0]!
+    ),
+    completedAt: "2026-07-12T08:59:00.000Z",
+    id: "automatic-exact-call-1",
+    mcpBinding: null,
+    ordinal: 0,
+    providerCallId: "knowledge-planner-v1-1",
+    result,
+    roundIndex: 0,
+    startedAt: "2026-07-12T08:58:59.000Z",
+    state: "complete",
+    toolName: KNOWLEDGE_TOOL_NAME
+  };
+  const normalizedRequest: NormalizedRunRequest = {
+    ...normalizedKnowledgeRequest(),
+    knowledgePlanner
+  };
+  return { automaticCall, normalizedRequest };
+}
+
+function recoveredGroundingResult() {
+  return {
+    diagnostics: {
+      citationCoverage: 1,
+      citationPrecision: 1,
+      citedClaimCount: 1,
+      issueCodes: [] as const,
+      sourceClaimCount: 1,
+      unsupportedClaimCount: 0
+    },
+    finalAnswerHash: "a".repeat(64),
+    finalText: "Recovered grounded answer [K1].",
+    originalAnswerHash: "b".repeat(64),
+    outcome: "passed" as const,
+    receiptHash: "c".repeat(64),
+    repairCount: 0 as const,
+    sessionId: "knowledge-evidence-session-1",
+    version: 4 as const
+  };
+}
+
+function recoveredKnowledgeFinalization(): KnowledgeRunFinalizationEnvelope {
+  return {
+    grounding: recoveredGroundingResult(),
+    semanticShadow: {
+      contentFreeMetrics: {} as never,
+      diagnostic: {} as never,
+      profileRevisionIds: ["profile-revision-1"]
+    }
+  };
 }
 
 function normalizedMemoryActionRequest(): NormalizedRunRequest {
@@ -841,7 +1490,7 @@ function installCheckpointState(
     return recordRunUsageEvents(input);
   };
   harness.repository.loadAttachments = async () => [];
-  harness.repository.claimToolLoopCall = async ({ callId }) => {
+  const claimToolLoopCall: RunRecoveryRepository["claimToolLoopCall"] = async ({ callId }) => {
     const call = calls.find((candidate) => candidate.id === callId);
     if (!call) return { kind: "not_found" };
     if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME) {
@@ -865,6 +1514,8 @@ function installCheckpointState(
     );
     return { call: claimed, kind: "claimed" };
   };
+  harness.repository.claimToolLoopCall = claimToolLoopCall;
+  harness.repository.claimAutomaticKnowledgeCall = claimToolLoopCall;
   harness.repository.settleToolLoopCall = async ({ callId, result, state }) => {
     const call = calls.find((candidate) => candidate.id === callId);
     if (!call) return "not_found";
@@ -1104,6 +1755,230 @@ describe("run recovery", () => {
     expect(harness.state.events.map(({ event, sequence }) => ({ sequence, type: event.type }))).toEqual([
       { sequence: 0, type: "artifact" }
     ]);
+  });
+
+  it("settles a recovered non-tool Knowledge attempt from its durable refresh handle", async () => {
+    const dispatch = knowledgeProviderDispatchRecorder("resume");
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      providerResponseId: "response-new",
+      result: providerResult,
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: { openai: providerWithRefresh(refresh) }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledWith("response-old");
+    expect(dispatch.lifecycle.dispatch).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.settle).toHaveBeenCalledWith(
+      dispatch.prepared,
+      expect.objectContaining({ providerResponseId: "response-new" })
+    );
+    expect(harness.state.completed).toMatchObject({
+      providerResponseId: "response-new"
+    });
+  });
+
+  it("rebuilds and dispatches an expired non-checkpointed RESERVED attempt exactly once", async () => {
+    const fixture = automaticKnowledgeProviderRecoveryFixture();
+    const normalizedRequest: NormalizedRunRequest = {
+      ...fixture.normalizedRequest,
+      toolMode: "none"
+    };
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const requests: ProviderRunRequest[] = [];
+    const refresh = vi.fn<NonNullable<ProviderAdapter["refresh"]>>();
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providerDispatchRecoveryRequest: normalizedRequest,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          refresh,
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered direct answer",
+              providerResponseId: "response-recovered-direct",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.context)).toContain(
+      "PERSISTED_EXACT_RECOVERY_MANIFEST"
+    );
+    expect(JSON.stringify(requests[0]?.context)).not.toContain(
+      "RECOMPUTED_RECOVERY_EVIDENCE"
+    );
+    expect(dispatch.lifecycle.recover).toHaveBeenCalledTimes(2);
+    expect(dispatch.lifecycle.recover).toHaveBeenNthCalledWith(1, {
+      modelRunId: runId,
+      ordinal: 1,
+      providerResponseId: null
+    });
+    expect(dispatch.lifecycle.recover).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      modelRunId: runId,
+      ordinal: 1,
+      requestPreview: expect.objectContaining({
+        context: expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              id: "knowledge-evidence:v2",
+              purpose: "knowledge_evidence"
+            })
+          ])
+        })
+      })
+    }));
+    expect(dispatch.lifecycle.dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.settle).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered direct answer",
+      providerResponseId: "response-recovered-direct"
+    });
+  });
+
+  it("persists the final response handle before settlement and resumes without redispatch", async () => {
+    const fixture = automaticKnowledgeProviderRecoveryFixture();
+    const normalizedRequest: NormalizedRunRequest = {
+      ...fixture.normalizedRequest,
+      toolMode: "none"
+    };
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    let claimed = false;
+    vi.mocked(dispatch.lifecycle.recover).mockImplementation(async (input) => {
+      if (!claimed && input.requestPreview === undefined) {
+        return { dispatch: dispatch.dispatch, kind: "request_required" };
+      }
+      if (!claimed) {
+        claimed = true;
+        return { kind: "dispatch", prepared: dispatch.prepared, providerResponseId: null };
+      }
+      return {
+        kind: "resume",
+        prepared: dispatch.prepared,
+        providerResponseId: "response-recovered-direct"
+      };
+    });
+    vi.mocked(dispatch.lifecycle.settle)
+      .mockRejectedValueOnce(new Error("simulated crash after provider completion"));
+    const stream = vi.fn(async function* () {
+      return {
+        ...providerResult,
+        finalText: "Recovered direct answer",
+        providerResponseId: "response-recovered-direct"
+      };
+    });
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      providerResponseId: "response-recovered-direct",
+      result: {
+        ...providerResult,
+        finalText: "Recovered direct answer",
+        providerResponseId: "response-recovered-direct"
+      },
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({
+      controls: [
+        control({ providerResponseId: null }),
+        control({ providerResponseId: "response-recovered-direct" })
+      ],
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providerDispatchRecoveryRequest: normalizedRequest,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          refresh,
+          stream
+        }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.providerResponseIds).toEqual([{
+      providerResponseId: "response-recovered-direct",
+      runId
+    }]);
+    expect(harness.state.completed).toBeNull();
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(stream).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.settle).toHaveBeenCalledTimes(2);
+    expect(dispatch.lifecycle.markAmbiguous).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([]);
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered direct answer",
+      providerResponseId: "response-recovered-direct"
+    });
+  });
+
+  it.each([
+    {
+      code: "provider_response_handle_missing",
+      message: "The completed provider round has no durable response handle for recovery.",
+      providerResponseId: null,
+      recoveryKind: "settled_without_handle" as const
+    },
+    {
+      code: "provider_refresh_unavailable",
+      message: "The saved provider response cannot be refreshed safely.",
+      providerResponseId: "response-old",
+      recoveryKind: "settled" as const
+    }
+  ])("settles missing SETTLED recovery capability terminally: $code", async ({
+    code,
+    message,
+    providerResponseId,
+    recoveryKind
+  }) => {
+    const dispatch = knowledgeProviderDispatchRecorder(recoveryKind);
+    const stream = vi.fn(async function* () {
+      return providerResult;
+    });
+    const harness = createHarness({
+      controls: [
+        control({ providerResponseId }),
+        control({ providerResponseId, recoverySettled: true, status: "error" })
+      ],
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: { buildRequestPreview: () => ({}), stream }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(stream).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.recover).toHaveBeenCalledOnce();
+    expect(harness.state.run).toMatchObject({
+      recoverySettled: true,
+      status: "error"
+    });
+    expect(harness.state.failed).toEqual([{
+      assistantMessageId: "assistant-1",
+      error: { code, message },
+      runId
+    }]);
   });
 
   it("fails recovery with attributable usage instead of finalizing an intermediate tool-call response", async () => {
@@ -2982,7 +3857,8 @@ describe("run recovery", () => {
         bindings: [],
         budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
         exclusions: [{ count: 1, reason: "not_ready", resourceType: "base" }],
-        knowledgePlan: normalizedRequest.knowledgePlan
+        knowledgePlan: normalizedRequest.knowledgePlan,
+        resolvedSourceCount: 0
       },
       normalizedRequest
     });
@@ -3157,8 +4033,12 @@ describe("run recovery", () => {
       toolChoice: "auto",
       toolMode: "auto"
     });
-    expect(JSON.stringify(synthesisRequests[0]?.providerToolMessages))
+    expect(JSON.stringify(synthesisRequests[0]?.context))
       .toContain("SAFE_RECOVERED_KNOWLEDGE_RESULT");
+    expect(JSON.stringify(synthesisRequests[0]?.providerToolMessages))
+      .toContain("knowledge_tool_result_processed");
+    expect(JSON.stringify(synthesisRequests[0]?.providerToolMessages))
+      .not.toContain("SAFE_RECOVERED_KNOWLEDGE_RESULT");
     expect(egress.began.map((entry) => ({
       destinationKind: entry.destinationKind,
       mode: entry.mode,
@@ -3183,6 +4063,247 @@ describe("run recovery", () => {
     }
     expect(harness.state.completed).toMatchObject({
       finalText: "Recovered with Memory and Knowledge"
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("settles a recovered Knowledge preflight rejection without Knowledge egress", async () => {
+    const normalizedRequest = normalizedKnowledgeRequest();
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["execute"]>();
+    const preflight = vi.fn<NonNullable<
+      NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["preflight"]
+    >>(
+      async (call) => ({
+        kind: "rejected",
+        result: {
+          callId: call.id,
+          content: [{
+            text: "Knowledge retrieval budget exhausted. Continue with the evidence already returned.",
+            type: "text"
+          }],
+          name: call.name,
+          rawPreview: {
+            knowledgeAdmission: {
+              reasonCode: "knowledge_budget_exhausted",
+              stopReason: "operation_budget",
+              version: 1
+            },
+            providerCall: false
+          },
+          status: "error",
+          usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+        }
+      })
+    );
+    const egress = createRecoveryMemoryEgressRecorder();
+    const synthesisRequests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      knowledgeAdmission: {
+        async load({ knowledgePlan, userId: admissionUserId }) {
+          return {
+            bindings: [{
+              baseContentRevision: 1,
+              embeddingCredentialSource: "user",
+              embeddingExecutionSnapshot: {} as never,
+              embeddingProviderModelId: "embedding-deployment-1",
+              indexedContentRevision: 1,
+              indexGenerationId: "knowledge-generation-1",
+              includeWholeBase: true,
+              knowledgeBaseId: "knowledge-base-1",
+              ordinal: 0,
+              selectedSourceIds: [],
+              targetDimension: 1024,
+              vectorSpaceFingerprint: "c".repeat(64)
+            }],
+            budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+            exclusions: [],
+            fingerprint: "d".repeat(64),
+            knowledgePlan,
+            resolvedSourceCount: 0,
+            userId: admissionUserId
+          };
+        }
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME ||
+          name === KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight,
+        tool: knowledgeRetrievalTool
+      },
+      memoryEgress: egress.service,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            synthesisRequests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered after Knowledge budget stop",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "one call too many" },
+      mcpBinding: null,
+      toolName: KNOWLEDGE_TOOL_NAME
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [knowledgeCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(knowledgeCall.arguments),
+          call_id: knowledgeCall.providerCallId,
+          name: knowledgeCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
+      normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(egress.began.map((entry) => entry.destinationKind)).toEqual(["answer_provider"]);
+    expect(egress.completed).toEqual(["recovery-egress-1"]);
+    expect(egress.failed).toEqual([]);
+    expect(JSON.stringify(synthesisRequests[0]?.providerToolMessages))
+      .toContain("Knowledge retrieval budget exhausted");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered after Knowledge budget stop"
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("replays a committed read receipt during recovery without Knowledge egress or execution", async () => {
+    const normalizedRequest = normalizedKnowledgeRequest();
+    const evidence = recoveryKnowledgeReadEvidence("committed read receipt passage");
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["execute"]>();
+    const preflight = vi.fn<NonNullable<
+      NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["preflight"]
+    >>(async (call) => ({
+      kind: "replayed",
+      result: {
+        callId: call.id,
+        content: knowledgeToolResultContent(evidence),
+        name: call.name,
+        rawPreview: {
+          knowledgeResultVersion: evidence.version,
+          knowledgeRetrieval: evidence,
+          providerCall: true
+        },
+        status: "complete",
+        usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+      }
+    }));
+    const egress = createRecoveryMemoryEgressRecorder();
+    const synthesisRequests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      knowledgeAdmission: {
+        async load({ knowledgePlan, userId: admissionUserId }) {
+          return {
+            bindings: [{
+              baseContentRevision: 1,
+              embeddingCredentialSource: "user",
+              embeddingExecutionSnapshot: {} as never,
+              embeddingProviderModelId: "embedding-deployment-1",
+              indexedContentRevision: 1,
+              indexGenerationId: "knowledge-generation-1",
+              includeWholeBase: true,
+              knowledgeBaseId: "knowledge-base-1",
+              ordinal: 0,
+              selectedSourceIds: [],
+              targetDimension: 1024,
+              vectorSpaceFingerprint: "c".repeat(64)
+            }],
+            budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+            exclusions: [],
+            fingerprint: "d".repeat(64),
+            knowledgePlan,
+            resolvedSourceCount: 0,
+            userId: admissionUserId
+          };
+        }
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME ||
+          name === KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight,
+        tool: knowledgeRetrievalTool
+      },
+      memoryEgress: egress.service,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            synthesisRequests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered from committed read receipt",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { direction: "around", locator: "page 1", sourceAlias: "S1", window: 3 },
+      mcpBinding: null,
+      toolName: KNOWLEDGE_READ_SOURCE_TOOL_NAME
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [knowledgeCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(knowledgeCall.arguments),
+          call_id: knowledgeCall.providerCallId,
+          name: knowledgeCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
+      normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(egress.began.map((entry) => entry.destinationKind)).toEqual(["answer_provider"]);
+    expect(egress.completed).toEqual(["recovery-egress-1"]);
+    expect(egress.failed).toEqual([]);
+    expect(synthesisRequests[0]?.providerToolMessages).toEqual(expect.arrayContaining([{
+      call_id: "provider-call-1",
+      output: JSON.stringify({
+        aiqsaType: "knowledge_tool_result_processed",
+        evidenceSource: "private_context_manifest",
+        version: 1
+      }),
+      type: "function_call_output"
+    }]));
+    expect(JSON.stringify(synthesisRequests[0]?.context))
+      .toContain("committed read receipt passage");
+    expect(knowledgeToolResultText(evidence)).toContain("[K1] [S1]");
+    expect(evidence).toMatchObject({
+      embeddingExecutions: [],
+      invocationOrdinal: 4,
+      operation: "read_source",
+      read: { embedding: "forbidden", resolution: "exact" }
+    });
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered from committed read receipt"
     });
     expect(harness.state.recoveredErrors).toEqual([]);
   });
@@ -3422,16 +4543,20 @@ describe("run recovery", () => {
         ftsRank: 1,
         ftsScore: 0.1,
         fusedScore: 2 / 61,
-        handle: "K1.1",
+        handle: "K1",
         includedText: "already persisted Knowledge passage",
         includedTextBytes: 35,
         knowledgeBaseId: "knowledge-base-1",
         page: 3,
+        sourceAlias: "S1",
+        sourceArtifactId: "private-source-artifact-id",
+        sourceName: "Private source",
         sourceTextBytes: 35,
         textTruncated: false,
         vectorDistance: 0,
         vectorScore: 1
       }],
+      scopeAliases: [{ alias: "S1", kind: "source", label: "Private source" }],
       threshold: 0.01,
       version: KNOWLEDGE_RESULT_VERSION
     };
@@ -3515,7 +4640,7 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("reinjects settled automatic Knowledge evidence when resuming a later tool round", async () => {
+  it("reinjects settled automatic Knowledge evidence for direct-only Source recovery", async () => {
     const evidence = recoveryKnowledgeEvidence("AUTO_RECOVERY_EVIDENCE");
     const automaticResult = snapshotToolExecutionResult({
       callId: "knowledge-planner-v1-1",
@@ -3559,6 +4684,7 @@ describe("run recovery", () => {
     };
     const requests: ProviderRunRequest[] = [];
     const groundKnowledgeAnswer = vi.fn(async () => ({
+      grounding: {
       diagnostics: {
         citationCoverage: 1,
         citationPrecision: 1,
@@ -3575,6 +4701,12 @@ describe("run recovery", () => {
       repairCount: 1 as const,
       sessionId: "knowledge-evidence-session-1",
       version: 4 as const
+      },
+      semanticShadow: {
+        contentFreeMetrics: {} as never,
+        diagnostic: {} as never,
+        profileRevisionIds: ["profile-revision-1"]
+      }
     }));
     const harness = createHarness({
       groundKnowledgeAnswer,
@@ -3606,6 +4738,9 @@ describe("run recovery", () => {
     });
     const normalizedRequest: NormalizedRunRequest = {
       ...normalizedKnowledgeRequest(),
+      knowledgePlan: {
+        baseIds: [], mode: "explicit", sourceIds: ["source-direct"], version: 1
+      },
       knowledgePlanner: {
         automaticRetrieval: true,
         coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
@@ -3637,7 +4772,11 @@ describe("run recovery", () => {
           type: "function_call"
         }]
       }),
-      knowledgeScope: knowledgeRecoveryScope(normalizedRequest),
+      knowledgeScope: {
+        ...knowledgeRecoveryScope(normalizedRequest),
+        bindings: [],
+        resolvedSourceCount: 1
+      },
       normalizedRequest
     });
 
@@ -3651,7 +4790,7 @@ describe("run recovery", () => {
     expect(JSON.stringify(requests[0]?.context)).toContain("AUTO_RECOVERY_EVIDENCE");
     expect(harness.state.completed).toMatchObject({
       finalText: "Recovered grounded answer [K1].",
-      knowledgeGrounding: { outcome: "repaired", repairCount: 1 },
+      knowledgeGrounding: { grounding: { outcome: "repaired", repairCount: 1 } },
       usageAttributions: expect.arrayContaining([expect.objectContaining({
         modelId: "embedding-v1",
         provider: "openai_compatible"
@@ -3660,6 +4799,646 @@ describe("run recovery", () => {
     expect(harness.state.assistantTexts.join("\n")).not.toContain("UNSUPPORTED_RECOVERY_DRAFT");
     expect(groundKnowledgeAnswer).toHaveBeenCalledOnce();
     expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("resumes a measured strategy after internal maps and seals coverage before provider recovery", async () => {
+    const fixture = automaticMeasuredKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch", fixture.candidate);
+    vi.mocked(dispatch.lifecycle.recover).mockResolvedValue({ kind: "not_found" });
+    const order: string[] = [];
+    const prepareStrategy = vi.fn<NonNullable<KnowledgeToolExecutor["prepareStrategy"]>>(
+      async (input) => {
+      order.push("prepare");
+      expect(input.calls).toEqual([{ id: fixture.automaticCall.id, ordinal: 0 }]);
+      expect(input.plan).toEqual(fixture.normalizedRequest.knowledgePlanner);
+      return { executionId: "strategy-execution-1", strategy: "full_context" as const };
+      }
+    );
+    const drainStrategy = vi.fn(async () => {
+      order.push("drain");
+    });
+    const finalizeStrategyCoverage = vi.fn(async ({ draft, requireVerified }: {
+      draft: KnowledgeEvidenceDispatchManifestDraft;
+      executionId: string;
+      requireVerified: boolean;
+    }) => {
+      order.push("finalize");
+      expect(requireVerified).toBe(true);
+      return recoveredVerifiedStrategyCoverage(draft);
+    });
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        drainStrategy,
+        async execute() {
+          throw new Error("settled measured Knowledge must replay");
+        },
+        finalizeStrategyCoverage,
+        prepareStrategy,
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream() {
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered grounded answer [K1].",
+              providerResponseId: "response-new",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(order).toEqual(["prepare", "drain", "finalize"]);
+    expect(finalizeStrategyCoverage.mock.calls[0]?.[0].draft.manifestHash)
+      .toBe(fixture.candidate.manifestHash);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.settle).toHaveBeenCalledOnce();
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("resumes a pending bound multi-hop follow-up in ordinal order without replanning", async () => {
+    const fixture = automaticMultiHopKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
+    vi.mocked(dispatch.lifecycle.recover).mockResolvedValue({ kind: "not_found" });
+    const order: string[] = [];
+    const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async (call) => {
+      order.push(`execute:${call.id}`);
+      expect(call.arguments).toEqual(fixture.followUpCall.arguments);
+      return fixture.followUpResult;
+    });
+    const finalizeStrategyCoverage = vi.fn<
+      NonNullable<KnowledgeToolExecutor["finalizeStrategyCoverage"]>
+    >(async ({ draft, requireVerified }) => {
+      order.push(`finalize:${requireVerified}`);
+      return requireVerified
+        ? { kind: "requires_unverified" }
+        : recoveredPartialMultiHopStrategyCoverage(draft);
+    });
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async drainStrategy() {
+          order.push("drain");
+        },
+        execute,
+        finalizeStrategyCoverage,
+        async prepareStrategy(input) {
+          order.push("prepare");
+          expect(input.calls).toEqual([
+            { id: fixture.rootCall.id, ordinal: 0 },
+            { id: fixture.followUpCall.id, ordinal: 1 }
+          ]);
+          expect(input.plan).toEqual(fixture.knowledgePlanner);
+          return { executionId: "strategy-execution-multi-hop", strategy: "multi_hop" };
+        },
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          async *stream() {
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered multi-hop answer [K1].",
+              providerResponseId: "response-new",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.rootCall, fixture.followUpCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+    const originalClaim = harness.repository.claimAutomaticKnowledgeCall!;
+    const claimAutomaticKnowledgeCall = vi.fn<RunRecoveryRepository["claimToolLoopCall"]>(
+      async (input) => {
+        order.push(`claim:${input.callId}`);
+        return originalClaim(input);
+      }
+    );
+    harness.repository.claimAutomaticKnowledgeCall = claimAutomaticKnowledgeCall;
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(order.slice(0, 4)).toEqual([
+      "prepare",
+      "drain",
+      "claim:automatic-call-2",
+      "execute:knowledge-planner-v1-2"
+    ]);
+    expect(order.at(-1)).toBe("finalize:false");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(claimAutomaticKnowledgeCall).toHaveBeenCalledExactlyOnceWith({
+      callId: fixture.followUpCall.id,
+      runId,
+      userId
+    });
+    expect(finalizeStrategyCoverage.mock.calls.at(-1)?.[0].requireVerified).toBe(false);
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledOnce();
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered grounded answer [K1]."
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("never replays a running bound multi-hop follow-up", async () => {
+    const fixture = automaticMultiHopKnowledgeProviderRecoveryFixture("running");
+    const order: string[] = [];
+    const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async () => {
+      throw new Error("running automatic Knowledge must not be replayed");
+    });
+    const finalizeStrategyCoverage = vi.fn<
+      NonNullable<KnowledgeToolExecutor["finalizeStrategyCoverage"]>
+    >();
+    const stream = vi.fn(async function* () {
+      return providerResult;
+    });
+    const harness = createHarness({
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async drainStrategy() {
+          order.push("drain");
+        },
+        execute,
+        finalizeStrategyCoverage,
+        async prepareStrategy() {
+          order.push("prepare");
+          return { executionId: "strategy-execution-multi-hop", strategy: "multi_hop" };
+        },
+        tool: knowledgeRetrievalTool
+      },
+      providers: { openai: { buildRequestPreview: () => ({}), stream } }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.rootCall, fixture.followUpCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+    const originalClaim = harness.repository.claimAutomaticKnowledgeCall!;
+    harness.repository.claimAutomaticKnowledgeCall = vi.fn<
+      RunRecoveryRepository["claimToolLoopCall"]
+    >(async (input) => {
+      order.push(`claim:${input.callId}`);
+      return originalClaim(input);
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(order).toEqual(["prepare", "drain", "claim:automatic-call-2"]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(finalizeStrategyCoverage).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_call_outcome_unknown" })
+      })
+    ]);
+  });
+
+  it("replays a persisted verified strategy manifest byte-exactly", async () => {
+    const fixture = automaticMeasuredKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch", fixture.candidate);
+    const requests: ProviderRunRequest[] = [];
+    const finalizeStrategyCoverage = vi.fn(async ({ draft, requireVerified }: {
+      draft: KnowledgeEvidenceDispatchManifestDraft;
+      executionId: string;
+      requireVerified: boolean;
+    }) => {
+      expect(requireVerified).toBe(true);
+      expect(draft).toBe(dispatch.draft);
+      return recoveredVerifiedStrategyCoverage(draft);
+    });
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async drainStrategy() {},
+        async execute() {
+          throw new Error("settled measured Knowledge must replay");
+        },
+        finalizeStrategyCoverage,
+        async prepareStrategy() {
+          return { executionId: "strategy-execution-1", strategy: "full_context" };
+        },
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered grounded answer [K1].",
+              providerResponseId: "response-new",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(finalizeStrategyCoverage).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.context?.messages.at(-2)).toMatchObject({
+      content: { blocks: [{ text: fixture.candidate.message, type: "text" }] },
+      id: "knowledge-evidence:v2",
+      purpose: "knowledge_evidence",
+      role: "user"
+    });
+    expect(dispatch.lifecycle.dispatch).toHaveBeenCalledOnce();
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("fails closed when a persisted strategy manifest differs from exact replay", async () => {
+    const fixture = automaticMeasuredKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const finalizeStrategyCoverage = vi.fn(async ({ draft }: {
+      draft: KnowledgeEvidenceDispatchManifestDraft;
+    }) => recoveredVerifiedStrategyCoverage(draft));
+    const stream = vi.fn(async function* () {
+      return providerResult;
+    });
+    const harness = createHarness({
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async drainStrategy() {},
+        async execute() {
+          throw new Error("settled measured Knowledge must replay");
+        },
+        finalizeStrategyCoverage,
+        async prepareStrategy() {
+          return { executionId: "strategy-execution-1", strategy: "full_context" };
+        },
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: { openai: { buildRequestPreview: () => ({}), stream } }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(finalizeStrategyCoverage).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.recover).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "knowledge_strategy_manifest_mismatch" })
+      })
+    ]);
+  });
+
+  it("dispatches an expired RESERVED Knowledge attempt from the persisted manifest exactly once", async () => {
+    const fixture = automaticKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const requests: ProviderRunRequest[] = [];
+    const refresh = vi.fn<NonNullable<ProviderAdapter["refresh"]>>();
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async execute() {
+          throw new Error("automatic Knowledge must replay");
+        },
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          refresh,
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered grounded answer [K1].",
+              providerResponseId: "response-new",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.context)).toContain(
+      "PERSISTED_EXACT_RECOVERY_MANIFEST"
+    );
+    expect(JSON.stringify(requests[0]?.context)).not.toContain(
+      "RECOMPUTED_RECOVERY_EVIDENCE"
+    );
+    expect(dispatch.lifecycle.dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.settle).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered grounded answer [K1]."
+    });
+  });
+
+  it("replays the complete purpose-specific find_exact checkpoint without generic reinterpretation", async () => {
+    const fixture = automaticExactKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const requests: ProviderRunRequest[] = [];
+    const execute = vi.fn(async () => {
+      throw new Error("settled exact Knowledge must replay");
+    });
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({ context: request.context }),
+          refresh: vi.fn<NonNullable<ProviderAdapter["refresh"]>>(),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered grounded answer [K1].",
+              providerResponseId: "response-new",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(fixture.automaticCall.arguments).toMatchObject({
+      exact: {
+        caseMode: "insensitive",
+        cursor: null,
+        field: "body",
+        limit: 50,
+        match: "phrase",
+        value: "AX-2026-0842"
+      },
+      exactTerms: ["\"AX-2026-0842\""],
+      lanes: ["exact"],
+      operation: "find_exact",
+      phaseOrdinal: 0,
+      plannerVersion: 2,
+      purpose: "answer",
+      strategy: "focused",
+      subqueryOrdinal: 0
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.context)).toContain(
+      "PERSISTED_EXACT_RECOVERY_MANIFEST"
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.settle).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed before retrieval or provider egress when saved v2 planner semantics drift", async () => {
+    const fixture = automaticKnowledgeProviderRecoveryFixture();
+    const stream = vi.fn(async function* () {
+      return providerResult;
+    });
+    const execute = vi.fn(async () => {
+      throw new Error("drifted automatic Knowledge must not execute");
+    });
+    const driftedCall: PersistedToolLoopCall = {
+      ...fixture.automaticCall,
+      arguments: {
+        ...fixture.automaticCall.arguments,
+        strategy: "exhaustive"
+      }
+    };
+    const harness = createHarness({
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        tool: knowledgeRetrievalTool
+      },
+      providers: {
+        openai: { buildRequestPreview: () => ({}), stream }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [driftedCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "knowledge_automatic_checkpoint_invalid" })
+      })
+    ]);
+  });
+
+  it("marks a DISPATCHED Knowledge attempt without a durable handle outcome-unknown", async () => {
+    const fixture = automaticKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("ambiguous");
+    const refresh = vi.fn<NonNullable<ProviderAdapter["refresh"]>>();
+    const stream = vi.fn(async function* () {
+      return providerResult;
+    });
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async execute() {
+          throw new Error("automatic Knowledge must replay");
+        },
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: { buildRequestPreview: () => ({}), refresh, stream }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(stream).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" })
+      })
+    ]);
+  });
+
+  it("replays a SETTLED Knowledge attempt through its durable refresh handle", async () => {
+    const fixture = automaticKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("settled");
+    const stream = vi.fn(async function* () {
+      return providerResult;
+    });
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      providerResponseId: "response-tool-1",
+      result: {
+        ...providerResult,
+        finalText: "Recovered grounded answer [K1].",
+        providerResponseId: "response-tool-1"
+      },
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({
+      groundKnowledgeAnswer: vi.fn(async () => recoveredKnowledgeFinalization()),
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        async execute() {
+          throw new Error("automatic Knowledge must replay");
+        },
+        tool: knowledgeRetrievalTool
+      },
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      providers: {
+        openai: { buildRequestPreview: () => ({}), refresh, stream }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [fixture.automaticCall],
+        phase: "provider_running",
+        providerResponseId: null,
+        providerToolMessages: [],
+        roundIndex: 1
+      }),
+      knowledgeScope: knowledgeRecoveryScope(fixture.normalizedRequest),
+      normalizedRequest: fixture.normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledWith("response-tool-1");
+    expect(stream).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.dispatch).not.toHaveBeenCalled();
+    expect(dispatch.lifecycle.settle).not.toHaveBeenCalled();
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered grounded answer [K1]."
+    });
   });
 
   it("replays a settled Knowledge tool error without inventing receipt evidence", async () => {

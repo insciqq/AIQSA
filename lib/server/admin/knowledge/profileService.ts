@@ -20,6 +20,7 @@ import {
   type KnowledgeVectorSpacePin
 } from "../../knowledge/indexProfile";
 import {
+  decodeKnowledgeProfileOperationRoles,
   KNOWLEDGE_INDEX_PROFILE_ID,
   KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION,
   knowledgeProfileConfiguration,
@@ -343,7 +344,10 @@ export function createAdminKnowledgeProfileService(
           data: {
             activatedAt: now,
             chunkingProfileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
-            egressPolicy: knowledgeProfileEgressPolicy(visualProfile),
+            egressPolicy: knowledgeProfileEgressPolicy({
+              embeddingProviderModelId: input.deploymentId,
+              visionDestination: visualProfile
+            }),
             embeddingConfiguration: resolved.pin.configuration as unknown as Prisma.InputJsonValue,
             embeddingProviderModelId: input.deploymentId,
             executionAuthority: "installation",
@@ -352,6 +356,7 @@ export function createAdminKnowledgeProfileService(
             preflightStatus: "ready",
             profileConfiguration: knowledgeProfileConfiguration({
               ...policy,
+              embeddingProviderModelId: input.deploymentId,
               visionDestination: visualProfile
             }),
             profileId: KNOWLEDGE_INDEX_PROFILE_ID,
@@ -443,6 +448,11 @@ export function createAdminKnowledgeProfileService(
       const activeVisionDestination = active && activeVisionResolution?.kind === "configured"
         ? visionDestination(active.profileConfiguration)
         : null;
+      const activeOperationRoles = active ? decodeKnowledgeProfileOperationRoles({
+        configuration: active.profileConfiguration,
+        egressPolicy: active.egressPolicy,
+        embeddingProviderModelId: active.embeddingProviderModelId
+      }) : null;
       let health: AdminKnowledgeProfileSettings["health"];
       if (!active) {
         health = {
@@ -451,6 +461,12 @@ export function createAdminKnowledgeProfileService(
           state: "not_configured"
         };
       } else if (active.preflightStatus !== "ready" || active.preflightErrorCode !== null) {
+        health = {
+          checkedAt: active.preflightCheckedAt.toISOString(),
+          code: "knowledge_profile_unavailable",
+          state: "unavailable"
+        };
+      } else if (!activeOperationRoles) {
         health = {
           checkedAt: active.preflightCheckedAt.toISOString(),
           code: "knowledge_profile_unavailable",
@@ -504,8 +520,13 @@ export function createAdminKnowledgeProfileService(
             !Array.isArray(active.egressPolicy) &&
             active.egressPolicy.policyVersion === "knowledge-profile-egress-v1"
             ? "knowledge-profile-egress-v1"
+            : active?.egressPolicy && typeof active.egressPolicy === "object" &&
+                !Array.isArray(active.egressPolicy) &&
+                active.egressPolicy.policyVersion === "knowledge-profile-egress-v2"
+              ? "knowledge-profile-egress-v2"
             : KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION,
           representations: ["document_text_chunks", "search_queries"],
+          roles: (activeOperationRoles ?? []).map(({ mode, operation }) => ({ mode, operation })),
           visualAnalysis: activeVisionDestination ? {
             destination: visionDestinationLabel(activeVisionDestination),
             representations: ["visual_source_bytes", "visual_queries"]

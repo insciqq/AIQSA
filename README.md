@@ -105,18 +105,36 @@ deletion/account obligations, source barriers, leases, and objects pass. The
 helpers never start the app or perform production cutover; see each script's
 `--help` for the exact environment.
 
-Update an existing checkout with:
+For an existing installation, use the guarded tagged-release workflow whenever
+the update can cross committed migrations. Release automation must invoke both
+phases of the tracked cutover gate under the same installation operation lock;
+inspect its exact fail-closed interface with:
 
 ```bash
-git pull --ff-only
-docker compose pull --ignore-buildable
-docker compose build docling
-docker compose up -d
-docker compose ps
-curl -fsS http://127.0.0.1:3000/api/health/ready
+bash scripts/ops-knowledge-cutover.sh --help
 ```
 
-The startup job applies committed migrations before the application becomes ready. Existing users, settings, chats, and uploaded objects remain in the configured volumes. Pin `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` in `.env` when a fixed release is preferred over `latest`.
+The workflow takes the shared deploy/backup/prune operation lock, verifies a
+fresh backup, stops application writers, and applies migrations before running
+the resumable V1-to-Source Knowledge backfill. It starts the app and worker only
+after aggregate reconciliation reports zero discrepancies. Do not replace that
+sequence with a plain `docker compose up` when upgrading an installation that
+may contain pre-cutover Knowledge data.
+
+Migration `20260818073000_knowledge_ingestion_v2` rewrites every existing
+`KnowledgeChunk` row and rebuilds its generated text-search column and GIN
+index, so the guarded workflow treats it as downtime work. Before migration it
+rejects open transactions/lock waits and requires PostgreSQL-volume free space
+of at least 1 GiB or, for a larger chunk relation, three times its current total
+size plus 512 MiB. A failure before migration restores the previous release and
+writers. After migration begins, automatic old-code/schema rollback is blocked;
+the verified backup, pending deployment record, and mode-0600 aggregate cutover
+evidence remain for operator recovery, while the supported application rollback
+is a non-destructive Knowledge profile pointer restore.
+
+Existing users, settings, chats, and uploaded objects remain in the configured
+volumes. Pin `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` in `.env` when a fixed
+release is preferred over `latest`.
 
 For automated backups, use the colocated [systemd timer templates](ops/systemd/README.md). Restore operations accept only unique disposable review projects and never overwrite canonical live services.
 

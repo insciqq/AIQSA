@@ -29,8 +29,14 @@ export type AdminKnowledgeProfileSettings = Readonly<{
   availableVisionDestinations: AdminKnowledgeVisionDestination[];
   egress: Readonly<{
     destination: string | null;
-    policyVersion: "knowledge-profile-egress-v1" | "knowledge-profile-egress-v2";
+    policyVersion: "knowledge-profile-egress-v1" | "knowledge-profile-egress-v2" |
+      "knowledge-profile-egress-v3";
     representations: readonly ["document_text_chunks", "search_queries"];
+    roles: readonly Readonly<{
+      mode: "disabled" | "external" | "local";
+      operation: "answer_citation_retry" | "citation_repair" | "embeddings" |
+        "grounding_validation" | "query_planning" | "reranking" | "vision_analysis";
+    }>[];
     visualAnalysis: Readonly<{
       destination: string;
       representations: readonly ["visual_source_bytes", "visual_queries"];
@@ -223,6 +229,38 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
   const availableDestinations = value.availableDestinations.map(decodeDestination);
   const availableVisionDestinations = value.availableVisionDestinations.map(decodeVisionDestination);
   const recentRevisions = value.recentRevisions.map(decodeRevision);
+  const roleOperations = new Set<AdminKnowledgeProfileSettings["egress"]["roles"][number]["operation"]>([
+    "embeddings",
+    "vision_analysis",
+    "query_planning",
+    "reranking",
+    "grounding_validation",
+    "citation_repair",
+    "answer_citation_retry"
+  ]);
+  const roleModes = new Set(["disabled", "external", "local"]);
+  const expectedRoleModes = new Map<
+    AdminKnowledgeProfileSettings["egress"]["roles"][number]["operation"],
+    AdminKnowledgeProfileSettings["egress"]["roles"][number]["mode"]
+  >([
+    ["embeddings", "external"],
+    ["query_planning", "disabled"],
+    ["reranking", "local"],
+    ["grounding_validation", "local"],
+    ["citation_repair", "local"],
+    ["answer_citation_retry", "disabled"]
+  ]);
+  const roles = Array.isArray(value.egress.roles) ? value.egress.roles.map((role) =>
+    record(role) && roleOperations.has(
+      role.operation as AdminKnowledgeProfileSettings["egress"]["roles"][number]["operation"]
+    ) && roleModes.has(String(role.mode))
+      ? {
+          mode: role.mode as AdminKnowledgeProfileSettings["egress"]["roles"][number]["mode"],
+          operation: role.operation as
+            AdminKnowledgeProfileSettings["egress"]["roles"][number]["operation"]
+        }
+      : null) : [];
+  const visualAnalysis = value.egress.visualAnalysis;
   const updatedBy = value.updatedBy;
   const healthStates = new Set(["not_configured", "ready", "ready_with_warnings", "unavailable"]);
   const healthCodes = new Set([
@@ -240,7 +278,15 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
     new Set(availableVisionDestinations.map((destination) => destination?.deploymentId)).size !==
       availableVisionDestinations.length ||
     value.egress.policyVersion !== "knowledge-profile-egress-v1" &&
-      value.egress.policyVersion !== "knowledge-profile-egress-v2" ||
+      value.egress.policyVersion !== "knowledge-profile-egress-v2" &&
+      value.egress.policyVersion !== "knowledge-profile-egress-v3" ||
+    !Array.isArray(value.egress.roles) || roles.some((role) => role === null) ||
+    roles.length !== (activeRevision ? roleOperations.size : 0) ||
+    new Set(roles.map((role) => role?.operation)).size !== roles.length ||
+    roles.some((role, index) => role?.operation !== [...roleOperations][index]) ||
+    roles.some((role) => role?.operation === "vision_analysis"
+      ? role.mode !== (visualAnalysis === null ? "disabled" : "external")
+      : role && expectedRoleModes.get(role.operation) !== role.mode) ||
     value.egress.destination !== null && !safeString(value.egress.destination, 512) ||
     !Array.isArray(value.egress.representations) ||
     value.egress.representations.length !== 2 ||
@@ -291,6 +337,7 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
       destination: value.egress.destination as string | null,
       policyVersion: value.egress.policyVersion as AdminKnowledgeProfileSettings["egress"]["policyVersion"],
       representations: ["document_text_chunks", "search_queries"],
+      roles: roles as AdminKnowledgeProfileSettings["egress"]["roles"],
       visualAnalysis: value.egress.visualAnalysis === null ? null : {
         destination: String((value.egress.visualAnalysis as Record<string, unknown>).destination),
         representations: ["visual_source_bytes", "visual_queries"]

@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import {
+  canonicalizeKnowledgeSourceCandidates,
+  type KnowledgeCanonicalSourceBinding,
+  type KnowledgeCanonicalSourceProvenance
+} from "./canonicalSourceCandidates";
+import { decodeKnowledgeDocumentContext } from "./documentContext";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION, knowledgeExactNormalizedValue } from "./hierarchicalIndex";
 import { KNOWLEDGE_SCOPE_MAX_BINDINGS } from "./retrievalTypes";
 import {
@@ -45,11 +51,13 @@ type ScopeRow = Readonly<{
   targetDimension: number;
 }>;
 
-type CandidateRow = Omit<KnowledgeRetrievalCandidate, "signals"> & Readonly<{
+type CandidateRow = Omit<KnowledgeRetrievalCandidate, "signals" | "sourceArtifactId"> & Readonly<{
+  contributingBindingOrdinals: readonly number[];
   exactKind: string | null;
   lane: KnowledgeRetrievalLane;
   laneRank: number;
   rawScore: number;
+  sourceArtifactId: string;
   vectorDistance: number | null;
   vectorMode: KnowledgeVectorSearchMode | null;
 }>;
@@ -83,6 +91,7 @@ export type KnowledgeRetrievalCoreResult = Readonly<{
   bindingCount: number;
   candidateCount: number;
   candidateCounts: Readonly<Record<number, number>>;
+  canonicalSourceProvenance: readonly KnowledgeCanonicalSourceProvenance[];
   passages: readonly KnowledgeRetrievalCorePassage[];
   rankingEvidence: KnowledgeRankingEvidence;
   vectorSearchEvidence: readonly KnowledgeVectorSearchEvidence[];
@@ -115,7 +124,48 @@ function retrievalBindingsSql(input: Readonly<{
     ? Prisma.sql`ARRAY[${Prisma.join(sourceIds)}]::text[]`
     : Prisma.empty;
   return Prisma.sql`
+    WITH canonical_profile_bindings AS MATERIALIZED (
+      SELECT
+        profile."modelRunId",
+        profile."id" AS "knowledgeBaseId",
+        profile."id" AS "knowledgeBaseSnapshotId",
+        profile."ordinal",
+        false AS "includeWholeBase",
+        array_agg(source_binding."sourceId" ORDER BY source_binding."sourceId")::text[]
+          AS "selectedSourceIds",
+        0::integer AS "baseContentRevision",
+        profile."profileRevisionId" AS "indexGenerationId",
+        profile."targetDimension",
+        'Pinned Knowledge Profile'::text AS "baseName",
+        'profile'::text AS "scopeKind"
+      FROM "ModelRun" AS run
+      INNER JOIN "KnowledgeRunProfileBinding" AS profile
+        ON profile."modelRunId" = run."id"
+      INNER JOIN "KnowledgeRunSourceBinding" AS source_binding
+        ON source_binding."modelRunId" = profile."modelRunId"
+       AND source_binding."profileBindingId" = profile."id"
+       AND source_binding."readinessState" = 'ready'
+       AND source_binding."tombstonedAt" IS NULL
+       AND source_binding."sourceId" IS NOT NULL
+       AND source_binding."sourceVersionId" IS NOT NULL
+       AND source_binding."sourceArtifactId" IS NOT NULL
+      WHERE run."id" = ${input.runId}
+        AND run."userId" = ${input.userId}
+        ${bindingOrdinals.length > 0
+          ? Prisma.sql`AND profile."ordinal" = ANY(${bindingOrdinalArray})`
+          : Prisma.empty}
+        ${sourceIds.length > 0
+          ? Prisma.sql`AND source_binding."sourceId" = ANY(${sourceIdArray})`
+          : Prisma.empty}
+      GROUP BY
+        profile."modelRunId",
+        profile."id",
+        profile."ordinal",
+        profile."profileRevisionId",
+        profile."targetDimension"
+    )
     SELECT
+      run."id" AS "modelRunId",
       binding."ordinal",
       binding."knowledgeBaseId",
       binding."knowledgeBaseSnapshotId",
@@ -126,12 +176,14 @@ function retrievalBindingsSql(input: Readonly<{
       binding."baseContentRevision",
       binding."indexGenerationId",
       binding."targetDimension",
-      base."name" AS "baseName"
+      base."name" AS "baseName",
+      'base'::text AS "scopeKind"
     FROM "ModelRun" AS run
     INNER JOIN "KnowledgeRunBinding" AS binding ON binding."modelRunId" = run."id"
     INNER JOIN "KnowledgeBase" AS base ON base."id" = binding."knowledgeBaseId"
     WHERE run."id" = ${input.runId}
       AND run."userId" = ${input.userId}
+      AND NOT EXISTS (SELECT 1 FROM canonical_profile_bindings)
       ${bindingOrdinals.length > 0
         ? Prisma.sql`AND binding."ordinal" = ANY(${bindingOrdinalArray})`
         : Prisma.empty}
@@ -148,31 +200,130 @@ function retrievalBindingsSql(input: Readonly<{
             )
         )
       ` : Prisma.empty}
+    UNION ALL
+    SELECT
+      canonical."modelRunId",
+      canonical."ordinal",
+      canonical."knowledgeBaseId",
+      canonical."knowledgeBaseSnapshotId",
+      canonical."includeWholeBase",
+      canonical."selectedSourceIds",
+      canonical."baseContentRevision",
+      canonical."indexGenerationId",
+      canonical."targetDimension",
+      canonical."baseName",
+      canonical."scopeKind"
+    FROM canonical_profile_bindings AS canonical
   `;
 }
 
 function scopedPassagesSql(): Prisma.Sql {
   return Prisma.sql`
+    WITH binding_sources AS MATERIALIZED (
+      SELECT
+        binding."baseName",
+        binding."ordinal" AS "bindingOrdinal",
+        binding."knowledgeBaseId",
+        binding."indexGenerationId",
+        binding."targetDimension",
+        snapshot_source."ownerUserId",
+        snapshot_source."sourceId",
+        snapshot_source."sourceVersionId",
+        snapshot_source."artifactId"
+      FROM bindings AS binding
+      INNER JOIN "KnowledgeBaseSnapshotSource" AS snapshot_source
+        ON snapshot_source."snapshotId" = binding."knowledgeBaseSnapshotId"
+       AND snapshot_source."knowledgeBaseId" = binding."knowledgeBaseId"
+      WHERE binding."scopeKind" = 'base'
+        AND binding."knowledgeBaseSnapshotId" IS NOT NULL
+        AND (
+          binding."includeWholeBase" = true
+          OR snapshot_source."sourceId" = ANY(binding."selectedSourceIds")
+        )
+      UNION ALL
+      SELECT
+        binding."baseName",
+        binding."ordinal" AS "bindingOrdinal",
+        binding."knowledgeBaseId",
+        binding."indexGenerationId",
+        binding."targetDimension",
+        source."ownerUserId",
+        source_binding."sourceId",
+        source_binding."sourceVersionId",
+        source_binding."sourceArtifactId" AS "artifactId"
+      FROM bindings AS binding
+      INNER JOIN "KnowledgeRunSourceBinding" AS source_binding
+        ON source_binding."modelRunId" = binding."modelRunId"
+       AND source_binding."profileBindingId" = binding."knowledgeBaseId"
+       AND source_binding."readinessState" = 'ready'
+       AND source_binding."tombstonedAt" IS NULL
+      INNER JOIN "KnowledgeSource" AS source
+        ON source."id" = source_binding."sourceId"
+      WHERE binding."scopeKind" = 'profile'
+        AND source_binding."sourceId" IS NOT NULL
+        AND source_binding."sourceVersionId" IS NOT NULL
+        AND source_binding."sourceArtifactId" IS NOT NULL
+        AND source_binding."sourceId" = ANY(binding."selectedSourceIds")
+    ),
+    source_provenance AS MATERIALIZED (
+      SELECT
+        source_binding."sourceId",
+        source_binding."sourceVersionId",
+        source_binding."artifactId",
+        array_agg(source_binding."bindingOrdinal" ORDER BY source_binding."bindingOrdinal")
+          AS "contributingBindingOrdinals"
+      FROM binding_sources AS source_binding
+      GROUP BY
+        source_binding."sourceId",
+        source_binding."sourceVersionId",
+        source_binding."artifactId"
+    ),
+    canonical_binding_sources AS MATERIALIZED (
+      SELECT DISTINCT ON (
+        source_binding."sourceId",
+        source_binding."sourceVersionId",
+        source_binding."artifactId"
+      ) source_binding.*
+      FROM binding_sources AS source_binding
+      ORDER BY
+        source_binding."sourceId",
+        source_binding."sourceVersionId",
+        source_binding."artifactId",
+        source_binding."bindingOrdinal",
+        source_binding."knowledgeBaseId"
+    )
     SELECT
-      binding."baseName",
-      binding."ordinal" AS "bindingOrdinal",
-      binding."knowledgeBaseId",
-      binding."indexGenerationId",
-      binding."targetDimension",
-      snapshot_source."sourceId" AS "documentId",
-      snapshot_source."sourceVersionId" AS "documentVersionId",
+      source_binding."baseName",
+      source_binding."bindingOrdinal",
+      source_binding."knowledgeBaseId",
+      source_binding."indexGenerationId",
+      source_binding."targetDimension",
+      provenance."contributingBindingOrdinals",
+      source_binding."sourceId" AS "documentId",
+      source_binding."sourceVersionId" AS "documentVersionId",
       version."versionNumber" AS "documentVersionNumber",
       version."fileName",
-      snapshot_source."artifactId" AS "sourceArtifactId",
+      source_binding."artifactId" AS "sourceArtifactId",
       hierarchy."id" AS "indexArtifactId",
       passage."id" AS "chunkId",
       passage."ordinal" AS "chunkIndex",
       passage."sectionId",
       passage."page",
       passage."headingPath",
-      CASE split_part(passage."contextPrefix", E'\n', 1)
-        WHEN 'Evidence layout: table_ambiguous_v1' THEN 'table_ambiguous'::text
-        WHEN 'Evidence layout: table_row_v1' THEN 'table_row'::text
+      passage."documentContext",
+      CASE
+        WHEN passage."documentContext"->'locator'->>'kind' = 'field_ambiguous'
+          THEN 'field_ambiguous'::text
+        WHEN passage."documentContext"->'locator'->>'kind' = 'field_pair'
+          THEN 'field_pair'::text
+        WHEN passage."documentContext"->'locator'->>'kind' = 'table_row_projection'
+          THEN 'table_row_projection'::text
+        WHEN passage."documentContext"->'locator'->>'kind' = 'table_row'
+          THEN 'table_row'::text
+        WHEN split_part(passage."contextPrefix", E'\n', 1) =
+          'Evidence layout: table_ambiguous_v1' THEN 'table_ambiguous'::text
+        WHEN split_part(passage."contextPrefix", E'\n', 1) =
+          'Evidence layout: table_row_v1' THEN 'table_row'::text
         ELSE 'body'::text
       END AS "layoutKind",
       passage."contentHash",
@@ -183,17 +334,18 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."russianSearchVector",
       embedding."embeddingDimension",
       embedding."embedding"
-    FROM bindings AS binding
-    INNER JOIN "KnowledgeBaseSnapshotSource" AS snapshot_source
-      ON snapshot_source."snapshotId" = binding."knowledgeBaseSnapshotId"
-     AND snapshot_source."knowledgeBaseId" = binding."knowledgeBaseId"
+    FROM canonical_binding_sources AS source_binding
+    INNER JOIN source_provenance AS provenance
+      ON provenance."sourceId" = source_binding."sourceId"
+     AND provenance."sourceVersionId" = source_binding."sourceVersionId"
+     AND provenance."artifactId" = source_binding."artifactId"
     INNER JOIN "KnowledgeSourceVersion" AS version
-      ON version."id" = snapshot_source."sourceVersionId"
-     AND version."sourceId" = snapshot_source."sourceId"
-     AND version."ownerUserId" = snapshot_source."ownerUserId"
+      ON version."id" = source_binding."sourceVersionId"
+     AND version."sourceId" = source_binding."sourceId"
+     AND version."ownerUserId" = source_binding."ownerUserId"
     INNER JOIN "KnowledgeSourceIndexArtifact" AS source_artifact
-      ON source_artifact."id" = snapshot_source."artifactId"
-     AND source_artifact."sourceVersionId" = snapshot_source."sourceVersionId"
+      ON source_artifact."id" = source_binding."artifactId"
+     AND source_artifact."sourceVersionId" = source_binding."sourceVersionId"
      AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
     INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
       ON hierarchy."sourceArtifactId" = source_artifact."id"
@@ -205,11 +357,6 @@ function scopedPassagesSql(): Prisma.Sql {
     LEFT JOIN "KnowledgeArtifactPassageEmbedding" AS embedding
       ON embedding."indexArtifactId" = passage."indexArtifactId"
      AND embedding."passageId" = passage."id"
-    WHERE binding."knowledgeBaseSnapshotId" IS NOT NULL
-      AND (
-        binding."includeWholeBase" = true
-        OR snapshot_source."sourceId" = ANY(binding."selectedSourceIds")
-      )
   `;
 }
 
@@ -340,19 +487,13 @@ export function knowledgeAdaptiveVectorSearchSql(input: Readonly<{
         WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
           AND EXISTS (
             SELECT 1
-            FROM bindings AS binding
-            INNER JOIN "KnowledgeBaseSnapshotSource" AS snapshot_source
-              ON snapshot_source."snapshotId" = binding."knowledgeBaseSnapshotId"
-             AND snapshot_source."knowledgeBaseId" = binding."knowledgeBaseId"
-            WHERE binding."ordinal" = ${input.vector.bindingOrdinal}
-              AND binding."knowledgeBaseId" = ${input.vector.knowledgeBaseId}
-              AND binding."indexGenerationId" = ${input.vector.indexGenerationId}
-              AND binding."targetDimension" = ${input.vector.targetDimension}
-              AND snapshot_source."artifactId" = hierarchy."sourceArtifactId"
-              AND (
-                binding."includeWholeBase" = true
-                OR snapshot_source."sourceId" = ANY(binding."selectedSourceIds")
-              )
+            FROM scoped_passages AS scoped
+            WHERE scoped."bindingOrdinal" = ${input.vector.bindingOrdinal}
+              AND scoped."knowledgeBaseId" = ${input.vector.knowledgeBaseId}
+              AND scoped."indexGenerationId" = ${input.vector.indexGenerationId}
+              AND scoped."targetDimension" = ${input.vector.targetDimension}
+              AND scoped."indexArtifactId" = hierarchy."id"
+              AND scoped."chunkId" = embedding."passageId"
           )
         ORDER BY ${globalDistance}
         LIMIT ${input.candidateLimit}
@@ -371,12 +512,14 @@ export function knowledgeAdaptiveVectorSearchSql(input: Readonly<{
     SELECT
       binding."baseName",
       binding."ordinal" AS "bindingOrdinal",
+      passage."contributingBindingOrdinals",
       passage."chunkId",
       passage."chunkIndex",
       passage."contentHash",
       passage."documentId",
       passage."documentVersionId",
       passage."documentVersionNumber",
+      passage."documentContext",
       passage."fileName",
       passage."headingPath",
       passage."layoutKind",
@@ -550,12 +693,14 @@ export function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
     SELECT
       ranked."baseName",
       ranked."bindingOrdinal",
+      ranked."contributingBindingOrdinals",
       ranked."chunkId",
       ranked."chunkIndex",
       ranked."contentHash",
       ranked."documentId",
       ranked."documentVersionId",
       ranked."documentVersionNumber",
+      ranked."documentContext",
       ranked."fileName",
       ranked."headingPath",
       ranked."layoutKind",
@@ -600,12 +745,14 @@ function knowledgeNeighborExpansionSql(input: Readonly<{
       SELECT
         neighbor."baseName",
         neighbor."bindingOrdinal",
+        neighbor."contributingBindingOrdinals",
         neighbor."chunkId",
         neighbor."chunkIndex",
         neighbor."contentHash",
         neighbor."documentId",
         neighbor."documentVersionId",
         neighbor."documentVersionNumber",
+        neighbor."documentContext",
         neighbor."fileName",
         neighbor."headingPath",
         neighbor."layoutKind",
@@ -631,6 +778,15 @@ function knowledgeNeighborExpansionSql(input: Readonly<{
         ON neighbor."bindingOrdinal" = source."bindingOrdinal"
        AND neighbor."indexArtifactId" = source."indexArtifactId"
        AND abs(neighbor."chunkIndex" - source."chunkIndex") = 1
+       AND (
+         source."documentContext" IS NULL AND neighbor."documentContext" IS NULL
+         OR source."documentContext"->'locator'->>'rowId' IS NOT NULL
+           AND neighbor."documentContext"->'locator'->>'rowId' =
+             source."documentContext"->'locator'->>'rowId'
+         OR source."documentContext"->'locator'->>'fieldGroupId' IS NOT NULL
+           AND neighbor."documentContext"->'locator'->>'fieldGroupId' =
+             source."documentContext"->'locator'->>'fieldGroupId'
+       )
     )
     SELECT * FROM expanded
     ORDER BY "laneRank"
@@ -648,15 +804,35 @@ const lanes = new Set<KnowledgeRetrievalLane>([
   "section_lexical"
 ]);
 
+function decodeContributingBindingOrdinals(
+  value: unknown
+): readonly number[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > KNOWLEDGE_SCOPE_MAX_BINDINGS) {
+    return null;
+  }
+  const decoded = value.map(integer);
+  if (decoded.some((entry) =>
+    entry === null || entry < 0 || entry >= KNOWLEDGE_SCOPE_MAX_BINDINGS)) return null;
+  const bindingOrdinals = (decoded as number[]).sort((left, right) => left - right);
+  if (new Set(bindingOrdinals).size !== bindingOrdinals.length) return null;
+  return Object.freeze(bindingOrdinals);
+}
+
 function decodeCandidateRow(value: unknown): CandidateRow | null {
   if (!record(value)) return null;
   const bindingOrdinal = integer(value.bindingOrdinal);
   const chunkIndex = integer(value.chunkIndex);
+  const documentContext = value.documentContext === undefined || value.documentContext === null
+    ? null
+    : decodeKnowledgeDocumentContext(value.documentContext);
   const documentVersionNumber = integer(value.documentVersionNumber);
   const laneRank = integer(value.laneRank);
   const page = integer(value.page);
   const rawScore = finite(value.rawScore);
   const vectorDistance = value.vectorDistance === null ? null : finite(value.vectorDistance);
+  const contributingBindingOrdinals = decodeContributingBindingOrdinals(
+    value.contributingBindingOrdinals
+  );
   if (
     bindingOrdinal === null || bindingOrdinal < 0 ||
     bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
@@ -670,15 +846,19 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     typeof value.contentHash !== "string" || !/^[0-9a-f]{64}$/u.test(value.contentHash) ||
     typeof value.documentId !== "string" || !value.documentId ||
     typeof value.documentVersionId !== "string" || !value.documentVersionId ||
+    (value.documentContext !== undefined && value.documentContext !== null && !documentContext) ||
     typeof value.fileName !== "string" || !value.fileName ||
-    value.layoutKind !== "body" && value.layoutKind !== "table_ambiguous" &&
-      value.layoutKind !== "table_row" ||
+    value.layoutKind !== "body" && value.layoutKind !== "field_ambiguous" &&
+      value.layoutKind !== "field_pair" && value.layoutKind !== "table_ambiguous" &&
+      value.layoutKind !== "table_row" && value.layoutKind !== "table_row_projection" ||
     typeof value.knowledgeBaseId !== "string" || !value.knowledgeBaseId ||
     typeof value.sourceName !== "string" || !value.sourceName ||
     typeof value.text !== "string" || !value.text ||
+    contributingBindingOrdinals === null ||
+    !contributingBindingOrdinals.includes(bindingOrdinal) ||
     (value.exactKind !== null && typeof value.exactKind !== "string") ||
     (value.sectionId !== null && typeof value.sectionId !== "string") ||
-    (value.sourceArtifactId !== null && typeof value.sourceArtifactId !== "string") ||
+    typeof value.sourceArtifactId !== "string" || !value.sourceArtifactId ||
     (value.vectorMode !== null && value.vectorMode !== "ann" && value.vectorMode !== "exact") ||
     (value.vectorMode === null) !== (vectorDistance === null) ||
     vectorDistance !== null && (vectorDistance < 0 || vectorDistance > 2)
@@ -689,7 +869,9 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     chunkId: value.chunkId,
     chunkIndex,
     contentHash: value.contentHash,
+    contributingBindingOrdinals,
     documentId: value.documentId,
+    ...(documentContext ? { documentContext } : {}),
     documentVersionId: value.documentVersionId,
     documentVersionNumber,
     exactKind: value.exactKind as string | null,
@@ -702,7 +884,7 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     page,
     rawScore,
     sectionId: value.sectionId as string | null,
-    sourceArtifactId: value.sourceArtifactId as string | null,
+    sourceArtifactId: value.sourceArtifactId,
     sourceName: value.sourceName,
     text: value.text,
     vectorDistance,
@@ -710,12 +892,43 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
   };
 }
 
-function mergedCandidates(rows: readonly CandidateRow[]): KnowledgeRetrievalCandidate[] {
+function mergedCandidates(
+  rows: readonly CandidateRow[],
+  scopesByOrdinal: ReadonlyMap<number, ScopeRow>
+): Readonly<{
+  candidates: readonly KnowledgeRetrievalCandidate[];
+  sourceBindings: readonly KnowledgeCanonicalSourceBinding[];
+}> {
   const candidates = new Map<string, {
     candidate: Omit<KnowledgeRetrievalCandidate, "signals">;
     signals: KnowledgeCandidateSignal[];
   }>();
+  const sourceBindings = new Map<string, KnowledgeCanonicalSourceBinding>();
   for (const row of rows) {
+    for (const bindingOrdinal of row.contributingBindingOrdinals) {
+      const contributingScope = scopesByOrdinal.get(bindingOrdinal);
+      if (!contributingScope) throw new Error("knowledge_retrieval_source_binding_invalid");
+      const sourceBinding = Object.freeze({
+        artifactId: row.sourceArtifactId,
+        baseName: contributingScope.baseName,
+        bindingOrdinal,
+        knowledgeBaseId: contributingScope.knowledgeBaseId,
+        sourceId: row.documentId,
+        sourceVersionId: row.documentVersionId
+      });
+      const sourceBindingKey = JSON.stringify([
+        sourceBinding.sourceId,
+        sourceBinding.sourceVersionId,
+        sourceBinding.artifactId,
+        sourceBinding.bindingOrdinal
+      ]);
+      const existingSourceBinding = sourceBindings.get(sourceBindingKey);
+      if (existingSourceBinding && (
+        existingSourceBinding.baseName !== sourceBinding.baseName ||
+        existingSourceBinding.knowledgeBaseId !== sourceBinding.knowledgeBaseId
+      )) throw new Error("knowledge_retrieval_source_binding_conflict");
+      sourceBindings.set(sourceBindingKey, sourceBinding);
+    }
     const signal: KnowledgeCandidateSignal = Object.freeze({
       exactKind: row.exactKind,
       lane: row.lane,
@@ -724,17 +937,22 @@ function mergedCandidates(rows: readonly CandidateRow[]): KnowledgeRetrievalCand
       vectorDistance: row.vectorDistance,
       vectorMode: row.vectorMode
     });
-    const existing = candidates.get(row.chunkId);
+    const candidateKey = JSON.stringify([row.bindingOrdinal, row.chunkId]);
+    const existing = candidates.get(candidateKey);
     if (existing) {
       if (
         existing.candidate.bindingOrdinal !== row.bindingOrdinal ||
+        existing.candidate.documentId !== row.documentId ||
         existing.candidate.documentVersionId !== row.documentVersionId ||
-        existing.candidate.contentHash !== row.contentHash
+        existing.candidate.contentHash !== row.contentHash ||
+        existing.candidate.knowledgeBaseId !== row.knowledgeBaseId ||
+        existing.candidate.sourceArtifactId !== row.sourceArtifactId
       ) throw new Error("knowledge_retrieval_candidate_conflict");
       existing.signals.push(signal);
       continue;
     }
     const {
+      contributingBindingOrdinals: _contributingBindingOrdinals,
       exactKind: _exactKind,
       lane: _lane,
       laneRank: _laneRank,
@@ -743,12 +961,16 @@ function mergedCandidates(rows: readonly CandidateRow[]): KnowledgeRetrievalCand
       vectorMode: _vectorMode,
       ...candidate
     } = row;
-    candidates.set(row.chunkId, { candidate, signals: [signal] });
+    candidates.set(candidateKey, { candidate, signals: [signal] });
   }
-  return [...candidates.values()].map(({ candidate, signals }) => Object.freeze({
-    ...candidate,
-    signals: Object.freeze(signals)
-  }));
+  return Object.freeze({
+    candidates: Object.freeze([...candidates.values()].map(({ candidate, signals }) =>
+      Object.freeze({
+        ...candidate,
+        signals: Object.freeze(signals)
+      }))),
+    sourceBindings: Object.freeze([...sourceBindings.values()])
+  });
 }
 
 function decodeRows(rows: readonly unknown[]): CandidateRow[] {
@@ -914,7 +1136,12 @@ export async function executeKnowledgeRetrievalCore(
     })).then(decodeRows),
     Promise.all(vectorPromises)
   ]);
-  let candidates = mergedCandidates([...lexicalRows, ...vectors.flat()]);
+  let merged = mergedCandidates([...lexicalRows, ...vectors.flat()], byOrdinal);
+  let canonical = canonicalizeKnowledgeSourceCandidates(
+    merged.candidates,
+    merged.sourceBindings
+  );
+  let candidates = [...canonical.candidates];
   if (candidates.length > 0) {
     const anchors = fuseKnowledgeCandidates(candidates)
       .slice(0, Math.min(8, input.resultLimit * 2))
@@ -933,13 +1160,32 @@ export async function executeKnowledgeRetrievalCore(
           userId: input.userId
         })
       ));
-      candidates = mergedCandidates([...lexicalRows, ...vectors.flat(), ...neighborRows]);
+      merged = mergedCandidates([...lexicalRows, ...vectors.flat(), ...neighborRows], byOrdinal);
+      canonical = canonicalizeKnowledgeSourceCandidates(
+        merged.candidates,
+        merged.sourceBindings
+      );
+      candidates = [...canonical.candidates];
     }
   }
   candidates = boundKnowledgeCandidates(
     candidates,
     acceptedScopes.map((scope) => scope.bindingOrdinal)
   );
+  const retainedChunkIds = new Set(candidates.map((candidate) => candidate.chunkId));
+  const retainedCandidateProvenance = canonical.candidateProvenance.filter((entry) =>
+    retainedChunkIds.has(entry.chunkId));
+  const provenanceByChunk = new Map(retainedCandidateProvenance.map((entry) => [
+    entry.chunkId,
+    entry
+  ]));
+  if (provenanceByChunk.size !== candidates.length) {
+    throw new Error("knowledge_canonical_source_provenance_invalid");
+  }
+  const retainedSourceKeys = new Set(retainedCandidateProvenance.map((entry) =>
+    JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
+  const canonicalSourceProvenance = canonical.sourceProvenance.filter((entry) =>
+    retainedSourceKeys.has(JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
   const ranking = await rankKnowledgeCandidates({
     candidates,
     query: input.query,
@@ -976,6 +1222,7 @@ export async function executeKnowledgeRetrievalCore(
     bindingCount: acceptedScopes.length,
     candidateCount: candidates.length,
     candidateCounts: Object.freeze(candidateCounts),
+    canonicalSourceProvenance: Object.freeze(canonicalSourceProvenance),
     passages: Object.freeze(passages),
     rankingEvidence: ranking.evidence,
     vectorSearchEvidence: Object.freeze(vectorEvidence.sort((left, right) =>

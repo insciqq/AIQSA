@@ -7,6 +7,11 @@ import type {
   ParsedDocumentAsset,
   ParsedDocumentBlock,
   ParsedDocumentBlockType,
+  ParsedFieldCell,
+  ParsedFieldCellLabel,
+  ParsedFieldGroup,
+  ParsedFieldLink,
+  ParsedFieldLinkLabel,
   ParsedTable,
   SidecarParserEngine
 } from "./types";
@@ -28,9 +33,30 @@ type MutableBlock = {
 };
 
 const MAX_NORMALIZED_BLOCKS = 100_000;
+const MAX_FIELD_BOUNDING_BOXES = 256;
+const MAX_FIELD_CELLS = 100_000;
+const MAX_FIELD_CELLS_PER_GROUP = 10_000;
+const MAX_FIELD_GROUPS = 10_000;
+const MAX_FIELD_LINKS = 200_000;
+const MAX_FIELD_LINKS_PER_GROUP = 20_000;
+const MAX_FIELD_REF_LENGTH = 512;
+const MAX_FIELD_TEXT_LENGTH = 32_767;
 const MAX_TABLE_CELLS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
 const MAX_TABLE_ROWS = 2_000;
+const FIELD_CELL_LABELS: readonly ParsedFieldCellLabel[] = [
+  "checkbox",
+  "key",
+  "unspecified",
+  "value"
+];
+const FIELD_LINK_LABELS: readonly ParsedFieldLinkLabel[] = [
+  "to_child",
+  "to_key",
+  "to_parent",
+  "to_value",
+  "unspecified"
+];
 
 function invalid(engine: SidecarParserEngine): never {
   throw new DocumentParserError("parser_invalid_output", engine);
@@ -50,42 +76,116 @@ function positivePage(value: unknown): number | undefined {
   return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : undefined;
 }
 
-function pageOf(item: Record<string, unknown>): number {
-  if (!Array.isArray(item.prov)) return 1;
-  for (const value of item.prov) {
-    if (!isRecord(value)) continue;
-    const page = positivePage(value.page_no);
-    if (page) return page;
+function boundedConfidence(item: Record<string, unknown>): number | null {
+  if (item.confidence === undefined || item.confidence === null) return null;
+  if (
+    typeof item.confidence !== "number" || !Number.isFinite(item.confidence) ||
+    item.confidence < 0 || item.confidence > 1
+  ) invalid("docling");
+  return item.confidence;
+}
+
+function boundedFieldText(value: unknown): string {
+  if (
+    typeof value !== "string" || value.length > MAX_FIELD_TEXT_LENGTH ||
+    /\u0000/u.test(value)
+  ) invalid("docling");
+  return value;
+}
+
+function fieldItemRef(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "$ref") ||
+    typeof value.$ref !== "string" || value.$ref.length > MAX_FIELD_REF_LENGTH ||
+    !/^#(?:\/(?:[\w-]+)(?:\/(?:0|[1-9]\d*))?)?$/u.test(value.$ref)) {
+    invalid("docling");
   }
-  return 1;
+  return value.$ref;
+}
+
+function provenanceBox(value: unknown): ParsedBoundingBox | null {
+  if (!isRecord(value) || !isRecord(value.bbox)) return null;
+  const page = positivePage(value.page_no);
+  const { b, l, r, t } = value.bbox;
+  if (value.bbox.coord_origin !== "TOPLEFT" && value.bbox.coord_origin !== "BOTTOMLEFT") {
+    return null;
+  }
+  const coordinateOrigin = value.bbox.coord_origin === "TOPLEFT"
+    ? "top_left"
+    : "bottom_left";
+  if (
+    !page ||
+    ![b, l, r, t].every((candidate) => typeof candidate === "number" && Number.isFinite(candidate)) ||
+    Number(l) > Number(r) ||
+    (coordinateOrigin === "top_left" ? Number(b) < Number(t) : Number(b) > Number(t))
+  ) return null;
+  return Object.freeze({
+    bottom: Number(b),
+    coordinateOrigin,
+    left: Number(l),
+    page,
+    right: Number(r),
+    top: Number(t)
+  });
+}
+
+function fieldGroupProvenance(item: Record<string, unknown>): Readonly<{
+  boxes: readonly ParsedBoundingBox[];
+  pages: readonly number[];
+}> {
+  if (item.prov === undefined || item.prov === null) {
+    return Object.freeze({ boxes: Object.freeze([]), pages: Object.freeze([]) });
+  }
+  if (!Array.isArray(item.prov) || item.prov.length > MAX_FIELD_BOUNDING_BOXES) {
+    invalid("docling");
+  }
+  const boxes: ParsedBoundingBox[] = [];
+  const pages: number[] = [];
+  for (const provenance of item.prov) {
+    if (!isRecord(provenance)) invalid("docling");
+    const page = positivePage(provenance.page_no);
+    if (!page) invalid("docling");
+    pages.push(page);
+    if (provenance.bbox !== undefined && provenance.bbox !== null) {
+      const box = provenanceBox(provenance);
+      if (!box) invalid("docling");
+      boxes.push(box);
+    }
+  }
+  return Object.freeze({
+    boxes: Object.freeze(boxes),
+    pages: Object.freeze(pages)
+  });
+}
+
+function pageRangeOf(item: Record<string, unknown>): Readonly<{ page: number; pageEnd: number }> {
+  const pages = Array.isArray(item.prov)
+    ? item.prov.flatMap((value) => {
+        if (!isRecord(value)) return [];
+        const page = positivePage(value.page_no);
+        return page ? [page] : [];
+      })
+    : [];
+  return pages.length > 0
+    ? Object.freeze({ page: Math.min(...pages), pageEnd: Math.max(...pages) })
+    : Object.freeze({ page: 1, pageEnd: 1 });
 }
 
 function boundingBoxesOf(item: Record<string, unknown>): ParsedBoundingBox[] {
   if (!Array.isArray(item.prov)) return [];
   const result: ParsedBoundingBox[] = [];
   for (const provenance of item.prov) {
-    if (!isRecord(provenance) || !isRecord(provenance.bbox)) continue;
-    const page = positivePage(provenance.page_no);
-    const { b, l, r, t } = provenance.bbox;
-    const coordinateOrigin = provenance.bbox.coord_origin === "TOPLEFT"
-      ? "top_left"
-      : "bottom_left";
-    if (
-      !page ||
-      ![b, l, r, t].every((value) => typeof value === "number" && Number.isFinite(value)) ||
-      Number(l) > Number(r) ||
-      (coordinateOrigin === "top_left" ? Number(b) < Number(t) : Number(b) > Number(t))
-    ) continue;
-    result.push(Object.freeze({
-      bottom: Number(b),
-      coordinateOrigin,
-      left: Number(l),
-      page,
-      right: Number(r),
-      top: Number(t)
-    }));
+    const box = provenanceBox(provenance);
+    if (box) result.push(box);
   }
   return result;
+}
+
+function fieldCellBoxes(item: Record<string, unknown>): readonly ParsedBoundingBox[] {
+  if (item.prov === undefined || item.prov === null) return Object.freeze([]);
+  const box = provenanceBox(item.prov);
+  if (!box) invalid("docling");
+  return Object.freeze([box]);
 }
 
 function addBlock(blocks: MutableBlock[], block: MutableBlock, engine: SidecarParserEngine): void {
@@ -109,6 +209,7 @@ function finalizedDocument(input: Readonly<{
   assets?: ParsedDocumentAsset[];
   blocks: MutableBlock[];
   engine: SidecarParserEngine;
+  fieldGroups?: ParsedFieldGroup[];
   mediaType: string;
   pageCount: number;
   status: "complete" | "partial";
@@ -128,12 +229,14 @@ function finalizedDocument(input: Readonly<{
     type: block.type ?? (block.isTable ? "table" : "paragraph")
   }));
   let pageCount = Math.max(1, input.pageCount);
-  for (const block of blocks) pageCount = Math.max(pageCount, block.page);
+  for (const block of blocks) pageCount = Math.max(pageCount, block.pageEnd);
+  for (const group of input.fieldGroups ?? []) pageCount = Math.max(pageCount, group.pageEnd);
 
   return finalizeParsedDocument({
     assets: input.assets ?? [],
     blocks,
     engine: input.engine,
+    fieldGroups: input.fieldGroups ?? [],
     mediaType: input.mediaType,
     pageCount,
     status: input.status
@@ -204,6 +307,80 @@ function tableText(table: ParsedTable | null): string {
   return rows.map((row) => row.join("\t").trimEnd()).filter(Boolean).join("\n");
 }
 
+function doclingFieldGroup(
+  item: Record<string, unknown>,
+  kind: ParsedFieldGroup["kind"],
+  sourceRef: string,
+  readingOrder: number
+): ParsedFieldGroup {
+  if (
+    item.self_ref !== sourceRef || !isRecord(item.graph) ||
+    !Array.isArray(item.graph.cells) || !Array.isArray(item.graph.links) ||
+    item.graph.cells.length > MAX_FIELD_CELLS_PER_GROUP ||
+    item.graph.links.length > MAX_FIELD_LINKS_PER_GROUP
+  ) invalid("docling");
+
+  const cellIds = new Set<number>();
+  const cells: ParsedFieldCell[] = item.graph.cells.map((candidate, order) => {
+    if (!isRecord(candidate) || !FIELD_CELL_LABELS.includes(candidate.label as ParsedFieldCellLabel) ||
+      !Number.isSafeInteger(candidate.cell_id) || Number(candidate.cell_id) < 0 ||
+      cellIds.has(Number(candidate.cell_id))) invalid("docling");
+    const id = Number(candidate.cell_id);
+    cellIds.add(id);
+    return Object.freeze({
+      boundingBoxes: fieldCellBoxes(candidate),
+      confidence: boundedConfidence(candidate),
+      id,
+      itemRef: fieldItemRef(candidate.item_ref),
+      label: candidate.label as ParsedFieldCellLabel,
+      order,
+      originalText: boundedFieldText(candidate.orig),
+      text: boundedFieldText(candidate.text)
+    });
+  });
+
+  const linkKeys = new Set<string>();
+  const links: ParsedFieldLink[] = item.graph.links.map((candidate, order) => {
+    if (!isRecord(candidate) || !FIELD_LINK_LABELS.includes(candidate.label as ParsedFieldLinkLabel) ||
+      !Number.isSafeInteger(candidate.source_cell_id) || Number(candidate.source_cell_id) < 0 ||
+      !Number.isSafeInteger(candidate.target_cell_id) || Number(candidate.target_cell_id) < 0) {
+      invalid("docling");
+    }
+    const sourceCellId = Number(candidate.source_cell_id);
+    const targetCellId = Number(candidate.target_cell_id);
+    if (!cellIds.has(sourceCellId) || !cellIds.has(targetCellId)) invalid("docling");
+    const key = `${candidate.label}:${sourceCellId}:${targetCellId}`;
+    if (linkKeys.has(key)) invalid("docling");
+    linkKeys.add(key);
+    return Object.freeze({
+      confidence: boundedConfidence(candidate),
+      label: candidate.label as ParsedFieldLinkLabel,
+      order,
+      sourceCellId,
+      targetCellId
+    });
+  });
+  const provenance = fieldGroupProvenance(item);
+  const boundingBoxes = provenance.boxes;
+  const pages = [
+    ...provenance.pages,
+    ...boundingBoxes.map((box) => box.page),
+    ...cells.flatMap((cell) => cell.boundingBoxes.map((box) => box.page))
+  ];
+  if (pages.length === 0) pages.push(1);
+  return Object.freeze({
+    boundingBoxes,
+    cells: Object.freeze(cells),
+    confidence: boundedConfidence(item),
+    kind,
+    links: Object.freeze(links),
+    page: Math.min(...pages),
+    pageEnd: Math.max(...pages),
+    readingOrder,
+    sourceRef
+  });
+}
+
 function doclingBlockType(item: Record<string, unknown>): ParsedDocumentBlockType {
   switch (item.label) {
     case "title": return "title";
@@ -254,9 +431,13 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
   };
   const blocks: MutableBlock[] = [];
   const assets: ParsedDocumentAsset[] = [];
+  const fieldGroups: ParsedFieldGroup[] = [];
   const headingPath: string[] = [];
   let hasTitle = false;
+  let totalFieldCells = 0;
+  let totalFieldLinks = 0;
   const visitedContainers = new Set<string>();
+  const visitedFieldGroups = new Set<string>();
 
   function updateHeading(item: Record<string, unknown>, text: string): void {
     if (item.label === "title") {
@@ -298,7 +479,8 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     if (collectionName === "pictures") {
       const assetId = `docling-picture-${index}`;
       const boxes = boundingBoxesOf(item);
-      const page = pageOf(item);
+      const { page, pageEnd } = pageRangeOf(item);
+      if (pageEnd !== page) invalid("docling");
       assets.push(Object.freeze({
         boundingBoxes: Object.freeze(boxes),
         caption: null,
@@ -312,6 +494,7 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
         headingPath,
         isTable: false,
         page,
+        pageEnd,
         text: "",
         type: "image"
       }, "docling");
@@ -319,26 +502,32 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     }
 
     if (collectionName === "form_items" || collectionName === "key_value_items") {
-      // Docling graph regions are valid body nodes but do not define a stable
-      // linear reading order. Validate their reviewed shape and omit them from
-      // the ordered text projection, as we already do for pictures.
-      if (
-        !isRecord(item.graph)
-        || !Array.isArray(item.graph.cells)
-        || !Array.isArray(item.graph.links)
-      ) {
+      if (visitedFieldGroups.has(reference.$ref) || fieldGroups.length >= MAX_FIELD_GROUPS) {
         invalid("docling");
       }
+      visitedFieldGroups.add(reference.$ref);
+      const group = doclingFieldGroup(
+        item,
+        collectionName === "form_items" ? "form" : "key_value",
+        reference.$ref,
+        blocks.length
+      );
+      totalFieldCells += group.cells.length;
+      totalFieldLinks += group.links.length;
+      if (totalFieldCells > MAX_FIELD_CELLS || totalFieldLinks > MAX_FIELD_LINKS) invalid("docling");
+      fieldGroups.push(group);
       return;
     }
 
     if (collectionName === "tables") {
       const table = doclingTable(item);
+      const { page, pageEnd } = pageRangeOf(item);
       addBlock(blocks, {
         boundingBoxes: boundingBoxesOf(item),
         headingPath,
         isTable: true,
-        page: pageOf(item),
+        page,
+        pageEnd,
         table,
         text: tableText(table),
         type: "table"
@@ -349,11 +538,13 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     const text = normalizedText(item.text);
     if (!text) return;
     updateHeading(item, text);
+    const { page, pageEnd } = pageRangeOf(item);
     addBlock(blocks, {
       boundingBoxes: boundingBoxesOf(item),
       headingPath,
       isTable: false,
-      page: pageOf(item),
+      page,
+      pageEnd,
       text,
       type: doclingBlockType(item)
     }, "docling");
@@ -365,6 +556,7 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     assets,
     blocks,
     engine: "docling",
+    fieldGroups,
     mediaType,
     pageCount: doclingPageCount(document),
     status: status === "partial_success" ? "partial" : "complete"

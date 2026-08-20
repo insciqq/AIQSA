@@ -6,15 +6,18 @@ import { encodeKnowledgeNormalizedDocument } from "../../lib/server/knowledge/no
 import {
   executeStructuredPlan,
   STRUCTURED_PLAN_VERSION,
+  verifyStructuredAnalysisResult,
+  type StructuredArithmeticPlan,
   type StructuredPlan
 } from "../../lib/server/knowledge/structuredData";
 import { planStructuredDataQuery } from "../../lib/server/knowledge/structuredPlanner";
 import { analyzeStructuredKnowledgeSources } from "../../lib/server/knowledge/structuredRetrieval";
 
-export const KNOWLEDGE_STRUCTURED_EVAL_VERSION = 1 as const;
+export const KNOWLEDGE_STRUCTURED_EVAL_VERSION = 2 as const;
 
 export const knowledgeStructuredLaunchGates = Object.freeze({
   ambiguitySafetyMinimum: 1,
+  arithmeticCorrectnessMinimum: 1,
   boundedFailureMinimum: 1,
   cachedFormulaMinimum: 1,
   dateExactnessMinimum: 1,
@@ -35,6 +38,7 @@ export type KnowledgeStructuredEvalReport = Readonly<{
   gates: typeof knowledgeStructuredLaunchGates;
   metrics: Readonly<{
     ambiguitySafety: number;
+    arithmeticCorrectness: number;
     boundedFailure: number;
     cachedFormula: number;
     dateExactness: number;
@@ -125,6 +129,32 @@ function aggregatePlan(valueColumn: string, includeHidden = false): StructuredPl
     select: [],
     valueColumn
   });
+}
+
+function decimalArithmeticWorkbook(englishRight = "0.2"): ParsedWorkbook {
+  return parseSpreadsheetDocument({
+    bytes: Buffer.from(
+      `Locale;Left;Right\nEN point;0.1;${englishRight}\nRU comma;0,1;0,2\n`
+    ),
+    fileName: "structured-decimal-arithmetic.csv",
+    mimeType: "text/csv"
+  }).workbook!;
+}
+
+function arithmeticPlan(operator: StructuredArithmeticPlan["operator"]): StructuredPlan {
+  return {
+    filters: [],
+    includeHidden: false,
+    leftColumn: "Left",
+    limit: 20,
+    operation: "arithmetic",
+    operator,
+    resultLabel: "Result",
+    rightColumn: "Right",
+    select: ["Locale"],
+    target: { range: "A1:C3", sheet: "Sheet1" },
+    version: STRUCTURED_PLAN_VERSION
+  };
 }
 
 function oversizedResultWorkbook(): ParsedWorkbook {
@@ -245,6 +275,38 @@ export async function runKnowledgeStructuredEval(): Promise<KnowledgeStructuredE
   const ambiguous = planStructuredDataQuery("Calculate the sum in Sales", value);
   const ordinary = planStructuredDataQuery("What is the retention policy?", value);
 
+  const arithmeticSource = decimalArithmeticWorkbook();
+  const arithmeticCases: readonly Readonly<{
+    expected: number;
+    operator: StructuredArithmeticPlan["operator"];
+  }>[] = [
+    { expected: 0.3, operator: "add" },
+    { expected: 0.5, operator: "divide" },
+    { expected: 0.02, operator: "multiply" },
+    { expected: -50, operator: "percent_change" },
+    { expected: -0.1, operator: "subtract" }
+  ];
+  const arithmeticResults = arithmeticCases.map(({ expected, operator }) => {
+    const result = executeStructuredPlan(arithmeticSource, arithmeticPlan(operator));
+    return {
+      checks: [
+        result.rows.length === 2 && result.rows.every((row) => row[1] === expected),
+        verifyStructuredAnalysisResult(arithmeticSource, result)
+      ],
+      operator,
+      result
+    };
+  });
+  const addition = arithmeticResults.find(({ operator }) => operator === "add")!.result;
+  const arithmeticChecks = [
+    ...arithmeticResults.flatMap(({ checks }) => checks),
+    !verifyStructuredAnalysisResult(arithmeticSource, {
+      ...addition,
+      rows: addition.rows.map((row, index) => index === 0 ? [row[0]!, 0.31] : row)
+    }),
+    !verifyStructuredAnalysisResult(decimalArithmeticWorkbook("0.4"), addition)
+  ];
+
   const controller = new AbortController();
   controller.abort();
   const boundedChecks = [
@@ -281,6 +343,7 @@ export async function runKnowledgeStructuredEval(): Promise<KnowledgeStructuredE
 
   const metrics = {
     ambiguitySafety: ambiguous.status === "needs_clarification" ? 1 : 0,
+    arithmeticCorrectness: arithmeticChecks.filter(Boolean).length / arithmeticChecks.length,
     boundedFailure: boundedChecks.filter(Boolean).length / boundedChecks.length,
     cachedFormula: cachedFormula.rows[0]?.[0] === 40 &&
       cachedFormula.receipt.formulaCellsUsed === 1 ? 1 : 0,
@@ -299,6 +362,7 @@ export async function runKnowledgeStructuredEval(): Promise<KnowledgeStructuredE
   };
   const gates = knowledgeStructuredLaunchGates;
   const passed = metrics.ambiguitySafety >= gates.ambiguitySafetyMinimum &&
+    metrics.arithmeticCorrectness >= gates.arithmeticCorrectnessMinimum &&
     metrics.boundedFailure >= gates.boundedFailureMinimum &&
     metrics.cachedFormula >= gates.cachedFormulaMinimum &&
     metrics.dateExactness >= gates.dateExactnessMinimum &&
@@ -313,7 +377,7 @@ export async function runKnowledgeStructuredEval(): Promise<KnowledgeStructuredE
     metrics.ordinaryFallback >= gates.ordinaryFallbackMinimum &&
     metrics.plannerRouting >= gates.plannerRoutingMinimum;
   return {
-    fixtureCount: 18,
+    fixtureCount: 18 + arithmeticCases.length + 2,
     gates,
     metrics,
     passed,

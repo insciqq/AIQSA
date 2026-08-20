@@ -121,12 +121,20 @@ describe("administrator Knowledge profile service", () => {
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         activatedAt: NOW,
-        chunkingProfileVersion: 3,
+        chunkingProfileVersion: 4,
         embeddingProviderModelId: "embedding-1",
         executionAuthority: "installation",
         preflightStatus: "ready",
         profileConfiguration: expect.objectContaining({
-          schemaVersion: 2,
+          operationRoles: expect.arrayContaining([
+            expect.objectContaining({ mode: "disabled", operation: "query_planning" }),
+            expect.objectContaining({ mode: "local", operation: "reranking" }),
+            expect.objectContaining({ mode: "local", operation: "grounding_validation" }),
+            expect.objectContaining({ mode: "local", operation: "citation_repair" }),
+            expect.objectContaining({ mode: "disabled", operation: "answer_citation_retry" })
+          ]),
+          rolePolicyVersion: 1,
+          schemaVersion: 3,
           visualAnalysis: expect.objectContaining({
             providerModelId: "vision-1",
             supportsNativePdf: true
@@ -140,7 +148,7 @@ describe("administrator Knowledge profile service", () => {
             operation: "vision_analysis",
             providerModelId: "vision-1"
           })]),
-          policyVersion: "knowledge-profile-egress-v2"
+          policyVersion: "knowledge-profile-egress-v3"
         })
       }),
       select: { id: true }
@@ -198,7 +206,16 @@ describe("administrator Knowledge profile service", () => {
       },
       egress: {
         destination: "Embedding route / Multilingual embed",
-        representations: ["document_text_chunks", "search_queries"]
+        representations: ["document_text_chunks", "search_queries"],
+        roles: [
+          { mode: "external", operation: "embeddings" },
+          { mode: "disabled", operation: "vision_analysis" },
+          { mode: "disabled", operation: "query_planning" },
+          { mode: "local", operation: "reranking" },
+          { mode: "local", operation: "grounding_validation" },
+          { mode: "local", operation: "citation_repair" },
+          { mode: "disabled", operation: "answer_citation_retry" }
+        ]
       },
       health: { code: null, state: "ready" },
       migration: {

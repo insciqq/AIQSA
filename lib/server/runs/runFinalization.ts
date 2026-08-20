@@ -76,7 +76,7 @@ export async function finalizeRunCompletion(input: Readonly<{
     userId: string;
   }>;
 }>): Promise<RunCompletionFinalizationResult> {
-  const grounding = input.repository.groundKnowledgeAnswer
+  const knowledgeFinalization = input.repository.groundKnowledgeAnswer
     ? await input.repository.groundKnowledgeAnswer({
         answer: input.result.finalText,
         runId: input.run.runId,
@@ -107,8 +107,8 @@ export async function finalizeRunCompletion(input: Readonly<{
     assistantMessageId: input.run.assistantMessageId,
     chatId: input.run.chatId,
     estimatedCostMicros: usage.estimatedCostMicros ?? null,
-    finalText: grounding?.finalText ?? input.result.finalText,
-    ...(grounding ? { knowledgeGrounding: grounding } : {}),
+    finalText: knowledgeFinalization?.grounding.finalText ?? input.result.finalText,
+    ...(knowledgeFinalization ? { knowledgeGrounding: knowledgeFinalization } : {}),
     modelId: input.run.modelId,
     provider: input.run.provider,
     providerResponseId: input.result.providerResponseId,
@@ -121,7 +121,7 @@ export async function finalizeRunCompletion(input: Readonly<{
 
   return completed
     ? {
-        finalText: grounding?.finalText ?? input.result.finalText,
+        finalText: knowledgeFinalization?.grounding.finalText ?? input.result.finalText,
         status: "completed",
         usage
       }

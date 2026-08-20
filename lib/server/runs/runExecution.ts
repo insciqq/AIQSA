@@ -59,6 +59,7 @@ import {
 } from "../search/toolExecutor";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import {
+  knowledgeRunAdmissionHasReadySources,
   knowledgeRunAdmissionStillAuthorizes,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
@@ -73,14 +74,26 @@ import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExe
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { memorySha256 } from "../memory/persistence/lexical";
 import {
-  automaticKnowledgeEvidenceMessage,
+  automaticKnowledgeCallArguments,
+  automaticKnowledgeCallArgumentsMatch,
+  automaticKnowledgeEvidenceDispatchDraft,
   automaticKnowledgeProviderCallId,
+  finalizeAutomaticKnowledgeEvidenceVerifiedDispatchDraft,
+  knowledgeEvidenceMessageFromDispatchDraft,
+  knowledgeToolEvidenceDispatchDraft,
+  prepareAutomaticKnowledgeEvidenceVerifiedDispatchDraft,
   unavailableKnowledgeEvidenceMessage,
   withAutomaticKnowledgeEvidence,
   type AutomaticKnowledgeBranchResult
 } from "../knowledge/automaticEvidence";
+import type { KnowledgeEvidenceDispatchManifestDraft } from "../knowledge/evidenceDispatchManifest";
+import type {
+  KnowledgeProviderDispatchLifecycle,
+  PreparedKnowledgeProviderDispatch
+} from "../knowledge/providerDispatchLifecycle";
 import {
-  decodeKnowledgePlannerPlan
+  decodeKnowledgePlannerPlan,
+  type KnowledgePlannerPlanV2
 } from "../knowledge/planner";
 import {
   knowledgeEvidenceFromToolResult,
@@ -219,6 +232,7 @@ export type RunExecutionInput = Readonly<{
   prepared: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
   knowledgeExecutor?: KnowledgeToolExecutor;
+  knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   knowledgeAdmission?: Readonly<{
     load(input: {
       executionScope?: "project";
@@ -539,15 +553,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const knowledgePlanner = decodedKnowledgePlanner?.ok
     ? decodedKnowledgePlanner.plan
     : null;
+  const admittedKnowledgeReady = knowledgeRunAdmissionHasReadySources(
+    input.prepared.knowledgeAdmissionPlan
+  );
   const automaticKnowledgeEnabled = knowledgePlanner?.automaticRetrieval === true &&
-    Boolean(input.prepared.knowledgeAdmissionPlan?.bindings.length);
+    admittedKnowledgeReady;
   const groundedKnowledgeAnswer = Boolean(
     knowledgePlanner && knowledgePlanner.intent !== "no_knowledge_needed" &&
     input.prepared.knowledgeAdmissionPlan
   );
   const knowledgeEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
-    Boolean(input.prepared.knowledgeAdmissionPlan?.bindings.length);
+    admittedKnowledgeReady;
   const memoryActionEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
     memoryActionsRequested;
@@ -581,6 +598,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       let projectAccessCheck: Promise<boolean> | null = null;
       let projectAccessRevoked = false;
       let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
+      let automaticKnowledgeBranchesForDispatch: readonly AutomaticKnowledgeBranchResult[] | null = null;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
 
       async function assertProjectRunAccessCurrent(force = false): Promise<void> {
@@ -741,8 +759,45 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         if (publication === "terminal") throw abortError();
       }
 
-      async function streamProviderRequest(request: ProviderRunRequest): Promise<ProviderRunResult> {
-        const providerStream = streamAnswerProviderWithEgress(request);
+      async function prepareKnowledgeProviderDispatch(inputRequest: Readonly<{
+        draft: KnowledgeEvidenceDispatchManifestDraft | null;
+        ordinal: number;
+        purpose: "answer" | "tool_follow_up";
+        request: ProviderRunRequest;
+        roundIndex: number;
+      }>): Promise<PreparedKnowledgeProviderDispatch | null> {
+        if (!inputRequest.draft) return null;
+        if (!input.knowledgeProviderDispatch) {
+          if (process.env.NODE_ENV === "production") {
+            throw new RunPipelineError(
+              "knowledge_evidence_dispatch_unavailable",
+              "Knowledge evidence dispatch persistence is unavailable"
+            );
+          }
+          return null;
+        }
+        return input.knowledgeProviderDispatch.prepare({
+          draft: inputRequest.draft,
+          modelRunId: runId,
+          ordinal: inputRequest.ordinal,
+          purpose: inputRequest.purpose,
+          requestPreview: input.adapter.buildRequestPreview(inputRequest.request),
+          roundIndex: inputRequest.roundIndex
+        });
+      }
+
+      async function streamProviderRequest(
+        request: ProviderRunRequest,
+        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null
+      ): Promise<ProviderRunResult> {
+        const preparedDispatch = await prepareKnowledgeProviderDispatch({
+          draft: dispatchDraft,
+          ordinal: 1,
+          purpose: "answer",
+          request,
+          roundIndex: 0
+        });
+        const providerStream = streamAnswerProviderWithEgress(request, signal, preparedDispatch);
         let lastReportedUsage: ModelRunUsage | null = null;
 
         try {
@@ -838,7 +893,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             ...(input.prepared.project ? { projectId: input.prepared.project.projectId } : {}),
             userId: input.userId
           });
-          return knowledgeRunAdmissionStillAuthorizes(
+          return knowledgeRunAdmissionHasReadySources(current) &&
+            knowledgeRunAdmissionStillAuthorizes(
             current,
             input.prepared.knowledgeAdmissionPlan
           );
@@ -872,7 +928,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function requestWithAutomaticKnowledgeEvidence(
         request: ProviderRunRequest
-      ): Promise<ProviderRunRequest> {
+      ): Promise<Readonly<{
+        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null;
+        request: ProviderRunRequest;
+      }>> {
         if (normalizedRequest.knowledgePlanner !== undefined && !decodedKnowledgePlanner?.ok) {
           throw new RunPipelineError(
             "knowledge_planner_invalid",
@@ -883,15 +942,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           const unavailable = knowledgePlanner &&
             knowledgePlanner.intent !== "no_knowledge_needed" &&
             input.prepared.knowledgeAdmissionPlan &&
-            input.prepared.knowledgeAdmissionPlan.bindings.length === 0;
+            !admittedKnowledgeReady;
           return unavailable
-            ? requestWithKnowledgeEvidenceMessage(
-                request,
-                unavailableKnowledgeEvidenceMessage({
-                  exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions ?? []
-                })
-              )
-            : request;
+            ? {
+                dispatchDraft: null,
+                request: await requestWithKnowledgeEvidenceMessage(
+                  request,
+                  unavailableKnowledgeEvidenceMessage({
+                    exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions ?? []
+                  })
+                )
+              }
+            : { dispatchDraft: null, request };
         }
         if (knowledgePlanner.subqueries.length < 1 ||
           knowledgePlanner.subqueries.length >
@@ -911,9 +973,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         const prepared = await prepare({
           calls: knowledgePlanner.subqueries.map((subquery) => ({
+            arguments: automaticKnowledgeCallArguments(knowledgePlanner, subquery),
             ordinal: subquery.ordinal,
-            providerCallId: automaticKnowledgeProviderCallId(subquery.ordinal),
-            query: subquery.query
+            providerCallId: automaticKnowledgeProviderCallId(subquery.ordinal)
           })),
           runId,
           userId: input.userId
@@ -925,6 +987,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             "Automatic Knowledge retrieval could not be durably prepared"
           );
         }
+        const preparedStrategy = knowledgePlanner.version === 2 &&
+          input.knowledgeExecutor.prepareStrategy
+          ? await input.knowledgeExecutor.prepareStrategy({
+            calls: prepared.calls.map(({ id, ordinal }) => ({ id, ordinal })),
+            plan: knowledgePlanner as KnowledgePlannerPlanV2,
+            runId,
+            userId: input.userId
+          })
+          : null;
 
         const executeBranch = async (
           persisted: PersistedToolLoopCall
@@ -937,7 +1008,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           });
           if (!subquery || call.id !== automaticKnowledgeProviderCallId(subquery.ordinal) ||
             call.name !== input.knowledgeExecutor!.tool.name ||
-            Object.keys(call.arguments).length !== 1 || call.arguments.query !== subquery.query) {
+            !automaticKnowledgeCallArgumentsMatch(
+              knowledgePlanner,
+              subquery,
+              persisted.arguments
+            )) {
             throw new RunPipelineError(
               "knowledge_automatic_checkpoint_conflict",
               "Automatic Knowledge retrieval checkpoint does not match the saved plan"
@@ -972,40 +1047,27 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
             result = stored;
           } else {
-            await assertProjectRunAccessCurrent(true);
-            if (!(await currentKnowledgeDispatchAllowed())) {
-              await input.memoryEgress?.recordBlockedDispatch({
-                destinationKind: "knowledge",
-                destinationSnapshot: {
-                  baseIds: normalizedRequest.knowledgePlan.baseIds,
-                  kind: "knowledge",
-                  toolName: call.name,
-                  version: 1
-                },
-                errorCode: "memory_egress_destination_revoked",
-                mode: "TOOL_CALL",
-                modelRunToolCallId: claim.call.id,
-                requestEvidence: memoryEgressRequestEvidence(request),
-                requestPreview: {
-                  argumentsHash: memorySha256(call.arguments),
-                  toolName: call.name
-                },
-                runId,
-                userId: input.userId
-              });
-              throw new RunPipelineError(
-                "memory_egress_destination_revoked",
-                "Knowledge access changed before automatic retrieval"
-              );
+            const executionContext = {
+              persistedToolCallId: claim.call.id,
+              request,
+              runId,
+              userId: input.userId
+            };
+            let preflightResult: ToolExecutionResult | null = null;
+            try {
+              const admission = await input.knowledgeExecutor!.preflight?.(call, executionContext);
+              if (admission && admission.kind !== "admitted") {
+                preflightResult = admission.result;
+              }
+            } catch (error) {
+              preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
             }
-            if (!input.memoryEgress && process.env.NODE_ENV === "production") {
-              throw new RunPipelineError(
-                "memory_egress_receipt_unavailable",
-                "Knowledge dispatch evidence is unavailable"
-              );
-            }
-            const receipt = input.memoryEgress
-              ? await input.memoryEgress.beginDispatch({
+            if (preflightResult) {
+              result = preflightResult;
+            } else {
+              await assertProjectRunAccessCurrent(true);
+              if (!(await currentKnowledgeDispatchAllowed())) {
+                await input.memoryEgress?.recordBlockedDispatch({
                   destinationKind: "knowledge",
                   destinationSnapshot: {
                     baseIds: normalizedRequest.knowledgePlan.baseIds,
@@ -1013,6 +1075,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     toolName: call.name,
                     version: 1
                   },
+                  errorCode: "memory_egress_destination_revoked",
                   mode: "TOOL_CALL",
                   modelRunToolCallId: claim.call.id,
                   requestEvidence: memoryEgressRequestEvidence(request),
@@ -1022,31 +1085,61 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   },
                   runId,
                   userId: input.userId
-                })
-              : null;
-            try {
-              result = await input.knowledgeExecutor!.execute(call, {
-                persistedToolCallId: claim.call.id,
-                request,
-                runId,
-                userId: input.userId
-              }, { signal });
-              if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
-                throw new Error("memory_egress_receipt_conflict");
+                });
+                throw new RunPipelineError(
+                  "memory_egress_destination_revoked",
+                  "Knowledge access changed before automatic retrieval"
+                );
               }
-            } catch (error) {
-              if (receipt) {
-                await input.memoryEgress!.failDispatch(
-                  receipt.id,
-                  error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
-                    ? error.message
-                    : "knowledge_automatic_dispatch_failed"
-                ).catch(() => undefined);
+              if (!input.memoryEgress && process.env.NODE_ENV === "production") {
+                throw new RunPipelineError(
+                  "memory_egress_receipt_unavailable",
+                  "Knowledge dispatch evidence is unavailable"
+                );
               }
-              if (signal.aborted || isAbortError(error) || error instanceof RunPipelineError) {
-                throw error;
+              const receipt = input.memoryEgress
+                ? await input.memoryEgress.beginDispatch({
+                    destinationKind: "knowledge",
+                    destinationSnapshot: {
+                      baseIds: normalizedRequest.knowledgePlan.baseIds,
+                      kind: "knowledge",
+                      toolName: call.name,
+                      version: 1
+                    },
+                    mode: "TOOL_CALL",
+                    modelRunToolCallId: claim.call.id,
+                    requestEvidence: memoryEgressRequestEvidence(request),
+                    requestPreview: {
+                      argumentsHash: memorySha256(call.arguments),
+                      toolName: call.name
+                    },
+                    runId,
+                    userId: input.userId
+                  })
+                : null;
+              try {
+                result = await input.knowledgeExecutor!.execute(
+                  call,
+                  executionContext,
+                  { signal }
+                );
+                if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
+                  throw new Error("memory_egress_receipt_conflict");
+                }
+              } catch (error) {
+                if (receipt) {
+                  await input.memoryEgress!.failDispatch(
+                    receipt.id,
+                    error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
+                      ? error.message
+                      : "knowledge_automatic_dispatch_failed"
+                  ).catch(() => undefined);
+                }
+                if (signal.aborted || isAbortError(error) || error instanceof RunPipelineError) {
+                  throw error;
+                }
+                result = toolExecutionErrorResult(call, error, "Knowledge");
               }
-              result = toolExecutionErrorResult(call, error, "Knowledge");
             }
             const storedResult = snapshotToolExecutionResult(
               result,
@@ -1085,14 +1178,92 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           return { result, subquery };
         };
 
-        const branches = await Promise.all(prepared.calls.map(executeBranch));
-        const evidenceMessage = automaticKnowledgeEvidenceMessage({
+        const preparedCalls = [...prepared.calls].sort((left, right) =>
+          left.ordinal - right.ordinal || left.id.localeCompare(right.id));
+        const drainPreparedStrategy = async (): Promise<void> => {
+          if (!preparedStrategy) return;
+          const drainStrategy = input.knowledgeExecutor!.drainStrategy;
+          if (!drainStrategy) {
+            throw new RunPipelineError(
+              "knowledge_policy_not_available",
+              "Measured Knowledge strategy execution is not available"
+            );
+          }
+          await drainStrategy({
+            executionId: preparedStrategy.executionId,
+            runId,
+            userId: input.userId
+          });
+        };
+        let branches: AutomaticKnowledgeBranchResult[];
+        if (knowledgePlanner.strategy === "multi_pass") {
+          branches = [];
+          for (const [index, persisted] of preparedCalls.entries()) {
+            branches.push(await executeBranch(persisted));
+            if (index < preparedCalls.length - 1) await drainPreparedStrategy();
+          }
+        } else {
+          branches = await Promise.all(preparedCalls.map(executeBranch));
+          await drainPreparedStrategy();
+        }
+        automaticKnowledgeBranchesForDispatch = branches;
+        const automaticEvidence = {
           branches,
           exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions ?? [],
           plan: knowledgePlanner,
           request
-        });
-        return requestWithKnowledgeEvidenceMessage(request, evidenceMessage);
+        } as const;
+        let dispatchDraft: KnowledgeEvidenceDispatchManifestDraft;
+        if (preparedStrategy && input.knowledgeExecutor.finalizeStrategyCoverage) {
+          const candidate = prepareAutomaticKnowledgeEvidenceVerifiedDispatchDraft(
+            automaticEvidence
+          );
+          const unverifiedDraft = () => automaticKnowledgeEvidenceDispatchDraft(
+            automaticEvidence
+          );
+          let coverageDraft = candidate ?? unverifiedDraft();
+          let verifiedCandidateAccepted = false;
+          let finalized = await input.knowledgeExecutor.finalizeStrategyCoverage({
+            draft: coverageDraft,
+            executionId: preparedStrategy.executionId,
+            requireVerified: candidate !== null
+          });
+          verifiedCandidateAccepted = candidate !== null && finalized.kind === "finalized";
+          if (finalized.kind === "requires_unverified") {
+            coverageDraft = unverifiedDraft();
+            finalized = await input.knowledgeExecutor.finalizeStrategyCoverage({
+              draft: coverageDraft,
+              executionId: preparedStrategy.executionId,
+              requireVerified: false
+            });
+            verifiedCandidateAccepted = false;
+          }
+          if (finalized.kind !== "finalized") {
+            throw new RunPipelineError(
+              "knowledge_strategy_coverage_invalid",
+              "Measured Knowledge coverage could not be persisted"
+            );
+          }
+          dispatchDraft = coverageDraft;
+          if (candidate && verifiedCandidateAccepted &&
+            finalized.coverage.status === "verified") {
+            dispatchDraft = finalizeAutomaticKnowledgeEvidenceVerifiedDispatchDraft({
+              candidate,
+              evidence: automaticEvidence,
+              strategyCoverage: finalized.coverage,
+              strategyExecution: finalized.execution
+            });
+          }
+        } else {
+          dispatchDraft = automaticKnowledgeEvidenceDispatchDraft(automaticEvidence);
+        }
+        return {
+          dispatchDraft,
+          request: await requestWithKnowledgeEvidenceMessage(
+            request,
+            knowledgeEvidenceMessageFromDispatchDraft(dispatchDraft)
+          )
+        };
       }
 
       async function currentMcpDispatchAllowed(inputRoute: Readonly<{
@@ -1130,51 +1301,33 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function* streamAnswerProviderWithEgress(
         request: ProviderRunRequest,
-        dispatchSignal: AbortSignal = signal
+        dispatchSignal: AbortSignal = signal,
+        preparedDispatch: PreparedKnowledgeProviderDispatch | null = null
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-        await assertProjectRunAccessCurrent(true);
-        if (!(await currentAnswerDispatchAllowed())) {
-          throw new RunPipelineError(
-            "model_not_available",
-            "The selected model is no longer available"
-          );
-        }
-        if (egressReceiptRequired && !input.memoryEgress &&
-          process.env.NODE_ENV === "production") {
-          throw new RunPipelineError(
-            "memory_egress_receipt_unavailable",
-            "Memory egress evidence is unavailable."
-          );
-        }
+        let providerDispatched = false;
         let preview: Record<string, unknown> | null = null;
         const requestPreview = () => {
           preview ??= input.adapter.buildRequestPreview(request);
           return preview;
         };
-        if (requestHasHostedSearchCapability(request) &&
-          !(await currentSearchDispatchAllowed())) {
-          await input.memoryEgress?.recordBlockedDispatch({
-            destinationKind: "answer_provider",
-            destinationSnapshot: {
-              modelId: request.modelId,
-              provider: request.provider,
-              searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
-              version: 1
-            },
-            errorCode: "memory_egress_search_revoked",
-            mode: "PROVIDER_REQUEST",
-            requestEvidence: memoryEgressRequestEvidence(request),
-            requestPreview: requestPreview(),
-            runId,
-            userId: input.userId
-          });
-          throw new RunPipelineError(
-            "search_strategy_not_available",
-            "The selected search destination is no longer available."
-          );
-        }
-        const receipt = input.memoryEgress && egressReceiptRequired
-          ? await input.memoryEgress.beginDispatch({
+        try {
+          await assertProjectRunAccessCurrent(true);
+          if (!(await currentAnswerDispatchAllowed())) {
+            throw new RunPipelineError(
+              "model_not_available",
+              "The selected model is no longer available"
+            );
+          }
+          if (egressReceiptRequired && !input.memoryEgress &&
+            process.env.NODE_ENV === "production") {
+            throw new RunPipelineError(
+              "memory_egress_receipt_unavailable",
+              "Memory egress evidence is unavailable."
+            );
+          }
+          if (requestHasHostedSearchCapability(request) &&
+            !(await currentSearchDispatchAllowed())) {
+            await input.memoryEgress?.recordBlockedDispatch({
               destinationKind: "answer_provider",
               destinationSnapshot: {
                 modelId: request.modelId,
@@ -1182,16 +1335,51 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
                 version: 1
               },
+              errorCode: "memory_egress_search_revoked",
               mode: "PROVIDER_REQUEST",
               requestEvidence: memoryEgressRequestEvidence(request),
               requestPreview: requestPreview(),
               runId,
               userId: input.userId
-            })
-          : null;
-        await assertProjectRunAccessCurrent(true);
-        const stream = input.adapter.stream(request, { signal: dispatchSignal });
+            });
+            throw new RunPipelineError(
+              "search_strategy_not_available",
+              "The selected search destination is no longer available."
+            );
+          }
+        } catch (error) {
+          if (preparedDispatch) {
+            await input.knowledgeProviderDispatch!.release(
+              preparedDispatch,
+              "provider_dispatch_not_started"
+            ).catch(() => undefined);
+          }
+          throw error;
+        }
+        let receipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
         try {
+          receipt = input.memoryEgress && egressReceiptRequired
+            ? await input.memoryEgress.beginDispatch({
+                destinationKind: "answer_provider",
+                destinationSnapshot: {
+                  modelId: request.modelId,
+                  provider: request.provider,
+                  searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
+                  version: 1
+                },
+                mode: "PROVIDER_REQUEST",
+                requestEvidence: memoryEgressRequestEvidence(request),
+                requestPreview: requestPreview(),
+                runId,
+                userId: input.userId
+              })
+            : null;
+          await assertProjectRunAccessCurrent(true);
+          if (preparedDispatch) {
+            await input.knowledgeProviderDispatch!.dispatch(preparedDispatch);
+            providerDispatched = true;
+          }
+          const stream = input.adapter.stream(request, { signal: dispatchSignal });
           let next = await stream.next();
           while (!next.done) {
             yield next.value;
@@ -1203,6 +1391,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               "Provider dispatch evidence could not be completed."
             );
           }
+          if (preparedDispatch) {
+            await input.knowledgeProviderDispatch!.settle(preparedDispatch, {
+              providerResponseId: next.value.providerResponseId ?? null,
+              usage: next.value.usage
+            });
+          }
           return next.value;
         } catch (error) {
           if (receipt) {
@@ -1211,12 +1405,25 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               error instanceof RunPipelineError ? error.code : "provider_dispatch_failed"
             ).catch(() => undefined);
           }
+          if (preparedDispatch) {
+            if (providerDispatched) {
+              await input.knowledgeProviderDispatch!.markAmbiguous(preparedDispatch, {
+                reason: "provider_dispatch_failed"
+              }).catch(() => undefined);
+            } else {
+              await input.knowledgeProviderDispatch!.release(
+                preparedDispatch,
+                "provider_dispatch_not_started"
+              ).catch(() => undefined);
+            }
+          }
           throw error;
         }
       }
 
       async function runProviderToolLoop(
-        request: ProviderRunRequest
+        request: ProviderRunRequest,
+        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null
       ): Promise<ProviderRunResult & { usageAttributions: RunUsageAttribution[] }> {
         const provider = normalizedRequest.provider;
         const toolBridge = input.toolBridge ??
@@ -1296,6 +1503,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         };
         const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
         let mcpRuntime = input.mcpRuntime ?? null;
+        const knowledgeToolResults = new Map<string, ToolExecutionResult>();
+        const roundDispatchDrafts = new WeakMap<
+          ProviderRunRequest,
+          KnowledgeEvidenceDispatchManifestDraft
+        >();
+        const roundDispatches = new WeakMap<ProviderRunRequest, PreparedKnowledgeProviderDispatch>();
         const runtime = () => {
           mcpRuntime ??= getDefaultMcpRuntimeCoordinator();
           return mcpRuntime;
@@ -1305,7 +1518,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             return input.adapter.buildRequestPreview(request);
           },
           stream(request, options) {
-            return streamAnswerProviderWithEgress(request, options?.signal ?? signal);
+            return streamAnswerProviderWithEgress(
+              request,
+              options?.signal ?? signal,
+              roundDispatches.get(request) ?? null
+            );
           }
         };
         const outcome = await continueProviderToolLoop({
@@ -1356,6 +1573,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
                 if (evidence) {
+                  knowledgeToolResults.set(result.callId, result);
                   for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
                     rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
                   }
@@ -1367,7 +1585,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
             await persistReportedUsageForIncompleteRun();
           },
-          beforeProviderRound: async ({ continuation, round }) => {
+          beforeProviderRound: async ({ continuation, request: roundRequest, round }) => {
             await assertProjectRunAccessCurrent(true);
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
@@ -1385,6 +1603,14 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 throw new RunPipelineError("tool_loop_checkpoint_conflict", "Provider round could not start");
               }
             }
+            const preparedDispatch = await prepareKnowledgeProviderDispatch({
+              draft: roundDispatchDrafts.get(roundRequest) ?? null,
+              ordinal: round,
+              purpose: round === 1 ? "answer" : "tool_follow_up",
+              request: roundRequest,
+              roundIndex: round - 1
+            });
+            if (preparedDispatch) roundDispatches.set(roundRequest, preparedDispatch);
             if (hasMcpTools) {
               await emit(
                 controller,
@@ -1467,7 +1693,23 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
                 }
-                const externalCall = !isMcpDiscoveryCall(call.name) && (
+                const knowledgeExecutionContext = isKnowledgeCall(call.name)
+                  ? {
+                      persistedToolCallId: claim.call.id,
+                      request,
+                      runId,
+                      userId: input.userId
+                    }
+                  : null;
+                const knowledgeAdmission = knowledgeExecutionContext
+                  ? await knowledgeExecutor?.preflight?.(call, knowledgeExecutionContext)
+                  : undefined;
+                const rejectedKnowledgeResult = knowledgeAdmission &&
+                  knowledgeAdmission.kind !== "admitted"
+                  ? knowledgeAdmission.result
+                  : null;
+                const externalCall = !rejectedKnowledgeResult &&
+                  !isMcpDiscoveryCall(call.name) && (
                   isKnowledgeCall(call.name) ||
                   isSearchCall(call.name) ||
                   (!isMemoryCall(call.name) && !isMemoryHistoryCall(call.name))
@@ -1546,7 +1788,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       })
                     : null;
                 }
-                if (isMcpDiscoveryCall(call.name)) {
+                if (rejectedKnowledgeResult) {
+                  result = rejectedKnowledgeResult;
+                } else if (isMcpDiscoveryCall(call.name)) {
                   const batch = mcpDiscoveryBatches.get(call.id);
                   if (batch) {
                     const results = await batch.execute();
@@ -1597,12 +1841,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     });
                   }
                 } else if (isKnowledgeCall(call.name)) {
-                  result = await knowledgeExecutor!.execute(call, {
-                    persistedToolCallId: claim.call.id,
-                    request,
-                    runId,
-                    userId: input.userId
-                  }, { signal: context.signal });
+                  result = await knowledgeExecutor!.execute(
+                    call,
+                    knowledgeExecutionContext!,
+                    { signal: context.signal }
+                  );
                 } else if (isMemoryCall(call.name)) {
                   if (call.name !== MEMORY_LIST_TOOL_NAME && memoryMutationAttempted) {
                     throw new Error("memory_action_already_attempted");
@@ -1744,6 +1987,24 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             });
           },
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
+          projectToolResultForProvider: (result) => {
+            if (!isKnowledgeCall(result.name) || !knowledgeEvidenceFromToolResult(result)) {
+              return result;
+            }
+            return {
+              callId: result.callId,
+              content: [{
+                type: "json",
+                value: {
+                  aiqsaType: "knowledge_tool_result_processed",
+                  evidenceSource: "private_context_manifest",
+                  version: 1
+                }
+              }],
+              name: result.name,
+              status: result.status
+            };
+          },
           persistToolBatch: async ({ calls, continuation, round }) => {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
@@ -1876,10 +2137,34 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           },
           prepareRequest: async (roundRequest, round) => {
+            const settledKnowledgeResults = [...knowledgeToolResults.values()];
+            const roundDispatchDraft = round === 1
+              ? dispatchDraft
+              : settledKnowledgeResults.length > 0 && automaticKnowledgeBranchesForDispatch &&
+                  knowledgePlanner
+                ? automaticKnowledgeEvidenceDispatchDraft({
+                    branches: automaticKnowledgeBranchesForDispatch,
+                    exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions ?? [],
+                    plan: knowledgePlanner,
+                    request: roundRequest,
+                    toolResults: settledKnowledgeResults
+                  })
+                : settledKnowledgeResults.length > 0
+                  ? knowledgeToolEvidenceDispatchDraft({
+                      request: roundRequest,
+                      results: settledKnowledgeResults
+                    })
+                  : dispatchDraft;
+            const evidenceRequest = roundDispatchDraft
+              ? withAutomaticKnowledgeEvidence(
+                  roundRequest,
+                  knowledgeEvidenceMessageFromDispatchDraft(roundDispatchDraft)
+                )
+              : roundRequest;
             const budgeted = applyProviderRequestContextBudget({
               bridge: toolBridge,
               request: {
-                ...roundRequest,
+                ...evidenceRequest,
                 ...(activeMcpDiscovery && round === 1
                   ? { parallelToolCalls: false }
                   : {}),
@@ -1898,6 +2183,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 contextTruncationArtifact(budgeted.contextTruncation)
               );
+            }
+            if (roundDispatchDraft) {
+              roundDispatchDrafts.set(budgeted.request, roundDispatchDraft);
             }
             return budgeted.request;
           },
@@ -1977,13 +2265,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           knowledgeEnabled || memoryActionEnabled || memoryHistoryEnabled;
-        const providerRequest = await requestWithAutomaticKnowledgeEvidence(
+        const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(
           input.prepared.providerRequest
         );
+        const providerRequest = preparedProviderRequest.request;
         assertPersonalContextEgressSafe(providerRequest);
         const providerResult = hasClientTools
-          ? await runProviderToolLoop(providerRequest)
-          : await streamProviderRequest(providerRequest);
+          ? await runProviderToolLoop(providerRequest, preparedProviderRequest.dispatchDraft)
+          : await streamProviderRequest(
+              providerRequest,
+              preparedProviderRequest.dispatchDraft
+            );
         const attributedProviderResult = {
           ...providerResult,
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
