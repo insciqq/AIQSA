@@ -1056,8 +1056,11 @@ async function resolveEvidenceBindings(
   return required.map((reference) => {
     const toolCallId = toolCallByProviderId.get(reference.providerCallId);
     const run = toolCallId ? runByToolCallId.get(toolCallId) : undefined;
+    // Provider-visible dispatch references are one-based (`:result:1`), while
+    // KnowledgeRunEvidence.resultOrdinal is the durable zero-based result index.
+    const persistedResultOrdinal = reference.resultOrdinal - 1;
     const link = run?.evidenceLinks.find(({ resultOrdinal }) =>
-      resultOrdinal === reference.resultOrdinal);
+      resultOrdinal === persistedResultOrdinal);
     if (!run || run.invocationOrdinal !== reference.operationOrdinal || !link) {
       repositoryError("evidence_mismatch");
     }
