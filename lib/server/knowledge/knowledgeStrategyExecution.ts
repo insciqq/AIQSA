@@ -2803,6 +2803,27 @@ function aggregateProcessedItemsHash(
   }))));
 }
 
+function multiHopProcessedItems(
+  steps: readonly KnowledgeStrategyStepRequestV1[],
+  receipts: readonly KnowledgeStrategyStepReceiptV1[]
+): Readonly<{ count: number; hash: string }> {
+  const projections = outcomeStepProjections(
+    steps,
+    receipts,
+    ({ kind }) => kind === "multi_hop_root" || kind === "multi_hop_follow_up"
+  );
+  if (!projections) throwInvalid("knowledge_strategy_multi_hop_processed_items_invalid");
+  return Object.freeze({
+    count: projections.reduce((sum, projection) =>
+      sum + (projection.processedItemCount ?? 0), 0),
+    hash: sha256(canonicalJson({
+      kind: "multi_hop_processed_items",
+      steps: projections,
+      version: KNOWLEDGE_STRATEGY_EXECUTION_VERSION
+    }))
+  });
+}
+
 function corpusMapPageReceiptsHash(
   steps: readonly KnowledgeStrategyStepRequestV1[],
   receiptsById: ReadonlyMap<string, KnowledgeStrategyStepReceiptV1>
@@ -3133,6 +3154,9 @@ export function deriveKnowledgeStrategyCoverageReceiptV1(
   const requiredSteps = coverage.steps.filter(({ required }) => required);
   const cleanSourceOutcomes = coverage.sourceOutcomes.filter(({ status: outcomeStatus }) =>
     outcomeStatus === "covered" || outcomeStatus === "not_found");
+  const multiHopProcessed = execution.strategy === "multi_hop"
+    ? multiHopProcessedItems(coverage.steps, coverage.stepReceipts)
+    : null;
   const body: KnowledgeStrategyCoverageReceiptBodyV1 = {
     dispatchExpectedItemCount: coverage.dispatch.expectedItemCount,
     dispatchIncludedItemCount: coverage.dispatch.includedItemCount,
@@ -3142,9 +3166,11 @@ export function deriveKnowledgeStrategyCoverageReceiptV1(
     expectedItemsHash: coverage.dispatch.expectedItemsHash,
     includedItemsHash: coverage.dispatch.includedItemsHash,
     observedSourceSetHash: coverage.observedSourceSetHash,
-    processedItemsHash: aggregateProcessedItemsHash(coverage.sourceOutcomes),
-    processedPassageCount: coverage.sourceOutcomes.reduce((sum, outcome) =>
-      sum + outcome.processedPassageCount, 0),
+    processedItemsHash: multiHopProcessed?.hash ??
+      aggregateProcessedItemsHash(coverage.sourceOutcomes),
+    processedPassageCount: multiHopProcessed?.count ??
+      coverage.sourceOutcomes.reduce((sum, outcome) =>
+        sum + outcome.processedPassageCount, 0),
     processedSourceCount: cleanSourceOutcomes.length,
     reasonCodes,
     requiredStepCount: requiredSteps.length,

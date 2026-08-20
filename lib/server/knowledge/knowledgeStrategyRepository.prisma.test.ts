@@ -4,6 +4,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { createPrismaKnowledgeStrategyRepository } from "./knowledgeStrategyRepository";
 import {
+  createKnowledgeStrategyCoverageRequestV1,
+  createKnowledgeStrategyStepReceiptV1,
   hashKnowledgeAcceptedSourceSetV1,
   hashKnowledgeStrategyExecutionRequestV1,
   hashKnowledgeStrategyStepRequestV1,
@@ -91,7 +93,7 @@ describe("Knowledge strategy PostgreSQL fencing and constraints", () => {
         hierarchicalArtifactId: `strategy-hierarchy-${suffix}`,
         hierarchicalChecksum: digest(`hierarchy-${suffix}`),
         ordinal: 0,
-        passageCount: 1,
+        passageCount: 152,
         sourceAlias: "S1",
         sourceArtifactId: `strategy-artifact-${suffix}`,
         sourceId: `strategy-source-${suffix}`,
@@ -152,7 +154,7 @@ describe("Knowledge strategy PostgreSQL fencing and constraints", () => {
         data: {
           executionHash: hashKnowledgeStrategyExecutionRequestV1(execution),
           executionRequest: json(execution),
-          expectedPassageCount: 1,
+          expectedPassageCount: 152,
           expectedSourceCount: 1,
           id: execution.executionId,
           modelRunId: run.id,
@@ -230,6 +232,117 @@ describe("Knowledge strategy PostgreSQL fencing and constraints", () => {
       ]);
       expect(claims.filter(({ kind }) => kind === "claimed")).toHaveLength(1);
       expect(claims.filter(({ kind }) => kind === "none")).toHaveLength(1);
+      const rootClaim = claims.find(({ kind }) => kind === "claimed");
+      if (rootClaim?.kind !== "claimed" || !rootClaim.step.request) {
+        throw new Error("strategy_root_claim_missing");
+      }
+      await repository.settleStep({
+        at: new Date(claimNow.valueOf() + 1_000),
+        executionId: execution.executionId,
+        includedPassageCount: 8,
+        leaseToken: rootClaim.leaseToken,
+        receipt: createKnowledgeStrategyStepReceiptV1({
+          cursorExhausted: true,
+          executionId: execution.executionId,
+          lastItemHash: digest(`root-last-${suffix}`),
+          nextCursor: null,
+          processedItemCount: 8,
+          processedItemsHash: digest(`root-items-${suffix}`),
+          reasonCode: null,
+          requestHash: hashKnowledgeStrategyStepRequestV1(rootClaim.step.request),
+          status: "succeeded",
+          stepId: rootClaim.step.request.stepId,
+          version: 1
+        }),
+        stateVersion: rootClaim.step.lifecycle.stateVersion,
+        stepId: rootClaim.step.lifecycle.stepId
+      });
+      await repository.materializeStepRequest({
+        at: new Date(claimNow.valueOf() + 2_000),
+        executionId: execution.executionId,
+        stepId: templates[1].stepId
+      });
+      const followUpClaim = await repository.claimToolCallStep({
+        leaseExpiresAt: new Date(claimNow.valueOf() + 60_000),
+        leaseToken: `lease:follow-up:${suffix}`,
+        modelRunId: run.id,
+        modelRunToolCallId: calls[1]!.id,
+        now: new Date(claimNow.valueOf() + 3_000)
+      });
+      if (followUpClaim.kind !== "claimed" || !followUpClaim.step.request) {
+        throw new Error("strategy_follow_up_claim_missing");
+      }
+      await repository.settleStep({
+        at: new Date(claimNow.valueOf() + 4_000),
+        executionId: execution.executionId,
+        includedPassageCount: 1,
+        leaseToken: followUpClaim.leaseToken,
+        receipt: createKnowledgeStrategyStepReceiptV1({
+          cursorExhausted: true,
+          executionId: execution.executionId,
+          lastItemHash: digest(`follow-up-last-${suffix}`),
+          nextCursor: null,
+          processedItemCount: 1,
+          processedItemsHash: digest(`follow-up-items-${suffix}`),
+          reasonCode: null,
+          requestHash: hashKnowledgeStrategyStepRequestV1(followUpClaim.step.request),
+          status: "succeeded",
+          stepId: followUpClaim.step.request.stepId,
+          version: 1
+        }),
+        stateVersion: followUpClaim.step.lifecycle.stateVersion,
+        stepId: followUpClaim.step.lifecycle.stepId
+      });
+      const ready = await repository.loadExecution(execution.executionId);
+      if (!ready?.execution) throw new Error("strategy_execution_missing");
+      const processedSetHash = digest(`dispatch-items-${suffix}`);
+      const finalization = await repository.finalizeExecution({
+        at: new Date(claimNow.valueOf() + 5_000),
+        coverage: createKnowledgeStrategyCoverageRequestV1({
+          dependencies: ready.dependencies,
+          dispatch: {
+            excludedItemCount: 0,
+            expectedItemCount: 9,
+            expectedItemsHash: processedSetHash,
+            includedItemCount: 9,
+            includedItemsHash: processedSetHash,
+            manifestHash: digest(`dispatch-manifest-${suffix}`),
+            shortenedItemCount: 0,
+            unavailableItemCount: 0,
+            version: 1
+          },
+          executionHash: hashKnowledgeStrategyExecutionRequestV1(ready.execution),
+          mapOutputReceipts: [],
+          observedSourceSet: ready.execution.sourceSet,
+          observedSourceSetHash: ready.execution.sourceSetHash,
+          sourceOutcomes: [],
+          stepReceipts: ready.steps.flatMap(({ receipt }) => receipt ? [receipt] : []),
+          steps: ready.steps.flatMap(({ request }) => request ? [request] : []),
+          summaryDispatchBindings: [],
+          targetOutcomes: [],
+          version: 1
+        }),
+        executionId: execution.executionId
+      });
+      expect(finalization).toMatchObject({
+        execution: {
+          coverage: {
+            dispatchExpectedItemCount: 9,
+            dispatchIncludedItemCount: 9,
+            processedPassageCount: 9,
+            processedSourceCount: 0,
+            status: "verified"
+          },
+          includedPassageCount: 9,
+          processedPassageCount: 9,
+          state: "settled"
+        },
+        kind: "transitioned"
+      });
+      expect(await prisma.knowledgeStrategyExecution.findUnique({
+        select: { dispatchedPassageCount: true },
+        where: { id: execution.executionId }
+      })).toEqual({ dispatchedPassageCount: 9 });
       await expect(prisma.knowledgeStrategyStep.update({
         data: { streamId: `mutated-${suffix}` },
         where: { id: templates[0].stepId }
