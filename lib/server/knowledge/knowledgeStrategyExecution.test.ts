@@ -1357,7 +1357,7 @@ describe("Knowledge strategy coverage truth table", () => {
       status: "degraded"
     });
 
-    const hop = multiHopExecution();
+    const hop = multiHopExecution(sourceSet([source(0, 152)]));
     if (hop.config.kind !== "multi_hop") throw new Error("multi_hop_fixture_invalid");
     const root = step(hop, {
       inputHash: hop.config.atomicQuestionHashes[0],
@@ -1365,7 +1365,7 @@ describe("Knowledge strategy coverage truth table", () => {
       stepId: "coverage-hop-root-0",
       streamId: "coverage-hop-root-stream-0"
     });
-    const rootReceipt = receipt(root);
+    const rootReceipt = receipt(root, { processedItemCount: 8 });
     const followUpId = "coverage-hop-follow";
     const hopDependencies = [dependency(hop.executionId, root.stepId, followUpId)];
     const dependencyEvidence = deriveKnowledgeStrategyDependencyEvidenceInputV1(
@@ -1387,15 +1387,33 @@ describe("Knowledge strategy coverage truth table", () => {
     const followUpReceipt = receipt(followUp);
     const followUpEvidenceInputHash = followUp.evidenceInputHash;
     if (!followUpEvidenceInputHash) throw new Error("follow_up_evidence_fixture_invalid");
+    const verifiedHopCoverage = deriveKnowledgeStrategyCoverageReceiptV1(
+      hop,
+      coverageRequest(hop, hopSteps, {
+        dependencies: hopDependencies,
+        dispatch: exactDispatch(9),
+        sourceOutcomes: [],
+        stepReceipts: [rootReceipt, followUpReceipt]
+      })
+    );
+    expect(verifiedHopCoverage).toMatchObject({
+      processedPassageCount: 9,
+      processedSourceCount: 0,
+      status: "verified"
+    });
+    const changedRootReceipt = receipt(root, {
+      processedItemCount: 8,
+      processedItemsHash: digest("changed-root-processed-items")
+    });
     expect(deriveKnowledgeStrategyCoverageReceiptV1(
       hop,
       coverageRequest(hop, hopSteps, {
         dependencies: hopDependencies,
-        dispatch: exactDispatch(hopSteps.length),
+        dispatch: exactDispatch(9),
         sourceOutcomes: [],
-        stepReceipts: [rootReceipt, followUpReceipt]
+        stepReceipts: [changedRootReceipt, followUpReceipt]
       })
-    ).status).toBe("verified");
+    ).processedItemsHash).not.toBe(verifiedHopCoverage.processedItemsHash);
     const syntheticReceipt = receipt(followUp, {
       lastItemHash: followUpEvidenceInputHash,
       processedItemsHash: followUpEvidenceInputHash
@@ -1404,7 +1422,7 @@ describe("Knowledge strategy coverage truth table", () => {
       hop,
       coverageRequest(hop, hopSteps, {
         dependencies: hopDependencies,
-        dispatch: exactDispatch(hopSteps.length),
+        dispatch: exactDispatch(9),
         sourceOutcomes: [],
         stepReceipts: [rootReceipt, syntheticReceipt]
       })
@@ -1424,7 +1442,7 @@ describe("Knowledge strategy coverage truth table", () => {
       hop,
       coverageRequest(hop, [root, forgedFollowUp], {
         dependencies: hopDependencies,
-        dispatch: exactDispatch(hopSteps.length),
+        dispatch: exactDispatch(9),
         sourceOutcomes: [],
         stepReceipts: [rootReceipt, receipt(forgedFollowUp)]
       })
