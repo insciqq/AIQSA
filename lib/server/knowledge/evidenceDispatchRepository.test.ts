@@ -53,6 +53,7 @@ function inputArray(value: unknown): Record<string, unknown>[] {
 
 function createFakePrisma(input: Readonly<{
   evidenceItems?: Record<string, unknown>[];
+  knowledgeRuns?: Record<string, unknown>[];
   loseRecoveryClaim?: boolean;
   sourceBindings?: Record<string, unknown>[];
 }> = {}): Readonly<{ client: PrismaClient; executeRaw: ReturnType<typeof vi.fn>; state: FakeState }> {
@@ -308,10 +309,13 @@ function createFakePrisma(input: Readonly<{
         const ids = nested(where, "modelRunToolCallId", "in");
         if (!Array.isArray(ids) || where.modelRunId !== "run-1" ||
           where.retrievalSessionId !== "session-1") return [];
+        if (input.knowledgeRuns) {
+          return input.knowledgeRuns.filter((run) => ids.includes(run.modelRunToolCallId));
+        }
         return ids.flatMap((id) => {
           const match = /^tool-call-([1-3])$/u.exec(String(id));
           return match ? [{
-            evidenceLinks: [{ evidenceItemId: "evidence-item-1", resultOrdinal: 1 }],
+            evidenceLinks: [{ evidenceItemId: "evidence-item-1", resultOrdinal: 0 }],
             invocationOrdinal: Number(match[1]),
             modelRunToolCallId: String(id)
           }] : [];
@@ -781,7 +785,7 @@ describe("Knowledge evidence dispatch repository", () => {
     }), "stored_manifest_invalid");
   });
 
-  it("derives the session and durable evidence item from provider call/result identity", async () => {
+  it("maps a one-based draft result reference to a zero-based durable evidence link", async () => {
     const manifest = draft([availableCandidate({
       evidenceId: "provider-call-1:result:1"
     })]);
@@ -806,6 +810,71 @@ describe("Knowledge evidence dispatch repository", () => {
       dispatchEvidenceId: "provider-call-1:result:1",
       evidenceItemId: "evidence-item-1"
     })]);
+  });
+
+  it("maps eight plus one one-based draft results across two zero-based durable runs", async () => {
+    const evidenceItems = Array.from({ length: 9 }, (_, index) => ({
+      excerpt: `Verified excerpt ${index + 1}`,
+      fileName: "source.txt",
+      handle: `K${index + 1}`,
+      id: `evidence-item-${index + 1}`,
+      retrievalSessionId: "session-1",
+      sourceArtifactId: "artifact-1",
+      sourceName: "Source",
+      sourceVersionId: "source-version-1",
+      sourceVersionNumber: 1,
+      state: "available",
+      textTruncated: false
+    }));
+    const candidates = evidenceItems.map((item, index) => {
+      const firstCall = index < 8;
+      const resultOrdinal = firstCall ? index + 1 : 1;
+      return availableCandidate({
+        evidenceId: `provider-call-${firstCall ? 1 : 2}:result:${resultOrdinal}`,
+        exactExcerpt: String(item.excerpt),
+        handle: String(item.handle),
+        operationOrdinal: firstCall ? 1 : 2,
+        resultOrdinal
+      });
+    });
+    const manifest = draft(candidates);
+    const prepared = reserveInput(manifest);
+    const {
+      evidenceBindings: _evidenceBindings,
+      retrievalSessionId: _retrievalSessionId,
+      ...input
+    } = prepared;
+    void _evidenceBindings;
+    void _retrievalSessionId;
+    const fake = createFakePrisma({
+      evidenceItems,
+      knowledgeRuns: [
+        {
+          evidenceLinks: evidenceItems.slice(0, 8).map((item, resultOrdinal) => ({
+            evidenceItemId: item.id,
+            resultOrdinal
+          })),
+          invocationOrdinal: 1,
+          modelRunToolCallId: "tool-call-1"
+        },
+        {
+          evidenceLinks: [{ evidenceItemId: "evidence-item-9", resultOrdinal: 0 }],
+          invocationOrdinal: 2,
+          modelRunToolCallId: "tool-call-2"
+        }
+      ]
+    });
+    const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+
+    const reserved = await repository.reserve(input);
+
+    expect(reserved.dispatch.items.map(({ dispatchEvidenceId, evidenceItemId }) => ({
+      dispatchEvidenceId,
+      evidenceItemId
+    }))).toEqual(candidates.map(({ evidenceId }, index) => ({
+      dispatchEvidenceId: evidenceId,
+      evidenceItemId: `evidence-item-${index + 1}`
+    })));
   });
 
   it("preserves repeated exclusions that resolve to one canonical evidence item", async () => {
