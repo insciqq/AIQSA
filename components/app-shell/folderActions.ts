@@ -219,8 +219,7 @@ export function createFolderActions({
     try {
       const response = await shellFetch(`/api/folders/${folder.id}`, {
         body: JSON.stringify({
-          defaultKnowledgePlan: { baseIds: folderMutation.projectKnowledgeBaseIds },
-          projectMemory: folderMutation.projectMemoryDraft
+          defaultKnowledgePlan: { baseIds: folderMutation.projectKnowledgeBaseIds }
         }),
         headers: {
           "content-type": "application/json"

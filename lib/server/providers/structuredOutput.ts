@@ -31,6 +31,7 @@ export type ProviderStructuredOutputRequest = Readonly<{
 }>;
 
 export type ProviderStructuredOutputOptions = Readonly<{
+  onProviderResponseId?(providerResponseId: string | null): void;
   onUsage?(usage: ModelRunUsage): void;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -166,6 +167,13 @@ function parseObject(text: string): Record<string, unknown> {
   return parsed;
 }
 
+function boundedProviderResponseId(value: unknown): string | null {
+  return typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,255}$/u.test(value)
+    ? value
+    : null;
+}
+
 function openAIResponseText(response: Record<string, unknown>): string {
   if (response.status !== undefined && response.status !== "completed") {
     throw new Error("structured_output_provider_incomplete");
@@ -291,9 +299,12 @@ export function createOpenAIResponsesStructuredOutputAdapter(input: Readonly<{
         buildOpenAIResponsesStructuredOutputRequest(input.model, request),
         options
       );
-      const output = parseObject(openAIResponseText(response));
-      options?.onUsage?.(extractOpenAIUsage(response));
-      return output;
+      const responseText = openAIResponseText(response);
+      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
+      if (isRecord(response.usage)) {
+        options?.onUsage?.(extractOpenAIUsage(response));
+      }
+      return parseObject(responseText);
     }
   };
 }
@@ -310,9 +321,12 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
         options
       );
       assertValidOpenRouterTerminalResponse(response);
-      const output = parseObject(extractOpenRouterText(response));
-      options?.onUsage?.(extractOpenRouterUsage(response));
-      return output;
+      const responseText = extractOpenRouterText(response);
+      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
+      if (isRecord(response.usage)) {
+        options?.onUsage?.(extractOpenRouterUsage(response));
+      }
+      return parseObject(responseText);
     }
   };
 }

@@ -26,8 +26,14 @@ import {
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  type MemoryActionFeedback
-} from "../../contracts/memory";
+  type MemoryActionFeedback,
+  type MemoryAnswerSource
+} from "../../contracts/memoryClient";
+import { loadMemoryRunSources } from "../memory/sources/runProjection";
+import {
+  loadMemoryRunPresentationStatuses,
+  type MemoryRunPresentationStatus
+} from "../memory/retrieval/runProjection";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveChatAccess } from "../projects/access";
@@ -210,6 +216,8 @@ type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
 type HydratedMessagePath = Readonly<{
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
+  memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
+  memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>;
   messages: HydratedMessageRow[];
 }>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
@@ -405,7 +413,12 @@ async function hydrateMessagePath(
   userId: string
 ): Promise<HydratedMessagePath> {
   if (messages.length === 0) {
-    return { memoryActionsByRun: new Map(), messages: [] };
+    return {
+      memoryActionsByRun: new Map(),
+      memorySourcesByRun: new Map(),
+      memoryStatusesByRun: new Map(),
+      messages: []
+    };
   }
   const hydrated = await tx.message.findMany({
     select: hydratedMessageSelect,
@@ -421,10 +434,12 @@ async function hydrateMessagePath(
   });
   const runIds = ordered.flatMap((message) =>
     message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
-  return {
-    memoryActionsByRun: await loadMemoryRunActions(tx, { runIds, userId }),
-    messages: ordered
-  };
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun] = await Promise.all([
+    loadMemoryRunActions(tx, { runIds, userId }),
+    loadMemoryRunSources(tx, { runIds, userId }),
+    loadMemoryRunPresentationStatuses(tx, { runIds, userId })
+  ]);
+  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered };
 }
 
 async function approximateActiveBranchInputTokens(
@@ -566,14 +581,18 @@ function summarizeChatUsageStats(input: {
 
 function serializeHydratedMessage(
   message: HydratedMessageRow,
-  memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>
+  memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>,
+  memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
+  memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0];
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
         message.content,
-        memoryActionsByRun.get(modelRun.id) ?? null
+        memoryActionsByRun.get(modelRun.id) ?? null,
+        memorySourcesByRun.get(modelRun.id) ?? [],
+        memoryStatusesByRun.get(modelRun.id)
       )
     : null;
   return {
@@ -634,7 +653,12 @@ function serializeChatDetail(input: {
     },
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
-      serializeHydratedMessage(message, input.messages.memoryActionsByRun)),
+      serializeHydratedMessage(
+        message,
+        input.messages.memoryActionsByRun,
+        input.messages.memorySourcesByRun,
+        input.messages.memoryStatusesByRun
+      )),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
       beforeCursor: pageCursor({
@@ -1002,7 +1026,9 @@ function sourceValuesFromSearchPayload(payload: unknown): unknown[] {
 export function summarizeMessageRunArtifacts(
   run: ArtifactSummaryRun,
   answerContent?: unknown,
-  memoryAction: MemoryActionFeedback | null = null
+  memoryAction: MemoryActionFeedback | null = null,
+  memorySources: readonly MemoryAnswerSource[] = [],
+  memoryStatus?: MemoryRunPresentationStatus
 ): ThreadArtifactSummary | null {
   const artifactPayloads = run.events.map((event) => event.payload);
   const reasoningPayloads = artifactPayloads.filter(
@@ -1072,7 +1098,9 @@ export function summarizeMessageRunArtifacts(
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
     !knowledgeState &&
-    !memoryAction
+    !memoryAction &&
+    !memoryStatus &&
+    memorySources.length === 0
   ) {
     return null;
   }
@@ -1082,6 +1110,8 @@ export function summarizeMessageRunArtifacts(
     ...(knowledgeState ? { knowledgeState } : {}),
     knowledgeCitations,
     ...(memoryAction ? { memoryAction } : {}),
+    ...(memoryStatus ? { memoryStatus } : {}),
+    ...(memorySources.length > 0 ? { memorySources: [...memorySources] } : {}),
     reasoningText: reasoningTexts,
     sources
   };
@@ -1478,7 +1508,12 @@ export function createPrismaChatRepository(
           kind: "ok" as const,
           page: {
             messages: messages.messages.map((message) =>
-              serializeHydratedMessage(message, messages.memoryActionsByRun)),
+              serializeHydratedMessage(
+                message,
+                messages.memoryActionsByRun,
+                messages.memorySourcesByRun,
+                messages.memoryStatusesByRun
+              )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
               beforeCursor: pageCursor({
@@ -1606,7 +1641,12 @@ export function createPrismaChatRepository(
           kind: "ok" as const,
           page: {
             messages: messages.messages.map((message) =>
-              serializeHydratedMessage(message, messages.memoryActionsByRun)),
+              serializeHydratedMessage(
+                message,
+                messages.memoryActionsByRun,
+                messages.memorySourcesByRun,
+                messages.memoryStatusesByRun
+              )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
               beforeCursor: pageCursor({
@@ -1921,9 +1961,14 @@ export function createPrismaChatRepository(
       resumeDisclosureCopyVersion,
       userId
     }) => {
+      const hasChatFence = expectedChatRevision !== undefined;
+      const hasMemoryFence = expectedMemoryRevision !== undefined;
       if (
-        !Number.isSafeInteger(expectedChatRevision) || expectedChatRevision < 0 ||
-        !Number.isSafeInteger(expectedMemoryRevision) || expectedMemoryRevision < 0 ||
+        hasChatFence !== hasMemoryFence ||
+        (hasChatFence && (!Number.isSafeInteger(expectedChatRevision) ||
+          (expectedChatRevision ?? -1) < 0)) ||
+        (hasMemoryFence && (!Number.isSafeInteger(expectedMemoryRevision) ||
+          (expectedMemoryRevision ?? -1) < 0)) ||
         (mode === "NORMAL" &&
           resumeDisclosureCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION) ||
         (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
@@ -1945,12 +1990,12 @@ export function createPrismaChatRepository(
         if (!chat) return { kind: "not_found" as const };
         if (chat.memoryMode === "TEMPORARY") return { kind: "temporary" as const };
         if (
-          chat.memorySourceRevision !== expectedChatRevision ||
+          (hasChatFence && chat.memorySourceRevision !== expectedChatRevision) ||
           chat.memoryMode === mode
         ) return { kind: "source_stale" as const };
 
         const settings = await lockMemorySettings(tx, userId, false);
-        if (settings.memoryRevision !== expectedMemoryRevision) {
+        if (hasMemoryFence && settings.memoryRevision !== expectedMemoryRevision) {
           return { kind: "memory_stale" as const };
         }
         if (mode === "NORMAL" && !(await resumeSuppressionPreflight(tx, userId))) {

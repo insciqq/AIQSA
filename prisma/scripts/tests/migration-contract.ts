@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "5747d8b1ee26b191bca516ba483be20333dd4f8e2fc05843277db28a39e2288a";
+  "575ec8439571b497e5feee83eb64571cfefc4caf300ab58c703bf5f6ebffdaf6";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -443,7 +443,13 @@ function bootstrapFoundationDigest(database: string): string {
         FROM "McpGrant"
       ), '[]'::jsonb),
       'model_policy', COALESCE((
-        SELECT jsonb_agg(jsonb_build_array(id, "defaultProviderModelId", version, "updatedByUserId") ORDER BY id)
+        SELECT jsonb_agg(jsonb_build_array(
+          id,
+          "defaultProviderModelId",
+          "memoryAdmissionTimeoutSeconds",
+          version,
+          "updatedByUserId"
+        ) ORDER BY id)
         FROM "ModelPolicy"
       ), '[]'::jsonb),
       'system_model_policy', COALESCE((

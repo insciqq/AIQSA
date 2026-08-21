@@ -109,6 +109,7 @@ describe("administrator Memory egress service", () => {
       reviewRequired: true,
       state: "AVAILABLE"
     });
+    expect(JSON.stringify(before)).not.toContain("MEMORY_VERIFY");
     expect(JSON.stringify(before)).not.toMatch(/owner-1|embedding-1|https?:\/\//u);
 
     const after = await service.acknowledge("admin-1", {

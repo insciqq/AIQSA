@@ -116,6 +116,7 @@ services:
     image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
     command: ["npm", "run", "memory:coordinator"]
     environment:
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
       AIQSA_MEMORY_EGRESS_CONSENT_MODE: ${AIQSA_MEMORY_EGRESS_CONSENT_MODE:-ADMIN}
       AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Set AIQSA_MEMORY_FINGERPRINT_KEYRING in .env}
       AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: ${AIQSA_MEMORY_COORDINATOR_INTERVAL_MS:-1000}
@@ -127,6 +128,11 @@ services:
       DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
       NEXT_TELEMETRY_DISABLED: "1"
       NODE_ENV: production
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
     cpus: ${AIQSA_MEMORY_WORKER_CPU_LIMIT:-1.0}
     init: true
     logging: *default-logging

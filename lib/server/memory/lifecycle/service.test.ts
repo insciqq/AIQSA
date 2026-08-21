@@ -96,6 +96,7 @@ function mutations(): MemoryLifecycleMutationRepository {
       memoryRevision: 8,
       replayed: false,
       settingsRevision: 2,
+      tombstone: forgottenSummary,
       undoExpiresAt: new Date(NOW.getTime() + 60_000),
       versionId: "version-1"
     })),
@@ -151,6 +152,42 @@ describe("Memory lifecycle service", () => {
       })
     );
     expect(kick).toHaveBeenCalledOnce();
+  });
+
+  it("returns the durable tombstone when source suppression hides an automatic fact", async () => {
+    const automaticTombstone: MemorySummary = {
+      ...forgottenSummary,
+      sourceMode: "AUTOMATIC"
+    };
+    const readRepository = { get: vi.fn(async () => null) };
+    const forget = vi.fn(async () => ({
+      deletionId: "deletion-1",
+      eventId: "event-1",
+      factId: "fact-1",
+      memoryGeneration: 4,
+      memoryRevision: 8,
+      replayed: false,
+      settingsRevision: 2,
+      tombstone: automaticTombstone,
+      undoExpiresAt: new Date(NOW.getTime() + 60_000),
+      versionId: "version-1"
+    }));
+    const service = createMemoryLifecycleService({
+      authorizationRepository: authorizations(),
+      clock: () => NOW,
+      mutationRepository: { ...mutations(), forget },
+      readRepository
+    });
+    const request = {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-1"
+    };
+
+    await expect(service.forget("user-1", "fact-1", request)).resolves
+      .toMatchObject({ memory: automaticTombstone });
+    await expect(service.forget("user-1", "fact-1", request)).resolves
+      .toMatchObject({ memory: automaticTombstone });
+    expect(readRepository.get).not.toHaveBeenCalled();
   });
 
   it("binds DELETE_EXPLICIT authorization to both CAS revisions", async () => {

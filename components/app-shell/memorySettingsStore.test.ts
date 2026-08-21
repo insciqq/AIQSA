@@ -1,138 +1,118 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { acceptCurrentMemoryDestinations, refreshMemorySettings, updateMemoryGate, useMemorySettingsStore } from "./memorySettingsStore";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
-import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import {
+  activateMemorySettings,
+  refreshMemorySettings,
+  updateMemoryGate,
+  useMemorySettingsStore
+} from "./memorySettingsStore";
+import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
+
+function json(value: unknown, status = 200): Response {
+  return Response.json(value, { status });
+}
 
 describe("Memory settings store", () => {
   beforeEach(() => resetMemorySettingsStoreForTest());
+
   afterEach(() => {
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it("round-trips all eight independent gate combinations with exact CAS bodies", async () => {
-    let server = memorySettingsFixture();
-    const patchBodies: Record<string, unknown>[] = [];
+  it("round-trips all independent gate combinations without client CAS fields", async () => {
+    let server = memoryConsumerSettingsFixture();
+    const bodies: Record<string, unknown>[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      patchBodies.push(body);
-      expect(body.expectedSettingsRevision).toBe(server.settings.settingsRevision);
-      expect(body.expectedMemoryRevision).toBe(server.settings.memoryRevision);
+      bodies.push(body);
       const key = ["useMemoryFacts", "referenceChatHistory", "learnAutomatically"].find(
         (candidate) => typeof body[candidate] === "boolean"
       ) as "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts";
-      server = memorySettingsFixture({
-        settings: {
-          ...server.settings,
-          [key]: body[key] as boolean,
-          memoryRevision: server.settings.memoryRevision + 1,
-          settingsRevision: server.settings.settingsRevision + 1
-        }
+      server = memoryConsumerSettingsFixture({
+        settings: { ...server.settings, [key]: body[key] as boolean },
+        status: key === "useMemoryFacts" && body[key] === true ? "ON" : server.status
       });
-      return new Response(JSON.stringify(server), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      });
+      return json(server);
     }));
     useMemorySettingsStore.setState({ data: server, error: null, loadState: "ready" });
 
-    const states = [
-      [false, false, false],
-      [true, false, false],
-      [true, true, false],
-      [false, true, false],
-      [false, true, true],
-      [true, true, true],
-      [true, false, true],
-      [false, false, true]
-    ] as const;
-    const observed: Array<readonly [boolean, boolean, boolean]> = [states[0]];
-    for (const next of states.slice(1)) {
-      const current = useMemorySettingsStore.getState().data!.settings;
-      const values = [current.useMemoryFacts, current.referenceChatHistory, current.learnAutomatically];
-      const index = next.findIndex((value, candidate) => value !== values[candidate]);
-      const key = ["useMemoryFacts", "referenceChatHistory", "learnAutomatically"] as const;
-      await updateMemoryGate(key[index]!, next[index]!);
-      const saved = useMemorySettingsStore.getState().data!.settings;
-      observed.push([saved.useMemoryFacts, saved.referenceChatHistory, saved.learnAutomatically]);
-    }
+    await updateMemoryGate("useMemoryFacts", true);
+    await updateMemoryGate("referenceChatHistory", true);
+    await updateMemoryGate("learnAutomatically", true);
 
-    expect(observed).toEqual(states);
-    expect(new Set(observed.map((state) => state.join(""))).size).toBe(8);
-    expect(patchBodies).toHaveLength(7);
+    expect(useMemorySettingsStore.getState().data?.settings).toEqual({
+      learnAutomatically: true,
+      referenceChatHistory: true,
+      useMemoryFacts: true
+    });
+    expect(bodies).toEqual([
+      { useMemoryFacts: true },
+      { referenceChatHistory: true },
+      { learnAutomatically: true }
+    ]);
+    expect(JSON.stringify(bodies)).not.toMatch(/revision|generation|fingerprint|deployment/iu);
   });
 
-  it("binds destination acceptance to the exact current policy and revisions", async () => {
-    const current = memorySettingsFixture({
-      egress: {
-        acceptedAt: null,
-        acceptedUtilityEgressFingerprint: null,
-        acceptedUtilityPolicyVersion: null,
-        consentMode: "PER_USER",
-        currentUtilityEgressFingerprint: "current-fingerprint-00000000000000001",
-        reviewRequired: true
-      }
+  it("reconciles the safe projection after a changed-state response", async () => {
+    const initial = memoryConsumerSettingsFixture();
+    const current = memoryConsumerSettingsFixture({
+      settings: { useMemoryFacts: true },
+      status: "ON"
     });
-    let body: Record<string, unknown> | null = null;
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify(memorySettingsFixture()), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      });
-    }));
-    useMemorySettingsStore.setState({ data: current, error: null, loadState: "ready" });
-
-    await acceptCurrentMemoryDestinations();
-
-    expect(body).toEqual({
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      currentUtilityEgressFingerprint: "current-fingerprint-00000000000000001",
-      currentUtilityPolicyVersion: "memory-policy-v1",
-      expectedMemoryConsentRevision: 4,
-      expectedMemoryRevision: 8,
-      expectedSettingsRevision: 12
-    });
-  });
-
-  it("reconciles current server state after stale settings authority", async () => {
-    const initial = memorySettingsFixture();
-    const current = memorySettingsFixture({
-      settings: { ...initial.settings, settingsRevision: 18, memoryRevision: 14, useMemoryFacts: true }
-    });
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "memory_version_stale" }), {
-        headers: { "content-type": "application/json" },
-        status: 409
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(current), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      }));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(json({ error: "memory_changed" }, 409))
+      .mockResolvedValueOnce(json(current)));
     useMemorySettingsStore.setState({ data: initial, error: null, loadState: "ready" });
 
-    await expect(updateMemoryGate("useMemoryFacts", true)).rejects.toThrow("memory_version_stale");
+    await expect(updateMemoryGate("useMemoryFacts", true)).rejects.toThrow("memory_changed");
 
     expect(useMemorySettingsStore.getState().data).toEqual(current);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("deduplicates settings loads", async () => {
-    const response = memorySettingsFixture();
+  it("deduplicates concurrent settings loads", async () => {
+    const settings = memoryConsumerSettingsFixture();
     let resolve!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((done) => { resolve = done; })));
 
     const first = refreshMemorySettings();
     const second = refreshMemorySettings();
-    resolve(new Response(JSON.stringify(response), {
-      headers: { "content-type": "application/json" },
-      status: 200
-    }));
+    resolve(json(settings));
 
-    await expect(Promise.all([first, second])).resolves.toEqual([response, response]);
+    await expect(Promise.all([first, second])).resolves.toEqual([settings, settings]);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a late settings response from the previous account", async () => {
+    const oldSettings = memoryConsumerSettingsFixture({
+      settings: { useMemoryFacts: false },
+      status: "PAUSED"
+    });
+    const currentSettings = memoryConsumerSettingsFixture({
+      settings: { useMemoryFacts: true },
+      status: "ON"
+    });
+    const pending: Array<(response: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      pending.push(resolve);
+    })));
+
+    activateMemorySettings("account-old");
+    const oldLoad = refreshMemorySettings();
+    activateMemorySettings("account-current");
+    const currentLoad = refreshMemorySettings();
+
+    pending[1]?.(json(currentSettings));
+    await expect(currentLoad).resolves.toEqual(currentSettings);
+    pending[0]?.(json(oldSettings));
+    await expect(oldLoad).resolves.toEqual(oldSettings);
+
+    expect(useMemorySettingsStore.getState()).toMatchObject({
+      accountId: "account-current",
+      data: currentSettings,
+      loadState: "ready"
+    });
   });
 });

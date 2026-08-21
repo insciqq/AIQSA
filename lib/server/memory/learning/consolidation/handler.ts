@@ -13,6 +13,7 @@ import {
   resolveCurrentMemoryExecutionAuthority,
   type MemoryExecutionAuthorityDependencies,
   type MemoryExecutionRole,
+  type MemoryLegacyExecutionRole,
   type MemoryReportedUsage,
   type PrismaMemoryExecutionService
 } from "../../execution";
@@ -52,7 +53,7 @@ import {
   type MemoryFactDecisionProvider
 } from "./runtime";
 
-type DecisionRole = "MEMORY_CONSOLIDATE" | "MEMORY_VERIFY";
+type DecisionRole = "MEMORY_CONSOLIDATE" | MemoryLegacyExecutionRole;
 
 export type MemoryFactDecisionHandlerDependencies = Readonly<{
   execution: PrismaMemoryExecutionService;
@@ -79,6 +80,7 @@ function createMemoryFactNeighborhoodResolver(
       const profile = await vectors.resolveActiveProfile(job.userId);
       if (profile.status !== "READY") return null;
       const embedding = await utilities.embedQuery({
+        jobAttemptCount: consolidationAttempt(job),
         owner: { memoryJobId: job.id, type: "JOB" },
         profile: profile.profile,
         query: candidate.displayText,
@@ -102,7 +104,7 @@ function createMemoryFactNeighborhoodResolver(
         },
         itemTypes: ["FACT_VERSION"],
         limit: 24,
-        minimumScore: -1,
+        minimumScore: profile.profile.minimumSimilarity,
         profile: embedding.profile,
         userId: job.userId,
         vector: embedding.vector
@@ -174,6 +176,55 @@ function maxOrdinal(bindings: readonly MemoryFactDecisionExecutionBinding[]): nu
   return bindings.reduce((maximum, binding) => Math.max(maximum, binding.ordinal), -1);
 }
 
+type MemoryFactConsolidationAttempt = 1 | 2;
+
+function consolidationAttempt(job: MemoryJobDescriptor): MemoryFactConsolidationAttempt {
+  if (job.attemptCount === 1 || job.attemptCount === 2) return job.attemptCount;
+  throw new MemoryCoordinatorError("memory_fact_consolidation_attempt_invalid", false);
+}
+
+function guardedConsolidationBindings(
+  bindings: readonly MemoryFactDecisionExecutionBinding[],
+  attempt: MemoryFactConsolidationAttempt
+): readonly MemoryFactDecisionExecutionBinding[] {
+  const ordered = [...bindings].sort((left, right) =>
+    left.ordinal - right.ordinal || left.id.localeCompare(right.id));
+  if (
+    ordered.length > attempt ||
+    ordered.length > 2 ||
+    ordered.some((binding, ordinal) =>
+      binding.ordinal !== ordinal ||
+      (binding.state === "SUCCEEDED") !== Boolean(binding.acceptedOutputHash))
+  ) {
+    throw new MemoryCoordinatorError("memory_fact_decision_binding_stale", false);
+  }
+  const unsettled = ordered.findIndex((binding) => binding.state !== "FAILED");
+  if (unsettled !== -1 && unsettled !== ordered.length - 1) {
+    throw new MemoryCoordinatorError("memory_fact_decision_binding_stale", false);
+  }
+  return ordered;
+}
+
+function consolidationDispatchAllowed(
+  bindings: readonly MemoryFactDecisionExecutionBinding[],
+  attempt: MemoryFactConsolidationAttempt
+): boolean {
+  if (attempt === 1) return bindings.length === 0;
+  const prior = bindings[0];
+  return bindings.length === 1 &&
+    prior?.ordinal === 0 &&
+    prior.state === "FAILED" &&
+    prior.errorCode === "memory_fact_decision_provider_transient";
+}
+
+function isV1Candidate(candidate: MemoryFactCandidateSnapshot): boolean {
+  return candidate.confidenceBand === "HIGH" &&
+    typeof candidate.proposedValue === "object" &&
+    candidate.proposedValue !== null &&
+    !Array.isArray(candidate.proposedValue) &&
+    typeof (candidate.proposedValue as { statement?: unknown }).statement === "string";
+}
+
 async function abandonPendingBindings(
   execution: PrismaMemoryExecutionService,
   userId: string,
@@ -222,18 +273,52 @@ async function recoverBinding(
   return null;
 }
 
+async function recoverDispatchedBinding(
+  execution: PrismaMemoryExecutionService,
+  userId: string,
+  bindings: readonly MemoryFactDecisionExecutionBinding[]
+): Promise<Readonly<{
+  binding: MemoryFactDecisionExecutionBinding;
+  kind: "SUCCEEDED" | "UNCERTAIN";
+}> | null> {
+  const binding = bindings.at(-1);
+  if (binding?.state === "SUCCEEDED" && binding.acceptedOutputHash) {
+    return { binding, kind: "SUCCEEDED" };
+  }
+  if (binding?.state !== "RUNNING" && binding?.state !== "OUTCOME_UNKNOWN") return null;
+  if (binding.state === "RUNNING") {
+    await execution.lifecycle.settle(userId, binding.id, {
+      acceptedOutputHash: null,
+      errorCode: "memory_fact_decision_recovered_uncertain",
+      providerResponseId: null,
+      state: "OUTCOME_UNKNOWN",
+      usage: unavailableUsage
+    });
+  }
+  return { binding, kind: "UNCERTAIN" };
+}
+
 function providerFailureState(error: unknown): Readonly<{
+  classification: "UNKNOWN" | "REPLAY_SAFE_TRANSIENT" | "PERMANENT";
   errorCode: string;
   state: "FAILED" | "OUTCOME_UNKNOWN";
   usage: MemoryReportedUsage;
 }> {
-  const uncertain = error instanceof MemoryFactDecisionProviderCallError;
+  const classification = error instanceof MemoryFactDecisionProviderCallError
+    ? error.classification
+    : "PERMANENT";
   return {
-    errorCode: uncertain
+    classification,
+    errorCode: classification === "UNKNOWN"
       ? "memory_fact_decision_provider_outcome_unknown"
-      : "memory_fact_decision_provider_unavailable",
-    state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
-    usage: uncertain && error.usage ? reportedUsage(error.usage) : unavailableUsage
+      : classification === "REPLAY_SAFE_TRANSIENT"
+        ? "memory_fact_decision_provider_transient"
+        : "memory_fact_decision_provider_unavailable",
+    state: classification === "UNKNOWN" ? "OUTCOME_UNKNOWN" : "FAILED",
+    usage: classification === "UNKNOWN" &&
+      error instanceof MemoryFactDecisionProviderCallError && error.usage
+      ? reportedUsage(error.usage)
+      : unavailableUsage
   };
 }
 
@@ -265,6 +350,47 @@ export function createMemoryFactConsolidationHandler(
           stage: "consolidation_job_invalid"
         };
       }
+      const attempt = consolidationAttempt(job);
+      const prior = guardedConsolidationBindings(
+        await deps.repository.consolidationBindings(job.userId, job.id),
+        attempt
+      );
+      const dispatched = await recoverDispatchedBinding(
+        deps.execution,
+        job.userId,
+        prior
+      );
+      if (dispatched) {
+        return {
+          acceptedResultHash: dispatched.binding.acceptedOutputHash ??
+            terminalHash(job, dispatched.binding.inputHash, "consolidation_outcome_unknown"),
+          apply: (tx, claim) => deps.repository.deferConsolidation(
+            tx,
+            claim,
+            identity.candidateId,
+            dispatched.kind === "SUCCEEDED"
+              ? "consolidation_result_unavailable"
+              : "consolidation_outcome_unknown"
+          ),
+          stage: "consolidation_deferred"
+        };
+      }
+      if (!consolidationDispatchAllowed(prior, attempt)) {
+        const failed = prior.at(-1);
+        const reason = failed?.state === "FAILED" && failed.errorCode
+          ? failed.errorCode
+          : "memory_fact_consolidation_retry_not_allowed";
+        return {
+          acceptedResultHash: terminalHash(job, failed?.inputHash ?? null, reason),
+          apply: (tx, claim) => deps.repository.deferConsolidation(
+            tx,
+            claim,
+            identity.candidateId,
+            reason
+          ),
+          stage: "consolidation_deferred"
+        };
+      }
       await context.setStage("related_fact_lookup");
       const initial = await deps.repository.prepareConsolidation(job);
       if ("decision" in initial) {
@@ -279,6 +405,22 @@ export function createMemoryFactConsolidationHandler(
           stage: "consolidation_deferred"
         };
       }
+      const v1Candidate = isV1Candidate(initial.input.candidate);
+      // The v1 comparison contract requires the exact-normalized and vector
+      // neighborhood snapshot.  If vector admission is unavailable, reject
+      // the candidate without invoking the System Model or mutating facts.
+      if (v1Candidate && !deps.neighborhood) {
+        return {
+          acceptedResultHash: terminalHash(job, initial.input.inputHash, "vector_neighborhood_unavailable"),
+          apply: (tx, claim) => deps.repository.deferConsolidation(
+            tx,
+            claim,
+            identity.candidateId,
+            "vector_neighborhood_unavailable"
+          ),
+          stage: "consolidation_deferred"
+        };
+      }
       const relatedVersionIds = deps.neighborhood
         ? await deps.neighborhood.relatedVersionIds(
             job,
@@ -286,6 +428,18 @@ export function createMemoryFactConsolidationHandler(
             context.signal
           ).catch(() => null)
         : null;
+      if (v1Candidate && relatedVersionIds === null) {
+        return {
+          acceptedResultHash: terminalHash(job, initial.input.inputHash, "vector_neighborhood_unavailable"),
+          apply: (tx, claim) => deps.repository.deferConsolidation(
+            tx,
+            claim,
+            identity.candidateId,
+            "vector_neighborhood_unavailable"
+          ),
+          stage: "consolidation_deferred"
+        };
+      }
       const prepared = relatedVersionIds === null
         ? initial
         : await deps.repository.prepareConsolidation(job, relatedVersionIds);
@@ -302,7 +456,6 @@ export function createMemoryFactConsolidationHandler(
         };
       }
       const input: MemoryFactConsolidationInput = prepared.input;
-      const prior = await deps.repository.consolidationBindings(job.userId, job.id);
       const recovered = await recoverBinding(
         deps.execution,
         job.userId,
@@ -376,6 +529,9 @@ export function createMemoryFactConsolidationHandler(
           state: failure.state,
           usage: failure.usage
         });
+        if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
+          throw new MemoryCoordinatorError(failure.errorCode, true);
+        }
         return {
           acceptedResultHash: terminalHash(job, input.inputHash, failure.errorCode),
           apply: (tx, claim) => deps.repository.deferConsolidation(
@@ -514,12 +670,16 @@ export function createMemoryFactVerificationHandler(
         inputHash: input.inputHash,
         ordinal: maxOrdinal(prior) + 1,
         owner: { memoryJobId: job.id, type: "JOB" },
-        role: "MEMORY_VERIFY",
+        // Legacy verification rows are no longer admitted by the active
+        // execution role manifest. Keep this cast solely so old-row
+        // terminalisation code remains decodable without making VERIFY an
+        // active destination.
+        role: "MEMORY_VERIFY" as MemoryExecutionRole,
         versions: MEMORY_FACT_VERIFICATION_VERSIONS
       });
       const started = await deps.execution.admission.start(job.userId, binding.id);
       if (
-        started.snapshot.logicalRole !== "MEMORY_VERIFY" ||
+        (started.snapshot.logicalRole as string) !== "MEMORY_VERIFY" ||
         !started.snapshot.requiresStrictStructuredOutput
       ) {
         await deps.execution.lifecycle.settle(job.userId, binding.id, {
@@ -623,17 +783,16 @@ export function createMemoryFactVerificationHandler(
   });
 }
 
-export function createPrismaMemoryFactDecisionHandlers(
+type PrismaMemoryFactDecisionHandlerOptions = Readonly<{
+  provider?: MemoryFactDecisionProvider;
+  repository?: MemoryFactConsolidationRepository;
+}>;
+
+function createPrismaMemoryFactDecisionDependencies(
   authority: MemoryExecutionAuthorityDependencies,
   client: PrismaClient = prisma,
-  options: Readonly<{
-    provider?: MemoryFactDecisionProvider;
-    repository?: MemoryFactConsolidationRepository;
-  }> = {}
-): Readonly<{
-  consolidation: MemoryJobHandler;
-  verification: MemoryJobHandler;
-}> {
+  options: PrismaMemoryFactDecisionHandlerOptions = {}
+): MemoryFactDecisionHandlerDependencies {
   const now = () => memoryExecutionNow(authority);
   const execution = createPrismaMemoryExecutionService(authority, client);
   const repository = options.repository ??
@@ -668,6 +827,32 @@ export function createPrismaMemoryFactDecisionHandlers(
     provider: options.provider ?? createAcceptedMemoryFactDecisionProvider(client),
     repository
   };
+  return dependencies;
+}
+
+/** Active v1 production factory.  Verification is intentionally not built or
+ * registered on this path; the legacy two-handler factory below exists only
+ * for replay/terminalisation tests of pre-v1 rows. */
+export function createPrismaMemoryFactConsolidationHandler(
+  authority: MemoryExecutionAuthorityDependencies,
+  client: PrismaClient = prisma,
+  options: PrismaMemoryFactDecisionHandlerOptions = {}
+): MemoryJobHandler {
+  return createMemoryFactConsolidationHandler(
+    createPrismaMemoryFactDecisionDependencies(authority, client, options)
+  );
+}
+
+/** @deprecated Use createPrismaMemoryFactConsolidationHandler for active v1. */
+export function createPrismaMemoryFactDecisionHandlers(
+  authority: MemoryExecutionAuthorityDependencies,
+  client: PrismaClient = prisma,
+  options: PrismaMemoryFactDecisionHandlerOptions = {}
+): Readonly<{
+  consolidation: MemoryJobHandler;
+  verification: MemoryJobHandler;
+}> {
+  const dependencies = createPrismaMemoryFactDecisionDependencies(authority, client, options);
   return Object.freeze({
     consolidation: createMemoryFactConsolidationHandler(dependencies),
     verification: createMemoryFactVerificationHandler(dependencies)

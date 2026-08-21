@@ -27,8 +27,15 @@ import type { MemoryExecutionAuthorityDependencies } from "../memory/execution";
 import { defaultMemoryExecutionAuthority } from "../memory/execution/defaultAuthority";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
+import { loadMemoryRunSources } from "../memory/sources/runProjection";
+import { loadMemoryRunPresentationStatuses } from "../memory/retrieval/runProjection";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import {
+  boundedMemoryAdmissionDeadlineMs,
+  memoryAdmissionDeadlineMsFromPolicySeconds,
+  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+} from "../memory/admissionDeadline";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
   admitPreparingRunWithClient,
@@ -139,6 +146,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
 export function createPrismaRunRepository(
   prismaClient = prisma,
   options: Readonly<{
+    memoryAdmissionDeadlineMs?: number;
     memoryExecutionAuthority?: MemoryExecutionAuthorityDependencies;
     memoryRetrieval?: MemoryRunRetrievalService;
     memorySourceHooks?: MemorySourceMutationHooks;
@@ -156,6 +164,19 @@ export function createPrismaRunRepository(
     memorySourceHooks
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
+  async function loadMemoryAdmissionDeadlineMs(): Promise<number> {
+    if (options.memoryAdmissionDeadlineMs !== undefined) {
+      return boundedMemoryAdmissionDeadlineMs(options.memoryAdmissionDeadlineMs);
+    }
+    const policy = await prismaClient.modelPolicy.findUnique({
+      select: { memoryAdmissionTimeoutSeconds: true },
+      where: { id: "installation" }
+    });
+    if (!policy) throw new Error("installation_model_policy_missing");
+    return memoryAdmissionDeadlineMsFromPolicySeconds(
+      policy.memoryAdmissionTimeoutSeconds
+    );
+  }
   async function loadConversationPath(
     chatId: string,
     userId: string,
@@ -274,17 +295,6 @@ export function createPrismaRunRepository(
         assistantBindings: { select: { assistantId: true, revisionId: true } },
         knowledgeBaseBindings: { select: { knowledgeBaseId: true } },
         mcpBindings: { select: { serverId: true } },
-        memoryFacts: {
-          include: { currentVersion: { select: { id: true, text: true } } },
-          orderBy: { updatedAt: "asc" },
-          take: 64,
-          where: {
-            currentVersion: {
-              is: { OR: [{ validUntil: null }, { validUntil: { gt: new Date() } }] }
-            },
-            state: "ACTIVE"
-          }
-        },
         modelBindings: { select: { providerModelId: true } },
         searchBindings: { include: { searchOption: { select: { id: true, optionId: true } } } },
         skillBindings: { select: { skillId: true } }
@@ -303,17 +313,11 @@ export function createPrismaRunRepository(
       instructionsRevision: access.instructionsRevision,
       knowledgeBaseIds: project.knowledgeBaseBindings.map(({ knowledgeBaseId }) => knowledgeBaseId),
       mcpServerIds: project.mcpBindings.map(({ serverId }) => serverId),
-      memoryEnabled: project.memoryEnabled,
-      memoryItems: project.memoryFacts.flatMap((fact, ordinal) =>
-        fact.currentVersion
-          ? [{
-              factId: fact.id,
-              factVersionId: fact.currentVersion.id,
-              includedText: fact.currentVersion.text,
-              ordinal
-            }]
-          : []
-      ),
+      // Project Memory remains persisted and manageable through its existing
+      // control plane, but Personal Memory v1 deliberately makes it dormant
+      // for newly admitted Project runs. Do not load any fact text here.
+      memoryEnabled: false,
+      memoryItems: [],
       memoryRevision: access.memoryRevision,
       modelIds: project.modelBindings.map(({ providerModelId }) => providerModelId),
       policy: policy.policy,
@@ -699,10 +703,14 @@ export function createPrismaRunRepository(
       });
     },
     createRun: async (input) => {
+      const memoryAdmissionDeadlineMs = input.project
+        ? MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+        : await loadMemoryAdmissionDeadlineMs();
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "NORMAL_SEND"
-      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks);
+      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
+        memoryAdmissionDeadlineMs);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.materializedRequest
@@ -713,10 +721,14 @@ export function createPrismaRunRepository(
       };
     },
     createRegenerationRun: async (input) => {
+      const memoryAdmissionDeadlineMs = input.project
+        ? MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+        : await loadMemoryAdmissionDeadlineMs();
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "REGENERATE"
-      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks);
+      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
+        memoryAdmissionDeadlineMs);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.materializedRequest
@@ -1322,12 +1334,21 @@ export function createPrismaRunRepository(
 
         const runIds = chat.messages.flatMap((message) =>
           message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
-        const [{ contextStats, usageStats }, memoryActionsByRun] = await Promise.all([
+        const [
+          { contextStats, usageStats },
+          memoryActionsByRun,
+          memorySourcesByRun,
+          memoryStatusesByRun
+        ] = await Promise.all([
           loadChatBranchSnapshotStats(tx, {
             activeLeafMessageId: chat.activeLeafMessageId,
             chatId
           }),
-          chat.projectId ? Promise.resolve(new Map<string, never>()) : loadMemoryRunActions(tx, { runIds, userId })
+          chat.projectId ? Promise.resolve(new Map<string, never>()) : loadMemoryRunActions(tx, { runIds, userId }),
+          chat.projectId ? Promise.resolve(new Map<string, never>()) : loadMemoryRunSources(tx, { runIds, userId }),
+          chat.projectId
+            ? Promise.resolve(new Map<string, never>())
+            : loadMemoryRunPresentationStatuses(tx, { runIds, userId })
         ]);
 
         return {
@@ -1355,7 +1376,9 @@ export function createPrismaRunRepository(
                 ? summarizeMessageRunArtifacts(
                     modelRun,
                     message.content,
-                    memoryActionsByRun.get(modelRun.id) ?? null
+                    memoryActionsByRun.get(modelRun.id) ?? null,
+                    memorySourcesByRun.get(modelRun.id) ?? [],
+                    memoryStatusesByRun.get(modelRun.id)
                   )
                 : null,
               assistantIdentity: serializeRunAssistantIdentity(modelRun),

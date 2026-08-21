@@ -131,7 +131,7 @@ async function createHistoryFixture(
   });
   const generation = await prisma.memoryIndexGeneration.create({
     data: {
-      chunkingVersion: "memory-history-chunking-v1",
+      chunkingVersion: "memory-history-chunking-v2",
       embeddingConfigurationFingerprint: configurationFingerprint,
       embeddingConnectionId: connectionId,
       embeddingDimension: 1_024,
@@ -171,6 +171,7 @@ async function createHistoryFixture(
       connectionId,
       dimension: 1_024,
       generationId: generation.id,
+      minimumSimilarity: 0.55,
       providerModelId: modelId,
       retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
       vectorSpaceFingerprint
@@ -207,8 +208,8 @@ async function insertReadyChunks(
       ${now} - interval '1 day',
       ${now},
       'ACTIVE'::"MemoryHistoryItemState",
-      'memory-history-chunking-v1',
-      'memory-history-source-projection-v1',
+      'memory-history-chunking-v2',
+      'memory-history-source-projection-v2',
       'NORMAL'::"MemoryDerivedSafetyClass",
       'NOT_NEEDED'::"MemoryRedactionState"
     FROM generate_series(1, ${count}) AS n
@@ -362,7 +363,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
     const incompatible = await prisma.memoryIndexGeneration.create({
       data: {
         activatedAt: now,
-        chunkingVersion: "memory-history-chunking-v1",
+        chunkingVersion: "memory-history-chunking-v2",
         embeddingConfigurationFingerprint: "1".repeat(64),
         embeddingConnectionId: connectionId,
         embeddingDimension: 1_536,

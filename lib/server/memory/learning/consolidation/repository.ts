@@ -41,6 +41,7 @@ import {
 
 export type MemoryFactDecisionExecutionBinding = Readonly<{
   acceptedOutputHash: string | null;
+  errorCode: string | null;
   id: string;
   inputHash: string;
   ordinal: number;
@@ -105,7 +106,7 @@ export async function reconcileMemoryFactCandidateJobs(
       client,
       row.userId,
       async (tx, settings) => {
-        if (!settings.learnAutomatically) return null;
+        if (!settings.useMemoryFacts || !settings.learnAutomatically) return null;
         const [candidate, decision] = await Promise.all([
           tx.memoryCandidate.findFirst({
             select: { id: true, state: true },
@@ -160,6 +161,7 @@ export function createPrismaMemoryFactConsolidationRepository(
       orderBy: [{ ordinal: "asc" }, { id: "asc" }],
       select: {
         acceptedOutputHash: true,
+        errorCode: true,
         id: true,
         inputHash: true,
         ordinal: true,

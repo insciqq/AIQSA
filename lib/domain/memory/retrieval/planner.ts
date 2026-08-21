@@ -5,7 +5,7 @@ import type {
   MemoryRetrievalSourceKind
 } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v4";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v6";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 
 const sourceKinds = new Set<MemoryRetrievalSourceKind>(["EVENT", "FACT", "HISTORY"]);
@@ -28,7 +28,10 @@ function validDate(value: Date | null): boolean {
   return value === null || value instanceof Date && Number.isFinite(value.getTime());
 }
 
-function filtersFor(input: MemoryRetrievalPlannerInput): MemoryRetrievalFilters {
+function filtersFor(
+  input: MemoryRetrievalPlannerInput,
+  applyResponsePreferences: boolean
+): MemoryRetrievalFilters {
   const from = input.filters?.from ?? null;
   const to = input.filters?.to ?? null;
   const scopeType = input.filters?.scopeType ?? null;
@@ -41,7 +44,8 @@ function filtersFor(input: MemoryRetrievalPlannerInput): MemoryRetrievalFilters 
     (scopeTargetId !== null && !opaqueTargetPattern.test(scopeTargetId)) ||
     (scopeTargetId !== null && scopeType === null) ||
     (scopeType === "GLOBAL_USER" && scopeTargetId !== null) ||
-    requestedKinds.length < 1 || requestedKinds.length > sourceKinds.size ||
+    requestedKinds.length > sourceKinds.size ||
+    (requestedKinds.length === 0 && !applyResponsePreferences) ||
     new Set(requestedKinds).size !== requestedKinds.length ||
     requestedKinds.some((kind) => !sourceKinds.has(kind))
   ) throw new Error("memory_retrieval_filter_invalid");
@@ -59,13 +63,23 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
     throw new Error("memory_retrieval_plan_invalid");
   }
+  if (input.recencyRequested !== undefined && typeof input.recencyRequested !== "boolean") {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
+  if (input.applyResponsePreferences !== undefined &&
+    typeof input.applyResponsePreferences !== "boolean") {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
+  const applyResponsePreferences = input.applyResponsePreferences === true;
   const normalizedQuery = boundedUnicode(input.currentUserText);
   return {
-    filters: filtersFor(input),
+    applyResponsePreferences,
+    filters: filtersFor(input, applyResponsePreferences),
     lexicalQuery: lexicalQuery(normalizedQuery),
     normalizedExactQuery: normalizedQuery.toLocaleLowerCase("und"),
     normalizedQuery,
     plannerVersion: MEMORY_RETRIEVAL_PLANNER_VERSION,
-    queryPresent: normalizedQuery.length > 0
+    queryPresent: normalizedQuery.length > 0,
+    recencyRequested: input.recencyRequested === true
   };
 }

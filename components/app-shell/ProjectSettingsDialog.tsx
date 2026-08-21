@@ -11,10 +11,8 @@ export function ProjectSettingsDialog({
   knowledgeBases = [],
   knowledgeDataError = null,
   knowledgeDataState = "ready",
-  memoryDraft,
   onCancel,
   onKnowledgeBaseIdsChange = () => {},
-  onMemoryDraftChange,
   onRetryKnowledge = () => {},
   onSave,
   restoreFocus,
@@ -25,10 +23,8 @@ export function ProjectSettingsDialog({
   knowledgeBases?: KnowledgeBaseSummary[];
   knowledgeDataError?: string | null;
   knowledgeDataState?: "error" | "loading" | "ready";
-  memoryDraft: string;
   onCancel(): void;
   onKnowledgeBaseIdsChange?(value: string[]): void;
-  onMemoryDraftChange(value: string): void;
   onRetryKnowledge?(): void;
   onSave(): void;
   restoreFocus?(): HTMLElement | null;
@@ -39,10 +35,7 @@ export function ProjectSettingsDialog({
     if (saving) {
       return;
     }
-    if (
-      memoryDraft !== folder.projectMemory ||
-      JSON.stringify(knowledgeBaseIds) !== JSON.stringify(folder.defaultKnowledgePlan?.baseIds ?? [])
-    ) {
+    if (JSON.stringify(knowledgeBaseIds) !== JSON.stringify(folder.defaultKnowledgePlan?.baseIds ?? [])) {
       setDiscardConfirmationOpen(true);
       return;
     }
@@ -92,22 +85,6 @@ export function ProjectSettingsDialog({
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
-          <label className="mb-1 block text-xs font-medium text-ink-secondary" htmlFor="project-instructions">
-            Project instructions
-          </label>
-          <textarea
-            className="h-48 min-h-32 w-full resize-y rounded-control border border-control-boundary bg-answer-paper p-3 text-sm leading-6 text-ink outline-none focus-visible:border-focus focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled"
-            id="project-instructions"
-            aria-label="Project instructions"
-            aria-describedby="project-instructions-help"
-            disabled={saving}
-            value={memoryDraft}
-            onChange={(event) => onMemoryDraftChange(event.target.value)}
-          />
-          <p className="mt-2 text-xs leading-5 text-ink-muted" id="project-instructions-help">
-            Sent to the model as context for future messages in every chat in this project. Existing messages and
-            replies are unchanged.
-          </p>
           <fieldset className="mt-6 border-t border-trace-subtle pt-5">
             <legend className="text-xs font-semibold text-ink">Default Knowledge plan</legend>
             <p className="mt-1 text-xs leading-5 text-ink-muted">

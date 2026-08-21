@@ -7,7 +7,7 @@ import {
 } from "./safety";
 
 export const MEMORY_HISTORY_SOURCE_PROJECTION_VERSION =
-  "memory-history-source-projection-v1";
+  "memory-history-source-projection-v2";
 
 export const MEMORY_HISTORY_SOURCE_ORIGINS = [
   "DEVELOPER",
@@ -186,28 +186,6 @@ export class MemoryHistorySourceProjectionError extends Error {
     super(code);
     this.name = "MemoryHistorySourceProjectionError";
   }
-}
-
-export function memoryBindingCarriesProviderPayload(contextTokenCount: number): boolean {
-  return Number.isSafeInteger(contextTokenCount) && contextTokenCount > 0;
-}
-
-export function memoryRuntimeInfluenceTaintSources(input: Readonly<{
-  attachment: boolean;
-  knowledgeRunCount: number;
-  memoryContextTokenCount: number;
-  searchRunCount: number;
-  toolCallCount: number;
-}>): readonly MemoryHistoryTaintSource[] {
-  const sources: MemoryHistoryTaintSource[] = [];
-  if (input.attachment) sources.push("ATTACHMENT");
-  if (input.knowledgeRunCount > 0) sources.push("KNOWLEDGE");
-  if (memoryBindingCarriesProviderPayload(input.memoryContextTokenCount)) {
-    sources.push("PROVIDER_PAYLOAD");
-  }
-  if (input.searchRunCount > 0) sources.push("SEARCH");
-  if (input.toolCallCount > 0) sources.push("TOOL");
-  return sources;
 }
 
 function fail(code: string): never {
@@ -500,14 +478,6 @@ function evaluateMessages(
   return evaluated;
 }
 
-function strongestSafetyClass(
-  messages: readonly MemoryHistoryProjectedMessage[]
-): "NORMAL" | "SENSITIVE" {
-  return messages.some((message) => message.safetyClass === "SENSITIVE")
-    ? "SENSITIVE"
-    : "NORMAL";
-}
-
 function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTurnGroup[] {
   const groups: MemoryHistoryRecallTurnGroup[] = [];
   for (let index = 0; index < evaluated.length - 1; index += 1) {
@@ -558,7 +528,7 @@ function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTur
       redactionReasonCodes: reasonCodes,
       redactionState: reasonCodes.length > 0 ? "REDACTED" : "NOT_NEEDED",
       safeTextHash: memorySha256(combinedText),
-      safetyClass: strongestSafetyClass(messages),
+      safetyClass: "NORMAL",
       sourceAssistantId: assistant.projected.provenance.assistantId,
       userMessageId: user.input.id
     });

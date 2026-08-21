@@ -22,17 +22,23 @@ const suffix = randomUUID();
 const ownerIds: string[] = [];
 
 type RetrievalFixture = Readonly<{
+  assistantId: string;
+  automaticSensitiveFactVersionId: string;
   currentChatId: string;
   enFactVersionId: string;
   excludedChunkId: string;
   foreignFactVersionId: string;
   generationId: string;
   historicalFactVersionId: string;
+  legacyAssistantFactVersionId: string;
+  legacyChatFactVersionId: string;
+  legacyFolderFactVersionId: string;
   otherFolderFactVersionId: string;
   rawSourceText: string;
   ruFactVersionId: string;
   safeChunkText: string;
   secretChunkId: string;
+  sensitiveChunkId: string;
   sensitiveFactVersionId: string;
   sourceChatId: string;
   staleAutomaticFactVersionId: string;
@@ -60,7 +66,7 @@ async function createOwner(prefix: string): Promise<string> {
 async function activateLexicalGeneration(userId: string): Promise<string> {
   const generation = await prisma.memoryIndexGeneration.create({
     data: {
-      chunkingVersion: "memory-history-chunking-v1",
+      chunkingVersion: "memory-history-chunking-v2",
       generation: 0,
       indexMode: "LEXICAL_ONLY",
       indexedThroughMemoryRevision: 0,
@@ -91,6 +97,7 @@ async function activateLexicalGeneration(userId: string): Promise<string> {
 }
 
 async function createChatWithLeaf(input: Readonly<{
+  folderId?: string;
   memoryMode?: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   sourceRevision?: number;
   title: string;
@@ -99,6 +106,7 @@ async function createChatWithLeaf(input: Readonly<{
 }>): Promise<Readonly<{ chatId: string; messageId: string }>> {
   const chat = await prisma.chat.create({
     data: {
+      folderId: input.folderId,
       memoryMode: input.memoryMode ?? "NORMAL",
       memorySourceRevision: input.sourceRevision ?? 1,
       title: input.title,
@@ -143,11 +151,125 @@ async function createCheckpoint(input: Readonly<{
   });
 }
 
+async function createClassifiedSafety(input: Readonly<{
+  source?: Readonly<{ branchGeneration: number; chatId: string; messageId: string }>;
+  sourceMode: "AUTOMATIC" | "EXPLICIT";
+  userId: string;
+}>) {
+  const executionId = randomUUID();
+  const completedAt = new Date(fixtureNow.getTime() - 1);
+  const startedAt = new Date(fixtureNow.getTime() - 2);
+  const jobId = input.sourceMode === "AUTOMATIC" ? randomUUID() : null;
+  const settings = jobId
+    ? await prisma.userMemorySettings.findUniqueOrThrow({
+        select: { memoryGeneration: true, memoryRevision: true },
+        where: { userId: input.userId }
+      })
+    : null;
+  await prisma.$transaction(async (tx) => {
+    if (jobId && settings) {
+      await tx.memoryJob.create({
+        data: {
+          acceptedResultHash: memorySha256({ executionId, result: "classified" }),
+          activeLeafMessageId: input.source?.messageId,
+          branchGeneration: input.source?.branchGeneration,
+          chatId: input.source?.chatId,
+          completedAt,
+          createdAt: startedAt,
+          id: jobId,
+          idempotencyFingerprint: `memory-retrieval-classifier-${executionId}`,
+          kind: "EXTRACT_FACTS",
+          memoryGenerationSnapshot: settings.memoryGeneration,
+          memoryRevisionSnapshot: settings.memoryRevision,
+          pipelineVersion: "memory-retrieval-test-classifier-v1",
+          sourceHash: input.source
+            ? memorySha256({ chatId: input.source.chatId, messageId: input.source.messageId })
+            : undefined,
+          sourceRevision: input.source ? 1 : undefined,
+          state: "SUCCEEDED",
+          userId: input.userId
+        }
+      });
+    }
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memorySha256({ executionId, output: "NORMAL" }),
+        cachedInputTokens: 0,
+        completedAt,
+        createdAt: startedAt,
+        destinationFingerprint: memorySha256({ destination: "fixture-classifier" }),
+        id: executionId,
+        inputHash: memorySha256({ executionId, input: "fixture" }),
+        inputTokens: 0,
+        logicalRole: input.sourceMode === "AUTOMATIC"
+          ? "MEMORY_FACT_EXTRACT"
+          : "MEMORY_STATEMENT_CLASSIFY",
+        ...(jobId
+          ? { memoryJobId: jobId, ownerType: "JOB" as const }
+          : {
+              mutationAuthorizationId: `memory-retrieval-classifier-${executionId}`,
+              ownerType: "MUTATION_AUTHORIZATION" as const
+            }),
+        ordinal: 0,
+        outputTokens: 0,
+        pipelineVersion: "memory-retrieval-test-classifier-v1",
+        policyVersion: "memory-retrieval-test-classifier-v1",
+        promptVersion: "memory-retrieval-test-classifier-v1",
+        providerId: "memory-retrieval-fixture",
+        reasoningTokens: 0,
+        recoverableUntil: completedAt,
+        relationsDetachedAt: fixtureNow,
+        schemaVersion: "memory-retrieval-test-classifier-v1",
+        secretFreeExecutionSnapshot: {
+          providerExecutionSnapshot: {
+            providerFamily: "memory-retrieval-fixture",
+            providerModelId: "memory-retrieval-fixture-model"
+          },
+          version: 1
+        },
+        startedAt,
+        state: "SUCCEEDED",
+        totalTokens: 0,
+        usageCompleteness: "COMPLETE",
+        userId: input.userId
+      }
+    });
+    await tx.usageEvent.create({
+      data: {
+        cachedInputTokens: 0,
+        inputTokens: 0,
+        memoryExecutionBindingId: executionId,
+        modelId: "memory-retrieval-fixture-model",
+        outputTokens: 0,
+        provider: "memory-retrieval-fixture",
+        providerModelId: "memory-retrieval-fixture-model",
+        reasoningTokens: 0,
+        totalTokens: 0,
+        userId: input.userId
+      }
+    });
+  });
+  return {
+    safetyClassificationReasonCode: input.sourceMode === "AUTOMATIC"
+      ? "automatic_extraction"
+      : "response_preference",
+    safetyClassificationState: "CLASSIFIED" as const,
+    safetyClassifiedAt: completedAt,
+    safetyClassifierExecutionId: executionId,
+    safetyClassifierModelId: "memory-retrieval-fixture-model",
+    safetyClassifierPolicyVersion: "memory-retrieval-test-classifier-v1",
+    safetyClassifierProviderId: "memory-retrieval-fixture"
+  };
+}
+
 async function createFact(input: Readonly<{
   canonicalKey: string;
+  coreEligible?: boolean;
   displayText: string;
   generationId: string;
   languageCode: string;
+  scopeAssistantId?: string;
+  scopeChatId?: string;
   scopeFolderId?: string;
   sensitivityClass?: "NORMAL" | "SECRET" | "SENSITIVE";
   source?: Readonly<{ branchGeneration: number; chatId: string; messageId: string }>;
@@ -175,23 +297,48 @@ async function createFact(input: Readonly<{
           userId: input.userId
         }
       })
-    : (await prisma.memoryScope.findFirst({
-        where: {
-          scopeType: "GLOBAL_USER",
-          state: "ACTIVE",
-          userId: input.userId
-        }
-      })) ?? await prisma.memoryScope.create({
-        data: { scopeType: "GLOBAL_USER", userId: input.userId }
-      });
+    : input.scopeAssistantId
+      ? await prisma.memoryScope.create({
+          data: {
+            assistantId: input.scopeAssistantId,
+            scopeType: "ASSISTANT",
+            targetDisplaySnapshot: "Current assistant",
+            targetIdSnapshot: input.scopeAssistantId,
+            userId: input.userId
+          }
+        })
+      : input.scopeChatId
+        ? await prisma.memoryScope.create({
+            data: {
+              chatId: input.scopeChatId,
+              scopeType: "CHAT",
+              targetDisplaySnapshot: "Current chat",
+              targetIdSnapshot: input.scopeChatId,
+              userId: input.userId
+            }
+          })
+        : (await prisma.memoryScope.findFirst({
+            where: {
+              scopeType: "GLOBAL_USER",
+              state: "ACTIVE",
+              userId: input.userId
+            }
+          })) ?? await prisma.memoryScope.create({
+            data: { scopeType: "GLOBAL_USER", userId: input.userId }
+          });
   const normalized = normalizeMemorySearchText(input.displayText);
   const factId = randomUUID();
   const versionId = randomUUID();
+  const classifiedSafety = await createClassifiedSafety({
+    source: input.source,
+    sourceMode,
+    userId: input.userId
+  });
   await prisma.$transaction(async (tx) => {
     await tx.memoryFact.create({
       data: {
         canonicalKey: input.canonicalKey,
-        category: "preference",
+        category: "preferences",
         currentVersionId: versionId,
         id: factId,
         scopeId: scope.id,
@@ -201,8 +348,9 @@ async function createFact(input: Readonly<{
     });
     await tx.memoryFactVersion.create({
       data: {
-        category: "preference",
+        category: "preferences",
         confidence: 1,
+        coreEligible: input.coreEligible ?? false,
         createdByEventId: event.id,
         directness: "DIRECT",
         displayText: input.displayText,
@@ -213,6 +361,7 @@ async function createFact(input: Readonly<{
         modality: "PREFERENCE",
         normalizedSearchText: normalized,
         pipelineVersion: "memory-retrieval-test-v1",
+        ...classifiedSafety,
         sensitivityClass: input.sensitivityClass ?? "NORMAL",
         sourceMode,
         state: "ACTIVE",
@@ -275,6 +424,7 @@ async function createFact(input: Readonly<{
 async function createHistoricalFactVersion(input: Readonly<{
   currentVersionId: string;
   displayText: string;
+  generationId: string;
   userId: string;
   validFrom: Date;
   validTo: Date;
@@ -293,6 +443,11 @@ async function createHistoricalFactVersion(input: Readonly<{
     }
   });
   const versionId = randomUUID();
+  const normalizedSearchText = normalizeMemorySearchText(input.displayText);
+  const classifiedSafety = await createClassifiedSafety({
+    sourceMode: "EXPLICIT",
+    userId: input.userId
+  });
   await prisma.$transaction(async (tx) => {
     await tx.memoryFactVersion.create({
       data: {
@@ -307,8 +462,9 @@ async function createHistoricalFactVersion(input: Readonly<{
         importance: 0.9,
         languageCode: "en",
         modality: "PREFERENCE",
-        normalizedSearchText: normalizeMemorySearchText(input.displayText),
+        normalizedSearchText,
         pipelineVersion: "memory-retrieval-test-v1",
+        ...classifiedSafety,
         sensitivityClass: "NORMAL",
         sourceMode: "EXPLICIT",
         state: "SUPERSEDED",
@@ -335,6 +491,24 @@ async function createHistoricalFactVersion(input: Readonly<{
         userId: input.userId
       }
     });
+    await tx.memorySearchEntry.create({
+      data: {
+        embeddingState: "NOT_APPLICABLE",
+        factVersionId: versionId,
+        indexGenerationId: input.generationId,
+        itemType: "FACT_VERSION",
+        languageCode: "en",
+        normalizedSearchText,
+        safeContentHash: memorySha256({ displayText: input.displayText }),
+        safetyIdentitySnapshot: memorySha256({ sensitivity: "NORMAL" }),
+        sourceIdentitySnapshot: memorySha256({ sourceMode: "EXPLICIT", versionId }),
+        suppressionIdentitySnapshot: memorySha256({
+          normalizedValue: normalizedSearchText,
+          state: "SUPERSEDED"
+        }),
+        userId: input.userId
+      }
+    });
   });
   return versionId;
 }
@@ -345,7 +519,7 @@ async function createChunk(input: Readonly<{
   chunkOrdinal?: number;
   generationId: string;
   messageId: string;
-  safetyClass?: "HIGHLY_SENSITIVE" | "NORMAL";
+  safetyClass?: "HIGHLY_SENSITIVE" | "NORMAL" | "SENSITIVE";
   safeText: string;
   state?: "ACTIVE" | "INVALIDATED";
   suppressionSnapshot: string;
@@ -357,7 +531,7 @@ async function createChunk(input: Readonly<{
       branchGeneration: input.branchGeneration ?? 0,
       chatId: input.chatId,
       chunkOrdinal: input.chunkOrdinal ?? 0,
-      chunkingVersion: "memory-history-chunking-v1",
+      chunkingVersion: "memory-history-chunking-v2",
       contentHash,
       languageCode: "ru",
       normalizedSafeSearchText: normalizeMemorySearchText(input.safeText),
@@ -366,7 +540,7 @@ async function createChunk(input: Readonly<{
       redactionState: "NOT_NEEDED",
       safeProjectedText: input.safeText,
       safetyClass: input.safetyClass ?? "NORMAL",
-      sourceProjectionVersion: "memory-history-source-projection-v1",
+      sourceProjectionVersion: "memory-history-source-projection-v2",
       sourceRevisionAtCreation: 1,
       state: input.state ?? "ACTIVE",
       invalidatedAt: input.state === "INVALIDATED" ? fixtureNow : null,
@@ -424,7 +598,14 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const foreignUserId = await createOwner("memory-local-foreign");
     const generationId = await activateLexicalGeneration(userId);
     const foreignGenerationId = await activateLexicalGeneration(foreignUserId);
+    const currentFolder = await prisma.folder.create({
+      data: { name: "Current folder", userId }
+    });
+    const assistant = await prisma.assistantDefinition.create({
+      data: { ownerUserId: userId }
+    });
     const current = await createChatWithLeaf({
+      folderId: currentFolder.id,
       sourceRevision: 0,
       title: "Current retrieval chat",
       userId,
@@ -450,6 +631,16 @@ describe("local Memory retrieval on PostgreSQL", () => {
       generationId,
       messageId: source.messageId,
       safeText: safeChunkText,
+      suppressionSnapshot,
+      userId
+    });
+    const sensitiveChunkId = await createChunk({
+      chatId: source.chatId,
+      chunkOrdinal: 3,
+      generationId,
+      messageId: source.messageId,
+      safeText: "Legacy sensitive context о миграции PostgreSQL.",
+      safetyClass: "SENSITIVE",
       suppressionSnapshot,
       userId
     });
@@ -493,6 +684,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     });
     const enFactVersionId = await createFact({
       canonicalKey: "profile.preferred_editor",
+      coreEligible: true,
       displayText: "My preferred editor is Neovim.",
       generationId,
       languageCode: "en",
@@ -501,6 +693,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const historicalFactVersionId = await createHistoricalFactVersion({
       currentVersionId: enFactVersionId,
       displayText: "My preferred editor was Vim in July 2025.",
+      generationId,
       userId,
       validFrom: new Date("2025-07-01T00:00:00.000Z"),
       validTo: new Date("2025-08-01T00:00:00.000Z")
@@ -520,12 +713,50 @@ describe("local Memory retrieval on PostgreSQL", () => {
       scopeFolderId: otherFolder.id,
       userId
     });
+    const legacyFolderFactVersionId = await createFact({
+      canonicalKey: "legacy.folder_editor",
+      coreEligible: true,
+      displayText: "My preferred legacy scoped editor is folder Vim.",
+      generationId,
+      languageCode: "en",
+      scopeFolderId: currentFolder.id,
+      userId
+    });
+    const legacyAssistantFactVersionId = await createFact({
+      canonicalKey: "legacy.assistant_editor",
+      coreEligible: true,
+      displayText: "My preferred legacy scoped editor is assistant Emacs.",
+      generationId,
+      languageCode: "en",
+      scopeAssistantId: assistant.id,
+      userId
+    });
+    const legacyChatFactVersionId = await createFact({
+      canonicalKey: "legacy.chat_editor",
+      coreEligible: true,
+      displayText: "My preferred legacy scoped editor is chat Nano.",
+      generationId,
+      languageCode: "en",
+      scopeChatId: current.chatId,
+      userId
+    });
     const sensitiveFactVersionId = await createFact({
       canonicalKey: "profile.sensitive_editor",
+      coreEligible: true,
       displayText: "My preferred editor reveals a sensitive private detail.",
       generationId,
       languageCode: "en",
       sensitivityClass: "SENSITIVE",
+      userId
+    });
+    const automaticSensitiveFactVersionId = await createFact({
+      canonicalKey: "profile.automatic_sensitive_editor",
+      displayText: "My learned preferred editor has a sensitive private detail.",
+      generationId,
+      languageCode: "en",
+      sensitivityClass: "SENSITIVE",
+      source: { branchGeneration: 0, chatId: source.chatId, messageId: source.messageId },
+      sourceMode: "AUTOMATIC",
       userId
     });
     const staleAutomaticFactVersionId = await createFact({
@@ -545,17 +776,23 @@ describe("local Memory retrieval on PostgreSQL", () => {
       userId: foreignUserId
     });
     fixture = {
+      assistantId: assistant.id,
+      automaticSensitiveFactVersionId,
       currentChatId: current.chatId,
       enFactVersionId,
       excludedChunkId,
       foreignFactVersionId,
       generationId,
       historicalFactVersionId,
+      legacyAssistantFactVersionId,
+      legacyChatFactVersionId,
+      legacyFolderFactVersionId,
       otherFolderFactVersionId,
       rawSourceText,
       ruFactVersionId,
       safeChunkText,
       secretChunkId,
+      sensitiveChunkId,
       sensitiveFactVersionId,
       sourceChatId: source.chatId,
       staleAutomaticFactVersionId,
@@ -568,6 +805,19 @@ describe("local Memory retrieval on PostgreSQL", () => {
   afterAll(async () => {
     for (const userId of ownerIds.reverse()) {
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+      const assistantScopes = await prisma.memoryScope.findMany({
+        select: { id: true },
+        where: { assistantId: { not: null }, userId }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFact.deleteMany({
+          where: { scopeId: { in: assistantScopes.map(({ id }) => id) }, userId }
+        });
+        await tx.memoryScope.deleteMany({
+          where: { id: { in: assistantScopes.map(({ id }) => id) }, userId }
+        });
+        await tx.assistantDefinition.deleteMany({ where: { ownerUserId: userId } });
+      });
       await prisma.user.deleteMany({ where: { id: userId } });
     }
     await prisma.$disconnect();
@@ -575,7 +825,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
 
   it("keeps Unicode lexical candidates bounded and excludes tenant/scope/source/safety violations", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
-    const enQuery = "What is my preferred editor?";
+    const enQuery = "preferred editor";
     const enResult = await repository.retrieve({
       assistantId: null,
       chatId: fixture.currentChatId,
@@ -588,10 +838,13 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const allEnIds = enResult.laneResults.flatMap((lane) => lane.candidates.map((item) => item.itemId));
     expect(allEnIds).not.toContain(fixture.foreignFactVersionId);
     expect(allEnIds).not.toContain(fixture.otherFolderFactVersionId);
-    expect(allEnIds).not.toContain(fixture.sensitiveFactVersionId);
+    // Legacy SENSITIVE facts use the same candidate policy as NORMAL facts,
+    // regardless of whether they were saved explicitly or learned.
+    expect(allEnIds).toContain(fixture.sensitiveFactVersionId);
+    expect(allEnIds).toContain(fixture.automaticSensitiveFactVersionId);
     expect(allEnIds).not.toContain(fixture.staleAutomaticFactVersionId);
 
-    const ruQuery = "Какой мой предпочтительный редактор?";
+    const ruQuery = "предпочтительный редактор";
     const ruResult = await repository.retrieve({
       assistantId: null,
       chatId: fixture.currentChatId,
@@ -604,10 +857,52 @@ describe("local Memory retrieval on PostgreSQL", () => {
     );
   });
 
+  it("keeps matching legacy folder, assistant, and chat facts dormant", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const result = await repository.retrieve({
+      assistantId: fixture.assistantId,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan: planMemoryRetrieval({
+        applyResponsePreferences: true,
+        currentUserText: "preferred legacy scoped editor",
+        now: fixtureNow
+      }),
+      userId: fixture.userId
+    });
+    const legacyIds = [
+      fixture.legacyFolderFactVersionId,
+      fixture.legacyAssistantFactVersionId,
+      fixture.legacyChatFactVersionId
+    ];
+    const candidateIds = result.laneResults.flatMap((lane) =>
+      lane.candidates.map((candidate) => candidate.itemId));
+    const coreIds = result.core.map(({ candidate }) => candidate.itemId);
+
+    expect(coreIds).toContain(fixture.enFactVersionId);
+    expect(coreIds).toContain(fixture.sensitiveFactVersionId);
+    expect(candidateIds.filter((id) => legacyIds.includes(id))).toEqual([]);
+    expect(coreIds.filter((id) => legacyIds.includes(id))).toEqual([]);
+  });
+
   it("never serves a superseded historical version as current truth", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
-    const query = "Which editor did I prefer in July 2025?";
+    const query = "preferred editor";
     const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
+    await expect(prisma.memorySearchEntry.count({
+      where: {
+        factVersionId: fixture.historicalFactVersionId,
+        indexGenerationId: fixture.generationId,
+        userId: fixture.userId
+      }
+    })).resolves.toBe(1);
+    await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+      select: { safetyClassificationState: true, state: true },
+      where: { id: fixture.historicalFactVersionId }
+    })).resolves.toEqual({
+      safetyClassificationState: "CLASSIFIED",
+      state: "SUPERSEDED"
+    });
     const result = await repository.retrieve({
       assistantId: null,
       chatId: fixture.currentChatId,
@@ -628,7 +923,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
 
   it("retrieves only safe chunks", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
-    const query = "Когда мы обсуждали миграцию PostgreSQL в предыдущем чате?";
+    const query = "миграции PostgreSQL";
     const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
     const result = await repository.retrieve({
       assistantId: null,
@@ -640,6 +935,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const candidateIds = result.laneResults.flatMap((lane) =>
       lane.candidates.map((candidate) => candidate.itemId));
     expect(candidateIds).toContain(fixture.validChunkId);
+    expect(candidateIds).toContain(fixture.sensitiveChunkId);
     expect(candidateIds).not.toContain(fixture.staleChunkId);
     expect(candidateIds).not.toContain(fixture.excludedChunkId);
     expect(candidateIds).not.toContain(fixture.secretChunkId);
@@ -659,7 +955,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.items.length).toBeLessThanOrEqual(12);
   });
 
-  it("keeps a bounded recency lane for cross-script and unrelated relevance decisions", async () => {
+  it("does not add an unconditional recency lane for alias or unrelated queries", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const aliasQuery = "Что мы решили по Макбуку в предыдущем чате?";
     const aliasPlan = planMemoryRetrieval({ currentUserText: aliasQuery, now: fixtureNow });
@@ -670,8 +966,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
       plan: aliasPlan,
       userId: fixture.userId
     });
-    expect(fuseMemoryRetrievalCandidates(aliasPlan, aliasResult.laneResults, fixtureNow)
-      .slice(0, 5).map((item) => item.itemId)).toContain(fixture.validChunkId);
+    expect(fuseMemoryRetrievalCandidates(aliasPlan, aliasResult.laneResults, fixtureNow))
+      .toEqual([]);
 
     const irrelevantQuery = "Что мы решили по квантовым бананам в предыдущем чате?";
     const irrelevantPlan = planMemoryRetrieval({
@@ -690,13 +986,13 @@ describe("local Memory retrieval on PostgreSQL", () => {
       irrelevantResult.laneResults,
       fixtureNow
     );
-    expect(irrelevantCandidates.length).toBeGreaterThan(0);
+    expect(irrelevantCandidates).toEqual([]);
     expect(irrelevantResult.laneResults.filter((lane) =>
       lane.lane === "HISTORY_RECALL_EXACT" || lane.lane === "HISTORY_RECALL_FTS_SIMPLE")
       .flatMap((lane) => lane.candidates)).toEqual([]);
   });
 
-  it("always generates candidates for an irrelevant non-empty query", async () => {
+  it("does not generate candidates for an irrelevant non-empty query", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const plan = planMemoryRetrieval({ currentUserText: "What is photosynthesis?", now: fixtureNow });
     const result = await repository.retrieve({
@@ -707,16 +1003,15 @@ describe("local Memory retrieval on PostgreSQL", () => {
       userId: fixture.userId
     });
     expect(result.laneResults.length).toBeGreaterThan(0);
-    expect(fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow).length)
-      .toBeGreaterThan(0);
+    expect(fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow)).toEqual([]);
   });
 
   it("emits reproducible sanitized candidate coverage, isolation, bounds, and latency evidence", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const cases = [
-      { expected: fixture.enFactVersionId, query: "What is my preferred editor?" },
-      { expected: fixture.ruFactVersionId, query: "Какой мой предпочтительный редактор?" },
-      { expected: fixture.validChunkId, query: "Когда мы обсуждали миграцию PostgreSQL в предыдущем чате?" }
+      { expected: fixture.enFactVersionId, query: "preferred editor" },
+      { expected: fixture.ruFactVersionId, query: "предпочтительный редактор" },
+      { expected: fixture.validChunkId, query: "миграции PostgreSQL" }
     ];
     const latencies: number[] = [];
     let crossTenantHits = 0;
@@ -748,7 +1043,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       "What is photosynthesis?",
       "Что мы решили по квантовым бананам в предыдущем чате?"
     ];
-    let recencyCandidateQueries = 0;
+    let unrelatedCandidateQueries = 0;
     for (const query of recencyQueries) {
       const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
       const result = await repository.retrieve({
@@ -759,19 +1054,19 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId: fixture.userId
       });
       if (fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow).length > 0) {
-        recencyCandidateQueries += 1;
+        unrelatedCandidateQueries += 1;
       }
     }
     const sampleCount = cases.length * 5;
     const evidence = Object.freeze({
       candidateHardCap: 150,
       crossTenantHits,
-      evidenceVersion: "memory-language-agnostic-local-candidates-v2",
+      evidenceVersion: "memory-language-agnostic-local-candidates-v3",
       latencyP95Ms: Number(percentile95(latencies).toFixed(2)),
       maximumLatencyP95Ms: 150,
       maximumCandidateCount,
       recallAt5: recalled / sampleCount,
-      recencyCandidateAvailabilityRate: recencyCandidateQueries / recencyQueries.length,
+      unrelatedCandidateRate: unrelatedCandidateQueries / recencyQueries.length,
       sanitizedAggregatesOnly: true,
       sampleCount
     });
@@ -780,7 +1075,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       crossTenantHits: 0,
       maximumCandidateCount: expect.any(Number),
       recallAt5: 1,
-      recencyCandidateAvailabilityRate: 1,
+      unrelatedCandidateRate: 0,
       sanitizedAggregatesOnly: true,
       sampleCount: 15
     });
@@ -803,7 +1098,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     });
     try {
       const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
-      const query = "What is my preferred editor?";
+      const query = "preferred editor";
       const result = await repository.retrieve({
         assistantId: null,
         chatId: fixture.currentChatId,

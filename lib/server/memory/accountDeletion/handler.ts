@@ -170,6 +170,7 @@ async function purgeReusableAndPrivateMemory(
   await tx.memoryRetrievalAttemptItem.deleteMany({ where: { userId } });
   await tx.memorySearchEntry.deleteMany({ where: { userId } });
   await tx.memorySuppression.deleteMany({ where: { userId } });
+  await tx.memoryPauseInterval.deleteMany({ where: { userId } });
   await tx.memorySourceBarrier.deleteMany({ where: { userId } });
   await tx.memoryRecallChunkMessage.deleteMany({ where: { userId } });
   await tx.memoryRecallChunk.deleteMany({ where: { userId } });
@@ -292,6 +293,7 @@ export async function inspectAccountMemoryDeletionResiduals(
       UNION ALL SELECT 'events', COUNT(*)::integer FROM "MemoryEvent" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'feedback', COUNT(*)::integer FROM "MemoryFeedback" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'suppressions', COUNT(*)::integer FROM "MemorySuppression" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'pause-intervals', COUNT(*)::integer FROM "MemoryPauseInterval" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'barriers', COUNT(*)::integer FROM "MemorySourceBarrier" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'authorizations', COUNT(*)::integer FROM "MemoryMutationAuthorization" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'receipts', COUNT(*)::integer FROM "MemoryOperationReceipt" WHERE "userId" = ${input.userId}
@@ -316,7 +318,10 @@ export async function inspectAccountMemoryDeletionResiduals(
         FROM "MemoryExecutionBinding" AS binding
         WHERE binding."userId" = ${input.userId}
           AND NOT (
-            binding."ownerType" = 'JOB'::"MemoryExecutionOwnerType"
+            binding."ownerType" IN (
+              'JOB'::"MemoryExecutionOwnerType",
+              'MUTATION_AUTHORIZATION'::"MemoryExecutionOwnerType"
+            )
             AND binding."state" IN (
               'SUCCEEDED'::"MemoryExecutionState",
               'FAILED'::"MemoryExecutionState",

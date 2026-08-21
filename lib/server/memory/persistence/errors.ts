@@ -1,5 +1,6 @@
 export const MEMORY_PERSISTENCE_ERROR_CODES = [
   "memory_active_generation_invalid",
+  "memory_admission_deadline_exceeded",
   "memory_consent_conflict",
   "memory_consent_policy_changed",
   "memory_counter_contract_invalid",

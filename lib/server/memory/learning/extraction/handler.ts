@@ -158,6 +158,30 @@ async function recoverPriorExecution(
   return null;
 }
 
+function providerFailureState(error: unknown): Readonly<{
+  classification: "UNKNOWN" | "REPLAY_SAFE_TRANSIENT" | "PERMANENT";
+  errorCode: string;
+  state: "FAILED" | "OUTCOME_UNKNOWN";
+  usage: MemoryReportedUsage;
+}> {
+  const classification = error instanceof MemoryFactProviderCallError
+    ? error.classification
+    : "PERMANENT";
+  return {
+    classification,
+    errorCode: classification === "UNKNOWN"
+      ? "memory_fact_provider_outcome_unknown"
+      : classification === "REPLAY_SAFE_TRANSIENT"
+        ? "memory_fact_provider_transient"
+        : "memory_fact_provider_unavailable",
+    state: classification === "UNKNOWN" ? "OUTCOME_UNKNOWN" : "FAILED",
+    usage: classification === "UNKNOWN" &&
+      error instanceof MemoryFactProviderCallError && error.usage
+      ? reportedUsage(error.usage)
+      : unavailableUsage
+  };
+}
+
 export function createMemoryFactExtractionHandler(
   deps: MemoryFactExtractionHandlerDependencies
 ): MemoryJobHandler {
@@ -231,20 +255,23 @@ export function createMemoryFactExtractionHandler(
           context.signal
         );
       } catch (error) {
-        const uncertain = error instanceof MemoryFactProviderCallError;
+        const failure = providerFailureState(error);
         await deps.execution.lifecycle.settle(job.userId, binding.id, {
           acceptedOutputHash: null,
-          errorCode: uncertain
-            ? "memory_fact_provider_outcome_unknown"
-            : "memory_fact_provider_unavailable",
+          errorCode: failure.errorCode,
           providerResponseId: null,
-          state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
-          usage: uncertain && error.usage ? reportedUsage(error.usage) : unavailableUsage
+          state: failure.state,
+          usage: failure.usage
         });
+        if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
+          throw new MemoryCoordinatorError(failure.errorCode, true);
+        }
         return terminalResult(
           job,
           input,
-          uncertain ? "fact_outcome_unknown" : "fact_provider_unavailable"
+          failure.classification === "UNKNOWN"
+            ? "fact_outcome_unknown"
+            : "fact_provider_unavailable"
         );
       }
 

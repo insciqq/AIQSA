@@ -6,10 +6,12 @@ import {
   memoryItemEmbeddingJobFingerprint
 } from "../../embedding/contract";
 import { enqueueMemoryJob } from "../../persistence/jobs";
+import { loadPersonalMemoryEvidenceSnapshots } from "../../persistence/eligibility";
 import {
   memorySha256,
   normalizeMemorySearchText
 } from "../../persistence/lexical";
+import { memoryCanonicalGlobalScopePredicate } from "../../persistence/scopes";
 import {
   advanceMemoryMutation,
   ensureActiveLexicalGeneration,
@@ -122,6 +124,7 @@ async function affectedEvidence(
     WHERE evidence."userId" = ${event.snapshot.userId}
       AND evidence."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
       AND evidence."chatId" = ${event.snapshot.id}
+      AND ${memoryCanonicalGlobalScopePredicate()}
       AND (${predicate})
     ORDER BY version."factId", evidence."id"
   `);
@@ -174,7 +177,8 @@ async function versionsAndSupport(
     },
     where: { factId: { in: [...factIds] }, userId }
   }) as VersionRow[];
-  const rows = await tx.$queryRaw<SupportRow[]>(Prisma.sql`
+  if (versions.length === 0) return { support: new Map(), versions };
+  const explicitRows = await tx.$queryRaw<SupportRow[]>(Prisma.sql`
     SELECT evidence."factVersionId",
       count(*)::bigint AS "supportCount",
       max(evidence."observedAt") AS "latestObservedAt"
@@ -185,19 +189,28 @@ async function versionsAndSupport(
     WHERE evidence."userId" = ${userId}
       AND evidence."factVersionId" IN (${Prisma.join(versions.map(({ id }) => id))})
       AND evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-      AND (
-        (
-          version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-          AND evidence."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
-          AND evidence."sourceRole" = 'user'
-        ) OR (
-          version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-          AND evidence."sourceType" = 'EXPLICIT_ACTION'::"MemoryEvidenceSourceType"
-        )
-      )
+      AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+      AND evidence."sourceType" = 'EXPLICIT_ACTION'::"MemoryEvidenceSourceType"
     GROUP BY evidence."factVersionId"
   `);
-  return { support: new Map(rows.map((row) => [row.factVersionId, row])), versions };
+  const support = new Map(explicitRows.map((row) => [row.factVersionId, row]));
+  const automaticEvidence = await loadPersonalMemoryEvidenceSnapshots(
+    tx,
+    userId,
+    versions.flatMap((version) => version.sourceMode === "AUTOMATIC" ? [version.id] : [])
+  );
+  for (const evidence of automaticEvidence) {
+    const current = support.get(evidence.factVersionId);
+    support.set(evidence.factVersionId, {
+      factVersionId: evidence.factVersionId,
+      latestObservedAt: !current || !current.latestObservedAt ||
+        evidence.observedAt > current.latestObservedAt
+        ? evidence.observedAt
+        : current.latestObservedAt,
+      supportCount: (current?.supportCount ?? 0n) + 1n
+    });
+  }
+  return { support, versions };
 }
 
 function transitionAt(now: Date, version: VersionRow): Date {
@@ -247,25 +260,30 @@ async function ensureWinnerSearchEntry(
   if (version.displayText === null || version.structuredValue === null) {
     throw new Error("memory_fact_source_normalization_content_missing");
   }
-  const evidence = await tx.memoryEvidence.findMany({
-    orderBy: [{ observedAt: "asc" }, { id: "asc" }],
-    select: {
-      branchGeneration: true,
-      chatId: true,
-      id: true,
-      messageId: true,
-      safeSourceHash: true,
-      sourceProjectionVersion: true,
-      sourceType: true
-    },
-    where: {
-      factVersionId: version.id,
-      sourceType: version.sourceMode === "AUTOMATIC" ? "MESSAGE" : "EXPLICIT_ACTION",
-      stance: "SUPPORTS",
-      userId: settings.userId,
-      ...(version.sourceMode === "AUTOMATIC" ? { sourceRole: "user" } : {})
-    }
-  });
+  const evidence = version.sourceMode === "AUTOMATIC"
+    ? (await loadPersonalMemoryEvidenceSnapshots(
+        tx,
+        settings.userId,
+        [version.id]
+      )).map((item) => ({ ...item, sourceType: "MESSAGE" as const }))
+    : await tx.memoryEvidence.findMany({
+        orderBy: [{ observedAt: "asc" }, { id: "asc" }],
+        select: {
+          branchGeneration: true,
+          chatId: true,
+          id: true,
+          messageId: true,
+          safeSourceHash: true,
+          sourceProjectionVersion: true,
+          sourceType: true
+        },
+        where: {
+          factVersionId: version.id,
+          sourceType: "EXPLICIT_ACTION",
+          stance: "SUPPORTS",
+          userId: settings.userId
+        }
+      });
   if (evidence.length === 0) {
     throw new Error("memory_fact_source_normalization_support_missing");
   }

@@ -353,7 +353,10 @@ export type PreparingRunMaterializedRequest = Readonly<{
 }>;
 
 export type PreparingRunMemoryMaterializer = (
-  personalContext: NonNullable<NormalizedRunRequest["personalContext"]>
+  personalContext: NonNullable<NormalizedRunRequest["personalContext"]> | null,
+  memoryActionAnswerResult?: NonNullable<
+    NormalizedRunRequest["prompt"]["memoryActionAnswerResult"]
+  >
 ) => PreparingRunMaterializedRequest | null;
 
 export type CreatedRun = Readonly<{

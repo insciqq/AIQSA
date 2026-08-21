@@ -1,10 +1,7 @@
 "use client";
 
 import {
-  openMemoryDetail,
-  useMemoryManagerStore
-} from "@/components/app-shell/memoryManagerStore";
-import {
+  refreshMemorySettings,
   updateMemoryGate,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
@@ -31,11 +28,6 @@ import type {
   MemoryOverviewV2
 } from "@/features/library-v2/contracts";
 
-function scopeLabel(scope: Readonly<{ projectId?: string; type: string }>): string {
-  if (scope.type === "GLOBAL_USER") return "Personal";
-  if (scope.type === "PROJECT") return "Project";
-  return scope.type.toLocaleLowerCase().replaceAll("_", " ");
-}
 function LibrarySurfaceV2({
   composer,
   onOpenMemoryOwner,
@@ -47,8 +39,8 @@ function LibrarySurfaceV2({
 }>) {
   const { session, settings } = props;
   const memoryData = useMemorySettingsStore((state) => state.data);
-  const memories = useMemoryManagerStore((state) => state.memories);
   const memoryBusy = useMemorySettingsStore((state) => state.busy);
+  const memoryLoadState = useMemorySettingsStore((state) => state.loadState);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
   const openKnowledgeSourceViewer = useKnowledgeSourceViewer();
@@ -95,31 +87,20 @@ function LibrarySurfaceV2({
         : "processing"
   }));
   const memory: MemoryOverviewV2 = memoryData ? {
-    administratorDisabled: !memoryData.capabilities.explicitMemory &&
-      !memoryData.capabilities.historyRecall &&
-      !memoryData.capabilities.automaticLearning,
+    administratorDisabled: memoryData.status === "NEEDS_ADMIN_SETUP",
     automaticLearning: memoryData.settings.learnAutomatically,
-    explicitCrudAvailable: memoryData.capabilities.explicitMemory,
-    facts: memories.filter((fact) => fact.factState === "ACTIVE" && fact.displayText).slice(0, 8).map((fact) => ({
-      id: fact.id,
-      pinned: fact.pinned,
-      scope: scopeLabel(fact.scope),
-      statement: fact.displayText ?? ""
-    })),
-    healthDetail: memoryData.egress.reviewRequired
-      ? "Utility egress needs review before automatic work can continue."
-      : `${memoryData.historyIndexing.completedChats} of ${memoryData.historyIndexing.totalChats} retained chats indexed.`,
-    healthLabel: memoryData.egress.reviewRequired ? "Review required" : "Memory ready",
+    explicitCrudAvailable: memoryData.capabilities.managementAvailable,
+    loadState: memoryLoadState,
     referenceChatHistory: memoryData.settings.referenceChatHistory,
+    status: memoryData.status,
     useMemoryFacts: memoryData.settings.useMemoryFacts
   } : {
     administratorDisabled: false,
     automaticLearning: false,
     explicitCrudAvailable: false,
-    facts: [],
-    healthDetail: "Loading exact Memory status…",
-    healthLabel: "Memory",
+    loadState: memoryLoadState,
     referenceChatHistory: false,
+    status: null,
     useMemoryFacts: false
   };
   const mutateMemory = (key: "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts", value: boolean) => {
@@ -167,13 +148,8 @@ function LibrarySurfaceV2({
           onChangeAutomaticLearning={(value) => mutateMemory("learnAutomatically", value)}
           onChangeReferenceHistory={(value) => mutateMemory("referenceChatHistory", value)}
           onChangeUseFacts={(value) => mutateMemory("useMemoryFacts", value)}
-          onForget={(id) => {
-            void openMemoryDetail(id).catch(() => undefined);
-            onOpenMemoryOwner();
-          }}
           onManage={onOpenMemoryOwner}
-          onOpenHistory={onOpenMemoryOwner}
-          onOpenOperations={onOpenMemoryOwner}
+          onRetry={() => void refreshMemorySettings(true).catch(() => undefined)}
         />
       ),
       id: "memory",

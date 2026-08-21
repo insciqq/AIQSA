@@ -50,10 +50,8 @@ describe("ProjectSettingsDialog", () => {
           projectMemory: "",
           sortOrder: 0
         }}
-        memoryDraft=""
         saving={false}
         onCancel={onCancel}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
       />
     );
@@ -85,10 +83,8 @@ describe("ProjectSettingsDialog", () => {
           projectMemory: "",
           sortOrder: 0
         }}
-        memoryDraft=""
         saving={false}
         onCancel={vi.fn()}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
         restoreFocus={() => fallback}
       />
@@ -103,7 +99,7 @@ describe("ProjectSettingsDialog", () => {
     fallback.remove();
   });
 
-  it("asks in a shell dialog before closing with unsaved project memory edits", () => {
+  it("does not expose legacy Project Memory or treat it as a dirty setting", () => {
     const onCancel = vi.fn();
 
     render(
@@ -115,26 +111,19 @@ describe("ProjectSettingsDialog", () => {
           projectMemory: "Saved memory",
           sortOrder: 0
         }}
-        memoryDraft="Draft memory"
         saving={false}
         onCancel={onCancel}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
       />
     );
 
+    expect(screen.queryByLabelText("Project instructions")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved memory|Draft memory|Project Memory/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close project settings" }));
-    expect(screen.getByRole("dialog", { name: "Discard project settings changes" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(onCancel).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Close project settings" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
-  it("routes backdrop dismissal through the dirty-state guard", () => {
+  it("routes backdrop dismissal through the clean close path when only legacy memory differs", () => {
     const onCancel = vi.fn();
 
     render(
@@ -146,10 +135,8 @@ describe("ProjectSettingsDialog", () => {
           projectMemory: "Saved memory",
           sortOrder: 0
         }}
-        memoryDraft="Draft memory"
         saving={false}
         onCancel={onCancel}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
       />
     );
@@ -157,8 +144,7 @@ describe("ProjectSettingsDialog", () => {
     const projectDialog = screen.getByRole("dialog", { name: "Project Settings Research" });
     fireEvent.mouseDown(projectDialog.parentElement!);
 
-    expect(screen.getByRole("dialog", { name: "Discard project settings changes" })).toBeInTheDocument();
-    expect(onCancel).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledOnce();
   });
 
   it("keeps focus in the dirty confirmation and restores it to project settings", async () => {
@@ -167,16 +153,19 @@ describe("ProjectSettingsDialog", () => {
     render(
       <ProjectSettingsDialog
         folder={{
+          defaultKnowledgePlan: {
+            baseIds: ["retained"], mode: "explicit", sourceIds: [], version: 1
+          },
           id: "folder-1",
           name: "Research",
           parentId: null,
-          projectMemory: "Saved memory",
+          projectMemory: "",
           sortOrder: 0
         }}
-        memoryDraft="Draft memory"
+        knowledgeBaseIds={["retained", "active"]}
+        knowledgeBases={[knowledgeBase("active", "Policies")]}
         saving={false}
         onCancel={onCancel}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
       />
     );
@@ -204,7 +193,7 @@ describe("ProjectSettingsDialog", () => {
     expect(closeProjectSettings).toHaveFocus();
   });
 
-  it("labels and explains project instructions while locking every close path during save", async () => {
+  it("keeps every close path locked during save without exposing legacy Project Memory", async () => {
     const onCancel = vi.fn();
 
     render(
@@ -216,10 +205,8 @@ describe("ProjectSettingsDialog", () => {
           projectMemory: "Saved memory",
           sortOrder: 0
         }}
-        memoryDraft="Draft memory"
         saving
         onCancel={onCancel}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
       />
     );
@@ -228,11 +215,7 @@ describe("ProjectSettingsDialog", () => {
     expect(dialog).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("button", { name: "Close project settings" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
-    const instructions = screen.getByLabelText("Project instructions");
-    expect(instructions).toBeDisabled();
-    expect(instructions).toHaveAccessibleDescription(
-      /Sent to the model as context for future messages in every chat in this project.*Existing messages and replies are unchanged/
-    );
+    expect(screen.queryByLabelText("Project instructions")).not.toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.mouseDown(dialog.parentElement!);
@@ -257,11 +240,9 @@ describe("ProjectSettingsDialog", () => {
         }}
         knowledgeBaseIds={["retained", "active"]}
         knowledgeBases={[knowledgeBase("active", "Policies")]}
-        memoryDraft=""
         saving={false}
         onCancel={vi.fn()}
         onKnowledgeBaseIdsChange={onKnowledgeBaseIdsChange}
-        onMemoryDraftChange={vi.fn()}
         onSave={vi.fn()}
       />
     );
@@ -287,10 +268,8 @@ describe("ProjectSettingsDialog", () => {
         }}
         knowledgeDataError="Knowledge catalog failed."
         knowledgeDataState="error"
-        memoryDraft=""
         saving={false}
         onCancel={vi.fn()}
-        onMemoryDraftChange={vi.fn()}
         onRetryKnowledge={onRetryKnowledge}
         onSave={vi.fn()}
       />

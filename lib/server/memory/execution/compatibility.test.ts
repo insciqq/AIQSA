@@ -12,7 +12,10 @@ const versions = {
   schemaVersion: "memory-schema-v2"
 } as const;
 
-function target(toolCalling: boolean): ResolvedMemoryExecutionTarget {
+function target(
+  toolCalling: boolean,
+  structuredOutput = toolCalling
+): ResolvedMemoryExecutionTarget {
   return {
     authority: {
       connectionId: "connection-1",
@@ -51,6 +54,7 @@ function target(toolCalling: boolean): ResolvedMemoryExecutionTarget {
           nativeSearch: false,
           pdf: false,
           reasoning: false,
+          structuredOutput,
           toolCalling,
           vision: false
         },
@@ -71,6 +75,7 @@ describe("Memory execution compatibility", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_RERANK");
     expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_FACT_EXTRACT");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_RERANK");
     expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_QUERY_EMBED");
   });
 
@@ -96,6 +101,14 @@ describe("Memory execution compatibility", () => {
     expect(() => resolveMemoryExecutionCompatibility({
       role: "MEMORY_FACT_EXTRACT",
       target: target(false),
+      versions
+    })).toThrow(new MemoryExecutionError("memory_execution_capability_unavailable"));
+  });
+
+  it("rejects tool calling without verified structured output", () => {
+    expect(() => resolveMemoryExecutionCompatibility({
+      role: "MEMORY_RERANK",
+      target: target(true, false),
       versions
     })).toThrow(new MemoryExecutionError("memory_execution_capability_unavailable"));
   });

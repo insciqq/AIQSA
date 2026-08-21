@@ -14,6 +14,7 @@ import type {
   MemoryUndoForgetInput,
   MemoryUpdateInput
 } from "../../../contracts/memory";
+import type { MemoryActionIntent } from "../../../contracts/memoryActionIntent";
 import {
   decodeMemoryDetailResponse,
   decodeMemoryEvidenceResponse,
@@ -39,6 +40,7 @@ import type {
   MemoryFactMoveInput,
   MemoryFactMutationResult,
   MemoryFactResolveInput,
+  MemoryFactSafetyClassificationInput,
   MemoryFactSaveInput,
   MemoryFactValueInput
 } from "../persistence/facts";
@@ -53,6 +55,20 @@ import type {
   ExplicitMemoryForgetUndoCandidate
 } from "./repository";
 import { memoryExplicitStatementContainsSecret } from "./safety";
+import {
+  MemoryStatementClassificationError,
+  memoryStatementClassificationDecision,
+  type MemoryStatementClassification,
+  type MemoryStatementClassifier
+} from "./statementClassifier";
+
+type StorableMemoryStatementClassification = Omit<
+  MemoryStatementClassification,
+  "sensitivity" | "storageDecision"
+> & Readonly<{
+  sensitivity: "NORMAL";
+  storageDecision: "ALLOW";
+}>;
 
 export const MEMORY_EXPLICIT_PIPELINE_VERSION = "memory-explicit-api-v1";
 export const MEMORY_EXPLICIT_SOURCE_PROJECTION_VERSION =
@@ -67,7 +83,7 @@ export type ExplicitMemoryAuthorizationRepository = Readonly<{
   resolveForUse(
     userId: string,
     input: MemoryMutationAuthorizationUse
-  ): Promise<Readonly<{ confirmedAt: Date; requestId: string }>>;
+  ): Promise<Readonly<{ confirmedAt: Date; replayed?: boolean; requestId: string }>>;
 }>;
 
 export type ExplicitMemoryFactRepository = Readonly<{
@@ -98,7 +114,11 @@ export type ExplicitMemoryReadRepository = Readonly<{
 }>;
 
 export type ExplicitMemoryScopeRepository = Readonly<{
-  ensure(userId: string, scope: MemoryCreateInput["scope"]): Promise<ActiveMemoryScope>;
+  ensure(
+    userId: string,
+    scope: MemoryCreateInput["scope"],
+    options?: Readonly<{ deadlineAtMs?: number }>
+  ): Promise<ActiveMemoryScope>;
   ensureGlobal(userId: string): Promise<ActiveMemoryScope>;
 }>;
 
@@ -113,6 +133,7 @@ export type ExplicitMemoryServiceErrorCode =
   | "memory_scope_unavailable"
   | "memory_secret_rejected"
   | "memory_statement_invalid"
+  | "memory_unavailable"
   | "memory_undo_unavailable"
   | "memory_version_stale";
 
@@ -123,6 +144,17 @@ export class ExplicitMemoryServiceError extends Error {
     super(code);
     this.code = code;
     this.name = "ExplicitMemoryServiceError";
+  }
+}
+
+export class MemoryControlledMutationCommittedError extends Error {
+  constructor(
+    readonly factId: string,
+    readonly statement: string,
+    readonly versionId: string
+  ) {
+    super("memory_controlled_mutation_committed");
+    this.name = "MemoryControlledMutationCommittedError";
   }
 }
 
@@ -163,9 +195,13 @@ export type ExplicitMemoryService = Readonly<{
 }>;
 
 export type MemoryOperationExecutionContext = Readonly<{
+  admissionDeadlineAtMs?: number;
   authorizedPayloadHash?: string;
   modelRunId: string;
-  persistedToolCallId: string;
+  persistedToolCallId?: string | null;
+  safetyClassifierExecutionId?: string;
+  safetyClassifierIntent?: MemoryActionIntent;
+  sensitivityClass?: "NORMAL" | "SENSITIVE";
 }>;
 
 function failure(code: ExplicitMemoryServiceErrorCode): never {
@@ -176,6 +212,8 @@ function publicPersistenceCode(
   code: MemoryPersistenceErrorCode
 ): ExplicitMemoryServiceErrorCode {
   switch (code) {
+    case "memory_admission_deadline_exceeded":
+      return "memory_unavailable";
     case "memory_fact_not_found":
       return "memory_not_found";
     case "memory_fact_version_stale":
@@ -199,6 +237,45 @@ function publicPersistenceCode(
     default:
       return "memory_action_failed";
   }
+}
+
+function controlSafetyClassification(
+  execution: MemoryOperationExecutionContext | undefined
+): MemoryFactSafetyClassificationInput | undefined {
+  if (!execution?.safetyClassifierExecutionId) return undefined;
+  if (!execution.safetyClassifierIntent) return failure("memory_contract_invalid");
+  return {
+    executionId: execution.safetyClassifierExecutionId,
+    intent: execution.safetyClassifierIntent,
+    kind: "CONTROL"
+  };
+}
+
+function statementSafetyClassification(
+  classification: StorableMemoryStatementClassification | null,
+  inputStatement: string
+): MemoryFactSafetyClassificationInput | undefined {
+  if (!classification?.executionId) return undefined;
+  if (!classification.acceptedOutputHash || !classification.inputHash) {
+    return failure("memory_contract_invalid");
+  }
+  return {
+    acceptedOutputHash: classification.acceptedOutputHash,
+    decision: memoryStatementClassificationDecision(classification),
+    executionId: classification.executionId,
+    inputHash: classification.inputHash,
+    inputStatement,
+    kind: "STATEMENT"
+  };
+}
+
+function classifiedModality(
+  classification: StorableMemoryStatementClassification | null,
+  fallback: MemoryFactValueInput["modality"]
+): MemoryFactValueInput["modality"] {
+  if (!classification) return fallback;
+  if (classification.responsePreference) return "PREFERENCE";
+  return fallback === "PREFERENCE" ? "STATE" : fallback;
 }
 
 async function persisted<T>(operation: () => Promise<T>): Promise<T> {
@@ -239,6 +316,17 @@ function dateOrNull(value: string | null | undefined): Date | null {
   return value == null ? null : new Date(value);
 }
 
+function canonicalStorableSensitivity(
+  value: MemorySensitivityClass
+): MemorySensitivityClass {
+  return value === "SENSITIVE" ? "NORMAL" : value;
+}
+
+function canonicalStorableCategory(value: string, responsePreference = false): string {
+  if (responsePreference) return "preferences";
+  return value === "sensitive" ? "about_you" : value;
+}
+
 const sensitivityRank: Readonly<Record<MemorySensitivityClass, number>> = {
   HIGHLY_SENSITIVE: 2,
   NORMAL: 0,
@@ -249,7 +337,7 @@ const sensitivityRank: Readonly<Record<MemorySensitivityClass, number>> = {
 function mostRestrictiveSensitivity(
   values: readonly MemorySensitivityClass[]
 ): MemorySensitivityClass {
-  return values.reduce((mostRestrictive, value) =>
+  return values.map(canonicalStorableSensitivity).reduce((mostRestrictive, value) =>
     sensitivityRank[value] > sensitivityRank[mostRestrictive]
       ? value
       : mostRestrictive, "NORMAL");
@@ -259,6 +347,7 @@ function valueFor(input: Readonly<{
   canonicalKey: string;
   category: string;
   modality: MemoryFactValueInput["modality"];
+  safetyClassification?: MemoryFactValueInput["safetyClassification"];
   sensitivityClass?: MemoryFactValueInput["sensitivityClass"];
   statement: string;
   validFrom: Date | null;
@@ -266,7 +355,7 @@ function valueFor(input: Readonly<{
 }>): MemoryFactValueInput {
   return {
     canonicalKey: input.canonicalKey,
-    category: input.category,
+    category: canonicalStorableCategory(input.category),
     confidence: 1,
     directness: "DIRECT",
     displayText: input.statement,
@@ -274,8 +363,13 @@ function valueFor(input: Readonly<{
     languageCode: languageCode(input.statement),
     modality: input.modality,
     pipelineVersion: MEMORY_EXPLICIT_PIPELINE_VERSION,
+    ...(input.safetyClassification
+      ? { safetyClassification: input.safetyClassification }
+      : {}),
     secretTaintedSourceWindow: false,
-    sensitivityClass: input.sensitivityClass ?? "NORMAL",
+    sensitivityClass: canonicalStorableSensitivity(
+      input.sensitivityClass ?? "NORMAL"
+    ),
     sourceMode: "EXPLICIT",
     structuredValue: {
       kind: "explicit_statement",
@@ -291,18 +385,20 @@ function evidenceFor(
   observedAt: Date,
   safetyClass: MemoryFactValueInput["sensitivityClass"] = "NORMAL"
 ) {
+  const canonicalSafetyClass = canonicalStorableSensitivity(safetyClass);
   return {
     kind: "EXPLICIT_ACTION" as const,
     observedAt,
     safeExcerpt: statement,
     safeSourceHash: memorySha256(statement),
-    safetyClass,
+    safetyClass: canonicalSafetyClass,
     sourceProjectionVersion: MEMORY_EXPLICIT_SOURCE_PROJECTION_VERSION
   };
 }
 
 function authorizationUse(input: Readonly<{
   action: "EDIT" | "MOVE_SCOPE" | "SAVE";
+  admissionDeadlineAtMs?: number;
   authorizationId: string;
   authorizedPayloadHash: string;
   expectedTargetVersionId?: string;
@@ -362,6 +458,7 @@ export function createExplicitMemoryService(input: Readonly<{
   factRepository: ExplicitMemoryFactRepository;
   readRepository: ExplicitMemoryReadRepository;
   scopeRepository: ExplicitMemoryScopeRepository;
+  statementClassifier?: MemoryStatementClassifier;
 }>): ExplicitMemoryService {
   const clock = input.clock ?? (() => new Date());
 
@@ -374,6 +471,43 @@ export function createExplicitMemoryService(input: Readonly<{
     return mutationResponse(memory);
   }
 
+  async function classifyStatement(
+    userId: string,
+    mutationAuthorizationId: string,
+    statement: string
+  ): Promise<StorableMemoryStatementClassification | null> {
+    if (!input.statementClassifier) return null;
+    let classification: MemoryStatementClassification;
+    try {
+      classification = await input.statementClassifier.classify(statement, {
+        execution: { mutationAuthorizationId, userId }
+      });
+    } catch (error) {
+      return failure(error instanceof MemoryStatementClassificationError &&
+        error.code === "memory_statement_classification_unavailable"
+        ? "memory_unavailable"
+        : "memory_action_failed");
+    }
+    if (classification.sensitivity === "SECRET" ||
+      classification.sensitivity === "UNCERTAIN") {
+      return failure("memory_secret_rejected");
+    }
+    if (classification.storageDecision !== "ALLOW") {
+      return failure("memory_statement_invalid");
+    }
+    requireStatement(classification.normalizedStatement);
+    return {
+      ...classification,
+      category: canonicalStorableCategory(
+        classification.category,
+        classification.responsePreference
+      ) as
+        StorableMemoryStatementClassification["category"],
+      sensitivity: "NORMAL",
+      storageDecision: "ALLOW"
+    };
+  }
+
   return Object.freeze({
     async create(userId, createInput, execution) {
       requireStatement(createInput.statement);
@@ -381,18 +515,35 @@ export function createExplicitMemoryService(input: Readonly<{
         memorySha256(createInput.statement);
       const authorization = authorizationUse({
         action: "SAVE",
+        ...(execution?.admissionDeadlineAtMs === undefined
+          ? {}
+          : { admissionDeadlineAtMs: execution.admissionDeadlineAtMs }),
         authorizationId: createInput.mutationAuthorizationId,
         authorizedPayloadHash
       });
       const resolved = await persisted(() =>
         input.authorizationRepository.resolveForUse(userId, authorization)
       );
-      const scope = await persisted(() =>
-        input.scopeRepository.ensure(userId, createInput.scope));
+      const classification = execution?.sensitivityClass || resolved.replayed
+        ? null
+        : await classifyStatement(
+            userId,
+            createInput.mutationAuthorizationId,
+            createInput.statement
+          );
+      const statement = classification?.normalizedStatement ?? createInput.statement;
+      const sensitivityClass = canonicalStorableSensitivity(
+        execution?.sensitivityClass ?? classification?.sensitivity ?? "NORMAL"
+      );
+      const scope = await persisted(() => execution?.admissionDeadlineAtMs === undefined
+        ? input.scopeRepository.ensure(userId, createInput.scope)
+        : input.scopeRepository.ensure(userId, createInput.scope, {
+            deadlineAtMs: execution.admissionDeadlineAtMs
+          }));
       const observedAt = resolved.confirmedAt;
       const saved = await persisted(() => input.factRepository.save(userId, {
         authorization,
-        evidence: evidenceFor(createInput.statement, observedAt),
+        evidence: evidenceFor(statement, observedAt, sensitivityClass),
         explicitSuppressionOverride: true,
         idempotencyFingerprint: idempotencyFingerprint(authorization),
         idempotencyPayloadHash: idempotencyPayloadHash("SAVE", createInput),
@@ -405,14 +556,25 @@ export function createExplicitMemoryService(input: Readonly<{
         requestId: resolved.requestId,
         scopeId: scope.id,
         value: valueFor({
-          canonicalKey: customCanonicalKey(createInput.statement),
-          category: createInput.category ?? "custom",
-          modality: createInput.modality ?? "STATE",
-          statement: createInput.statement,
+          canonicalKey: customCanonicalKey(statement),
+          category: classification?.category ?? createInput.category ?? "other",
+          modality: classifiedModality(classification, createInput.modality ?? "STATE"),
+          safetyClassification: execution?.safetyClassifierExecutionId
+            ? controlSafetyClassification(execution)
+            : statementSafetyClassification(classification, createInput.statement),
+          sensitivityClass,
+          statement,
           validFrom: dateOrNull(createInput.validFrom),
           validTo: dateOrNull(createInput.validTo)
         })
       }));
+      if (execution?.admissionDeadlineAtMs !== undefined) {
+        throw new MemoryControlledMutationCommittedError(
+          saved.factId,
+          statement,
+          saved.versionId
+        );
+      }
       return currentResponse(userId, saved.factId);
     },
 
@@ -524,10 +686,6 @@ export function createExplicitMemoryService(input: Readonly<{
       const statement = resolveInput.resolution.kind === "CORRECT"
         ? resolveInput.resolution.statement
         : selected.displayText;
-      const sensitivityClass = resolveInput.resolution.kind === "CORRECT"
-        ? mostRestrictiveSensitivity(conflict.versions.map((version) =>
-            version.sensitivityClass))
-        : selected.sensitivityClass;
       requireStatement(statement);
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
         action: "EDIT",
@@ -543,9 +701,24 @@ export function createExplicitMemoryService(input: Readonly<{
       });
       const resolved = await persisted(() =>
         input.authorizationRepository.resolveForUse(userId, authorization));
+      const classification = resolveInput.resolution.kind === "CORRECT" &&
+        !resolved.replayed
+        ? await classifyStatement(
+            userId,
+            resolveInput.mutationAuthorizationId,
+            statement
+          )
+        : null;
+      const storedStatement = classification?.normalizedStatement ?? statement;
+      const sensitivityClass = resolveInput.resolution.kind === "CORRECT"
+        ? mostRestrictiveSensitivity([
+            ...conflict.versions.map((version) => version.sensitivityClass),
+            classification?.sensitivity ?? "NORMAL"
+          ])
+        : selected.sensitivityClass;
       await persisted(() => input.factRepository.resolve(userId, {
         authorization,
-        evidence: evidenceFor(statement, resolved.confirmedAt, sensitivityClass),
+        evidence: evidenceFor(storedStatement, resolved.confirmedAt, sensitivityClass),
         expectedVersionIds,
         explicitSuppressionOverride: false,
         factId,
@@ -560,10 +733,11 @@ export function createExplicitMemoryService(input: Readonly<{
         selectedVersionId,
         value: valueFor({
           canonicalKey: conflict.canonicalKey,
-          category: conflict.category,
-          modality: selected.modality,
+          category: classification?.category ?? conflict.category,
+          modality: classifiedModality(classification, selected.modality),
+          safetyClassification: statementSafetyClassification(classification, statement),
           sensitivityClass,
-          statement,
+          statement: storedStatement,
           validFrom: selected.validFrom,
           validTo: selected.validTo
         })
@@ -697,8 +871,8 @@ export function createExplicitMemoryService(input: Readonly<{
       if (current.factState !== "ACTIVE") {
         return failure("memory_scope_unavailable");
       }
-      const statement = updateInput.statement ?? current.displayText;
-      requireStatement(statement);
+      const requestedStatement = updateInput.statement ?? current.displayText;
+      requireStatement(requestedStatement);
       const validFrom = Object.hasOwn(updateInput, "validFrom")
         ? dateOrNull(updateInput.validFrom)
         : current.validFrom;
@@ -711,10 +885,16 @@ export function createExplicitMemoryService(input: Readonly<{
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
         action: "EDIT",
         expectedTargetVersionId: updateInput.expectedVersionId,
+        replacementStatementHash: execution && Object.hasOwn(updateInput, "statement")
+          ? memorySha256(requestedStatement)
+          : undefined,
         targetFactId: factId
       });
       const authorization = authorizationUse({
         action: "EDIT",
+        ...(execution?.admissionDeadlineAtMs === undefined
+          ? {}
+          : { admissionDeadlineAtMs: execution.admissionDeadlineAtMs }),
         authorizationId: updateInput.mutationAuthorizationId,
         authorizedPayloadHash,
         expectedTargetVersionId: updateInput.expectedVersionId,
@@ -723,10 +903,25 @@ export function createExplicitMemoryService(input: Readonly<{
       const resolved = await persisted(() =>
         input.authorizationRepository.resolveForUse(userId, authorization)
       );
+      const classification = Object.hasOwn(updateInput, "statement") &&
+        !execution?.sensitivityClass && !resolved.replayed
+        ? await classifyStatement(
+            userId,
+            updateInput.mutationAuthorizationId,
+            requestedStatement
+          )
+        : null;
+      const statement = classification?.normalizedStatement ?? requestedStatement;
+      const sensitivityClass = execution?.sensitivityClass || classification
+        ? mostRestrictiveSensitivity([
+            current.sensitivityClass,
+            execution?.sensitivityClass ?? classification!.sensitivity
+          ])
+        : current.sensitivityClass;
       const observedAt = resolved.confirmedAt;
-      await persisted(() => input.factRepository.edit(userId, {
+      const edited = await persisted(() => input.factRepository.edit(userId, {
         authorization,
-        evidence: evidenceFor(statement, observedAt, current.sensitivityClass),
+        evidence: evidenceFor(statement, observedAt, sensitivityClass),
         expectedVersionId: updateInput.expectedVersionId,
         explicitSuppressionOverride: false,
         factId,
@@ -746,14 +941,27 @@ export function createExplicitMemoryService(input: Readonly<{
         scopeId: current.scopeId,
         value: valueFor({
           canonicalKey: current.canonicalKey,
-          category: updateInput.category ?? current.category,
-          modality: updateInput.modality ?? current.modality,
-          sensitivityClass: current.sensitivityClass,
+          category: classification?.category ?? updateInput.category ?? current.category,
+          modality: classifiedModality(
+            classification,
+            updateInput.modality ?? current.modality
+          ),
+          safetyClassification: execution?.safetyClassifierExecutionId
+            ? controlSafetyClassification(execution)
+            : statementSafetyClassification(classification, requestedStatement),
+          sensitivityClass,
           statement,
           validFrom,
           validTo
         })
       }));
+      if (execution?.admissionDeadlineAtMs !== undefined) {
+        throw new MemoryControlledMutationCommittedError(
+          edited.factId,
+          statement,
+          edited.versionId
+        );
+      }
       return currentResponse(userId, factId);
     }
   });

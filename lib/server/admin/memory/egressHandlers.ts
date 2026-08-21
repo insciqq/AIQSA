@@ -1,4 +1,4 @@
-import { decodeAdminMemoryEgressAcknowledgeInput } from "../../../contracts/adminMemory";
+import { decodeAdminMemoryEgressAcknowledgeInput } from "./egressContract";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {

@@ -73,7 +73,7 @@ export const adminSections = [
   },
   {
     Icon: BrainCircuit,
-    description: "Review and acknowledge exact external destinations used by Memory utilities.",
+    description: "Check configured Memory models, worker, queue, index readiness, and bounded rebuild.",
     group: "ai-setup",
     id: "memory",
     label: "Memory"

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  calculateContextBudgetLimits,
+  estimateApproxTokens
+} from "../../domain/contextBudget";
 import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
+import {
+  MEMORY_ACTION_NO_COMMIT_RESULT,
+  memoryActionAnswerContract
+} from "../providers/memoryActionAnswer";
 import type { ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import {
@@ -44,6 +52,60 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 
 describe("provider request context budget", () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it("keeps a near-budget ordinary answer dispatchable when Memory result truth replaces the reserve", () => {
+    const committed = {
+      operation: "SAVE",
+      status: "COMMITTED",
+      version: 1
+    } as const;
+    const text = "ordinary-answer-canary";
+    const requiredTokens = estimateApproxTokens(memoryActionAnswerContract(
+      MEMORY_ACTION_NO_COMMIT_RESULT
+    )) + estimateApproxTokens(text) + 2 * estimateApproxTokens([]);
+    let contextWindow = 1;
+    while (calculateContextBudgetLimits({ contextWindow }).budgetTokens < requiredTokens) {
+      contextWindow += 1;
+    }
+    const base = request({
+      content: { blocks: [{ text, type: "text" }] },
+      context: {
+        messages: [{
+          content: { blocks: [{ text, type: "text" }] },
+          id: "current",
+          role: "user"
+        }],
+        mode: "branch_path"
+      },
+      modelCapabilities: {
+        contextWindow,
+        defaultMaxOutputTokens: 0,
+        nativePdfInput: false,
+        nativeSearch: false,
+        pdf: false,
+        reasoning: false,
+        vision: false
+      },
+      prompt: {
+        developer: null,
+        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        system: null
+      }
+    });
+
+    expect(calculateContextBudgetLimits({ contextWindow }).budgetTokens - requiredTokens)
+      .toBeLessThanOrEqual(1);
+    expect(estimateApproxTokens(memoryActionAnswerContract(committed))).toBe(
+      estimateApproxTokens(memoryActionAnswerContract(MEMORY_ACTION_NO_COMMIT_RESULT))
+    );
+    expect(applyProviderRequestContextBudget({ request: base })).toMatchObject({ ok: true });
+    expect(applyProviderRequestContextBudget({
+      request: {
+        ...base,
+        prompt: { ...base.prompt, memoryActionAnswerResult: committed }
+      }
+    })).toMatchObject({ ok: true });
+  });
 
   it("counts the exact serialized provider tool schema", () => {
     const tool = {

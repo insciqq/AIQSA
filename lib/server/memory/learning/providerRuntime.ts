@@ -6,14 +6,20 @@ import type {
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import {
   providerAuthenticationMode,
+  ProviderConfigurationError,
   type ProviderConnectionConfiguration
 } from "../../providers/providerConfiguration";
-import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
+import {
+  createProviderSafeFetch,
+  ProviderSafeFetchError
+} from "../../providers/providerSafeFetch";
+import { ProviderResponseTooLargeError } from "../../providers/network";
 import {
   createProviderRuntimeBinding,
   normalizeProviderExecutionSnapshot,
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
+import { ProviderStreamSafetyError } from "../../providers/streamSafety";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import type { ModelToolCall } from "../../tools/types";
@@ -40,7 +46,42 @@ export type MemoryLearningProviderResult = Readonly<{
   usage: ModelRunUsage;
 }>;
 
+export type MemoryLearningProviderFailureClassification =
+  | "UNKNOWN"
+  | "REPLAY_SAFE_TRANSIENT"
+  | "PERMANENT";
+
+export type MemoryLearningProviderFailure = Readonly<{
+  cause: unknown;
+  classification: MemoryLearningProviderFailureClassification;
+  usage: ModelRunUsage | null;
+}>;
+
 type RuntimeClient = Pick<PrismaClient, "$transaction">;
+
+const replaySafeTransientHttpStatuses = new Set([
+  408,
+  429,
+  500,
+  502,
+  503,
+  504
+]);
+
+class MemoryLearningHttpStatusError extends Error {
+  readonly classification: Exclude<
+    MemoryLearningProviderFailureClassification,
+    "UNKNOWN"
+  >;
+
+  constructor(readonly status: number) {
+    super("memory_learning_provider_http_failure");
+    this.name = "MemoryLearningHttpStatusError";
+    this.classification = replaySafeTransientHttpStatuses.has(status)
+      ? "REPLAY_SAFE_TRANSIENT"
+      : "PERMANENT";
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -57,20 +98,67 @@ function boundedProviderResponseId(value: string | undefined): string | null {
     : null;
 }
 
+function classifyProviderFailure(
+  cause: unknown,
+  observedEvent: boolean
+): MemoryLearningProviderFailureClassification {
+  // Once the adapter has yielded anything, dispatch happened and a retry can
+  // no longer prove that it will not duplicate provider work.
+  if (observedEvent) return "UNKNOWN";
+
+  // The accepted-learning fetch fence observes the status before any adapter
+  // parses it. This gives every provider the same typed, body-free decision.
+  if (cause instanceof MemoryLearningHttpStatusError) {
+    return cause.classification;
+  }
+
+  if (cause instanceof ProviderSafeFetchError) {
+    // DNS resolution happens before the pinned request is dispatched.
+    if (cause.code === "provider_http_dns_failed") {
+      return "REPLAY_SAFE_TRANSIENT";
+    }
+    // A generic request failure may occur after bytes reached the provider.
+    if (cause.code === "provider_http_request_failed") return "UNKNOWN";
+    return "PERMANENT";
+  }
+
+  if (
+    cause instanceof ProviderConfigurationError ||
+    cause instanceof ProviderResponseTooLargeError ||
+    cause instanceof ProviderStreamSafetyError
+  ) {
+    return "PERMANENT";
+  }
+
+  // Timeouts, aborts, untyped adapter errors, and network failures are
+  // deliberately ambiguous. Never infer replay safety from an error string.
+  return "UNKNOWN";
+}
+
 async function collectProviderResult(
   stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResult>,
-  callError: (usage: ModelRunUsage | null, cause: unknown) => Error
+  callError: (
+    usage: ModelRunUsage | null,
+    cause: unknown,
+    classification: MemoryLearningProviderFailureClassification
+  ) => Error
 ): Promise<ProviderRunResult> {
   let lastUsage: ModelRunUsage | null = null;
+  let observedEvent = false;
   try {
     let next = await stream.next();
     while (!next.done) {
+      observedEvent = true;
       if (next.value.type === "usage") lastUsage = next.value.data;
       next = await stream.next();
     }
     return next.value;
   } catch (error) {
-    throw callError(lastUsage, error);
+    throw callError(
+      lastUsage,
+      error,
+      classifyProviderFailure(error, observedEvent)
+    );
   }
 }
 
@@ -86,7 +174,11 @@ export function createAcceptedMemoryLearningProvider<
   client: RuntimeClient,
   input: Readonly<{
     buildRequest(snapshot: ProviderExecutionSnapshot, request: Request): ProviderRunRequest;
-    callError(usage: ModelRunUsage | null, cause: unknown): Error;
+    callError(
+      usage: ModelRunUsage | null,
+      cause: unknown,
+      classification: MemoryLearningProviderFailureClassification
+    ): Error;
     createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
     encryptionKey?: () => Buffer;
     invalidRuntimeError: string;
@@ -149,12 +241,31 @@ export function createAcceptedMemoryLearningProvider<
       });
     const baseFetch = input.createFetch?.(snapshot.connection) ??
       createProviderSafeFetch({ configuration: snapshot.connection });
+    let observedSuccessfulHttpResponse = false;
+    const statusCheckedFetch: typeof fetch = async (fetchRequest, init) => {
+      const response = await baseFetch(fetchRequest, init);
+      if (response.ok) {
+        observedSuccessfulHttpResponse = true;
+        return response;
+      }
+      // A provider lifecycle may intentionally retry a follow-up poll. Once
+      // the initial request succeeded, leave later statuses to that lifecycle;
+      // collectProviderResult will still treat any escaped error as UNKNOWN
+      // because the adapter has already emitted dispatch evidence.
+      if (observedSuccessfulHttpResponse) return response;
+      try {
+        await response.body?.cancel();
+      } catch {
+        // The body is never inspected; cancellation is best-effort cleanup.
+      }
+      throw new MemoryLearningHttpStatusError(response.status);
+    };
     const fetchFn: typeof fetch = authenticationMode === "none"
       ? async (fetchRequest, init) => {
           await lockCredential(true);
-          return baseFetch(fetchRequest, init);
+          return statusCheckedFetch(fetchRequest, init);
         }
-      : baseFetch;
+      : statusCheckedFetch;
     const runtime = createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn },
       secret: authenticationMode === "none"

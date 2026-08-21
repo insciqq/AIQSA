@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  decodeMemoryMutationResponse,
   MEMORY_FORGET_UNDO_WINDOW_MS,
   type MemoryBulkDeleteOperation,
-  type MemoryDeletionStatus
+  type MemoryDeletionStatus,
+  type MemorySummary
 } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
 import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
@@ -41,6 +43,18 @@ type ActiveFactRow = Readonly<{
   factState: "ACTIVE" | "CONFLICTED" | "ORPHANED";
   factId: string;
   scopeId: string;
+}>;
+
+type ForgettableFactRow = ActiveFactRow & Readonly<{
+  createdAt: Date;
+  currentModality: MemorySummary["modality"];
+  currentSensitivityClass: MemorySummary["sensitivityClass"];
+  currentValidFrom: Date | null;
+  currentValidTo: Date | null;
+  lastConfirmedAt: Date | null;
+  lastUsedAt: Date | null;
+  scopeTargetIdSnapshot: string | null;
+  scopeType: MemorySummary["scope"]["type"];
 }>;
 
 type FactVersionRow = Readonly<{
@@ -87,6 +101,7 @@ export type MemoryForgetMutationResult = Readonly<{
   memoryRevision: number;
   replayed: boolean;
   settingsRevision: number;
+  tombstone: MemorySummary;
   undoExpiresAt: Date;
   versionId: string;
 }>;
@@ -161,6 +176,60 @@ function receiptObject(value: Prisma.JsonValue): Record<string, Prisma.JsonValue
   return value as Record<string, Prisma.JsonValue>;
 }
 
+function parsedForgetTombstone(
+  value: unknown,
+  factId: string
+): MemorySummary {
+  const decoded = decodeMemoryMutationResponse({ memory: value });
+  if (
+    !decoded.ok ||
+    decoded.value.memory.actionVersionId != null ||
+    decoded.value.memory.currentVersionId !== null ||
+    decoded.value.memory.displayText !== null ||
+    decoded.value.memory.factState !== "FORGOTTEN" ||
+    decoded.value.memory.id !== factId ||
+    decoded.value.memory.indexingState !== "DEGRADED" ||
+    decoded.value.memory.pinned ||
+    decoded.value.memory.sourceCount !== 0 ||
+    decoded.value.memory.versionState !== "FORGOTTEN"
+  ) {
+    return memoryPersistenceFailure("memory_idempotency_conflict");
+  }
+  return decoded.value.memory;
+}
+
+function forgetTombstone(fact: ForgettableFactRow, now: Date): MemorySummary {
+  const scope = fact.scopeType === "GLOBAL_USER"
+    ? fact.scopeTargetIdSnapshot === null
+      ? { type: "GLOBAL_USER" as const }
+      : memoryPersistenceFailure("memory_counter_contract_invalid")
+    : fact.scopeTargetIdSnapshot
+      ? { targetId: fact.scopeTargetIdSnapshot, type: fact.scopeType }
+      : memoryPersistenceFailure("memory_counter_contract_invalid");
+  return {
+    actionVersionId: null,
+    category: fact.category,
+    createdAt: fact.createdAt.toISOString(),
+    currentVersionId: null,
+    displayText: null,
+    factState: "FORGOTTEN",
+    id: fact.factId,
+    indexingState: "DEGRADED",
+    lastConfirmedAt: fact.lastConfirmedAt?.toISOString() ?? null,
+    lastUsedAt: fact.lastUsedAt?.toISOString() ?? null,
+    modality: fact.currentModality,
+    pinned: false,
+    scope,
+    sensitivityClass: fact.currentSensitivityClass,
+    sourceCount: 0,
+    sourceMode: fact.currentSourceMode,
+    updatedAt: now.toISOString(),
+    validFrom: fact.currentValidFrom?.toISOString() ?? null,
+    validTo: fact.currentValidTo?.toISOString() ?? null,
+    versionState: "FORGOTTEN"
+  };
+}
+
 function parseForgetReceipt(
   value: Prisma.JsonValue,
   payloadHash: string
@@ -174,6 +243,8 @@ function parseForgetReceipt(
     typeof row.memoryGeneration !== "number" ||
     typeof row.memoryRevision !== "number" ||
     typeof row.settingsRevision !== "number" ||
+    typeof row.tombstone !== "object" ||
+    row.tombstone === null ||
     typeof row.undoExpiresAt !== "string" ||
     !Number.isFinite(Date.parse(row.undoExpiresAt)) ||
     typeof row.versionId !== "string"
@@ -188,6 +259,7 @@ function parseForgetReceipt(
     memoryRevision: row.memoryRevision,
     replayed: true,
     settingsRevision: row.settingsRevision,
+    tombstone: parsedForgetTombstone(row.tombstone, row.factId),
     undoExpiresAt: new Date(row.undoExpiresAt),
     versionId: row.versionId
   };
@@ -285,17 +357,26 @@ async function lockForgettableFact(
   userId: string,
   factId: string,
   expectedVersionId: string
-): Promise<ActiveFactRow | null> {
-  const rows = await tx.$queryRaw<ActiveFactRow[]>(Prisma.sql`
+): Promise<ForgettableFactRow | null> {
+  const rows = await tx.$queryRaw<ForgettableFactRow[]>(Prisma.sql`
     SELECT
       fact."id" AS "factId",
       fact."scopeId",
       fact."canonicalKey",
       fact."category",
+      fact."createdAt",
       fact."state"::text AS "factState",
+      fact."lastConfirmedAt",
+      fact."lastUsedAt",
+      scope."scopeType"::text AS "scopeType",
+      scope."targetIdSnapshot" AS "scopeTargetIdSnapshot",
       version."id" AS "currentVersionId",
+      version."modality"::text AS "currentModality",
+      version."sensitivityClass"::text AS "currentSensitivityClass",
       version."sourceMode"::text AS "currentSourceMode",
-      version."systemFrom" AS "currentSystemFrom"
+      version."systemFrom" AS "currentSystemFrom",
+      version."validFrom" AS "currentValidFrom",
+      version."validTo" AS "currentValidTo"
     FROM "MemoryFact" AS fact
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
@@ -1256,6 +1337,7 @@ export function createPrismaMemoryLifecycleRepository(
           memoryRevision: settings.memoryRevision,
           replayed: false,
           settingsRevision: settings.settingsRevision,
+          tombstone: forgetTombstone(fact, input.now),
           undoExpiresAt,
           versionId: fact.currentVersionId
         };
@@ -1264,7 +1346,7 @@ export function createPrismaMemoryLifecycleRepository(
           versionId: fact.currentVersionId
         });
         return result;
-      });
+      }, { deadlineAtMs: input.authorization.admissionDeadlineAtMs });
     },
 
     async status(userId: string, deletionId: string): Promise<MemoryDeletionStatus | null> {

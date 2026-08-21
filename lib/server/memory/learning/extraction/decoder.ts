@@ -1,33 +1,34 @@
-import { memorySha256, memoryStableJson } from "../../persistence/lexical";
+import { memorySha256 } from "../../persistence/lexical";
+import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import type { ModelToolCall } from "../../../tools/types";
 import {
-  MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE,
-  MEMORY_FACT_MAX_OUTPUT_CANDIDATES,
+  MEMORY_FACT_DURABLE_CATEGORIES,
+  MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+  MEMORY_FACT_MAX_PACKET_CANDIDATES,
   memoryFactCandidateId,
   memoryFactExtractionOutputHash,
   type MemoryExtractedCandidate,
-  type MemoryFactCandidateEvidence,
-  type MemoryFactCandidateScope,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "./contract";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 
-const exactCandidateKeys = [
-  "core_eligible", "core_salience", "directness", "display_text", "evidence",
-  "language", "modality", "raw_temporal_expression", "scope", "sensitivity",
-  "structured_value", "valid_from", "valid_to"
-].sort();
-const exactEvidenceKeys = ["end_offset", "message_id", "start_offset"].sort();
-const exactScopeKeys = ["target_id", "type"].sort();
-const modalities = new Set([
-  "CONSIDERATION", "CONSTRAINT", "EVENT", "HABIT", "INTENTION", "PLAN",
-  "PREFERENCE", "STATE", "WORKFLOW"
-]);
-const coreSaliences = new Set(["HIGH", "MEDIUM", "LOW", "NONE"]);
-const isoTimestampSyntax =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 const controlSyntax = /[\u0000-\u001f\u007f]/u;
+
+const v1CandidateKeys = [
+  "category",
+  "confidence_band",
+  "correction",
+  "future_useful",
+  "quote",
+  "reason_code",
+  "response_preference",
+  "sensitivity",
+  "statement",
+  "temporary"
+].sort();
+const v1ConfidenceBands = new Set(["HIGH", "MEDIUM", "LOW"]);
+const v1Sensitivities = new Set(["NORMAL", "SENSITIVE", "SECRET", "UNCERTAIN"]);
 
 export class MemoryFactDecodeError extends Error {
   constructor(readonly code: string) {
@@ -58,186 +59,134 @@ function boundedString(value: unknown, maxLength: number): string {
   return value;
 }
 
-function nullableString(value: unknown, maxLength: number): string | null {
-  return value === null ? null : boundedString(value, maxLength);
+function v1RejectionCode(error: unknown):
+  "REJECT_AMBIGUOUS" | "REJECT_DUPLICATE" | "REJECT_LOW_CONFIDENCE" | "REJECT_SECRET" |
+  "REJECT_STALE_SOURCE" | "REJECT_TEMPORARY" |
+  "REJECT_UNSUPPORTED" {
+  if (!(error instanceof MemoryFactDecodeError)) return "REJECT_UNSUPPORTED";
+  if (error.code === "memory_fact_evidence_ambiguous") return "REJECT_AMBIGUOUS";
+  if (error.code === "memory_fact_source_stale") return "REJECT_STALE_SOURCE";
+  if (error.code === "memory_fact_confidence_low") return "REJECT_LOW_CONFIDENCE";
+  if (error.code === "memory_fact_temporary") return "REJECT_TEMPORARY";
+  if (error.code === "memory_fact_secret") return "REJECT_SECRET";
+  return "REJECT_UNSUPPORTED";
 }
 
-function boundedJson(value: unknown, depth = 0): void {
-  if (depth > 6) fail("memory_fact_structured_value_invalid");
-  if (value === null || typeof value === "boolean") return;
-  if (typeof value === "string") {
-    if (!value || value.length > 2_000 || controlSyntax.test(value)) {
-      fail("memory_fact_structured_value_invalid");
-    }
-    return;
+function v1CandidateModality(category: string): MemoryExtractedCandidate["modality"] {
+  if (category === "preferences" || category === "communication_preference") {
+    return "PREFERENCE";
   }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) fail("memory_fact_structured_value_invalid");
-    return;
+  if (category === "constraints_routines" || category === "constraint") {
+    return "CONSTRAINT";
   }
-  if (Array.isArray(value)) {
-    if (value.length > 32) fail("memory_fact_structured_value_invalid");
-    for (const entry of value) boundedJson(entry, depth + 1);
-    return;
-  }
-  if (!isRecord(value) || Object.keys(value).length > 32) {
-    fail("memory_fact_structured_value_invalid");
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (!key || key.length > 64 || controlSyntax.test(key)) {
-      fail("memory_fact_structured_value_invalid");
-    }
-    boundedJson(entry, depth + 1);
-  }
+  if (category === "goals" || category === "goal") return "INTENTION";
+  if (category === "work" || category === "professional_role") return "WORKFLOW";
+  return "STATE";
 }
 
-function decodeStructuredValue(value: unknown): unknown {
-  const encoded = boundedString(value, 8_192);
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(encoded) as unknown;
-  } catch {
-    return fail("memory_fact_structured_value_invalid");
-  }
-  boundedJson(decoded);
-  if (memoryStableJson(decoded).length > 8_192) {
-    fail("memory_fact_structured_value_invalid");
-  }
-  return decoded;
-}
-
-function languageTag(value: unknown): string {
-  const tag = boundedString(value, 35);
-  if (tag === "und") return tag;
-  try {
-    new Intl.Locale(tag);
-    return tag;
-  } catch {
-    return fail("memory_fact_language_invalid");
-  }
-}
-
-function timestamp(value: unknown): string | null {
-  if (value === null) return null;
-  const text = boundedString(value, 64);
-  if (!isoTimestampSyntax.test(text)) fail("memory_fact_temporal_invalid");
-  const date = new Date(text);
-  if (!Number.isFinite(date.getTime())) fail("memory_fact_temporal_invalid");
-  return date.toISOString();
-}
-
-function decodeEvidence(
-  value: unknown,
-  input: MemoryFactExtractionInput
-): MemoryFactCandidateEvidence[] {
-  if (
-    !Array.isArray(value) || value.length < 1 ||
-    value.length > MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE
-  ) fail();
-  const seenMessages = new Set<string>();
-  return value.map((entry) => {
-    if (!isRecord(entry) || !hasExactKeys(entry, exactEvidenceKeys)) fail();
-    const messageId = boundedString(entry.message_id, 256);
-    if (seenMessages.has(messageId)) fail("memory_fact_evidence_ambiguous");
-    seenMessages.add(messageId);
-    if (!Number.isSafeInteger(entry.start_offset) ||
-      !Number.isSafeInteger(entry.end_offset)) fail("memory_fact_evidence_invalid");
-    const startOffset = Number(entry.start_offset);
-    const endOffset = Number(entry.end_offset);
-    const message = input.messages.find((candidate) => candidate.id === messageId);
-    if (
-      !message || startOffset < 0 || endOffset <= startOffset ||
-      endOffset > message.text.length
-    ) fail("memory_fact_evidence_invalid");
-    return {
-      endOffset,
-      messageId,
-      sourceTextHash: memorySha256(message.text),
-      startOffset
-    };
-  });
-}
-
-function decodeScope(
-  value: unknown,
-  input: MemoryFactExtractionInput
-): MemoryFactCandidateScope {
-  if (!isRecord(value) || !hasExactKeys(value, exactScopeKeys)) fail();
-  const type = boundedString(value.type, 32);
-  const targetId = value.target_id === null
-    ? null
-    : boundedString(value.target_id, 256);
-  if (type === "GLOBAL_USER" && targetId === null) {
-    return { targetId: null, type };
-  }
-  if (type === "CHAT" && targetId === input.source.chatId) {
-    return { targetId, type };
-  }
-  if (type === "FOLDER" && input.folderId !== null && targetId === input.folderId) {
-    return { targetId, type };
-  }
-  return fail("memory_fact_scope_invalid");
-}
-
-function decodeCandidate(
+function decodeV1Candidate(
   value: unknown,
   input: MemoryFactExtractionInput
 ): MemoryExtractedCandidate {
-  if (!isRecord(value) || !hasExactKeys(value, exactCandidateKeys)) fail();
-  const evidence = decodeEvidence(value.evidence, input);
-  const displayText = boundedString(value.display_text, 2_000);
-  const proposedValue = decodeStructuredValue(value.structured_value);
-  if (typeof value.modality !== "string" || !modalities.has(value.modality)) fail();
-  if (value.directness !== "DIRECT" && value.directness !== "PARAPHRASED") {
-    fail("memory_fact_directness_invalid");
-  }
-  if (value.sensitivity !== "NORMAL") fail("memory_fact_sensitivity_invalid");
-  if (typeof value.core_eligible !== "boolean" ||
-    typeof value.core_salience !== "string" ||
-    !coreSaliences.has(value.core_salience)) fail("memory_fact_core_invalid");
+  if (!isRecord(value) || !hasExactKeys(value, v1CandidateKeys)) fail();
+  if (input.messages.length !== 1) fail("memory_fact_source_stale");
+  const source = input.messages[0];
+  if (!source) fail("memory_fact_source_stale");
+  const statement = boundedString(value.statement, 2_000);
+  const quote = boundedString(value.quote, 2_000);
   if (
-    (value.core_eligible && value.core_salience === "NONE") ||
-    (!value.core_eligible && value.core_salience !== "NONE")
-  ) fail("memory_fact_core_invalid");
-  const validFrom = timestamp(value.valid_from);
-  const validTo = timestamp(value.valid_to);
-  if (validFrom && validTo && validFrom > validTo) {
-    fail("memory_fact_temporal_invalid");
+    memoryExplicitStatementContainsSecret(statement) ||
+    memoryExplicitStatementContainsSecret(quote)
+  ) fail("memory_fact_secret");
+  const category = boundedString(value.category, 64);
+  if (!(MEMORY_FACT_DURABLE_CATEGORIES as readonly string[]).includes(category)) {
+    fail("memory_fact_category_unsupported");
   }
+  if (typeof value.confidence_band !== "string" ||
+    !v1ConfidenceBands.has(value.confidence_band)) fail();
+  if (value.confidence_band !== "HIGH") fail("memory_fact_confidence_low");
+  if (typeof value.temporary !== "boolean") fail();
+  if (value.temporary) fail("memory_fact_temporary");
+  if (typeof value.future_useful !== "boolean" || !value.future_useful) {
+    fail("memory_fact_unsupported");
+  }
+  if (typeof value.correction !== "boolean") fail();
+  if (typeof value.sensitivity !== "string" ||
+    !v1Sensitivities.has(value.sensitivity)) fail();
+  if (value.sensitivity === "SECRET") fail("memory_fact_secret");
+  if (value.sensitivity === "UNCERTAIN") fail("memory_fact_unsupported");
+  if (value.response_preference !== null) {
+    const responsePreference = boundedString(value.response_preference, 512);
+    if (memoryExplicitStatementContainsSecret(responsePreference)) {
+      fail("memory_fact_secret");
+    }
+  }
+  boundedString(value.reason_code, 64);
+
+  // String offsets are UTF-16 code-unit offsets in JavaScript.  The server,
+  // not the model, resolves them and records the source hash.  A repeated
+  // quote is deliberately ambiguous and is rejected independently.
+  const startOffset = source.text.indexOf(quote);
+  if (startOffset < 0) fail("memory_fact_evidence_invalid");
+  if (source.text.indexOf(quote, startOffset + quote.length) >= 0) {
+    fail("memory_fact_evidence_ambiguous");
+  }
+  const endOffset = startOffset + quote.length;
+  const sourceTextHash = memorySha256(source.text);
+  const evidence = [{
+    endOffset,
+    messageId: source.id,
+    quote,
+    sourceTextHash,
+    startOffset
+  }];
+  const responsePreference = value.response_preference as string | null;
   const base = {
-    category: "memory",
-    confidence: 0.5,
-    coreEligible: value.core_eligible,
-    coreSalience: value.core_salience as MemoryExtractedCandidate["coreSalience"],
-    directness: value.directness as MemoryExtractedCandidate["directness"],
-    displayText,
+    category,
+    confidence: 1,
+    confidenceBand: "HIGH" as const,
+    correction: value.correction,
+    coreEligible: responsePreference !== null,
+    coreSalience: responsePreference !== null ? "HIGH" as const : "NONE" as const,
+    directness: "DIRECT" as const,
+    displayText: statement,
     evidence,
+    futureUseful: true,
     importance: 0.5,
-    languageCode: languageTag(value.language),
-    modality: value.modality as MemoryExtractedCandidate["modality"],
+    languageCode: source.languageCode,
+    modality: v1CandidateModality(category),
     negated: false as const,
-    proposedValue,
-    rawTemporalExpression: nullableString(value.raw_temporal_expression, 512),
+    proposedValue: responsePreference === null
+      ? { correction: value.correction, statement }
+      : { correction: value.correction, responsePreference, statement },
+    quote,
+    rawTemporalExpression: null,
     reasonCode: null,
-    scope: decodeScope(value.scope, input),
+    responsePreference,
+    scope: { targetId: null, type: "GLOBAL_USER" as const },
     sensitivity: "NORMAL" as const,
     state: "PENDING" as const,
+    statement,
+    temporary: false,
     temporalResolutionEvidence: null,
-    validFrom,
-    validTo
+    validFrom: null,
+    validTo: null
   };
-  const candidateId = memoryFactCandidateId(input, {
-    ...base,
-    canonicalKey: "auto.pending"
-  });
+  const canonicalKey = `auto.${memorySha256({
+    category,
+    domain: "aiqsa.memory.personal-v1",
+    statement
+  })}`;
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     ...base,
-    canonicalKey: `auto.${candidateId}`
+    canonicalKey
   };
   return { ...withoutId, id: memoryFactCandidateId(input, withoutId) };
 }
 
-export function decodeMemoryFactExtraction(
+/** Strict v1 decoder. Invalid candidates are isolated so a bad sibling does
+ * not discard valid candidates from the same packet. */
+export function decodeMemoryFactExtractionV1(
   calls: readonly ModelToolCall[] | undefined,
   input: MemoryFactExtractionInput
 ): MemoryFactExtractionPlan {
@@ -245,24 +194,72 @@ export function decodeMemoryFactExtraction(
     !calls || calls.length !== 1 ||
     calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
     !isRecord(calls[0].arguments) ||
-    !hasExactKeys(calls[0].arguments, ["candidates", "decision"]) ||
+    !hasExactKeys(calls[0].arguments, ["candidates"]) ||
     !Array.isArray(calls[0].arguments.candidates) ||
-    calls[0].arguments.candidates.length > MEMORY_FACT_MAX_OUTPUT_CANDIDATES ||
-    (calls[0].arguments.decision !== "STORE" &&
-      calls[0].arguments.decision !== "ABSTAIN")
+    calls[0].arguments.candidates.length > MEMORY_FACT_MAX_PACKET_CANDIDATES
   ) fail();
-  const store = calls[0].arguments.decision === "STORE";
-  if (store !== (calls[0].arguments.candidates.length > 0)) {
-    fail("memory_fact_decision_invalid");
+  const raw = calls[0].arguments.candidates;
+  const candidates: Array<{
+    candidate: MemoryExtractedCandidate;
+    candidateOrdinal: number;
+  }> = [];
+  const rejections: Array<{
+    candidateOrdinal: number;
+    reasonCode: "REJECT_AMBIGUOUS" | "REJECT_DUPLICATE" | "REJECT_LOW_CONFIDENCE" | "REJECT_SECRET" |
+      "REJECT_STALE_SOURCE" | "REJECT_TEMPORARY" |
+      "REJECT_UNSUPPORTED";
+  }> = [];
+  raw.forEach((value, candidateOrdinal) => {
+    try {
+      candidates.push({
+        candidate: decodeV1Candidate(value, input),
+        candidateOrdinal
+      });
+    } catch (error) {
+      rejections.push({ candidateOrdinal, reasonCode: v1RejectionCode(error) });
+    }
+  });
+  const unique = new Map<string, {
+    candidate: MemoryExtractedCandidate;
+    candidateOrdinal: number;
+  }>();
+  for (const decoded of candidates) {
+    if (unique.has(decoded.candidate.id)) {
+      rejections.push({
+        candidateOrdinal: decoded.candidateOrdinal,
+        reasonCode: "REJECT_DUPLICATE"
+      });
+      continue;
+    }
+    unique.set(decoded.candidate.id, decoded);
   }
-  const candidates = calls[0].arguments.candidates.map((candidate) =>
-    decodeCandidate(candidate, input));
-  if (new Set(candidates.map((candidate) => candidate.id)).size !== candidates.length) {
-    fail("memory_fact_duplicate_candidate");
+  const uniqueValues = [...unique.values()];
+  if (uniqueValues.length > MEMORY_FACT_MAX_ACCEPTED_CANDIDATES) {
+    for (let ordinal = MEMORY_FACT_MAX_ACCEPTED_CANDIDATES;
+      ordinal < uniqueValues.length;
+      ordinal += 1) {
+      rejections.push({
+        candidateOrdinal: uniqueValues[ordinal]!.candidateOrdinal,
+        reasonCode: "REJECT_UNSUPPORTED"
+      });
+    }
   }
+  const accepted = uniqueValues
+    .slice(0, MEMORY_FACT_MAX_ACCEPTED_CANDIDATES)
+    .map(({ candidate }) => candidate);
   return {
-    candidates,
+    candidates: accepted,
     input,
-    outputHash: memoryFactExtractionOutputHash(input, candidates)
+    outputHash: memoryFactExtractionOutputHash(input, accepted),
+    rejections
   };
+}
+
+/** Only the Personal Memory v1 strict packet is executable. Retired packet
+ * shapes fail closed instead of replaying obsolete model-authored fields. */
+export function decodeMemoryFactExtraction(
+  calls: readonly ModelToolCall[] | undefined,
+  input: MemoryFactExtractionInput
+): MemoryFactExtractionPlan {
+  return decodeMemoryFactExtractionV1(calls, input);
 }

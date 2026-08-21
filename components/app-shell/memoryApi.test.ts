@@ -1,220 +1,179 @@
-import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  authorizeMemoryMutation,
-  cancelMemoryRebuild,
+  createMemory,
   forgetMemory,
-  loadMemoryHealth,
+  listMemories,
   loadMemorySettings,
-  loadMemoryRebuildStatus,
-  memoryStatementHash,
+  patchMemorySettings,
+  resetPersonalMemory,
   searchMemories,
-  startMemoryBulkDeletion,
-  startMemoryRebuild,
-  undoForgetMemory
+  submitMemorySourceAction,
+  updateMemory
 } from "./memoryApi";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
+import { MEMORY_CONSUMER_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryConsumer";
 import {
-  memoryDeletionFixture,
-  memoryHealthFixture,
-  memoryListFixture,
-  memoryRebuildFixture,
-  memorySettingsFixture,
-  memorySummaryFixture
+  memoryConsumerItemFixture,
+  memoryConsumerListFixture,
+  memoryConsumerSettingsFixture
 } from "@/tests/support/memoryFixtures";
 
-function jsonResponse(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    headers: { "content-type": "application/json" },
-    status
-  });
+function json(value: unknown, status = 200): Response {
+  return Response.json(value, { status });
 }
 
-describe("Memory API client", () => {
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
-  it("strictly decodes settings and rejects an extra server field", async () => {
-    const valid = memorySettingsFixture();
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(valid), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...valid, unexpected: true }), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      }));
-    vi.stubGlobal("fetch", fetchMock);
+describe("Memory consumer API", () => {
+  it("strictly accepts only the safe settings projection", async () => {
+    const settings = memoryConsumerSettingsFixture();
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(json(settings))
+      .mockResolvedValueOnce(json({ ...settings, memoryRevision: 12 })));
 
-    await expect(loadMemorySettings()).resolves.toEqual(valid);
+    await expect(loadMemorySettings()).resolves.toEqual(settings);
     await expect(loadMemorySettings()).rejects.toMatchObject({
       code: "memory_response_invalid",
       status: 502
     });
-  });
-
-  it("loads owner health with no-store semantics and rejects enriched evidence", async () => {
-    const valid = { health: memoryHealthFixture() };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(valid))
-      .mockResolvedValueOnce(jsonResponse({
-        health: { ...valid.health, sourceChatId: "private-chat" }
-      }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(loadMemoryHealth()).resolves.toEqual(valid);
-    await expect(loadMemoryHealth()).rejects.toMatchObject({
-      code: "memory_response_invalid",
-      status: 502
-    });
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/me/memory/health");
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/me/memory/settings", expect.objectContaining({
       cache: "no-store",
       credentials: "same-origin",
       method: "GET"
-    });
+    }));
   });
 
-  it("keeps saved-memory search text out of URLs and strictly POSTs the bounded query", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(memoryListFixture()), {
-      headers: { "content-type": "application/json" },
-      status: 200
-    }));
+  it("patches only the selected setting without browser-owned revisions", async () => {
+    const settings = memoryConsumerSettingsFixture({
+      settings: { useMemoryFacts: true },
+      status: "ON"
+    });
+    const fetchMock = vi.fn().mockResolvedValue(json(settings));
     vi.stubGlobal("fetch", fetchMock);
 
-    await searchMemories("секретный любимый цвет");
+    await expect(patchMemorySettings({ useMemoryFacts: true })).resolves.toEqual(settings);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ useMemoryFacts: true });
+    expect(String(init.body)).not.toMatch(/revision|generation|fingerprint/iu);
+  });
+
+  it("keeps private search text out of the URL and decodes opaque item refs", async () => {
+    const response = memoryConsumerListFixture();
+    const fetchMock = vi.fn().mockResolvedValue(json(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(searchMemories(
+      "секретный любимый цвет",
+      null,
+      undefined,
+      { category: "PREFERENCES", provenance: "LEARNED" }
+    )).resolves.toEqual(response);
 
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(path).toBe("/api/me/memories/search");
     expect(path).not.toContain("секретный");
-    expect(init.method).toBe("POST");
-    expect(new Headers(init.headers).get("content-type")).toBe("application/json");
     expect(JSON.parse(String(init.body))).toEqual({
+      category: "PREFERENCES",
       pageSize: 20,
-      query: "секретный любимый цвет",
-      state: "ACTIVE"
+      provenance: "LEARNED",
+      query: "секретный любимый цвет"
     });
   });
 
-  it("hashes the exact UTF-8 statement and mints current-copy single-action authority", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      expiresAt: "2026-08-10T08:05:00.000Z",
-      mutationAuthorizationId: "memory-authorization-1"
-    }), {
-      headers: { "content-type": "application/json" },
-      status: 201
-    }));
+  it("uses opaque refs and server-minted authority for create, edit, and forget", async () => {
+    const created = memoryConsumerItemFixture({ memoryRef: "opaque-ref-created" });
+    const edited = memoryConsumerItemFixture({
+      memoryRef: "opaque-ref-edited",
+      statement: "Use concise answers."
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ item: created }, 201))
+      .mockResolvedValueOnce(json({ item: edited }))
+      .mockResolvedValueOnce(json({ status: "FORGOTTEN" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const statement = "  Ёж любит чай.  ";
-    expect(await memoryStatementHash(statement)).toBe(
-      "7790788b11cfc66c169250a7278043785ad2800cd67ac77245e3769d63fa10f5"
+    await expect(createMemory("I prefer concise answers.")).resolves.toEqual({ item: created });
+    await expect(updateMemory("opaque/ref", "Use concise answers.")).resolves.toEqual({ item: edited });
+    await expect(forgetMemory("opaque/ref")).resolves.toEqual({ status: "FORGOTTEN" });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/me/memories",
+      "/api/me/memories/opaque%2Fref",
+      "/api/me/memories/opaque%2Fref/forget"
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      const body = JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>;
+      expect(body.requestId).toMatch(/^[a-f0-9]{48}$/u);
+      expect(JSON.stringify(body)).not.toMatch(/factId|versionId|authorization|hash/iu);
+    }
+  });
+
+  it("lists with opaque cursors and rejects enriched item responses", async () => {
+    const response = memoryConsumerListFixture([], "opaque-next-cursor");
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(json(response))
+      .mockResolvedValueOnce(json({
+        items: [{ ...memoryConsumerItemFixture(), score: 0.98 }],
+        nextCursor: null
+      })));
+
+    await expect(listMemories(
+      "opaque-cursor",
+      undefined,
+      { category: "WORK", provenance: "SAVED" }
+    )).resolves.toEqual(response);
+    await expect(listMemories()).rejects.toMatchObject({ code: "memory_response_invalid" });
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "/api/me/memories?pageSize=20&category=WORK&cursor=opaque-cursor&provenance=SAVED",
+      expect.objectContaining({ method: "GET" })
     );
-    await authorizeMemoryMutation({ action: "SAVE", exactStatementHash: "a".repeat(64) });
+  });
+
+  it("resets through the single product action without deletion IDs or revisions", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ status: "IN_PROGRESS" }, 202));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resetPersonalMemory()).resolves.toEqual({ status: "IN_PROGRESS" });
 
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(path).toBe("/api/me/memory/mutation-authorizations");
-    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({
-      action: "SAVE",
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      exactStatementHash: "a".repeat(64)
+    expect(path).toBe("/api/me/memory/reset");
+    expect(JSON.parse(String(init.body))).toEqual({
+      confirmationCopyVersion: MEMORY_CONSUMER_CONFIRMATION_COPY_VERSION,
+      requestId: expect.stringMatching(/^[a-f0-9]{48}$/u)
     });
-    expect(body.requestNonce).toMatch(/^[a-f0-9]{48}$/u);
+    expect(String(init.body)).not.toMatch(/deletion|revision|generation|authorization/iu);
   });
 
-  it("exposes only stable Memory errors from failed responses", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      error: "memory_version_stale",
-      privateDetail: "must not escape"
-    }), {
-      headers: { "content-type": "application/json" },
-      status: 409
-    })));
-
-    await expect(loadMemorySettings()).rejects.toMatchObject({
-      code: "memory_action_failed",
-      status: 409
-    });
-  });
-
-  it("uses strict body-only operation routes and an explicitly empty cancel request", async () => {
-    const deletion = memoryDeletionFixture({ operation: "CLEAR_HISTORY_INDEX" });
-    const rebuild = memoryRebuildFixture();
+  it("keeps source actions on opaque refs and fails closed on unsafe navigation", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(deletion), { status: 202 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(rebuild), { status: 202 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(rebuild), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...rebuild, state: "CANCELLED" }), {
-        status: 200
-      }));
+      .mockResolvedValueOnce(json({ status: "COMMITTED" }))
+      .mockResolvedValueOnce(json({
+        href: "/api/me/memory/source-actions/open?memoryRef=opaque-ref",
+        status: "READY"
+      }))
+      .mockResolvedValueOnce(json({ href: "javascript:alert(1)", status: "READY" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await startMemoryBulkDeletion({
-      expectedMemoryRevision: 8,
-      expectedSettingsRevision: 12,
-      mutationAuthorizationId: "clear-authorization",
-      operation: "CLEAR_HISTORY_INDEX"
+    await expect(submitMemorySourceAction("CORRECT", " opaque-ref ", "Corrected statement"))
+      .resolves.toEqual({ status: "COMMITTED" });
+    await expect(submitMemorySourceAction("OPEN_SOURCE", "opaque-ref"))
+      .resolves.toEqual({
+        href: "/api/me/memory/source-actions/open?memoryRef=opaque-ref",
+        status: "READY"
+      });
+    await expect(submitMemorySourceAction("OPEN_SOURCE", "opaque-ref"))
+      .rejects.toMatchObject({ code: "memory_response_invalid", status: 502 });
+
+    const firstBody = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(firstBody).toMatchObject({
+      action: "CORRECT",
+      memoryRef: "opaque-ref",
+      statement: "Corrected statement"
     });
-    await startMemoryRebuild({
-      expectedMemoryRevision: 8,
-      expectedSettingsRevision: 12,
-      operation: "REBUILD_SEARCH_INDEX"
-    });
-    await loadMemoryRebuildStatus("job/private");
-    await cancelMemoryRebuild("job/private");
-
-    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
-      "/api/me/memory/bulk-delete",
-      "/api/me/memory/rebuild",
-      "/api/me/memory/rebuild/job%2Fprivate",
-      "/api/me/memory/rebuild/job%2Fprivate/cancel"
-    ]);
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
-    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
-    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "GET" });
-    const cancelInit = fetchMock.mock.calls[3]?.[1] as RequestInit;
-    expect(cancelInit.method).toBe("POST");
-    expect(cancelInit.body).toBeUndefined();
-    expect(new Headers(cancelInit.headers).get("content-type")).toBeNull();
-  });
-
-  it("strictly carries the owner-private Forget deadline into the exact Undo route", async () => {
-    const active = memorySummaryFixture();
-    const forgotten = memorySummaryFixture({
-      currentVersionId: null,
-      displayText: null,
-      factState: "FORGOTTEN",
-      versionState: "FORGOTTEN"
-    });
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        memory: forgotten,
-        undo: {
-          deletionId: "forget-deletion",
-          expiresAt: "2026-08-11T08:01:00.000Z",
-          versionId: "memory-version-1"
-        }
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ memory: active }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(forgetMemory("memory/id", {
-      expectedVersionId: "memory-version-1",
-      mutationAuthorizationId: "forget-auth"
-    })).resolves.toMatchObject({ undo: { deletionId: "forget-deletion" } });
-    await expect(undoForgetMemory("memory/id", {
-      deletionId: "forget-deletion",
-      mutationAuthorizationId: "restore-auth"
-    })).resolves.toEqual({ memory: active });
-
-    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
-      "/api/me/memories/memory%2Fid/forget",
-      "/api/me/memories/memory%2Fid/undo-forget"
-    ]);
+    expect(firstBody.requestNonce).toMatch(/^[a-f0-9]{48}$/u);
   });
 });

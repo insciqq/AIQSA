@@ -48,7 +48,6 @@ import {
   createKnowledgeFocusedRequest,
   type KnowledgeFocusedRequestV1
 } from "../knowledge/focusedRequest";
-import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import {
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
@@ -412,6 +411,7 @@ function preparedData(input: Readonly<{
   knowledgeFocusedRequest?: KnowledgeFocusedRequestV1;
   knowledgeUnavailable?: boolean;
   memoryActions?: boolean;
+  memoryHistory?: boolean;
   mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
@@ -468,6 +468,9 @@ function preparedData(input: Readonly<{
     toolMode: input.toolMode ?? "auto",
     ...(input.memoryActions
       ? { memoryActionTools: { version: "model-driven-v2" as const } }
+      : {}),
+    ...(input.memoryHistory
+      ? { memoryHistoryTool: { maxCalls: 2 as const, pageSize: 20 as const } }
       : {}),
     ...(input.mcpDiscovery ? { mcpDiscovery: input.mcpDiscovery } : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
@@ -957,7 +960,6 @@ function executionInput(input: Readonly<{
   knowledgeAdmission?: RunExecutionInput["knowledgeAdmission"];
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
-  memoryActionExecutor?: MemoryActionExecutor;
   memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunExecutionInput["mcp"];
   mcpRuntime?: RunExecutionInput["mcpRuntime"];
@@ -993,7 +995,6 @@ function executionInput(input: Readonly<{
     ...(input.knowledgeProviderDispatch
       ? { knowledgeProviderDispatch: input.knowledgeProviderDispatch }
       : {}),
-    ...(input.memoryActionExecutor ? { memoryActionExecutor: input.memoryActionExecutor } : {}),
     ...(input.memoryEgress ? { memoryEgress: input.memoryEgress } : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
@@ -2293,70 +2294,40 @@ describe("run execution", () => {
     expect(repository.failedRuns).toHaveLength(0);
   });
 
-  it("executes a model-driven first-party Memory action through the durable tool loop", async () => {
+  it.each([
+    ["action", { memoryActions: true }],
+    ["history", { memoryHistory: true }]
+  ] as const)("terminalizes a persisted answer-model Memory %s contract before dispatch", async (
+    _kind,
+    legacyRequest
+  ) => {
     const repository = createRepository();
     const providerRequests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
       providerRequests.push(request);
-      if (providerRequests.length === 1) {
-        return providerResult({
-          finalText: "",
-          toolCalls: [{
-            arguments: { statement: "I like tea" },
-            id: "memory-call-1",
-            name: "save_memory"
-          }]
-        });
-      }
-      return providerResult({ finalText: "I saved that memory." });
+      return providerResult({ finalText: "must not dispatch" });
     });
-    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (call, context) => {
-      expect(context).toMatchObject({
-        persistedToolCallId: "persisted-tool-call-1",
-        runId: "run-1",
-        userId: "user-1"
-      });
-      return {
-        callId: call.id,
-        content: [{ type: "json", value: { operation: "SAVE", result: "applied" } }],
-        name: call.name,
-        rawPreview: { operation: "SAVE", result: "applied" },
-        status: "complete"
-      };
-    });
-    const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (name) => name === "save_memory",
-      execute
-    };
 
     await createRunExecutionResponse(executionInput({
       adapter,
-      memoryActionExecutor,
       prepared: preparedData({
-        memoryActions: true,
+        ...legacyRequest,
         modelId: "openai-answer-model",
         provider: "openai"
       }),
       repository: repository.repository
     })).text();
 
-    expect(execute).toHaveBeenCalledOnce();
-    expect(providerRequests).toHaveLength(2);
-    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
-      "save_memory",
-      "list_memories",
-      "update_memory",
-      "forget_memory",
-      "mark_memory_incorrect"
-    ]);
-    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("operation");
-    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("SAVE");
-    expect([...repository.toolCalls.values()][0]).toMatchObject({
-      state: "complete",
-      toolName: "save_memory"
-    });
-    expect(repository.completeRuns).toHaveLength(1);
-    expect(repository.failedRuns).toHaveLength(0);
+    expect(providerRequests).toEqual([]);
+    expect(repository.toolCalls.size).toBe(0);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: {
+        code: "memory_answer_model_tools_retired",
+        message: "This run uses a retired answer-model Memory tool contract."
+      },
+      options: { recoveryTerminal: true }
+    })]);
   });
 
   it("runs one focused Knowledge retrieval, exposes no tools, and strips the exact status line", async () => {

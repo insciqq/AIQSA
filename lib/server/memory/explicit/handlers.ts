@@ -71,6 +71,7 @@ function serviceErrorStatus(code: ExplicitMemoryServiceErrorCode): number {
     case "memory_version_stale":
       return 409;
     case "memory_index_unavailable":
+    case "memory_unavailable":
       return 503;
     case "memory_action_failed":
       return 500;

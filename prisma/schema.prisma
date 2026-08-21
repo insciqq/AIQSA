@@ -286,6 +286,19 @@ enum MemorySensitivityClass {
   SECRET
 }
 
+/// Safety classification is a separate admission fence from the semantic
+/// sensitivity value.  Existing rows are migrated to PENDING and cannot be
+/// retrieved, embedded, or rebuilt until a strict system-model decision is
+/// recorded.  New rows use the CLASSIFIED default and are written through the
+/// current Memory persistence boundary.
+enum MemorySafetyClassificationState {
+  PENDING
+  CLASSIFIED
+  UNCERTAIN
+  SECRET_FENCED
+  REJECTED_FENCED
+}
+
 enum MemoryEvidenceStance {
   SUPPORTS
   CONTRADICTS
@@ -351,6 +364,12 @@ enum MemorySourceBarrierKind {
   ALL_REUSABLE
 }
 
+enum MemoryPauseScope {
+  MASTER
+  SEARCH_HISTORY
+  AUTOMATIC_LEARNING
+}
+
 enum MemoryJobKind {
   INDEX_HISTORY
   EXTRACT_FACTS
@@ -360,6 +379,7 @@ enum MemoryJobKind {
   RECONCILE_BRANCH
   RECONCILE_SOURCE
   REBUILD_INDEX
+  RECLASSIFY_FACTS
 }
 
 enum MemoryJobState {
@@ -377,6 +397,7 @@ enum MemoryExecutionOwnerType {
   JOB
   RETRIEVAL_ATTEMPT
   MODEL_RUN_TOOL_CALL
+  MUTATION_AUTHORIZATION
 }
 
 enum MemoryExecutionState {
@@ -846,6 +867,7 @@ model SearchPolicy {
 model ModelPolicy {
   id                             String         @id
   defaultProviderModelId         String?
+  memoryAdmissionTimeoutSeconds  BigInt         @default(30)
   maxToolCalls                   BigInt         @default(20)
   maxToolRounds                  BigInt         @default(8)
   maxMcpToolsPerDiscovery        BigInt         @default(10)
@@ -3203,7 +3225,7 @@ model Project {
   policyRevision          Int                             @default(1)
   defaults                Json                            @default("{}")
   accessRevision          Int                             @default(1)
-  memoryEnabled           Boolean                         @default(true)
+  memoryEnabled           Boolean                         @default(false)
   memoryPolicy            Json                            @default("{\"automatic\":\"OFF\"}")
   memoryRevision          Int                             @default(0)
   publicSharingEnabled    Boolean                         @default(false)
@@ -3583,6 +3605,7 @@ model ChatMemoryCheckpoint {
   id                   String                        @id @default(uuid())
   userId               String
   chatId               String
+  pipelineVersion      String                        @default("memory-history-index-v3") @db.VarChar(64)
   branchGeneration     Int
   sourceRevision       Int
   activeLeafMessageId  String
@@ -3591,6 +3614,7 @@ model ChatMemoryCheckpoint {
   status               MemoryHistoryCheckpointStatus @default(PENDING)
   lastSucceededAt      DateTime?
   lastErrorCode        String?                       @db.VarChar(64)
+  resumeCreatedAtCutoff DateTime?
   createdAt            DateTime                      @default(now())
   updatedAt            DateTime                      @default(now()) @updatedAt
 
@@ -3793,6 +3817,13 @@ model MemoryFactVersion {
   importance                 Float
   directness                 MemoryDirectness
   sensitivityClass           MemorySensitivityClass
+  safetyClassificationState  MemorySafetyClassificationState @default(PENDING)
+  safetyClassifierExecutionId String?
+  safetyClassifierProviderId String?                @db.VarChar(128)
+  safetyClassifierModelId    String?                @db.VarChar(256)
+  safetyClassifierPolicyVersion String?             @db.VarChar(64)
+  safetyClassificationReasonCode String?            @db.VarChar(64)
+  safetyClassifiedAt         DateTime?
   coreEligible               Boolean                @default(false)
   coreSalience               MemoryCoreSalience     @default(NONE)
   supersedesVersionId        String?
@@ -3808,6 +3839,8 @@ model MemoryFactVersion {
   @@index([userId, supersedesVersionId])
   @@index([userId, movedFromVersionId])
   @@index([userId, createdByEventId])
+  @@index([userId, safetyClassificationState, state])
+  @@index([userId, safetyClassifierExecutionId])
 }
 
 model MemoryEvidence {
@@ -3920,6 +3953,21 @@ model MemorySourceBarrier {
 
   @@unique([userId, id])
   @@index([userId, kind, sourceCreatedAtCutoff])
+}
+
+/// Non-destructive admission windows for the three Personal Memory controls.
+/// Rows are opened at OFF and closed at ON; only source content whose server
+/// timestamp falls inside an interval is ineligible for later derivation.
+model MemoryPauseInterval {
+  id               String           @id @default(uuid())
+  userId           String
+  scope            MemoryPauseScope
+  pausedAt         DateTime
+  resumedAt        DateTime?
+  memoryGeneration Int
+
+  @@unique([userId, id])
+  @@index([userId, scope, pausedAt, resumedAt])
 }
 
 model MemoryMutationAuthorization {
@@ -4059,6 +4107,16 @@ model MemoryJob {
   @@index([userId, chatId, branchGeneration, sourceRevision])
 }
 
+/// Installation-scoped liveness evidence for the single supported Personal
+/// Memory worker. This is observability only: it is not a leader election or
+/// work-ownership primitive, and job/deletion leases remain authoritative.
+model MemoryWorkerHeartbeat {
+  id         String   @id @db.VarChar(64)
+  instanceId String   @db.VarChar(128)
+  startedAt  DateTime
+  lastSeenAt DateTime
+}
+
 model MemoryDeletionOutbox {
   id                          String                  @id @default(uuid())
   userId                      String
@@ -4169,6 +4227,7 @@ model MemoryExecutionBinding {
   retrievalAttemptId          String?
   modelRunId                  String?
   modelRunToolCallId          String?
+  mutationAuthorizationId     String?
   logicalRole                 String                   @db.VarChar(64)
   ordinal                     Int
   state                       MemoryExecutionState     @default(PENDING)
@@ -4204,6 +4263,7 @@ model MemoryExecutionBinding {
   @@index([userId, memoryJobId, ordinal])
   @@index([userId, retrievalAttemptId, ordinal])
   @@index([userId, modelRunId, modelRunToolCallId, ordinal])
+  @@index([userId, mutationAuthorizationId, ordinal])
   @@index([connectionId, providerModelId])
   @@index([credentialId, credentialVersionId])
 }

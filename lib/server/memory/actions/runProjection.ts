@@ -1,22 +1,31 @@
 import type { PrismaClient } from "@prisma/client";
 import {
-  decodeMemoryActionFeedback,
-  type MemoryActionFeedback
+  decodeMemoryActionFeedback as decodePersistedMemoryActionFeedback,
+  type MemoryActionFeedback as PersistedMemoryActionFeedback
 } from "../../../contracts/memory";
 import {
-  MEMORY_FORGET_TOOL_NAME,
-  MEMORY_MARK_INCORRECT_TOOL_NAME,
-  MEMORY_SAVE_TOOL_NAME,
-  MEMORY_UPDATE_TOOL_NAME
-} from "./tools";
+  type MemoryActionResultItem,
+  type MemoryActionFeedback
+} from "../../../contracts/memoryClient";
+import {
+  defaultMemoryClientRefService,
+  type MemoryClientRefPayload,
+  type MemoryClientRefService
+} from "./clientRef";
+import {
+  loadPersonalEligibleFactVersionIds,
+  loadPersonalMemoryRunIds
+} from "../persistence/eligibility";
+import { canonicalGlobalMemoryScopeWhere } from "../persistence/scopes";
 
 type MemoryRunActionClient = Pick<
   PrismaClient,
-  | "memoryDeletionOutbox"
+  | "$queryRaw"
+  | "memoryFact"
   | "memoryFactVersion"
-  | "memoryFeedback"
-  | "memoryOperationReceipt"
-  | "modelRunToolCall"
+  | "memoryRetrievalAttempt"
+  | "memoryScope"
+  | "modelRun"
 >;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -25,96 +34,76 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function snapshotString(value: unknown, key: string): string | null {
-  const candidate = record(value)?.[key];
-  return typeof candidate === "string" ? candidate : null;
-}
-
-function expectedActionToolName(operation: string): string | null {
-  if (operation === "SAVE") return MEMORY_SAVE_TOOL_NAME;
-  if (operation === "EDIT") return MEMORY_UPDATE_TOOL_NAME;
-  if (operation === "FORGET") return MEMORY_FORGET_TOOL_NAME;
-  return null;
-}
-
-function actionFeedback(
-  receipt: Readonly<{
-    operation: string;
-    resultSnapshot: unknown;
-    targetFactId: string | null;
-    targetVersionId: string | null;
-  }>,
-  version: Readonly<{
-    contentPurgedAt: Date | null;
-    displayText: string | null;
-    factId: string;
-    id: string;
-    state: string;
-  }> | null,
-  undoPending: boolean
-): MemoryActionFeedback | null {
-  const targetStateMatches = version && (receipt.operation === "FORGET"
-    ? version.state === "FORGOTTEN"
-    : version.state === "ACTIVE");
-  const target = version && targetStateMatches && !version.contentPurgedAt && version.displayText &&
-      receipt.targetFactId === version.factId && receipt.targetVersionId === version.id
-    ? {
-        factId: version.factId,
-        statement: version.displayText,
-        versionId: version.id
-      }
-    : null;
-  const candidate = {
-    ...(target ?? {}),
-    ...(receipt.operation === "FORGET" && undoPending && target
-      ? {
-          deletionId: snapshotString(receipt.resultSnapshot, "deletionId") ?? undefined,
-          expiresAt: snapshotString(receipt.resultSnapshot, "undoExpiresAt") ?? undefined
-        }
-      : {}),
-    operation: receipt.operation === "EDIT" ? "UPDATE" : receipt.operation,
-    status: "COMMITTED"
-  };
-  const decoded = decodeMemoryActionFeedback(candidate);
-  return decoded.ok ? decoded.value : null;
-}
-
-/** Projects only committed user-visible Memory mutations for their exact runs. */
+/**
+ * Rejoins statement-bearing action results to the exact current fact version
+ * before projecting them. Provider output, mutation authorizations,
+ * repository identifiers, and uncommitted tool calls are never exposed.
+ */
 export async function loadMemoryRunActions(
   client: MemoryRunActionClient,
-  input: Readonly<{ runIds: readonly string[]; userId: string }>
+  input: Readonly<{
+    clientRefs?: MemoryClientRefService;
+    now?: Date;
+    runIds: readonly string[];
+    userId: string;
+  }>
 ): Promise<ReadonlyMap<string, MemoryActionFeedback>> {
   const runIds = [...new Set(input.runIds.filter(Boolean))];
   if (runIds.length === 0) return new Map();
-
-  const operationReceipts = await client.memoryOperationReceipt.findMany({
-    orderBy: { createdAt: "asc" },
-    select: {
-      modelRunId: true,
-      operation: true,
-      persistedToolCallId: true,
-      resultSnapshot: true,
-      targetFactId: true,
-      targetVersionId: true
-    },
+  const personalRunIds = await loadPersonalMemoryRunIds(
+    client,
+    input.userId,
+    runIds
+  );
+  if (personalRunIds.size === 0) return new Map();
+  const attempts = await client.memoryRetrievalAttempt.findMany({
+    orderBy: [{ modelRunId: "asc" }, { attemptOrdinal: "desc" }],
+    select: { budgetSnapshot: true, modelRunId: true },
     where: {
-      modelRunId: { in: runIds },
-      operation: { in: ["SAVE", "EDIT", "FORGET"] },
-      outcome: "APPLIED",
-      persistedToolCallId: { not: null },
+      modelRunId: { in: [...personalRunIds] },
+      state: "CONSUMED",
       userId: input.userId
     }
   });
-  const versionIds = [...new Set(operationReceipts.flatMap((receipt) =>
-    receipt.targetVersionId ? [receipt.targetVersionId] : []))];
-  const operationToolCallIds = [...new Set(operationReceipts.flatMap((receipt) =>
-    receipt.persistedToolCallId ? [receipt.persistedToolCallId] : []))];
-  const deletionIds = [...new Set(operationReceipts.flatMap((receipt) => {
-    const deletionId = snapshotString(receipt.resultSnapshot, "deletionId");
-    return deletionId ? [deletionId] : [];
-  }))];
-
-  const [versions, pendingUndoDeletions, toolCalls, incorrectFeedback] = await Promise.all([
+  const candidates = new Map<string, PersistedMemoryActionFeedback>();
+  for (const attempt of attempts) {
+    if (candidates.has(attempt.modelRunId)) continue;
+    const candidate = record(attempt.budgetSnapshot)?.memoryActionResult;
+    const decoded = decodePersistedMemoryActionFeedback(candidate);
+    if (decoded.ok) candidates.set(attempt.modelRunId, decoded.value);
+  }
+  const refs = input.clientRefs ?? defaultMemoryClientRefService;
+  const now = input.now ?? new Date();
+  const resolved = new Map<string, MemoryClientRefPayload>();
+  const refEntries: Array<Readonly<{ memoryRef: string; runId: string }>> = [];
+  for (const [runId, candidate] of candidates) {
+    if (candidate.memoryRef) refEntries.push({ memoryRef: candidate.memoryRef, runId });
+    for (const item of candidate.items ?? candidate.candidates ?? []) {
+      refEntries.push({ memoryRef: item.memoryRef, runId });
+    }
+  }
+  for (const entry of refEntries) {
+    const payload = refs.resolve(input.userId, entry.memoryRef, "EDIT", now);
+    if (
+      payload?.originatingRunId === entry.runId &&
+      payload.target.itemType === "FACT_VERSION" &&
+      payload.target.factId &&
+      payload.target.factVersionId
+    ) {
+      resolved.set(`${entry.runId}\u0000${entry.memoryRef}`, payload);
+    }
+  }
+  const factIds = [...new Set([...resolved.values()].flatMap((payload) =>
+    payload.target.factId ? [payload.target.factId] : []))];
+  const versionIds = [...new Set([...resolved.values()].flatMap((payload) =>
+    payload.target.factVersionId ? [payload.target.factVersionId] : []))];
+  const [facts, versions] = await Promise.all([
+    factIds.length > 0
+      ? client.memoryFact.findMany({
+          select: { currentVersionId: true, id: true, scopeId: true, state: true },
+          where: { id: { in: factIds }, userId: input.userId }
+        })
+      : Promise.resolve([]),
     versionIds.length > 0
       ? client.memoryFactVersion.findMany({
           select: {
@@ -122,118 +111,113 @@ export async function loadMemoryRunActions(
             displayText: true,
             factId: true,
             id: true,
+            safetyClassificationState: true,
+            sensitivityClass: true,
             state: true
           },
           where: { id: { in: versionIds }, userId: input.userId }
         })
-      : Promise.resolve([]),
-    deletionIds.length > 0
-      ? client.memoryDeletionOutbox.findMany({
-          select: { id: true, nextAttemptAt: true, state: true },
-          where: {
-            id: { in: deletionIds },
-            operation: "FORGET_PURGE",
-            userId: input.userId
-          }
-        })
-      : Promise.resolve([]),
-    client.modelRunToolCall.findMany({
-      select: { id: true, modelRunId: true, toolName: true },
-      where: {
-        modelRunId: { in: runIds },
-        OR: [
-          ...(operationToolCallIds.length > 0 ? [{ id: { in: operationToolCallIds } }] : []),
-          { toolName: MEMORY_MARK_INCORRECT_TOOL_NAME }
-        ]
-      }
-    }),
-    client.memoryFeedback.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: {
-        feedbackType: true,
-        id: true,
-        modelRunId: true,
-        modelRunToolCallId: true,
-        retractsFeedbackId: true
-      },
-      where: {
-        contentPurgedAt: null,
-        feedbackType: "INCORRECT",
-        modelRunId: { in: runIds },
-        modelRunToolCallId: { not: null },
-        userId: input.userId
-      }
-    })
+      : Promise.resolve([])
   ]);
-  const retractions = incorrectFeedback.length > 0
-    ? await client.memoryFeedback.findMany({
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        select: {
-          feedbackType: true,
-          id: true,
-          modelRunId: true,
-          modelRunToolCallId: true,
-          retractsFeedbackId: true
-        },
+  const factsById = new Map(facts.map((fact) => [fact.id, fact]));
+  const versionsById = new Map(versions.map((version) => [version.id, version]));
+  const eligibleVersionIds = await loadPersonalEligibleFactVersionIds(
+    client,
+    input.userId,
+    versionIds
+  );
+  const canonicalScopeIds = new Set(facts.length > 0
+    ? (await client.memoryScope.findMany({
+        select: { id: true },
         where: {
-          contentPurgedAt: null,
-          feedbackType: "RETRACT",
-          retractsFeedbackId: { in: incorrectFeedback.map(({ id }) => id) },
+          ...canonicalGlobalMemoryScopeWhere(),
+          id: { in: [...new Set(facts.map(({ scopeId }) => scopeId))] },
           userId: input.userId
         }
-      })
-    : [];
+      })).map(({ id }) => id)
+    : []);
 
-  const versionById = new Map(versions.map((version) => [version.id, version] as const));
-  const toolCallById = new Map(toolCalls.map((call) => [call.id, call] as const));
-  const pendingUndoById = new Map(pendingUndoDeletions.map((deletion) => [
-    deletion.id,
-    deletion.state === "PENDING" && deletion.nextAttemptAt !== null &&
-      deletion.nextAttemptAt > new Date()
-  ] as const));
-  const retractedFeedbackIds = new Set(retractions.flatMap((feedback) =>
-    feedback.retractsFeedbackId ? [feedback.retractsFeedbackId] : []));
-  const actionsByRun = new Map<string, MemoryActionFeedback[]>();
-
-  for (const operationReceipt of operationReceipts) {
-    const runId = operationReceipt.modelRunId;
-    const toolCallId = operationReceipt.persistedToolCallId;
-    const toolCall = toolCallId ? toolCallById.get(toolCallId) : null;
-    if (
-      !runId || !toolCallId || !toolCall || toolCall.modelRunId !== runId ||
-      toolCall.toolName !== expectedActionToolName(operationReceipt.operation)
-    ) continue;
-    const deletionId = snapshotString(operationReceipt.resultSnapshot, "deletionId");
-    const action = actionFeedback(
-      operationReceipt,
-      operationReceipt.targetVersionId
-        ? versionById.get(operationReceipt.targetVersionId) ?? null
-        : null,
-      deletionId ? pendingUndoById.get(deletionId) === true : false
+  function currentItem(
+    runId: string,
+    item: Pick<MemoryActionResultItem, "memoryRef" | "statement">
+  ): boolean {
+    const payload = resolved.get(`${runId}\u0000${item.memoryRef}`);
+    const factId = payload?.target.factId;
+    const versionId = payload?.target.factVersionId;
+    if (!factId || !versionId) return false;
+    const fact = factsById.get(factId);
+    const version = versionsById.get(versionId);
+    return Boolean(
+      fact && version && version.factId === fact.id &&
+      eligibleVersionIds.has(version.id) &&
+      canonicalScopeIds.has(fact.scopeId) &&
+      fact.state === "ACTIVE" && fact.currentVersionId === version.id &&
+      version.state === "ACTIVE" && version.contentPurgedAt === null &&
+      version.safetyClassificationState === "CLASSIFIED" &&
+      (version.sensitivityClass === "NORMAL" || version.sensitivityClass === "SENSITIVE") &&
+      version.displayText === item.statement
     );
-    if (!action) continue;
-    const actions = actionsByRun.get(runId) ?? [];
-    actions.push(action);
-    actionsByRun.set(runId, actions);
   }
 
-  for (const feedback of incorrectFeedback) {
+  const projected = new Map<string, MemoryActionFeedback>();
+  for (const [runId, candidate] of candidates) {
+    if (candidate.status === "COMMITTED" && candidate.operation === "FORGET") {
+      projected.set(runId, { operation: "FORGET", status: "COMMITTED" });
+      continue;
+    }
     if (
-      retractedFeedbackIds.has(feedback.id) || !feedback.modelRunId ||
-      !feedback.modelRunToolCallId
-    ) continue;
-    const toolCall = toolCallById.get(feedback.modelRunToolCallId);
+      candidate.status === "COMMITTED" &&
+      (candidate.operation === "SAVE" || candidate.operation === "UPDATE") &&
+      candidate.memoryRef && candidate.statement &&
+      currentItem(runId, {
+        memoryRef: candidate.memoryRef,
+        statement: candidate.statement
+      })
+    ) {
+      projected.set(runId, candidate);
+      continue;
+    }
+    if (candidate.status === "COMPLETE" && candidate.items) {
+      projected.set(runId, {
+        items: candidate.items.filter((item) => currentItem(runId, item)),
+        operation: candidate.operation,
+        status: "COMPLETE"
+      });
+      continue;
+    }
+    if (candidate.status === "AMBIGUOUS" && candidate.candidates) {
+      const current = candidate.candidates.filter((item) => currentItem(runId, item));
+      if (current.length >= 2) {
+        projected.set(runId, {
+          candidates: current,
+          operation: candidate.operation,
+          ...(candidate.operation === "UPDATE" && candidate.statement
+            ? { statement: candidate.statement }
+            : {}),
+          status: "AMBIGUOUS"
+        });
+      }
+      continue;
+    }
+    if (candidate.status === "REJECTED") {
+      projected.set(runId, { operation: candidate.operation, status: "REJECTED" });
+      continue;
+    }
     if (
-      !toolCall || toolCall.modelRunId !== feedback.modelRunId ||
-      toolCall.toolName !== MEMORY_MARK_INCORRECT_TOOL_NAME
-    ) continue;
-    const actions = actionsByRun.get(feedback.modelRunId) ?? [];
-    actions.push({ operation: "MARK_INCORRECT", status: "COMMITTED" });
-    actionsByRun.set(feedback.modelRunId, actions);
+      candidate.status === "THIS_CHAT_ONLY" &&
+      candidate.operation === "SAVE" &&
+      candidate.statement
+    ) {
+      projected.set(runId, {
+        operation: "SAVE",
+        statement: candidate.statement,
+        status: "THIS_CHAT_ONLY"
+      });
+      continue;
+    }
+    if (candidate.status === "CONFIRMATION_REQUIRED" && candidate.operation === "RESET") {
+      projected.set(runId, { operation: "RESET", status: "CONFIRMATION_REQUIRED" });
+    }
   }
-
-  return new Map(runIds.flatMap((runId) => {
-    const actions = actionsByRun.get(runId) ?? [];
-    return actions.length === 1 ? [[runId, actions[0]!] as const] : [];
-  }));
+  return projected;
 }

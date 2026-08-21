@@ -13,6 +13,10 @@ import {
   createMemorySettingsService,
   DEFAULT_MEMORY_SETTINGS_CAPABILITIES
 } from "./service";
+import {
+  deriveMemorySettingsCapabilities,
+  readMemoryCapabilityOperationalState
+} from "./capabilities";
 
 export const defaultMemorySettingsRepository =
   createPrismaMemorySettingsRepository(prisma);
@@ -25,15 +29,26 @@ export const defaultMemorySettingsService = createMemorySettingsService({
     readMemoryHistoryIndexingProgress(
       prisma,
       userId,
-      settings.referenceChatHistory
+      settings.referenceChatHistory,
+      settings.useMemoryFacts
     ),
   repository: defaultMemorySettingsRepository,
-  resolveCapabilities: (_settings, _policy) => ({
-    ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
-    automaticLearning: true,
-    permanentChatDeletion:
-      defaultPermanentChatDeletionCapability.enabled
-  }),
+  resolveCapabilities: async (settings, policy, consentMode) =>
+    deriveMemorySettingsCapabilities({
+      base: {
+        permanentChatDeletion: defaultPermanentChatDeletionCapability.enabled,
+        temporaryChats: DEFAULT_MEMORY_SETTINGS_CAPABILITIES.temporaryChats
+      },
+      consentMode,
+      operations: await readMemoryCapabilityOperationalState(prisma, {
+        consentMode,
+        now: new Date(),
+        policy,
+        settings
+      }),
+      policy,
+      settings
+    }),
   resolveCurrentUtilityPolicy: (userId, settings) =>
     resolveCurrentMemoryUtilityPolicy(prisma, userId, settings)
 });

@@ -11,6 +11,7 @@ import {
   MEMORY_FACT_CONSOLIDATION_TOOL_NAME,
   MEMORY_FACT_VERIFICATION_TOOL_NAME
 } from "./prompt";
+import { MemoryFactDecisionProviderCallError } from "./runtime";
 
 const candidateId = "a".repeat(64);
 const sourceHash = "b".repeat(64);
@@ -32,6 +33,7 @@ function candidate(): MemoryFactCandidateSnapshot {
       sourceTextHash: "c".repeat(64),
       startOffset: 0
     }],
+    extractionExecutionId: "extraction-binding-1",
     id: candidateId,
     importance: 0.4,
     languageCode: "en",
@@ -57,6 +59,24 @@ function consolidationInput(): MemoryFactConsolidationInput {
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate: candidate(),
+    memoryRevision: 0,
+    relatedFacts,
+    relatedSnapshotHash
+  };
+  return { ...withoutHash, inputHash: memoryFactConsolidationInputHash(withoutHash) };
+}
+
+function v1ConsolidationInput(): MemoryFactConsolidationInput {
+  const relatedFacts: readonly MemoryRelatedFactSnapshot[] = [];
+  const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
+  const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
+    candidate: {
+      ...candidate(),
+      confidenceBand: "HIGH",
+      correction: false,
+      futureUseful: true,
+      proposedValue: { statement: "The user prefers tea." }
+    },
     memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
@@ -126,10 +146,8 @@ function providerOutput(kind: "CONSOLIDATE" | "VERIFY") {
       ? [{
           arguments: {
             candidate_id: candidateId,
-            effective_from: null,
+            comparison: "DIFFERENT",
             evidence_ids: ["message-1"],
-            operation: "ADD",
-            reason_code: "new_supported_fact",
             target_fact_id: null,
             target_version_id: null
           },
@@ -222,6 +240,16 @@ function context() {
   };
 }
 
+function providerFailure(
+  classification: "UNKNOWN" | "REPLAY_SAFE_TRANSIENT" | "PERMANENT"
+): MemoryFactDecisionProviderCallError {
+  return new MemoryFactDecisionProviderCallError({
+    cause: new Error("provider_fixture_failure"),
+    classification,
+    usage: null
+  });
+}
+
 describe("Memory fact decision handlers", () => {
   it("binds one strict consolidation call, accounts usage, and exposes one atomic apply", async () => {
     const fixture = dependencies();
@@ -251,23 +279,60 @@ describe("Memory fact decision handlers", () => {
 
   it("never replays a recovered RUNNING provider call", async () => {
     const fixture = dependencies();
+    const relatedVersionIds = vi.fn(async () => [] as const);
     vi.mocked(fixture.base.repository.consolidationBindings).mockResolvedValue([{
       acceptedOutputHash: null,
+      errorCode: null,
       id: "uncertain-binding",
       inputHash: fixture.consolidation.inputHash,
       ordinal: 0,
       state: "RUNNING" as const
     }]);
     const job = claim("CONSOLIDATE_CANDIDATE");
-    const result = await createMemoryFactConsolidationHandler(fixture.base)
+    const result = await createMemoryFactConsolidationHandler({
+      ...fixture.base,
+      neighborhood: { relatedVersionIds }
+    })
       .execute(job, context());
     expect(result.stage).toBe("consolidation_deferred");
     expect(fixture.run).not.toHaveBeenCalled();
+    expect(relatedVersionIds).not.toHaveBeenCalled();
     expect(fixture.settle).toHaveBeenCalledWith(
       job.userId,
       "uncertain-binding",
       expect.objectContaining({ state: "OUTCOME_UNKNOWN" })
     );
+    await result.apply?.({} as never, job);
+    expect(fixture.deferConsolidation).toHaveBeenCalledWith(
+      expect.anything(),
+      job,
+      candidateId,
+      "consolidation_outcome_unknown"
+    );
+  });
+
+  it("never replays a durable OUTCOME_UNKNOWN provider call", async () => {
+    const fixture = dependencies();
+    const relatedVersionIds = vi.fn(async () => [] as const);
+    vi.mocked(fixture.base.repository.consolidationBindings).mockResolvedValue([{
+      acceptedOutputHash: null,
+      errorCode: "memory_fact_decision_provider_outcome_unknown",
+      id: "unknown-binding",
+      inputHash: fixture.consolidation.inputHash,
+      ordinal: 0,
+      state: "OUTCOME_UNKNOWN"
+    }]);
+    const job = { ...claim("CONSOLIDATE_CANDIDATE"), attemptCount: 2 };
+
+    const result = await createMemoryFactConsolidationHandler({
+      ...fixture.base,
+      neighborhood: { relatedVersionIds }
+    }).execute(job, context());
+
+    expect(result.stage).toBe("consolidation_deferred");
+    expect(fixture.settle).not.toHaveBeenCalled();
+    expect(relatedVersionIds).not.toHaveBeenCalled();
+    expect(fixture.run).not.toHaveBeenCalled();
     await result.apply?.({} as never, job);
     expect(fixture.deferConsolidation).toHaveBeenCalledWith(
       expect.anything(),
@@ -295,4 +360,238 @@ describe("Memory fact decision handlers", () => {
     );
     expect(fixture.staleVerification).not.toHaveBeenCalled();
   });
+
+  it("settles a replay-safe transient consolidation before a new binding succeeds", async () => {
+    const fixture = dependencies();
+    const consolidation = v1ConsolidationInput();
+    const relatedVersionIds = vi.fn(async () => [] as const);
+    const prepareConsolidation = vi.fn(async () => ({ input: consolidation }));
+    const bindings: Array<{
+      acceptedOutputHash: string | null;
+      errorCode: string | null;
+      id: string;
+      inputHash: string;
+      ordinal: number;
+      state: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "OUTCOME_UNKNOWN";
+    }> = [];
+    const bind = vi.fn(async (_userId: string, request: {
+      inputHash: string;
+      ordinal: number;
+    }) => {
+      const id = `consolidate-binding-${request.ordinal + 1}`;
+      bindings.push({
+        acceptedOutputHash: null,
+        errorCode: null,
+        id,
+        inputHash: request.inputHash,
+        ordinal: request.ordinal,
+        state: "PENDING"
+      });
+      return { id };
+    });
+    const start = vi.fn(async (_userId: string, bindingId: string) => {
+      const binding = bindings.find((candidateBinding) =>
+        candidateBinding.id === bindingId)!;
+      binding.state = "RUNNING";
+      return {
+        bindingId,
+        snapshot: {
+          logicalRole: "MEMORY_CONSOLIDATE",
+          providerExecutionSnapshot: {
+            connectionId: "connection-1",
+            credentialId: "credential-1",
+            credentialVersionId: "credential-version-1",
+            providerModelId: "model-1"
+          },
+          requiresStrictStructuredOutput: true
+        }
+      };
+    });
+    const settle = vi.fn(async (_userId: string, bindingId: string, result: {
+      acceptedOutputHash: string | null;
+      errorCode: string | null;
+      state: "SUCCEEDED" | "FAILED" | "OUTCOME_UNKNOWN";
+    }) => {
+      const binding = bindings.find((candidateBinding) =>
+        candidateBinding.id === bindingId)!;
+      binding.acceptedOutputHash = result.acceptedOutputHash;
+      binding.errorCode = result.errorCode;
+      binding.state = result.state;
+      return { state: result.state };
+    });
+    const run = vi.fn()
+      .mockRejectedValueOnce(providerFailure("REPLAY_SAFE_TRANSIENT"))
+      .mockResolvedValueOnce(providerOutput("CONSOLIDATE"));
+    const handler = createMemoryFactConsolidationHandler({
+      ...fixture.base,
+      execution: {
+        ...fixture.base.execution,
+        admission: { ...fixture.base.execution.admission, bind, start },
+        lifecycle: { ...fixture.base.execution.lifecycle, settle }
+      },
+      neighborhood: { relatedVersionIds },
+      provider: { run },
+      repository: {
+        ...fixture.base.repository,
+        consolidationBindings: vi.fn(async () => bindings),
+        prepareConsolidation
+      }
+    } as unknown as MemoryFactDecisionHandlerDependencies);
+    const firstClaim = claim("CONSOLIDATE_CANDIDATE");
+
+    await expect(handler.execute(firstClaim, context())).rejects.toMatchObject({
+      code: "memory_fact_decision_provider_transient",
+      retryable: true
+    });
+    expect(bindings).toMatchObject([{
+      errorCode: "memory_fact_decision_provider_transient",
+      id: "consolidate-binding-1",
+      ordinal: 0,
+      state: "FAILED"
+    }]);
+
+    const result = await handler.execute({ ...firstClaim, attemptCount: 2 }, context());
+    expect(result.stage).toBe("consolidation_applied");
+    expect(bindings).toMatchObject([
+      { id: "consolidate-binding-1", ordinal: 0, state: "FAILED" },
+      { id: "consolidate-binding-2", ordinal: 1, state: "SUCCEEDED" }
+    ]);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(relatedVersionIds).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ attemptCount: 1 }),
+      consolidation.candidate,
+      expect.any(AbortSignal)
+    );
+    expect(relatedVersionIds).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ attemptCount: 2 }),
+      consolidation.candidate,
+      expect.any(AbortSignal)
+    );
+    expect(prepareConsolidation).toHaveBeenNthCalledWith(2, firstClaim, []);
+    expect(prepareConsolidation).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({ attemptCount: 2 }),
+      []
+    );
+  });
+
+  it("does not resolve another neighborhood after a succeeded consolidation dispatch", async () => {
+    const fixture = dependencies();
+    const relatedVersionIds = vi.fn(async () => [] as const);
+    vi.mocked(fixture.base.repository.consolidationBindings).mockResolvedValue([{
+      acceptedOutputHash: "9".repeat(64),
+      errorCode: null,
+      id: "succeeded-binding",
+      inputHash: fixture.consolidation.inputHash,
+      ordinal: 0,
+      state: "SUCCEEDED"
+    }]);
+    const job = claim("CONSOLIDATE_CANDIDATE");
+
+    const result = await createMemoryFactConsolidationHandler({
+      ...fixture.base,
+      neighborhood: { relatedVersionIds }
+    }).execute({ ...job, attemptCount: 2 }, context());
+
+    expect(result).toMatchObject({
+      acceptedResultHash: "9".repeat(64),
+      stage: "consolidation_deferred"
+    });
+    expect(relatedVersionIds).not.toHaveBeenCalled();
+    expect(fixture.run).not.toHaveBeenCalled();
+    await result.apply?.({} as never, job);
+    expect(fixture.deferConsolidation).toHaveBeenCalledWith(
+      expect.anything(),
+      job,
+      candidateId,
+      "consolidation_result_unavailable"
+    );
+  });
+
+  it("fails closed before neighborhood work when the bounded attempt is already spent", async () => {
+    const fixture = dependencies();
+    const relatedVersionIds = vi.fn(async () => [] as const);
+    vi.mocked(fixture.base.repository.consolidationBindings).mockResolvedValue([
+      {
+        acceptedOutputHash: null,
+        errorCode: "memory_fact_decision_provider_transient",
+        id: "failed-binding-1",
+        inputHash: fixture.consolidation.inputHash,
+        ordinal: 0,
+        state: "FAILED"
+      },
+      {
+        acceptedOutputHash: null,
+        errorCode: "memory_fact_decision_provider_transient",
+        id: "failed-binding-2",
+        inputHash: fixture.consolidation.inputHash,
+        ordinal: 1,
+        state: "FAILED"
+      }
+    ]);
+
+    const job = { ...claim("CONSOLIDATE_CANDIDATE"), attemptCount: 2 };
+    const result = await createMemoryFactConsolidationHandler({
+      ...fixture.base,
+      neighborhood: { relatedVersionIds }
+    }).execute(job, context());
+    expect(result.stage).toBe("consolidation_deferred");
+    expect(relatedVersionIds).not.toHaveBeenCalled();
+    expect(fixture.run).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a durable permanent failure on the second job attempt", async () => {
+    const fixture = dependencies();
+    const relatedVersionIds = vi.fn(async () => [] as const);
+    vi.mocked(fixture.base.repository.consolidationBindings).mockResolvedValue([{
+      acceptedOutputHash: null,
+      errorCode: "memory_fact_decision_provider_unavailable",
+      id: "permanent-binding",
+      inputHash: fixture.consolidation.inputHash,
+      ordinal: 0,
+      state: "FAILED"
+    }]);
+    const job = { ...claim("CONSOLIDATE_CANDIDATE"), attemptCount: 2 };
+
+    const result = await createMemoryFactConsolidationHandler({
+      ...fixture.base,
+      neighborhood: { relatedVersionIds }
+    }).execute(job, context());
+
+    expect(result.stage).toBe("consolidation_deferred");
+    expect(relatedVersionIds).not.toHaveBeenCalled();
+    expect(fixture.run).not.toHaveBeenCalled();
+    await result.apply?.({} as never, job);
+    expect(fixture.deferConsolidation).toHaveBeenCalledWith(
+      expect.anything(),
+      job,
+      candidateId,
+      "memory_fact_decision_provider_unavailable"
+    );
+  });
+
+  it.each([
+    ["UNKNOWN", "OUTCOME_UNKNOWN"],
+    ["PERMANENT", "FAILED"]
+  ] as const)(
+    "terminalizes a %s consolidation failure without requesting a retry",
+    async (classification, state) => {
+      const fixture = dependencies();
+      vi.mocked(fixture.base.provider.run).mockRejectedValueOnce(
+        providerFailure(classification)
+      );
+      const job = claim("CONSOLIDATE_CANDIDATE");
+
+      const result = await createMemoryFactConsolidationHandler(fixture.base)
+        .execute(job, context());
+      expect(result.stage).toBe("consolidation_deferred");
+      expect(fixture.settle).toHaveBeenCalledWith(
+        job.userId,
+        "consolidate-binding",
+        expect.objectContaining({ state })
+      );
+    }
+  );
 });

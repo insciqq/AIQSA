@@ -16,11 +16,17 @@ import {
 
 const response: MemorySettingsResponse = {
   capabilities: {
-  automaticLearning: false,
-  explicitMemory: false,
-  historyRecall: false,
-  permanentChatDeletion: false,
-  temporaryChats: false
+    administratorSetupRequired: true,
+    automaticLearning: false,
+    automaticLearningAvailable: false,
+    explicitMemory: false,
+    historyRecall: false,
+    managementAvailable: false,
+    naturalLanguageActionsAvailable: false,
+    pastChatIndexingAvailable: false,
+    permanentChatDeletion: false,
+    retrievalAvailable: false,
+    temporaryChats: false
   },
   egress: {
     acceptedAt: null,

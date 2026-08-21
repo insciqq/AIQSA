@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
-import type { AdminMemoryEgressResponse } from "../../lib/contracts/adminMemory";
+import type { AdminMemoryStatusResponse } from "../../lib/contracts/adminMemory";
 import {
   expectNoHorizontalOverflow,
   expectTouchSafe
@@ -40,72 +40,42 @@ function emptyAdminDashboard(): AdminDashboard {
   };
 }
 
-function memoryResponse(acknowledged: boolean): AdminMemoryEgressResponse {
-  const fingerprint = "a".repeat(64);
+function memoryResponse(input: Readonly<{
+  rebuilding: boolean;
+  timeoutSeconds: number;
+  timeoutVersion: number;
+}>): AdminMemoryStatusResponse {
   return {
-    memoryEgress: {
-      acceptedAt: acknowledged ? "2026-08-11T10:00:00.000Z" : null,
-      acceptedBy: acknowledged ? { displayName: "Administrator", id: "admin-1" } : null,
-      acceptedFingerprint: acknowledged ? fingerprint : null,
-      acceptedPolicyVersion: acknowledged ? "memory-utility-egress-v1" : null,
-      consentMode: "ADMIN",
-      currentFingerprint: fingerprint,
-      currentPolicyVersion: "memory-utility-egress-v1",
-      destinations: [
-        {
-          destinations: ["Selected and bound for each accepted run"],
-          id: "answer_provider",
-          reviewRequired: false,
-          state: "BOUND_PER_RUN"
-        },
-        {
-          destinations: ["System connection / System model"],
-          id: "system_model",
-          reviewRequired: !acknowledged,
-          state: "AVAILABLE"
-        },
-        {
-          destinations: ["Embedding connection / Embedding model"],
-          id: "embedding",
-          reviewRequired: !acknowledged,
-          state: "AVAILABLE"
-        },
-        {
-          destinations: [],
-          id: "remote_reranker",
-          reviewRequired: false,
-          state: "UNAVAILABLE"
-        }
+    memory: {
+      configuredTargets: [
+        { model: "System model", provider: "Primary provider" },
+        { model: "Embedding model", provider: "Vector provider" }
       ],
-      reviewRequired: !acknowledged,
-      version: acknowledged ? 2 : 1,
-      waitingJobCount: acknowledged ? 0 : 2
-    },
-    memoryHealth: {
-      deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
-      observedAt: "2026-08-12T10:00:00.000Z",
-      overall: acknowledged ? "HEALTHY" : "ACTION_REQUIRED",
-      provider: {
-        failedRecent: "NONE",
-        outcomeUnknown: "NONE",
-        state: "READY",
-        usageIncomplete: "NONE"
+      index: {
+        generation: input.rebuilding ? 5 : 4,
+        readiness: input.rebuilding ? "REBUILDING" : "REBUILD_REQUIRED"
       },
+      admissionTimeout: {
+        seconds: input.timeoutSeconds,
+        version: input.timeoutVersion
+      },
+      activeIssueCode: input.rebuilding ? "memory_provider_unavailable" : null,
       queue: {
-        active: acknowledged ? "NONE" : "SOME",
-        failed: "NONE",
-        oldestLag: acknowledged ? "NONE" : "UNDER_15_MINUTES",
-        state: acknowledged ? "CLEAR" : "DELAYED",
-        waitingForReview: acknowledged ? "NONE" : "SOME"
+        length: input.rebuilding ? 1 : 0,
+        oldestAgeSeconds: input.rebuilding ? 0 : null
       },
-      temporary: { overdue: "NONE", state: "CLEAR" }
+      rebuild: { state: input.rebuilding ? "IN_PROGRESS" : "AVAILABLE" },
+      worker: { state: "RUNNING" }
     }
   };
 }
 
-test("administrator reviews and acknowledges exact Memory destinations", async ({ page }) => {
-  let acknowledged = false;
-  const bodies: unknown[] = [];
+test("administrator sees minimal Memory runtime status and starts a bounded rebuild", async ({ page }) => {
+  let rebuilding = false;
+  let timeoutSeconds = 15;
+  let timeoutVersion = 4;
+  const rebuildBodies: unknown[] = [];
+  const timeoutBodies: unknown[] = [];
   await page.route("**/api/admin", async (route) => {
     await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
   });
@@ -113,35 +83,58 @@ test("administrator reviews and acknowledges exact Memory destinations", async (
     await route.fulfill({ contentType: "application/json", json: { state: "unavailable" } });
   });
   await page.route("**/api/admin/memory", async (route) => {
-    if (route.request().method() === "PATCH") {
-      bodies.push(route.request().postDataJSON());
-      acknowledged = true;
+    if (route.request().method() === "POST") {
+      rebuildBodies.push(route.request().postDataJSON());
+      rebuilding = true;
+    } else if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as Readonly<{
+        expectedVersion: number;
+        timeoutSeconds: number;
+      }>;
+      timeoutBodies.push(body);
+      timeoutSeconds = body.timeoutSeconds;
+      timeoutVersion += 1;
     }
-    await route.fulfill({ contentType: "application/json", json: memoryResponse(acknowledged) });
+    await route.fulfill({
+      contentType: "application/json",
+      json: memoryResponse({ rebuilding, timeoutSeconds, timeoutVersion })
+    });
   });
 
   await signInWithLocalToken(page);
   await page.goto("/admin?section=memory");
 
   const section = page.getByTestId("admin-section-memory");
-  await expect(section.getByRole("heading", { name: "Memory health" })).toBeVisible();
-  await expect(section.getByRole("heading", { name: "Memory needs attention" })).toBeVisible();
-  await expect(section.getByText("System connection / System model")).toBeHidden();
-  await section.getByText("Advanced", { exact: true }).click();
-  const matrix = section.getByRole("list", { name: "Memory destination matrix" });
-  await expect(matrix.getByText("Selected answer model", { exact: true })).toBeVisible();
-  await expect(matrix.getByText("System Memory model", { exact: true })).toBeVisible();
-  await expect(matrix.getByText("Embedding deployment", { exact: true })).toBeVisible();
-  await expect(matrix.getByText("Remote reranker", { exact: true })).toBeVisible();
-  await expect(section.getByText(/Destination review required/u)).toBeVisible();
-  await expect(section.getByText("2", { exact: true })).toBeVisible();
-  const acknowledge = section.getByRole("button", { name: "Acknowledge current destinations" });
-  await expectTouchSafe(acknowledge);
-  await acknowledge.click();
+  await expect(section.getByRole("heading", { name: "Memory status" })).toBeVisible();
+  const configuredTargets = section.getByRole("list", {
+    name: "Configured models and providers"
+  });
+  await expect(configuredTargets.getByRole("listitem")
+    .filter({ hasText: "System model · Primary provider" })).toBeVisible();
+  await expect(configuredTargets.getByRole("listitem")
+    .filter({ hasText: "Embedding model · Vector provider" })).toBeVisible();
+  await expect(section.getByText("Running", { exact: true })).toBeVisible();
+  await expect(section.getByText("Generation 4 · Rebuild required")).toBeVisible();
+  await expect(section.getByText("None", { exact: true })).toBeVisible();
+  await expect(section.getByText(/fingerprint|policy revision|destination matrix/iu)).toHaveCount(0);
+  const timeout = section.getByRole("spinbutton", {
+    name: "Memory admission timeout (seconds)"
+  });
+  await expect(timeout).toHaveValue("15");
+  await timeout.fill("30");
+  await section.getByRole("button", { name: "Save timeout" }).click();
+  await expect(timeout).toHaveValue("30");
+  await expect(section.getByText(/timeout saved.*New messages/u)).toBeVisible();
+  expect(timeoutBodies).toEqual([{ expectedVersion: 4, timeoutSeconds: 30 }]);
 
-  await expect(section.getByText(/Waiting work will resume automatically/u)).toBeVisible();
-  await expect(acknowledge).toHaveCount(0);
-  expect(bodies).toEqual([{ currentFingerprint: "a".repeat(64), expectedVersion: 1 }]);
+  const rebuild = section.getByRole("button", { name: "Rebuild index" });
+  await expectTouchSafe(rebuild);
+  await rebuild.click();
+
+  await expect(section.getByText(/bounded Memory index rebuild was queued/u)).toBeVisible();
+  await expect(section.getByText(/generation-safe rebuild is in progress/u)).toBeVisible();
+  await expect(rebuild).toHaveCount(0);
+  expect(rebuildBodies).toEqual([{ action: "REBUILD_REQUIRED" }]);
   await expectNoHorizontalOverflow(page);
 
   await page.setViewportSize({ height: 844, width: 390 });

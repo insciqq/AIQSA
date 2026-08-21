@@ -12,7 +12,14 @@ import {
   sameProviderAdmissionPlan,
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
-import type { MemoryRunRetrievalService } from "../memory/retrieval";
+import type {
+  MemoryRunControlCache,
+  MemoryRunRetrievalService
+} from "../memory/retrieval";
+import {
+  boundedMemoryAdmissionDeadlineMs,
+  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+} from "../memory/admissionDeadline";
 import {
   assertMemoryExecutionBindingLineage,
   MEMORY_EXECUTION_RECOVERY_HORIZON_MS,
@@ -20,9 +27,22 @@ import {
   parseMemoryExecutionSnapshot,
   reauthorizeStoredMemoryExecution,
   type MemoryExecutionAuthorityDependencies,
+  type MemoryExecutionBindingRecord,
   type MemorySecretFreeExecutionSnapshot
 } from "../memory/execution";
 import { resolveMemoryEgressConsentMode } from "../memory/execution/consentMode";
+import {
+  decodeMemoryActionAnswerResult,
+  MEMORY_ACTION_NO_COMMIT_RESULT
+} from "../providers/memoryActionAnswer";
+import {
+  decodeMemoryReadOnlyControlReuseProof,
+  type MemoryReadOnlyControlReuseProof
+} from "../memory/actions/controlRuntime";
+import {
+  decodeMemoryActionLifecycleSnapshot,
+  memoryActionLifecycleBudgetSnapshot
+} from "../memory/actions/lifecycleSnapshot";
 import {
   lockMemorySettings,
   type LockedMemorySettings
@@ -32,13 +52,15 @@ import {
   lockMemorySourceChat,
   MemorySourceStateConflictError,
   type LockedMemorySourceChat,
-  type MemorySourceMutationHooks
+  type MemorySourceMutationHooks,
+  type MemorySourceSnapshot
 } from "../memory/sourceState";
 import {
   scheduleTemporaryChatDeletion,
   temporaryRetentionDeadline
 } from "../memory/temporaryRetention";
 import {
+  decodeMemoryActionFeedback,
   decodeMemoryInitialChatMode,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memory";
@@ -98,7 +120,8 @@ import {
   insertAcceptedSkillRunBindings,
   lockKnowledgeRunAdmissionSources,
   persistAcceptedRunDefaults,
-  repeatableReadTransaction
+  repeatableReadTransaction,
+  RunTransactionDeadlineError
 } from "./prismaRepositoryBindings";
 import {
   activeMessageStatuses,
@@ -109,6 +132,11 @@ import {
 } from "./prismaRepositoryShared";
 
 type PreparingSettingsRow = MemoryPreparingSettingsSnapshot & LockedMemorySettings;
+
+const MEMORY_PREPARING_ADMISSION_RESERVE_MS = 1_500;
+const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 1_500;
+const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 1_200;
+const MEMORY_PREPARING_FINALIZATION_RESERVE_MS = 1_000;
 
 type LockedPreparingAttempt = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
@@ -283,6 +311,10 @@ async function createPreparingAttempt(
     chatId: string;
     chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     folderIdSnapshot: string | null;
+    lifecycleSnapshot: Pick<
+      MemorySourceSnapshot,
+      "activeLeafMessageId" | "memoryBranchGeneration" | "memorySourceRevision"
+    >;
     now: Date;
     preSendActiveLeafMessageId: string | null;
     runId: string;
@@ -301,6 +333,11 @@ async function createPreparingAttempt(
       attemptOrdinal: input.attemptOrdinal,
       baseRequestHash: memoryPreparingHash(input.baseSnapshot),
       boundedPrivateBaseRequestSnapshot: json(input.baseSnapshot),
+      budgetSnapshot: json(memoryActionLifecycleBudgetSnapshot({
+        activeLeafMessageId: input.lifecycleSnapshot.activeLeafMessageId!,
+        branchGeneration: input.lifecycleSnapshot.memoryBranchGeneration,
+        sourceRevision: input.lifecycleSnapshot.memorySourceRevision
+      })),
       chatId: input.chatId,
       chatMemoryModeSnapshot: input.chatMemoryMode,
       createdAt: input.now,
@@ -323,6 +360,162 @@ async function createPreparingAttempt(
   return attemptId;
 }
 
+type TemporaryPreparingRunAdmissionInput = Readonly<{
+  assistantMessageId: string;
+  chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+  folderId: string | null;
+  memoryGeneration: number;
+  memoryRevision: number;
+  normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
+  runId: string;
+  settingsSnapshot: MemoryPreparingSettingsSnapshot;
+  userMessageId: string;
+}>;
+
+/**
+ * Temporary Chat bypasses the Personal Memory preparation ledger entirely.
+ * The ordinary run is made dispatchable in the admission transaction, while
+ * no Memory attempt/binding receives the content-bearing base request.
+ */
+export async function finalizeTemporaryPreparingRunAdmission(
+  tx: Pick<Prisma.TransactionClient, "modelRun">,
+  input: TemporaryPreparingRunAdmissionInput
+): Promise<PreparingRunAdmissionResult | null> {
+  if (input.chatMemoryMode !== "TEMPORARY") return null;
+  await tx.modelRun.update({
+    data: {
+      normalizedRequest: json(input.normalizedRequest),
+      status: "streaming"
+    },
+    where: { id: input.runId }
+  });
+  return {
+    assistantMessageId: input.assistantMessageId,
+    attemptId: "",
+    chatMemoryMode: input.chatMemoryMode,
+    folderId: input.folderId,
+    memoryGeneration: input.memoryGeneration,
+    memoryRevision: input.memoryRevision,
+    runId: input.runId,
+    settingsSnapshot: input.settingsSnapshot,
+    userMessageId: input.userMessageId
+  };
+}
+
+type UnavailablePreparingRunAdmissionInput = Readonly<{
+  admissionKind: "NORMAL_SEND" | "REGENERATE";
+  assistantIdSnapshot: string | null;
+  assistantMessageId: string;
+  baseSnapshot: ReturnType<typeof createMemoryPreparingBaseSnapshot>;
+  chatId: string;
+  chatMemoryMode: "NORMAL" | "EXCLUDED";
+  folderId: string | null;
+  lifecycleSnapshot: Pick<
+    MemorySourceSnapshot,
+    "activeLeafMessageId" | "memoryBranchGeneration" | "memorySourceRevision"
+  >;
+  normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
+  now: Date;
+  preSendActiveLeafMessageId: string | null;
+  runId: string;
+  userId: string;
+  userMessageId: string;
+}>;
+
+/**
+ * If the bounded Memory-specific portion of initial admission cannot finish,
+ * admit the ordinary run with a durable, content-free FAILED_SAFE receipt.
+ * This path deliberately avoids UserMemorySettings and index reads while the
+ * surrounding admission transaction still proves the ordinary run, DAG,
+ * attachment, provider, Knowledge, MCP, and Skill authorities.
+ */
+export async function finalizeUnavailablePreparingRunAdmission(
+  tx: Prisma.TransactionClient,
+  input: UnavailablePreparingRunAdmissionInput
+): Promise<PreparingRunAdmissionResult> {
+  const settingsSnapshot = memoryPreparingSettingsSnapshot(
+    TEMPORARY_PREPARING_SETTINGS
+  );
+  const attemptId = await createPreparingAttempt(tx, {
+    admissionKind: input.admissionKind,
+    assistantIdSnapshot: input.assistantIdSnapshot,
+    assistantMessageId: input.assistantMessageId,
+    attemptOrdinal: 0,
+    baseSnapshot: input.baseSnapshot,
+    chatId: input.chatId,
+    chatMemoryMode: input.chatMemoryMode,
+    folderIdSnapshot: input.folderId,
+    lifecycleSnapshot: input.lifecycleSnapshot,
+    now: input.now,
+    preSendActiveLeafMessageId: input.preSendActiveLeafMessageId,
+    runId: input.runId,
+    settings: TEMPORARY_PREPARING_SETTINGS,
+    userId: input.userId,
+    userMessageId: input.userMessageId
+  });
+  const budgetSnapshot = {
+    ...memoryActionLifecycleBudgetSnapshot({
+      activeLeafMessageId: input.lifecycleSnapshot.activeLeafMessageId!,
+      branchGeneration: input.lifecycleSnapshot.memoryBranchGeneration,
+      sourceRevision: input.lifecycleSnapshot.memorySourceRevision
+    }),
+    itemCount: 0,
+    memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+    reason: "memory_admission_deadline_exceeded",
+    schemaVersion: 2
+  };
+  await tx.memoryRetrievalAttempt.update({
+    data: {
+      budgetSnapshot: json(budgetSnapshot),
+      consumedAt: input.now,
+      degradationCode: "memory_admission_deadline_exceeded",
+      outcome: "FAILED_SAFE",
+      state: "CONSUMED",
+      updatedAt: input.now
+    },
+    where: { id: attemptId }
+  });
+  await tx.modelRunMemoryBinding.create({
+    data: {
+      boundedSafeQuerySnapshot: null,
+      contextTextHash: memoryPreparingTextHash(""),
+      contextTokenCount: 0,
+      degradationCode: "memory_admission_deadline_exceeded",
+      finalizedAt: input.now,
+      finalizedRevisionSnapshot: 0,
+      indexGenerationId: null,
+      memoryGenerationSnapshot: 0,
+      modelRunId: input.runId,
+      outcome: "FAILED_SAFE",
+      queryHash: memoryPreparingTextHash(""),
+      queryPlannerVersion: MEMORY_PREPARING_QUERY_PLANNER_VERSION,
+      retrievalAttemptId: attemptId,
+      retrievalPipelineVersion: MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION,
+      retrievalRevisionSnapshot: 0,
+      settingsSnapshot: json(settingsSnapshot),
+      userId: input.userId
+    }
+  });
+  await tx.modelRun.update({
+    data: {
+      normalizedRequest: json(input.normalizedRequest),
+      status: "streaming"
+    },
+    where: { id: input.runId }
+  });
+  return {
+    assistantMessageId: input.assistantMessageId,
+    attemptId,
+    chatMemoryMode: input.chatMemoryMode,
+    folderId: input.folderId,
+    memoryGeneration: 0,
+    memoryRevision: 0,
+    runId: input.runId,
+    settingsSnapshot,
+    userMessageId: input.userMessageId
+  };
+}
+
 function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void {
   const initialMode = "initialChatMode" in input ? input.initialChatMode : undefined;
   const requestSkills = input.normalizedRequest.skills ?? [];
@@ -343,6 +536,8 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
     input.normalizedRequest.modelId !== input.modelId ||
     input.normalizedRequest.provider !== input.provider ||
     input.normalizedRequest.personalContext !== undefined ||
+    input.normalizedRequest.memoryActionTools !== undefined ||
+    input.normalizedRequest.memoryHistoryTool !== undefined ||
     (input.admissionKind === "REGENERATE" && initialMode !== undefined) ||
     (input.admissionKind === "NORMAL_SEND" &&
       memoryPreparingHash(input.normalizedRequest.content) !== memoryPreparingHash(input.content))
@@ -655,47 +850,9 @@ export async function admitProjectRunWithClient(
           ].filter((value): value is string => Boolean(value)))]
         }
       });
-      if (project.memoryEnabled && project.memoryItems.length > 0) {
-        const validFacts = await tx.projectMemoryFact.findMany({
-          select: {
-            currentVersion: { select: { id: true, text: true } },
-            currentVersionId: true,
-            id: true
-          },
-          where: {
-            currentVersionId: { in: project.memoryItems.map((item) => item.factVersionId) },
-            currentVersion: {
-              is: { OR: [{ validUntil: null }, { validUntil: { gt: new Date() } }] }
-            },
-            id: { in: project.memoryItems.map((item) => item.factId) },
-            projectId: project.projectId,
-            state: "ACTIVE"
-          }
-        });
-        const valid = new Map(validFacts.map((fact) => [
-          `${fact.id}:${fact.currentVersionId}`,
-          fact.currentVersion?.text ?? null
-        ]));
-        const itemKeys = project.memoryItems.map((item) => `${item.factId}:${item.factVersionId}`);
-        if (
-          new Set(itemKeys).size !== itemKeys.length ||
-          project.memoryItems.some((item, index) =>
-            item.ordinal !== index || valid.get(itemKeys[index]!) !== item.includedText
-          )
-        ) {
-          throw new ActiveLeafConflictError();
-        }
-        await tx.projectMemoryRunItem.createMany({
-          data: project.memoryItems.map((item) => ({
-            factId: item.factId,
-            factVersionId: item.factVersionId,
-            includedText: item.includedText,
-            ordinal: item.ordinal,
-            projectId: project.projectId,
-            projectRunBindingId: run.id
-          }))
-        });
-      }
+      // Project Memory is intentionally dormant for Personal Memory v1.
+      // Existing facts and run-item rows remain intact for compatibility, but
+      // new Project runs neither read their text nor create run-item bindings.
       return {
         assistantMessageId,
         attemptId: "",
@@ -716,7 +873,11 @@ export async function admitProjectRunWithClient(
 export async function admitPreparingRunWithClient(
   prismaClient: PrismaClient,
   input: PreparingRunAdmissionInput,
-  memorySourceHooks?: MemorySourceMutationHooks
+  memorySourceHooks?: MemorySourceMutationHooks,
+  options: Readonly<{
+    deadlineAtMs?: number;
+    memoryUnavailableFallback?: boolean;
+  }> = {}
 ): Promise<PreparingRunAdmissionResult> {
   assertPreparingAdmissionInput(input);
   const baseSnapshot = createMemoryPreparingBaseSnapshot({
@@ -751,6 +912,7 @@ export async function admitPreparingRunWithClient(
       }
 
       let assistantMessageId: string;
+      let admittedSourceSnapshot: MemorySourceSnapshot;
       let preSendActiveLeafMessageId: string | null;
       let userMessageId: string;
 
@@ -891,7 +1053,7 @@ export async function admitPreparingRunWithClient(
         preSendActiveLeafMessageId = input.expectedActiveLeafId;
         userMessageId = userMessage.id;
 
-        await applyMemorySourceMutations(tx, {
+        admittedSourceSnapshot = await applyMemorySourceMutations(tx, {
           chat: lockedChat,
           hooks: memorySourceHooks,
           mutations: ["NORMAL_APPEND"],
@@ -1019,7 +1181,7 @@ export async function admitPreparingRunWithClient(
         assistantMessageId = assistantMessage.id;
         preSendActiveLeafMessageId = preSendSourceMessageId;
         userMessageId = input.userMessageId;
-        await applyMemorySourceMutations(tx, {
+        admittedSourceSnapshot = await applyMemorySourceMutations(tx, {
           chat: lockedChat,
           hooks: memorySourceHooks,
           mutations: ["BRANCH_PATH_CHANGE"],
@@ -1027,7 +1189,8 @@ export async function admitPreparingRunWithClient(
         });
       }
 
-      const settings = lockedChat.memoryMode === "TEMPORARY"
+      const settings = lockedChat.memoryMode === "TEMPORARY" ||
+          options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
         : await loadPreparingSettings(tx, input.userId);
 
@@ -1074,6 +1237,39 @@ export async function admitPreparingRunWithClient(
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
       }
 
+      const temporaryResult = await finalizeTemporaryPreparingRunAdmission(tx, {
+        assistantMessageId,
+        chatMemoryMode: lockedChat.memoryMode,
+        folderId: lockedChat.folderId,
+        memoryGeneration: settings.memoryGeneration,
+        memoryRevision: settings.memoryRevision,
+        normalizedRequest: input.normalizedRequest,
+        runId: run.id,
+        settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
+        userMessageId
+      });
+      if (temporaryResult) return temporaryResult;
+
+      if (options.memoryUnavailableFallback &&
+        lockedChat.memoryMode !== "TEMPORARY") {
+        return finalizeUnavailablePreparingRunAdmission(tx, {
+          admissionKind: input.admissionKind,
+          assistantIdSnapshot: input.assistant?.assistantId ?? null,
+          assistantMessageId,
+          baseSnapshot,
+          chatId: input.chatId,
+          chatMemoryMode: lockedChat.memoryMode,
+          folderId: lockedChat.folderId,
+          lifecycleSnapshot: admittedSourceSnapshot,
+          normalizedRequest: input.normalizedRequest,
+          now: admissionNow,
+          preSendActiveLeafMessageId,
+          runId: run.id,
+          userId: input.userId,
+          userMessageId
+        });
+      }
+
       const attemptId = await createPreparingAttempt(tx, {
         admissionKind: input.admissionKind,
         assistantIdSnapshot: input.assistant?.assistantId ?? null,
@@ -1083,6 +1279,7 @@ export async function admitPreparingRunWithClient(
         chatId: input.chatId,
         chatMemoryMode: lockedChat.memoryMode,
         folderIdSnapshot: lockedChat.folderId,
+        lifecycleSnapshot: admittedSourceSnapshot,
         now: admissionNow,
         preSendActiveLeafMessageId,
         runId: run.id,
@@ -1102,25 +1299,33 @@ export async function admitPreparingRunWithClient(
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
       };
-    })
+    }, options)
   );
 }
 
 export async function beginPreparingRunAttemptWithClient(
   prismaClient: PrismaClient,
-  input: Readonly<{ attemptId: string; now: Date; runId: string; userId: string }>
+  input: Readonly<{
+    attemptId: string;
+    deadlineAtMs?: number;
+    now: Date;
+    runId: string;
+    userId: string;
+  }>
 ): Promise<boolean> {
-  const updated = await prismaClient.memoryRetrievalAttempt.updateMany({
-    data: { state: "EXECUTING", updatedAt: input.now },
-    where: {
-      expiresAt: { gt: input.now },
-      id: input.attemptId,
-      modelRunId: input.runId,
-      state: "PENDING",
-      userId: input.userId
-    }
-  });
-  return updated.count === 1;
+  return repeatableReadTransaction(prismaClient, async (tx) => {
+    const updated = await tx.memoryRetrievalAttempt.updateMany({
+      data: { state: "EXECUTING", updatedAt: input.now },
+      where: {
+        expiresAt: { gt: input.now },
+        id: input.attemptId,
+        modelRunId: input.runId,
+        state: "PENDING",
+        userId: input.userId
+      }
+    });
+    return updated.count === 1;
+  }, { deadlineAtMs: input.deadlineAtMs });
 }
 
 async function lockMemoryAttemptTargets(
@@ -1163,16 +1368,53 @@ async function lockMemoryAttemptTargets(
 }
 
 const retrievalExecutionRoles = new Set([
+  "MEMORY_CONTROL",
   "MEMORY_QUERY_EMBED",
-  "MEMORY_QUERY_EXPAND",
   "MEMORY_RERANK"
 ]);
 
-const retrievalExecutionOrdinals = new Map<string, number>([
-  ["MEMORY_QUERY_EXPAND", 0],
-  ["MEMORY_QUERY_EMBED", 1],
-  ["MEMORY_RERANK", 2]
+const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
+  ["MEMORY_CONTROL", new Set([0, 1])],
+  ["MEMORY_QUERY_EMBED", new Set([1, 3])],
+  ["MEMORY_RERANK", new Set([2, 3])]
 ]);
+
+export function validMemoryRetrievalExecutionSequence(
+  bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[]
+): boolean {
+  if (bindings.length > 6) return false;
+  const positions = bindings.map((binding) =>
+    `${binding.logicalRole}:${binding.ordinal}`);
+  if (new Set(positions).size !== positions.length || bindings.some((binding) =>
+    !retrievalExecutionRoles.has(binding.logicalRole) ||
+    !retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal)
+  )) return false;
+  const present = new Set(positions);
+  return (
+    (!present.has("MEMORY_CONTROL:1") || present.has("MEMORY_CONTROL:0")) &&
+    (!present.has("MEMORY_QUERY_EMBED:1") || present.has("MEMORY_CONTROL:0")) &&
+    (!present.has("MEMORY_QUERY_EMBED:3") || present.has("MEMORY_CONTROL:0")) &&
+    (!present.has("MEMORY_RERANK:2") || present.has("MEMORY_QUERY_EMBED:1")) &&
+    (!present.has("MEMORY_RERANK:3") || present.has("MEMORY_RERANK:2"))
+  );
+}
+
+export function validMemoryRerankRetrySettlement(
+  bindings: readonly Readonly<{
+    errorCode: string | null;
+    logicalRole: string;
+    ordinal: number;
+    state: string;
+  }>[]
+): boolean {
+  const retry = bindings.find((binding) =>
+    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal === 3);
+  if (!retry) return true;
+  const primary = bindings.find((binding) =>
+    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal === 2);
+  return primary?.state === "FAILED" &&
+    primary.errorCode === "memory_run_utility_output_invalid";
+}
 
 type PreparingAttemptExecutionEvidence = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
@@ -1181,12 +1423,166 @@ type PreparingAttemptExecutionEvidence = Readonly<{
   utilityEgressMode: "CONSENTED_EXTERNAL" | "LOCAL_ONLY";
 }>;
 
+type ReadOnlyControlRetryScope = Pick<
+  LockedPreparingAttempt,
+  | "admissionKind"
+  | "admittedAssistantLeafMessageId"
+  | "admittedUserMessageId"
+  | "assistantIdSnapshot"
+  | "attemptOrdinal"
+  | "baseRequestHash"
+  | "budgetSnapshot"
+  | "chatId"
+  | "chatMemoryModeSnapshot"
+  | "folderIdSnapshot"
+  | "id"
+  | "indexGenerationIdSnapshot"
+  | "memoryGenerationSnapshot"
+  | "modelRunId"
+  | "preSendActiveLeafMessageId"
+  | "settingsSnapshot"
+  | "userId"
+>;
+
+export function sameMemoryReadOnlyControlRetryScope(
+  source: ReadOnlyControlRetryScope,
+  current: ReadOnlyControlRetryScope
+): boolean {
+  const sourceSettings = decodeMemoryPreparingSettingsSnapshot(source.settingsSnapshot);
+  const currentSettings = decodeMemoryPreparingSettingsSnapshot(current.settingsSnapshot);
+  const sourceLifecycle = decodeMemoryActionLifecycleSnapshot(source.budgetSnapshot);
+  const currentLifecycle = decodeMemoryActionLifecycleSnapshot(current.budgetSnapshot);
+  return source.id !== current.id &&
+    source.attemptOrdinal === 0 &&
+    current.attemptOrdinal === 1 &&
+    source.userId === current.userId &&
+    source.modelRunId === current.modelRunId &&
+    source.chatId === current.chatId &&
+    source.admissionKind === current.admissionKind &&
+    source.admittedAssistantLeafMessageId === current.admittedAssistantLeafMessageId &&
+    source.admittedUserMessageId === current.admittedUserMessageId &&
+    source.assistantIdSnapshot === current.assistantIdSnapshot &&
+    source.folderIdSnapshot === current.folderIdSnapshot &&
+    source.chatMemoryModeSnapshot === current.chatMemoryModeSnapshot &&
+    source.memoryGenerationSnapshot === current.memoryGenerationSnapshot &&
+    source.indexGenerationIdSnapshot === current.indexGenerationIdSnapshot &&
+    source.baseRequestHash === current.baseRequestHash &&
+    source.preSendActiveLeafMessageId === current.preSendActiveLeafMessageId &&
+    sourceSettings !== null &&
+    currentSettings !== null &&
+    memoryPreparingHash(sourceSettings) === memoryPreparingHash(currentSettings) &&
+    sourceLifecycle !== null &&
+    currentLifecycle !== null &&
+    memoryPreparingHash(sourceLifecycle) === memoryPreparingHash(currentLifecycle);
+}
+
+async function loadReadOnlyControlReuseBinding(
+  tx: Prisma.TransactionClient,
+  attempt: ReadOnlyControlRetryScope,
+  proof: MemoryReadOnlyControlReuseProof
+): Promise<MemoryExecutionBindingRecord> {
+  if (attempt.attemptOrdinal !== 1 || proof.sourceAttemptId === attempt.id) {
+    throw new Error("control_reuse_attempt_invalid");
+  }
+  const [sourceAttempt, sourceBinding] = await Promise.all([
+    tx.memoryRetrievalAttempt.findFirst({
+      select: {
+        admissionKind: true,
+        admittedAssistantLeafMessageId: true,
+        admittedUserMessageId: true,
+        assistantIdSnapshot: true,
+        attemptOrdinal: true,
+        baseRequestHash: true,
+        budgetSnapshot: true,
+        chatId: true,
+        chatMemoryModeSnapshot: true,
+        errorCode: true,
+        folderIdSnapshot: true,
+        id: true,
+        indexGenerationIdSnapshot: true,
+        memoryGenerationSnapshot: true,
+        modelRunId: true,
+        preSendActiveLeafMessageId: true,
+        settingsSnapshot: true,
+        state: true,
+        userId: true
+      },
+      where: { id: proof.sourceAttemptId, userId: attempt.userId }
+    }),
+    tx.memoryExecutionBinding.findFirst({
+      select: memoryExecutionBindingSelect,
+      where: { id: proof.sourceBindingId, userId: attempt.userId }
+    })
+  ]);
+  if (
+    !sourceAttempt ||
+    sourceAttempt.id !== proof.sourceAttemptId ||
+    !sameMemoryReadOnlyControlRetryScope(sourceAttempt, attempt) ||
+    sourceAttempt.state !== "STALE" ||
+    sourceAttempt.errorCode !== "memory_admission_settings_changed" ||
+    !sourceBinding ||
+    sourceBinding.ownerType !== "RETRIEVAL_ATTEMPT" ||
+    sourceBinding.retrievalAttemptId !== sourceAttempt.id ||
+    sourceBinding.userId !== attempt.userId ||
+    sourceBinding.logicalRole !== "MEMORY_CONTROL" ||
+    sourceBinding.ordinal !== 0 ||
+    sourceBinding.state !== "SUCCEEDED" ||
+    sourceBinding.inputHash !== proof.inputHash ||
+    sourceBinding.acceptedOutputHash !== proof.acceptedOutputHash ||
+    sourceBinding.relationsDetachedAt !== null
+  ) {
+    throw new Error("control_reuse_lineage_invalid");
+  }
+  return sourceBinding;
+}
+
 async function loadPreparingAttemptExecutionEvidence(
   tx: Prisma.TransactionClient,
-  attempt: Pick<LockedPreparingAttempt, "id" | "userId">
+  attempt: Pick<
+    LockedPreparingAttempt,
+    | "admissionKind"
+    | "admittedAssistantLeafMessageId"
+    | "admittedUserMessageId"
+    | "assistantIdSnapshot"
+    | "attemptOrdinal"
+    | "baseRequestHash"
+    | "budgetSnapshot"
+    | "chatId"
+    | "chatMemoryModeSnapshot"
+    | "folderIdSnapshot"
+    | "id"
+    | "indexGenerationIdSnapshot"
+    | "memoryGenerationSnapshot"
+    | "modelRunId"
+    | "preSendActiveLeafMessageId"
+    | "settingsSnapshot"
+    | "userId"
+  >,
+  budgetSnapshot: unknown = attempt.budgetSnapshot
 ): Promise<PreparingAttemptExecutionEvidence> {
   try {
-    const bindings = await tx.memoryExecutionBinding.findMany({
+    const budget = isRecord(budgetSnapshot) ? budgetSnapshot : null;
+    const rawReuseProof = budget?.readOnlyControlReuse;
+    const reuseProof = rawReuseProof === undefined
+      ? null
+      : decodeMemoryReadOnlyControlReuseProof(rawReuseProof);
+    if (rawReuseProof !== undefined && !reuseProof) {
+      throw new Error("control_reuse_proof_invalid");
+    }
+    if (reuseProof) {
+      const actionAnswerResult = decodeMemoryActionAnswerResult(
+        budget?.memoryActionAnswerResult
+      );
+      if (
+        !actionAnswerResult ||
+        memoryPreparingHash(actionAnswerResult) !==
+          memoryPreparingHash(MEMORY_ACTION_NO_COMMIT_RESULT) ||
+        budget?.memoryActionResult !== undefined
+      ) {
+        throw new Error("control_reuse_action_evidence_invalid");
+      }
+    }
+    const currentBindings = await tx.memoryExecutionBinding.findMany({
       orderBy: [{ ordinal: "asc" }, { id: "asc" }],
       select: memoryExecutionBindingSelect,
       where: {
@@ -1195,7 +1591,22 @@ async function loadPreparingAttemptExecutionEvidence(
         userId: attempt.userId
       }
     });
-    if (bindings.length > retrievalExecutionRoles.size) {
+    let reusedControlBindingId: string | null = null;
+    let bindings = currentBindings;
+    if (reuseProof) {
+      const sourceBinding = await loadReadOnlyControlReuseBinding(
+        tx,
+        attempt,
+        reuseProof
+      );
+      reusedControlBindingId = sourceBinding.id;
+      bindings = [sourceBinding, ...currentBindings]
+        .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id));
+    }
+    if (
+      !validMemoryRetrievalExecutionSequence(bindings) ||
+      !validMemoryRerankRetrySettlement(bindings)
+    ) {
       throw new Error("binding_count_invalid");
     }
     if (bindings.length === 0) {
@@ -1210,16 +1621,19 @@ async function loadPreparingAttemptExecutionEvidence(
     const roles: string[] = [];
     const fingerprints = new Set<string>();
     for (const binding of bindings) {
+      const bindingAttemptId = binding.id === reusedControlBindingId
+        ? reuseProof!.sourceAttemptId
+        : attempt.id;
       if (
         binding.ownerType !== "RETRIEVAL_ATTEMPT" ||
-        binding.retrievalAttemptId !== attempt.id ||
+        binding.retrievalAttemptId !== bindingAttemptId ||
         binding.userId !== attempt.userId ||
         binding.memoryJobId !== null ||
         binding.modelRunId !== null ||
         binding.modelRunToolCallId !== null ||
         binding.relationsDetachedAt !== null ||
         !retrievalExecutionRoles.has(binding.logicalRole) ||
-        binding.ordinal !== retrievalExecutionOrdinals.get(binding.logicalRole) ||
+        !retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal) ||
         (binding.state !== "SUCCEEDED" &&
           binding.state !== "FAILED" &&
           binding.state !== "CANCELLED" &&
@@ -1234,7 +1648,7 @@ async function loadPreparingAttemptExecutionEvidence(
       roles.push(binding.logicalRole);
       fingerprints.add(snapshot.acceptedUtilityEgressFingerprint);
     }
-    if (new Set(roles).size !== roles.length || fingerprints.size !== 1) {
+    if (fingerprints.size !== 1) {
       throw new Error("binding_lineage_invalid");
     }
     const usageCount = await tx.usageEvent.count({
@@ -1334,6 +1748,7 @@ export async function completePreparingRunAttemptWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{
     attemptId: string;
+    deadlineAtMs?: number;
     result: MemoryPreparingAttemptResult;
     runId: string;
     userId: string;
@@ -1341,7 +1756,7 @@ export async function completePreparingRunAttemptWithClient(
 ): Promise<boolean> {
   validateMemoryPreparingAttemptResult(input.result);
   const now = new Date();
-  return prismaClient.$transaction(async (tx) => {
+  return repeatableReadTransaction(prismaClient, async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     const attempt = await lockPreparingAttempt(tx, input);
     if (!run || run.status !== "preparing" || !attempt ||
@@ -1349,7 +1764,11 @@ export async function completePreparingRunAttemptWithClient(
       attempt.expiresAt <= now) {
       return false;
     }
-    const executionEvidence = await loadPreparingAttemptExecutionEvidence(tx, attempt);
+    const executionEvidence = await loadPreparingAttemptExecutionEvidence(
+      tx,
+      attempt,
+      input.result.budgetSnapshot
+    );
     assertAttemptUtilityDeclaration(input.result.budgetSnapshot, executionEvidence);
     if ((input.result.items?.length ?? 0) > 0) {
       await lockMemoryAttemptTargets(tx, attempt);
@@ -1393,9 +1812,16 @@ export async function completePreparingRunAttemptWithClient(
     }
 
     const context = input.result.preparedContext ?? null;
+    const lifecycleSnapshot = decodeMemoryActionLifecycleSnapshot(attempt.budgetSnapshot);
+    if (!lifecycleSnapshot) {
+      throw new MemoryPreparingRunConflictError("memory_admission_snapshot_invalid", false);
+    }
     const updated = await tx.memoryRetrievalAttempt.updateMany({
       data: {
-        budgetSnapshot: json(input.result.budgetSnapshot),
+        budgetSnapshot: json({
+          ...input.result.budgetSnapshot,
+          ...memoryActionLifecycleBudgetSnapshot(lifecycleSnapshot)
+        }),
         boundedSafeQuerySnapshot: querySnapshot,
         degradationCode: input.result.degradationCode ?? null,
         externalRolesUsed: [...executionEvidence.externalRolesUsed],
@@ -1418,7 +1844,7 @@ export async function completePreparingRunAttemptWithClient(
       }
     });
     return updated.count === 1;
-  });
+  }, { deadlineAtMs: input.deadlineAtMs });
 }
 
 async function assertCurrentProviderAdmission(
@@ -1722,8 +2148,28 @@ function validateFinalPreparingRequest(
   ) {
     throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
   }
+  const budget = isRecord(attempt.budgetSnapshot) ? attempt.budgetSnapshot : null;
+  const rawActionAnswerResult = budget?.memoryActionAnswerResult;
+  const actionAnswerResult = rawActionAnswerResult === undefined
+    ? null
+    : decodeMemoryActionAnswerResult(rawActionAnswerResult);
+  if (rawActionAnswerResult !== undefined && !actionAnswerResult) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  const rawBaseActionAnswerResult = baseSnapshot.normalizedRequest.prompt
+    .memoryActionAnswerResult;
+  const baseActionAnswerResult = rawBaseActionAnswerResult === undefined
+    ? null
+    : decodeMemoryActionAnswerResult(rawBaseActionAnswerResult);
+  if (
+    rawBaseActionAnswerResult !== undefined &&
+    (!baseActionAnswerResult || memoryPreparingHash(baseActionAnswerResult) !==
+      memoryPreparingHash(MEMORY_ACTION_NO_COMMIT_RESULT))
+  ) {
+    throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
+  }
   const contextBearingOutcome = preparingAttemptCarriesProviderContext(attempt);
-  if (!contextBearingOutcome) {
+  if (!contextBearingOutcome && !actionAnswerResult) {
     if (
       input.normalizedRequest.personalContext !== undefined ||
       memoryPreparingHash(input.normalizedRequest) !==
@@ -1739,9 +2185,20 @@ function validateFinalPreparingRequest(
   const {
     context: finalContext,
     personalContext,
-    ...finalRequestCore
+    prompt: finalPrompt,
+    ...finalRequestRest
   } = input.normalizedRequest;
-  const { context: baseContext, ...baseRequestCore } = baseSnapshot.normalizedRequest;
+  const {
+    context: baseContext,
+    prompt: basePrompt,
+    ...baseRequestRest
+  } = baseSnapshot.normalizedRequest;
+  const {
+    memoryActionAnswerResult: finalActionAnswerResult,
+    ...finalPromptCore
+  } = finalPrompt;
+  const { memoryActionAnswerResult: _baseActionAnswerResult, ...basePromptCore } = basePrompt;
+  const effectiveActionAnswerResult = actionAnswerResult ?? baseActionAnswerResult;
   const baseMessages = baseContext?.messages ?? [];
   const finalMessages = finalContext?.messages ?? [];
   let priorIndex = -1;
@@ -1757,15 +2214,20 @@ function validateFinalPreparingRequest(
     }) &&
     priorIndex === baseMessages.length - 1;
   if (
-    !personalContext ||
-    memoryPreparingHash(finalRequestCore) !== memoryPreparingHash(baseRequestCore) ||
+    memoryPreparingHash({ ...finalRequestRest, prompt: finalPromptCore }) !==
+      memoryPreparingHash({ ...baseRequestRest, prompt: basePromptCore }) ||
+    memoryPreparingHash(finalActionAnswerResult ?? null) !==
+      memoryPreparingHash(effectiveActionAnswerResult) ||
     !contextIsDerived ||
-    personalContext.mode !== "prefetched" ||
-    personalContext.text !== attempt.preparedContextText ||
-    personalContext.approxTokens !== attempt.preparedContextTokenCount ||
-    personalContext.itemCount !== items.length ||
-    personalContext.memoryGeneration !== attempt.memoryGenerationSnapshot ||
-    personalContext.memoryRevision !== attempt.retrievalRevisionSnapshot
+    (contextBearingOutcome
+      ? !personalContext ||
+        personalContext.mode !== "prefetched" ||
+        personalContext.text !== attempt.preparedContextText ||
+        personalContext.approxTokens !== attempt.preparedContextTokenCount ||
+        personalContext.itemCount !== items.length ||
+        personalContext.memoryGeneration !== attempt.memoryGenerationSnapshot ||
+        personalContext.memoryRevision !== attempt.retrievalRevisionSnapshot
+      : personalContext !== undefined)
   ) {
     throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
   }
@@ -1775,21 +2237,186 @@ function validateFinalPreparingRequest(
   });
 }
 
+function committedMutationOperation(
+  budgetSnapshot: Prisma.JsonValue | null
+): "EDIT" | "FORGET" | "SAVE" | null {
+  const budget = isRecord(budgetSnapshot) ? budgetSnapshot : null;
+  if (budget?.reason !== "memory_not_useful") return null;
+  const answerResult = decodeMemoryActionAnswerResult(
+    budget.memoryActionAnswerResult
+  );
+  const actionResult = decodeMemoryActionFeedback(budget.memoryActionResult);
+  if (
+    !answerResult ||
+    answerResult.status !== "COMMITTED" ||
+    !actionResult.ok ||
+    actionResult.value.status !== "COMMITTED" ||
+    actionResult.value.operation !== answerResult.operation
+  ) {
+    return null;
+  }
+  switch (answerResult.operation) {
+    case "SAVE": return "SAVE";
+    case "UPDATE": return "EDIT";
+    case "FORGET": return "FORGET";
+    default: return null;
+  }
+}
+
+async function committedMutationOwnsRevisionAdvance(
+  tx: Prisma.TransactionClient,
+  attempt: Pick<
+    LockedPreparingAttempt,
+    | "budgetSnapshot"
+    | "memoryGenerationSnapshot"
+    | "modelRunId"
+    | "retrievalRevisionSnapshot"
+    | "userId"
+  >,
+  currentSettings: Pick<LockedMemorySettings, "memoryGeneration" | "memoryRevision">
+): Promise<boolean> {
+  const operation = committedMutationOperation(attempt.budgetSnapshot);
+  if (!operation) return false;
+  const authorizations = await tx.memoryMutationAuthorization.findMany({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: {
+      consumedAt: true,
+      requestId: true,
+      targetFactId: true
+    },
+    take: 2,
+    where: {
+      action: operation,
+      modelRunId: attempt.modelRunId,
+      persistedToolCallId: null,
+      userId: attempt.userId
+    }
+  });
+  const authorization = authorizations.length === 1 ? authorizations[0] : null;
+  if (!authorization?.consumedAt) return false;
+  const receipts = await tx.memoryOperationReceipt.findMany({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: {
+      resultSnapshot: true,
+      targetFactId: true
+    },
+    take: 2,
+    where: {
+      modelRunId: attempt.modelRunId,
+      operation,
+      outcome: "APPLIED",
+      persistedToolCallId: null,
+      requestId: authorization.requestId,
+      userId: attempt.userId
+    }
+  });
+  const receipt = receipts.length === 1 ? receipts[0] : null;
+  const result = receipt && isRecord(receipt.resultSnapshot)
+    ? receipt.resultSnapshot
+    : null;
+  const receiptGeneration = result?.memoryGeneration;
+  const receiptRevision = result?.memoryRevision;
+  return Boolean(
+    receipt?.targetFactId &&
+    (operation === "SAVE" || authorization.targetFactId === receipt.targetFactId) &&
+    typeof receiptGeneration === "number" &&
+    Number.isSafeInteger(receiptGeneration) &&
+    receiptGeneration === attempt.memoryGenerationSnapshot &&
+    receiptGeneration === currentSettings.memoryGeneration &&
+    typeof receiptRevision === "number" &&
+    Number.isSafeInteger(receiptRevision) &&
+    receiptRevision === attempt.retrievalRevisionSnapshot + 1 &&
+    receiptRevision === currentSettings.memoryRevision
+  );
+}
+
 export async function finalizePreparingRunWithClient(
   prismaClient: PrismaClient,
-  input: PreparingRunFinalizationInput,
+  input: PreparingRunFinalizationInput & Readonly<{
+    deadlineAtMs?: number;
+    deadlineFallbackBudget?: Readonly<Record<string, unknown>>;
+  }>,
   memoryExecutionAuthority: MemoryExecutionAuthorityDependencies
 ): Promise<boolean> {
   const now = new Date();
   return repeatableReadTransaction(prismaClient, async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
-    const attempt = await lockPreparingAttempt(tx, {
+    let attempt = await lockPreparingAttempt(tx, {
       attemptId: input.attemptId,
       runId: input.runId,
       userId: input.userId
     });
     if (!run || run.status !== "preparing" || !attempt) return false;
-    if (attempt.state !== "READY") return false;
+    const deadlineFallback = input.deadlineFallbackBudget !== undefined;
+    if (deadlineFallback) {
+      if (!["PENDING", "EXECUTING", "READY"].includes(attempt.state)) return false;
+      const lifecycleSnapshot = decodeMemoryActionLifecycleSnapshot(
+        attempt.budgetSnapshot
+      );
+      if (!lifecycleSnapshot) {
+        throw new MemoryPreparingRunConflictError(
+          "memory_admission_snapshot_invalid",
+          false
+        );
+      }
+      await settlePreparingAttemptExecutions(tx, {
+        attemptId: attempt.id,
+        cancelled: false,
+        now,
+        userId: input.userId
+      });
+      await tx.memoryRetrievalAttemptItem.deleteMany({
+        where: { attemptId: attempt.id, userId: input.userId }
+      });
+      const executionEvidence = await loadPreparingAttemptExecutionEvidence(
+        tx,
+        attempt,
+        input.deadlineFallbackBudget
+      );
+      const safeBudgetSnapshot = {
+        ...input.deadlineFallbackBudget,
+        ...memoryActionLifecycleBudgetSnapshot(lifecycleSnapshot),
+        itemCount: 0,
+        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        reason: "memory_admission_deadline_exceeded"
+      };
+      assertAttemptUtilityDeclaration(safeBudgetSnapshot, executionEvidence);
+      await tx.memoryRetrievalAttempt.update({
+        data: {
+          acceptedUtilityEgressFingerprint:
+            executionEvidence.acceptedUtilityEgressFingerprint,
+          boundedSafeQuerySnapshot: null,
+          budgetSnapshot: json(safeBudgetSnapshot),
+          degradationCode: "memory_admission_deadline_exceeded",
+          externalRolesUsed: [...executionEvidence.externalRolesUsed],
+          outcome: "FAILED_SAFE",
+          preparedContextHash: null,
+          preparedContextText: null,
+          preparedContextTokenCount: null,
+          state: "READY",
+          updatedAt: now,
+          utilityEgressMode: executionEvidence.utilityEgressMode
+        },
+        where: { id: attempt.id }
+      });
+      attempt = {
+        ...attempt,
+        acceptedUtilityEgressFingerprint:
+          executionEvidence.acceptedUtilityEgressFingerprint,
+        boundedSafeQuerySnapshot: null,
+        budgetSnapshot: safeBudgetSnapshot as Prisma.JsonValue,
+        degradationCode: "memory_admission_deadline_exceeded",
+        externalRolesUsed: [...executionEvidence.externalRolesUsed],
+        outcome: "FAILED_SAFE",
+        preparedContextHash: null,
+        preparedContextText: null,
+        preparedContextTokenCount: null,
+        state: "READY",
+        utilityEgressMode: executionEvidence.utilityEgressMode
+      };
+    } else if (attempt.state !== "READY") {
+      return false;
+    }
     if (attempt.expiresAt <= now) {
       throw new MemoryPreparingRunConflictError("memory_preparing_attempt_expired", false);
     }
@@ -1827,22 +2454,30 @@ export async function finalizePreparingRunWithClient(
       activeLeafMessageId: string | null;
       archived: boolean;
       folderId: string | null;
+      memoryBranchGeneration: number;
       memoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+      memorySourceRevision: number;
     }>>(Prisma.sql`
       SELECT "activeLeafMessageId", "archived", "folderId",
-        "memoryMode"::text AS "memoryMode"
+        "memoryBranchGeneration", "memoryMode"::text AS "memoryMode",
+        "memorySourceRevision"
       FROM "Chat"
       WHERE "id" = ${run.chatId}
         AND "userId" = ${input.userId}
         AND "permanentDeletionAt" IS NULL
       FOR UPDATE
     `);
+    const lifecycleSnapshot = decodeMemoryActionLifecycleSnapshot(attempt.budgetSnapshot);
     if (
       !chat ||
+      !lifecycleSnapshot ||
       chat.archived ||
       chat.activeLeafMessageId !== attempt.admittedAssistantLeafMessageId ||
+      chat.activeLeafMessageId !== lifecycleSnapshot.activeLeafMessageId ||
       chat.folderId !== attempt.folderIdSnapshot ||
-      chat.memoryMode !== attempt.chatMemoryModeSnapshot
+      chat.memoryMode !== attempt.chatMemoryModeSnapshot ||
+      chat.memoryBranchGeneration !== lifecycleSnapshot.branchGeneration ||
+      chat.memorySourceRevision !== lifecycleSnapshot.sourceRevision
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
     }
@@ -1931,7 +2566,8 @@ export async function finalizePreparingRunWithClient(
       }
     }
 
-    const currentSettings = attempt.chatMemoryModeSnapshot === "TEMPORARY"
+    const currentSettings = deadlineFallback ||
+        attempt.chatMemoryModeSnapshot === "TEMPORARY"
       ? null
       : await loadPreparingSettings(tx, input.userId, true);
     if (currentSettings) {
@@ -2041,22 +2677,28 @@ export async function finalizePreparingRunWithClient(
       return true;
     }
 
-    if (!currentSettings) {
+    if (!deadlineFallback && !currentSettings) {
       throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
     }
-    const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
-    const exactRevisionRequired = attempt.outcome === "EMPTY" && items.length === 0;
-    if (
-      currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot ||
-      currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
-      !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot, {
-        requireUtilityEgressMatch: attempt.utilityEgressMode === "CONSENTED_EXTERNAL"
-      }) ||
-      currentSettings.memoryRevision < attempt.retrievalRevisionSnapshot ||
-      (exactRevisionRequired &&
-        currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot)
-    ) {
-      throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
+    if (currentSettings) {
+      const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
+      const exactRevisionRequired = attempt.outcome === "EMPTY" && items.length === 0;
+      const ownCommittedMutation = exactRevisionRequired &&
+        currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot &&
+        await committedMutationOwnsRevisionAdvance(tx, attempt, currentSettings);
+      if (
+        currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot ||
+        currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
+        !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot, {
+          requireUtilityEgressMatch: attempt.utilityEgressMode === "CONSENTED_EXTERNAL"
+        }) ||
+        currentSettings.memoryRevision < attempt.retrievalRevisionSnapshot ||
+        (exactRevisionRequired &&
+          !ownCommittedMutation &&
+          currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot)
+      ) {
+        throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
+      }
     }
     if (!attempt.outcome) {
       throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
@@ -2075,7 +2717,8 @@ export async function finalizePreparingRunWithClient(
         contextTokenCount: attempt.preparedContextTokenCount ?? 0,
         degradationCode: attempt.degradationCode,
         finalizedAt: now,
-        finalizedRevisionSnapshot: currentSettings.memoryRevision,
+        finalizedRevisionSnapshot: currentSettings?.memoryRevision ??
+          attempt.retrievalRevisionSnapshot,
         indexGenerationId: attempt.indexGenerationIdSnapshot,
         memoryGenerationSnapshot: attempt.memoryGenerationSnapshot,
         modelRunId: run.id,
@@ -2130,13 +2773,14 @@ export async function finalizePreparingRunWithClient(
       where: { id: run.id }
     });
     return true;
-  });
+  }, { deadlineAtMs: input.deadlineAtMs });
 }
 
 export async function retryPreparingRunAttemptWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{
     attemptId: string;
+    deadlineAtMs?: number;
     now: Date;
     runId: string;
     userId: string;
@@ -2169,22 +2813,30 @@ export async function retryPreparingRunAttemptWithClient(
       activeLeafMessageId: string | null;
       archived: boolean;
       folderId: string | null;
+      memoryBranchGeneration: number;
       memoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+      memorySourceRevision: number;
     }>>(Prisma.sql`
       SELECT "activeLeafMessageId", "archived", "folderId",
-        "memoryMode"::text AS "memoryMode"
+        "memoryBranchGeneration", "memoryMode"::text AS "memoryMode",
+        "memorySourceRevision"
       FROM "Chat"
       WHERE "id" = ${attempt.chatId}
         AND "userId" = ${input.userId}
         AND "permanentDeletionAt" IS NULL
       FOR UPDATE
     `);
+    const lifecycleSnapshot = decodeMemoryActionLifecycleSnapshot(attempt.budgetSnapshot);
     if (
       !chat ||
+      !lifecycleSnapshot ||
       chat.archived ||
       chat.activeLeafMessageId !== attempt.admittedAssistantLeafMessageId ||
+      chat.activeLeafMessageId !== lifecycleSnapshot.activeLeafMessageId ||
       chat.folderId !== attempt.folderIdSnapshot ||
-      chat.memoryMode !== attempt.chatMemoryModeSnapshot
+      chat.memoryMode !== attempt.chatMemoryModeSnapshot ||
+      chat.memoryBranchGeneration !== lifecycleSnapshot.branchGeneration ||
+      chat.memorySourceRevision !== lifecycleSnapshot.sourceRevision
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
     }
@@ -2223,6 +2875,11 @@ export async function retryPreparingRunAttemptWithClient(
       chatId: attempt.chatId,
       chatMemoryMode: attempt.chatMemoryModeSnapshot,
       folderIdSnapshot: attempt.folderIdSnapshot,
+      lifecycleSnapshot: {
+        activeLeafMessageId: lifecycleSnapshot.activeLeafMessageId,
+        memoryBranchGeneration: lifecycleSnapshot.branchGeneration,
+        memorySourceRevision: lifecycleSnapshot.sourceRevision
+      },
       now: input.now,
       preSendActiveLeafMessageId: attempt.preSendActiveLeafMessageId,
       runId: attempt.modelRunId,
@@ -2236,7 +2893,7 @@ export async function retryPreparingRunAttemptWithClient(
       memoryRevision: settings.memoryRevision,
       settingsSnapshot: memoryPreparingSettingsSnapshot(settings)
     };
-  });
+  }, { deadlineAtMs: input.deadlineAtMs });
 }
 
 async function settlePreparingAttemptExecutions(
@@ -2500,37 +3157,104 @@ export async function createDormantPreparingRun(
   admission: PreparingRunAdmissionInput,
   memoryRetrieval: MemoryRunRetrievalService,
   memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
-  memorySourceHooks?: MemorySourceMutationHooks
+  memorySourceHooks?: MemorySourceMutationHooks,
+  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 ): Promise<PreparingRunAdmissionResult & Readonly<{
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
   if (admission.project) {
     return admitProjectRunWithClient(prismaClient, admission);
   }
-  const created = await admitPreparingRunWithClient(
-    prismaClient,
-    admission,
-    memorySourceHooks
-  );
+  const memoryAdmissionDeadlineAtMs =
+    Date.now() + boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs);
+  let created: PreparingRunAdmissionResult;
+  try {
+    created = await admitPreparingRunWithClient(
+      prismaClient,
+      admission,
+      memorySourceHooks,
+      {
+        deadlineAtMs: memoryAdmissionDeadlineAtMs -
+          MEMORY_PREPARING_ADMISSION_RESERVE_MS
+      }
+    );
+  } catch (error) {
+    if (!(error instanceof RunTransactionDeadlineError)) throw error;
+    // The timed-out transaction rolled back atomically. Retry only the
+    // ordinary admission shape and persist a zero-item FAILED_SAFE receipt;
+    // no Memory settings, index, utility, or model decision is consulted.
+    return admitPreparingRunWithClient(
+      prismaClient,
+      admission,
+      memorySourceHooks,
+      {
+        memoryUnavailableFallback: true
+      }
+    );
+  }
+  if (created.chatMemoryMode === "TEMPORARY") {
+    return created;
+  }
   let currentAttemptId = created.attemptId;
   let currentSettings = {
     memoryGeneration: created.memoryGeneration,
     memoryRevision: created.memoryRevision,
     settingsSnapshot: created.settingsSnapshot
   };
-  try {
-    if (created.chatMemoryMode === "TEMPORARY" &&
-      admission.normalizedRequest.memoryActionTools !== undefined) {
+  const memoryControlCache: MemoryRunControlCache = {
+    admissionDeadlineAtMs: memoryAdmissionDeadlineAtMs -
+      MEMORY_PREPARING_RETRIEVAL_RESERVE_MS
+  };
+  let deadlineFallbackBudget: Readonly<Record<string, unknown>> = {
+    itemCount: 0,
+    memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+    reason: "memory_admission_deadline_exceeded",
+    schemaVersion: 2
+  };
+  const finalizeDeadlineFallback = async (): Promise<PreparingRunAdmissionResult> => {
+    const fallbackFinalized = await finalizePreparingRunWithClient(
+      prismaClient,
+      {
+        ...(admission.assistant ? { assistant: admission.assistant } : {}),
+        attemptId: currentAttemptId,
+        deadlineFallbackBudget: {
+          ...deadlineFallbackBudget,
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+        },
+        ...(admission.knowledgeAdmissionPlan
+          ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
+          : {}),
+        ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
+        normalizedRequest: admission.normalizedRequest,
+        providerAdmissionPlan: admission.providerAdmissionPlan,
+        providerRequestPreview: admission.providerRequestPreview,
+        runId: created.runId,
+        ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
+        userId: admission.userId
+      },
+      memoryExecutionAuthority
+    );
+    if (!fallbackFinalized) {
       throw new MemoryPreparingRunConflictError(
-        "memory_temporary_chat_forbidden",
+        "memory_preparing_deadline_fallback_unavailable",
         false
       );
     }
-
+    return {
+      ...created,
+      attemptId: currentAttemptId,
+      memoryGeneration: currentSettings.memoryGeneration,
+      memoryRevision: currentSettings.memoryRevision,
+      settingsSnapshot: currentSettings.settingsSnapshot
+    };
+  };
+  try {
     for (let attemptOrdinal = 0; attemptOrdinal < 2; attemptOrdinal += 1) {
       try {
         const began = await beginPreparingRunAttemptWithClient(prismaClient, {
           attemptId: currentAttemptId,
+          deadlineAtMs: memoryAdmissionDeadlineAtMs -
+            MEMORY_PREPARING_RETRIEVAL_RESERVE_MS,
           now: new Date(),
           runId: created.runId,
           userId: admission.userId
@@ -2538,12 +3262,11 @@ export async function createDormantPreparingRun(
         if (!began) {
           throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
         }
-        let attemptResult = created.chatMemoryMode === "TEMPORARY"
-          ? dormantMemoryAttemptResult(currentSettings.settingsSnapshot)
-          : admission.memoryMaterializer
+        let attemptResult = admission.memoryMaterializer
           ? await memoryRetrieval.retrieve({
                 attemptId: currentAttemptId,
                 chatId: admission.chatId,
+                controlCache: memoryControlCache,
                 expected: {
                   activeIndexGenerationId:
                     currentSettings.settingsSnapshot.activeIndexGenerationId,
@@ -2555,21 +3278,36 @@ export async function createDormantPreparingRun(
                   settings: currentSettings.settingsSnapshot
                 },
                 normalizedRequest: admission.normalizedRequest,
+                modelRunId: created.runId,
                 now: new Date(),
                 ...(admission.signal ? { signal: admission.signal } : {}),
                 userId: admission.userId
               })
           : dormantMemoryAttemptResult(currentSettings.settingsSnapshot);
+        deadlineFallbackBudget = attemptResult.budgetSnapshot;
+        const rawActionAnswerResult = attemptResult.budgetSnapshot.memoryActionAnswerResult;
+        const actionAnswerResult = rawActionAnswerResult === undefined
+          ? null
+          : decodeMemoryActionAnswerResult(rawActionAnswerResult);
+        if (rawActionAnswerResult !== undefined && !actionAnswerResult) {
+          throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+        }
         let materializedRequest: PreparingRunMaterializedRequest | undefined;
-        if (attemptResult.preparedContext) {
-          materializedRequest = admission.memoryMaterializer?.({
-            approxTokens: attemptResult.preparedContext.approxTokens,
-            itemCount: attemptResult.items?.length ?? 0,
-            memoryGeneration: currentSettings.memoryGeneration,
-            memoryRevision: currentSettings.memoryRevision,
-            mode: "prefetched",
-            text: attemptResult.preparedContext.text
-          }) ?? undefined;
+        if (attemptResult.preparedContext || actionAnswerResult) {
+          const personalContext = attemptResult.preparedContext
+            ? {
+                approxTokens: attemptResult.preparedContext.approxTokens,
+                itemCount: attemptResult.items?.length ?? 0,
+                memoryGeneration: currentSettings.memoryGeneration,
+                memoryRevision: currentSettings.memoryRevision,
+                mode: "prefetched" as const,
+                text: attemptResult.preparedContext.text
+              }
+            : null;
+          materializedRequest = admission.memoryMaterializer?.(
+            personalContext,
+            actionAnswerResult ?? undefined
+          ) ?? undefined;
           if (!materializedRequest) {
             attemptResult = {
               budgetSnapshot: {
@@ -2582,10 +3320,33 @@ export async function createDormantPreparingRun(
               preparedContext: null,
               querySnapshot: attemptResult.querySnapshot ?? null
             };
+            materializedRequest = actionAnswerResult
+              ? admission.memoryMaterializer?.(null, actionAnswerResult) ?? undefined
+              : undefined;
+            if (actionAnswerResult && !materializedRequest) {
+              attemptResult = {
+                ...attemptResult,
+                budgetSnapshot: {
+                  ...attemptResult.budgetSnapshot,
+                  memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+                }
+              };
+              // The already-admitted ordinary request carries this same
+              // no-commit result. If even a fresh materialization declines,
+              // Phase B safely dispatches that base request instead of making
+              // an optional Memory contract fail the answer.
+              materializedRequest = admission.memoryMaterializer?.(
+                null,
+                MEMORY_ACTION_NO_COMMIT_RESULT
+              ) ?? undefined;
+            }
           }
         }
+        deadlineFallbackBudget = attemptResult.budgetSnapshot;
         const completed = await completePreparingRunAttemptWithClient(prismaClient, {
           attemptId: currentAttemptId,
+          deadlineAtMs: memoryAdmissionDeadlineAtMs -
+            MEMORY_PREPARING_COMPLETION_RESERVE_MS,
           result: attemptResult,
           runId: created.runId,
           userId: admission.userId
@@ -2602,6 +3363,8 @@ export async function createDormantPreparingRun(
           ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
           ...(admission.project ? { project: admission.project } : {}),
           ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
+          deadlineAtMs: memoryAdmissionDeadlineAtMs -
+            MEMORY_PREPARING_FINALIZATION_RESERVE_MS,
           normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
           providerAdmissionPlan: admission.providerAdmissionPlan,
           providerRequestPreview:
@@ -2621,6 +3384,9 @@ export async function createDormantPreparingRun(
           ...(materializedRequest ? { materializedRequest } : {})
         };
       } catch (error) {
+        if (error instanceof RunTransactionDeadlineError) {
+          return finalizeDeadlineFallback();
+        }
         if (
           !(error instanceof MemoryPreparingRunConflictError) ||
           !error.retryable ||
@@ -2628,12 +3394,22 @@ export async function createDormantPreparingRun(
         ) {
           throw error;
         }
-        const retry = await retryPreparingRunAttemptWithClient(prismaClient, {
-          attemptId: currentAttemptId,
-          now: new Date(),
-          runId: created.runId,
-          userId: admission.userId
-        });
+        let retry;
+        try {
+          retry = await retryPreparingRunAttemptWithClient(prismaClient, {
+            attemptId: currentAttemptId,
+            deadlineAtMs: memoryAdmissionDeadlineAtMs -
+              MEMORY_PREPARING_RETRIEVAL_RESERVE_MS,
+            now: new Date(),
+            runId: created.runId,
+            userId: admission.userId
+          });
+        } catch (retryError) {
+          if (retryError instanceof RunTransactionDeadlineError) {
+            return finalizeDeadlineFallback();
+          }
+          throw retryError;
+        }
         if (!retry) throw error;
         currentAttemptId = retry.attemptId;
         currentSettings = retry;

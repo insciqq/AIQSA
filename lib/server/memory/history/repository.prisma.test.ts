@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
-import {
-  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  type MemoryHistorySearchInput
-} from "../../../contracts/memory";
+import { afterAll, describe, expect, it } from "vitest";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
@@ -12,33 +9,25 @@ import type { MemoryJobClaim } from "../coordinator/types";
 import { defaultMemorySourceMutationHooks } from "../sourceHooks";
 import {
   applyMemorySourceMutations,
+  loadMemorySourceSnapshot,
   lockMemorySourceChat
 } from "../sourceState";
 import { createPrismaMemoryHistoryIndexHandler } from "./handler";
-import {
-  createPrismaMemoryHistorySearchRepository,
-  MemoryHistorySearchRepositoryError
-} from "./search/repository";
-import {
-  MEMORY_LEXICAL_NORMALIZATION_VERSION,
-  memorySha256
-} from "../persistence/lexical";
+import type { MemoryHistorySafetyClassifier } from "./classifier";
+import { memorySha256 } from "../persistence/lexical";
+import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   MEMORY_TEMPORARY_DELETION_GENERATION,
   MEMORY_TEMPORARY_DELETION_TARGET_TYPE
 } from "../temporaryRetention";
-import { createMemoryHistoryToolExecutor } from "./search/toolExecutor";
-import { MEMORY_HISTORY_SEARCH_TOOL_NAME } from "./search/tool";
-import type { MemoryUnifiedSearchResponse } from "./search/unifiedService";
-import type { ProviderRunRequest } from "../../providers/types";
 import { createMemoryToolEgressReceiptService } from "../egress/receipts";
-import { purgeMemoryHistoryReceiptDerivatives } from "./purge";
 import {
   MEMORY_HISTORY_BACKFILL_WINDOW,
   readMemoryHistoryIndexingProgress,
   seedMemoryHistoryBackfill
 } from "./backfill";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "./contract";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 
 async function mutateSource(
@@ -195,42 +184,19 @@ function executionContext(now: Date) {
   };
 }
 
-function historyToolProviderRequest(chatId: string): ProviderRunRequest {
-  return {
-    attachmentIds: [],
-    attachments: [],
-    chatId,
-    content: textMessageContent("Search my history"),
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-    toolMode: "auto",
-    modelCapabilities: {
-      nativePdfInput: false,
-      nativeSearch: false,
-      pdf: false,
-      reasoning: false,
-      toolCalling: true,
-      vision: false
-    },
-    modelId: "history-test-model",
-    params: {},
-    prompt: { developer: null, system: null },
-    provider: "history-test-provider",
-    searchPlan: { mode: "all_selected", options: [] }
-  };
-}
-
-function unifiedToolArguments(query: string) {
-  return {
-    query,
-    scope: null,
-    source_kinds: null,
-    time_range: null
-  };
-}
+const normalHistoryClassifier: MemoryHistorySafetyClassifier = {
+  classify: async (chunks) => ({
+    decisions: chunks.map((chunk) => ({
+      chunkId: chunk.id,
+      sensitivity: "NORMAL" as const
+    })),
+    policyVersion: "memory-history-safety-policy-test"
+  })
+};
 
 async function processHistoryJob(userId: string) {
   const claim = await claimHistoryJob(userId);
-  const handler = createPrismaMemoryHistoryIndexHandler(prisma);
+  const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
   await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
   const now = new Date();
   const result = await handler.execute(claim, executionContext(now));
@@ -255,7 +221,7 @@ describe("Memory lexical history index persistence", () => {
     await prisma.$disconnect();
   });
 
-  it("automatically backfills retained chats newest-first through a bounded idempotent window", async () => {
+  it("explicitly backfills retained chats newest-first through a bounded idempotent window", async () => {
     const userId = await createOwner("memory-history-auto-backfill");
     try {
       await prisma.userMemorySettings.update({
@@ -301,6 +267,9 @@ describe("Memory lexical history index persistence", () => {
         expectedSettingsRevision: before.settingsRevision,
         referenceChatHistory: true
       });
+      // Backfill is now an explicit rebuild action; toggling the setting alone
+      // must not replay chats written while history was off.
+      await seedHistoryBackfill(userId);
 
       const initialJobs = await prisma.memoryJob.findMany({
         orderBy: [{ nextAttemptAt: "asc" }, { id: "asc" }],
@@ -377,10 +346,11 @@ describe("Memory lexical history index persistence", () => {
       const catchupChat = await prisma.chat.create({
         data: { title: "Already-enabled catch-up", userId }
       });
+      const catchupCreatedAt = new Date(Date.now() + 60_000);
       const catchupTurn = await createTurn({
         assistantText: "Catch-up assistant",
         chatId: catchupChat.id,
-        createdAt: new Date("2026-08-10T15:00:00.000Z"),
+        createdAt: catchupCreatedAt,
         parentMessageId: null,
         userId,
         userText: "Catch-up user"
@@ -388,7 +358,7 @@ describe("Memory lexical history index persistence", () => {
       await prisma.chat.update({
         data: {
           activeLeafMessageId: catchupTurn.assistantMessage.id,
-          updatedAt: new Date("2026-08-10T15:01:00.000Z")
+          updatedAt: new Date(catchupCreatedAt.getTime() + 1_000)
         },
         where: { id: catchupChat.id }
       });
@@ -405,8 +375,105 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("reindexes a legacy READY checkpoint once and marks a classified zero-chunk result current", async () => {
+    const userId = await createOwner("memory-history-checkpoint-upgrade");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Legacy history checkpoint", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Legacy private history response.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-20T10:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Legacy private history input."
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: turn.assistantMessage.id },
+        where: { id: chat.id }
+      });
+      const source = await loadMemorySourceSnapshot(prisma, {
+        chatId: chat.id,
+        lock: "NONE",
+        personalOnly: true,
+        userId
+      });
+      if (!source?.activeLeafMessageId) {
+        throw new Error("memory_history_upgrade_source_missing");
+      }
+      await prisma.chatMemoryCheckpoint.create({
+        data: {
+          activeLeafMessageId: source.activeLeafMessageId,
+          branchGeneration: source.memoryBranchGeneration,
+          chatId: source.id,
+          lastIndexedMessageId: source.activeLeafMessageId,
+          lastSucceededAt: new Date("2026-08-20T10:01:00.000Z"),
+          pipelineVersion: "memory-history-index-v1",
+          sourceContentHash: source.sourceHash,
+          sourceRevision: source.memorySourceRevision,
+          status: "READY",
+          userId
+        }
+      });
+
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true)).resolves.toMatchObject({
+        completedChats: 0,
+        state: "INDEXING",
+        totalChats: 1
+      });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({
+        activeJobs: 0,
+        enqueuedJobs: 1
+      });
+      const claim = await claimHistoryJob(userId);
+      expect(claim.pipelineVersion).toBe(MEMORY_HISTORY_INDEX_PIPELINE_VERSION);
+      const secretClassifier: MemoryHistorySafetyClassifier = {
+        classify: async (chunks) => ({
+          decisions: chunks.map((chunk) => ({
+            chunkId: chunk.id,
+            sensitivity: "SECRET" as const
+          })),
+          policyVersion: "memory-history-safety-policy-upgrade-test"
+        })
+      };
+      const handler = createPrismaMemoryHistoryIndexHandler(prisma, secretClassifier);
+      const now = new Date();
+      const result = await handler.execute(claim, executionContext(now));
+      const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
+      await expect(coordinator.commitJobSuccess({
+        acceptedResultHash: result.acceptedResultHash,
+        apply: result.apply,
+        claim,
+        now,
+        stage: result.stage ?? null
+      })).resolves.toBe(true);
+
+      await expect(prisma.memoryRecallChunk.count({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      })).resolves.toBe(0);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        status: "READY"
+      });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({
+        activeJobs: 0,
+        enqueuedJobs: 0
+      });
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true)).resolves.toMatchObject({
+        completedChats: 1,
+        state: "READY",
+        totalChats: 1
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it.each(["HISTORY_INDEX", "ALL_REUSABLE"] as const)(
-    "replays automatic backfill behind a populated %s barrier without resurrection",
+    "does not backfill retained chats behind a populated %s barrier",
     async (barrierKind) => {
     const userId = await createOwner(`memory-history-${barrierKind.toLowerCase()}-barrier`);
     try {
@@ -449,25 +516,15 @@ describe("Memory lexical history index persistence", () => {
         expectedSettingsRevision: before.settingsRevision,
         referenceChatHistory: true
       });
-      await processHistoryJob(userId);
-
+      await seedHistoryBackfill(userId);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", userId }
+      })).resolves.toBe(0);
       await expect(prisma.memoryRecallChunk.count({ where: { userId } }))
         .resolves.toBe(0);
-      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+      await expect(prisma.chatMemoryCheckpoint.findUnique({
         where: { userId_chatId: { chatId: chat.id, userId } }
-      })).resolves.toMatchObject({
-        lastIndexedMessageId: turn.assistantMessage.id,
-        status: "READY"
-      });
-
-      await prisma.chatMemoryCheckpoint.update({
-        data: {
-          lastIndexedMessageId: null,
-          lastSucceededAt: null,
-          status: "STALE"
-        },
-        where: { userId_chatId: { chatId: chat.id, userId } }
-      });
+      })).resolves.toBeNull();
       const enabled = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
@@ -481,27 +538,199 @@ describe("Memory lexical history index persistence", () => {
         expectedSettingsRevision: disabled.settingsRevision,
         referenceChatHistory: true
       });
-      await expect(prisma.memoryJob.findFirstOrThrow({
-        where: { kind: "INDEX_HISTORY", userId }
-      })).resolves.toMatchObject({ state: "QUEUED" });
+      await seedHistoryBackfill(userId);
       await expect(prisma.memoryJob.count({
         where: { kind: "INDEX_HISTORY", userId }
-      })).resolves.toBe(1);
-
-      await processHistoryJob(userId);
+      })).resolves.toBe(0);
       await expect(prisma.memoryRecallChunk.count({ where: { userId } }))
         .resolves.toBe(0);
       await expect(prisma.memorySearchEntry.count({ where: { userId } }))
         .resolves.toBe(0);
-      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+      await expect(prisma.chatMemoryCheckpoint.findUnique({
         where: { userId_chatId: { chatId: chat.id, userId } }
-      })).resolves.toMatchObject({ status: "READY" });
+      })).resolves.toBeNull();
     } finally {
       await cleanupOwner(userId);
     }
   });
 
-  it("continues past terminal failures and retries them only after history is re-enabled", async () => {
+  it.each(["MASTER", "SEARCH_HISTORY"] as const)(
+    "retains A, excludes B, admits C, and preserves the split through forced %s reindex",
+    async (pauseScope) => {
+      const userId = await createOwner(`memory-history-abc-${pauseScope.toLowerCase()}`);
+      const pausedAt = new Date("2026-08-21T10:10:00.000Z");
+      const resumedAt = new Date("2026-08-21T10:20:00.000Z");
+      let settingsNow = pausedAt;
+      const settingsRepository = createPrismaMemorySettingsRepository(prisma, {
+        now: () => settingsNow
+      });
+      try {
+        const chat = await prisma.chat.create({
+          data: { title: `A B C ${pauseScope}`, userId }
+        });
+        const turnA = await createTurn({
+          assistantText: "A-before assistant retained marker.",
+          chatId: chat.id,
+          createdAt: new Date("2026-08-21T10:00:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: "A-before user retained marker."
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId: turnA.assistantMessage.id }
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: {
+            assistantMessageId: turnA.assistantMessage.id,
+            runId: turnA.run.id,
+            status: "complete"
+          }
+        });
+        await processHistoryJob(userId);
+        const retainedA = await prisma.memoryRecallChunk.findFirstOrThrow({
+          where: { chatId: chat.id, state: "ACTIVE", userId }
+        });
+        expect(retainedA.safeProjectedText).toContain("A-before user retained marker");
+
+        const beforePause = await prisma.userMemorySettings.findUniqueOrThrow({
+          where: { userId }
+        });
+        const paused = await settingsRepository.patch(userId, {
+          expectedMemoryRevision: beforePause.memoryRevision,
+          expectedSettingsRevision: beforePause.settingsRevision,
+          ...(pauseScope === "MASTER"
+            ? { useMemoryFacts: false }
+            : { referenceChatHistory: false })
+        });
+        const turnB = await createTurn({
+          assistantText: "B-during assistant excluded marker.",
+          chatId: chat.id,
+          createdAt: new Date("2026-08-21T10:12:00.000Z"),
+          parentMessageId: turnA.assistantMessage.id,
+          userId,
+          userText: "B-during user excluded marker."
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId: turnB.assistantMessage.id }
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: {
+            assistantMessageId: turnB.assistantMessage.id,
+            runId: turnB.run.id,
+            status: "complete"
+          }
+        });
+        await expect(prisma.memoryRecallChunk.findUniqueOrThrow({
+          where: { id: retainedA.id }
+        })).resolves.toMatchObject({ state: "ACTIVE" });
+        await expect(prisma.memoryJob.count({
+          where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+        })).resolves.toBe(0);
+
+        settingsNow = resumedAt;
+        await settingsRepository.patch(userId, {
+          expectedMemoryRevision: paused.memoryRevision,
+          expectedSettingsRevision: paused.settingsRevision,
+          ...(pauseScope === "MASTER"
+            ? { useMemoryFacts: true }
+            : { referenceChatHistory: true })
+        });
+        await expect(prisma.memoryPauseInterval.findFirstOrThrow({
+          where: { scope: pauseScope, userId }
+        })).resolves.toMatchObject({ pausedAt, resumedAt });
+        const visibleAfterResume = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chunk."id"
+          FROM "MemoryRecallChunk" AS chunk
+          WHERE chunk."userId" = ${userId}
+            AND chunk."id" = ${retainedA.id}
+            AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+            AND ${memoryHistoryChunkSourceAuthorityPredicate()}
+        `);
+        expect(visibleAfterResume).toEqual([{ id: retainedA.id }]);
+
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({
+          enqueuedJobs: 1
+        });
+        await processHistoryJob(userId);
+        const afterBReindex = await prisma.memoryRecallChunk.findMany({
+          where: { chatId: chat.id, state: "ACTIVE", userId }
+        });
+        expect(afterBReindex).toHaveLength(1);
+        expect(afterBReindex[0]?.safeProjectedText).toContain(
+          "A-before user retained marker"
+        );
+        expect(afterBReindex[0]?.safeProjectedText).not.toContain(
+          "B-during user excluded marker"
+        );
+
+        const turnC = await createTurn({
+          assistantText: "C-after assistant admitted marker.",
+          chatId: chat.id,
+          createdAt: new Date("2026-08-21T10:22:00.000Z"),
+          parentMessageId: turnB.assistantMessage.id,
+          userId,
+          userText: "C-after user admitted marker."
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId: turnC.assistantMessage.id }
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: {
+            assistantMessageId: turnC.assistantMessage.id,
+            runId: turnC.run.id,
+            status: "complete"
+          }
+        });
+        await processHistoryJob(userId);
+
+        const assertSplitAC = async () => {
+          const chunks = await prisma.memoryRecallChunk.findMany({
+            orderBy: { chunkOrdinal: "asc" },
+            where: { chatId: chat.id, state: "ACTIVE", userId }
+          });
+          expect(chunks).toHaveLength(2);
+          expect(chunks.map(({ safeProjectedText }) => safeProjectedText)).toEqual([
+            expect.stringContaining("A-before user retained marker"),
+            expect.stringContaining("C-after user admitted marker")
+          ]);
+          expect(chunks.map(({ safeProjectedText }) => safeProjectedText).join("\n"))
+            .not.toContain("B-during user excluded marker");
+          return chunks;
+        };
+        const currentChunks = await assertSplitAC();
+
+        // Force the same full-source projection to run again. This exercises
+        // rebuild admission rather than relying on the already-stored A/C rows.
+        await prisma.$transaction(async (tx) => {
+          await tx.memorySearchEntry.deleteMany({
+            where: { recallChunkId: { in: currentChunks.map(({ id }) => id) }, userId }
+          });
+          await tx.chatMemoryCheckpoint.update({
+            data: { status: "STALE" },
+            where: { userId_chatId: { chatId: chat.id, userId } }
+          });
+        });
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({
+          enqueuedJobs: 1
+        });
+        await processHistoryJob(userId);
+        await assertSplitAC();
+        await expect(prisma.memorySearchEntry.count({
+          where: { itemType: "RECALL_CHUNK", userId }
+        })).resolves.toBe(2);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
+  it("continues past terminal failures without retrying them after history is re-enabled", async () => {
     const userId = await createOwner("memory-history-terminal-backfill");
     try {
       for (let ordinal = 0; ordinal < 6; ordinal += 1) {
@@ -559,33 +788,33 @@ describe("Memory lexical history index persistence", () => {
         expectedSettingsRevision: enabled.settingsRevision,
         referenceChatHistory: false
       });
-      const reenabled = await repository.patch(userId, {
+      await repository.patch(userId, {
         expectedMemoryRevision: disabled.memoryRevision,
         expectedSettingsRevision: disabled.settingsRevision,
         referenceChatHistory: true
       });
+      await seedHistoryBackfill(userId);
       await expect(prisma.memoryJob.count({
         where: {
           id: { in: initialWindow.map(({ id }) => id) },
-          memoryGenerationSnapshot: reenabled.memoryGeneration,
           state: "QUEUED",
           userId
         }
-      })).resolves.toBe(2);
-      await expect(prisma.memoryJob.count({
-        where: {
-          id: { in: initialWindow.map(({ id }) => id) },
-          state: "STALE",
-          userId
-        }
-      })).resolves.toBe(2);
+      })).resolves.toBe(0);
       await expect(prisma.memoryJob.count({
         where: {
           id: { in: initialWindow.map(({ id }) => id) },
           state: "TERMINAL_FAILED",
           userId
         }
-      })).resolves.toBe(0);
+      })).resolves.toBe(MEMORY_HISTORY_BACKFILL_WINDOW);
+      await expect(prisma.memoryJob.count({
+        where: {
+          kind: "INDEX_HISTORY",
+          state: "QUEUED",
+          userId
+        }
+      })).resolves.toBe(2);
     } finally {
       await cleanupOwner(userId);
     }
@@ -750,7 +979,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("indexes and serves eligible recall chunks", async () => {
+  it("indexes eligible recall chunks", async () => {
     const userId = await createOwner("memory-history-chunks");
     try {
       const chat = await prisma.chat.create({
@@ -778,19 +1007,18 @@ describe("Memory lexical history index persistence", () => {
       });
       await processHistoryJob(userId);
 
-      const historySearch = createPrismaMemoryHistorySearchRepository(prisma);
-      const prepared = await historySearch.prepare(userId, {
-        chatIds: [],
-        cursor: null,
-        folderId: null,
-        from: null,
-        pageSize: 20,
-        query: "СИНЕ-ЗЕЛЕНОЕ РАЗВЕРТЫВАНИЕ",
-        to: null
+      const chunks = await prisma.memoryRecallChunk.findMany({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
       });
-      const response = await historySearch.search(prepared, null);
-      expect(response.results.some((result) => result.itemType === "RECALL_CHUNK"))
-        .toBe(true);
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]?.safeProjectedText).toContain("сине-зелёное развёртывание");
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          itemType: "RECALL_CHUNK",
+          recallChunkId: chunks[0]?.id,
+          userId
+        }
+      })).resolves.toBe(1);
     } finally {
       await cleanupOwner(userId);
     }
@@ -823,7 +1051,7 @@ describe("Memory lexical history index persistence", () => {
         }
       });
       const claim = await claimHistoryJob(userId);
-      const handler = createPrismaMemoryHistoryIndexHandler(prisma);
+      const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
       const result = await handler.execute(claim, executionContext(new Date()));
 
       await mutateSource(userId, chat.id, {
@@ -858,16 +1086,17 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("reindexes on Resume without crossing history cutoffs or message suppressions", async () => {
+  it("keeps Resume forward-only without crossing history cutoffs or suppressions", async () => {
     const userId = await createOwner("memory-history-resume");
     try {
+      const resumeBoundary = Date.now();
       const chat = await prisma.chat.create({
         data: { title: "History resume", userId }
       });
       const oldTurn = await createTurn({
         assistantText: "Old assistant text must stay behind the cutoff.",
         chatId: chat.id,
-        createdAt: new Date("2026-08-10T10:00:00.000Z"),
+        createdAt: new Date(resumeBoundary - 120_000),
         parentMessageId: null,
         userId,
         userText: "Old user text must stay behind the cutoff."
@@ -883,7 +1112,7 @@ describe("Memory lexical history index persistence", () => {
       const excludedSettings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
-      const cutoff = new Date("2026-08-10T11:00:00.000Z");
+      const cutoff = new Date(resumeBoundary - 60_000);
       await prisma.memorySourceBarrier.create({
         data: {
           kind: "HISTORY_INDEX",
@@ -896,7 +1125,6 @@ describe("Memory lexical history index persistence", () => {
         mutations: ["SOURCE_RESUME"],
         patch: { memoryMode: "NORMAL" }
       });
-      await processHistoryJob(userId);
 
       await expect(prisma.memoryRecallChunk.count({ where: { userId } }))
         .resolves.toBe(0);
@@ -904,12 +1132,16 @@ describe("Memory lexical history index persistence", () => {
         .resolves.toBe(0);
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
-      })).resolves.toMatchObject({ status: "READY" });
+      })).resolves.toMatchObject({
+        lastErrorCode: null,
+        resumeCreatedAtCutoff: expect.any(Date),
+        status: "STALE"
+      });
 
       const newTurn = await createTurn({
         assistantText: "Fresh assistant text is eligible.",
         chatId: chat.id,
-        createdAt: new Date("2026-08-10T12:00:00.000Z"),
+        createdAt: new Date(resumeBoundary + 60_000),
         parentMessageId: oldTurn.assistantMessage.id,
         userId,
         userText: "Fresh user text is eligible."
@@ -936,7 +1168,7 @@ describe("Memory lexical history index persistence", () => {
       const suppressedTurn = await createTurn({
         assistantText: "Suppressed assistant text must not be indexed.",
         chatId: chat.id,
-        createdAt: new Date("2026-08-10T13:00:00.000Z"),
+        createdAt: new Date(resumeBoundary + 120_000),
         parentMessageId: newTurn.assistantMessage.id,
         userId,
         userText: "Suppressed user text must not be indexed."
@@ -1087,20 +1319,153 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("persists no grounded assistant derivative while keeping later clean turns", async () => {
+  it("retains visible assistant text after normal runtime sources without raw payloads", async () => {
     const userId = await createOwner("memory-history-taint");
     try {
       const chat = await prisma.chat.create({
         data: { title: "History provenance", userId }
       });
       const groundedTurn = await createTurn({
-        assistantText: "Grounded answer must not become reusable history.",
+        assistantText: "Grounded answer remains visible past-chat context.",
         chatId: chat.id,
         createdAt: new Date("2026-08-10T16:00:00.000Z"),
         grounded: true,
         parentMessageId: null,
         userId,
-        userText: "Please search for this transient result."
+        userText: "Please search with my attached context."
+      });
+      const attachmentId = `history-runtime-attachment-${randomUUID()}`;
+      await prisma.message.update({
+        data: {
+          content: {
+            blocks: [
+              { text: "Please search with my attached context.", type: "text" },
+              {
+                attachmentId,
+                fileName: "context.txt",
+                type: "file"
+              }
+            ]
+          }
+        },
+        where: { id: groundedTurn.userMessage.id }
+      });
+      await prisma.attachment.create({
+        data: {
+          byteSize: 32,
+          chatId: chat.id,
+          extractedText: "RAW_ATTACHMENT_CONTENT_MUST_NOT_BE_INDEXED",
+          fileName: "context.txt",
+          id: attachmentId,
+          kind: "document",
+          messageId: groundedTurn.userMessage.id,
+          metadata: {},
+          mimeType: "text/plain",
+          status: "ready",
+          storageKey: `${userId}/history-runtime-attachment`,
+          userId
+        }
+      });
+      await prisma.searchRun.create({
+        data: {
+          artifacts: { private: "RAW_SEARCH_RESULT_MUST_NOT_BE_INDEXED" },
+          modelRunId: groundedTurn.run.id,
+          provider: "history-test-search",
+          status: "complete",
+          strategyId: "history-test-search"
+        }
+      });
+      const knowledgeToolCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { private: "RAW_KNOWLEDGE_QUERY_MUST_NOT_BE_INDEXED" },
+          modelRunId: groundedTurn.run.id,
+          ordinal: 0,
+          providerCallId: "history-knowledge-call",
+          roundIndex: 0,
+          state: "complete",
+          toolName: "knowledge_search"
+        }
+      });
+      await prisma.knowledgeRun.create({
+        data: {
+          baseEvidence: [{ baseName: "History runtime Base", ordinal: 0 }],
+          candidateCount: 1,
+          candidateLimit: 1,
+          durationMs: 1,
+          embeddingUsage: [],
+          fusion: "rrf_k60",
+          invocationOrdinal: 1,
+          modelRunId: groundedTurn.run.id,
+          modelRunToolCallId: knowledgeToolCall.id,
+          outcome: "complete",
+          providerText: "RAW_KNOWLEDGE_RESULT_MUST_NOT_BE_INDEXED",
+          query: "private knowledge query",
+          resultLimit: 1,
+          results: [{ handle: "K1" }]
+        }
+      });
+      await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { private: "RAW_TOOL_ARGUMENTS_MUST_NOT_BE_INDEXED" },
+          modelRunId: groundedTurn.run.id,
+          ordinal: 1,
+          providerCallId: "history-tool-call",
+          result: { private: "RAW_TOOL_RESULT_MUST_NOT_BE_INDEXED" },
+          roundIndex: 0,
+          state: "complete",
+          toolName: "mcp_history_test"
+        }
+      });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const memoryContext = "RAW_RETRIEVED_MEMORY_MUST_NOT_BE_INDEXED";
+      await prisma.$transaction(async (tx) => {
+        const retrievalAttempt = await tx.memoryRetrievalAttempt.create({
+          data: {
+            admissionKind: "NORMAL_SEND",
+            admittedAssistantLeafMessageId: groundedTurn.assistantMessage.id,
+            admittedUserMessageId: groundedTurn.userMessage.id,
+            attemptOrdinal: 0,
+            baseRequestHash: memorySha256({ type: "history-runtime-base" }),
+            boundedPrivateBaseRequestSnapshot: {},
+            chatId: chat.id,
+            chatMemoryModeSnapshot: "NORMAL",
+            consumedAt: new Date("2026-08-10T16:01:00.000Z"),
+            expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+            memoryGenerationSnapshot: settings.memoryGeneration,
+            modelRunId: groundedTurn.run.id,
+            outcome: "USED",
+            preparedContextHash: memorySha256(memoryContext),
+            preparedContextText: memoryContext,
+            preparedContextTokenCount: 8,
+            queryHash: memorySha256("history runtime memory"),
+            retrievalRevisionSnapshot: settings.memoryRevision,
+            settingsSnapshot: {},
+            state: "CONSUMED",
+            userId,
+            utilityEgressMode: "LOCAL_ONLY"
+          }
+        });
+        await tx.modelRunMemoryBinding.create({
+          data: {
+            boundedSafeQuerySnapshot: "history runtime memory",
+            contextTextHash: memorySha256(memoryContext),
+            contextTokenCount: 8,
+            finalizedAt: new Date("2026-08-10T16:01:00.000Z"),
+            finalizedRevisionSnapshot: settings.memoryRevision,
+            memoryGenerationSnapshot: settings.memoryGeneration,
+            modelRunId: groundedTurn.run.id,
+            outcome: "USED",
+            queryHash: memorySha256("history runtime memory"),
+            queryPlannerVersion: "history-runtime-query-v1",
+            retrievalAttemptId: retrievalAttempt.id,
+            retrievalPipelineVersion: "history-runtime-retrieval-v1",
+            retrievalRevisionSnapshot: settings.memoryRevision,
+            settingsSnapshot: {},
+            userId
+          }
+        });
       });
       const cleanTurn = await createTurn({
         assistantText: "Clean visible answer is eligible.",
@@ -1128,602 +1493,11 @@ describe("Memory lexical history index persistence", () => {
         where: { chatId: chat.id, state: "ACTIVE", userId }
       });
       expect(chunks).toHaveLength(1);
+      expect(chunks[0]?.safeProjectedText).toContain("attached context");
+      expect(chunks[0]?.safeProjectedText).toContain("Grounded answer remains visible");
       expect(chunks[0]?.safeProjectedText).toContain("direct follow-up");
-      expect(chunks[0]?.safeProjectedText).not.toContain("Grounded answer");
-      expect(JSON.stringify(chunks)).not.toContain("transient result");
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("searches only current safe owned sources with scope-bound cursor pagination", async () => {
-    const userId = await createOwner("memory-history-manual-search");
-    const foreignUserId = await createOwner("memory-history-manual-search-foreign");
-    try {
-      const folder = await prisma.folder.create({
-        data: { name: "Private infrastructure", userId }
-      });
-      const firstChat = await prisma.chat.create({
-        data: { folderId: folder.id, title: "First private source", userId }
-      });
-      const firstTurn = await createTurn({
-        assistantText: "Manual history marker alpha is confirmed.",
-        chatId: firstChat.id,
-        createdAt: new Date("2026-08-01T10:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "Manual history marker alpha belongs to this account."
-      });
-      await mutateSource(userId, firstChat.id, {
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: firstTurn.assistantMessage.id }
-      });
-      await mutateSource(userId, firstChat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: {
-          assistantMessageId: firstTurn.assistantMessage.id,
-          runId: firstTurn.run.id,
-          status: "complete"
-        }
-      });
-      await processHistoryJob(userId);
-
-      const secondChat = await prisma.chat.create({
-        data: { title: "Second private source", userId }
-      });
-      const secondTurn = await createTurn({
-        assistantText: "Manual history marker beta is confirmed.",
-        chatId: secondChat.id,
-        createdAt: new Date("2026-08-02T10:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "Manual history marker beta belongs to this account."
-      });
-      await mutateSource(userId, secondChat.id, {
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: secondTurn.assistantMessage.id }
-      });
-      await mutateSource(userId, secondChat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: {
-          assistantMessageId: secondTurn.assistantMessage.id,
-          runId: secondTurn.run.id,
-          status: "complete"
-        }
-      });
-      await processHistoryJob(userId);
-
-      const foreignChat = await prisma.chat.create({
-        data: { title: "Foreign private source", userId: foreignUserId }
-      });
-      const foreignTurn = await createTurn({
-        assistantText: "Manual history marker foreign is confirmed.",
-        chatId: foreignChat.id,
-        createdAt: new Date("2026-08-03T10:00:00.000Z"),
-        parentMessageId: null,
-        userId: foreignUserId,
-        userText: "Manual history marker foreign belongs elsewhere."
-      });
-      await mutateSource(foreignUserId, foreignChat.id, {
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: foreignTurn.assistantMessage.id }
-      });
-      await mutateSource(foreignUserId, foreignChat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: {
-          assistantMessageId: foreignTurn.assistantMessage.id,
-          runId: foreignTurn.run.id,
-          status: "complete"
-        }
-      });
-      await processHistoryJob(foreignUserId);
-
-      const repository = createPrismaMemoryHistorySearchRepository(prisma);
-      const baseInput: MemoryHistorySearchInput = {
-        chatIds: [],
-        cursor: null,
-        folderId: null,
-        from: null,
-        pageSize: 1,
-        query: "manual history marker",
-        to: null
-      };
-      const firstPage = await repository.search(
-        await repository.prepare(userId, baseInput),
-        null
-      );
-      expect(firstPage.results).toHaveLength(1);
-      expect(firstPage.nextCursor).not.toBeNull();
-      expect(firstPage.results[0]?.sourceChatId).not.toBe(foreignChat.id);
-
-      const secondPageInput = { ...baseInput, cursor: firstPage.nextCursor };
-      const secondPage = await repository.search(
-        await repository.prepare(userId, secondPageInput),
-        null
-      );
-      expect(secondPage.results).toHaveLength(1);
-      expect(new Set([
-        firstPage.results[0]?.sourceChatId,
-        secondPage.results[0]?.sourceChatId
-      ])).toEqual(new Set([firstChat.id, secondChat.id]));
-      await expect(repository.prepare(userId, {
-        ...secondPageInput,
-        chatIds: [foreignChat.id]
-      })).rejects.toEqual(new MemoryHistorySearchRepositoryError(
-        "memory_contract_invalid"
-      ));
-
-      const folderOnly = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          folderId: folder.id,
-          pageSize: 20
-        }),
-        null
-      );
-      expect(folderOnly.results.map((result) => result.sourceChatId))
-        .toEqual([firstChat.id]);
-      const foreignFolder = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          folderId: randomUUID(),
-          pageSize: 20
-        }),
-        null
-      );
-      expect(foreignFolder.results).toEqual([]);
-      const boundedTime = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          from: "2026-08-02T00:00:00.000Z",
-          pageSize: 20,
-          to: "2026-08-03T00:00:00.000Z"
-        }),
-        null
-      );
-      expect(boundedTime.results.map((result) => result.sourceChatId))
-        .toEqual([secondChat.id]);
-
-      await prisma.chat.update({
-        data: { archived: true },
-        where: { id: firstChat.id }
-      });
-      const archived = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          chatIds: [firstChat.id],
-          pageSize: 20,
-          query: "marker alpha"
-        }),
-        null
-      );
-      expect(archived.results).toMatchObject([{ sourceState: "ARCHIVED" }]);
-
-      const firstChunk = await prisma.memoryRecallChunk.findFirstOrThrow({
-        where: { chatId: firstChat.id, state: "ACTIVE", userId }
-      });
-      await prisma.memoryRecallChunk.update({
-        data: {
-          redactionReasonCodes: ["CONTACT_EMAIL_REDACTED"],
-          redactionState: "REDACTED",
-          safetyClass: "SENSITIVE"
-        },
-        where: { id: firstChunk.id }
-      });
-      const safelyRedacted = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          chatIds: [firstChat.id],
-          pageSize: 20,
-          query: "marker alpha"
-        }),
-        null
-      );
-      expect(safelyRedacted.results.map((result) => result.sourceChatId))
-        .toEqual([firstChat.id]);
-      await prisma.memoryRecallChunk.update({
-        data: {
-          redactionReasonCodes: [],
-          redactionState: "NOT_NEEDED",
-          safetyClass: "NORMAL"
-        },
-        where: { id: firstChunk.id }
-      });
-
-      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      await prisma.memorySuppression.create({
-        data: {
-          deletionGeneration: settings.memoryGeneration,
-          fingerprintKeyVersion: "history-search-test-v1",
-          normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
-          scope: "SOURCE_MESSAGE",
-          sourceBranchGeneration: firstChunk.branchGeneration,
-          sourceChatId: firstChat.id,
-          sourceMessageId: firstTurn.userMessage.id,
-          userId
-        }
-      });
-      const suppressed = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          chatIds: [firstChat.id],
-          pageSize: 20,
-          query: "marker alpha"
-        }),
-        null
-      );
-      expect(suppressed.results).toEqual([]);
-
-      await prisma.memorySuppression.deleteMany({ where: { userId } });
-      await mutateSource(userId, firstChat.id, {
-        mutations: ["BRANCH_PATH_CHANGE"],
-        patch: { activeLeafMessageId: firstTurn.assistantMessage.id }
-      });
-      const staleBranch = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          chatIds: [firstChat.id],
-          pageSize: 20,
-          query: "marker alpha"
-        }),
-        null
-      );
-      expect(staleBranch.results).toEqual([]);
-
-      const absentSource = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          chatIds: [randomUUID()],
-          pageSize: 20,
-          query: "marker alpha"
-        }),
-        null
-      );
-      expect(absentSource.results).toEqual([]);
-
-      await mutateSource(userId, secondChat.id, {
-        mutations: ["SOURCE_EXCLUDE"],
-        patch: { memoryMode: "EXCLUDED" }
-      });
-      const excluded = await repository.search(
-        await repository.prepare(userId, {
-          ...baseInput,
-          chatIds: [secondChat.id],
-          pageSize: 20,
-          query: "marker beta"
-        }),
-        null
-      );
-      expect(excluded.results).toEqual([]);
-      const evidence = Object.freeze({
-        crossTenantLeakageCount: firstPage.results.filter((result) =>
-          result.sourceChatId === foreignChat.id).length,
-        evidenceVersion: "memory-manual-search-qualification-v1",
-        excludedSourceHitCount: excluded.results.length,
-        sanitizedAggregatesOnly: true,
-        staleBranchHitCount: staleBranch.results.length,
-        suppressedSourceHitCount: suppressed.results.length
-      });
-      expect(evidence).toEqual({
-        crossTenantLeakageCount: 0,
-        evidenceVersion: "memory-manual-search-qualification-v1",
-        excludedSourceHitCount: 0,
-        sanitizedAggregatesOnly: true,
-        staleBranchHitCount: 0,
-        suppressedSourceHitCount: 0
-      });
-      expect(JSON.stringify(evidence)).not.toContain(userId);
-      expect(JSON.stringify(evidence)).not.toContain(foreignUserId);
-      console.info("memory_manual_search_qualification", evidence);
-    } finally {
-      await cleanupOwner(foreignUserId);
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("owns bounded history-tool receipts, replays settled calls, and fails safe on ambiguity", async () => {
-    const userId = await createOwner("memory-history-tool-receipt");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "History tool receipts", userId }
-      });
-      const firstTurn = await createTurn({
-        assistantText: "Receipt fixture answer",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-10T18:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "Receipt fixture question"
-      });
-      const response: MemoryUnifiedSearchResponse = {
-        executionBindingIds: [],
-        indexing: {
-          candidateCount: 1,
-          degradationCode: null,
-          lexicalState: "READY",
-          relevanceState: "READY",
-          serviceVersion: "memory-unified-search-v1",
-          vectorState: "NOT_CONFIGURED"
-        },
-        privateResults: [{
-          entryId: "entry-1",
-          factId: null,
-          handle: "m0",
-          itemId: "chunk-1",
-          itemType: "RECALL_CHUNK",
-          laneRanks: { HISTORY_RECALL_EXACT: 1 },
-          sourceChatId: chat.id,
-          sourceKind: "HISTORY"
-        }],
-        results: [{
-          handle: "m0",
-          occurredFrom: "2026-08-10T17:00:00.000Z",
-          occurredTo: null,
-          sourceChatId: chat.id,
-          sourceKind: "HISTORY",
-          text: "Receipt fixture question"
-        }]
-      };
-      const search = vi.fn(async () => response);
-      const executor = createMemoryHistoryToolExecutor({
-        client: prisma,
-        service: { search }
-      });
-      const calls = await Promise.all([0, 1, 2].map((ordinal) =>
-        prisma.modelRunToolCall.create({
-          data: {
-            arguments: unifiedToolArguments(`receipt query ${ordinal}`),
-            modelRunId: firstTurn.run.id,
-            ordinal,
-            providerCallId: `history-tool-call-${ordinal}`,
-            roundIndex: 0,
-            toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
-          }
-        })
-      ));
-      const context = (persistedToolCallId: string) => ({
-        persistedToolCallId,
-        request: historyToolProviderRequest(chat.id),
-        runId: firstTurn.run.id,
-        userId
-      });
-      const call = (ordinal: number) => ({
-        arguments: unifiedToolArguments(`receipt query ${ordinal}`),
-        id: `history-tool-call-${ordinal}`,
-        name: MEMORY_HISTORY_SEARCH_TOOL_NAME
-      });
-
-      const first = await executor.execute(call(0), context(calls[0]!.id));
-      expect(search).toHaveBeenCalledTimes(1);
-      expect(first).toMatchObject({
-        callId: "history-tool-call-0",
-        content: [{
-          value: expect.objectContaining({ results: response.results, untrusted: true })
-        }],
-        status: "complete"
-      });
-      expect(search).toHaveBeenNthCalledWith(1, expect.objectContaining({
-        assistantId: null,
-        chatId: chat.id,
-        owner: {
-          modelRunId: firstTurn.run.id,
-          modelRunToolCallId: calls[0]!.id,
-          type: "MODEL_RUN_TOOL_CALL"
-        },
-        userId
-      }), {
-        from: null,
-        query: "receipt query 0",
-        scope: null,
-        sourceKinds: ["FACT", "EVENT", "HISTORY"],
-        to: null
-      });
-      await expect(prisma.memoryHistoryRun.findUniqueOrThrow({
-        where: { modelRunToolCallId: calls[0]!.id }
-      })).resolves.toMatchObject({
-        invocationOrdinal: 1,
-        modelRunId: firstTurn.run.id,
-        outcome: "RESULTS",
-        query: "receipt query 0",
-        resultCount: 1,
-        retentionState: "RETAINED",
-        state: "COMPLETE",
-        userId
-      });
-
-      await expect(executor.execute(call(0), context(calls[0]!.id))).resolves.toEqual(first);
-      expect(search).toHaveBeenCalledTimes(1);
-      await expect(executor.execute(call(1), context(calls[1]!.id))).resolves.toMatchObject({
-        status: "complete"
-      });
-      expect(search).toHaveBeenCalledTimes(2);
-      await expect(executor.execute(call(2), context(calls[2]!.id))).resolves.toMatchObject({
-        content: [{ value: { error: "memory_history_call_limit" } }],
-        status: "error"
-      });
-      expect(search).toHaveBeenCalledTimes(2);
-      await expect(prisma.memoryHistoryRun.count({
-        where: { modelRunId: firstTurn.run.id }
-      })).resolves.toBe(2);
-
-      const ambiguousTurn = await createTurn({
-        assistantText: "Ambiguous receipt answer",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-10T18:01:00.000Z"),
-        parentMessageId: firstTurn.assistantMessage.id,
-        userId,
-        userText: "Ambiguous receipt question"
-      });
-      const ambiguousCall = await prisma.modelRunToolCall.create({
-        data: {
-          arguments: unifiedToolArguments("ambiguous query"),
-          modelRunId: ambiguousTurn.run.id,
-          ordinal: 0,
-          providerCallId: "history-tool-call-ambiguous",
-          roundIndex: 0,
-          state: "running",
-          toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
-        }
-      });
-      await prisma.memoryHistoryRun.create({
-        data: {
-          indexingEvidence: {},
-          invocationOrdinal: 1,
-          modelRunId: ambiguousTurn.run.id,
-          modelRunToolCallId: ambiguousCall.id,
-          privateRequest: {
-            chatIds: [],
-            cursor: null,
-            folderId: null,
-            from: null,
-            pageSize: 20,
-            query: "ambiguous query",
-            to: null
-          },
-          query: "ambiguous query",
-          queryHash: memorySha256("ambiguous query"),
-          userId
-        }
-      });
-      await expect(executor.execute({
-        arguments: unifiedToolArguments("ambiguous query"),
-        id: "history-tool-call-ambiguous",
-        name: MEMORY_HISTORY_SEARCH_TOOL_NAME
-      }, {
-        persistedToolCallId: ambiguousCall.id,
-        request: historyToolProviderRequest(chat.id),
-        runId: ambiguousTurn.run.id,
-        userId
-      })).resolves.toMatchObject({
-        content: [{ value: { error: "memory_history_outcome_unknown" } }],
-        status: "error"
-      });
-      expect(search).toHaveBeenCalledTimes(2);
-
-      await expect(executor.execute(call(0), {
-        ...context(calls[0]!.id),
-        userId: "foreign-user"
-      })).resolves.toMatchObject({
-        content: [{ value: { error: "memory_history_authorization_missing" } }],
-        status: "error"
-      });
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("cancels and scrubs an in-flight history result before a source purge can race it", async () => {
-    const userId = await createOwner("memory-history-tool-purge-race");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "History purge race", userId }
-      });
-      const turn = await createTurn({
-        assistantText: "Race fixture answer",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-10T18:30:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "Race fixture question"
-      });
-      const toolCall = await prisma.modelRunToolCall.create({
-        data: {
-          arguments: unifiedToolArguments("private race query"),
-          modelRunId: turn.run.id,
-          ordinal: 0,
-          providerCallId: "history-tool-call-purge-race",
-          roundIndex: 0,
-          toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
-        }
-      });
-      let releaseSearch!: (response: MemoryUnifiedSearchResponse) => void;
-      let markSearchStarted!: () => void;
-      const searchStarted = new Promise<void>((resolve) => {
-        markSearchStarted = resolve;
-      });
-      const searchResult = new Promise<MemoryUnifiedSearchResponse>((resolve) => {
-        releaseSearch = resolve;
-      });
-      const executor = createMemoryHistoryToolExecutor({
-        client: prisma,
-        service: {
-          search: vi.fn(() => {
-            markSearchStarted();
-            return searchResult;
-          })
-        }
-      });
-      const execution = executor.execute({
-        arguments: unifiedToolArguments("private race query"),
-        id: "history-tool-call-purge-race",
-        name: MEMORY_HISTORY_SEARCH_TOOL_NAME
-      }, {
-        persistedToolCallId: toolCall.id,
-        request: historyToolProviderRequest(chat.id),
-        runId: turn.run.id,
-        userId
-      });
-      await searchStarted;
-
-      await prisma.$transaction((tx) =>
-        purgeMemoryHistoryReceiptDerivatives(tx, userId, {
-          chatId: chat.id,
-          kind: "SOURCE"
-        })
-      );
-      releaseSearch({
-        executionBindingIds: [],
-        indexing: {
-          candidateCount: 1,
-          degradationCode: null,
-          lexicalState: "READY",
-          relevanceState: "READY",
-          serviceVersion: "memory-unified-search-v1",
-          vectorState: "NOT_CONFIGURED"
-        },
-        privateResults: [{
-          entryId: "entry-race",
-          factId: null,
-          handle: "m0",
-          itemId: "chunk-race",
-          itemType: "RECALL_CHUNK",
-          laneRanks: { HISTORY_RECALL_EXACT: 1 },
-          sourceChatId: chat.id,
-          sourceKind: "HISTORY"
-        }],
-        results: [{
-          handle: "m0",
-          occurredFrom: "2026-08-10T18:30:00.000Z",
-          occurredTo: null,
-          sourceChatId: chat.id,
-          sourceKind: "HISTORY",
-          text: "PRIVATE_PURGE_RACE_CANARY"
-        }]
-      });
-
-      await expect(execution).resolves.toMatchObject({
-        content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
-        status: "error"
-      });
-      await expect(prisma.memoryHistoryRun.findUniqueOrThrow({
-        where: { modelRunToolCallId: toolCall.id }
-      })).resolves.toMatchObject({
-        outcome: "FAILED",
-        privateRequest: {},
-        providerResult: null,
-        query: null,
-        results: null,
-        retentionState: "SCRUBBED",
-        state: "CANCELLED"
-      });
-      await expect(prisma.modelRunToolCall.findUniqueOrThrow({
-        where: { id: toolCall.id }
-      })).resolves.toMatchObject({
-        arguments: {},
-        state: "error"
-      });
+      expect(chunks[0]?.safeProjectedText).toContain("Clean visible answer is eligible");
+      expect(JSON.stringify(chunks)).not.toContain("RAW_");
     } finally {
       await cleanupOwner(userId);
     }

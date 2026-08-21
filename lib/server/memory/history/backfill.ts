@@ -71,12 +71,14 @@ function eligibleHistorySourceWhereSql(userId: string): Prisma.Sql {
   return Prisma.sql`
     chat."userId" = ${userId}
     AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+    AND chat."projectId" IS NULL
   `;
 }
 
 function checkpointMatchesSourceSql(): Prisma.Sql {
   return Prisma.sql`
     checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+    AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
     AND checkpoint."activeLeafMessageId" = chat."activeLeafMessageId"
     AND checkpoint."branchGeneration" = chat."memoryBranchGeneration"
     AND checkpoint."sourceRevision" = chat."memorySourceRevision"
@@ -94,6 +96,19 @@ async function currentBackfillCandidates(
     SELECT chat."id" AS "chatId", chat."updatedAt"
     ${eligibleHistorySourceFromSql()}
     WHERE ${eligibleHistorySourceWhereSql(settings.userId)}
+      -- Destructive clear/reset barriers suppress a source with no settled
+      -- post-clear leaf. Non-destructive setting pauses live in interval rows
+      -- and are applied per message by the indexer, so A-before can rebuild.
+      AND leaf."createdAt" > COALESCE((
+        SELECT MAX(barrier."sourceCreatedAtCutoff")
+        FROM "MemorySourceBarrier" AS barrier
+        WHERE barrier."userId" = chat."userId"
+          AND barrier."explicitOverrideAllowed" = FALSE
+          AND barrier."kind" IN (
+            'ALL_REUSABLE'::"MemorySourceBarrierKind",
+            'HISTORY_INDEX'::"MemorySourceBarrierKind"
+          )
+      ), TO_TIMESTAMP(0))
       AND NOT EXISTS (
         SELECT 1
         FROM "ChatMemoryCheckpoint" AS checkpoint
@@ -172,7 +187,7 @@ export async function seedMemoryHistoryBackfill(
   settings: LockedMemorySettings,
   options: Readonly<{ now?: Date }> = {}
 ): Promise<MemoryHistoryBackfillSeedResult> {
-  if (!settings.referenceChatHistory) {
+  if (!settings.useMemoryFacts || !settings.referenceChatHistory) {
     return Object.freeze({ activeJobs: 0, enqueuedJobs: 0 });
   }
   const activeJobs = await tx.memoryJob.count({
@@ -192,6 +207,7 @@ export async function seedMemoryHistoryBackfill(
     const source = await loadMemorySourceSnapshot(tx, {
       chatId: candidate.chatId,
       lock: "NONE",
+      personalOnly: true,
       userId: settings.userId
     });
     if (
@@ -239,7 +255,7 @@ export async function authorizeMemoryHistoryTerminalRetries(
   settings: LockedMemorySettings,
   now = new Date()
 ): Promise<number> {
-  if (!settings.referenceChatHistory) return 0;
+  if (!settings.useMemoryFacts || !settings.referenceChatHistory) return 0;
   const updated = await tx.$executeRaw(Prisma.sql`
     UPDATE "MemoryJob" AS job
     SET
@@ -268,7 +284,8 @@ export async function authorizeMemoryHistoryTerminalRetries(
 export async function readMemoryHistoryIndexingProgress(
   client: PrismaClient,
   userId: string,
-  referenceChatHistory: boolean
+  referenceChatHistory: boolean,
+  memoryEnabled = true
 ): Promise<MemoryHistoryIndexingProgress> {
   const rows = await client.$queryRaw<ProgressRow[]>(Prisma.sql`
     SELECT
@@ -285,7 +302,7 @@ export async function readMemoryHistoryIndexingProgress(
   const totalChats = rows[0]?.totalChats ?? 0;
   return Object.freeze({
     completedChats,
-    state: !referenceChatHistory
+    state: !memoryEnabled || !referenceChatHistory
       ? "DISABLED"
       : completedChats < totalChats
         ? "INDEXING"
@@ -303,7 +320,8 @@ async function listBackfillOwners(
         SELECT settings."userId"
         FROM "UserMemorySettings" AS settings
         INNER JOIN "User" AS owner_user ON owner_user."id" = settings."userId"
-        WHERE settings."referenceChatHistory" = TRUE
+        WHERE settings."useMemoryFacts" = TRUE
+          AND settings."referenceChatHistory" = TRUE
           AND owner_user."status" = 'active'::"UserStatus"
         ORDER BY settings."userId"
         LIMIT ${limit}
@@ -312,7 +330,8 @@ async function listBackfillOwners(
         SELECT settings."userId"
         FROM "UserMemorySettings" AS settings
         INNER JOIN "User" AS owner_user ON owner_user."id" = settings."userId"
-        WHERE settings."referenceChatHistory" = TRUE
+        WHERE settings."useMemoryFacts" = TRUE
+          AND settings."referenceChatHistory" = TRUE
           AND owner_user."status" = 'active'::"UserStatus"
           AND settings."userId" > ${lastReconciledOwnerUserId}
         ORDER BY settings."userId"
@@ -324,7 +343,8 @@ async function listBackfillOwners(
         SELECT settings."userId"
         FROM "UserMemorySettings" AS settings
         INNER JOIN "User" AS owner_user ON owner_user."id" = settings."userId"
-        WHERE settings."referenceChatHistory" = TRUE
+        WHERE settings."useMemoryFacts" = TRUE
+          AND settings."referenceChatHistory" = TRUE
           AND owner_user."status" = 'active'::"UserStatus"
           AND settings."userId" <= ${lastReconciledOwnerUserId}
         ORDER BY settings."userId"

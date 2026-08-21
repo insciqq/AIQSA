@@ -1076,18 +1076,66 @@ export async function insertAcceptedProviderRunBindings(
   });
 }
 
+export class RunTransactionDeadlineError extends Error {
+  constructor() {
+    super("run_transaction_deadline_exceeded");
+    this.name = "RunTransactionDeadlineError";
+  }
+}
+
+export type RunTransactionOptions = Readonly<{
+  clock?: () => number;
+  deadlineAtMs?: number;
+}>;
+
+function runTransactionRemainingMs(options: RunTransactionOptions): number | null {
+  if (options.deadlineAtMs === undefined) return null;
+  const remaining = Math.floor(options.deadlineAtMs - (options.clock ?? Date.now)());
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    throw new RunTransactionDeadlineError();
+  }
+  return remaining;
+}
+
+function runTransactionTimedOut(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code === "P2028") return true;
+  return error.code === "P2010" &&
+    typeof error.meta === "object" && error.meta !== null &&
+    "code" in error.meta &&
+    (error.meta.code === "57014" || error.meta.code === "55P03");
+}
+
 export async function repeatableReadTransaction<Value>(
   prismaClient: PrismaClient,
-  operation: (tx: Prisma.TransactionClient) => Promise<Value>
+  operation: (tx: Prisma.TransactionClient) => Promise<Value>,
+  options: RunTransactionOptions = {}
 ): Promise<Value> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const remainingMs = runTransactionRemainingMs(options);
     try {
-      return await prismaClient.$transaction(operation, {
+      return await prismaClient.$transaction(async (tx) => {
+        if (remainingMs !== null) {
+          const timeout = `${Math.max(1, remainingMs)}ms`;
+          await tx.$queryRaw(Prisma.sql`
+            SELECT
+              set_config('lock_timeout', ${timeout}, true),
+              set_config('statement_timeout', ${timeout}, true)
+          `);
+        }
+        return operation(tx);
+      }, {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
-        maxWait: 10_000,
-        timeout: 120_000
+        maxWait: remainingMs ?? 10_000,
+        timeout: remainingMs ?? 120_000
       });
     } catch (error) {
+      if (options.deadlineAtMs !== undefined && (
+        runTransactionTimedOut(error) ||
+        (options.clock ?? Date.now)() >= options.deadlineAtMs
+      )) {
+        throw new RunTransactionDeadlineError();
+      }
       const assistantSerializationConflict =
         error instanceof AssistantProvenanceSerializationError;
       const skillSerializationConflict = error instanceof SkillProvenanceSerializationError;

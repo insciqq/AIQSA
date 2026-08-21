@@ -8,6 +8,11 @@ import type {
   MemorySettingsResponse,
   MemorySummary
 } from "@/lib/contracts/memory";
+import type {
+  MemoryConsumerItem,
+  MemoryConsumerListResponse,
+  MemoryConsumerSettingsResponse
+} from "@/lib/contracts/memoryConsumer";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 
 export function memoryHealthFixture(
@@ -64,10 +69,16 @@ export function memorySettingsFixture(
 ): MemorySettingsResponse {
   const base: MemorySettingsResponse = {
     capabilities: {
+      administratorSetupRequired: false,
       automaticLearning: true,
+      automaticLearningAvailable: true,
       explicitMemory: true,
       historyRecall: true,
+      managementAvailable: true,
+      naturalLanguageActionsAvailable: true,
+      pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
+      retrievalAvailable: true,
       temporaryChats: true
     },
     egress: {
@@ -118,6 +129,63 @@ export function memorySettingsFixture(
     historyIndexing: { ...defaultHistoryIndexing, ...overrides.historyIndexing },
     settings
   };
+}
+
+export function memoryConsumerSettingsFixture(
+  overrides: Readonly<{
+    capabilities?: Partial<MemoryConsumerSettingsResponse["capabilities"]>;
+    resetState?: MemoryConsumerSettingsResponse["resetState"];
+    settings?: Partial<MemoryConsumerSettingsResponse["settings"]>;
+    status?: MemoryConsumerSettingsResponse["status"];
+  }> = {}
+): MemoryConsumerSettingsResponse {
+  const base: MemoryConsumerSettingsResponse = {
+    capabilities: {
+      automaticLearningAvailable: true,
+      managementAvailable: true,
+      naturalLanguageActionsAvailable: true,
+      permanentChatDeletion: false,
+      pastChatIndexingAvailable: true,
+      retrievalAvailable: true,
+      temporaryChats: true
+    },
+    resetState: "IDLE",
+    settings: {
+      learnAutomatically: false,
+      referenceChatHistory: false,
+      useMemoryFacts: false
+    },
+    status: "PAUSED"
+  };
+  return {
+    ...base,
+    ...overrides,
+    capabilities: { ...base.capabilities, ...overrides.capabilities },
+    settings: { ...base.settings, ...overrides.settings }
+  };
+}
+
+export function memoryConsumerItemFixture(
+  overrides: Partial<MemoryConsumerItem> = {}
+): MemoryConsumerItem {
+  return {
+    allowedActions: ["EDIT", "FORGET"],
+    category: "PREFERENCES",
+    createdAt: "2026-08-10T08:00:00.000Z",
+    memoryRef: "opaque-memory-ref-1",
+    provenance: "SAVED",
+    sourceAvailable: true,
+    statement: "I prefer concise answers in Russian.",
+    updatedAt: "2026-08-10T08:00:00.000Z",
+    ...overrides
+  };
+}
+
+export function memoryConsumerListFixture(
+  items: readonly MemoryConsumerItem[] = [memoryConsumerItemFixture()],
+  nextCursor: string | null = null
+): MemoryConsumerListResponse {
+  return { items: [...items], nextCursor };
 }
 
 export function memorySummaryFixture(overrides: Partial<MemorySummary> = {}): MemorySummary {

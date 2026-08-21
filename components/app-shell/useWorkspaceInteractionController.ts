@@ -35,14 +35,11 @@ export type WorkspaceFolderMutationPort = Readonly<{
   endAction(): void;
   endCreate(): void;
   projectKnowledgeBaseIds: string[];
-  projectMemoryDraft: string;
 }>;
 
 export type WorkspaceProjectSettingsPort = Readonly<{
-  changeDraft(value: string): void;
   changeKnowledgeBaseIds(value: string[]): void;
   close(): void;
-  draft: string;
   folderId: string | null;
   knowledgeBaseIds: string[];
   open(folder: FolderSummary): void;
@@ -64,7 +61,6 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
   const [editingFolderName, setEditingFolderName] = useState("");
   const [folderActionId, setFolderActionId] = useState<string | null>(null);
   const [projectSettingsFolderId, setProjectSettingsFolderId] = useState<string | null>(null);
-  const [projectMemoryDraft, setProjectMemoryDraft] = useState("");
   const [projectKnowledgeBaseIds, setProjectKnowledgeBaseIds] = useState<string[]>([]);
 
   const cancelChatEdit = useCallback(() => {
@@ -80,13 +76,11 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
     setEditingChatTitle("");
   }, []);
   const openProjectSettings = useCallback((folder: FolderSummary) => {
-    setProjectMemoryDraft(folder.projectMemory);
     setProjectKnowledgeBaseIds([...(folder.defaultKnowledgePlan?.baseIds ?? [])]);
     setProjectSettingsFolderId(folder.id);
   }, []);
   const closeProjectSettings = useCallback(() => {
     setProjectSettingsFolderId(null);
-    setProjectMemoryDraft("");
     setProjectKnowledgeBaseIds([]);
   }, []);
   const startChatEdit = useCallback((chat: WorkspaceChatSummary) => {
@@ -104,7 +98,6 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
   }, []);
   const completeProjectSave = useCallback(() => {
     setProjectSettingsFolderId(null);
-    setProjectMemoryDraft("");
     setProjectKnowledgeBaseIds([]);
   }, []);
   const endFolderAction = useCallback(() => setFolderActionId(null), []);
@@ -142,8 +135,7 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
     editingName: editingFolderName,
     endAction: endFolderAction,
     endCreate: () => setCreatingFolder(false),
-    projectKnowledgeBaseIds,
-    projectMemoryDraft
+    projectKnowledgeBaseIds
   }), [
     beginFolderAction,
     completeFolderRename,
@@ -152,19 +144,16 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
     editingFolderName,
     endFolderAction,
     folderActionId,
-    projectKnowledgeBaseIds,
-    projectMemoryDraft
+    projectKnowledgeBaseIds
   ]);
 
   const projectSettings = useMemo<WorkspaceProjectSettingsPort>(() => ({
-    changeDraft: setProjectMemoryDraft,
     changeKnowledgeBaseIds: setProjectKnowledgeBaseIds,
     close: closeProjectSettings,
-    draft: projectMemoryDraft,
     folderId: projectSettingsFolderId,
     knowledgeBaseIds: projectKnowledgeBaseIds,
     open: openProjectSettings
-  }), [closeProjectSettings, openProjectSettings, projectKnowledgeBaseIds, projectMemoryDraft, projectSettingsFolderId]);
+  }), [closeProjectSettings, openProjectSettings, projectKnowledgeBaseIds, projectSettingsFolderId]);
 
   return useMemo(() => ({
     chatMutation,

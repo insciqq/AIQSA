@@ -1647,7 +1647,7 @@ describe("model run route handlers", () => {
       provider: "fake",
       searchPlan: { mode: "all_selected", options: [] }
     });
-    expect(state.created?.normalizedRequest.prompt.system).toContain(
+    expect(state.created?.normalizedRequest.prompt.system).not.toContain(
       "Project memory:\nProject prefers short bullet answers."
     );
     expect(state.completed?.usage.outputTokens).toBeGreaterThan(0);
@@ -2174,7 +2174,7 @@ describe("model run route handlers", () => {
       }
     ];
     const { repository, state } = createMemoryRepository(entitledFakeModel, conversationContext, null, {
-      contextWindow: 260,
+      contextWindow: 280,
       defaultMaxOutputTokens: 20,
       nativePdfInput: false,
       nativeSearch: true,

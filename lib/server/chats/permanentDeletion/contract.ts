@@ -1,7 +1,7 @@
 import type {
-  ChatPermanentDeleteAuthorizationRequestWire,
-  ChatPermanentDeleteRequestWire
-} from "../../../contracts/chats";
+  ChatPermanentDeleteAuthorizationRequest,
+  ChatPermanentDeleteRequest
+} from "./internalContract";
 import { memorySha256 } from "../../memory/persistence/lexical";
 
 export const PERMANENT_CHAT_DELETION_MANIFEST_VERSION =
@@ -10,7 +10,7 @@ export const PERMANENT_CHAT_DELETION_TARGET_TYPE =
   `CHAT@${PERMANENT_CHAT_DELETION_MANIFEST_VERSION}` as const;
 
 type PermanentChatDeletionPayload = Pick<
-  ChatPermanentDeleteAuthorizationRequestWire | ChatPermanentDeleteRequestWire,
+  ChatPermanentDeleteAuthorizationRequest | ChatPermanentDeleteRequest,
   | "alsoForgetOriginMemories"
   | "expectedActiveLeafMessageId"
   | "expectedChatRevision"

@@ -203,6 +203,25 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(apiMocks.loadProjectWorkspace).toHaveBeenCalledTimes(1);
   });
 
+  it("does not read dormant Project Memory when shared Project settings open", async () => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      result.current.actions.openSettings("general");
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(apiMocks.loadProjectMemory).not.toHaveBeenCalled();
+    expect(result.current.memory).toBeNull();
+    expect(apiMocks.loadProjectActivity).toHaveBeenCalled();
+  });
+
   it("keeps the Project open when a stale resource target returns a typed 404", async () => {
     apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
     apiMocks.removeProjectResource.mockRejectedValueOnce(

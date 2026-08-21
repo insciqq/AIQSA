@@ -21,10 +21,16 @@ import {
   type MemoryRetrievalPlan
 } from "../../../domain/memory/retrieval";
 import { prisma } from "../../prisma";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256
 } from "../persistence/lexical";
+import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import {
   createPrismaMemoryVectorRepository,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
@@ -33,7 +39,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v3";
+  "memory-local-retrieval-repository-v4";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -164,6 +170,7 @@ const historySafetyClasses = new Set([
   "NORMAL", "SENSITIVE", "HIGHLY_SENSITIVE", "SECRET_TAINTED"
 ]);
 const coreSaliences = new Set(["HIGH", "MEDIUM", "LOW", "NONE"]);
+const retrievalSourceKinds = new Set(["EVENT", "FACT", "HISTORY"]);
 
 function validToken(value: unknown): value is string {
   return typeof value === "string" && opaqueTokenPattern.test(value);
@@ -276,11 +283,22 @@ async function historySuppressionIdentity(
   userId: string,
   now: Date
 ): Promise<string> {
-  const [barriers, suppressions] = await Promise.all([
+  const [barriers, pauseIntervals, suppressions] = await Promise.all([
     client.memorySourceBarrier.findMany({
       orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
       select: { id: true, kind: true, memoryGeneration: true, sourceCreatedAtCutoff: true },
-      where: { userId }
+      where: { explicitOverrideAllowed: false, userId }
+    }),
+    client.memoryPauseInterval.findMany({
+      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memoryGeneration: true,
+        pausedAt: true,
+        resumedAt: true,
+        scope: true
+      },
+      where: { scope: { in: ["MASTER", "SEARCH_HISTORY"] }, userId }
     }),
     client.memorySuppression.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -300,7 +318,7 @@ async function historySuppressionIdentity(
       where: { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], userId }
     })
   ]);
-  return memorySha256({ barriers, suppressions });
+  return memorySha256({ barriers, pauseIntervals, suppressions });
 }
 
 async function loadSnapshot(
@@ -356,7 +374,7 @@ async function loadSnapshot(
   const useMemoryFacts = row.useMemoryFacts === true;
   const referenceChatHistory = row.referenceChatHistory === true;
   const indexMode = row.generationIndexMode;
-  const generationReady = row.activeIndexGenerationId !== null &&
+  const generationReady = useMemoryFacts && row.activeIndexGenerationId !== null &&
     row.generationId === row.activeIndexGenerationId &&
     row.generationState === "ACTIVE" &&
     (indexMode === "HYBRID" || indexMode === "LEXICAL_ONLY") &&
@@ -382,10 +400,10 @@ async function loadSnapshot(
   if (row.chatMemoryMode === "TEMPORARY") {
     return { ...base, reason: "temporary_chat", status: "DISABLED" };
   }
-  if (!useMemoryFacts && !referenceChatHistory) {
-    return { ...base, reason: "memory_reads_disabled", status: "DISABLED" };
+  if (!useMemoryFacts) {
+    return { ...base, reason: "memory_paused", status: "DISABLED" };
   }
-  const suppressionIdentity = referenceChatHistory
+  const suppressionIdentity = useMemoryFacts && referenceChatHistory
     ? await historySuppressionIdentity(client, input.userId, input.now)
     : null;
   if (suppressionIdentity !== null && !fingerprintPattern.test(suppressionIdentity)) {
@@ -409,71 +427,9 @@ export function memoryActiveSuppressionPredicate(userId: string): Prisma.Sql {
 }
 
 export function memoryFactScopePredicate(
-  snapshot: Pick<MemoryLocalRetrievalSnapshot, "assistantId" | "chatId" | "folderId" | "userId">
+  _snapshot: Pick<MemoryLocalRetrievalSnapshot, "assistantId" | "chatId" | "folderId" | "userId">
 ): Prisma.Sql {
-  return Prisma.sql`(
-    (scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-      AND scope."targetIdSnapshot" IS NULL AND scope."folderId" IS NULL
-      AND scope."assistantId" IS NULL AND scope."chatId" IS NULL)
-    OR (scope."scopeType" = 'FOLDER'::"MemoryScopeType"
-      AND scope."folderId" = ${snapshot.folderId} AND scope."targetIdSnapshot" = scope."folderId"
-      AND scope."assistantId" IS NULL AND scope."chatId" IS NULL
-      AND EXISTS (SELECT 1 FROM "Folder" AS scope_folder
-        WHERE scope_folder."userId" = fact."userId" AND scope_folder."id" = scope."folderId"))
-    OR (scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
-      AND scope."assistantId" = ${snapshot.assistantId}
-      AND scope."targetIdSnapshot" = scope."assistantId"
-      AND scope."folderId" IS NULL AND scope."chatId" IS NULL
-      AND EXISTS (SELECT 1 FROM "AssistantDefinition" AS scope_assistant
-        WHERE scope_assistant."ownerUserId" = fact."userId"
-          AND scope_assistant."id" = scope."assistantId"
-          AND scope_assistant."archivedAt" IS NULL))
-    OR (scope."scopeType" = 'CHAT'::"MemoryScopeType"
-      AND scope."chatId" = ${snapshot.chatId} AND scope."targetIdSnapshot" = scope."chatId"
-      AND scope."folderId" IS NULL AND scope."assistantId" IS NULL
-      AND EXISTS (SELECT 1 FROM "Chat" AS scope_chat
-        WHERE scope_chat."userId" = fact."userId" AND scope_chat."id" = scope."chatId"
-          AND scope_chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"))
-  )`;
-}
-
-export function memoryAutomaticFactEvidencePredicate(userId: string): Prisma.Sql {
-  return Prisma.sql`(
-    version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-    OR EXISTS (
-      SELECT 1 FROM "MemoryEvidence" AS support
-      INNER JOIN "Chat" AS evidence_chat
-        ON evidence_chat."userId" = support."userId" AND evidence_chat."id" = support."chatId"
-        AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-        AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
-      INNER JOIN "Message" AS evidence_message
-        ON evidence_message."chatId" = support."chatId" AND evidence_message."id" = support."messageId"
-        AND evidence_message."role" = 'user'
-      WHERE support."userId" = ${userId} AND support."factVersionId" = version."id"
-        AND support."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-        AND support."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
-        AND support."sourceRole" = 'user'
-        AND NOT EXISTS (
-          SELECT 1 FROM "MemorySuppression" AS source_suppression
-          WHERE source_suppression."userId" = support."userId"
-            AND source_suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-            AND source_suppression."sourceChatId" = support."chatId"
-            AND source_suppression."sourceMessageId" = support."messageId"
-            AND (source_suppression."sourceBranchGeneration" IS NULL
-              OR source_suppression."sourceBranchGeneration" = support."branchGeneration")
-            AND (source_suppression."expiresAt" IS NULL
-              OR source_suppression."expiresAt" > CURRENT_TIMESTAMP)
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM "MemorySourceBarrier" AS source_barrier
-          WHERE source_barrier."userId" = support."userId"
-            AND source_barrier."kind" IN (
-              'AUTOMATIC_FACTS'::"MemorySourceBarrierKind", 'ALL_REUSABLE'::"MemorySourceBarrierKind"
-            )
-            AND evidence_message."createdAt" <= source_barrier."sourceCreatedAtCutoff"
-        )
-    )
-  )`;
+  return memoryCanonicalGlobalScopePredicate();
 }
 
 export function memoryChunkSourceSafetyPredicate(): Prisma.Sql {
@@ -500,6 +456,7 @@ export function memoryChunkSourceSafetyPredicate(): Prisma.Sql {
         AND history_barrier."kind" IN (
           'HISTORY_INDEX'::"MemorySourceBarrierKind", 'ALL_REUSABLE'::"MemorySourceBarrierKind"
         )
+        AND history_barrier."explicitOverrideAllowed" = FALSE
         AND (chunk."createdAt" <= history_barrier."createdAt" OR EXISTS (
           SELECT 1 FROM "MemoryRecallChunkMessage" AS barrier_chunk_message
           INNER JOIN "Message" AS barrier_message
@@ -583,6 +540,56 @@ function factColumns(entry: Prisma.Sql): Prisma.Sql {
   `;
 }
 
+function memoryFactConversationFeedbackPredicate(
+  snapshot: MemoryLocalRetrievalSnapshot
+): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1
+    FROM "MemoryFeedback" AS negative_feedback
+    INNER JOIN "ModelRun" AS negative_run
+      ON negative_run."userId" = negative_feedback."userId"
+      AND negative_run."id" = negative_feedback."modelRunId"
+    WHERE negative_feedback."userId" = ${snapshot.userId}
+      AND negative_feedback."feedbackType" = 'NOT_USEFUL'::"MemoryFeedbackType"
+      AND negative_feedback."memoryFactVersionId" = version."id"
+      AND negative_feedback."contentPurgedAt" IS NULL
+      AND negative_run."chatId" = ${snapshot.chatId}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryFeedback" AS feedback_retraction
+        WHERE feedback_retraction."userId" = negative_feedback."userId"
+          AND feedback_retraction."feedbackType" = 'RETRACT'::"MemoryFeedbackType"
+          AND feedback_retraction."retractsFeedbackId" = negative_feedback."id"
+          AND feedback_retraction."contentPurgedAt" IS NULL
+      )
+  )`;
+}
+
+function memoryChunkConversationFeedbackPredicate(
+  snapshot: MemoryLocalRetrievalSnapshot
+): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1
+    FROM "MemoryFeedback" AS negative_feedback
+    INNER JOIN "ModelRun" AS negative_run
+      ON negative_run."userId" = negative_feedback."userId"
+      AND negative_run."id" = negative_feedback."modelRunId"
+    WHERE negative_feedback."userId" = ${snapshot.userId}
+      AND negative_feedback."feedbackType" = 'NOT_USEFUL'::"MemoryFeedbackType"
+      AND negative_feedback."recallChunkId" = chunk."id"
+      AND negative_feedback."contentPurgedAt" IS NULL
+      AND negative_run."chatId" = ${snapshot.chatId}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryFeedback" AS feedback_retraction
+        WHERE feedback_retraction."userId" = negative_feedback."userId"
+          AND feedback_retraction."feedbackType" = 'RETRACT'::"MemoryFeedbackType"
+          AND feedback_retraction."retractsFeedbackId" = negative_feedback."id"
+          AND feedback_retraction."contentPurgedAt" IS NULL
+      )
+  )`;
+}
+
 function factEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan
@@ -602,6 +609,7 @@ function factEligibleSelect(
     INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = entry."userId" AND version."id" = entry."factVersionId"
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState" AND version."systemTo" IS NULL
+      AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
     INNER JOIN "MemoryFact" AS fact
@@ -612,10 +620,14 @@ function factEligibleSelect(
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
     WHERE entry."userId" = ${snapshot.userId}
       AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
-      AND version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
+      AND version."sensitivityClass" IN (
+        'NORMAL'::"MemorySensitivityClass",
+        'SENSITIVE'::"MemorySensitivityClass"
+      )
       AND ${memoryFactScopePredicate(snapshot)}
-      AND ${memoryAutomaticFactEvidencePredicate(snapshot.userId)}
+      AND ${memoryPersonalFactEvidencePredicate(snapshot.userId)}
       AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
+      AND ${memoryFactConversationFeedbackPredicate(snapshot)}
       AND ${factPlanPredicates(plan)}
   `;
 }
@@ -635,20 +647,27 @@ function coreSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
       ON settings."userId" = version."userId" AND settings."useMemoryFacts" = TRUE
     WHERE version."userId" = ${snapshot.userId}
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState" AND version."systemTo" IS NULL
+      AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
-      AND version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
-      AND (fact."pinned" OR version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-        OR version."coreEligible")
+      AND version."sensitivityClass" IN (
+        'NORMAL'::"MemorySensitivityClass",
+        'SENSITIVE'::"MemorySensitivityClass"
+      )
+      AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+      AND version."modality" = 'PREFERENCE'::"MemoryFactModality"
+      AND version."category" = 'preferences'
+      AND version."coreEligible" = TRUE
       AND ${memoryFactScopePredicate(snapshot)}
-      AND ${memoryAutomaticFactEvidencePredicate(snapshot.userId)}
+      AND ${memoryPersonalFactEvidencePredicate(snapshot.userId)}
       AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
+      AND ${memoryFactConversationFeedbackPredicate(snapshot)}
     ORDER BY fact."pinned" DESC,
       (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode") DESC,
       CASE version."coreSalience" WHEN 'HIGH'::"MemoryCoreSalience" THEN 0
         WHEN 'MEDIUM'::"MemoryCoreSalience" THEN 1
         WHEN 'LOW'::"MemoryCoreSalience" THEN 2 ELSE 3 END,
-      version."systemFrom" DESC, fact."id", version."id"
+      fact."id", version."id"
     LIMIT ${MEMORY_CORE_MAX_FACTS * 2}
   `;
 }
@@ -728,7 +747,9 @@ function historyEligibleSelect(
       entry."normalizedSearchText", entry."searchVectorSimple"
     FROM "MemorySearchEntry" AS entry
     INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = entry."userId" AND settings."referenceChatHistory" = TRUE
+      ON settings."userId" = entry."userId"
+      AND settings."useMemoryFacts" = TRUE
+      AND settings."referenceChatHistory" = TRUE
       AND settings."activeIndexGenerationId" = ${snapshot.activeGenerationId}
     INNER JOIN "MemoryIndexGeneration" AS generation
       ON generation."userId" = settings."userId" AND generation."id" = settings."activeIndexGenerationId"
@@ -743,16 +764,22 @@ function historyEligibleSelect(
     WHERE entry."userId" = ${snapshot.userId}
       AND entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
       AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-      AND chunk."safetyClass" = 'NORMAL'::"MemoryDerivedSafetyClass"
+      AND chunk."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND source_chat."projectId" IS NULL
       AND source_chat."memoryBranchGeneration" = chunk."branchGeneration"
-      AND source_chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
       AND checkpoint."branchGeneration" = chunk."branchGeneration"
       AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
-      AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
-      AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND ${memoryHistoryChunkSourceAuthorityPredicate()}
+      AND ${memoryChunkConversationFeedbackPredicate(snapshot)}
       AND ${memoryChunkSourceSafetyPredicate()}
       AND ${historyPlanPredicates(plan)}
   `;
@@ -817,6 +844,7 @@ function recentSql(
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
   limit: number
 ): Prisma.Sql {
+  if (!plan.recencyRequested) throw new Error("memory_retrieval_lane_invalid");
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(snapshot, plan)
     : historyEligibleSelect(snapshot, plan);
@@ -855,12 +883,13 @@ function localLexicalLanes(
     (plan.filters.sourceKinds.includes("FACT") || plan.filters.sourceKinds.includes("EVENT"))) {
     lanes.push("FACT_EXACT");
     if (plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
-    lanes.push("FACT_RECENT");
+    if (plan.recencyRequested) lanes.push("FACT_RECENT");
   }
-  if (snapshot.referenceChatHistory && plan.filters.sourceKinds.includes("HISTORY")) {
+  if (snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
+    plan.filters.sourceKinds.includes("HISTORY")) {
     lanes.push("HISTORY_RECALL_EXACT");
     if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
-    lanes.push("HISTORY_RECALL_RECENT");
+    if (plan.recencyRequested) lanes.push("HISTORY_RECALL_RECENT");
   }
   return lanes;
 }
@@ -956,7 +985,8 @@ function localVectorLanes(
   const lanes: MemoryRetrievalLane[] = [];
   if (snapshot.useMemoryFacts && (input.plan.filters.sourceKinds.includes("FACT") ||
     input.plan.filters.sourceKinds.includes("EVENT"))) lanes.push("FACT_VECTOR");
-  if (snapshot.referenceChatHistory && input.plan.filters.sourceKinds.includes("HISTORY")) {
+  if (snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
+    input.plan.filters.sourceKinds.includes("HISTORY")) {
     lanes.push("HISTORY_RECALL_VECTOR");
   }
   return lanes;
@@ -981,8 +1011,8 @@ function pushVectorTasks(
   let state: MemoryLocalRetrievalResult["vectorState"] = "READY";
   const result = createPrismaMemoryVectorRepository(client).search({
     eligibility: {
-      allowedFactSensitivity: ["NORMAL"],
-      allowedHistorySafety: ["NORMAL"],
+      allowedFactSensitivity: ["NORMAL", "SENSITIVE"],
+      allowedHistorySafety: ["NORMAL", "SENSITIVE"],
       assistantId: snapshot.assistantId,
       chatId: snapshot.chatId,
       folderId: snapshot.folderId,
@@ -1069,9 +1099,17 @@ function chunkExpansionSql(
 }
 
 function validPlan(plan: MemoryRetrievalPlan): boolean {
-  return plan.normalizedQuery.length <= 2_000 &&
+  const requestedKinds = plan.filters.sourceKinds;
+  return typeof plan.applyResponsePreferences === "boolean" &&
+    Array.isArray(requestedKinds) &&
+    requestedKinds.length <= retrievalSourceKinds.size &&
+    (requestedKinds.length > 0 || plan.applyResponsePreferences) &&
+    new Set(requestedKinds).size === requestedKinds.length &&
+    requestedKinds.every((kind) => retrievalSourceKinds.has(kind)) &&
+    plan.normalizedQuery.length <= 2_000 &&
     plan.normalizedExactQuery.length <= 2_000 &&
     plan.queryPresent === (plan.normalizedQuery.length > 0) &&
+    typeof plan.recencyRequested === "boolean" &&
     (plan.lexicalQuery === null || plan.lexicalQuery.length <= 2_000);
 }
 
@@ -1131,7 +1169,9 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (!validPlan(input.plan)) throw new Error("memory_retrieval_plan_invalid");
       const snapshot = await loadSnapshot(client, input);
       if (snapshot.status !== "READY") return emptyResult(snapshot);
-      const core = await loadCore(client, snapshot);
+      const core = input.plan.applyResponsePreferences
+        ? await loadCore(client, snapshot)
+        : [];
       if (!input.plan.queryPresent || !snapshot.activeGenerationId || !snapshot.indexMode) {
         return emptyResult(snapshot, core, input.vector ? "DISABLED" : "NOT_CONFIGURED");
       }

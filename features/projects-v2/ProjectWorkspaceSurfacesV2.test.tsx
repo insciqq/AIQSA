@@ -177,16 +177,32 @@ describe("Project workspace surfaces", () => {
     application.remove();
   });
 
-  it("keeps shared audience, role, Memory isolation, defaults, and live state permanently visible", () => {
+  it("keeps shared audience, role, personal-memory isolation, defaults, and live state permanently visible", () => {
     render(<ProjectContextRailV2 activeChatProjectId="project-1" controller={controller()} />);
 
     const rail = screen.getByRole("complementary", { name: "Shared project context" });
     expect(within(rail).getByText("Launch room")).toBeVisible();
     expect(within(rail).getByText("Shared with all project members · Personal Memory is off")).toBeVisible();
     expect(within(rail).getByText("owner")).toBeVisible();
-    expect(within(rail).getByText("Project Memory on")).toBeVisible();
+    expect(within(rail).queryByText(/Project Memory/i)).toBeNull();
     expect(within(rail).getByText("Search 1 · Knowledge 1")).toBeVisible();
     expect(within(rail).getByText("Shared desk live")).toBeVisible();
+  });
+
+  it("keeps the retired Project Memory tab and controls unreachable", async () => {
+    const projectController = controller();
+    const initialTabController: ProjectWorkspaceController = {
+      ...projectController,
+      settingsInitialTab: "memory"
+    };
+    render(<ProjectSettingsDialogV2 controller={initialTabController} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+
+    expect(within(dialog).queryByRole("button", { name: "Memory" })).toBeNull();
+    expect(within(dialog).queryByText(/Project Memory|approved facts|propose/i)).toBeNull();
+    expect(within(dialog).queryByRole("checkbox", { name: /Project Memory/i })).toBeNull();
+    expect(within(dialog).getByRole("heading", { name: "Shared context" })).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: /Add fact|Forget|Approve|Reject|Edit/ })).toBeNull();
   });
 
   it("lets an owner restore shared history while keeping lifecycle controls absent for a viewer", async () => {

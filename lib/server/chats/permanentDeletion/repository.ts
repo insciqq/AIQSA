@@ -299,6 +299,38 @@ export function createPrismaPermanentChatDeletionRepository(
             updatedAt: deletion.updatedAt
           }
         : null;
+    },
+
+    async latestStatus({ chatId, userId }) {
+      const deletion = await client.memoryDeletionOutbox.findFirst({
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: {
+          attemptCount: true,
+          createdAt: true,
+          errorCode: true,
+          id: true,
+          lastAuditAt: true,
+          state: true,
+          updatedAt: true
+        },
+        where: {
+          operation: "SOURCE_PURGE",
+          targetId: chatId,
+          targetType: PERMANENT_CHAT_DELETION_TARGET_TYPE,
+          userId
+        }
+      });
+      return deletion
+        ? {
+            attemptCount: deletion.attemptCount,
+            deletionId: deletion.id,
+            errorCode: deletion.errorCode,
+            fencedAt: deletion.createdAt,
+            lastAuditAt: deletion.lastAuditAt,
+            state: deletion.state,
+            updatedAt: deletion.updatedAt
+          }
+        : null;
     }
   });
 }

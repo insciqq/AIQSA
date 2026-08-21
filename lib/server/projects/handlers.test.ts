@@ -5,7 +5,8 @@ import {
   createDeleteProjectResourceHandler,
   createLeaveProjectHandler,
   createProjectCandidatesHandler,
-  createProjectResourcePreviewHandler
+  createProjectResourcePreviewHandler,
+  createUpdateProjectHandler
 } from "./handlers";
 
 const auth = createTestAuth({ user: { displayName: "Project Owner", id: "owner-1" } });
@@ -25,6 +26,19 @@ function jsonRequest(path: string, body: unknown, method = "POST"): Request {
 const projectContext = { params: { projectId: "project-1" } };
 
 describe("Project v2 HTTP handlers", () => {
+  it("rejects the retired Project Memory toggle without repository access", async () => {
+    const update = vi.fn();
+    const PATCH = createUpdateProjectHandler(deps({ update }));
+    const response = await PATCH(jsonRequest("/api/projects/project-1", {
+      expectedMemoryRevision: 3,
+      memoryEnabled: true
+    }, "PATCH"), projectContext);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "project_input_invalid" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("passes bounded picker search and cursor data without accepting arbitrary offsets", async () => {
     const candidates = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
     const GET = createProjectCandidatesHandler(deps({ candidates }));

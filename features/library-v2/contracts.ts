@@ -51,21 +51,13 @@ export type FileSummaryV2 = Readonly<{
   status: "failed" | "processing" | "ready";
 }>;
 
-export type MemoryFactSummaryV2 = Readonly<{
-  id: string;
-  pinned?: boolean;
-  scope: string;
-  statement: string;
-}>;
-
 export type MemoryOverviewV2 = Readonly<{
   administratorDisabled: boolean;
   automaticLearning: boolean;
   disabledReason?: string;
   explicitCrudAvailable: boolean;
-  facts: readonly MemoryFactSummaryV2[];
-  healthDetail: string;
-  healthLabel: string;
+  loadState: "error" | "idle" | "loading" | "ready";
   referenceChatHistory: boolean;
+  status: "NEEDS_ADMIN_SETUP" | "ON" | "PAUSED" | "PREPARING" | "UNAVAILABLE" | null;
   useMemoryFacts: boolean;
 }>;

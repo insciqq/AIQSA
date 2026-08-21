@@ -38,6 +38,35 @@ describe("language-agnostic Memory retrieval planning", () => {
     });
   });
 
+  it("carries only the trusted explicit recency decision", () => {
+    expect(planMemoryRetrieval({ currentUserText: "latest update", now }))
+      .toMatchObject({ recencyRequested: false });
+    expect(planMemoryRetrieval({
+      currentUserText: "latest update",
+      now,
+      recencyRequested: true
+    })).toMatchObject({ recencyRequested: true });
+  });
+
+  it("carries only the trusted response-preference admission decision", () => {
+    expect(planMemoryRetrieval({ currentUserText: "answer", now }))
+      .toMatchObject({ applyResponsePreferences: false });
+    expect(planMemoryRetrieval({
+      applyResponsePreferences: true,
+      currentUserText: "answer",
+      filters: { sourceKinds: [] },
+      now
+    })).toMatchObject({
+      applyResponsePreferences: true,
+      filters: { sourceKinds: [] }
+    });
+    expect(() => planMemoryRetrieval({
+      currentUserText: "answer",
+      filters: { sourceKinds: [] },
+      now
+    })).toThrow("memory_retrieval_filter_invalid");
+  });
+
   it("treats only an empty normalized turn as absent", () => {
     expect(planMemoryRetrieval({ currentUserText: " \n\t ", now }).queryPresent).toBe(false);
   });

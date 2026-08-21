@@ -2,11 +2,17 @@ import { Prisma } from "@prisma/client";
 import type { MemorySafeProjectionKind } from "../../domain/memory/retrieval";
 import {
   memoryActiveSuppressionPredicate,
-  memoryAutomaticFactEvidencePredicate,
   memoryChunkSourceSafetyPredicate,
   memoryFactScopePredicate
 } from "../memory/retrieval/localRepository";
-import { normalizeMemorySearchText } from "../memory/persistence/lexical";
+import { memoryPersonalFactEvidencePredicate } from "../memory/persistence/eligibility";
+import {
+  memoryChunkConversationFeedbackPredicate,
+  memoryFactConversationFeedbackPredicate
+} from "../memory/persistence/feedback";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../memory/history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../memory/history/contract";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../memory/history/sourceProjection";
 import {
   MemoryPreparingRunConflictError,
   memoryPreparingHash,
@@ -111,9 +117,10 @@ function compactProjection(value: string): string {
 }
 
 function exactTextContainsProjection(exactSafeText: string, projection: string): boolean {
+  const compactExactText = compactProjection(exactSafeText);
   const compact = compactProjection(projection);
   return compact.length > 0 && (
-    exactSafeText === compact || exactSafeText.endsWith(compact)
+    compactExactText === compact || compactExactText.endsWith(compact)
   );
 }
 
@@ -169,7 +176,6 @@ function commonResolved(
 async function resolveFact(
   tx: PreparingItemTransaction,
   authority: PreparingMemoryItemAuthority,
-  querySnapshot: string | null,
   input: MemoryPreparingItemInput & Readonly<{ factVersionId: string }>
 ): Promise<ResolvedPreparingMemoryItem> {
   const projection = itemProjection(input);
@@ -181,7 +187,6 @@ async function resolveFact(
   if (!core && !authority.indexGenerationId) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
-  const normalizedQuery = querySnapshot ? normalizeMemorySearchText(querySnapshot) : "";
   const settingsJoin = core
     ? Prisma.sql`
         INNER JOIN "UserMemorySettings" AS settings
@@ -254,6 +259,8 @@ async function resolveFact(
     ${settingsJoin}
     WHERE version."userId" = ${authority.userId}
       AND version."id" = ${input.factVersionId}
+      AND version."safetyClassificationState" =
+        'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."sourceMode" IN (
@@ -267,7 +274,11 @@ async function resolveFact(
         folderId: authority.folderId,
         userId: authority.userId
       })}
-      AND ${memoryAutomaticFactEvidencePredicate(authority.userId)}
+      AND ${memoryPersonalFactEvidencePredicate(authority.userId)}
+      AND ${memoryFactConversationFeedbackPredicate(
+        authority.userId,
+        authority.chatId
+      )}
       AND ${memoryActiveSuppressionPredicate(authority.userId)}
       AND (
         (
@@ -279,13 +290,9 @@ async function resolveFact(
         )
         OR ${terminalCompatibility}
       )
-      AND (
-        version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
-        OR (
-          version."sensitivityClass" = 'SENSITIVE'::"MemorySensitivityClass"
-          AND ${normalizedQuery} <> ''
-          AND version."normalizedSearchText" = ${normalizedQuery}
-        )
+      AND version."sensitivityClass" IN (
+        'NORMAL'::"MemorySensitivityClass",
+        'SENSITIVE'::"MemorySensitivityClass"
       )
     FOR SHARE OF ${lockTargets}
   `);
@@ -301,6 +308,7 @@ async function resolveFact(
         INNER JOIN "Chat" AS evidence_chat
           ON evidence_chat."userId" = support."userId"
           AND evidence_chat."id" = support."chatId"
+          AND evidence_chat."projectId" IS NULL
           AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
           AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
         INNER JOIN "Message" AS evidence_message
@@ -408,11 +416,9 @@ async function resolveFact(
 async function resolveChunkRow(
   tx: PreparingItemTransaction,
   authority: PreparingMemoryItemAuthority,
-  querySnapshot: string | null,
   chunkId: string
 ): Promise<HistoryAuthorityRow | null> {
   if (!authority.indexGenerationId) return null;
-  const normalizedQuery = querySnapshot ? normalizeMemorySearchText(querySnapshot) : "";
   const [row] = await tx.$queryRaw<HistoryAuthorityRow[]>(Prisma.sql`
     SELECT
       chunk."branchGeneration", chunk."chatId", chunk."contentHash",
@@ -439,11 +445,14 @@ async function resolveChunkRow(
       AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = chunk."userId" AND source_chat."id" = chunk."chatId"
+      AND source_chat."projectId" IS NULL
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId" AND checkpoint."chatId" = chunk."chatId"
     WHERE chunk."userId" = ${authority.userId}
       AND chunk."id" = ${chunkId}
       AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND source_chat."memoryBranchGeneration" = chunk."branchGeneration"
@@ -453,14 +462,15 @@ async function resolveChunkRow(
       AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND ${memoryChunkConversationFeedbackPredicate(
+        authority.userId,
+        authority.chatId
+      )}
       AND ${memoryChunkSourceSafetyPredicate()}
-      AND (
-        chunk."safetyClass" = 'NORMAL'::"MemoryDerivedSafetyClass"
-        OR (
-          chunk."safetyClass" = 'SENSITIVE'::"MemoryDerivedSafetyClass"
-          AND ${normalizedQuery} <> ''
-          AND entry."normalizedSearchText" = ${normalizedQuery}
-        )
+      AND chunk."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
     FOR SHARE OF chunk, entry, settings, generation, source_chat, checkpoint
   `);
@@ -517,7 +527,6 @@ function historySnapshots(
 async function resolveChunk(
   tx: PreparingItemTransaction,
   authority: PreparingMemoryItemAuthority,
-  querySnapshot: string | null,
   input: MemoryPreparingItemInput & Readonly<{ recallChunkId: string }>
 ): Promise<ResolvedPreparingMemoryItem> {
   const projection = itemProjection(input);
@@ -525,7 +534,7 @@ async function resolveChunk(
     projection.supportingItemId !== null) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
-  const row = await resolveChunkRow(tx, authority, querySnapshot, input.recallChunkId);
+  const row = await resolveChunkRow(tx, authority, input.recallChunkId);
   if (!row || !exactTextContainsProjection(input.exactSafeText, row.safeText)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
@@ -550,7 +559,7 @@ async function resolveChunk(
 export async function resolvePreparingMemoryItem(
   tx: PreparingItemTransaction,
   authority: PreparingMemoryItemAuthority,
-  querySnapshot: string | null,
+  _querySnapshot: string | null,
   input: MemoryPreparingItemInput
 ): Promise<ResolvedPreparingMemoryItem> {
   const target = memoryPreparingItemTarget(input);
@@ -558,13 +567,13 @@ export async function resolvePreparingMemoryItem(
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
   if (target.itemType === "FACT_VERSION" && target.factVersionId) {
-    return resolveFact(tx, authority, querySnapshot, {
+    return resolveFact(tx, authority, {
       ...input,
       factVersionId: target.factVersionId
     });
   }
   if (target.itemType === "RECALL_CHUNK" && target.recallChunkId) {
-    return resolveChunk(tx, authority, querySnapshot, {
+    return resolveChunk(tx, authority, {
       ...input,
       exactItemId: target.exactItemId,
       itemType: "RECALL_CHUNK",

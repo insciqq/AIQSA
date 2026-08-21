@@ -913,7 +913,7 @@ describe("Prisma-backed Project repository", () => {
     });
   });
 
-  it("snapshots Project Memory evidence from the cited shared message", async () => {
+  it("keeps dormant Project Memory fact writes fail closed without persisting evidence", async () => {
     await withProjectFixture(async ({ ownerId, projectId }) => {
       const chat = await prisma.chat.create({
         data: {
@@ -937,29 +937,21 @@ describe("Prisma-backed Project repository", () => {
         }
       });
 
-      const created = await createPrismaProjectMemoryRepository(prisma).createFact({
+      await expect(createPrismaProjectMemoryRepository(prisma).createFact({
         actorDisplayName: "Project Owner",
         projectId,
         sourceMessageId: message.id,
         text: "The team deploys on Tuesdays.",
         userId: ownerId
-      });
-
-      expect(created.kind).toBe("ok");
-      const version = await prisma.projectMemoryFactVersion.findFirstOrThrow({
+      })).resolves.toEqual({ kind: "conflict", reason: "project_memory_disabled" });
+      await expect(prisma.projectMemoryFact.count({ where: { projectId } })).resolves.toBe(0);
+      await expect(prisma.projectMemoryFactVersion.count({
         where: { projectId, sourceMessageId: message.id }
-      });
-      expect(version.sourceSnapshot).toEqual({
-        authorDisplayName: "Project Owner",
-        createdAt: message.createdAt.toISOString(),
-        messageId: message.id,
-        role: "user",
-        text: "Deploy on Tuesdays."
-      });
+      })).resolves.toBe(0);
     });
   });
 
-  it("accepts Contributor proposals only from Project user messages", async () => {
+  it("keeps dormant Project Memory proposals fail closed without persisting user-message evidence", async () => {
     await withProjectFixture(async ({ ownerId, projectId }) => {
       const chat = await prisma.chat.create({
         data: {
@@ -1006,15 +998,10 @@ describe("Prisma-backed Project repository", () => {
         sourceMessageId: userMessage.id,
         text: "The release window is Tuesday.",
         userId: ownerId
-      })).resolves.toMatchObject({
-        kind: "ok",
-        value: {
-          source: { messageId: userMessage.id, role: "user" }
-        }
-      });
+      })).resolves.toEqual({ kind: "conflict", reason: "project_memory_disabled" });
       await expect(prisma.projectMemoryProposal.count({
         where: { projectId }
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
     });
   });
 

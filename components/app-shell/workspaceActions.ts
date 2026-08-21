@@ -52,6 +52,7 @@ import {
 import {
   archiveChat as archiveChatRequest,
   loadChatMemoryState,
+  resolveChatSource,
   restoreChat as restoreChatRequest
 } from "@/components/app-shell/chatLifecycleApi";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
@@ -294,12 +295,14 @@ export function useWorkspaceActions({
 
   function fetchChatDetail(
     chatId: string,
-    options: { force?: boolean } = {}
+    options: { admitMissingPersonalSummary?: boolean; force?: boolean } = {}
   ): Promise<ChatDetail | null> {
     const pending = chatDetailRequestsRef.current.get(chatId);
     if (pending) {
       return options.force
-        ? pending.then(() => fetchChatDetail(chatId))
+        ? pending.then(() => fetchChatDetail(chatId, {
+            admitMissingPersonalSummary: options.admitMissingPersonalSummary
+          }))
         : pending;
     }
 
@@ -319,7 +322,13 @@ export function useWorkspaceActions({
           throw new Error("chat_detail_malformed");
         }
 
-        if (!useWorkspaceStore.getState().chats.some((candidate) => candidate.id === chatId)) {
+        const summaryKnown = useWorkspaceStore.getState().chats.some(
+          (candidate) => candidate.id === chatId
+        );
+        if (
+          !summaryKnown &&
+          (!options.admitMissingPersonalSummary || chat.projectId !== null)
+        ) {
           return null;
         }
 
@@ -626,6 +635,26 @@ export function useWorkspaceActions({
     return detail;
   }
 
+  async function activatePersonalChatById(chatId: string): Promise<ChatDetail | null> {
+    const existing = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
+    if (existing?.projectId) {
+      return null;
+    }
+    if (existing) {
+      return activateChat(existing);
+    }
+
+    const detail = await fetchChatDetail(chatId, {
+      admitMissingPersonalSummary: true,
+      force: true
+    });
+    if (!detail || detail.projectId) {
+      return null;
+    }
+    const summary = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
+    return summary ? activateChat(summary) : null;
+  }
+
   function activateBlankWorkspace(
     folderId: string | null = null,
     memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL"
@@ -763,7 +792,7 @@ export function useWorkspaceActions({
         if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
           try {
             const memoryState = await loadChatMemoryState(targetActiveChatId);
-            if (memoryState.chat.mode === "TEMPORARY" && !memoryState.chat.archived) {
+            if (memoryState.mode === "TEMPORARY" && !memoryState.archived) {
               const detailResponse = await shellFetch(
                 `/api/chats/${encodeURIComponent(targetActiveChatId)}`
               );
@@ -778,8 +807,7 @@ export function useWorkspaceActions({
               recoveredTemporarySummary = {
                 ...summaryFromDetail(recoveredTemporaryDetail),
                 memoryMode: "TEMPORARY",
-                memorySourceRevision: memoryState.chat.sourceRevision,
-                temporaryRetentionDeadline: memoryState.chat.temporaryRetentionDeadline
+                temporaryRetentionDeadline: memoryState.temporaryRetentionDeadline
               };
             }
           } catch {
@@ -976,10 +1004,11 @@ export function useWorkspaceActions({
 
     try {
       const memoryState = await loadChatMemoryState(chat.id);
-      if (memoryState.chat.mode === "TEMPORARY") {
+      if (memoryState.mode === "TEMPORARY") {
         throw new Error("memory_temporary_chat_forbidden");
       }
-      const archived = await archiveChatRequest(chat.id, memoryState.chat.sourceRevision);
+      const source = await resolveChatSource(chat.id);
+      const archived = await archiveChatRequest(chat.id, source.source.sourceRevision);
 
       const nextActive = useWorkspaceStore.getState().chats.find((candidate) => candidate.id !== chat.id) ?? null;
       useWorkspaceStore.getState().updateChats((current) => current.filter((candidate) => candidate.id !== chat.id));
@@ -1157,6 +1186,7 @@ export function useWorkspaceActions({
   return {
     activateBlankWorkspace,
     activateChat,
+    activatePersonalChatById,
     applyChatUpdate,
     createChat,
     deleteChat,

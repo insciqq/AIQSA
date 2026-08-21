@@ -135,8 +135,8 @@ export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
     if (bodyError) return bodyError;
     const allowed = [
       "defaults", "description", "expectedAccessRevision", "expectedInstructionsRevision",
-      "expectedMemoryRevision", "expectedPolicyRevision",
-      "instructions", "memoryEnabled", "name", "policy", "publicSharingEnabled", "status"
+      "expectedPolicyRevision", "instructions", "name", "policy",
+      "publicSharingEnabled", "status"
     ];
     if (!body || Object.keys(body).length === 0 || !hasOnly(body, allowed)) {
       return error("project_input_invalid", 400);
@@ -148,7 +148,6 @@ export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
     const instructions = optionalText(body.instructions, PROJECT_INSTRUCTIONS_MAX_LENGTH);
     const expectedAccessRevision = optionalRevision(body.expectedAccessRevision);
     const expectedInstructionsRevision = optionalRevision(body.expectedInstructionsRevision);
-    const expectedMemoryRevision = optionalRevision(body.expectedMemoryRevision);
     const expectedPolicyRevision = optionalRevision(body.expectedPolicyRevision);
     const defaults = body.defaults === undefined
       ? undefined
@@ -157,20 +156,16 @@ export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
     const status = body.status === undefined
       ? undefined
       : body.status === "ACTIVE" || body.status === "ARCHIVED" ? body.status : null;
-    const memoryEnabled = body.memoryEnabled === undefined
-      ? undefined
-      : typeof body.memoryEnabled === "boolean" ? body.memoryEnabled : null;
     const publicSharingEnabled = body.publicSharingEnabled === undefined
       ? undefined
       : typeof body.publicSharingEnabled === "boolean" ? body.publicSharingEnabled : null;
     if (
       name === null || description === null || instructions === null ||
       expectedAccessRevision === null || expectedInstructionsRevision === null ||
-      expectedMemoryRevision === null || expectedPolicyRevision === null ||
+      expectedPolicyRevision === null ||
       defaults?.ok === false || policy?.ok === false || status === null ||
-      memoryEnabled === null || publicSharingEnabled === null ||
+      publicSharingEnabled === null ||
       (body.instructions !== undefined && expectedInstructionsRevision === undefined) ||
-      (body.memoryEnabled !== undefined && expectedMemoryRevision === undefined) ||
       ((body.defaults !== undefined || body.policy !== undefined || body.publicSharingEnabled !== undefined) &&
         expectedPolicyRevision === undefined) ||
       (body.status !== undefined && expectedAccessRevision === undefined)
@@ -183,10 +178,8 @@ export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
         description,
         expectedAccessRevision,
         expectedInstructionsRevision,
-        expectedMemoryRevision,
         expectedPolicyRevision,
         instructions,
-        memoryEnabled,
         name,
         policy: policy?.ok ? policy.policy : undefined,
         projectId,

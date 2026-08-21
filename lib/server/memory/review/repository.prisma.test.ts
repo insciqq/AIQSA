@@ -36,6 +36,86 @@ async function createActiveUser(label: string): Promise<string> {
   return id;
 }
 
+async function classifyFactVersion(
+  userId: string,
+  versionId: string,
+  reasonCode = "other_durable"
+): Promise<void> {
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    select: { memoryGeneration: true, memoryRevision: true },
+    where: { userId }
+  });
+  const jobId = randomUUID();
+  const bindingId = randomUUID();
+  const startedAt = new Date();
+  const completedAt = new Date(startedAt.getTime() + 1);
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryJob.create({
+      data: {
+        acceptedResultHash: memorySha256({ result: "classified", versionId }),
+        completedAt,
+        id: jobId,
+        idempotencyFingerprint: memorySha256({
+          job: "review-classification",
+          versionId
+        }),
+        kind: "RECLASSIFY_FACTS",
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: "memory-review-classification-fixture-v1",
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memorySha256({ decision: reasonCode, versionId }),
+        completedAt,
+        createdAt: startedAt,
+        destinationFingerprint: memorySha256({
+          destination: "review-classifier",
+          versionId
+        }),
+        id: bindingId,
+        inputHash: memorySha256({ input: "review-classifier", versionId }),
+        logicalRole: "MEMORY_RECLASSIFY",
+        memoryJobId: jobId,
+        ordinal: 0,
+        ownerType: "JOB",
+        pipelineVersion: "memory-review-classification-fixture-v1",
+        policyVersion: "memory-review-classification-policy-v1",
+        promptVersion: "memory-review-classification-prompt-v1",
+        providerId: "memory-review-fixture",
+        recoverableUntil: completedAt,
+        relationsDetachedAt: completedAt,
+        schemaVersion: "memory-review-classification-schema-v1",
+        secretFreeExecutionSnapshot: {
+          providerExecutionSnapshot: {
+            providerFamily: "memory-review-fixture",
+            providerModelId: "memory-review-classifier-v1"
+          },
+          version: 1
+        },
+        startedAt,
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.update({
+      data: {
+        safetyClassificationReasonCode: reasonCode,
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifiedAt: completedAt,
+        safetyClassifierExecutionId: bindingId,
+        safetyClassifierModelId: "memory-review-classifier-v1",
+        safetyClassifierPolicyVersion: "memory-review-classification-policy-v1",
+        safetyClassifierProviderId: "memory-review-fixture"
+      },
+      where: { id: versionId }
+    });
+  });
+}
+
 function explicitService() {
   return createExplicitMemoryService({
     authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma),
@@ -58,7 +138,7 @@ async function createAutomaticMemory(userId: string, statement: string) {
     }
   });
   const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
-  return createPrismaMemoryFactRepository(keyring, prisma).save(userId, {
+  const created = await createPrismaMemoryFactRepository(keyring, prisma).save(userId, {
     evidence: {
       branchGeneration: 0,
       chatId: chat.id,
@@ -94,6 +174,8 @@ async function createAutomaticMemory(userId: string, statement: string) {
       structuredValue: { statement }
     }
   });
+  await classifyFactVersion(userId, created.versionId, "response_preference");
+  return created;
 }
 
 async function makeConflict(
@@ -107,6 +189,26 @@ async function makeConflict(
     await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
     const first = await tx.memoryFactVersion.findFirstOrThrow({
       where: { factId, id: firstVersionId, userId }
+    });
+    const firstEvidence = await tx.memoryEvidence.findFirstOrThrow({
+      select: { branchGeneration: true, chatId: true },
+      where: {
+        factVersionId: firstVersionId,
+        sourceType: "MESSAGE",
+        userId
+      }
+    });
+    if (firstEvidence.branchGeneration === null || !firstEvidence.chatId) {
+      throw new Error("memory_review_conflict_source_missing");
+    }
+    const secondStatement = "I prefer detailed technical explanations.";
+    const secondMessage = await tx.message.create({
+      data: {
+        chatId: firstEvidence.chatId,
+        content: textMessageContent(secondStatement),
+        role: "user",
+        status: "complete"
+      }
     });
     await tx.memoryEvent.create({
       data: {
@@ -129,7 +231,7 @@ async function makeConflict(
         confidence: first.confidence,
         createdByEventId: eventId,
         directness: first.directness,
-        displayText: "I prefer detailed technical explanations.",
+        displayText: secondStatement,
         factId,
         id: secondVersionId,
         importance: first.importance,
@@ -156,6 +258,23 @@ async function makeConflict(
         validTo: first.validTo
       }
     });
+    await tx.memoryEvidence.create({
+      data: {
+        branchGeneration: firstEvidence.branchGeneration,
+        chatId: firstEvidence.chatId,
+        factVersionId: secondVersionId,
+        messageId: secondMessage.id,
+        observedAt: new Date(first.systemFrom.getTime() + 1),
+        safeExcerpt: secondStatement,
+        safeSourceHash: memorySha256(secondStatement),
+        safetyClass: "SENSITIVE",
+        sourceProjectionVersion: "memory-review-conflict-test-v1",
+        sourceRole: "user",
+        sourceType: "MESSAGE",
+        stance: "SUPPORTS",
+        userId
+      }
+    });
     await tx.memoryFact.update({
       data: { currentVersionId: null, state: "CONFLICTED" },
       where: { id: factId }
@@ -164,6 +283,7 @@ async function makeConflict(
       where: { factVersionId: firstVersionId, userId }
     });
   });
+  await classifyFactVersion(userId, secondVersionId, "sensitive_personal");
   return [firstVersionId, secondVersionId];
 }
 

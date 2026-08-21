@@ -19,6 +19,10 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import {
+  memoryDestructiveSourceCutoff,
+  memorySourceIsInsidePause
+} from "../persistence/pauseIntervals";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import {
   advanceMemoryMutation,
@@ -36,6 +40,7 @@ import {
   chunkMemoryRecallProjection
 } from "./chunking";
 import {
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryChunkId,
   memoryHistoryIndexClaimIsValid,
   memoryHistoryIndexResultHash,
@@ -45,7 +50,6 @@ import {
 } from "./contract";
 import {
   buildMemorySafeSourceSnapshot,
-  memoryRuntimeInfluenceTaintSources,
   type MemoryHistorySourceMessageInput,
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
@@ -151,20 +155,22 @@ async function probeWith(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: job.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
   if (!sourceMatchesJob(source, job)) return staleDecision;
   const settings = await tx.userMemorySettings.findUnique({
     select: {
       memoryGeneration: true,
-      referenceChatHistory: true
+      referenceChatHistory: true,
+      useMemoryFacts: true
     },
     where: { userId: job.userId }
   });
   if (!settings || settings.memoryGeneration !== job.memoryGenerationSnapshot) {
     return staleDecision;
   }
-  if (!settings.referenceChatHistory) return disabledDecision;
+  if (!settings.useMemoryFacts || !settings.referenceChatHistory) return disabledDecision;
   return { status: "READY" };
 }
 
@@ -190,19 +196,47 @@ async function loadHistoryAdmission(
   now: Date
 ): Promise<HistoryAdmission> {
   const pathMessageIds = source.messages.map((message) => message.id);
-  const barriers = await tx.memorySourceBarrier.findMany({
-    orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
-    select: {
-      id: true,
-      kind: true,
-      memoryGeneration: true,
-      sourceCreatedAtCutoff: true
-    },
-    where: {
-      kind: { in: ["ALL_REUSABLE", "HISTORY_INDEX"] },
-      userId: source.userId
-    }
-  });
+  const [barriers, checkpoint, pauseIntervals] = await Promise.all([
+    tx.memorySourceBarrier.findMany({
+      orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
+      select: {
+        createdAt: true,
+        explicitOverrideAllowed: true,
+        id: true,
+        kind: true,
+        memoryGeneration: true,
+        sourceCreatedAtCutoff: true
+      },
+      where: {
+        explicitOverrideAllowed: false,
+        kind: { in: ["ALL_REUSABLE", "HISTORY_INDEX"] },
+        userId: source.userId
+      }
+    }),
+    tx.chatMemoryCheckpoint.findUnique({
+      select: { resumeCreatedAtCutoff: true },
+      where: {
+        userId_chatId: {
+          chatId: source.id,
+          userId: source.userId
+        }
+      }
+    }),
+    tx.memoryPauseInterval.findMany({
+      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memoryGeneration: true,
+        pausedAt: true,
+        resumedAt: true,
+        scope: true
+      },
+      where: {
+        scope: { in: ["MASTER", "SEARCH_HISTORY"] },
+        userId: source.userId
+      }
+    })
+  ]);
   const suppressions = pathMessageIds.length === 0
     ? []
     : await tx.memorySuppression.findMany({
@@ -235,23 +269,37 @@ async function loadHistoryAdmission(
         }
       });
   const excludesAll = suppressions.some((suppression) => suppression.scope === "ALL");
-  const excludedMessageIds = excludesAll
+  const suppressionExcludedMessageIds = excludesAll
     ? pathMessageIds
     : suppressions.flatMap((suppression) =>
         suppression.scope === "SOURCE_MESSAGE" && suppression.sourceMessageId
           ? [suppression.sourceMessageId]
           : []);
-  const cutoff = barriers.at(-1)?.sourceCreatedAtCutoff ?? null;
+  const pauseExcludedMessageIds = source.messages.flatMap((message) =>
+    memorySourceIsInsidePause(message.createdAt, pauseIntervals) ? [message.id] : []);
+  const excludedMessageIds = [
+    ...suppressionExcludedMessageIds,
+    ...pauseExcludedMessageIds
+  ];
+  const globalCutoff = memoryDestructiveSourceCutoff(barriers);
+  const chatResumeCutoff = checkpoint?.resumeCreatedAtCutoff ?? null;
+  const cutoff = globalCutoff && chatResumeCutoff
+    ? (globalCutoff > chatResumeCutoff ? globalCutoff : chatResumeCutoff)
+    : globalCutoff ?? chatResumeCutoff;
   return {
     excludedMessageIds: [...new Set(excludedMessageIds)].sort(),
     sourceCreatedAtCutoff: cutoff?.toISOString() ?? null,
     suppressionIdentitySnapshot: memorySha256({
       barriers: barriers.map((barrier) => ({
+        createdAt: barrier.createdAt,
+        explicitOverrideAllowed: barrier.explicitOverrideAllowed,
         id: barrier.id,
         kind: barrier.kind,
         memoryGeneration: barrier.memoryGeneration,
         sourceCreatedAtCutoff: barrier.sourceCreatedAtCutoff
       })),
+      checkpointResumeCutoff: chatResumeCutoff,
+      pauseIntervals,
       suppressions: suppressions.map((suppression) => ({
         expiresAt: suppression.expiresAt,
         fingerprintKeyVersion: suppression.fingerprintKeyVersion,
@@ -283,6 +331,7 @@ async function prepareWith(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: job.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
   if (!sourceMatchesJob(source, job)) return { decision: staleDecision };
@@ -293,9 +342,6 @@ async function prepareWith(
       chatId: true,
       content: true,
       createdAt: true,
-      groundedAt: true,
-      groundingProvider: true,
-      groundingStrategy: true,
       id: true,
       parentMessageId: true,
       role: true,
@@ -309,13 +355,6 @@ async function prepareWith(
 
   const runs = await tx.modelRun.findMany({
     select: {
-      _count: {
-        select: {
-          knowledgeRuns: true,
-          searchRuns: true,
-          toolCalls: true
-        }
-      },
       assistantId: true,
       assistantMessageId: true,
       id: true,
@@ -329,15 +368,6 @@ async function prepareWith(
       userId: source.userId
     }
   });
-  const runIds = runs.map((run) => run.id);
-  const memoryBindings = runIds.length === 0
-    ? []
-    : await tx.modelRunMemoryBinding.findMany({
-        select: { contextTokenCount: true, modelRunId: true },
-        where: { modelRunId: { in: runIds }, userId: source.userId }
-      });
-  const memoryContextTokensByRun = new Map(memoryBindings.map((binding) =>
-    [binding.modelRunId, binding.contextTokenCount] as const));
   const runAssistantIds = runs.flatMap((run) => run.assistantId ? [run.assistantId] : []);
   const ownedAssistants = runAssistantIds.length === 0
     ? []
@@ -350,14 +380,6 @@ async function prepareWith(
         }
       });
   const ownedAssistantIds = new Set(ownedAssistants.map((assistant) => assistant.id));
-  const attachments = pathIds.length === 0
-    ? []
-    : await tx.attachment.findMany({
-        select: { messageId: true },
-        where: { messageId: { in: pathIds }, userId: source.userId }
-      });
-  const attachmentMessageIds = new Set(attachments.flatMap((attachment) =>
-    attachment.messageId ? [attachment.messageId] : []));
   const runsByAssistantMessage = new Map<string, typeof runs>();
   for (const run of runs) {
     if (!run.assistantMessageId) continue;
@@ -394,24 +416,13 @@ async function prepareWith(
 
     const candidates = runsByAssistantMessage.get(row.id) ?? [];
     const run = candidates.length === 1 ? candidates[0]! : null;
-    const taint = new Set<MemoryHistoryTaintSource>();
-    if (row.groundedAt || row.groundingProvider || row.groundingStrategy) {
-      taint.add("SEARCH");
-    }
-    if (run) {
-      for (const source of memoryRuntimeInfluenceTaintSources({
-        attachment: attachmentMessageIds.has(run.userMessageId),
-        knowledgeRunCount: run._count.knowledgeRuns,
-        memoryContextTokenCount: memoryContextTokensByRun.get(run.id) ?? 0,
-        searchRunCount: run._count.searchRuns,
-        toolCallCount: run._count.toolCalls
-      })) {
-        taint.add(source);
-      }
-      if (run.assistantId && !ownedAssistantIds.has(run.assistantId)) {
-        taint.add("DEVELOPER");
-      }
-    }
+    // Runtime sources live outside the visible Message row. Their raw payloads
+    // stay excluded at those dedicated boundaries; ordinary use must not taint
+    // the settled assistant text that the user actually saw.
+    const taintSources: readonly MemoryHistoryTaintSource[] =
+      run?.assistantId && !ownedAssistantIds.has(run.assistantId)
+        ? ["DEVELOPER"]
+        : [];
     return {
       chatId: row.chatId,
       content: row.content,
@@ -426,7 +437,7 @@ async function prepareWith(
         influencedByMessageIds: run ? [run.userMessageId] : [],
         modelRunId: run?.id ?? null,
         origin: "VISIBLE_ASSISTANT",
-        taintSources: [...taint].sort()
+        taintSources
       },
       role: row.role,
       status: row.status,
@@ -466,14 +477,17 @@ async function prepareWith(
     ...chunk,
     id: memoryHistoryChunkId(sourceIdentity, chunk)
   }));
+  const resultHash = memoryHistoryIndexResultHash(
+    sourceIdentity,
+    chunks,
+    admission.suppressionIdentitySnapshot
+  );
   return {
     plan: {
+      classificationPolicyVersion: null,
       chunks,
-      resultHash: memoryHistoryIndexResultHash(
-        sourceIdentity,
-        chunks,
-        admission.suppressionIdentitySnapshot
-      ),
+      preparedResultHash: resultHash,
+      resultHash,
       source: sourceIdentity,
       suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
     }
@@ -489,7 +503,8 @@ function expectedSearchEntry(
     safeContentHash: chunk.contentHash,
     normalizedSearchText: normalizeMemorySearchText(chunk.safeProjectedText),
     safetyIdentitySnapshot: memorySha256({
-      policyVersion: chunk.sourceProjectionVersion,
+      classificationPolicyVersion: plan.classificationPolicyVersion,
+      projectionVersion: chunk.sourceProjectionVersion,
       redactionReasonCodes: chunk.redactionReasonCodes,
       redactionState: chunk.redactionState,
       safetyClass: chunk.safetyClass
@@ -553,6 +568,7 @@ async function planAlreadyApplied(
   if (
     !checkpoint ||
     checkpoint.status !== "READY" ||
+    checkpoint.pipelineVersion !== MEMORY_HISTORY_INDEX_PIPELINE_VERSION ||
     checkpoint.activeLeafMessageId !== plan.source.activeLeafMessageId ||
     checkpoint.branchGeneration !== plan.source.branchGeneration ||
     checkpoint.sourceContentHash !== plan.source.sourceHash ||
@@ -753,6 +769,7 @@ async function applyPlan(
 ): Promise<void> {
   if (
     !memoryHistoryIndexClaimIsValid(claim) ||
+    plan.classificationPolicyVersion === null ||
     plan.source.activeLeafMessageId !== claim.activeLeafMessageId ||
     plan.source.branchGeneration !== claim.branchGeneration ||
     plan.source.chatId !== claim.chatId ||
@@ -762,7 +779,8 @@ async function applyPlan(
     memoryHistoryIndexResultHash(
       plan.source,
       plan.chunks,
-      plan.suppressionIdentitySnapshot
+      plan.suppressionIdentitySnapshot,
+      plan.classificationPolicyVersion
     ) !== plan.resultHash
   ) {
     throw new MemoryCoordinatorError("memory_history_plan_invalid", false);
@@ -772,6 +790,7 @@ async function applyPlan(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: claim.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: claim.userId
   });
   if (
@@ -783,7 +802,7 @@ async function applyPlan(
   const currentPrepared = await prepareWith(tx, claim, now);
   if (
     "decision" in currentPrepared ||
-    currentPrepared.plan.resultHash !== plan.resultHash
+    currentPrepared.plan.resultHash !== plan.preparedResultHash
   ) {
     throw new MemoryCoordinatorError("memory_history_plan_stale", true);
   }
@@ -850,6 +869,7 @@ async function applyPlan(
       chatId: plan.source.chatId,
       lastIndexedMessageId: plan.source.activeLeafMessageId,
       lastSucceededAt: now,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
       status: "READY",
@@ -861,6 +881,7 @@ async function applyPlan(
       lastErrorCode: null,
       lastIndexedMessageId: plan.source.activeLeafMessageId,
       lastSucceededAt: now,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
       status: "READY"

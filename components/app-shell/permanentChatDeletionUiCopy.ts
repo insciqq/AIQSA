@@ -1,13 +1,8 @@
 const COPY = {
     advanced: "Advanced details",
-    advancedAttempts: "Cleanup attempts",
-    advancedError: "Last error code",
-    advancedFenced: "Made unavailable",
-    advancedLastAudit: "Last audit",
-    advancedReference: "Deletion reference",
-    advancedUpdated: "Updated",
     archiveAction: "Archive instead",
     blocked: "Cleanup needs administrator attention. The chat remains unavailable.",
+    busy: "This chat is busy. Wait for the current response to finish, then try again.",
     cancel: "Cancel",
     close: "Close",
     confirmBody: "This chat will disappear immediately and cannot be restored.",
@@ -24,15 +19,13 @@ const COPY = {
     noticeSucceeded: "Chat deletion completed",
     refresh: "Refresh status",
     refreshing: "Refreshing…",
-    retryWait: "The chat is unavailable. Cleanup will retry automatically.",
-    stale: "The chat changed. Review the refreshed details, then confirm again.",
-    statePending: "The chat is unavailable. Cleanup is queued in the background.",
+    stale: "The chat changed. Review it, then confirm again.",
     stateRunning: "The chat is unavailable. Private data cleanup is in progress.",
     stateSucceeded: "The chat and its owned data have been removed.",
     statusBody: "You can keep using AIQSA while cleanup continues.",
     statusTitle: "Permanent deletion",
     unavailable: "Permanent deletion is not available yet.",
-    unknownError: "Could not delete this chat. Nothing was deleted; try again."
+    unknownError: "Could not confirm the latest deletion state. Check the chat and try again."
 } as const;
 
 export type PermanentChatDeletionUiCopyKey = keyof typeof COPY;

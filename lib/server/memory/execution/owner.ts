@@ -14,13 +14,22 @@ export type MemoryExecutionOwner =
       modelRunId: string;
       modelRunToolCallId: string;
       type: "MODEL_RUN_TOOL_CALL";
+    }>
+  | Readonly<{
+      mutationAuthorizationId: string;
+      type: "MUTATION_AUTHORIZATION";
     }>;
 
 type StoredOwnerShape = Readonly<{
   memoryJobId: string | null;
   modelRunId: string | null;
   modelRunToolCallId: string | null;
-  ownerType: "JOB" | "MODEL_RUN_TOOL_CALL" | "RETRIEVAL_ATTEMPT";
+  mutationAuthorizationId: string | null;
+  ownerType:
+    | "JOB"
+    | "MODEL_RUN_TOOL_CALL"
+    | "MUTATION_AUTHORIZATION"
+    | "RETRIEVAL_ATTEMPT";
   retrievalAttemptId: string | null;
 }>;
 
@@ -34,6 +43,7 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
   memoryJobId: string | null;
   modelRunId: string | null;
   modelRunToolCallId: string | null;
+  mutationAuthorizationId: string | null;
   ownerType: MemoryExecutionOwner["type"];
   retrievalAttemptId: string | null;
 } {
@@ -42,6 +52,7 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
       memoryJobId: owner.memoryJobId,
       modelRunId: null,
       modelRunToolCallId: null,
+      mutationAuthorizationId: null,
       ownerType: owner.type,
       retrievalAttemptId: null
     };
@@ -54,6 +65,7 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
       memoryJobId: null,
       modelRunId: null,
       modelRunToolCallId: null,
+      mutationAuthorizationId: null,
       ownerType: owner.type,
       retrievalAttemptId: owner.retrievalAttemptId
     };
@@ -67,6 +79,20 @@ export function memoryExecutionOwnerData(owner: MemoryExecutionOwner): {
       memoryJobId: null,
       modelRunId: owner.modelRunId,
       modelRunToolCallId: owner.modelRunToolCallId,
+      mutationAuthorizationId: null,
+      ownerType: owner.type,
+      retrievalAttemptId: null
+    };
+  }
+  if (
+    owner.type === "MUTATION_AUTHORIZATION" &&
+    isValidMemoryExecutionIdentifier(owner.mutationAuthorizationId)
+  ) {
+    return {
+      memoryJobId: null,
+      modelRunId: null,
+      modelRunToolCallId: null,
+      mutationAuthorizationId: owner.mutationAuthorizationId,
       ownerType: owner.type,
       retrievalAttemptId: null
     };
@@ -83,6 +109,7 @@ export function memoryExecutionOwnerWhere(
     memoryJobId: shape.memoryJobId,
     modelRunId: shape.modelRunId,
     modelRunToolCallId: shape.modelRunToolCallId,
+    mutationAuthorizationId: shape.mutationAuthorizationId,
     ownerType: shape.ownerType,
     retrievalAttemptId: shape.retrievalAttemptId,
     userId
@@ -97,7 +124,8 @@ export function storedMemoryExecutionOwner(
     record.memoryJobId &&
     record.retrievalAttemptId === null &&
     record.modelRunId === null &&
-    record.modelRunToolCallId === null
+    record.modelRunToolCallId === null &&
+    record.mutationAuthorizationId === null
   ) {
     return { memoryJobId: record.memoryJobId, type: "JOB" };
   }
@@ -106,7 +134,8 @@ export function storedMemoryExecutionOwner(
     record.retrievalAttemptId &&
     record.memoryJobId === null &&
     record.modelRunId === null &&
-    record.modelRunToolCallId === null
+    record.modelRunToolCallId === null &&
+    record.mutationAuthorizationId === null
   ) {
     return { retrievalAttemptId: record.retrievalAttemptId, type: "RETRIEVAL_ATTEMPT" };
   }
@@ -115,12 +144,26 @@ export function storedMemoryExecutionOwner(
     record.modelRunId &&
     record.modelRunToolCallId &&
     record.memoryJobId === null &&
-    record.retrievalAttemptId === null
+    record.retrievalAttemptId === null &&
+    record.mutationAuthorizationId === null
   ) {
     return {
       modelRunId: record.modelRunId,
       modelRunToolCallId: record.modelRunToolCallId,
       type: "MODEL_RUN_TOOL_CALL"
+    };
+  }
+  if (
+    record.ownerType === "MUTATION_AUTHORIZATION" &&
+    record.mutationAuthorizationId &&
+    record.memoryJobId === null &&
+    record.retrievalAttemptId === null &&
+    record.modelRunId === null &&
+    record.modelRunToolCallId === null
+  ) {
+    return {
+      mutationAuthorizationId: record.mutationAuthorizationId,
+      type: "MUTATION_AUTHORIZATION"
     };
   }
   return memoryExecutionFailure("memory_execution_snapshot_invalid");

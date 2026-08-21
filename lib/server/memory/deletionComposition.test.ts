@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createPermanentChatDeleteAdmissionHandler,
+  createPermanentChatDeleteConsumerHandler,
   type PermanentChatDeletionHandlerDeps
 } from "../chats/permanentDeletion/handlers";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
 import { MemoryCoordinatorRegistry } from "./coordinator/registry";
 import type { MemoryDeletionHandler } from "./coordinator/types";
 import { createMemoryDeletionComposition } from "./deletionComposition";
@@ -125,27 +126,22 @@ describe("Memory deletion composition", () => {
   it("keeps the direct permanent-delete API zero-mutation until composition", async () => {
     const policy = { account: true, permanent: true };
     const fixture = composition(policy);
-    const admit = vi.fn(async () => ({
-      deletionId: "deletion-1",
-      fencedAt: "2026-08-12T12:00:00.000Z",
-      state: "PENDING" as const
-    }));
-    const handler = createPermanentChatDeleteAdmissionHandler({
+    const confirm = vi.fn(async () => ({ status: "IN_PROGRESS" as const }));
+    const handler = createPermanentChatDeleteConsumerHandler({
       capability: fixture.created.permanentChatDeletionCapability,
       mutationRateLimiter: {
-        check: vi.fn(async () => ({ allowed: true as const }))
+        check: vi.fn(async () => ({ allowed: true as const, retryAfterSeconds: 0 }))
       },
       resolveAuth: vi.fn(async () => ({ userId: "owner-1" })),
-      service: { admit }
+      service: { confirm }
     } as unknown as PermanentChatDeletionHandlerDeps);
     const request = () => new Request(
       "https://example.test/api/chats/chat-1/delete-permanently",
       {
         body: JSON.stringify({
           alsoForgetOriginMemories: false,
-          expectedActiveLeafMessageId: "message-1",
-          expectedChatRevision: 1,
-          mutationAuthorizationId: "authorization-1"
+          confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+          requestId: "request-1"
         }),
         headers: { "content-type": "application/json" },
         method: "POST"
@@ -154,14 +150,14 @@ describe("Memory deletion composition", () => {
     const context = { params: { chatId: "chat-1" } };
 
     expect((await handler(request(), context)).status).toBe(503);
-    expect(admit).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
 
     fixture.created.ensure();
     expect((await handler(request(), context)).status).toBe(202);
-    expect(admit).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
 
     policy.permanent = false;
     expect((await handler(request(), context)).status).toBe(503);
-    expect(admit).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
   });
 });

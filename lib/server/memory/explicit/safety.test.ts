@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { memoryExplicitStatementContainsSecret } from "./safety";
+import {
+  memoryExplicitStatementContainsSecret,
+  parseMemorySecret
+} from "./safety";
 
 describe("explicit Memory secret screening", () => {
   it("accepts ordinary Russian and English saved-memory statements", () => {
@@ -26,5 +29,25 @@ describe("explicit Memory secret screening", () => {
     "Recovery: ABCD-EFGH-IJKL-MNOP"
   ])("rejects credential-like plaintext without returning it (%#)", (statement) => {
     expect(memoryExplicitStatementContainsSecret(statement)).toBe(true);
+  });
+
+  it("reports structural findings without treating semantic labels as secrets", () => {
+    expect(parseMemorySecret("My password is hunter2-secret")).toEqual({
+      containsSecret: false,
+      findings: []
+    });
+    expect(parseMemorySecret("-----BEGIN PRIVATE KEY-----")).toMatchObject({
+      containsSecret: true,
+      findings: ["PEM_PRIVATE_KEY"]
+    });
+    expect(parseMemorySecret("postgresql://owner:private-password@db.example.test/app"))
+      .toMatchObject({ containsSecret: true, findings: ["CREDENTIAL_URL"] });
+  });
+
+  it("does not require a language or keyword fallback for recovery and card formats", () => {
+    expect(parseMemorySecret("ABCD-EFGH-IJKL-MNOP").findings)
+      .toContain("RECOVERY_CODE");
+    expect(parseMemorySecret("4111 1111 1111 1111").findings)
+      .toContain("PAYMENT_CARD");
   });
 });

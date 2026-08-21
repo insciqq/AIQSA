@@ -4,6 +4,7 @@ import { DiscardChangesConfirmationDialog } from "@/components/app-shell/Confirm
 import { MemorySettingsSection } from "@/components/app-shell/MemorySettingsSection";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
 import { discardMemoryManagerDraft } from "@/components/app-shell/memoryManagerStore";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { Notice } from "@/components/app-shell/types";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
@@ -20,14 +21,12 @@ export function MemoryWorkspace({
   notice = null,
   onClose,
   onDismissNotice,
-  onOpenMemorySource,
   restoreFocus
 }: Readonly<{
   accountId: string;
   notice?: Notice | null;
   onClose(): void;
   onDismissNotice?(): void;
-  onOpenMemorySource(chatId: string): void;
   restoreFocus?(): HTMLElement | null;
 }>) {
   const [busy, setBusy] = useState(false);
@@ -64,7 +63,7 @@ export function MemoryWorkspace({
         ref={workspaceRef}
         aria-busy={busy || undefined}
         aria-hidden={discardOpen || undefined}
-        aria-label="Memory"
+        aria-label={memoryUiCopy("settings.heading")}
         aria-modal="true"
         className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col overflow-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
         data-testid="memory-workspace"
@@ -75,16 +74,18 @@ export function MemoryWorkspace({
           <div className="mx-auto grid w-full max-w-6xl min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
             <button ref={backRef} className={backButton} disabled={busy} onClick={requestClose} type="button">
               <ArrowLeft className="size-4" aria-hidden="true" />
-              Back to chat
+              {memoryUiCopy("workspace.backToChat")}
             </button>
             <div className="flex min-w-0 items-center gap-3">
               <span className="hidden size-8 shrink-0 place-items-center rounded-control bg-control-selected text-proof sm:grid" aria-hidden="true">
                 <Brain className="size-4" />
               </span>
               <div className="min-w-0">
-                <h1 className="truncate text-xl font-semibold tracking-tight text-ink">Memory</h1>
+                <h1 className="truncate text-xl font-semibold tracking-tight text-ink">
+                  {memoryUiCopy("settings.heading")}
+                </h1>
                 <p className="mt-0.5 hidden truncate text-xs text-ink-muted sm:block">
-                  Control what AIQSA remembers, inspect saved context, and review advanced evidence when needed.
+                  {memoryUiCopy("workspace.description")}
                 </p>
               </div>
             </div>
@@ -104,13 +105,12 @@ export function MemoryWorkspace({
           accountId={accountId}
           onBusyChange={setBusy}
           onDirtyChange={setDirty}
-          onOpenMemorySource={onOpenMemorySource}
         />
       </div>
 
       {discardOpen ? (
         <DiscardChangesConfirmationDialog
-          label="Memory draft"
+          label={memoryUiCopy("workspace.draftLabel")}
           onCancel={() => setDiscardOpen(false)}
           onConfirm={() => {
             discardMemoryManagerDraft();

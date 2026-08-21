@@ -1,6 +1,8 @@
 import { estimateApproxTokens } from "../../contextBudget";
 import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_DYNAMIC_FACT_TARGET_TOKENS,
+  MEMORY_CONTEXT_HISTORY_TARGET_TOKENS,
   MEMORY_CONTEXT_MAX_ITEMS,
   MEMORY_CONTEXT_MAX_DYNAMIC_FACTS,
   MEMORY_CONTEXT_MAX_HISTORY_SNIPPETS,
@@ -52,8 +54,36 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
       expansion.sourceChatId !== null;
 }
 
+export function isEligibleMemoryResponsePreferenceCore(
+  core: MemoryCoreCandidate
+): boolean {
+  const { candidate, expansion } = core;
+  return candidate.itemType === "FACT_VERSION" &&
+    candidate.featureSnapshot.tier === "CORE" &&
+    safeProjectionShape(expansion) &&
+    itemKey(candidate) === itemKey(expansion) &&
+    (candidate.metadata.sensitivityClass === "NORMAL" ||
+      candidate.metadata.sensitivityClass === "SENSITIVE") &&
+    candidate.metadata.sourceMode === "EXPLICIT" &&
+    candidate.metadata.modality === "PREFERENCE" &&
+    candidate.metadata.category === "preferences" &&
+    candidate.metadata.coreEligible &&
+    candidate.metadata.current;
+}
+
 function compactSafeText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function packedSafeText(
+  candidate: MemoryRankedCandidate,
+  expansion: MemoryExpandedCandidate
+): string {
+  // Recall chunks carry canonical speaker and message boundaries. Preserve
+  // them verbatim; only atomic facts are compacted to one line.
+  return candidate.itemType === "RECALL_CHUNK"
+    ? expansion.safeText.trim()
+    : compactSafeText(expansion.safeText);
 }
 
 function datePrefix(
@@ -68,7 +98,7 @@ function datePrefix(
 
 function render(items: readonly SectionedItem[]): string {
   const sections: readonly [MemoryPackedItem["section"], string][] = [
-    ["CORE", "Core memory (always considered current facts):"],
+    ["CORE", "Response preferences relevant to this answer:"],
     ["FACT", "Relevant current facts:"],
     ["HISTORY", "Relevant prior conversations:"]
   ];
@@ -126,16 +156,13 @@ export function packMemoryPersonalContext(input: Readonly<{
   const selectedDedupe = new Set<string>();
 
   const coreCandidates = input.core ?? [];
+  if (coreCandidates.length > MEMORY_CORE_MAX_FACTS) {
+    omissionCounts.core_item_limit = coreCandidates.length - MEMORY_CORE_MAX_FACTS;
+  }
   for (const core of coreCandidates.slice(0, MEMORY_CORE_MAX_FACTS)) {
     const { candidate, expansion } = core;
-    if (
-      candidate.itemType !== "FACT_VERSION" ||
-      candidate.featureSnapshot.tier !== "CORE" ||
-      !safeProjectionShape(expansion) ||
-      itemKey(candidate) !== itemKey(expansion) ||
-      candidate.metadata.sensitivityClass !== "NORMAL" ||
-      !candidate.metadata.current
-    ) {
+    if (!input.plan.applyResponsePreferences ||
+      !isEligibleMemoryResponsePreferenceCore(core)) {
       increment(omissionCounts, "core_contract_invalid");
       continue;
     }
@@ -144,7 +171,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       increment(omissionCounts, "duplicate_identity");
       continue;
     }
-    const line = `${datePrefix(candidate, expansion)}${compactSafeText(expansion.safeText)}`;
+    const line = `${datePrefix(candidate, expansion)}${packedSafeText(candidate, expansion)}`;
     const item: MemoryPackedItem = {
       exactSafeText: line,
       finalScore: candidate.finalScore,
@@ -172,6 +199,8 @@ export function packMemoryPersonalContext(input: Readonly<{
   const sourceChats = new Set<string>();
   let factCount = 0;
   let historyCount = 0;
+  let dynamicFactTokens = 0;
+  let historyTokens = 0;
   for (const candidate of input.ranked) {
     if (selected.length >= MEMORY_CONTEXT_MAX_ITEMS) {
       increment(omissionCounts, "item_limit");
@@ -211,7 +240,16 @@ export function packMemoryPersonalContext(input: Readonly<{
         continue;
       }
     }
-    const line = `${datePrefix(candidate, expansion)}${compactSafeText(expansion.safeText)}`;
+    const line = `${datePrefix(candidate, expansion)}${packedSafeText(candidate, expansion)}`;
+    const itemTokens = estimateApproxTokens(line);
+    if (fact && dynamicFactTokens + itemTokens > MEMORY_CONTEXT_DYNAMIC_FACT_TARGET_TOKENS) {
+      increment(omissionCounts, "fact_token_budget");
+      continue;
+    }
+    if (!fact && historyTokens + itemTokens > MEMORY_CONTEXT_HISTORY_TARGET_TOKENS) {
+      increment(omissionCounts, "history_token_budget");
+      continue;
+    }
     const item: MemoryPackedItem = {
       exactSafeText: line,
       finalScore: candidate.finalScore,
@@ -234,9 +272,13 @@ export function packMemoryPersonalContext(input: Readonly<{
     selected.push({ item, line });
     selectedIdentity.add(identity);
     selectedDedupe.add(candidate.metadata.dedupeKey);
-    if (fact) factCount += 1;
+    if (fact) {
+      factCount += 1;
+      dynamicFactTokens += itemTokens;
+    }
     else {
       historyCount += 1;
+      historyTokens += itemTokens;
       const sourceChatId = expansion.sourceChatId!;
       sourceChats.add(sourceChatId);
       sourceCounts.set(sourceChatId, (sourceCounts.get(sourceChatId) ?? 0) + 1);

@@ -12,7 +12,10 @@ import { createPrismaRunRepository } from "../../runs/prismaRepository";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryDeletionClaim } from "../coordinator/types";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
-import { createExplicitMemoryService } from "../explicit/service";
+import {
+  createExplicitMemoryService,
+  ExplicitMemoryServiceError
+} from "../explicit/service";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
 import {
   createPrismaMemoryFactRepository,
@@ -89,6 +92,82 @@ async function cleanupUsers(userIds: readonly string[]): Promise<void> {
   await prisma.user.deleteMany({ where: { id: { in: [...userIds] } } });
 }
 
+async function classifyFactVersion(userId: string, versionId: string): Promise<void> {
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    select: { memoryGeneration: true, memoryRevision: true },
+    where: { userId }
+  });
+  const jobId = randomUUID();
+  const bindingId = randomUUID();
+  const startedAt = new Date();
+  const completedAt = new Date(startedAt.getTime() + 1);
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryJob.create({
+      data: {
+        acceptedResultHash: memorySha256({ result: "classified", versionId }),
+        completedAt,
+        id: jobId,
+        idempotencyFingerprint: memorySha256({
+          job: "lifecycle-classification",
+          versionId
+        }),
+        kind: "RECLASSIFY_FACTS",
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: "memory-lifecycle-classification-fixture-v1",
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memorySha256({ decision: "NORMAL", versionId }),
+        completedAt,
+        createdAt: startedAt,
+        destinationFingerprint: memorySha256({
+          destination: "lifecycle-classifier",
+          versionId
+        }),
+        id: bindingId,
+        inputHash: memorySha256({ input: "lifecycle-classifier", versionId }),
+        logicalRole: "MEMORY_RECLASSIFY",
+        memoryJobId: jobId,
+        ordinal: 0,
+        ownerType: "JOB",
+        pipelineVersion: "memory-lifecycle-classification-fixture-v1",
+        policyVersion: "memory-lifecycle-classification-policy-v1",
+        promptVersion: "memory-lifecycle-classification-prompt-v1",
+        providerId: "memory-lifecycle-fixture",
+        recoverableUntil: completedAt,
+        relationsDetachedAt: completedAt,
+        schemaVersion: "memory-lifecycle-classification-schema-v1",
+        secretFreeExecutionSnapshot: {
+          providerExecutionSnapshot: {
+            providerFamily: "memory-lifecycle-fixture",
+            providerModelId: "memory-lifecycle-classifier-v1"
+          },
+          version: 1
+        },
+        startedAt,
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.update({
+      data: {
+        safetyClassificationReasonCode: "other_durable",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifiedAt: completedAt,
+        safetyClassifierExecutionId: bindingId,
+        safetyClassifierModelId: "memory-lifecycle-classifier-v1",
+        safetyClassifierPolicyVersion: "memory-lifecycle-classification-policy-v1",
+        safetyClassifierProviderId: "memory-lifecycle-fixture"
+      },
+      where: { id: versionId }
+    });
+  });
+}
+
 function services(
   registry: MemoryDeletionContributorRegistry,
   clock?: () => Date
@@ -128,11 +207,38 @@ async function saveExplicit(
     exactStatementHash: memorySha256(statement),
     requestNonce: nonce
   });
-  return explicit.create(userId, {
+  const input = {
     mutationAuthorizationId: authorization.mutationAuthorizationId,
     scope: { type: "GLOBAL_USER" },
     statement
+  } as const;
+  try {
+    return await explicit.create(userId, input);
+  } catch (error) {
+    if (
+      !(error instanceof ExplicitMemoryServiceError) ||
+      error.code !== "memory_not_found"
+    ) {
+      throw error;
+    }
+  }
+  const authorizationRow = await prisma.memoryMutationAuthorization.findUniqueOrThrow({
+    select: { requestId: true },
+    where: { id: authorization.mutationAuthorizationId }
   });
+  const receipt = await prisma.memoryOperationReceipt.findFirstOrThrow({
+    select: { targetVersionId: true },
+    where: {
+      operation: "SAVE",
+      requestId: authorizationRow.requestId,
+      userId
+    }
+  });
+  if (!receipt.targetVersionId) {
+    throw new Error("memory_lifecycle_classification_target_missing");
+  }
+  await classifyFactVersion(userId, receipt.targetVersionId);
+  return explicit.create(userId, input);
 }
 
 function normalizedRequest(
@@ -751,7 +857,7 @@ async function makeConflictedFact(
         pipelineVersion: "memory-conflict-forget-test-v1",
         rawTemporalExpression: first.rawTemporalExpression,
         sensitivityClass: first.sensitivityClass,
-        sourceMode: "AUTOMATIC",
+        sourceMode: "EXPLICIT",
         sourceTimezone: first.sourceTimezone,
         state: "CONFLICTING",
         structuredValue: first.structuredValue as Prisma.InputJsonValue,
@@ -776,6 +882,7 @@ async function makeConflictedFact(
       where: { factVersionId: firstVersionId, userId }
     });
   });
+  await classifyFactVersion(userId, secondVersionId);
   return [firstVersionId, secondVersionId];
 }
 
@@ -1464,6 +1571,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         scopeId: scope.id,
         value: automaticValue("learned.travel.mode", statement)
       });
+      await classifyFactVersion(userId, created.versionId);
       const receipt = await createAcceptedReceiptDerivatives({
         assistantMessageId: admitted.assistantMessageId,
         attemptId: admitted.attemptId,
@@ -1622,6 +1730,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         scopeId: scope.id,
         value: automaticValue("learned.travel.seat", statement)
       });
+      await classifyFactVersion(userId, learned.versionId);
       const review = createMemoryReviewService(
         createPrismaMemoryFeedbackRepository(prisma)
       );
@@ -1766,6 +1875,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         scopeId: scope.id,
         value: automaticValue("learned.travel.seat", futureStatement)
       });
+      await classifyFactVersion(userId, futureLearned.versionId);
       expect(futureLearned.factId).toBe(learned.factId);
       expect(futureLearned.versionId).not.toBe(learned.versionId);
 

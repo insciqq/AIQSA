@@ -7,7 +7,22 @@ import {
   LibraryV2,
   MemoryPanelV2
 } from "./LibraryV2";
-import type { LibraryNavigationGuardV2 } from "./contracts";
+import type { LibraryNavigationGuardV2, MemoryOverviewV2 } from "./contracts";
+
+function memoryOverview(
+  overrides: Partial<MemoryOverviewV2> = {}
+): MemoryOverviewV2 {
+  return {
+    administratorDisabled: false,
+    automaticLearning: false,
+    explicitCrudAvailable: true,
+    loadState: "ready",
+    referenceChatHistory: true,
+    status: "ON",
+    useMemoryFacts: true,
+    ...overrides
+  };
+}
 
 describe("LibraryV2", () => {
   it("keeps selected tab local and supports roving keyboard navigation", () => {
@@ -111,30 +126,96 @@ describe("Library resource panels", () => {
     const onManage = vi.fn();
     render(
       <MemoryPanelV2
-        memory={{
+        memory={memoryOverview({
           administratorDisabled: true,
           automaticLearning: false,
           disabledReason: "Policy disabled",
-          explicitCrudAvailable: true,
-          facts: [{ id: "fact", scope: "Global", statement: "Prefers compact answers" }],
-          healthDetail: "Recall stopped",
-          healthLabel: "Memory does not participate",
           referenceChatHistory: false,
+          status: "NEEDS_ADMIN_SETUP",
           useMemoryFacts: false
-        }}
+        })}
         onManage={onManage}
       />
     );
 
-    expect(screen.getByText("Memory is disabled by the administrator")).toBeInTheDocument();
+    expect(screen.getByText("Memory needs administrator setup")).toBeInTheDocument();
     expect(screen.getAllByRole("switch")).toEqual([
       expect.objectContaining({ disabled: true }),
       expect.objectContaining({ disabled: true }),
       expect.objectContaining({ disabled: true })
     ]);
-    fireEvent.click(screen.getByRole("button", { name: "Manage memories" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage memory" }));
     expect(onManage).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Search chat history")).not.toBeInTheDocument();
+    expect(screen.queryByText("Memory operations")).not.toBeInTheDocument();
+    expect(screen.queryByText("Advanced evidence")).not.toBeInTheDocument();
     expect(screen.queryByText(/temperature|profile/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["ON", "Memory is on"],
+    ["PREPARING", "Memory is preparing"],
+    ["UNAVAILABLE", "Memory is temporarily unavailable"],
+    ["NEEDS_ADMIN_SETUP", "Memory needs administrator setup"],
+    ["PAUSED", "Memory is paused"]
+  ] as const)("renders the exact consumer status for %s", (status, label) => {
+    render(
+      <MemoryPanelV2
+        memory={memoryOverview({
+          administratorDisabled: status === "NEEDS_ADMIN_SETUP",
+          status
+        })}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: label })).toBeVisible();
+  });
+
+  it("gives every Library Memory switch a setting-and-state accessible name", () => {
+    const onChangeAutomaticLearning = vi.fn();
+    render(
+      <MemoryPanelV2
+        memory={memoryOverview()}
+        onChangeAutomaticLearning={onChangeAutomaticLearning}
+      />
+    );
+
+    expect(screen.getByRole("switch", { name: "Memory: On" })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Search past chats: On" })).toBeEnabled();
+    const automaticLearning = screen.getByRole("switch", {
+      name: "Learn automatically: Off"
+    });
+    fireEvent.click(automaticLearning);
+    expect(onChangeAutomaticLearning).toHaveBeenCalledWith(true);
+  });
+
+  it("shows an honest loading state and disables settings until status is ready", () => {
+    render(
+      <MemoryPanelV2
+        memory={memoryOverview({ loadState: "loading", status: null })}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Loading Memory settings…" })).toBeVisible();
+    expect(screen.queryByText("Memory is paused")).not.toBeInTheDocument();
+    for (const control of screen.getAllByRole("switch")) {
+      expect(control).toBeDisabled();
+    }
+  });
+
+  it("shows a bounded load error and delegates Retry", () => {
+    const onRetry = vi.fn();
+    render(
+      <MemoryPanelV2
+        memory={memoryOverview({ loadState: "error", status: null })}
+        onRetry={onRetry}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Memory status could not be loaded" }))
+      .toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 
   it("labels uploads private without advertising disabled generated files", () => {

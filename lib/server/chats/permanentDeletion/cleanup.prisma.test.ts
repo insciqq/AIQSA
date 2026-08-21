@@ -39,6 +39,82 @@ async function createOwner(): Promise<string> {
   return id;
 }
 
+async function classifyFactVersion(userId: string, versionId: string): Promise<void> {
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    select: { memoryGeneration: true, memoryRevision: true },
+    where: { userId }
+  });
+  const jobId = randomUUID();
+  const bindingId = randomUUID();
+  const startedAt = new Date();
+  const completedAt = new Date(startedAt.getTime() + 1);
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryJob.create({
+      data: {
+        acceptedResultHash: memorySha256({ result: "classified", versionId }),
+        completedAt,
+        id: jobId,
+        idempotencyFingerprint: memorySha256({
+          job: "permanent-chat-classification",
+          versionId
+        }),
+        kind: "RECLASSIFY_FACTS",
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: "permanent-chat-classification-fixture-v1",
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memorySha256({ decision: "NORMAL", versionId }),
+        completedAt,
+        createdAt: startedAt,
+        destinationFingerprint: memorySha256({
+          destination: "permanent-chat-classifier",
+          versionId
+        }),
+        id: bindingId,
+        inputHash: memorySha256({ input: "permanent-chat-classifier", versionId }),
+        logicalRole: "MEMORY_RECLASSIFY",
+        memoryJobId: jobId,
+        ordinal: 0,
+        ownerType: "JOB",
+        pipelineVersion: "permanent-chat-classification-fixture-v1",
+        policyVersion: "permanent-chat-classification-policy-v1",
+        promptVersion: "permanent-chat-classification-prompt-v1",
+        providerId: "permanent-chat-fixture",
+        recoverableUntil: completedAt,
+        relationsDetachedAt: completedAt,
+        schemaVersion: "permanent-chat-classification-schema-v1",
+        secretFreeExecutionSnapshot: {
+          providerExecutionSnapshot: {
+            providerFamily: "permanent-chat-fixture",
+            providerModelId: "permanent-chat-classifier-v1"
+          },
+          version: 1
+        },
+        startedAt,
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.update({
+      data: {
+        safetyClassificationReasonCode: "response_preference",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifiedAt: completedAt,
+        safetyClassifierExecutionId: bindingId,
+        safetyClassifierModelId: "permanent-chat-classifier-v1",
+        safetyClassifierPolicyVersion: "permanent-chat-classification-policy-v1",
+        safetyClassifierProviderId: "permanent-chat-fixture"
+      },
+      where: { id: versionId }
+    });
+  });
+}
+
 async function createTurn(userId: string, title: string) {
   const chat = await prisma.chat.create({ data: { title, userId } });
   const userMessage = await prisma.message.create({
@@ -229,8 +305,6 @@ async function createAcceptedDestinationReceipt(input: Readonly<{
 }
 
 async function createOriginExplicitFact(input: Readonly<{
-  sourceChatId: string;
-  sourceMessageId: string;
   sourceRunId: string;
   statement: string;
   userId: string;
@@ -246,51 +320,51 @@ async function createOriginExplicitFact(input: Readonly<{
     action: "SAVE",
     authorizedPayloadHash: payloadHash,
     confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-    exactSourceEnd: input.statement.length,
-    exactSourceStart: 0,
     expiresAt: new Date(now.getTime() + 60_000),
-    modelRunId: input.sourceRunId,
     nonceHash: memoryMutationNonceHash(input.userId, randomUUID()),
-    requestId,
-    sourceChatId: input.sourceChatId,
-    sourceMessageId: input.sourceMessageId
+    requestId
   }, now);
-  return createPrismaMemoryFactRepository(keyring, prisma).save(input.userId, {
-    authorization: {
-      action: "SAVE",
-      authorizationId: authorization.id,
-      authorizedPayloadHash: payloadHash
-    },
-    evidence: {
-      kind: "EXPLICIT_ACTION",
-      observedAt: now,
-      safeExcerpt: input.statement,
-      safeSourceHash: memorySha256(input.statement),
-      safetyClass: "NORMAL",
-      sourceProjectionVersion: "permanent-chat-test-v1"
-    },
-    explicitSuppressionOverride: false,
-    idempotencyFingerprint: memorySha256({ domain: "origin-fact", requestId }),
-    idempotencyPayloadHash: payloadHash,
-    modelRunId: input.sourceRunId,
-    requestId,
-    scopeId: scope.id,
-    value: {
-      canonicalKey: `preference.origin.${memorySha256(input.statement).slice(0, 32)}`,
-      category: "preference",
-      confidence: 1,
-      directness: "DIRECT",
-      displayText: input.statement,
-      importance: 0.8,
-      languageCode: "en",
-      modality: "PREFERENCE",
-      pipelineVersion: "permanent-chat-test-v1",
-      secretTaintedSourceWindow: false,
-      sensitivityClass: "NORMAL",
-      sourceMode: "EXPLICIT",
-      structuredValue: { statement: input.statement }
+  const created = await createPrismaMemoryFactRepository(keyring, prisma).save(
+    input.userId,
+    {
+      authorization: {
+        action: "SAVE",
+        authorizationId: authorization.id,
+        authorizedPayloadHash: payloadHash
+      },
+      evidence: {
+        kind: "EXPLICIT_ACTION",
+        observedAt: now,
+        safeExcerpt: input.statement,
+        safeSourceHash: memorySha256(input.statement),
+        safetyClass: "NORMAL",
+        sourceProjectionVersion: "permanent-chat-test-v1"
+      },
+      explicitSuppressionOverride: false,
+      idempotencyFingerprint: memorySha256({ domain: "origin-fact", requestId }),
+      idempotencyPayloadHash: payloadHash,
+      modelRunId: input.sourceRunId,
+      requestId,
+      scopeId: scope.id,
+      value: {
+        canonicalKey: `preference.origin.${memorySha256(input.statement).slice(0, 32)}`,
+        category: "preference",
+        confidence: 1,
+        directness: "DIRECT",
+        displayText: input.statement,
+        importance: 0.8,
+        languageCode: "en",
+        modality: "PREFERENCE",
+        pipelineVersion: "permanent-chat-test-v1",
+        secretTaintedSourceWindow: false,
+        sensitivityClass: "NORMAL",
+        sourceMode: "EXPLICIT",
+        structuredValue: { statement: input.statement }
+      }
     }
-  });
+  );
+  await classifyFactVersion(input.userId, created.versionId);
+  return created;
 }
 
 async function runScenario(alsoForgetOriginMemories: boolean) {
@@ -310,8 +384,6 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
     userId
   });
   const originFact = await createOriginExplicitFact({
-    sourceChatId: source.chat.id,
-    sourceMessageId: source.userMessage.id,
     sourceRunId: source.run.id,
     statement: `Origin preference ${randomUUID()}`,
     userId

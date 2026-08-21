@@ -3,7 +3,7 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-index-v1";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-index-v3";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
@@ -30,7 +30,9 @@ export type MemoryHistoryPreparedChunk = MemoryRecallChunkProjection & Readonly<
 }>;
 
 export type MemoryHistoryIndexPlan = Readonly<{
+  classificationPolicyVersion: string | null;
   chunks: readonly MemoryHistoryPreparedChunk[];
+  preparedResultHash: string;
   resultHash: string;
   source: MemoryHistoryIndexSourceIdentity;
   suppressionIdentitySnapshot: string;
@@ -120,7 +122,8 @@ export function memoryHistoryChunkId(
 export function memoryHistoryIndexResultHash(
   source: MemoryHistoryIndexSourceIdentity,
   chunks: readonly MemoryHistoryPreparedChunk[],
-  suppressionIdentitySnapshot: string
+  suppressionIdentitySnapshot: string,
+  classificationPolicyVersion: string | null = null
 ): string {
   return memorySha256({
     chunks: chunks.map((chunk) => ({
@@ -128,8 +131,12 @@ export function memoryHistoryIndexResultHash(
       id: chunk.id,
       messageJoins: chunk.messageJoins,
       ordinal: chunk.ordinal,
+      redactionReasonCodes: chunk.redactionReasonCodes,
+      redactionState: chunk.redactionState,
+      safetyClass: chunk.safetyClass,
       sourceAssistantId: chunk.sourceAssistantId
     })),
+    classificationPolicyVersion,
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
     source,
     suppressionIdentitySnapshot

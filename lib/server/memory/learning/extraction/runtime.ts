@@ -6,6 +6,8 @@ import type { ProviderRunRequest } from "../../../providers/types";
 import type { MemorySecretFreeExecutionSnapshot } from "../../execution";
 import {
   createAcceptedMemoryLearningProvider,
+  type MemoryLearningProviderFailure,
+  type MemoryLearningProviderFailureClassification,
   type MemoryLearningProviderResult
 } from "../providerRuntime";
 import type { MemoryFactExtractionInput } from "./contract";
@@ -34,12 +36,23 @@ export type MemoryFactProvider = Readonly<{
 }>;
 
 export class MemoryFactProviderCallError extends Error {
+  readonly classification: MemoryLearningProviderFailureClassification;
+  readonly usage: ModelRunUsage | null;
+
   constructor(
-    readonly usage: ModelRunUsage | null,
-    options: Readonly<{ cause?: unknown }> = {}
+    failure: MemoryLearningProviderFailure
   ) {
-    super("memory_fact_provider_outcome_unknown", options);
+    super(
+      failure.classification === "UNKNOWN"
+        ? "memory_fact_provider_outcome_unknown"
+        : failure.classification === "REPLAY_SAFE_TRANSIENT"
+          ? "memory_fact_provider_transient"
+          : "memory_fact_provider_unavailable",
+      { cause: failure.cause }
+    );
     this.name = "MemoryFactProviderCallError";
+    this.classification = failure.classification;
+    this.usage = failure.usage;
   }
 }
 
@@ -82,7 +95,9 @@ function providerRequest(
     },
     provider: snapshot.providerFamily,
     searchPlan: { mode: "all_selected", options: [] },
-    toolChoice: "auto",
+    // The extraction contract is one forced strict System Model call.  A
+    // free-form answer or an omitted tool call is not an extraction result.
+    toolChoice: "required",
     tools: [memoryFactExtractionTool]
   };
 }
@@ -120,7 +135,11 @@ export function createAcceptedMemoryFactProvider(
   >(client, {
     ...options,
     buildRequest: providerRequest,
-    callError: (usage, cause) => new MemoryFactProviderCallError(usage, { cause }),
+    callError: (usage, cause, classification) => new MemoryFactProviderCallError({
+      cause,
+      classification,
+      usage
+    }),
     invalidRuntimeError: "memory_fact_runtime_invalid"
   });
   return Object.freeze({

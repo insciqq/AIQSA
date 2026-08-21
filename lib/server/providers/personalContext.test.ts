@@ -9,6 +9,7 @@ import {
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
+import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import type { ProviderRunRequest } from "./types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
@@ -111,6 +112,39 @@ describe("provider-neutral personal context", () => {
     );
     expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("proper nouns, code identifiers");
     expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("in their original form");
+  });
+
+  it.each([
+    { operation: "SAVE", status: "COMMITTED", version: 1 },
+    { operation: "UPDATE", status: "REJECTED", version: 1 },
+    { operation: "NONE", status: "UNAVAILABLE", version: 1 }
+  ] as const)("bridges the authoritative Memory result without replacing the ordinary answer %#", (
+    memoryActionAnswerResult
+  ) => {
+    const input = request({
+      content: { blocks: [{ text: "ordinary-answer-canary", type: "text" }] },
+      prompt: {
+        developer: "Developer",
+        memoryActionAnswerResult,
+        system: "System"
+      }
+    });
+    const contract = memoryActionAnswerContract(memoryActionAnswerResult);
+    const compatible = buildOpenAICompatibleChatRequest(input);
+    const instructions = buildOpenAIResponsesRequest(input).instructions;
+    expect(instructions).toContain(contract);
+    expect(compatible.messages[0]).toEqual({
+      content: expect.stringContaining(contract),
+      role: "system"
+    });
+    expect(compatible.messages.at(-1)).toEqual({
+      content: "ordinary-answer-canary",
+      role: "user"
+    });
+    expect(contract).not.toContain("private-secret-sentinel");
+    if (memoryActionAnswerResult.status !== "COMMITTED") {
+      expect(contract).toContain("otherwise no reusable change occurred");
+    }
   });
 
   it("coexists with hosted Search, Knowledge, and admin-connected tools", () => {

@@ -3,9 +3,15 @@ import type { ModelRunUsage } from "../../../../domain/modelRunEvents";
 import type { ProviderConnectionConfiguration } from "../../../providers/providerConfiguration";
 import type { ProviderExecutionSnapshot } from "../../../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../../../providers/types";
-import type { MemorySecretFreeExecutionSnapshot } from "../../execution";
+import type {
+  MemoryExecutionRole,
+  MemoryLegacyExecutionRole,
+  MemorySecretFreeExecutionSnapshot
+} from "../../execution";
 import {
   createAcceptedMemoryLearningProvider,
+  type MemoryLearningProviderFailure,
+  type MemoryLearningProviderFailureClassification,
   type MemoryLearningProviderResult
 } from "../providerRuntime";
 import type {
@@ -28,7 +34,7 @@ export type MemoryFactDecisionProviderEvidence = Readonly<{
   credentialId: string;
   credentialVersionId: string;
   executionSnapshot: unknown;
-  logicalRole: "MEMORY_CONSOLIDATE" | "MEMORY_VERIFY";
+  logicalRole: MemoryExecutionRole | MemoryLegacyExecutionRole;
   providerModelId: string;
 }>;
 
@@ -47,19 +53,32 @@ export type MemoryFactDecisionProvider = Readonly<{
 }>;
 
 export class MemoryFactDecisionProviderCallError extends Error {
+  readonly classification: MemoryLearningProviderFailureClassification;
+  readonly usage: ModelRunUsage | null;
+
   constructor(
-    readonly usage: ModelRunUsage | null,
-    options: Readonly<{ cause?: unknown }> = {}
+    failure: MemoryLearningProviderFailure
   ) {
-    super("memory_fact_decision_provider_outcome_unknown", options);
+    super(
+      failure.classification === "UNKNOWN"
+        ? "memory_fact_decision_provider_outcome_unknown"
+        : failure.classification === "REPLAY_SAFE_TRANSIENT"
+          ? "memory_fact_decision_provider_transient"
+          : "memory_fact_decision_provider_unavailable",
+      { cause: failure.cause }
+    );
     this.name = "MemoryFactDecisionProviderCallError";
+    this.classification = failure.classification;
+    this.usage = failure.usage;
   }
 }
 
 export function memoryFactDecisionToolChoice(
-  kind: MemoryFactDecisionProviderRequest["kind"]
+  _kind: MemoryFactDecisionProviderRequest["kind"]
 ): NonNullable<ProviderRunRequest["toolChoice"]> {
-  return kind === "VERIFY" ? "required" : "auto";
+  // Keep the legacy diagnostic helper stable for persisted v2 callers. The
+  // active v1 provider request below is unconditionally forced-required.
+  return _kind === "VERIFY" ? "required" : "auto";
 }
 
 function providerRequest(
@@ -109,7 +128,7 @@ function providerRequest(
     },
     provider: snapshot.providerFamily,
     searchPlan: { mode: "all_selected", options: [] },
-    toolChoice: memoryFactDecisionToolChoice(request.kind),
+    toolChoice: "required",
     tools: [request.kind === "CONSOLIDATE"
       ? memoryFactConsolidationTool
       : memoryFactVerificationTool]
@@ -122,8 +141,8 @@ export function memoryFactDecisionProviderEvidence(
   const provider = snapshot.providerExecutionSnapshot;
   if (
     !provider.credentialId || !provider.credentialVersionId ||
-    (snapshot.logicalRole !== "MEMORY_CONSOLIDATE" &&
-      snapshot.logicalRole !== "MEMORY_VERIFY")
+    (snapshot.logicalRole as string) !== "MEMORY_CONSOLIDATE" &&
+      (snapshot.logicalRole as string) !== "MEMORY_VERIFY"
   ) throw new Error("memory_fact_decision_binding_invalid");
   return {
     connectionId: provider.connectionId,
@@ -151,8 +170,8 @@ export function createAcceptedMemoryFactDecisionProvider(
   >(client, {
     ...options,
     buildRequest: providerRequest,
-    callError: (usage, cause) =>
-      new MemoryFactDecisionProviderCallError(usage, { cause }),
+    callError: (usage, cause, classification) =>
+      new MemoryFactDecisionProviderCallError({ cause, classification, usage }),
     invalidRuntimeError: "memory_fact_decision_runtime_invalid",
     validate: (evidence, _snapshot, request) =>
       evidence.logicalRole === (request.kind === "CONSOLIDATE"

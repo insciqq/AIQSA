@@ -4,6 +4,7 @@ import {
   MEMORY_HNSW_MAX_CANDIDATES_PER_LANE,
   MEMORY_HNSW_OVERFETCH_MULTIPLIER,
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
+  memoryVectorCandidateSql,
   searchMemoryVectorLanes,
   type MemoryVectorHit,
   type MemoryVectorLaneExecutor,
@@ -16,6 +17,7 @@ const profile: MemoryVectorProfile = Object.freeze({
   connectionId: "connection-1",
   dimension: 1_024,
   generationId: "generation-1",
+  minimumSimilarity: 0.55,
   providerModelId: "model-1",
   retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   vectorSpaceFingerprint: "d".repeat(64)
@@ -56,6 +58,37 @@ function hit(entryId: string): MemoryVectorHit {
 }
 
 describe("Memory vector lane orchestration", () => {
+  it("fences project history and same-conversation negative feedback in vector SQL", () => {
+    const chunkSql = memoryVectorCandidateSql({
+      input: input(),
+      itemType: "RECALL_CHUNK",
+      limit: 2
+    }).strings.join("?");
+    const factSql = memoryVectorCandidateSql({
+      input: { ...input(), itemTypes: ["FACT_VERSION"] },
+      itemType: "FACT_VERSION",
+      limit: 2
+    }).strings.join("?");
+
+    expect(chunkSql).toContain('source_chat."projectId" IS NULL');
+    expect(chunkSql).toContain('chunk."chunkingVersion" =');
+    expect(chunkSql).toContain('chunk."sourceProjectionVersion" =');
+    expect(chunkSql).toContain('negative_feedback."recallChunkId" = chunk."id"');
+    expect(chunkSql).toContain('negative_run."chatId" =');
+    expect(factSql).toContain('negative_feedback."memoryFactVersionId" = version."id"');
+    expect(factSql).not.toContain('version."sensitivityClass" <> \'SENSITIVE\'');
+    expect(factSql).toContain('evidence_chat."projectId" IS NULL');
+    expect(factSql).toContain('evidence_chat."permanentDeletionAt" IS NULL');
+    expect(factSql).toContain('current_chat."projectId" IS NULL');
+    expect(factSql).toContain('current_chat."permanentDeletionAt" IS NULL');
+    expect(factSql).toContain('current_chat."memoryMode" = \'NORMAL\'');
+    expect(factSql).toContain('feedback_retraction."retractsFeedbackId" = negative_feedback."id"');
+    expect(factSql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
+    expect(factSql).toContain('scope."targetIdSnapshot" IS NULL');
+    expect(factSql).toContain('scope."targetDisplaySnapshot" IS NULL');
+    expect(factSql).not.toMatch(/scope\."scopeType" = '(?:FOLDER|ASSISTANT|CHAT)'/u);
+  });
+
   it("uses bounded HNSW overfetch and exact fallback after authoritative underfill", async () => {
     const scans: Array<readonly [string, string, number]> = [];
     const executor: MemoryVectorLaneExecutor = {
@@ -99,6 +132,42 @@ describe("Memory vector lane orchestration", () => {
       "chunk-1",
       "chunk-2"
     ]);
+  });
+
+  it("returns bounded nearest eligible candidates across the full cosine range", async () => {
+    const candidateScan = vi.fn(async () => [{ entryId: "fact-low-similarity" }]);
+    const rejoin = vi.fn(async (search: MemoryVectorSearchInput) => search.minimumScore <= 0.2
+      ? [{
+          distance: 0.8,
+          entryId: "fact-low-similarity",
+          itemId: "fact-saved-name",
+          itemType: "FACT_VERSION" as const,
+          score: 0.2
+        }]
+      : []);
+    const executor: MemoryVectorLaneExecutor = {
+      candidateScan,
+      eligibleCount: vi.fn(async () => 1),
+      rejoin,
+      resolveActiveProfile: vi.fn(async () => ({ profile, status: "READY" as const }))
+    };
+
+    const result = await searchMemoryVectorLanes(executor, input({
+      itemTypes: ["FACT_VERSION"],
+      minimumScore: -1
+    }));
+
+    expect(candidateScan).toHaveBeenCalledWith(
+      expect.objectContaining({ minimumScore: -1 }),
+      "FACT_VERSION",
+      "EXACT",
+      2
+    );
+    expect(result).toMatchObject({
+      hits: [{ itemId: "fact-saved-name", score: 0.2 }],
+      lanes: [{ candidateCount: 1, resultCount: 1 }],
+      status: "READY"
+    });
   });
 
   it("degrades before scanning when the active generation no longer matches", async () => {

@@ -1,33 +1,30 @@
-import { loadArchivedChat, loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
-  decodeChatDetailResponse,
-  decodeChatPermanentDeleteAdmissionResponse,
-  decodeChatPermanentDeleteAuthorizationResponse,
-  decodeChatPermanentDeleteStatusResponse,
-  type ChatPermanentDeleteAdmissionResponseWire,
-  type ChatPermanentDeleteAuthorizationRequestWire,
-  type ChatPermanentDeleteAuthorizationResponseWire,
-  type ChatPermanentDeleteRequestWire,
-  type ChatPermanentDeleteStatusResponseWire
-} from "@/lib/contracts/chats";
+  decodeMemoryConsumerPermanentChatDeleteResponse,
+  type MemoryConsumerPermanentChatDeleteInput,
+  type MemoryConsumerPermanentChatDeleteResponse
+} from "@/lib/contracts/memoryClient";
 
 export class PermanentChatDeletionApiError extends Error {
-  readonly code: string;
+  readonly reason: PermanentChatDeletionFailureReason;
   readonly status: number;
 
-  constructor(code: string, status: number) {
-    super(code);
-    this.code = code;
+  constructor(reason: PermanentChatDeletionFailureReason, status: number) {
+    super(reason);
+    this.reason = reason;
     this.name = "PermanentChatDeletionApiError";
     this.status = status;
   }
 }
 
+export type PermanentChatDeletionFailureReason =
+  | "BUSY"
+  | "CHANGED"
+  | "FAILED"
+  | "UNAVAILABLE";
+
 export type PermanentChatDeletionSnapshot = Readonly<{
   chatId: string;
-  expectedActiveLeafMessageId: string | null;
-  expectedChatRevision: number;
   location: "ARCHIVED" | "WORKSPACE";
   title: string;
 }>;
@@ -40,11 +37,18 @@ async function responseBody(response: Response): Promise<unknown> {
   }
 }
 
-function errorCode(value: unknown): string {
-  return value && typeof value === "object" && !Array.isArray(value) &&
+function failureReason(value: unknown): PermanentChatDeletionFailureReason {
+  const code = value && typeof value === "object" && !Array.isArray(value) &&
     typeof (value as { error?: unknown }).error === "string"
     ? (value as { error: string }).error
-    : "chat_permanent_delete_failed";
+    : null;
+  switch (code) {
+    case "BUSY": return "BUSY";
+    case "CHANGED": return "CHANGED";
+    case "UNAVAILABLE": return "UNAVAILABLE";
+    default:
+      return "FAILED";
+  }
 }
 
 async function request<T>(
@@ -64,86 +68,43 @@ async function request<T>(
   });
   const value = await responseBody(response);
   if (!response.ok) {
-    throw new PermanentChatDeletionApiError(errorCode(value), response.status);
+    throw new PermanentChatDeletionApiError(failureReason(value), response.status);
   }
   const decoded = decode(value);
   if (!decoded) {
     throw new PermanentChatDeletionApiError(
-      "chat_permanent_delete_response_invalid",
+      "FAILED",
       502
     );
   }
   return decoded;
 }
 
-export async function loadPermanentChatDeletionSnapshot(
-  chatId: string,
-  signal?: AbortSignal
-): Promise<PermanentChatDeletionSnapshot> {
-  const lifecycle = await loadChatMemoryState(chatId, signal);
-  if (lifecycle.chat.mode === "TEMPORARY") {
-    throw new PermanentChatDeletionApiError(
-      "chat_permanent_delete_temporary_forbidden",
-      409
-    );
-  }
-  if (lifecycle.chat.archived) {
-    const archived = await loadArchivedChat(chatId, signal);
-    return {
-      chatId,
-      expectedActiveLeafMessageId: archived.chat.activeLeafMessageId,
-      expectedChatRevision: lifecycle.chat.sourceRevision,
-      location: "ARCHIVED",
-      title: archived.chat.title
-    };
-  }
-  const detail = await request(
-    `/api/chats/${encodeURIComponent(chatId)}`,
-    { method: "GET", signal },
-    decodeChatDetailResponse
-  );
-  return {
-    chatId,
-    expectedActiveLeafMessageId: detail.activeLeafMessageId,
-    expectedChatRevision: lifecycle.chat.sourceRevision,
-    location: "WORKSPACE",
-    title: detail.title
-  };
-}
-
-export function authorizePermanentChatDeletion(
-  chatId: string,
-  input: ChatPermanentDeleteAuthorizationRequestWire,
-  signal?: AbortSignal
-): Promise<ChatPermanentDeleteAuthorizationResponseWire> {
-  return request(
-    `/api/chats/${encodeURIComponent(chatId)}/delete-permanently/authorization`,
-    { body: JSON.stringify(input), method: "POST", signal },
-    decodeChatPermanentDeleteAuthorizationResponse
-  );
-}
-
 export function admitPermanentChatDeletion(
   chatId: string,
-  input: ChatPermanentDeleteRequestWire,
+  input: MemoryConsumerPermanentChatDeleteInput,
   signal?: AbortSignal
-): Promise<ChatPermanentDeleteAdmissionResponseWire> {
+): Promise<MemoryConsumerPermanentChatDeleteResponse> {
   return request(
     `/api/chats/${encodeURIComponent(chatId)}/delete-permanently`,
     { body: JSON.stringify(input), method: "POST", signal },
-    decodeChatPermanentDeleteAdmissionResponse
+    (value) => {
+      const decoded = decodeMemoryConsumerPermanentChatDeleteResponse(value);
+      return decoded.ok ? decoded.value : null;
+    }
   );
 }
 
 export function loadPermanentChatDeletionStatus(
   chatId: string,
-  deletionId: string,
   signal?: AbortSignal
-): Promise<ChatPermanentDeleteStatusResponseWire> {
-  const query = new URLSearchParams({ deletionId });
+): Promise<MemoryConsumerPermanentChatDeleteResponse> {
   return request(
-    `/api/chats/${encodeURIComponent(chatId)}/delete-permanently/status?${query.toString()}`,
+    `/api/chats/${encodeURIComponent(chatId)}/delete-permanently/status`,
     { method: "GET", signal },
-    decodeChatPermanentDeleteStatusResponse
+    (value) => {
+      const decoded = decodeMemoryConsumerPermanentChatDeleteResponse(value);
+      return decoded.ok ? decoded.value : null;
+    }
   );
 }

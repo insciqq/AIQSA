@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MEMORY_RETRIEVAL_LANE_ORDER, type MemoryRetrievalLane } from "./config";
+import {
+  MEMORY_RETRIEVAL_LANE_ORDER,
+  MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
+  type MemoryRetrievalLane
+} from "./config";
 import { allocateMemoryRetrievalLaneLimits, executeMemoryRetrievalLaneTasks } from "./lanes";
 
 describe("Memory retrieval lane scheduler", () => {
@@ -31,6 +35,6 @@ describe("Memory retrieval lane scheduler", () => {
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
-      .toBeLessThanOrEqual(120);
+      .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);
   });
 });

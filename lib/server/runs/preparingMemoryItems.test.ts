@@ -25,7 +25,7 @@ const item = {
 
 describe("preparing Memory item finalization", () => {
   it("revalidates Core directly when no search generation is active", async () => {
-    const $queryRaw = vi.fn()
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
       .mockResolvedValueOnce([{
       coreEligible: true,
       coreSalience: "HIGH",
@@ -63,7 +63,7 @@ describe("preparing Memory item finalization", () => {
     await expect(resolvePreparingMemoryItem(
       { $queryRaw } as unknown as Prisma.TransactionClient,
       authority,
-      null,
+      "What do you know about me?",
       item
     )).resolves.toMatchObject({
       exactItemId: "version-1",
@@ -79,6 +79,64 @@ describe("preparing Memory item finalization", () => {
       }
     });
     expect($queryRaw).toHaveBeenCalledTimes(2);
+    const factSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
+    expect(factSql).toContain('version."safetyClassificationState" =');
+    expect(factSql).toContain('version."sensitivityClass" IN (');
+    expect(factSql).toContain("'SENSITIVE'::\"MemorySensitivityClass\"");
+    expect(factSql).not.toContain('version."normalizedSearchText" =');
+    expect(factSql).not.toContain("'SECRET'::\"MemorySensitivityClass\"");
+    expect(factSql).toContain('FROM "MemoryFeedback" AS negative_feedback');
+    expect(factSql).toContain('negative_feedback."memoryFactVersionId" =');
+  });
+
+  it("requires both current history projection versions at final rejoin", async () => {
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [{
+      branchGeneration: 2,
+      chatId: "source-chat",
+      contentHash: "content-hash",
+      languageCode: "en",
+      redactionState: "NOT_NEEDED",
+      safeText: "User:\nWe chose cedar deployment.\n\nAssistant:\nNoted.",
+      safetyClass: "NORMAL",
+      sourceAssistantId: null,
+      sourceFolderId: null,
+      sourceRevision: 4,
+      state: "ACTIVE"
+    }]);
+    const tx = {
+      $queryRaw,
+      memoryRecallChunkMessage: {
+        findMany: vi.fn(async () => [{ messageId: "source-message" }])
+      }
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(resolvePreparingMemoryItem(
+      tx,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What do you know about me?",
+      {
+        exactItemId: "chunk-1",
+        exactSafeText: "[2026-08-13] User:\nWe chose cedar deployment.\n\nAssistant:\nNoted.",
+        finalScore: 0.9,
+        itemType: "RECALL_CHUNK",
+        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+        recallChunkId: "chunk-1",
+        selectionReason: "history_recall_exact"
+      }
+    )).resolves.toMatchObject({
+      exactItemId: "chunk-1",
+      recallChunkId: "chunk-1",
+      sourceMessageIdsSnapshot: ["source-message"]
+    });
+    const historySql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
+    expect(historySql).toContain('chunk."chunkingVersion" =');
+    expect(historySql).toContain('chunk."sourceProjectionVersion" =');
+    expect(historySql).toContain('chunk."safetyClass" IN (');
+    expect(historySql).toContain("'SENSITIVE'::\"MemoryDerivedSafetyClass\"");
+    expect(historySql).not.toContain('entry."normalizedSearchText" =');
+    expect(historySql).not.toContain("'HIGHLY_SENSITIVE'::\"MemoryDerivedSafetyClass\"");
+    expect(historySql).toContain('FROM "MemoryFeedback" AS negative_feedback');
+    expect(historySql).toContain('negative_feedback."recallChunkId" =');
   });
 
   it("still requires an exact active generation for dynamic fact items", async () => {

@@ -12,6 +12,7 @@ import {
   createExplicitMemoryService,
   type ExplicitMemoryFactRepository
 } from "./service";
+import { defaultMemoryStatementClassifier } from "./statementClassifier";
 
 const authorizationRepository =
   createPrismaMemoryMutationAuthorizationRepository(prisma);
@@ -37,7 +38,8 @@ export const defaultExplicitMemoryService = createExplicitMemoryService({
   authorizationRepository,
   factRepository,
   readRepository,
-  scopeRepository
+  scopeRepository,
+  statementClassifier: defaultMemoryStatementClassifier
 });
 
 export const defaultMemoryMutationAuthorizationRateLimiter =

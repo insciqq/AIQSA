@@ -26,13 +26,6 @@ const activityLabels: Record<string, string> = {
   group_grant_changed: "Group role changed",
   group_grant_removed: "Group access removed",
   instructions_updated: "Project instructions updated",
-  memory_policy_updated: "Project Memory policy changed",
-  memory_fact_created: "Project Memory fact added",
-  memory_fact_edited: "Project Memory fact updated",
-  memory_fact_forgotten: "Project Memory fact forgotten",
-  memory_proposal_approved: "Memory proposal approved",
-  memory_proposal_created: "Memory proposal created",
-  memory_proposal_rejected: "Memory proposal rejected",
   policy_updated: "Project policy updated",
   project_archived: "Project archived",
   project_chat_archived: "Shared chat archived",
@@ -119,7 +112,6 @@ export function ProjectContextRailV2({
       </span>
       <span className="v2-project-context-facts">
         <span>{project.effectiveRole.toLowerCase()}</span>
-        <span>Project Memory {project.memoryEnabled ? "on" : "off"}</span>
         <span>{defaultModel?.label ?? "No default model"}</span>
         <span>Search {searchCount > 0 ? searchCount : "off"} · Knowledge {knowledgeCount}</span>
         <span data-sync={controller.syncState}>
@@ -231,7 +223,16 @@ function CreateProjectDialogContentV2({
   );
 }
 
-type ProjectSettingsTab = "activity" | "general" | "members" | "memory" | "resources";
+type ProjectSettingsTab = "activity" | "general" | "members" | "resources";
+
+/**
+ * Project Memory remains a persisted compatibility field, but it is not an
+ * active product surface. Older callers may still request the retired tab;
+ * keep that navigation harmless by landing on the general Project section.
+ */
+function normalizeProjectSettingsTab(tab: string): ProjectSettingsTab {
+  return tab === "activity" || tab === "members" || tab === "resources" ? tab : "general";
+}
 
 export function ProjectSettingsDialogV2({ controller }: Readonly<{ controller: ProjectWorkspaceController }>) {
   const project = controller.detail;
@@ -246,11 +247,12 @@ function ProjectSettingsDialogContentV2({
   controller: ProjectWorkspaceController;
   project: NonNullable<ProjectWorkspaceController["detail"]>;
 }>) {
-  const [tab, setTab] = useState<ProjectSettingsTab>(controller.settingsInitialTab);
+  const [tab, setTab] = useState<ProjectSettingsTab>(
+    normalizeProjectSettingsTab(controller.settingsInitialTab)
+  );
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description);
   const [instructions, setInstructions] = useState(project.instructions);
-  const [memoryEnabled, setMemoryEnabled] = useState(project.memoryEnabled);
   const [publicSharingEnabled, setPublicSharingEnabled] = useState(project.publicSharingEnabled);
   const [defaultModelId, setDefaultModelId] = useState(project.defaults.providerModelId ?? "");
   const [defaultAssistantId, setDefaultAssistantId] = useState(project.defaults.assistantId ?? "");
@@ -309,17 +311,11 @@ function ProjectSettingsDialogContentV2({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [deleteProjectName, setDeleteProjectName] = useState("");
-  const [editingFactId, setEditingFactId] = useState<string | null>(null);
-  const [editingFactText, setEditingFactText] = useState("");
-  const [forgetFactId, setForgetFactId] = useState<string | null>(null);
-  const [memoryText, setMemoryText] = useState("");
-  const [memoryValidUntil, setMemoryValidUntil] = useState("");
   const [discardOpen, setDiscardOpen] = useState(false);
   const previousProjectRef = useRef(project);
   const generalDirty = name !== project.name ||
     description !== project.description ||
     instructions !== project.instructions ||
-    memoryEnabled !== project.memoryEnabled ||
     publicSharingEnabled !== project.publicSharingEnabled ||
     defaultModelId !== (project.defaults.providerModelId ?? "") ||
     defaultAssistantId !== (project.defaults.assistantId ?? "") ||
@@ -337,7 +333,7 @@ function ProjectSettingsDialogContentV2({
     reasoningEffort !== (typeof project.defaults.controlValues.reasoningEffort === "string"
       ? project.defaults.controlValues.reasoningEffort
       : "");
-  const dirty = generalDirty || Boolean(memoryText.trim()) || Boolean(editingFactId);
+  const dirty = generalDirty;
   const requestClose = () => {
     if (controller.busy) return;
     if (dirty) {
@@ -359,7 +355,6 @@ function ProjectSettingsDialogContentV2({
     if (name === previous.name) setName(nextProject.name);
     if (description === previous.description) setDescription(nextProject.description);
     if (instructions === previous.instructions) setInstructions(nextProject.instructions);
-    if (memoryEnabled === previous.memoryEnabled) setMemoryEnabled(nextProject.memoryEnabled);
     if (publicSharingEnabled === previous.publicSharingEnabled) {
       setPublicSharingEnabled(nextProject.publicSharingEnabled);
     }
@@ -476,7 +471,6 @@ function ProjectSettingsDialogContentV2({
     setName(project.name);
     setDescription(project.description);
     setInstructions(project.instructions);
-    setMemoryEnabled(project.memoryEnabled);
     setPublicSharingEnabled(project.publicSharingEnabled);
     setDefaultModelId(project.defaults.providerModelId ?? "");
     setDefaultAssistantId(project.defaults.assistantId ?? "");
@@ -618,11 +612,10 @@ function ProjectSettingsDialogContentV2({
       setCandidateLoading(false);
     }
   };
-  const tabs: readonly { id: ProjectSettingsTab; icon: "history" | "memory" | "settings" | "tool" | "assistant"; label: string }[] = [
+  const tabs: readonly { id: ProjectSettingsTab; icon: "history" | "settings" | "tool" | "assistant"; label: string }[] = [
     { id: "general", icon: "settings", label: "Project" },
     { id: "members", icon: "assistant", label: "Members" },
     { id: "resources", icon: "tool", label: "Resources" },
-    { id: "memory", icon: "memory", label: "Memory" },
     { id: "activity", icon: "history", label: "Activity" }
   ];
 
@@ -704,10 +697,8 @@ function ProjectSettingsDialogContentV2({
                 },
                 description,
                 expectedInstructionsRevision: project.instructionsRevision,
-                expectedMemoryRevision: project.memoryRevision,
                 expectedPolicyRevision: project.policyRevision,
                 instructions,
-                memoryEnabled,
                 name,
                 policy: { externalToolsEnabled },
                 ...(owner ? { publicSharingEnabled } : {})
@@ -777,7 +768,6 @@ function ProjectSettingsDialogContentV2({
                 setExternalToolsEnabled(event.target.checked);
                 if (!event.target.checked) { setDefaultSearchIds([]); setMcpMode("off"); }
               }} /><span><strong>External tools</strong><small>Allow linked Search and shared/no-auth MCP destinations in future runs.</small></span></label>
-              <label className="v2-project-check"><input checked={memoryEnabled} disabled={!manager} type="checkbox" onChange={(event) => setMemoryEnabled(event.target.checked)} /><span><strong>Project Memory</strong><small>Explicit approved facts can be used in future project runs.</small></span></label>
               {owner ? <label className="v2-project-check"><input checked={publicSharingEnabled} disabled={!manager} type="checkbox" onChange={(event) => setPublicSharingEnabled(event.target.checked)} /><span><strong>Public sharing</strong><small>Allow explicit project chat snapshots when the sharing route supports them.</small></span></label> : null}
               {manager ? <div className="v2-project-actions"><UiV2Button disabled={controller.busy} type="submit">Save changes</UiV2Button></div> : null}
               {archivedChats.length > 0 ? (
@@ -824,7 +814,7 @@ function ProjectSettingsDialogContentV2({
                 <div className="v2-project-confirmation" role="alertdialog" aria-label="Confirm project deletion">
                   <strong>Delete {project.name}?</strong>
                   <p>
-                    Permanently removes {project.chatCount} chat{project.chatCount === 1 ? "" : "s"}, {project.fileCount ?? 0} file{(project.fileCount ?? 0) === 1 ? "" : "s"}, shared Memory, and access for {project.audienceCount} member{project.audienceCount === 1 ? "" : "s"}. This cannot be undone.
+                    Permanently removes {project.chatCount} chat{project.chatCount === 1 ? "" : "s"}, {project.fileCount ?? 0} file{(project.fileCount ?? 0) === 1 ? "" : "s"}, shared project data, and access for {project.audienceCount} member{project.audienceCount === 1 ? "" : "s"}. This cannot be undone.
                   </p>
                   <label>
                     Type <strong>{project.name}</strong> to confirm
@@ -1081,50 +1071,6 @@ function ProjectSettingsDialogContentV2({
                       : "Unlink and clean up"}
                   </UiV2Button>
                 </div>
-              ) : null}
-            </section>
-          ) : null}
-
-          {tab === "memory" ? (
-            <section className="v2-project-settings-section">
-              <div className="v2-project-section-heading"><h2>Project Memory</h2><p>Only explicit facts live here. Pending proposals are never added to model context.</p></div>
-              {!controller.memory ? <p className="v2-project-empty">Loading memory…</p> : (
-                <>
-                  <div className="v2-project-memory-list">
-                    {controller.memory.facts.length === 0 ? <p className="v2-project-empty">No approved facts.</p> : controller.memory.facts.map((fact) => (
-                      <div key={fact.factId}>
-                        <span>{fact.text}</span>
-                        <small>v{fact.versionNumber} · {fact.createdByDisplayName}{fact.validUntil ? ` · valid until ${new Date(fact.validUntil).toLocaleString()}` : ""}</small>
-                        {manager && project.capabilities.manageMemory ? <span className="v2-project-memory-actions">
-                          <button type="button" onClick={() => { setEditingFactId(fact.factId); setEditingFactText(fact.text); }}>Edit</button>
-                          <button type="button" onClick={() => setForgetFactId(fact.factId)}>Forget</button>
-                        </span> : null}
-                        {editingFactId === fact.factId ? <form onSubmit={(event) => { event.preventDefault(); if (!editingFactText.trim()) return; void controller.actions.editMemoryFact(fact.factId, editingFactText.trim()).then((saved) => { if (saved) setEditingFactId(null); }); }}>
-                          <textarea aria-label="Edit project fact" maxLength={4000} rows={2} value={editingFactText} onChange={(event) => setEditingFactText(event.target.value)} />
-                          <button type="submit" disabled={controller.busy || !editingFactText.trim()}>Save</button>
-                          <button type="button" onClick={() => setEditingFactId(null)}>Cancel</button>
-                        </form> : null}
-                        {forgetFactId === fact.factId ? <div className="v2-project-confirmation" role="alertdialog" aria-label="Confirm forgetting fact"><span>Forget this shared fact for everyone? It will no longer be used in future Project runs; existing chat output is unchanged.</span><button type="button" onClick={() => setForgetFactId(null)}>Cancel</button><button type="button" disabled={controller.busy} onClick={() => { setForgetFactId(null); void controller.actions.forgetMemoryFact(fact.factId); }}>Forget</button></div> : null}
-                      </div>
-                    ))}
-                  </div>
-                  {controller.memory.proposals.length > 0 ? <h3>Pending proposals</h3> : null}
-                  <div className="v2-project-memory-list">
-                    {controller.memory.proposals.map((proposal) => <div key={proposal.id}><span>{proposal.proposedText}</span><small>Proposed by {proposal.proposedByDisplayName}</small>{proposal.source ? <small>Evidence from {proposal.source.authorDisplayName ?? "project member"}: “{proposal.source.text}”</small> : null}{manager && project.capabilities.manageMemory ? <span className="v2-project-memory-actions"><button type="button" onClick={() => void controller.actions.reviewMemoryProposal(proposal.id, true)}>Approve</button><button type="button" onClick={() => void controller.actions.reviewMemoryProposal(proposal.id, false)}>Reject</button></span> : null}</div>)}
-                  </div>
-                </>
-              )}
-              {project.status === "ACTIVE" && project.capabilities.manageMemory && project.memoryEnabled ? (
-                <form className="v2-project-memory-form" onSubmit={(event) => {
-                  event.preventDefault();
-                  if (!memoryText.trim()) return;
-                  const validUntil = memoryValidUntil
-                    ? new Date(memoryValidUntil).toISOString()
-                    : null;
-                  void controller.actions.saveMemory(memoryText.trim(), true, undefined, validUntil).then((saved) => { if (saved) { setMemoryText(""); setMemoryValidUntil(""); } });
-                }}><textarea maxLength={4000} rows={3} placeholder="Add an approved project fact" value={memoryText} onChange={(event) => setMemoryText(event.target.value)} /><label>Valid until <span>Optional</span><input type="datetime-local" value={memoryValidUntil} onChange={(event) => setMemoryValidUntil(event.target.value)} /></label><UiV2Button disabled={controller.busy || !memoryText.trim()} type="submit">Add fact</UiV2Button></form>
-              ) : project.status === "ACTIVE" && project.capabilities.mutateChats && project.memoryEnabled ? (
-                <p className="v2-project-empty">Select a user message in a shared chat to propose it for Project Memory.</p>
               ) : null}
             </section>
           ) : null}

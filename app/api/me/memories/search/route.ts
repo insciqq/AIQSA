@@ -1,8 +1,8 @@
-import { defaultExplicitMemoryHandlerDeps } from "@/lib/server/memory/explicit/defaultExplicit";
-import { createSearchMemoriesHandler } from "@/lib/server/memory/explicit/handlers";
+import { defaultMemoryConsumerHandlerDeps } from "@/lib/server/memory/consumer/defaultConsumer";
+import { createSearchMemoryConsumerItemsHandler } from "@/lib/server/memory/consumer/handlers";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
-export const POST = createSearchMemoriesHandler(defaultExplicitMemoryHandlerDeps);
+export const POST = createSearchMemoryConsumerItemsHandler(defaultMemoryConsumerHandlerDeps);

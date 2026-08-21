@@ -120,6 +120,8 @@ describe("Navigation v2", () => {
     expect(screen.getByText("Project chat tree")).toBeVisible();
     expect(screen.queryByText("Start your first chat")).toBeNull();
     expect(screen.getByRole("button", { name: "Archived chats" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New chat mode" })).toBeNull();
+    expect(screen.queryByText(/Memory off|Normal memory|Exclude from Memory|Resume Memory/)).toBeNull();
   });
 
   it("routes Normal, Memory-off, and Temporary new-chat intents and marks the current mode", () => {
@@ -155,7 +157,7 @@ describe("Navigation v2", () => {
     expect(onCreateFolder).toHaveBeenCalledWith(null, "Исследования");
   });
 
-  it("fences archive during a run and keeps one stateful Memory toggle", () => {
+  it("fences archive during a run and names the current Memory action", () => {
     const onArchive = vi.fn();
     const onMemoryMode = vi.fn();
     sidebar({
@@ -169,9 +171,7 @@ describe("Navigation v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Actions: Running answer" }));
     expect(screen.getByRole("menuitem", { name: "Archive" })).toBeDisabled();
     expect(screen.queryByRole("menuitem", { name: "Memory off" })).toBeNull();
-    // One toggle item shows the current state and flips it.
-    const memoryOn = screen.getByRole("menuitem", { name: "Use memory" });
-    expect(memoryOn).toHaveAttribute("aria-current", "true");
+    const memoryOn = screen.getByRole("menuitem", { name: "Exclude from Memory" });
     expect(screen.getByRole("menuitem", { name: "Favorite" })).toHaveAttribute(
       "aria-current",
       "true"
@@ -180,8 +180,7 @@ describe("Navigation v2", () => {
     expect(onMemoryMode).toHaveBeenCalledWith(chats[0], "EXCLUDED");
 
     fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
-    const memoryOff = screen.getByRole("menuitem", { name: "Use memory" });
-    expect(memoryOff).not.toHaveAttribute("aria-current");
+    const memoryOff = screen.getByRole("menuitem", { name: "Resume Memory for this chat" });
     expect(screen.getByRole("menuitem", { name: "Favorite" })).not.toHaveAttribute(
       "aria-current"
     );

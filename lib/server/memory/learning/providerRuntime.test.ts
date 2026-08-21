@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import { encryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
+import { ProviderSafeFetchError } from "../../providers/providerSafeFetch";
 import type { ProviderRunRequest } from "../../providers/types";
-import { createAcceptedMemoryLearningProvider } from "./providerRuntime";
+import {
+  createAcceptedMemoryLearningProvider,
+  type MemoryLearningProviderFailure
+} from "./providerRuntime";
+
+const KEY = Buffer.alloc(32, 23);
 
 function snapshot(): ProviderExecutionSnapshot {
   return {
@@ -38,6 +45,26 @@ function snapshot(): ProviderExecutionSnapshot {
   };
 }
 
+function openAIResponsesSnapshot(): ProviderExecutionSnapshot {
+  const base = snapshot();
+  if (base.model.adapterKind === "fake") throw new Error("provider_fixture_invalid");
+  return {
+    ...base,
+    connection: {
+      ...base.connection,
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.openai.example.test/v1",
+      authenticationMode: "bearer"
+    },
+    model: {
+      ...base.model,
+      adapterKind: "openai_responses_native",
+      upstreamModelId: "gpt-test"
+    },
+    providerFamily: "openai"
+  };
+}
+
 function request(runtime: ProviderExecutionSnapshot): ProviderRunRequest {
   return {
     attachmentIds: [],
@@ -56,13 +83,21 @@ function request(runtime: ProviderExecutionSnapshot): ProviderRunRequest {
   };
 }
 
-function client() {
+function client(authenticationMode: "bearer" | "none" = "none") {
+  const secretEnvelope = authenticationMode === "bearer"
+    ? encryptProviderCredentialSecret({
+        credentialId: "credential-1",
+        key: KEY,
+        secret: "provider-test-secret",
+        valueId: "credential-version-1"
+      })
+    : null;
   const queryRaw = vi.fn(async () => [{
     credentialId: "credential-1",
     id: "credential-version-1",
     revokedAt: null,
-    secretEnvelope: null,
-    testEvidence: { authenticationMode: "none" }
+    secretEnvelope,
+    testEvidence: { authenticationMode }
   }]);
   const transaction = vi.fn(async (
     callback: (tx: Readonly<{ $queryRaw: typeof queryRaw }>) => Promise<unknown>
@@ -102,7 +137,8 @@ describe("Memory learning provider runtime", () => {
     });
     const run = createAcceptedMemoryLearningProvider(fixture.client, {
       buildRequest: (accepted) => request(accepted),
-      callError: (_usage, cause) => new Error("memory_provider_outcome_unknown", { cause }),
+      callError: (_usage, cause) =>
+        new Error("memory_provider_outcome_unknown", { cause }),
       createFetch: () => fetchFn,
       invalidRuntimeError: "memory_runtime_invalid"
     });
@@ -139,8 +175,15 @@ describe("Memory learning provider runtime", () => {
         if (signal.aborted) rejectFromSignal();
         else signal.addEventListener("abort", rejectFromSignal, { once: true });
       }));
-    const callError = vi.fn((usage, cause) =>
-      Object.assign(new Error("memory_provider_outcome_unknown", { cause }), { usage }));
+    const callError = vi.fn((
+      usage: MemoryLearningProviderFailure["usage"],
+      cause: MemoryLearningProviderFailure["cause"],
+      classification: MemoryLearningProviderFailure["classification"]
+    ) =>
+      Object.assign(
+        new Error("memory_provider_outcome_unknown", { cause }),
+        { classification, usage }
+      ));
     const run = createAcceptedMemoryLearningProvider(fixture.client, {
       buildRequest: (accepted) => request(accepted),
       callError,
@@ -153,9 +196,107 @@ describe("Memory learning provider runtime", () => {
     controller.abort(new Error("operator_cancelled"));
 
     await expect(pending).rejects.toMatchObject({
+      classification: "UNKNOWN",
       message: "memory_provider_outcome_unknown",
       usage: null
     });
-    expect(callError).toHaveBeenCalledWith(null, expect.anything());
+    expect(callError).toHaveBeenCalledWith(null, expect.anything(), "UNKNOWN");
+  });
+
+  it.each([
+    ["provider_http_dns_failed", "REPLAY_SAFE_TRANSIENT"],
+    ["provider_http_address_forbidden", "PERMANENT"],
+    ["provider_http_request_failed", "UNKNOWN"]
+  ] as const)(
+    "classifies a pre-result %s failure as %s without parsing error text",
+    async (code, classification) => {
+      const runtime = snapshot();
+      const fixture = client();
+      const run = createAcceptedMemoryLearningProvider(fixture.client, {
+        buildRequest: (accepted) => request(accepted),
+        callError: (usage, cause, failureClassification) => Object.assign(
+          new Error("memory_provider_failed", { cause }),
+          { classification: failureClassification, usage }
+        ),
+        createFetch: () => vi.fn<typeof fetch>(async () => {
+          throw new ProviderSafeFetchError(code);
+        }),
+        invalidRuntimeError: "memory_runtime_invalid"
+      });
+
+      await expect(run(evidence(runtime), undefined, new AbortController().signal))
+        .rejects.toMatchObject({ classification, usage: null });
+    }
+  );
+
+  it.each([
+    [429, "REPLAY_SAFE_TRANSIENT"],
+    [503, "REPLAY_SAFE_TRANSIENT"],
+    [400, "PERMANENT"]
+  ] as const)(
+    "classifies provider-agnostic HTTP status %s as %s before adapter parsing",
+    async (status, classification) => {
+      const runtime = snapshot();
+      const fixture = client();
+      const run = createAcceptedMemoryLearningProvider(fixture.client, {
+        buildRequest: (accepted) => request(accepted),
+        callError: (usage, cause, failureClassification) => Object.assign(
+          new Error("memory_provider_failed", { cause }),
+          { classification: failureClassification, usage }
+        ),
+        createFetch: () => vi.fn<typeof fetch>(async () =>
+          new Response("", { status })),
+        invalidRuntimeError: "memory_runtime_invalid"
+      });
+
+      await expect(run(evidence(runtime), undefined, new AbortController().signal))
+        .rejects.toMatchObject({ classification, usage: null });
+    }
+  );
+
+  it("leaves a post-dispatch 503 to the provider-native retrieve retry", async () => {
+    vi.useFakeTimers();
+    const runtime = openAIResponsesSnapshot();
+    const fixture = client("bearer");
+    const fetchFn = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ id: "response-1", status: "queued" }));
+      }
+      if (fetchFn.mock.calls.length === 2) {
+        return new Response("", { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        id: "response-1",
+        output: [{
+          content: [{ text: "done", type: "output_text" }],
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 3, output_tokens: 2 }
+      }));
+    });
+    const run = createAcceptedMemoryLearningProvider(fixture.client, {
+      buildRequest: (accepted) => request(accepted),
+      callError: (usage, cause, classification) => Object.assign(
+        new Error("memory_provider_failed", { cause }),
+        { classification, usage }
+      ),
+      createFetch: () => fetchFn,
+      encryptionKey: () => KEY,
+      invalidRuntimeError: "memory_runtime_invalid"
+    });
+
+    try {
+      const pending = run(evidence(runtime), undefined, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(pending).resolves.toMatchObject({ providerResponseId: "response-1" });
+      expect(fetchFn.mock.calls.map(([, init]) => init?.method)).toEqual([
+        "POST",
+        "GET",
+        "GET"
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

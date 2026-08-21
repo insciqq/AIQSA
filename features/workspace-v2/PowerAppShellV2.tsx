@@ -22,17 +22,13 @@ import {
 } from "@/components/app-shell/composerSessionStore";
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
-import { navigateMemorySource } from "@/components/app-shell/memorySourceNavigation";
 import {
-  activateMemoryHistorySearchAccount,
-  deactivateMemoryHistorySearchAccount
-} from "@/components/app-shell/memoryHistorySearchStore";
-import {
+  activateMemorySettings,
   deactivateMemorySettings,
   refreshMemorySettings,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { PowerAppShellV2View } from "@/features/workspace-v2/PowerAppShellV2View";
 import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import type {
@@ -109,7 +105,6 @@ import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import {
   deactivateArchivedChats,
   openArchivedChats,
-  openArchivedChatPreview,
   removePermanentlyDeletedArchivedChat,
   useArchivedChatsStore
 } from "@/components/app-shell/archivedChatsStore";
@@ -118,11 +113,9 @@ import {
   deactivatePermanentChatDeletionAccount,
   openPermanentChatDeletion
 } from "@/components/app-shell/permanentChatDeletionStore";
-import { loadPermanentChatDeletionSnapshot } from "@/components/app-shell/permanentChatDeletionApi";
 import {
   loadChatMemoryState,
-  patchChatMemoryMode,
-  resolveChatSource
+  patchChatMemoryMode
 } from "@/components/app-shell/chatLifecycleApi";
 import {
   selectThreadRenderActiveLeafId,
@@ -138,12 +131,17 @@ import type {
   WorkspaceChatSummary,
   Notice
 } from "@/components/app-shell/types";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
 import { useBranchGraphController } from "./useBranchGraphController";
+import {
+  revealPersonalChatDeepLinkMessage,
+  usePersonalChatDeepLink
+} from "./usePersonalChatDeepLink";
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
 import { useProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
@@ -195,14 +193,13 @@ export function PowerAppShellV2({
   const setCatalogError = useWorkspaceStore((state) => state.setCatalogError);
 
   useEffect(() => {
-    activateMemoryHistorySearchAccount(accountId);
-    return () => deactivateMemoryHistorySearchAccount(accountId);
-  }, [accountId]);
-  useEffect(() => () => {
+    activateMemorySettings(accountId);
+    return () => {
     deactivateArchivedChats();
     deactivateMcpSettings();
     deactivateMemoryManager();
-    deactivateMemorySettings();
+      deactivateMemorySettings(accountId);
+    };
   }, [accountId]);
   const activeThread = useThreadStore((state) => selectThreadSnapshot(state, activeChatId));
   const activeRunSurface = useRunSurfaceStore((state) => selectRunSurface(state, activeChatId));
@@ -276,13 +273,17 @@ export function PowerAppShellV2({
   const { change: changeTheme, id: themeId } = appearance.theme;
   const workspaceInteraction = useWorkspaceInteractionController();
   const projectSettingsFolderId = workspaceInteraction.projectSettings.folderId;
-  const projectMemoryDraft = workspaceInteraction.projectSettings.draft;
   const projectKnowledgeBaseIds = workspaceInteraction.projectSettings.knowledgeBaseIds;
   const shellOverlays = useShellOverlayController();
   const uploading = composerSession.pendingUploadGenerations.length > 0;
   const [notice, setNotice] = useState<Notice | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<Notice | null>(null);
   const [shareDialogTarget, setShareDialogTarget] = useState<ShareDialogTarget | null>(null);
+  const [memoryResumeTarget, setMemoryResumeTarget] = useState<WorkspaceChatSummary | null>(null);
+  const [personalReadingAnchor, setPersonalReadingAnchor] = useState<Readonly<{
+    chatId: string;
+    messageId: string;
+  }> | null>(null);
   const activeChatStream = useRunLifecycleStore((state) =>
     activeChatId ? state.activeStreams[activeChatId] : undefined
   );
@@ -359,6 +360,11 @@ export function PowerAppShellV2({
     []
   );
 
+  const consumePersonalReadingAnchor = useEventCallback((anchorKey: string) => {
+    setPersonalReadingAnchor((current) =>
+      current?.chatId === activeChatId && current.messageId === anchorKey ? null : current
+    );
+  });
   const {
     activeChat,
     activeChatStreaming,
@@ -396,6 +402,9 @@ export function PowerAppShellV2({
     selectedProvider,
     visibleMessages
   });
+  const readingAnchorKey = personalReadingAnchor?.chatId === activeChatId
+    ? personalReadingAnchor.messageId
+    : threadReadingAnchorKey;
   const { branchGraph, loadBranchGraph } = useBranchGraphController({
     activeChatId,
     activeChatStreaming,
@@ -471,7 +480,8 @@ export function PowerAppShellV2({
   } = usePinnedScroll<HTMLDivElement>({
     followKey: threadFollowKey,
     hasContent: visibleMessages.length > 0,
-    readingAnchorKey: threadReadingAnchorKey,
+    onReadingAnchorApplied: consumePersonalReadingAnchor,
+    readingAnchorKey,
     resetKey: activeChatId ?? "blank"
   });
   const {
@@ -556,6 +566,7 @@ export function PowerAppShellV2({
   const {
     activateBlankWorkspace,
     activateChat,
+    activatePersonalChatById,
     applyChatUpdate,
     createChat,
     deleteChat,
@@ -587,6 +598,38 @@ export function PowerAppShellV2({
     workspaceRefreshPromiseRef
   });
   const pruneThreadCacheEvent = useEventCallback(pruneThreadCache);
+  const activatePersonalChatDeepLink = useEventCallback(async (chatId: string) =>
+    Boolean(await activatePersonalChatById(chatId))
+  );
+  const revealPersonalChatMessage = useEventCallback(async (
+    chatId: string,
+    messageId: string
+  ): Promise<boolean> => revealPersonalChatDeepLinkMessage({
+    current: () => {
+      const snapshot = selectThreadSnapshot(useThreadStore.getState(), chatId);
+      const history = threadHistoryState(snapshot);
+      return {
+        beforeCursor: history.beforeCursor,
+        hasOlder: history.hasOlder,
+        messageIds: selectThreadVisibleMessages(snapshot).map((message) => message.id)
+      };
+    },
+    loadEarlier: async () => await loadEarlierMessagesPage(chatId) !== "failed",
+    messageId
+  }));
+  const anchorPersonalChatMessage = useEventCallback((chatId: string, messageId: string) => {
+    setPersonalReadingAnchor({ chatId, messageId });
+  });
+  const showUnavailableMemorySource = useEventCallback(() => {
+    setNotice({ kind: "error", text: memoryUiCopy("source.unavailableBody") });
+  });
+  usePersonalChatDeepLink({
+    activateChat: activatePersonalChatDeepLink,
+    onAnchor: anchorPersonalChatMessage,
+    onUnavailable: showUnavailableMemorySource,
+    ready: workspaceReady,
+    revealMessage: revealPersonalChatMessage
+  });
 
   useEffect(() => {
     pruneThreadCacheEvent();
@@ -846,6 +889,13 @@ export function PowerAppShellV2({
     knowledgeLibraryActions.openLibrary();
   };
   const openMemoryWorkspace = () => {
+    // Personal Memory is not a Project capability. This callback is also
+    // passed to answer actions, so guard it even when a stale action arrives
+    // after navigation into a shared Project.
+    if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) {
+      closeMemoryWorkspace();
+      return;
+    }
     assistantLibraryActions.closeLibrary();
     knowledgeLibraryActions.closeLibrary();
     openMemorySettings();
@@ -1040,45 +1090,49 @@ export function PowerAppShellV2({
     shareActiveBranch
   } satisfies ShellSessionView;
 
-  async function toggleChatMemorySource(chat: WorkspaceChatSummary): Promise<void> {
+  function updateChatMemoryMode(chatId: string, mode: "EXCLUDED" | "NORMAL"): void {
+    useWorkspaceStore.getState().updateChats((current) => current.map((candidate) =>
+      candidate.id === chatId
+        ? {
+            ...candidate,
+            memoryMode: mode
+          }
+        : candidate
+    ));
+  }
+
+  async function commitChatMemoryMode(
+    chat: WorkspaceChatSummary,
+    patch: Readonly<{ mode: "EXCLUDED" }> | Readonly<{
+      mode: "NORMAL";
+      resumeDisclosureCopyVersion: typeof MEMORY_CONFIRMATION_COPY_VERSION;
+    }>
+  ): Promise<void> {
     if (memorySourceMutationIdsRef.current.has(chat.id)) return;
     memorySourceMutationIdsRef.current.add(chat.id);
     try {
-      const [source, settings] = await Promise.all([
-        loadChatMemoryState(chat.id),
-        refreshMemorySettings(true)
-      ]);
-      if (source.chat.mode === "TEMPORARY") {
+      const source = await loadChatMemoryState(chat.id);
+      if (source.mode === "TEMPORARY") {
         throw new Error("memory_temporary_chat_forbidden");
       }
-      const mode = source.chat.mode === "EXCLUDED" ? "NORMAL" : "EXCLUDED";
-      const response = await patchChatMemoryMode({
-        chatId: chat.id,
-        expectedChatRevision: source.chat.sourceRevision,
-        mode,
-        settings
-      });
-      useWorkspaceStore.getState().updateChats((current) => current.map((candidate) =>
-        candidate.id === chat.id
-          ? {
-              ...candidate,
-              memoryMode: response.mode,
-              memorySourceRevision: response.sourceRevision
-            }
-          : candidate
-      ));
-      useMemorySettingsStore.setState((current) => current.data
-        ? {
-            data: {
-              ...current.data,
-              settings: {
-                ...current.data.settings,
-                memoryGeneration: response.memoryGeneration,
-                memoryRevision: response.memoryRevision
-              }
-            }
-          }
-        : {});
+      if (source.mode === patch.mode) {
+        updateChatMemoryMode(chat.id, source.mode);
+        return;
+      }
+      const response = patch.mode === "NORMAL"
+        ? await patchChatMemoryMode({
+            chatId: chat.id,
+            mode: "NORMAL",
+            resumeDisclosureCopyVersion: patch.resumeDisclosureCopyVersion
+          })
+        : await patchChatMemoryMode({
+            chatId: chat.id,
+            mode: "EXCLUDED"
+          });
+      if (response.mode === "TEMPORARY") {
+        throw new Error("memory_temporary_chat_forbidden");
+      }
+      updateChatMemoryMode(chat.id, response.mode);
       setNotice({
         kind: "success",
         text: resolveMemoryCopy(
@@ -1092,18 +1146,44 @@ export function PowerAppShellV2({
     }
   }
 
-  /**
-   * Direct "Delete…" entry: fetch the fresh server snapshot, then open the
-   * existing permanent-deletion confirm surface. `openPermanentChatDeletion`
-   * keeps the `permanentChatDeletionAvailable` gate; nothing is deleted before
-   * the surface's own confirmed authorization.
-   */
-  async function deleteChatPermanently(chat: WorkspaceChatSummary): Promise<void> {
+  async function toggleChatMemorySource(
+    chat: WorkspaceChatSummary,
+    mode: "EXCLUDED" | "NORMAL"
+  ): Promise<void> {
+    if (mode === "EXCLUDED") {
+      await commitChatMemoryMode(chat, { mode: "EXCLUDED" });
+      return;
+    }
+    if (memorySourceMutationIdsRef.current.has(chat.id)) return;
+    memorySourceMutationIdsRef.current.add(chat.id);
     try {
-      openPermanentChatDeletion(await loadPermanentChatDeletionSnapshot(chat.id));
+      const source = await loadChatMemoryState(chat.id);
+      if (source.mode === "TEMPORARY") {
+        throw new Error("memory_temporary_chat_forbidden");
+      }
+      if (source.mode === "NORMAL") {
+        updateChatMemoryMode(chat.id, source.mode);
+        return;
+      }
+      setMemoryResumeTarget(chat);
     } catch (error) {
       setNotice({ kind: "error", text: errorMessage(error) });
+    } finally {
+      memorySourceMutationIdsRef.current.delete(chat.id);
     }
+  }
+
+  /**
+   * Direct "Delete…" entry opens the confirmation surface. The confirmed POST
+   * reads and fences the authoritative chat snapshot on the server; the browser
+   * never carries deletion authorization or lifecycle identifiers.
+   */
+  function deleteChatPermanently(chat: WorkspaceChatSummary): void {
+    openPermanentChatDeletion({
+      chatId: chat.id,
+      location: "WORKSPACE",
+      title: chat.title
+    });
   }
 
   const workspacePaneView = {
@@ -1144,10 +1224,8 @@ export function PowerAppShellV2({
     pane: workspacePaneView,
     projects: projectWorkspace,
     projectSettings: {
-      changeDraft: workspaceInteraction.projectSettings.changeDraft,
       changeKnowledgeBaseIds: workspaceInteraction.projectSettings.changeKnowledgeBaseIds,
       close: workspaceInteraction.projectSettings.close,
-      draft: projectMemoryDraft,
       folder: projectSettingsFolder,
       knowledgeBaseIds: projectKnowledgeBaseIds,
       knowledgeBases: knowledgeSnapshot.data?.knowledgeBases ?? [],
@@ -1157,41 +1235,6 @@ export function PowerAppShellV2({
       save: saveProjectSettings
     }
   } satisfies ShellWorkspaceView;
-
-  async function navigateMemorySourceChat(
-    chatId: string,
-    fromSettings: boolean
-  ): Promise<void> {
-    let settingsClosed = false;
-    try {
-      await navigateMemorySource(chatId, {
-        activateChat: (sourceChat) => activateChat(sourceChat, { preserveControls: true }),
-        ...(fromSettings ? {
-          closeResolvedOverlay: () => {
-            closeMemoryWorkspace();
-            settingsClosed = true;
-          }
-        } : {}),
-        findActiveChat: (sourceChatId) =>
-          useWorkspaceStore.getState().chats.find((chat) => chat.id === sourceChatId) ?? null,
-        openArchivedPreview: openArchivedChatPreview,
-        refreshWorkspace: (sourceChatId) =>
-          refreshWorkspace(sourceChatId, { preserveControls: true }),
-        resolveSource: resolveChatSource
-      });
-    } catch {
-      const sourceNotice = {
-        kind: "error" as const,
-        text: memoryUiCopy("manager.sourceUnavailable")
-      };
-      if (fromSettings && !settingsClosed) setSettingsNotice(sourceNotice);
-      else setNotice(sourceNotice);
-    }
-  }
-
-  function openMemorySourceFromSettings(chatId: string): Promise<void> {
-    return navigateMemorySourceChat(chatId, true);
-  }
 
   const threadView = {
     activeChatDetailError,
@@ -1216,9 +1259,6 @@ export function PowerAppShellV2({
     loadEarlierMessages,
     loadingOlderMessages: activeThreadHistory.loading,
     olderMessagesError: activeThreadHistory.error,
-    openMemorySourceChat: (chatId: string) => {
-      void navigateMemorySourceChat(chatId, false);
-    },
     retryActiveChatDetail,
     showJumpToLatest,
     threadScrollRef,
@@ -1497,9 +1537,6 @@ export function PowerAppShellV2({
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
     openMemory: openMemoryWorkspace,
-    openMemorySourceChat: (chatId: string) => {
-      void openMemorySourceFromSettings(chatId);
-    },
     openMcp: openMcpSettings,
     settings: {
       open: settingsOpen,
@@ -1513,12 +1550,24 @@ export function PowerAppShellV2({
     confirmations: {
       cancelChat: shellOverlays.confirmations.chat.cancel,
       cancelFolder: shellOverlays.confirmations.folder.cancel,
+      cancelMemoryResume: () => setMemoryResumeTarget(null),
       cancelMessage: shellOverlays.confirmations.message.cancel,
       chat: shellOverlays.confirmations.chat.target,
       confirmChat: shellOverlays.confirmations.chat.confirm,
       confirmFolder: shellOverlays.confirmations.folder.confirm,
+      confirmMemoryResume: () => {
+        const target = memoryResumeTarget;
+        setMemoryResumeTarget(null);
+        if (target) {
+          void commitChatMemoryMode(target, {
+            mode: "NORMAL",
+            resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+          });
+        }
+      },
       confirmMessage: shellOverlays.confirmations.message.confirm,
       folder: shellOverlays.confirmations.folder.target,
+      memoryResume: memoryResumeTarget,
       message: shellOverlays.confirmations.message.target
     },
     share: {

@@ -1,6 +1,12 @@
 "use client";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import {
+  MEMORY_UI_LOCALE,
+  formatMemoryUiCopy,
+  memoryUiCopy
+} from "@/components/app-shell/memoryUiCopy";
 import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
@@ -8,11 +14,20 @@ import type {
   ThreadKnowledgeCitation,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
+import {
+  MEMORY_STATEMENT_MAX_LENGTH,
+  isSafeMemorySourceActionHref,
+  type MemoryAnswerSource
+} from "@/lib/contracts/memoryClient";
 import { KnowledgeCitationSourceTrigger } from "@/features/citations-v2/KnowledgeCitationViewer";
-import { useMemo, type ReactNode } from "react";
+import { useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
 import { MemoryActionConfirmationV2 } from "./MemoryActionConfirmationV2";
 import { presentSearchSourcesV2 } from "./sourcePresentation";
+
+function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
+  return memoryUiCopy(key);
+}
 
 function safeAnswerHref(value: unknown): string | null {
   if (
@@ -66,6 +81,15 @@ function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerStat
   );
 }
 
+function MemoryStatusV2() {
+  return (
+    <p className="v2-memory-answer-state" data-testid="memory-unavailable-status" role="status">
+      <UiV2Icon name="memory" />
+      <span>{mt("answer.unavailable")}</span>
+    </p>
+  );
+}
+
 function KnowledgeSourceV2({
   citation,
   index,
@@ -92,6 +116,276 @@ function KnowledgeSourceV2({
   );
 }
 
+function memorySourceTypeLabel(sourceType: MemoryAnswerSource["sourceType"]): string {
+  switch (sourceType) {
+    case "LEARNED_MEMORY": return mt("source.learnedMemory");
+    case "PAST_CHAT": return mt("source.pastChat");
+    case "SAVED_MEMORY": return mt("source.savedMemory");
+  }
+}
+
+function memorySourceOriginLabel(source: MemoryAnswerSource): string {
+  switch (source.sourceType) {
+    case "LEARNED_MEMORY": return mt("source.learnedFromChat");
+    case "PAST_CHAT": return "origin" in source
+      ? source.origin ?? mt("source.pastChat")
+      : mt("source.pastChat");
+    case "SAVED_MEMORY": return mt("source.savedByYou");
+  }
+}
+
+function memorySourceDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return mt("source.dateUnavailable");
+  return new Intl.DateTimeFormat(MEMORY_UI_LOCALE, { dateStyle: "medium" }).format(date);
+}
+
+type MemorySourceAction = "CORRECT" | "FORGET" | "NOT_RELEVANT" | "OPEN_SOURCE";
+
+function memorySourceActionMessage(action: Exclude<MemorySourceAction, "OPEN_SOURCE">): string {
+  switch (action) {
+    case "CORRECT": return mt("source.corrected");
+    case "FORGET": return mt("source.forgotten");
+    case "NOT_RELEVANT": return mt("source.notRelevantDone");
+  }
+}
+
+function MemorySourceCard({ source }: Readonly<{ source: MemoryAnswerSource }>) {
+  const [editing, setEditing] = useState(false);
+  const [statement, setStatement] = useState(source.text ?? "");
+  const [pending, setPending] = useState<MemorySourceAction | null>(null);
+  const [completed, setCompleted] = useState<Exclude<MemorySourceAction, "OPEN_SOURCE"> | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [openHref, setOpenHref] = useState<string | null>(null);
+  const statementId = `memory-source-statement-${useId()}`;
+
+  async function runAction(action: MemorySourceAction, nextStatement?: string): Promise<void> {
+    if (!source.sourceAvailable || !source.memoryRef) return;
+    setPending(action);
+    setNotice(null);
+    setError(null);
+    try {
+      const response = await submitMemorySourceAction(action, source.memoryRef, nextStatement);
+      if (action === "OPEN_SOURCE") {
+        if (response.status !== "READY") throw new Error("memory_source_response_invalid");
+        if (!isSafeMemorySourceActionHref(response.href)) {
+          throw new Error("memory_source_href_invalid");
+        }
+        setOpenHref(response.href);
+        setNotice(mt("source.ready"));
+      } else {
+        if (response.status !== "COMMITTED") throw new Error("memory_source_response_invalid");
+        if (action === "CORRECT" && nextStatement) setStatement(nextStatement);
+        setCompleted(action);
+        setEditing(false);
+        setNotice(memorySourceActionMessage(action));
+      }
+    } catch {
+      setError(mt("source.actionError"));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  function submitCorrection(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const nextStatement = statement.trim();
+    if (!nextStatement || nextStatement.length > MEMORY_STATEMENT_MAX_LENGTH) {
+      setError(formatMemoryUiCopy("action.correctionLength", {
+        count: MEMORY_STATEMENT_MAX_LENGTH.toLocaleString(MEMORY_UI_LOCALE)
+      }));
+      return;
+    }
+    void runAction("CORRECT", nextStatement);
+  }
+
+  const hasAction = (action: MemorySourceAction): boolean =>
+    source.sourceAvailable &&
+    (source.actions as readonly MemorySourceAction[]).includes(action);
+  // Every action ref is bound to the exact committed source version. Once a
+  // mutation commits, leave the historical receipt readable but remove every
+  // control that would replay that now-stale authority.
+  const mutationDone = completed !== null;
+  const sourceAvailable = source.sourceAvailable && completed !== "FORGET";
+
+  return (
+    <article className="v2-memory-source-card" data-testid="memory-source-card">
+      <div className="v2-memory-source-card-heading">
+        <span className="v2-memory-source-type">{memorySourceTypeLabel(source.sourceType)}</span>
+        {sourceAvailable ? null : (
+          <UiV2Chip tone="warn">{mt("source.unavailableLabel")}</UiV2Chip>
+        )}
+      </div>
+      {sourceAvailable ? (
+        <>
+          <p className="v2-memory-source-text">{completed === "CORRECT" ? statement : source.text}</p>
+          <div className="v2-memory-source-meta">
+            <span>{memorySourceOriginLabel(source)}</span>
+            <span aria-hidden="true">·</span>
+            <time dateTime={source.date}>{memorySourceDate(source.date)}</time>
+          </div>
+        </>
+      ) : (
+        <p className="v2-memory-source-text">{mt("source.unavailableBody")}</p>
+      )}
+      {editing ? (
+        <form className="v2-memory-source-correction" onSubmit={submitCorrection}>
+          <label htmlFor={statementId}>{mt("source.correctStatement")}</label>
+          <textarea
+            aria-describedby={`${statementId}-help`}
+            id={statementId}
+            maxLength={MEMORY_STATEMENT_MAX_LENGTH}
+            onChange={(event) => setStatement(event.target.value.slice(0, MEMORY_STATEMENT_MAX_LENGTH))}
+            rows={3}
+            value={statement}
+          />
+          <small id={`${statementId}-help`}>
+            {statement.length.toLocaleString(MEMORY_UI_LOCALE)}/
+            {MEMORY_STATEMENT_MAX_LENGTH.toLocaleString(MEMORY_UI_LOCALE)}
+          </small>
+          <div className="v2-memory-action-buttons">
+            <UiV2Button
+              busy={pending === "CORRECT"}
+              disabled={pending !== null}
+              type="submit"
+              tone="primary"
+            >
+              {mt("action.saveCorrection")}
+            </UiV2Button>
+            <UiV2Button
+              disabled={pending !== null}
+              onClick={() => {
+                setEditing(false);
+                setError(null);
+              }}
+              type="button"
+            >
+              {mt("manager.cancel")}
+            </UiV2Button>
+          </div>
+        </form>
+      ) : null}
+      {!mutationDone ? (
+        hasAction("CORRECT") && !editing ? (
+          <div className="v2-memory-action-buttons">
+            <UiV2Button
+              disabled={pending !== null}
+              onClick={() => {
+                setStatement(source.text ?? "");
+                setNotice(null);
+                setError(null);
+                setEditing(true);
+              }}
+              type="button"
+            >
+              {mt("source.correct")}
+            </UiV2Button>
+            {hasAction("FORGET") ? (
+              <UiV2Button
+                busy={pending === "FORGET"}
+                disabled={pending !== null}
+                onClick={() => void runAction("FORGET")}
+                type="button"
+                tone="destructive"
+              >
+                {mt("manager.forget")}
+              </UiV2Button>
+            ) : null}
+            {hasAction("NOT_RELEVANT") ? (
+              <UiV2Button
+                busy={pending === "NOT_RELEVANT"}
+                disabled={pending !== null}
+                onClick={() => void runAction("NOT_RELEVANT")}
+                type="button"
+              >
+                {mt("source.notRelevant")}
+              </UiV2Button>
+            ) : null}
+          </div>
+        ) : !editing ? (
+          <div className="v2-memory-action-buttons">
+            {hasAction("FORGET") ? (
+              <UiV2Button
+                busy={pending === "FORGET"}
+                disabled={pending !== null}
+                onClick={() => void runAction("FORGET")}
+                type="button"
+                tone="destructive"
+              >
+                {mt("manager.forget")}
+              </UiV2Button>
+            ) : null}
+            {hasAction("NOT_RELEVANT") ? (
+              <UiV2Button
+                busy={pending === "NOT_RELEVANT"}
+                disabled={pending !== null}
+                onClick={() => void runAction("NOT_RELEVANT")}
+                type="button"
+              >
+                {mt("source.notRelevant")}
+              </UiV2Button>
+            ) : null}
+          </div>
+        ) : null
+      ) : null}
+      {!mutationDone && hasAction("OPEN_SOURCE") ? (
+        openHref ? (
+          <div className="v2-memory-action-buttons">
+            <a
+              className="v2-memory-source-open"
+              href={openHref}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {mt("source.open")}
+            </a>
+          </div>
+        ) : (
+          <div className="v2-memory-action-buttons">
+            <UiV2Button
+              busy={pending === "OPEN_SOURCE"}
+              disabled={pending !== null}
+              onClick={() => void runAction("OPEN_SOURCE")}
+              type="button"
+            >
+              {mt("source.open")}
+            </UiV2Button>
+          </div>
+        )
+      ) : null}
+      {notice ? <p aria-live="polite" className="v2-memory-source-notice" role="status">{notice}</p> : null}
+      {error ? <p aria-live="assertive" className="v2-memory-source-error" role="alert">{error}</p> : null}
+    </article>
+  );
+}
+
+function MemorySourcesV2({ sources }: Readonly<{ sources: readonly MemoryAnswerSource[] }>) {
+  const headingId = `answer-memory-sources-heading-${useId()}`;
+  if (sources.length === 0) return null;
+  return (
+    <section
+      aria-labelledby={headingId}
+      className="v2-memory-sources"
+      data-testid="answer-memory-sources"
+    >
+      <h3 id={headingId}>
+        {formatMemoryUiCopy("source.heading", { count: sources.length })}
+      </h3>
+      <div className="v2-memory-source-list">
+        {sources.map((source, index) => (
+          <MemorySourceCard
+            key={source.sourceAvailable
+              ? `memory-source-${source.memoryRef}`
+              : `memory-source-${source.sourceType}-${source.date}-${index}`}
+            source={source}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function SourcesV2({ artifact, knowledgeReference }: Readonly<{
   artifact: ThreadArtifactSummary;
   knowledgeReference?: Readonly<{ messageId: string; runId: string }>;
@@ -101,53 +395,59 @@ export function SourcesV2({ artifact, knowledgeReference }: Readonly<{
     [artifact]
   );
   const knowledge = artifact.knowledgeCitations ?? [];
+  const memorySources = artifact.memorySources ?? [];
   const count = presented.sources.length + knowledge.length;
-  if (count === 0) return null;
+  if (count === 0 && memorySources.length === 0) return null;
 
   return (
-    <details className="v2-answer-sources" data-testid="answer-sources">
-      <summary aria-label={`Sources, ${count} item${count === 1 ? "" : "s"}`}>
-        <UiV2Icon name="library" />
-        <span>Sources</span>
-      </summary>
-      <div className="v2-answer-sources-body">
-        {presented.sources.length > 0 ? (
-          <ol className="v2-answer-source-list">
-            {presented.sources.map((source, index) => {
-              const href = safeAnswerHref(source.url);
-              return (
-                <li key={`${source.rank}:${source.url}:${index}`}>
-                  <span className="v2-answer-source-index">{index + 1}</span>
-                  <span>
-                    {href ? (
-                      <a href={href} rel="noreferrer" target="_blank">{source.title}</a>
-                    ) : (
-                      <span data-testid="unsafe-source-title">{source.title}</span>
-                    )}
-                    {source.domain && source.domain !== source.title ? (
-                      <small>{source.domain}</small>
-                    ) : null}
-                    {source.snippet ? <small>{source.snippet}</small> : null}
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-        ) : null}
-        {knowledge.length > 0 ? (
-          <ol className="v2-answer-knowledge-sources" aria-label="Knowledge sources">
-            {knowledge.map((citation, index) => (
-              <KnowledgeSourceV2
-                citation={citation}
-                index={presented.sources.length + index + 1}
-                key={`${citation.handle}:${index}`}
-                reference={knowledgeReference}
-              />
-            ))}
-          </ol>
-        ) : null}
-      </div>
-    </details>
+    <>
+      {count > 0 ? (
+        <details className="v2-answer-sources" data-testid="answer-sources">
+          <summary aria-label={`Sources, ${count} item${count === 1 ? "" : "s"}`}>
+            <UiV2Icon name="library" />
+            <span>Sources</span>
+          </summary>
+          <div className="v2-answer-sources-body">
+            {presented.sources.length > 0 ? (
+              <ol className="v2-answer-source-list">
+                {presented.sources.map((source, index) => {
+                  const href = safeAnswerHref(source.url);
+                  return (
+                    <li key={`${source.rank}:${source.url}:${index}`}>
+                      <span className="v2-answer-source-index">{index + 1}</span>
+                      <span>
+                        {href ? (
+                          <a href={href} rel="noreferrer" target="_blank">{source.title}</a>
+                        ) : (
+                          <span data-testid="unsafe-source-title">{source.title}</span>
+                        )}
+                        {source.domain && source.domain !== source.title ? (
+                          <small>{source.domain}</small>
+                        ) : null}
+                        {source.snippet ? <small>{source.snippet}</small> : null}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : null}
+            {knowledge.length > 0 ? (
+              <ol className="v2-answer-knowledge-sources" aria-label="Knowledge sources">
+                {knowledge.map((citation, index) => (
+                  <KnowledgeSourceV2
+                    citation={citation}
+                    index={presented.sources.length + index + 1}
+                    key={`${citation.handle}:${index}`}
+                    reference={knowledgeReference}
+                  />
+                ))}
+              </ol>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
+      <MemorySourcesV2 sources={memorySources} />
+    </>
   );
 }
 
@@ -168,17 +468,20 @@ export function AnswerOutputsV2({
   artifact,
   identitySlot = null,
   knowledgeReference,
+  onOpenMemorySettings,
   showReasoning
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   identitySlot?: ReactNode;
   knowledgeReference?: Readonly<{ messageId: string; runId: string }>;
+  onOpenMemorySettings?(): void;
   showReasoning: boolean;
 }>) {
   const hasSources = Boolean(
     artifact && (
       answerWebSources(artifact).length > 0 ||
-      (artifact.knowledgeCitations?.length ?? 0) > 0
+      (artifact.knowledgeCitations?.length ?? 0) > 0 ||
+      (artifact.memorySources?.length ?? 0) > 0
     )
   );
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
@@ -186,12 +489,14 @@ export function AnswerOutputsV2({
     artifact && showReasoning && artifact.reasoningText.some((text) => text.trim())
   );
   const hasMemoryAction = Boolean(artifact?.memoryAction);
+  const hasMemoryStatus = artifact?.memoryStatus === "UNAVAILABLE";
   const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
     artifact.knowledgeState.answer === "insufficient_evidence" ||
     artifact.knowledgeState.scope === "partial_sources_ready"
   ));
 
   if (!identitySlot && !hasSources && !hasSuggestions && !hasReasoning && !hasMemoryAction &&
+    !hasMemoryStatus &&
     !hasKnowledgeState) {
     return null;
   }
@@ -199,6 +504,7 @@ export function AnswerOutputsV2({
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
       {identitySlot ? <div className="v2-answer-identity">{identitySlot}</div> : null}
+      {artifact?.memoryStatus === "UNAVAILABLE" ? <MemoryStatusV2 /> : null}
       {artifact?.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
       {artifact && hasSources ? (
         <SourcesV2 artifact={artifact} knowledgeReference={knowledgeReference} />
@@ -208,7 +514,10 @@ export function AnswerOutputsV2({
       ) : null}
       {artifact && showReasoning ? <ReasoningV2 texts={artifact.reasoningText} /> : null}
       {artifact?.memoryAction ? (
-        <MemoryActionConfirmationV2 action={artifact.memoryAction} />
+        <MemoryActionConfirmationV2
+          action={artifact.memoryAction}
+          onOpenMemorySettings={onOpenMemorySettings}
+        />
       ) : null}
     </div>
   );

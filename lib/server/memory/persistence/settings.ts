@@ -1,4 +1,9 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
+import {
+  Prisma,
+  type MemoryJobKind,
+  type MemoryPauseScope,
+  type PrismaClient
+} from "@prisma/client";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemoryConsentInput,
@@ -13,10 +18,6 @@ import {
   resolveCurrentMemoryUtilityPolicy,
   type ResolvedMemoryUtilityPolicy
 } from "../execution/policy";
-import {
-  authorizeMemoryHistoryTerminalRetries,
-  seedMemoryHistoryBackfill
-} from "../history/backfill";
 import { memoryPersistenceFailure } from "./errors";
 import {
   advanceMemoryMutation,
@@ -62,6 +63,7 @@ const settingsSelect = {
 } satisfies Prisma.UserMemorySettingsSelect;
 
 type MemorySettingsRepositoryOptions = Readonly<{
+  now?: () => Date;
   resolveCurrentUtilityPolicy?: (
     tx: MemoryTransaction,
     userId: string,
@@ -72,6 +74,67 @@ type MemorySettingsRepositoryOptions = Readonly<{
     input: Readonly<{ providerModelId: string; userId: string }>
   ) => Promise<void>;
 }>;
+
+const pausableJobStates = [
+  "CLAIMED",
+  "QUEUED",
+  "RETRYABLE_FAILED",
+  "WAITING_FOR_EGRESS_CONSENT"
+] as const;
+
+async function closePauseAdmissionCutoff(
+  tx: MemoryTransaction,
+  userId: string,
+  scope: MemoryPauseScope,
+  resumedAt: Date
+): Promise<void> {
+  await tx.memoryPauseInterval.updateMany({
+    data: { resumedAt },
+    where: { resumedAt: null, scope, userId }
+  });
+}
+
+async function openPauseAdmissionCutoff(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  scope: MemoryPauseScope,
+  pausedAt: Date
+): Promise<void> {
+  await tx.memoryPauseInterval.create({
+    data: {
+      memoryGeneration: settings.memoryGeneration,
+      pausedAt,
+      scope,
+      userId: settings.userId
+    }
+  });
+}
+
+async function cancelPausedJobs(
+  tx: MemoryTransaction,
+  userId: string,
+  kinds: readonly MemoryJobKind[],
+  errorCode: string,
+  pausedAt: Date
+): Promise<void> {
+  await tx.memoryJob.updateMany({
+    data: {
+      completedAt: pausedAt,
+      errorCode,
+      errorMessage: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "CANCELLED",
+      updatedAt: pausedAt
+    },
+    where: {
+      kind: { in: [...kinds] },
+      state: { in: [...pausableJobStates] },
+      userId
+    }
+  });
+}
 
 const visibleKeys = [
   "embeddingDeploymentId",
@@ -156,6 +219,7 @@ export function createPrismaMemorySettingsRepository(
   client: PrismaClient = prisma,
   options: MemorySettingsRepositoryOptions = {}
 ) {
+  const now = options.now ?? (() => new Date());
   const resolveCurrentUtilityPolicy = options.resolveCurrentUtilityPolicy ??
     resolveCurrentMemoryUtilityPolicy;
   const validateEmbeddingSelection = options.validateEmbeddingSelection ??
@@ -235,7 +299,6 @@ export function createPrismaMemorySettingsRepository(
     ): Promise<MemorySettingsPersistenceSnapshot> {
       validatePatchShape(patch);
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
-        const historyWasEnabled = settings.referenceChatHistory;
         if (settings.settingsRevision !== patch.expectedSettingsRevision) {
           return memoryPersistenceFailure("memory_settings_conflict");
         }
@@ -260,7 +323,25 @@ export function createPrismaMemorySettingsRepository(
           }
         }
 
-        if (visiblePatchChanges(settings, patch)) {
+        const masterPause = owns(patch, "useMemoryFacts") &&
+          settings.useMemoryFacts && patch.useMemoryFacts === false;
+        const masterResume = owns(patch, "useMemoryFacts") &&
+          !settings.useMemoryFacts && patch.useMemoryFacts === true;
+        const historyPause = owns(patch, "referenceChatHistory") &&
+          settings.referenceChatHistory && patch.referenceChatHistory === false;
+        const historyResume = owns(patch, "referenceChatHistory") &&
+          !settings.referenceChatHistory && patch.referenceChatHistory === true;
+        const learningPause = owns(patch, "learnAutomatically") &&
+          settings.learnAutomatically && patch.learnAutomatically === false;
+        const learningResume = owns(patch, "learnAutomatically") &&
+          !settings.learnAutomatically && patch.learnAutomatically === true;
+        if (masterPause) {
+          // Unlike a subordinate preference change, pausing the master must
+          // invalidate every already-admitted source/job snapshot.  Keep the
+          // subordinate booleans untouched so a later explicit resume does
+          // not silently rewrite the user's preferences.
+          await advanceMemoryMutation(tx, settings, "MEMORY_MASTER_PAUSE");
+        } else if (visiblePatchChanges(settings, patch)) {
           await advanceMemoryMutation(tx, settings, "MEMORY_VISIBLE_SETTING_CHANGE");
         }
         const data: Prisma.UserMemorySettingsUpdateManyMutationInput = {
@@ -283,16 +364,80 @@ export function createPrismaMemorySettingsRepository(
           where: { settingsRevision: patch.expectedSettingsRevision, userId }
         });
         if (updated.count !== 1) return memoryPersistenceFailure("memory_settings_conflict");
+        const cutoff = now();
+        if (masterPause) {
+          // A pause cutoff is deliberately non-destructive. It is closed at
+          // resume and admission treats only its [pause, resume] interval as
+          // ineligible; retained pre-pause rows remain reusable.
+          await openPauseAdmissionCutoff(tx, settings, "MASTER", cutoff);
+          // Cancel queued and currently leased work in the same transaction.
+          // A worker that is already in provider I/O loses its lease/state;
+          // its later commit is rejected by the guarded coordinator update.
+          await tx.$executeRaw(Prisma.sql`
+            UPDATE "MemoryJob" AS job
+            SET
+              "completedAt" = ${cutoff},
+              "errorCode" = 'memory_master_paused',
+              "errorMessage" = NULL,
+              "leaseExpiresAt" = NULL,
+              "leaseToken" = NULL,
+              "nextAttemptAt" = NULL,
+              "state" = 'CANCELLED'::"MemoryJobState",
+              "updatedAt" = ${cutoff}
+            WHERE job."userId" = ${userId}
+              AND job."state" IN (
+                'CLAIMED'::"MemoryJobState",
+                'QUEUED'::"MemoryJobState",
+                'RETRYABLE_FAILED'::"MemoryJobState",
+                'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
+              )
+              AND (
+                job."chatId" IS NULL
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM "Chat" AS job_chat
+                  WHERE job_chat."userId" = job."userId"
+                    AND job_chat."id" = job."chatId"
+                    AND job_chat."projectId" IS NOT NULL
+                )
+              )
+          `);
+        }
+        if (masterResume) {
+          await closePauseAdmissionCutoff(tx, userId, "MASTER", cutoff);
+        }
+        if (historyPause) {
+          await openPauseAdmissionCutoff(tx, settings, "SEARCH_HISTORY", cutoff);
+          await cancelPausedJobs(
+            tx,
+            userId,
+            ["INDEX_HISTORY"],
+            "memory_history_paused",
+            cutoff
+          );
+        }
+        if (historyResume) {
+          await closePauseAdmissionCutoff(tx, userId, "SEARCH_HISTORY", cutoff);
+        }
+        if (learningPause) {
+          await openPauseAdmissionCutoff(tx, settings, "AUTOMATIC_LEARNING", cutoff);
+          await cancelPausedJobs(
+            tx,
+            userId,
+            ["EXTRACT_FACTS", "CONSOLIDATE_CANDIDATE", "VERIFY_CANDIDATE"],
+            "memory_automatic_learning_paused",
+            cutoff
+          );
+        }
+        if (learningResume) {
+          await closePauseAdmissionCutoff(tx, userId, "AUTOMATIC_LEARNING", cutoff);
+        }
         settings.settingsRevision += 1;
         if (owns(patch, "referenceChatHistory")) {
           settings.referenceChatHistory = patch.referenceChatHistory!;
         }
         if (owns(patch, "useMemoryFacts")) {
           settings.useMemoryFacts = patch.useMemoryFacts!;
-        }
-        if (!historyWasEnabled && settings.referenceChatHistory) {
-          await authorizeMemoryHistoryTerminalRetries(tx, settings);
-          await seedMemoryHistoryBackfill(tx, settings);
         }
         return persistedSettings(tx, userId);
       });

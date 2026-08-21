@@ -43,6 +43,22 @@ export function evaluateMemoryFactConsolidationPlan(
       id !== input.candidate.evidence[index]?.messageId)
   ) return { reasonCode: "evidence_precondition_invalid", status: "DEFER" };
 
+  // v1 has no deferred/conflict/verification states.  A strict model may
+  // reject a candidate explicitly; that is a terminal, non-mutating result.
+  if (plan.operation === "REJECT") {
+    return { requiresVerification: false, status: "VALID" };
+  }
+  if (plan.operation === "REPLACE") {
+    const target = targetVersion(input, plan);
+    if (!target) return { reasonCode: "target_precondition_invalid", status: "DEFER" };
+    // Saved (explicit) memory wins unless the current direct-user candidate
+    // is itself marked as an explicit correction.
+    if (target.sourceMode === "EXPLICIT" && input.candidate.correction !== true) {
+      return { reasonCode: "explicit_authority_retained", status: "DEFER" };
+    }
+    return { requiresVerification: false, status: "VALID" };
+  }
+
   if (plan.operation === "NOOP") {
     return { requiresVerification: false, status: "VALID" };
   }

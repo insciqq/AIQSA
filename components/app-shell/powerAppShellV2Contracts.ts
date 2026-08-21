@@ -79,7 +79,10 @@ export type ShellWorkspacePaneActions = {
   shareChat(chat: WorkspaceChatSummary): Promise<void> | void;
   startChatEdit(chat: WorkspaceChatSummary): void;
   startFolderEdit(folder: FolderSummary): void;
-  toggleChatMemorySource(chat: WorkspaceChatSummary): Promise<void> | void;
+  toggleChatMemorySource(
+    chat: WorkspaceChatSummary,
+    mode: "EXCLUDED" | "NORMAL"
+  ): Promise<void> | void;
   toggleChatFavorite(chat: WorkspaceChatSummary): Promise<void> | void;
 };
 
@@ -96,10 +99,8 @@ export type ShellWorkspaceView = {
   pane: ShellWorkspacePaneView;
   projects: ProjectWorkspaceController;
   projectSettings: {
-    changeDraft(value: string): void;
     changeKnowledgeBaseIds(value: string[]): void;
     close(): void;
-    draft: string;
     folder: FolderSummary | null;
     knowledgeBaseIds: string[];
     knowledgeBases: KnowledgeBaseSummary[];
@@ -137,7 +138,6 @@ export type ShellThreadView = {
   jumpToLatest(): void;
   liveArtifactSummary: ThreadArtifactSummary | null;
   olderMessagesError: string | null;
-  openMemorySourceChat(chatId: string): void;
   /**
    * Existing headless force-refresh owner for an ambiguous transport failure:
    * reconciles the chat with durable server state and clears the recorded
@@ -267,7 +267,6 @@ export type ShellSettingsView = {
   openKnowledge(): void;
   openLibrary(): void;
   openMemory(): void;
-  openMemorySourceChat(chatId: string): void;
   openMcp(): void;
   settings: {
     open: boolean;
@@ -281,12 +280,15 @@ export type ShellOverlaysView = {
   confirmations: {
     cancelChat(): void;
     cancelFolder(): void;
+    cancelMemoryResume(): void;
     cancelMessage(): void;
     chat: WorkspaceChatSummary | null;
     confirmChat(): void;
     confirmFolder(): void;
+    confirmMemoryResume(): void;
     confirmMessage(): void;
     folder: FolderSummary | null;
+    memoryResume: WorkspaceChatSummary | null;
     message: string | null;
   };
   share: {

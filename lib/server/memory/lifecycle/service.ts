@@ -71,6 +71,13 @@ export class MemoryLifecycleServiceError extends Error {
   }
 }
 
+export class MemoryControlledForgetCommittedError extends Error {
+  constructor() {
+    super("memory_controlled_forget_committed");
+    this.name = "MemoryControlledForgetCommittedError";
+  }
+}
+
 export type MemoryLifecycleService = Readonly<{
   deleteExplicit(userId: string, input: MemoryBulkDeleteInput): Promise<MemoryDeletionStatus>;
   forget(
@@ -83,8 +90,9 @@ export type MemoryLifecycleService = Readonly<{
 }>;
 
 export type MemoryLifecycleExecutionContext = Readonly<{
+  admissionDeadlineAtMs?: number;
   modelRunId: string;
-  persistedToolCallId: string;
+  persistedToolCallId?: string | null;
 }>;
 
 function failure(code: MemoryLifecycleServiceErrorCode): never {
@@ -224,6 +232,9 @@ export function createMemoryLifecycleService(input: Readonly<{
       });
       const authorization = {
         action: "FORGET" as const,
+        ...(execution?.admissionDeadlineAtMs === undefined
+          ? {}
+          : { admissionDeadlineAtMs: execution.admissionDeadlineAtMs }),
         authorizationId: forgetInput.mutationAuthorizationId,
         authorizedPayloadHash,
         expectedTargetVersionId: forgetInput.expectedVersionId,
@@ -252,12 +263,11 @@ export function createMemoryLifecycleService(input: Readonly<{
         requestId: resolved.requestId
       }));
       kick();
-      const memory = await persisted(() =>
-        input.readRepository.get(userId, forgotten.factId)
-      );
-      if (!memory) return failure("memory_not_found");
+      if (execution?.admissionDeadlineAtMs !== undefined) {
+        throw new MemoryControlledForgetCommittedError();
+      }
       return checkedForget({
-        memory,
+        memory: forgotten.tombstone,
         undo: {
           deletionId: forgotten.deletionId,
           expiresAt: forgotten.undoExpiresAt.toISOString(),

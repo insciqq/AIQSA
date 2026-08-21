@@ -1,13 +1,6 @@
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "./memory";
-
-export { MEMORY_CONFIRMATION_COPY_VERSION };
+export { MEMORY_CONFIRMATION_COPY_VERSION } from "./memoryClient";
 
 export const MEMORY_COPY_KEYS = [
-  "settings.useFacts.label",
-  "settings.referenceHistory.label",
-  "settings.learnAutomatically.label",
-  "settings.savedWhileUseOff",
-  "settings.manage.label",
   "archive.action",
   "archive.explanation",
   "restore.action",
@@ -15,27 +8,10 @@ export const MEMORY_COPY_KEYS = [
   "exclude.explanation",
   "resume.action",
   "resume.explanation",
-  "forget.action",
-  "forget.explanation",
-  "permanentDelete.action",
-  "permanentDelete.explanation",
   "temporary.label",
   "temporary.explanation",
   "temporary.retention",
-  "temporary.externalRetention",
-  "consent.title",
-  "consent.explanation",
-  "consent.reviewRequired",
-  "consent.answerDestination",
-  "consent.systemDestination",
-  "consent.embeddingDestination",
-  "consent.rerankerDestination",
-  "bulkDelete.explicit.action",
-  "bulkDelete.learned.action",
-  "bulkDelete.history.action",
-  "bulkDelete.reusable.action",
-  "bulkDelete.reusable.explanation",
-  "deletion.blockedAdmin"
+  "temporary.externalRetention"
 ] as const;
 
 export type MemoryCopyKey = (typeof MEMORY_COPY_KEYS)[number];
@@ -44,33 +20,11 @@ export type MemoryCopyCatalog = Readonly<Record<MemoryCopyKey, string>>;
 export const MEMORY_COPY: MemoryCopyCatalog = Object.freeze({
   "archive.action": "Archive",
   "archive.explanation": "Moves this chat out of the active list. The retained chat remains eligible as a Memory source.",
-  "bulkDelete.explicit.action": "Delete all saved memories",
-  "bulkDelete.history.action": "Clear chat-history memory index",
-  "bulkDelete.learned.action": "Delete automatically learned memories",
-  "bulkDelete.reusable.action": "Delete all reusable memory data",
-  "bulkDelete.reusable.explanation": "Deletes reusable facts, the chat-history index, and other derived Memory data. It does not delete retained chats, rewrite old accepted runs, erase provider-retained requests, or rewrite operator backups.",
-  "consent.answerDestination": "Selected answer model: final bounded snippets may be sent with the accepted run.",
-  "consent.embeddingDestination": "Embedding destination: eligible bounded text may be sent only to the disclosed configured deployment.",
-  "consent.explanation": "Review the exact current Memory destinations. A material destination change pauses affected external Memory work until you accept it.",
-  "consent.rerankerDestination": "Remote reranker: bounded eligible candidates may be sent only when this destination is configured and accepted.",
-  "consent.reviewRequired": "Review required before external Memory processing can continue.",
-  "consent.systemDestination": "System Memory model: bounded eligible source text may be sent for compatible extraction or verification.",
-  "consent.title": "Review Memory data destinations",
-  "deletion.blockedAdmin": "Future Memory use is fenced, but physical deletion needs administrator attention and will keep retrying.",
-  "exclude.action": "Exclude this chat from memory",
+  "exclude.action": "Exclude from Memory",
   "exclude.explanation": "Keeps the chat but immediately stops using it as a source for automatic recall and learning. Archive status does not change.",
-  "forget.action": "Forget",
-  "forget.explanation": "Stops future Memory use and suppresses relearning from the same unchanged evidence. Retained chat text and old accepted runs are not rewritten.",
-  "permanentDelete.action": "Delete permanently",
-  "permanentDelete.explanation": "Deletes this chat and its owned run data, revokes its shares, and reconciles Memory derivatives. Provider retention and operator backups are not rewritten.",
   "restore.action": "Restore",
-  "resume.action": "Resume using this chat as a memory source",
-  "resume.explanation": "Allows a controlled active-branch reindex. Prior Forget and bulk-clear barriers remain in force, and external work still requires accepted destinations.",
-  "settings.learnAutomatically.label": "Learn useful memories automatically",
-  "settings.manage.label": "Manage Memories",
-  "settings.referenceHistory.label": "Reference chat history",
-  "settings.savedWhileUseOff": "Saved; memory use is off.",
-  "settings.useFacts.label": "Use memory facts",
+  "resume.action": "Resume Memory for this chat",
+  "resume.explanation": "Only new messages sent after you resume can be used for Memory. Earlier excluded messages are not added back automatically.",
   "temporary.explanation": "Temporary Chat reads and writes no personal Memory, cannot be converted to a retained chat, and cannot be shared.",
   "temporary.externalRetention": "External providers and tools may retain data under their disclosed policies; operator backups are a separate domain.",
   "temporary.label": "Temporary Chat",
@@ -82,8 +36,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function memoryCopyCatalogIsComplete(value: unknown): value is MemoryCopyCatalog {
-  if (!isRecord(value)) return false;
-  if (Object.keys(value).length !== MEMORY_COPY_KEYS.length) return false;
+  if (!isRecord(value) || Object.keys(value).length !== MEMORY_COPY_KEYS.length) return false;
   return MEMORY_COPY_KEYS.every((key) => {
     const copy = value[key];
     return typeof copy === "string" && copy.trim().length > 0 && !copy.includes("\u0000");

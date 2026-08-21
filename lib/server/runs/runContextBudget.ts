@@ -12,6 +12,7 @@ import {
   truncateProviderAttachmentText
 } from "../providers/attachmentPayload";
 import { KNOWLEDGE_ANSWER_CONTRACT_V1 } from "../providers/personalContext";
+import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
 import type {
   NormalizedRunRequest,
   ProviderConversationMessage,
@@ -103,6 +104,9 @@ export function applyRunContextBudget(input: Readonly<{
     prompt: {
       developer: [
         input.prompt.developer,
+        input.prompt.memoryActionAnswerResult
+          ? memoryActionAnswerContract(input.prompt.memoryActionAnswerResult)
+          : null,
         input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null
       ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
       system: input.prompt.system
@@ -264,6 +268,11 @@ function fitProviderAttachmentText(input: Readonly<{
     const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
     const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
       estimateApproxTokens(input.request.prompt.developer ?? "") +
+      (input.request.prompt.memoryActionAnswerResult
+        ? estimateApproxTokens(memoryActionAnswerContract(
+            input.request.prompt.memoryActionAnswerResult
+          ))
+        : 0) +
       (input.request.prompt.knowledgeAnswerContract === 1
         ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
         : 0);

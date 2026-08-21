@@ -76,7 +76,10 @@ export function resolveMemoryExecutionCompatibility(input: Readonly<{
   ) return memoryExecutionFailure("memory_execution_capability_unavailable");
 
   const requiresStrictStructuredOutput = memoryRoleRequiresStrictOutput(input.role);
-  if (requiresStrictStructuredOutput && model.capabilities.toolCalling !== true) {
+  if (requiresStrictStructuredOutput && (
+    model.capabilities.toolCalling !== true ||
+    model.capabilities.structuredOutput !== true
+  )) {
     return memoryExecutionFailure("memory_execution_capability_unavailable");
   }
   const requirement: MemoryExecutionCompatibilityRequirement = {

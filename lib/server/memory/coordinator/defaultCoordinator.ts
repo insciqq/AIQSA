@@ -17,12 +17,15 @@ import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createPrismaMemoryRebuildHandler } from "../rebuild/handler";
 import { memoryHistoryClearDeletionHandler } from "../history/purge";
-import { reconcileMemoryHistoryBackfills } from "../history/backfill";
 import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
-import { createPrismaMemoryFactDecisionHandlers } from "../learning/consolidation/handler";
+import { createPrismaMemoryFactConsolidationHandler } from "../learning/consolidation/handler";
 import { reconcileMemoryFactCandidateJobs } from "../learning/consolidation/repository";
+import { createPrismaMemoryReclassificationHandler } from "../reclassification/handler";
+import { reconcileMemoryFactReclassificationJobs } from "../reclassification/reconcile";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 import { ensureDefaultMemoryDeletionComposition } from "../deletionComposition";
+import { defaultMemoryWorkerHeartbeat } from "./workerHeartbeat";
+import { preflightPrismaMemoryProviderBindings } from "./providerPreflight";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -37,23 +40,23 @@ export const defaultMemoryCoordinatorRepository =
 
 type DefaultMemoryReconciliationWork = Readonly<{
   candidates: () => Promise<unknown>;
-  history: () => Promise<unknown>;
+  reclassification?: () => Promise<unknown>;
 }>;
 
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     candidates: () => reconcileMemoryFactCandidateJobs(prisma),
-    history: () => reconcileMemoryHistoryBackfills(prisma)
+    reclassification: () => reconcileMemoryFactReclassificationJobs(prisma)
   });
 
 export async function reconcileDefaultMemoryWork(
   work: DefaultMemoryReconciliationWork = defaultMemoryReconciliationWork
 ): Promise<void> {
-  // Every discovery path takes the same owner-local SERIALIZABLE settings lock.
-  // Running them concurrently creates self-conflicts, retries, and retained dev
-  // tracing allocations without increasing useful owner-level throughput.
-  await work.history();
+  // Candidate reconciliation is the only periodic discovery path.  History
+  // backfill is an explicit rebuild action; running it here would replay
+  // chats written while Search past chats was OFF after a later resume.
   await work.candidates();
+  await work.reclassification?.();
 }
 
 // Provider-backed work validates current destination, credential, transport,
@@ -71,11 +74,13 @@ const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );
-const defaultFactDecisionHandlers = createPrismaMemoryFactDecisionHandlers(
+const defaultFactConsolidationHandler = createPrismaMemoryFactConsolidationHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );
 const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
+const defaultMemoryReclassificationHandler =
+  createPrismaMemoryReclassificationHandler(prisma);
 
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;
@@ -148,23 +153,47 @@ export function ensureDefaultMemoryHandlersRegistered(): void {
     "memory_default_fact_extraction_handler_conflict"
   );
   ensureJobHandlerRegistered(
-    defaultFactDecisionHandlers.consolidation,
+    defaultFactConsolidationHandler,
     "memory_default_fact_consolidation_handler_conflict"
-  );
-  ensureJobHandlerRegistered(
-    defaultFactDecisionHandlers.verification,
-    "memory_default_fact_verification_handler_conflict"
   );
   ensureJobHandlerRegistered(
     defaultMemoryRebuildHandler,
     "memory_default_rebuild_handler_conflict"
   );
+  ensureJobHandlerRegistered(
+    defaultMemoryReclassificationHandler,
+    "memory_default_reclassification_handler_conflict"
+  );
+}
+
+/**
+ * Startup/build owner for the active worker manifest.  Keeping this beside
+ * default registration means a newly enqueueable kind cannot be introduced
+ * without either a handler or an explicit terminalisation policy.
+ */
+export function assertDefaultMemoryCoordinatorRegistryComplete(): void {
+  ensureDefaultMemoryHandlersRegistered();
+  defaultMemoryCoordinatorRegistry.assertComplete();
+}
+
+/**
+ * Check the durable worker boundary before the process starts claiming jobs.
+ * Production always executes the rollback-only lifecycle probe; only the
+ * repository factory's hermetic test seam may substitute its implementation.
+ */
+export async function preflightDefaultMemoryCoordinator(input: Readonly<{
+  encryptionKey: Buffer;
+}>): Promise<void> {
+  assertDefaultMemoryCoordinatorRegistryComplete();
+  await defaultMemoryCoordinatorRepository.preflight();
+  await preflightPrismaMemoryProviderBindings(prisma, input.encryptionKey);
 }
 
 function createDefaultMemoryCoordinator(): MemoryCoordinator {
   ensureDefaultMemoryHandlersRegistered();
   const runtime = getDefaultMemoryCoordinatorRuntime();
   return new MemoryCoordinator({
+    onDrain: () => defaultMemoryWorkerHeartbeat.beat(),
     policy: runtime.policy,
     reconcileWork: reconcileDefaultMemoryWork,
     registry: defaultMemoryCoordinatorRegistry,
@@ -187,7 +216,9 @@ export function startDefaultMemoryCoordinator(): MemoryCoordinator {
 }
 
 export function kickDefaultMemoryCoordinator(): void {
-  startDefaultMemoryCoordinator().kick();
+  // Request processes only enqueue durable work. The dedicated worker (or the
+  // explicitly started local-development coordinator) polls that queue; a web
+  // request must never create a second claimant that bypasses worker preflight.
 }
 
 export function stopDefaultMemoryCoordinator(): void {

@@ -63,11 +63,6 @@ import {
   type KnowledgeRunAdmissionAuthorizationSnapshot,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
-import { memoryActionTools } from "../memory/actions/tools";
-import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
-import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
-import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { memorySha256 } from "../memory/persistence/lexical";
 import {
@@ -227,8 +222,6 @@ export type RunRecoveryDeps = Readonly<{
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   memoryEgress?: MemoryToolEgressReceiptService;
-  memoryActionExecutor?: MemoryActionExecutor;
-  memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
   mcpRuntime?: RunRecoveryMcpRuntime;
   mcp?: Readonly<{
     materialize?(
@@ -645,8 +638,6 @@ type RecoveryToolContext = {
   providerRequest: ProviderRunRequest;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
-  memoryActionExecutor: MemoryActionExecutor | null;
-  memoryHistoryToolExecutor: MemoryHistoryToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
   tools: RunTool[];
   usageAttributions: RunUsageAttribution[];
@@ -654,17 +645,6 @@ type RecoveryToolContext = {
 
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
   return context.searchExecutor?.accepts(name) === true;
-}
-
-function isRecoveredMemoryCall(context: RecoveryToolContext, name: string): boolean {
-  return context.memoryActionExecutor?.accepts(name) === true;
-}
-
-function isRecoveredMemoryHistoryCall(
-  context: RecoveryToolContext,
-  name: string
-): boolean {
-  return context.memoryHistoryToolExecutor?.accepts(name) === true;
 }
 
 function isRecoveredMcpDiscoveryCall(
@@ -1099,9 +1079,7 @@ async function executePersistedToolCall(
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
     }
-    const externalCall = !isRecoveredMcpDiscoveryCall(context, call.name) &&
-      !isRecoveredMemoryCall(context, call.name) &&
-      !isRecoveredMemoryHistoryCall(context, call.name);
+    const externalCall = !isRecoveredMcpDiscoveryCall(context, call.name);
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -1162,23 +1140,6 @@ async function executePersistedToolCall(
     }
     if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
-    } else if (isRecoveredMemoryCall(context, call.name)) {
-      result = await context.memoryActionExecutor!.execute(
-        call,
-        {
-          persistedToolCallId: claim.call.id,
-          request: context.providerRequest,
-          runId: context.run.id,
-          userId: context.run.userId
-        }
-      );
-    } else if (isRecoveredMemoryHistoryCall(context, call.name)) {
-      result = await context.memoryHistoryToolExecutor!.execute(call, {
-        persistedToolCallId: claim.call.id,
-        request: context.providerRequest,
-        runId: context.run.id,
-        userId: context.run.userId
-      });
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
         call,
@@ -1357,6 +1318,13 @@ async function recoverCheckpointedToolLoop(
         "The retired Knowledge planning runtime cannot be replayed."
       );
     }
+    if (run.normalizedRequest.memoryActionTools !== undefined ||
+      run.normalizedRequest.memoryHistoryTool !== undefined) {
+      throw new ToolLoopRecoveryError(
+        "memory_answer_model_tools_retired",
+        "Checkpointed answer-model Memory tools cannot be replayed."
+      );
+    }
     if (run.knowledgeScope || run.normalizedRequest.knowledgePlan.mode !== "none" ||
       run.calls.some(isFocusedKnowledgeCall)) {
       throw new ToolLoopRecoveryError(
@@ -1427,8 +1395,6 @@ async function recoverCheckpointedToolLoop(
       attachments
     };
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
-    const memoryActionsRequested =
-      run.normalizedRequest.memoryActionTools?.version === "model-driven-v2";
     const planRuntimes: Record<string, ProviderRuntimeBinding> = {};
     for (const option of clientToolsEnabled
       ? run.normalizedRequest.searchPlan.options
@@ -1481,19 +1447,6 @@ async function recoverCheckpointedToolLoop(
           tools: planSearchRouter.tools
         }
       : null;
-    const memoryActionEnabled = memoryActionsRequested &&
-      clientToolsEnabled &&
-      run.normalizedRequest.modelCapabilities.toolCalling === true;
-    const memoryActionExecutor = memoryActionEnabled
-      ? deps.memoryActionExecutor ?? defaultMemoryActionExecutor
-      : null;
-    const memoryHistoryEnabled = clientToolsEnabled &&
-      run.normalizedRequest.modelCapabilities.toolCalling === true &&
-      run.normalizedRequest.memoryHistoryTool?.maxCalls === 2 &&
-      run.normalizedRequest.memoryHistoryTool.pageSize === 20;
-    const memoryHistoryToolExecutor = memoryHistoryEnabled
-      ? deps.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
-      : null;
     const rawMcpDiscovery = run.normalizedRequest.mcpDiscovery;
     const toolBudgets = toolRunBudgetsForRequest(run.normalizedRequest);
     const decodedMcpDiscovery = rawMcpDiscovery === undefined
@@ -1515,8 +1468,6 @@ async function recoverCheckpointedToolLoop(
     }
     const tools: RunTool[] = [
       ...(searchExecutor?.tools ?? []),
-      ...(memoryActionExecutor ? memoryActionTools : []),
-      ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
       ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
     ];
@@ -1549,8 +1500,6 @@ async function recoverCheckpointedToolLoop(
       persistedUsageRecordedAt,
       providerRequest,
       run,
-      memoryActionExecutor,
-      memoryHistoryToolExecutor,
       runtime() {
         runtime ??= getDefaultMcpRuntimeCoordinator();
         return runtime;
@@ -1825,8 +1774,6 @@ async function recoverCheckpointedToolLoop(
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
-            memoryActionExecutor?.accepts(call.name) !== true &&
-            memoryHistoryToolExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
@@ -2373,6 +2320,13 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
       "The accepted provider request does not match the saved run."
     );
   }
+  if (normalizedRequest.memoryActionTools !== undefined ||
+    normalizedRequest.memoryHistoryTool !== undefined) {
+    throw new ToolLoopRecoveryError(
+      "memory_answer_model_tools_retired",
+      "A retired answer-model Memory tool request cannot be rebuilt."
+    );
+  }
   const runtime = await resolveAnswerRuntime(
     input.deps,
     input.runId,
@@ -2638,6 +2592,21 @@ async function refreshProviderRunOnceRegistered(
   const acceptedRequest = deps.repository.loadProviderDispatchRecoveryRequest
     ? await deps.repository.loadProviderDispatchRecoveryRequest({ runId, userId })
     : null;
+  if (acceptedRequest?.memoryActionTools !== undefined ||
+    acceptedRequest?.memoryHistoryTool !== undefined) {
+    if (control.assistantMessageId) {
+      await deps.repository.failRun(
+        runId,
+        control.assistantMessageId,
+        {
+          code: "memory_answer_model_tools_retired",
+          message: "This saved run uses a retired answer-model Memory tool contract."
+        },
+        { recoveryTerminal: true }
+      );
+    }
+    return;
+  }
   const focusedRequest = acceptedRequest?.knowledgeFocusedRequest
     ? decodeKnowledgeFocusedRequest(acceptedRequest.knowledgeFocusedRequest)
     : null;

@@ -548,7 +548,7 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
-  it("excludes expired Project Memory and rejects it if stale preparation still submits it", async () => {
+  it("keeps persisted Project Memory dormant and never binds it to a new run", async () => {
     await withRunUser(async ({ userId }) => {
       const projectRepository = createPrismaProjectRepository(prisma);
       const createdProject = await projectRepository.create({
@@ -608,7 +608,7 @@ describe("Prisma-backed run repository", () => {
         await expect(repository.findOwnedChat(chat.id, userId)).resolves.toMatchObject({
           project: { memoryItems: [] }
         });
-        await expect(repository.createRun(createRunInput({
+        const createdRun = await repository.createRun(createRunInput({
           chatId: chat.id,
           project: {
             accessRevision: project.accessRevision,
@@ -636,10 +636,12 @@ describe("Prisma-backed run repository", () => {
           providerAdmissionPlan: await projectProviderAdmission(userId),
           question: "Do not admit stale Project Memory",
           userId
-        }))).rejects.toBeInstanceOf(ActiveLeafConflictError);
+        }));
+        await expect(prisma.projectMemoryRunItem.count({
+          where: { projectRunBindingId: createdRun.runId }
+        })).resolves.toBe(0);
         await expect(chatGraph(chat.id)).resolves.toMatchObject({
-          _count: { messages: 0, modelRuns: 0 },
-          activeLeafMessageId: null
+          _count: { modelRuns: 1 }
         });
       } finally {
         await projectRepository.delete({
@@ -2204,24 +2206,18 @@ describe("Prisma-backed run repository", () => {
           select: { memoryGeneration: true, memoryRevision: true },
           where: { userId }
         }),
-        prisma.memoryJob.findFirstOrThrow({
-          select: {
-            activeLeafMessageId: true,
-            branchGeneration: true,
-            kind: true,
-            sourceRevision: true
-          },
-          where: { chatId: chat.id, kind: "RECONCILE_BRANCH", userId }
+        prisma.memoryJob.findMany({
+          select: { kind: true },
+          where: {
+            chatId: chat.id,
+            kind: { in: ["RECONCILE_BRANCH", "RECONCILE_SOURCE"] },
+            userId
+          }
         })
       ])).resolves.toEqual([
         { memoryBranchGeneration: 1, memorySourceRevision: 2 },
         { memoryGeneration: 1, memoryRevision: 1 },
-        {
-          activeLeafMessageId: regenerated.assistantMessageId,
-          branchGeneration: 1,
-          kind: "RECONCILE_BRANCH",
-          sourceRevision: 2
-        }
+        []
       ]);
     });
   });

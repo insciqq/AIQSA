@@ -123,7 +123,6 @@ export function usePowerAppShellViewModel({
   draft,
   folders,
   maxOutputTokens,
-  pendingChatFolderId,
   projectSettingsFolderId,
   renderActiveLeafId,
   runSurface,
@@ -173,14 +172,12 @@ export function usePowerAppShellViewModel({
   );
   const projectSettingsFolder = folders.find((folder) => folder.id === projectSettingsFolderId) ?? null;
   const activeChatTitle = activeChat?.title ?? "New Chat";
-  const activeChatFolderId = activeChat?.folderId ?? pendingChatFolderId ?? "";
   const composerDisabledHint =
     catalog && catalog.models.length === 0
       ? "No model access. Ask an admin to grant model access."
       : catalog && !currentModel
         ? "Select an available model before sending."
         : null;
-  const projectMemory = folders.find((folder) => folder.id === activeChatFolderId)?.projectMemory?.trim() ?? "";
   const currentContextWindow =
     currentModel && typeof currentModel.contextWindow === "number" &&
         Number.isFinite(currentModel.contextWindow) && currentModel.contextWindow > 0
@@ -209,8 +206,7 @@ export function usePowerAppShellViewModel({
     const promptSystem = [
       selectedAssistantPromptCharacterCount === null
         ? STANDARD_CHAT_BASELINE_TEMPLATE
-        : "",
-      projectMemory ? `Project memory:\n${projectMemory}` : null
+        : ""
     ]
       .filter((part): part is string => Boolean(part?.trim()))
       .join("\n\n");
@@ -240,7 +236,7 @@ export function usePowerAppShellViewModel({
       safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
       totalContextTokens: currentContextWindow || null
     };
-  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, projectMemory, safeInputBudget, selectedAssistantPromptCharacterCount, selectedSkillPromptCharacterCount, visibleMessages]);
+  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, safeInputBudget, selectedAssistantPromptCharacterCount, selectedSkillPromptCharacterCount, visibleMessages]);
   const composerUsageStats = activeThreadUsageStats ?? {
     activeBranchMessageCount: visibleMessages.length,
     cachedInputTokens: 0,

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import {
   Prisma,
   type MemoryDeletionOperation,
@@ -5,7 +6,7 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { prisma } from "../../prisma";
-import { isMemoryCoordinatorErrorCode } from "./errors";
+import { isMemoryCoordinatorErrorCode, MemoryCoordinatorError } from "./errors";
 import { memorySourceJobSnapshotMatches } from "../sourceState";
 import type {
   MemoryDeletionApply,
@@ -18,8 +19,19 @@ import type {
 
 const JOB_CURSOR = "memory-job";
 const DELETION_CURSOR = "memory-delete";
+const JOB_COMMIT_TRANSACTION_ATTEMPTS = 3;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
+
+function rollbackSafeTransactionConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code === "P2034") return true;
+  return error.code === "P2010" &&
+    typeof error.meta === "object" &&
+    error.meta !== null &&
+    "code" in error.meta &&
+    error.meta.code === "40001";
+}
 
 type JobClaimRow = Omit<MemoryJobClaim, "recoveredLease"> & {
   priorState: string;
@@ -108,6 +120,16 @@ export type MemoryCoordinatorRepository = Readonly<{
     now: Date;
     stage: string;
   }): Promise<boolean>;
+  /**
+   * Fail legacy/unknown rows explicitly.  A worker must never leave a row in
+   * a queue merely because its handler is absent from the active manifest.
+   */
+  terminalUnavailableJobs(input: {
+    now: Date;
+    supportedKinds: readonly MemoryJobKind[];
+  }): Promise<number>;
+  /** Read/write capability probe used during worker startup. */
+  preflight(): Promise<void>;
   settleJobGate(input: {
     claim: MemoryJobClaim;
     decision: Exclude<MemoryJobGateDecision, { status: "READY" }>;
@@ -313,48 +335,332 @@ function validDecision(decision: MemoryJobGateDecision): boolean {
   return decision.status === "READY" || isMemoryCoordinatorErrorCode(decision.errorCode);
 }
 
+type ClaimJobTransitionInput = Readonly<{
+  claimToken: string;
+  leaseExpiresAt: Date;
+  now: Date;
+}>;
+
+type HeartbeatJobTransitionInput = Readonly<{
+  claim: MemoryJobClaim;
+  leaseExpiresAt: Date;
+  now: Date;
+}>;
+
+type CommitJobTransitionInput = Readonly<{
+  acceptedResultHash: string;
+  apply?: MemoryJobApply;
+  claim: MemoryJobClaim;
+  now: Date;
+  stage: string | null;
+}>;
+
+async function claimJobFromCandidate(
+  tx: Prisma.TransactionClient,
+  candidateCtes: Prisma.Sql,
+  input: ClaimJobTransitionInput
+): Promise<JobClaimRow | null> {
+  const rows = await tx.$queryRaw<JobClaimRow[]>(Prisma.sql`
+    WITH ${candidateCtes}, claimed AS (
+      UPDATE "MemoryJob" AS job
+      SET
+        "state" = 'CLAIMED'::"MemoryJobState",
+        "attemptCount" = job."attemptCount" + 1,
+        "leaseToken" = ${input.claimToken},
+        "leaseExpiresAt" = ${input.leaseExpiresAt},
+        "nextAttemptAt" = NULL,
+        "errorCode" = NULL,
+        "errorMessage" = NULL,
+        "updatedAt" = ${input.now}
+      FROM candidate
+      WHERE job."id" = candidate."id"
+      RETURNING
+        job."id", job."userId", job."chatId", job."activeLeafMessageId",
+        job."branchGeneration", job."sourceRevision", job."sourceHash",
+        job."kind"::text AS "kind", job."stage", job."attemptCount",
+        job."pipelineVersion", job."memoryGenerationSnapshot",
+        job."memoryRevisionSnapshot", job."idempotencyFingerprint",
+        job."leaseToken" AS "claimToken", job."leaseExpiresAt",
+        candidate."priorState"
+    )
+    SELECT * FROM claimed
+  `);
+  return rows[0] ?? null;
+}
+
+async function advanceJobFairnessCursor(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  now: Date
+): Promise<void> {
+  const advanced = await tx.$executeRaw(Prisma.sql`
+    UPDATE "DocumentProcessingFairnessCursor"
+    SET "lastGrantedOwnerUserId" = ${userId}, "updatedAt" = ${now}
+    WHERE "pipeline" = ${JOB_CURSOR}
+  `);
+  if (advanced !== 1) throw new Error("memory_job_fairness_cursor_lost");
+}
+
+async function heartbeatJobWithAuthority(
+  client: Pick<PrismaClient, "$executeRaw"> | Prisma.TransactionClient,
+  input: HeartbeatJobTransitionInput
+): Promise<boolean> {
+  const updated = await client.$executeRaw(Prisma.sql`
+    UPDATE "MemoryJob" AS job
+    SET "leaseExpiresAt" = ${input.leaseExpiresAt}, "updatedAt" = ${input.now}
+    WHERE job."id" = ${input.claim.id}
+      AND job."userId" = ${input.claim.userId}
+      AND job."state" = 'CLAIMED'::"MemoryJobState"
+      AND job."leaseToken" = ${input.claim.claimToken}
+      AND job."leaseExpiresAt" > ${input.now}
+      AND EXISTS (
+        SELECT 1 FROM "User" AS owner_user
+        WHERE owner_user."id" = job."userId"
+          AND owner_user."status" = 'active'::"UserStatus"
+      )
+  `);
+  return updated === 1;
+}
+
+async function commitJobSuccessWithAuthority(
+  tx: Prisma.TransactionClient,
+  input: CommitJobTransitionInput
+): Promise<boolean> {
+  const sourceMatches = await memorySourceJobSnapshotMatches(
+    tx,
+    input.claim,
+    input.claim.kind === "RECLASSIFY_FACTS"
+      ? { memoryRevisionSnapshot: input.claim.memoryRevisionSnapshot }
+      : undefined
+  );
+  const lease = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id" FROM "MemoryJob"
+    WHERE "id" = ${input.claim.id}
+      AND "userId" = ${input.claim.userId}
+      AND "state" = 'CLAIMED'::"MemoryJobState"
+      AND "leaseToken" = ${input.claim.claimToken}
+      AND "leaseExpiresAt" > ${input.now}
+      AND EXISTS (
+        SELECT 1 FROM "User" AS owner_user
+        WHERE owner_user."id" = "MemoryJob"."userId"
+          AND owner_user."status" = 'active'::"UserStatus"
+      )
+    FOR UPDATE
+  `);
+  if (!lease[0]) return false;
+  if (!sourceMatches) {
+    const staled = await tx.memoryJob.updateMany({
+      data: {
+        completedAt: input.now,
+        errorCode: "memory_source_stale",
+        errorMessage: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        nextAttemptAt: null,
+        state: "STALE",
+        updatedAt: input.now
+      },
+      where: {
+        id: input.claim.id,
+        leaseExpiresAt: { gt: input.now },
+        leaseToken: input.claim.claimToken,
+        state: "CLAIMED",
+        userId: input.claim.userId
+      }
+    });
+    return staled.count === 1;
+  }
+  await input.apply?.(tx, input.claim);
+  const updated = await tx.memoryJob.updateMany({
+    data: {
+      acceptedResultHash: input.acceptedResultHash,
+      completedAt: input.now,
+      errorCode: null,
+      errorMessage: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      stage: input.stage,
+      state: "SUCCEEDED",
+      updatedAt: input.now
+    },
+    where: {
+      id: input.claim.id,
+      leaseExpiresAt: { gt: input.now },
+      leaseToken: input.claim.claimToken,
+      state: "CLAIMED",
+      userId: input.claim.userId
+    }
+  });
+  return updated.count === 1;
+}
+
+type MemoryJobLifecyclePreflightOptions = Readonly<{
+  now?: Date;
+  ownerUserId?: string;
+  probeId?: string;
+}>;
+
+class MemoryJobLifecyclePreflightRollback extends Error {
+  constructor() {
+    super("memory_job_lifecycle_preflight_rollback");
+    this.name = "MemoryJobLifecyclePreflightRollback";
+  }
+}
+
+function preflightSha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Exercise the production claim, fairness, heartbeat, source-fence, and
+ * success-transition authority against a real row. The deliberate exception
+ * rolls the entire transaction back; the final read proves no probe residue
+ * escaped that rollback.
+ */
+export async function preflightPrismaMemoryJobLifecycle(
+  client: PrismaClient,
+  options: MemoryJobLifecyclePreflightOptions = {}
+): Promise<void> {
+  const probeId = options.probeId ?? randomUUID();
+  const admittedAt = options.now ?? new Date();
+  if (!probeId || !Number.isFinite(admittedAt.getTime())) {
+    throw new Error("memory_job_lifecycle_preflight_input_invalid");
+  }
+  const rollback = new MemoryJobLifecyclePreflightRollback();
+  try {
+    await client.$transaction(async (tx) => {
+      const ownerFilter = options.ownerUserId
+        ? Prisma.sql`AND settings."userId" = ${options.ownerUserId}`
+        : Prisma.empty;
+      const owners = await tx.$queryRaw<Array<{
+        memoryGeneration: number;
+        memoryRevision: number;
+        userId: string;
+      }>>(Prisma.sql`
+        SELECT settings."userId", settings."memoryGeneration",
+          settings."memoryRevision"
+        FROM "UserMemorySettings" AS settings
+        INNER JOIN "User" AS owner_user ON owner_user."id" = settings."userId"
+        WHERE owner_user."status" = 'active'::"UserStatus"
+          ${ownerFilter}
+        ORDER BY settings."userId"
+        LIMIT 1
+        FOR SHARE OF owner_user, settings
+      `);
+      const owner = owners[0];
+      if (!owner) throw new Error("memory_job_lifecycle_preflight_owner_missing");
+
+      await tx.memoryJob.create({
+        data: {
+          id: probeId,
+          idempotencyFingerprint: preflightSha256(`fingerprint:${probeId}`),
+          kind: "RECLASSIFY_FACTS",
+          memoryGenerationSnapshot: owner.memoryGeneration,
+          memoryRevisionSnapshot: owner.memoryRevision,
+          pipelineVersion: "memory-coordinator-preflight-v1",
+          userId: owner.userId
+        }
+      });
+      await lockFairnessCursor(tx, JOB_CURSOR);
+      const claimToken = `preflight:${probeId}`;
+      const claimed = await claimJobFromCandidate(
+        tx,
+        Prisma.sql`candidate AS MATERIALIZED (
+          SELECT job."id", job."state"::text AS "priorState"
+          FROM "MemoryJob" AS job
+          WHERE job."id" = ${probeId}
+            AND job."userId" = ${owner.userId}
+            AND job."state" = 'QUEUED'::"MemoryJobState"
+          FOR UPDATE OF job
+        )`,
+        {
+          claimToken,
+          leaseExpiresAt: new Date(admittedAt.getTime() + 60_000),
+          now: admittedAt
+        }
+      );
+      if (!claimed || claimed.priorState !== "QUEUED") {
+        throw new Error("memory_job_lifecycle_preflight_claim_failed");
+      }
+      await advanceJobFairnessCursor(tx, claimed.userId, admittedAt);
+      const { priorState: _priorState, ...claimRecord } = claimed;
+      const claim = { ...claimRecord, recoveredLease: false } as MemoryJobClaim;
+      const heartbeatAt = new Date(admittedAt.getTime() + 1);
+      if (!(await heartbeatJobWithAuthority(tx, {
+        claim,
+        leaseExpiresAt: new Date(admittedAt.getTime() + 120_000),
+        now: heartbeatAt
+      }))) {
+        throw new Error("memory_job_lifecycle_preflight_heartbeat_failed");
+      }
+      if (!(await commitJobSuccessWithAuthority(tx, {
+        acceptedResultHash: preflightSha256(`result:${probeId}`),
+        claim: {
+          ...claim,
+          leaseExpiresAt: new Date(admittedAt.getTime() + 120_000)
+        },
+        now: new Date(admittedAt.getTime() + 2),
+        stage: "preflight_succeeded"
+      }))) {
+        throw new Error("memory_job_lifecycle_preflight_commit_failed");
+      }
+      const settled = await tx.memoryJob.findUnique({
+        select: { acceptedResultHash: true, state: true },
+        where: { id: probeId }
+      });
+      if (!settled || settled.state !== "SUCCEEDED" || !settled.acceptedResultHash) {
+        throw new Error("memory_job_lifecycle_preflight_settlement_invalid");
+      }
+      throw rollback;
+    });
+  } catch (error) {
+    if (error !== rollback) throw error;
+  }
+  if ((await client.memoryJob.count({ where: { id: probeId } })) !== 0) {
+    throw new Error("memory_job_lifecycle_preflight_residue_detected");
+  }
+}
+
+export type MemoryCoordinatorRepositoryOptions = Readonly<{
+  preflightJobLifecycle?: () => Promise<void>;
+}>;
+
 export function createPrismaMemoryCoordinatorRepository(
-  client: PrismaClient = prisma
+  client: PrismaClient = prisma,
+  options: MemoryCoordinatorRepositoryOptions = {}
 ): MemoryCoordinatorRepository {
   return Object.freeze({
+    async preflight() {
+      // Validate the deployed table/enum projections before the rollback-only
+      // lifecycle probe exercises actual production transition authority.
+      await client.$transaction(async (tx) => {
+        await tx.$queryRaw(Prisma.sql`SELECT 1`);
+        await tx.$queryRaw(Prisma.sql`
+          SELECT "id", "kind", "state", "leaseToken", "leaseExpiresAt",
+            "acceptedResultHash"
+          FROM "MemoryJob"
+          LIMIT 0
+        `);
+        await tx.$queryRaw(Prisma.sql`
+          SELECT "id", "operation", "state", "leaseToken", "leaseExpiresAt"
+          FROM "MemoryDeletionOutbox"
+          LIMIT 0
+        `);
+      });
+      await (options.preflightJobLifecycle
+        ? options.preflightJobLifecycle()
+        : preflightPrismaMemoryJobLifecycle(client));
+    },
+
     async claimJob(input) {
       if (input.kinds.length === 0) return null;
       return client.$transaction(async (tx) => {
         const lastOwner = await lockFairnessCursor(tx, JOB_CURSOR);
         const candidateCtes = jobCandidateCtes(input.kinds, input.now, lastOwner);
-        const rows = await tx.$queryRaw<JobClaimRow[]>(Prisma.sql`
-          WITH ${candidateCtes}, claimed AS (
-            UPDATE "MemoryJob" AS job
-            SET
-              "state" = 'CLAIMED'::"MemoryJobState",
-              "attemptCount" = job."attemptCount" + 1,
-              "leaseToken" = ${input.claimToken},
-              "leaseExpiresAt" = ${input.leaseExpiresAt},
-              "nextAttemptAt" = NULL,
-              "errorCode" = NULL,
-              "errorMessage" = NULL,
-              "updatedAt" = ${input.now}
-            FROM candidate
-            WHERE job."id" = candidate."id"
-            RETURNING
-              job."id", job."userId", job."chatId", job."activeLeafMessageId",
-              job."branchGeneration", job."sourceRevision", job."sourceHash",
-              job."kind"::text AS "kind", job."stage", job."attemptCount",
-              job."pipelineVersion", job."memoryGenerationSnapshot",
-              job."memoryRevisionSnapshot", job."idempotencyFingerprint",
-              job."leaseToken" AS "claimToken", job."leaseExpiresAt",
-              candidate."priorState"
-          )
-          SELECT * FROM claimed
-        `);
-        const row = rows[0];
+        const row = await claimJobFromCandidate(tx, candidateCtes, input);
         if (!row) return null;
-        const advanced = await tx.$executeRaw(Prisma.sql`
-          UPDATE "DocumentProcessingFairnessCursor"
-          SET "lastGrantedOwnerUserId" = ${row.userId}, "updatedAt" = ${input.now}
-          WHERE "pipeline" = ${JOB_CURSOR}
-        `);
-        if (advanced !== 1) throw new Error("memory_job_fairness_cursor_lost");
+        await advanceJobFairnessCursor(tx, row.userId, input.now);
         const { priorState, ...claim } = row;
         return {
           ...claim,
@@ -364,21 +670,7 @@ export function createPrismaMemoryCoordinatorRepository(
     },
 
     async heartbeatJob(input) {
-      const updated = await client.$executeRaw(Prisma.sql`
-        UPDATE "MemoryJob" AS job
-        SET "leaseExpiresAt" = ${input.leaseExpiresAt}, "updatedAt" = ${input.now}
-        WHERE job."id" = ${input.claim.id}
-          AND job."userId" = ${input.claim.userId}
-          AND job."state" = 'CLAIMED'::"MemoryJobState"
-          AND job."leaseToken" = ${input.claim.claimToken}
-          AND job."leaseExpiresAt" > ${input.now}
-          AND EXISTS (
-            SELECT 1 FROM "User" AS owner_user
-            WHERE owner_user."id" = job."userId"
-              AND owner_user."status" = 'active'::"UserStatus"
-          )
-      `);
-      return updated === 1;
+      return heartbeatJobWithAuthority(client, input);
     },
 
     async setJobStage(input) {
@@ -466,71 +758,57 @@ export function createPrismaMemoryCoordinatorRepository(
       return updated.count === 1;
     },
 
+    async terminalUnavailableJobs(input) {
+      const unsupportedKinds = input.supportedKinds.length === 0
+        ? Prisma.sql`TRUE`
+        : Prisma.sql`
+          job."kind" NOT IN (${jobKindList(input.supportedKinds)})
+        `;
+      return client.$executeRaw(Prisma.sql`
+        UPDATE "MemoryJob" AS job
+        SET
+          "completedAt" = ${input.now},
+          "errorCode" = 'memory_job_handler_unavailable',
+          "errorMessage" = NULL,
+          "leaseExpiresAt" = NULL,
+          "leaseToken" = NULL,
+          "nextAttemptAt" = NULL,
+          "state" = 'TERMINAL_FAILED'::"MemoryJobState",
+          "updatedAt" = ${input.now}
+        WHERE ${unsupportedKinds}
+          AND (
+            job."state" IN (
+              'QUEUED'::"MemoryJobState",
+              'RETRYABLE_FAILED'::"MemoryJobState",
+              'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
+            )
+            OR (
+              job."state" = 'CLAIMED'::"MemoryJobState"
+              AND (
+                job."leaseExpiresAt" IS NULL
+                OR job."leaseExpiresAt" <= ${input.now}
+              )
+            )
+          )
+      `);
+    },
+
     async commitJobSuccess(input) {
       if (!sha256.test(input.acceptedResultHash) || !validStage(input.stage)) return false;
-      return client.$transaction(async (tx) => {
-        const sourceMatches = await memorySourceJobSnapshotMatches(tx, input.claim);
-        const lease = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT "id" FROM "MemoryJob"
-          WHERE "id" = ${input.claim.id}
-            AND "userId" = ${input.claim.userId}
-            AND "state" = 'CLAIMED'::"MemoryJobState"
-            AND "leaseToken" = ${input.claim.claimToken}
-            AND "leaseExpiresAt" > ${input.now}
-            AND EXISTS (
-              SELECT 1 FROM "User" AS owner_user
-              WHERE owner_user."id" = "MemoryJob"."userId"
-                AND owner_user."status" = 'active'::"UserStatus"
-            )
-          FOR UPDATE
-        `);
-        if (!lease[0]) return false;
-        if (!sourceMatches) {
-          const staled = await tx.memoryJob.updateMany({
-            data: {
-              completedAt: input.now,
-              errorCode: "memory_source_stale",
-              errorMessage: null,
-              leaseExpiresAt: null,
-              leaseToken: null,
-              nextAttemptAt: null,
-              state: "STALE",
-              updatedAt: input.now
-            },
-            where: {
-              id: input.claim.id,
-              leaseExpiresAt: { gt: input.now },
-              leaseToken: input.claim.claimToken,
-              state: "CLAIMED",
-              userId: input.claim.userId
-            }
-          });
-          return staled.count === 1;
+      for (let attempt = 0; attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS; attempt += 1) {
+        try {
+          return await client.$transaction((tx) =>
+            commitJobSuccessWithAuthority(tx, input));
+        } catch (error) {
+          if (
+            attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS - 1 &&
+            rollbackSafeTransactionConflict(error)
+          ) continue;
+          if (error instanceof MemoryCoordinatorError) throw error;
+          throw new MemoryCoordinatorError("memory_job_commit_failed", false);
         }
-        await input.apply?.(tx, input.claim);
-        const updated = await tx.memoryJob.updateMany({
-          data: {
-            acceptedResultHash: input.acceptedResultHash,
-            completedAt: input.now,
-            errorCode: null,
-            errorMessage: null,
-            leaseExpiresAt: null,
-            leaseToken: null,
-            nextAttemptAt: null,
-            stage: input.stage,
-            state: "SUCCEEDED",
-            updatedAt: input.now
-          },
-          where: {
-            id: input.claim.id,
-            leaseExpiresAt: { gt: input.now },
-            leaseToken: input.claim.claimToken,
-            state: "CLAIMED",
-            userId: input.claim.userId
-          }
-        });
-        return updated.count === 1;
-      });
+      }
+      return false;
     },
 
     async requeueDueJobs(input) {

@@ -21,6 +21,32 @@ type ScopeTarget = Readonly<{
   id: string;
 }>;
 
+/** Personal Memory v1 admits only the canonical user-global scope. Legacy
+ * target-scoped rows remain persisted but are dormant for retrieval, indexing,
+ * and provider egress. Every caller aliases MemoryScope as `scope`. */
+export function memoryCanonicalGlobalScopePredicate(): Prisma.Sql {
+  return Prisma.sql`(
+    scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+    AND scope."targetIdSnapshot" IS NULL
+    AND scope."targetDisplaySnapshot" IS NULL
+    AND scope."folderId" IS NULL
+    AND scope."assistantId" IS NULL
+    AND scope."chatId" IS NULL
+  )`;
+}
+
+export function canonicalGlobalMemoryScopeWhere() {
+  return {
+    assistantId: null,
+    chatId: null,
+    folderId: null,
+    scopeType: "GLOBAL_USER" as const,
+    state: "ACTIVE" as const,
+    targetDisplaySnapshot: null,
+    targetIdSnapshot: null
+  };
+}
+
 function activeScope(
   row: Readonly<{
     id: string;
@@ -94,7 +120,15 @@ export async function ensureGlobalMemoryScope(
       targetIdSnapshot: true,
       userId: true
     },
-    where: { scopeType: "GLOBAL_USER", userId: settings.userId }
+    where: {
+      assistantId: null,
+      chatId: null,
+      folderId: null,
+      scopeType: "GLOBAL_USER",
+      targetDisplaySnapshot: null,
+      targetIdSnapshot: null,
+      userId: settings.userId
+    }
   });
   if (existing) {
     if (existing.state !== "ACTIVE") {
@@ -168,12 +202,18 @@ export async function requireActiveOwnedMemoryScope(
   scopeId: string
 ): Promise<ActiveMemoryScope> {
   const [scope] = await tx.$queryRaw<Array<{
+    assistantId: string | null;
+    chatId: string | null;
+    folderId: string | null;
     id: string;
     scopeType: MemoryScopeType;
+    targetDisplaySnapshot: string | null;
     targetIdSnapshot: string | null;
     userId: string;
   }>>(Prisma.sql`
-    SELECT "id", "userId", "scopeType"::text AS "scopeType", "targetIdSnapshot"
+    SELECT
+      "id", "userId", "scopeType"::text AS "scopeType", "targetIdSnapshot",
+      "targetDisplaySnapshot", "folderId", "assistantId", "chatId"
     FROM "MemoryScope"
     WHERE "id" = ${scopeId}
       AND "userId" = ${userId}
@@ -181,7 +221,13 @@ export async function requireActiveOwnedMemoryScope(
     FOR SHARE
   `);
   if (!scope) return memoryPersistenceFailure("memory_scope_unavailable");
-  if (scope.scopeType === "GLOBAL_USER") return activeScope(scope);
+  if (scope.scopeType === "GLOBAL_USER") {
+    if (scope.targetIdSnapshot || scope.targetDisplaySnapshot || scope.folderId ||
+      scope.assistantId || scope.chatId) {
+      return memoryPersistenceFailure("memory_scope_unavailable");
+    }
+    return activeScope(scope);
+  }
   if (!scope.targetIdSnapshot) {
     return memoryPersistenceFailure("memory_scope_unavailable");
   }
@@ -196,10 +242,11 @@ export function createPrismaMemoryScopeRepository(client: PrismaClient = prisma)
   return Object.freeze({
     async ensure(
       userId: string,
-      selection: MemoryScopeSelection
+      selection: MemoryScopeSelection,
+      options: Readonly<{ deadlineAtMs?: number }> = {}
     ): Promise<ActiveMemoryScope> {
       if (selection.type === "GLOBAL_USER") {
-        return withLockedMemoryTransaction(client, userId, ensureGlobalMemoryScope);
+        return withLockedMemoryTransaction(client, userId, ensureGlobalMemoryScope, options);
       }
       return client.$transaction(async (tx) => {
         const target = await requireAvailableTarget(tx, userId, selection, true);

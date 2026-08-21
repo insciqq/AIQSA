@@ -6,6 +6,7 @@ import {
   type MemoryTransaction
 } from "../persistence/transaction";
 import {
+  assertMemoryExecutionBindingLink,
   assertMemoryExecutionBindingLineage,
   loadMemoryExecutionBinding,
   type MemoryExecutionBindingRecord
@@ -21,6 +22,7 @@ import {
   storedMemoryExecutionOwner,
   type MemoryExecutionOwner
 } from "./owner";
+import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
 import { parseMemoryExecutionSnapshot } from "./snapshot";
 
 export const MEMORY_EXECUTION_RECOVERY_HORIZON_MS = 24 * 60 * 60 * 1_000;
@@ -52,6 +54,16 @@ export type MemoryExecutionRecoveryInput = Readonly<{
   errorCode: string | null;
   state: "CANCELLED" | "FAILED" | "SUCCEEDED";
   usage: MemoryReportedUsage;
+}>;
+
+export type MemoryExecutionLinkedResultInput = Readonly<{
+  acceptedOutputHash: string;
+  bindingId: string;
+  sourceBindingId: string;
+}>;
+
+export type MemoryExecutionResultInput = Readonly<{
+  bindingId: string;
 }>;
 
 export type MemoryExecutionSettlementView = Readonly<{
@@ -320,6 +332,83 @@ export async function countBlockingMemoryExecutionBindings(
   return tx.memoryExecutionBinding.count({ where: target });
 }
 
+export type MemoryExecutionCommitEvidence = Readonly<{
+  bindingId: string;
+  modelId: string;
+  owner: MemoryExecutionOwner;
+  policyVersion: string;
+  providerId: string;
+  settings: LockedMemorySettings;
+}>;
+
+/** Reauthorize settled provider results inside an existing authoritative
+ * commit transaction. Job handlers use this form so their source/lease fence,
+ * classifier evidence, and durable output are committed atomically. */
+export async function authorizeMemoryExecutionResultsForCommit(
+  dependencies: MemoryExecutionAuthorityDependencies,
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  userId: string,
+  expected: Readonly<{
+    memoryJobId: string;
+    role: MemoryExecutionRole;
+  }>,
+  inputs: readonly Readonly<{
+    acceptedOutputHash: string;
+    bindingId: string;
+    inputHash?: string;
+  }>[]
+): Promise<readonly MemoryExecutionCommitEvidence[]> {
+  if (
+    !isValidMemoryExecutionIdentifier(userId) ||
+    settings.userId !== userId ||
+    !isValidMemoryExecutionIdentifier(expected.memoryJobId) ||
+    !isMemoryExecutionRole(expected.role) ||
+    inputs.length < 1 || inputs.length > 32 ||
+    new Set(inputs.map(({ bindingId }) => bindingId)).size !== inputs.length ||
+    inputs.some((input) =>
+      !isValidMemoryExecutionIdentifier(input.bindingId) ||
+      !sha256.test(input.acceptedOutputHash) ||
+      (input.inputHash !== undefined && !sha256.test(input.inputHash)))
+  ) {
+    return memoryExecutionFailure("memory_execution_input_invalid");
+  }
+  const now = memoryExecutionNow(dependencies);
+  const evidence: MemoryExecutionCommitEvidence[] = [];
+  for (const input of inputs) {
+    const binding = await loadMemoryExecutionBinding(tx, userId, input.bindingId);
+    const owner = storedMemoryExecutionOwner(binding);
+    if (
+      binding.state !== "SUCCEEDED" ||
+      binding.acceptedOutputHash !== input.acceptedOutputHash ||
+      (input.inputHash !== undefined && binding.inputHash !== input.inputHash) ||
+      binding.relationsDetachedAt ||
+      binding.logicalRole !== expected.role ||
+      owner.type !== "JOB" || owner.memoryJobId !== expected.memoryJobId
+    ) {
+      return memoryExecutionFailure("memory_execution_state_conflict");
+    }
+    const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+    assertMemoryExecutionBindingLineage(binding, snapshot);
+    await assertDurableUsage(tx, binding, usageFromBinding(binding));
+    await reauthorizeStoredMemoryExecution(tx, settings, {
+      dependencies,
+      now,
+      snapshot,
+      userId
+    });
+    evidence.push({
+      bindingId: binding.id,
+      modelId: snapshot.providerExecutionSnapshot.providerModelId,
+      owner,
+      policyVersion: binding.policyVersion,
+      providerId: snapshot.providerExecutionSnapshot.providerFamily,
+      settings
+    });
+  }
+  return evidence;
+}
+
 export function createPrismaMemoryExecutionLifecycle(
   dependencies: MemoryExecutionAuthorityDependencies,
   client: PrismaClient = prisma
@@ -388,6 +477,85 @@ export function createPrismaMemoryExecutionLifecycle(
 
   return Object.freeze({
     settle,
+
+    async assertResultAuthorized(
+      userId: string,
+      input: MemoryExecutionResultInput
+    ): Promise<void> {
+      if (
+        !isValidMemoryExecutionIdentifier(userId) ||
+        !isValidMemoryExecutionIdentifier(input.bindingId)
+      ) {
+        return memoryExecutionFailure("memory_execution_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const now = memoryExecutionNow(dependencies);
+        const binding = await loadMemoryExecutionBinding(tx, userId, input.bindingId);
+        if (
+          binding.state !== "SUCCEEDED" ||
+          binding.acceptedOutputHash === null ||
+          binding.relationsDetachedAt !== null
+        ) {
+          return memoryExecutionFailure("memory_execution_state_conflict");
+        }
+        const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+        assertMemoryExecutionBindingLineage(binding, snapshot);
+        await assertDurableUsage(tx, binding, usageFromBinding(binding));
+        await reauthorizeStoredMemoryExecution(tx, settings, {
+          dependencies,
+          now,
+          snapshot,
+          userId
+        });
+      });
+    },
+
+    async assertLinkedResultAuthorized(
+      userId: string,
+      input: MemoryExecutionLinkedResultInput
+    ): Promise<void> {
+      if (
+        !isValidMemoryExecutionIdentifier(userId) ||
+        !isValidMemoryExecutionIdentifier(input.bindingId) ||
+        !isValidMemoryExecutionIdentifier(input.sourceBindingId) ||
+        !sha256.test(input.acceptedOutputHash)
+      ) {
+        return memoryExecutionFailure("memory_execution_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const now = memoryExecutionNow(dependencies);
+        const binding = await loadMemoryExecutionBinding(tx, userId, input.bindingId);
+        const source = await loadMemoryExecutionBinding(tx, userId, input.sourceBindingId);
+        if (
+          binding.state !== "SUCCEEDED" ||
+          binding.acceptedOutputHash !== input.acceptedOutputHash ||
+          binding.relationsDetachedAt !== null
+        ) {
+          return memoryExecutionFailure("memory_execution_state_conflict");
+        }
+        const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+        const sourceSnapshot = parseMemoryExecutionSnapshot(
+          source.secretFreeExecutionSnapshot
+        );
+        assertMemoryExecutionBindingLineage(binding, snapshot);
+        assertMemoryExecutionBindingLineage(source, sourceSnapshot);
+        assertMemoryExecutionBindingLink(binding, snapshot, source, sourceSnapshot);
+        await assertDurableUsage(tx, binding, usageFromBinding(binding));
+        await assertDurableUsage(tx, source, usageFromBinding(source));
+        await reauthorizeStoredMemoryExecution(tx, settings, {
+          dependencies,
+          now,
+          snapshot,
+          userId
+        });
+        await reauthorizeStoredMemoryExecution(tx, settings, {
+          dependencies,
+          now,
+          snapshot: sourceSnapshot,
+          userId
+        });
+      });
+    },
 
     async recoverOutcome(
       userId: string,
@@ -530,6 +698,71 @@ export function createPrismaMemoryExecutionLifecycle(
           owner: storedMemoryExecutionOwner(binding),
           settings
         });
+      });
+    },
+
+    /** Authorize every independently accounted provider call in the same
+     * transaction that applies their combined classifier result. */
+    async withAuthorizedResultsCommit<Value>(
+      userId: string,
+      inputs: readonly Readonly<{
+        acceptedOutputHash: string;
+        bindingId: string;
+      }>[],
+      apply: (
+        tx: MemoryTransaction,
+        evidence: readonly Readonly<{
+          bindingId: string;
+          owner: MemoryExecutionOwner;
+          settings: LockedMemorySettings;
+        }>[]
+      ) => Promise<Value>
+    ): Promise<Value> {
+      if (
+        !isValidMemoryExecutionIdentifier(userId) ||
+        inputs.length < 1 || inputs.length > 32 ||
+        typeof apply !== "function" ||
+        new Set(inputs.map(({ bindingId }) => bindingId)).size !== inputs.length ||
+        inputs.some((input) =>
+          !isValidMemoryExecutionIdentifier(input.bindingId) ||
+          !sha256.test(input.acceptedOutputHash))
+      ) {
+        return memoryExecutionFailure("memory_execution_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const now = memoryExecutionNow(dependencies);
+        const evidence: Array<Readonly<{
+          bindingId: string;
+          owner: MemoryExecutionOwner;
+          settings: LockedMemorySettings;
+        }>> = [];
+        for (const input of inputs) {
+          const binding = await loadMemoryExecutionBinding(tx, userId, input.bindingId);
+          if (
+            binding.state !== "SUCCEEDED" ||
+            binding.acceptedOutputHash !== input.acceptedOutputHash ||
+            binding.relationsDetachedAt
+          ) {
+            return memoryExecutionFailure("memory_execution_state_conflict");
+          }
+          const snapshot = parseMemoryExecutionSnapshot(
+            binding.secretFreeExecutionSnapshot
+          );
+          assertMemoryExecutionBindingLineage(binding, snapshot);
+          await assertDurableUsage(tx, binding, usageFromBinding(binding));
+          await reauthorizeStoredMemoryExecution(tx, settings, {
+            dependencies,
+            now,
+            snapshot,
+            userId
+          });
+          evidence.push({
+            bindingId: binding.id,
+            owner: storedMemoryExecutionOwner(binding),
+            settings
+          });
+        }
+        return apply(tx, evidence);
       });
     }
   });

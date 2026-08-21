@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   hasUnseenLatestMessageContent,
   isPinnedToBottom,
@@ -241,6 +241,7 @@ describe("usePinnedScroll", () => {
   });
 
   it("anchors a streamed turn at its user message with prior-answer context", async () => {
+    const onReadingAnchorApplied = vi.fn();
     let scrollHeight = 1000;
     let answerHeight = 60;
     const element = scrollElement({
@@ -271,6 +272,7 @@ describe("usePinnedScroll", () => {
       ({ followKey, readingAnchorKey }) =>
         usePinnedScroll<HTMLDivElement>({
           followKey,
+          onReadingAnchorApplied,
           readingAnchorKey,
           resetKey: "chat-1"
         }),
@@ -298,6 +300,8 @@ describe("usePinnedScroll", () => {
     expect(element.scrollTop).toBe(654);
     expect(result.current.isPinned).toBe(false);
     expect(result.current.showJumpToLatest).toBe(false);
+    expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
+    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-1");
 
     answerHeight = 500;
     scrollHeight = 1400;
@@ -310,6 +314,7 @@ describe("usePinnedScroll", () => {
     expect(spacer.style.height).toBe("0px");
     expect(element.scrollTop).toBe(654);
     expect(result.current.showJumpToLatest).toBe(true);
+    expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
 
     act(() => result.current.jumpToLatest());
     await waitForAnimationFrame();

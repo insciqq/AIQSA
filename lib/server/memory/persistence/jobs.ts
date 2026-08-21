@@ -1,4 +1,5 @@
 import type { MemoryJobKind, MemoryJobState } from "@prisma/client";
+import { isMemoryCoordinatorJobKind } from "../coordinator/registry";
 import { memoryPersistenceFailure } from "./errors";
 import {
   type LockedMemorySettings,
@@ -51,6 +52,7 @@ export async function enqueueMemoryJob(
   input: MemoryJobEnqueueInput
 ): Promise<MemoryJobEnqueueResult> {
   if (
+    !isMemoryCoordinatorJobKind(input.kind) ||
     !validToken(input.idempotencyFingerprint, 128) ||
     !validToken(input.pipelineVersion, 64) ||
     !validSource(input.source)

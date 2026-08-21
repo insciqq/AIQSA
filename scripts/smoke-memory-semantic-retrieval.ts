@@ -1,24 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import type { AdminProviderConnection } from "../lib/contracts/adminProviders";
 import {
-  decodeAdminMemoryEgressResponse,
-  type AdminMemoryEgressResponse
+  decodeAdminMemoryStatusResponse,
+  type AdminMemoryStatus
 } from "../lib/contracts/adminMemory";
-import { decodeAdminModelPolicyResponse } from "../lib/contracts/adminModelPolicy";
 import {
-  decodeAdminSystemModelPolicyResponse,
-  type AdminSystemModelPolicyResponse
-} from "../lib/contracts/adminSystemModelPolicy";
+  decodeMemoryConsumerChatModeResponse,
+  decodeMemorySourceActionResponse,
+  type MemoryActionFeedback
+} from "../lib/contracts/memoryClient";
 import {
-  decodeMemoryEvidenceResponse,
-  decodeMemoryListResponse,
-  decodeMemoryRebuildStatus,
-  decodeMemorySettingsResponse,
-  type MemorySettingsResponse,
-  type MemorySummary
-} from "../lib/contracts/memory";
-import { decodeMemoryHealthResponse } from "../lib/contracts/memoryHealth";
+  decodeMemoryConsumerForgetResponse,
+  decodeMemoryConsumerListResponse,
+  decodeMemoryConsumerSettingsResponse,
+  type MemoryConsumerItem,
+  type MemoryConsumerSettingsResponse
+} from "../lib/contracts/memoryConsumer";
 import {
   decodeChatDetailResponse,
   decodeChatSummaryResponse,
@@ -27,40 +24,40 @@ import {
   type WorkspaceChatSummaryWire
 } from "../lib/contracts/chats";
 import { decodeRunOutcomeResponse } from "../lib/contracts/runs";
+import { prisma } from "../lib/server/prisma";
+import { getSecretEncryptionKey } from "../lib/server/secrets/envelope";
+import {
+  MemorySemanticSmokePreflightError,
+  createMemorySemanticSmokeScenarioLedger,
+  createPrismaMemorySemanticSmokeVerifier,
+  preflightPrismaMemorySemanticSmoke,
+  readCgroupResourceLimits,
+  validateMemorySemanticSmokeConsumerPreparation,
+  type MemorySemanticSmokeTarget
+} from "./memory-semantic-smoke-support";
 
 const REQUEST_TIMEOUT_MS = 660_000;
 const POLL_TIMEOUT_MS = 1_200_000;
 const POLL_INTERVAL_MS = 2_000;
+const MAX_REBUILD_ACTIONS = 1;
+const MAX_CHAT_RUNS = 12;
 
 type SmokeStage =
-  | "admin_egress"
   | "answer_recall"
   | "automatic_learning"
   | "bootstrap_auth"
+  | "capability_preflight"
   | "chat_run"
-  | "embedding_rebuild"
   | "history_index"
+  | "memory_readiness"
   | "memory_settings"
-  | "provider_catalog"
-  | "provider_refresh"
-  | "smoke_user_setup"
   | "vector_recall";
-
-type ProviderTarget = Readonly<{
-  connection: AdminProviderConnection;
-  credentialId: string;
-  modelId: string;
-}>;
 
 type SourceRun = Readonly<{
   assistant: ChatMessageWire;
   chat: WorkspaceChatSummaryWire;
+  modelRunId: string;
   userMessage: ChatMessageWire;
-}>;
-
-type LearnedFact = Readonly<{
-  evidenceSourceBound: boolean;
-  summary: MemorySummary;
 }>;
 
 class SmokeFailure extends Error {
@@ -75,8 +72,8 @@ class SmokeFailure extends Error {
   }
 }
 
-function fail(stage: SmokeStage): never {
-  throw new SmokeFailure(stage);
+function fail(stage: SmokeStage, code: string | null = null): never {
+  throw new SmokeFailure(stage, code);
 }
 
 function unquote(value: string): string {
@@ -118,7 +115,7 @@ async function poll<T>(stage: SmokeStage, probe: () => Promise<T | null>): Promi
     if (value !== null) return value;
     await sleep(POLL_INTERVAL_MS);
   }
-  return fail(stage);
+  return fail(stage, "memory_smoke_poll_timeout");
 }
 
 function textFromContent(content: unknown): string {
@@ -133,15 +130,18 @@ function textFromContent(content: unknown): string {
 loadLocalEnv();
 
 const baseUrl = new URL(process.env.AIQSA_SMOKE_BASE_URL ?? "http://127.0.0.1:3000");
-if (!["127.0.0.1", "localhost", "::1"].includes(baseUrl.hostname)) {
-  fail("bootstrap_auth");
+if (!["http:", "https:"].includes(baseUrl.protocol) ||
+  !["127.0.0.1", "localhost", "[::1]"].includes(baseUrl.hostname) ||
+  baseUrl.username || baseUrl.password) {
+  fail("bootstrap_auth", "memory_smoke_loopback_required");
 }
 const bootstrapToken = process.env.AIQSA_BOOTSTRAP_AUTH_TOKEN ?? "";
-if (!bootstrapToken) fail("bootstrap_auth");
+if (!bootstrapToken) fail("bootstrap_auth", "memory_smoke_bootstrap_token_missing");
 
 let sessionCookie = "";
-let adminSessionCookie = "";
 let authenticatedUserId = "";
+let chatRunCount = 0;
+const createdSmokeChats: WorkspaceChatSummaryWire[] = [];
 
 function url(path: string): URL {
   return new URL(path, baseUrl);
@@ -172,7 +172,7 @@ async function requestJson(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     });
   } catch {
-    return fail(stage);
+    return fail(stage, "memory_smoke_request_failed");
   }
   if (!response.ok) {
     const failureBody = await response.json().catch(() => null) as unknown;
@@ -185,7 +185,7 @@ async function requestJson(
   try {
     return await response.json() as unknown;
   } catch {
-    return fail(stage);
+    return fail(stage, "memory_smoke_response_invalid");
   }
 }
 
@@ -200,423 +200,102 @@ async function authenticate(): Promise<void> {
       signal: AbortSignal.timeout(30_000)
     });
   } catch {
-    return fail("bootstrap_auth");
-  }
-  const setCookie = response.headers.get("set-cookie") ?? "";
-  const cookie = setCookie.split(";", 1)[0]?.trim() ?? "";
-  if (!response.ok || !cookie.includes("=")) fail("bootstrap_auth");
-  sessionCookie = cookie;
-  adminSessionCookie = cookie;
-  const body = await response.json().catch(() => null) as unknown;
-  if (!record(body) || !record(body.user) || typeof body.user.id !== "string" ||
-    !body.user.id || body.user.id.length > 256) fail("bootstrap_auth");
-  authenticatedUserId = body.user.id;
-}
-
-function successfulAction(value: unknown): boolean {
-  return record(value) && value.ok === true;
-}
-
-async function provisionSmokeUser(targets: readonly ProviderTarget[]): Promise<void> {
-  const suffix = digest(randomUUID(), String(Date.now())).slice(0, 16);
-  const group = await requestJson("smoke_user_setup", "/api/admin/action", {
-    body: { action: "create_group", name: `Memory smoke ${suffix}` },
-    method: "POST"
-  });
-  if (!record(group) || !record(group.group) || typeof group.group.id !== "string") {
-    fail("smoke_user_setup");
-  }
-  const groupId = group.group.id;
-  const uniqueModels = new Map<string, ProviderTarget>();
-  const credentialsByConnection = new Map<string, string>();
-  for (const target of targets) {
-    uniqueModels.set(`${target.connection.id}:${target.modelId}`, target);
-    const existing = credentialsByConnection.get(target.connection.id);
-    if (existing && existing !== target.credentialId) fail("smoke_user_setup");
-    credentialsByConnection.set(target.connection.id, target.credentialId);
-  }
-  for (const target of uniqueModels.values()) {
-    if (!successfulAction(await requestJson(
-      "smoke_user_setup",
-      "/api/admin/action",
-      {
-        body: {
-          action: "set_group_grant",
-          enabled: true,
-          groupId,
-          modelId: target.modelId,
-          provider: target.connection.id
-        },
-        method: "POST"
-      }
-    ))) {
-      fail("smoke_user_setup");
-    }
-  }
-  for (const [connectionId, credentialId] of credentialsByConnection) {
-    providerCatalog(await requestJson(
-      "smoke_user_setup",
-      `/api/admin/providers/${encodeURIComponent(connectionId)}/actions`,
-      {
-        body: {
-          action: "assign_group_credential",
-          credentialId,
-          groupId
-        },
-        method: "POST"
-      }
-    ));
-  }
-  const password = `Memory-smoke-${randomUUID()}`;
-  const invite = await requestJson("smoke_user_setup", "/api/admin/action", {
-    body: {
-      action: "create_invite",
-      email: `memory-smoke-${suffix}@example.test`,
-      groupIds: [groupId],
-      sendEmail: false
-    },
-    method: "POST"
-  });
-  if (!record(invite) || typeof invite.inviteUrl !== "string") {
-    fail("smoke_user_setup");
-  }
-  let token = "";
-  try {
-    token = new URL(invite.inviteUrl).searchParams.get("invite") ?? "";
-  } catch {
-    fail("smoke_user_setup");
-  }
-  if (!token) fail("smoke_user_setup");
-  let response: Response;
-  try {
-    response = await fetch(url("/api/auth/invite/accept"), {
-      body: JSON.stringify({
-        displayName: `Memory smoke ${suffix}`,
-        password,
-        token
-      }),
-      headers: {
-        "content-type": "application/json",
-        origin: baseUrl.origin
-      },
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(30_000)
-    });
-  } catch {
-    return fail("smoke_user_setup");
+    return fail("bootstrap_auth", "memory_smoke_auth_request_failed");
   }
   const cookie = (response.headers.get("set-cookie") ?? "")
     .split(";", 1)[0]?.trim() ?? "";
-  if (!response.ok || !cookie.includes("=")) fail("smoke_user_setup");
+  if (!response.ok || !cookie.includes("=")) {
+    return fail("bootstrap_auth", "memory_smoke_auth_failed");
+  }
   sessionCookie = cookie;
-}
-
-function providerCatalog(value: unknown): AdminProviderConnection[] {
-  if (!record(value) || !Array.isArray(value.connections)) fail("provider_catalog");
-  return value.connections as AdminProviderConnection[];
-}
-
-function credentialFor(connection: AdminProviderConnection): string | null {
-  const directAssignment = connection.userAssignments?.find((assignment) =>
-    assignment.user.id === authenticatedUserId
-  );
-  const selected = connection.credentials.find((credential) =>
-    credential.id === directAssignment?.credentialId && credential.enabled &&
-    credential.activeVersion?.revokedAt === null
-  ) ?? connection.credentials.find((credential) =>
-    credential.id === connection.defaultCredentialId && credential.enabled &&
-    credential.activeVersion?.revokedAt === null
-  ) ?? connection.credentials.find((credential) =>
-    credential.enabled && credential.activeVersion?.revokedAt === null
-  );
-  return selected?.id ?? null;
-}
-
-function exactAvailable(target: ProviderTarget): boolean {
-  const model = target.connection.models.find((candidate) => candidate.id === target.modelId);
-  const credential = target.connection.credentials.find((candidate) =>
-    candidate.id === target.credentialId
-  );
-  if (!model?.activeConfig || !credential?.activeVersion) return false;
-  return target.connection.activeChecks.some((check) =>
-    check.connectionVersion === target.connection.activeVersion &&
-    check.credentialId === credential.id &&
-    check.credentialVersionId === credential.activeVersion?.id &&
-    check.modelVersion === model.activeVersion &&
-    check.providerModelId === model.id && check.status === "available"
-  );
-}
-
-function targetFor(
-  connections: readonly AdminProviderConnection[],
-  connectionId: string,
-  modelId: string
-): ProviderTarget {
-  const connection = connections.find((candidate) => candidate.id === connectionId);
-  const credentialId = connection ? credentialFor(connection) : null;
-  const model = connection?.models.find((candidate) => candidate.id === modelId);
-  if (!connection?.enabled || !connection.activeConfig || !credentialId || !model?.enabled ||
-    !model.activeConfig) fail("provider_catalog");
-  return { connection, credentialId, modelId };
-}
-
-function embeddingTarget(connections: readonly AdminProviderConnection[]): ProviderTarget {
-  const candidates = connections.flatMap((connection) => {
-    const credentialId = credentialFor(connection);
-    if (!connection.enabled || !connection.activeConfig || !credentialId) return [];
-    return connection.models.flatMap((model) => {
-      if (!model.enabled || !model.activeConfig ||
-        model.activeConfig.adapterKind !== "openai_embeddings_compatible" ||
-        (model.modelClass ?? model.activeConfig.modelClass) !== "embedding" ||
-        !model.activeConfig.embedding) return [];
-      return [{
-        connection,
-        credentialId,
-        modelId: model.id,
-        preferred: model.activeConfig.embedding.providerFamily === "openrouter" ? 1 : 0
-      }];
-    });
-  }).sort((left, right) => right.preferred - left.preferred);
-  const selected = candidates[0];
-  if (!selected) return fail("provider_catalog");
-  return selected;
-}
-
-function preferredNativeSystemTarget(
-  connections: readonly AdminProviderConnection[],
-  policy: AdminSystemModelPolicyResponse
-): ProviderTarget {
-  const candidates = policy.systemModelPolicy.candidates.flatMap((candidate) => {
-    const connection = connections.find((entry) => entry.id === candidate.connectionId);
-    const model = connection?.models.find((entry) => entry.id === candidate.id);
-    if (model?.activeConfig?.adapterKind !== "openai_responses_native") return [];
-    return [{
-      candidate,
-      preferred: /luna/iu.test(`${candidate.displayName} ${model.activeConfig.upstreamModelId}`)
-        ? 1
-        : 0
-    }];
-  }).sort((left, right) => right.preferred - left.preferred);
-  const selected = candidates[0]?.candidate;
-  if (!selected) fail("provider_catalog");
-  return targetFor(connections, selected.connectionId, selected.id);
-}
-
-async function setSystemPolicy(
-  expectedVersion: number,
-  providerModelId: string | null,
-  reasoningEffort: string | null
-): Promise<AdminSystemModelPolicyResponse> {
-  const callerCookie = sessionCookie;
-  sessionCookie = adminSessionCookie;
-  try {
-    return decodeAdminSystemModelPolicyResponse(await requestJson(
-      "provider_catalog",
-      "/api/admin/providers/system-model-policy",
-      {
-        body: { expectedVersion, providerModelId, reasoningEffort },
-        method: "PATCH"
-      }
-    )) ?? fail("provider_catalog");
-  } finally {
-    sessionCookie = callerCookie;
+  const body = await response.json().catch(() => null) as unknown;
+  if (!record(body) || !record(body.user) || typeof body.user.id !== "string" ||
+    !body.user.id || body.user.id.length > 256) {
+    return fail("bootstrap_auth", "memory_smoke_auth_response_invalid");
   }
+  authenticatedUserId = body.user.id;
 }
 
-async function setDefaultCredential(
-  connectionId: string,
-  credentialId: string | null
-): Promise<void> {
-  const callerCookie = sessionCookie;
-  sessionCookie = adminSessionCookie;
-  try {
-    const catalog = providerCatalog(await requestJson(
-      "provider_catalog",
-      `/api/admin/providers/${encodeURIComponent(connectionId)}/actions`,
-      {
-        body: { action: "set_default_credential", credentialId },
-        method: "POST"
-      }
-    ));
-    if (catalog.find((connection) => connection.id === connectionId)
-      ?.defaultCredentialId !== credentialId) {
-      fail("provider_catalog");
-    }
-  } finally {
-    sessionCookie = callerCookie;
-  }
+function decodeConsumerSettings(value: unknown): MemoryConsumerSettingsResponse {
+  const decoded = decodeMemoryConsumerSettingsResponse(value);
+  return decoded.ok ? decoded.value : fail("memory_settings", decoded.code);
 }
 
-async function restoreSystemPolicy(
-  previous: AdminSystemModelPolicyResponse["systemModelPolicy"]["policy"],
-  temporaryModelId: string
-): Promise<void> {
-  const callerCookie = sessionCookie;
-  sessionCookie = adminSessionCookie;
-  try {
-    const current = decodeAdminSystemModelPolicyResponse(await requestJson(
-      "provider_catalog",
-      "/api/admin/providers/system-model-policy"
-    )) ?? fail("provider_catalog");
-    if (current.systemModelPolicy.policy.systemModel?.id !== temporaryModelId) {
-      fail("provider_catalog");
-    }
-    sessionCookie = callerCookie;
-    await setSystemPolicy(current.systemModelPolicy.policy.version,
-      previous.systemModel?.id ?? null, previous.reasoningEffort);
-  } finally {
-    sessionCookie = callerCookie;
-  }
-}
-
-async function refreshTarget(target: ProviderTarget): Promise<AdminProviderConnection[]> {
-  return providerCatalog(await requestJson(
-    "provider_refresh",
-    `/api/admin/providers/${encodeURIComponent(target.connection.id)}/actions`,
-    {
-      body: {
-        action: "refresh_active",
-        confirmPaidRequest: true,
-        credentialId: target.credentialId,
-        providerModelId: target.modelId
-      },
-      method: "POST"
-    }
-  ));
-}
-
-async function availableTarget(
-  connections: AdminProviderConnection[],
-  target: ProviderTarget
-): Promise<Readonly<{ connections: AdminProviderConnection[]; target: ProviderTarget }>> {
-  if (!exactAvailable(target)) connections = await refreshTarget(target);
-  const refreshed = targetFor(connections, target.connection.id, target.modelId);
-  if (!exactAvailable(refreshed)) fail("provider_refresh");
-  return { connections, target: refreshed };
-}
-
-function decodeSettings(value: unknown): MemorySettingsResponse {
-  const decoded = decodeMemorySettingsResponse(value);
-  if (!decoded.ok) return fail("memory_settings");
-  return decoded.value;
-}
-
-async function configureMemory(embedding: ProviderTarget): Promise<MemorySettingsResponse> {
-  let settings = decodeSettings(await requestJson(
+async function consumerSettings(): Promise<MemoryConsumerSettingsResponse> {
+  return decodeConsumerSettings(await requestJson(
     "memory_settings",
     "/api/me/memory/settings"
   ));
-  const needsPatch = !settings.settings.learnAutomatically ||
-    !settings.settings.referenceChatHistory || !settings.settings.useMemoryFacts ||
-    settings.settings.embeddingDeployment?.id !== embedding.modelId;
-  if (needsPatch) {
-    settings = decodeSettings(await requestJson(
-      "memory_settings",
-      "/api/me/memory/settings",
-      {
-        body: {
-          embeddingDeploymentId: embedding.modelId,
-          expectedMemoryRevision: settings.settings.memoryRevision,
-          expectedSettingsRevision: settings.settings.settingsRevision,
-          learnAutomatically: true,
-          referenceChatHistory: true,
-          useMemoryFacts: true
-        },
-        method: "PATCH"
-      }
-    ));
-  }
-  if (!settings.settings.learnAutomatically || !settings.settings.referenceChatHistory ||
-    !settings.settings.useMemoryFacts ||
-    settings.settings.embeddingDeployment?.id !== embedding.modelId) {
-    fail("memory_settings");
-  }
-  return settings;
 }
 
-async function setAutomaticLearning(enabled: boolean): Promise<MemorySettingsResponse> {
-  let settings = decodeSettings(await requestJson(
-    "memory_settings",
-    "/api/me/memory/settings"
+function requireConsumerPreparation(settings: MemoryConsumerSettingsResponse): boolean {
+  const prepared = validateMemorySemanticSmokeConsumerPreparation(settings);
+  return prepared.ok
+    ? prepared.retrievalReady
+    : fail("capability_preflight", prepared.code);
+}
+
+function assertConsumerSettingsReady(settings: MemoryConsumerSettingsResponse): void {
+  if (!requireConsumerPreparation(settings)) {
+    fail("capability_preflight", "memory_smoke_consumer_capability_unavailable");
+  }
+}
+
+async function adminMemoryStatus(stage: SmokeStage): Promise<AdminMemoryStatus> {
+  const decoded = decodeAdminMemoryStatusResponse(await requestJson(
+    stage,
+    "/api/admin/memory"
   ));
-  if (settings.settings.learnAutomatically === enabled) return settings;
-  settings = decodeSettings(await requestJson(
-    "memory_settings",
-    "/api/me/memory/settings",
-    {
-      body: {
-        expectedMemoryRevision: settings.settings.memoryRevision,
-        expectedSettingsRevision: settings.settings.settingsRevision,
-        learnAutomatically: enabled
-      },
-      method: "PATCH"
+  return decoded?.memory ?? fail(stage, "memory_smoke_admin_status_invalid");
+}
+
+async function ensureAdminMemoryReady(
+  initialStatus: AdminMemoryStatus,
+  initialSettings: MemoryConsumerSettingsResponse
+): Promise<number> {
+  let currentSettings = initialSettings;
+  let currentStatus = initialStatus;
+  let rebuildActions = 0;
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (currentStatus.worker.state !== "RUNNING") {
+      fail("memory_readiness", "memory_smoke_worker_not_running");
     }
-  ));
-  if (settings.settings.learnAutomatically !== enabled) fail("memory_settings");
-  return settings;
-}
-
-function decodeAdminEgress(value: unknown): AdminMemoryEgressResponse {
-  return decodeAdminMemoryEgressResponse(value) ?? fail("admin_egress");
-}
-
-async function acknowledgeAdminEgress(): Promise<void> {
-  const userCookie = sessionCookie;
-  sessionCookie = adminSessionCookie;
-  try {
-    let state = decodeAdminEgress(await requestJson("admin_egress", "/api/admin/memory"));
-    if (state.memoryEgress.reviewRequired) {
-      state = decodeAdminEgress(await requestJson("admin_egress", "/api/admin/memory", {
-        body: {
-          currentFingerprint: state.memoryEgress.currentFingerprint,
-          expectedVersion: state.memoryEgress.version
-        },
-        method: "PATCH"
-      }));
+    // Administrator status is installation-wide. A different owner's pending
+    // preparation must not hold a ready authenticated smoke owner hostage.
+    if (requireConsumerPreparation(currentSettings)) return rebuildActions;
+    if (currentStatus.index.readiness === "READY") {
+      assertConsumerSettingsReady(await consumerSettings());
+      return rebuildActions;
     }
-    if (state.memoryEgress.reviewRequired) fail("admin_egress");
-  } finally {
-    sessionCookie = userCookie;
-  }
-}
-
-async function rebuildEmbedding(settings: MemorySettingsResponse, embeddingId: string): Promise<void> {
-  const resumedJobId = process.env.AIQSA_SMOKE_REBUILD_JOB_ID?.trim() ?? "";
-  if (resumedJobId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
-    resumedJobId
-  )) {
-    fail("embedding_rebuild");
-  }
-  let jobId = resumedJobId;
-  if (!jobId) {
-    const started = decodeMemoryRebuildStatus(await requestJson(
-      "embedding_rebuild",
-      "/api/me/memory/rebuild",
-      {
-        body: {
-          embeddingDeploymentId: embeddingId,
-          expectedMemoryRevision: settings.settings.memoryRevision,
-          expectedSettingsRevision: settings.settings.settingsRevision,
-          operation: "REEMBED"
-        },
-        method: "POST"
+    if (currentStatus.index.readiness === "NOT_CONFIGURED") {
+      fail("memory_readiness", "memory_smoke_index_not_configured");
+    }
+    if (currentStatus.index.readiness === "REBUILD_REQUIRED") {
+      if (currentStatus.rebuild.state !== "AVAILABLE") {
+        fail("memory_readiness", "memory_smoke_rebuild_unavailable");
       }
-    ));
-    if (!started.ok) fail("embedding_rebuild");
-    jobId = started.value.jobId;
-  }
-  await poll("embedding_rebuild", async () => {
-    const current = decodeMemoryRebuildStatus(await requestJson(
-      "embedding_rebuild",
-      `/api/me/memory/rebuild/${encodeURIComponent(jobId)}`
-    ));
-    if (!current.ok || current.value.state === "FAILED" ||
-      current.value.state === "CANCELLED" || current.value.state === "STALE") {
-      fail("embedding_rebuild");
+      if (rebuildActions >= MAX_REBUILD_ACTIONS) {
+        fail("memory_readiness", "memory_smoke_rebuild_bound_exhausted");
+      }
+      const decoded = decodeAdminMemoryStatusResponse(await requestJson(
+        "memory_readiness",
+        "/api/admin/memory",
+        { body: { action: "REBUILD_REQUIRED" }, method: "POST" }
+      ));
+      currentStatus = decoded?.memory ?? fail(
+        "memory_readiness",
+        "memory_smoke_admin_status_invalid"
+      );
+      rebuildActions += 1;
     }
-    return current.value.state === "SUCCEEDED" ? true : null;
-  });
+    await sleep(POLL_INTERVAL_MS);
+    [currentSettings, currentStatus] = await Promise.all([
+      consumerSettings(),
+      adminMemoryStatus("memory_readiness")
+    ]);
+  }
+  return fail("memory_readiness", "memory_smoke_poll_timeout");
 }
 
 async function createChat(title: string): Promise<WorkspaceChatSummaryWire> {
@@ -624,19 +303,19 @@ async function createChat(title: string): Promise<WorkspaceChatSummaryWire> {
     body: { title },
     method: "POST"
   }));
-  return decoded ?? fail("chat_run");
+  return decoded ?? fail("chat_run", "memory_smoke_chat_response_invalid");
 }
 
 async function drain(response: Response, stage: SmokeStage): Promise<void> {
-  if (!response.ok || !response.body) fail(stage);
+  if (!response.ok || !response.body) fail(stage, `http_${response.status}`);
   try {
     const reader = response.body.getReader();
     while (!(await reader.read()).done) {
-      // The production stream is intentionally consumed without materializing
-      // provider text or emitting it into smoke output.
+      // Consume the production stream without materializing provider text in
+      // logs or the aggregate smoke report.
     }
   } catch {
-    fail(stage);
+    fail(stage, "memory_smoke_stream_failed");
   }
 }
 
@@ -644,7 +323,7 @@ async function sendMessage(
   stage: SmokeStage,
   chat: WorkspaceChatSummaryWire,
   text: string,
-  answer: ProviderTarget
+  answer: MemorySemanticSmokeTarget
 ): Promise<void> {
   let response: Response;
   try {
@@ -653,7 +332,7 @@ async function sendMessage(
         content: { blocks: [{ text, type: "text" }] },
         expectedActiveLeafId: chat.activeLeafMessageId,
         modelId: answer.modelId,
-        provider: answer.connection.id,
+        provider: answer.connectionId,
         searchPlan: { mode: "all_selected", optionIds: [] },
         searchStrategy: "search-disabled",
         timeZone: "Europe/Moscow"
@@ -665,7 +344,7 @@ async function sendMessage(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     });
   } catch {
-    return fail(stage);
+    return fail(stage, "memory_smoke_request_failed");
   }
   if (!response.ok) {
     const failureBody = await response.json().catch(() => null) as unknown;
@@ -682,17 +361,22 @@ async function loadChat(chatId: string): Promise<ChatDetailWire> {
   return decodeChatDetailResponse(await requestJson(
     "chat_run",
     `/api/chats/${encodeURIComponent(chatId)}`
-  )) ?? fail("chat_run");
+  )) ?? fail("chat_run", "memory_smoke_chat_response_invalid");
 }
 
 async function sourceRun(
   title: string,
   messageText: string,
-  answer: ProviderTarget
+  answer: MemorySemanticSmokeTarget
 ): Promise<SourceRun> {
+  if (chatRunCount >= MAX_CHAT_RUNS) {
+    fail("chat_run", "memory_smoke_run_bound_exhausted");
+  }
+  chatRunCount += 1;
   const chat = await createChat(title);
+  createdSmokeChats.push(chat);
   await sendMessage("chat_run", chat, messageText, answer);
-  const detail = await poll("chat_run", async () => {
+  const settled = await poll("chat_run", async () => {
     const current = await loadChat(chat.id);
     const userMessage = [...current.messages].reverse().find((message) =>
       message.role === "user" && textFromContent(message.content) === messageText
@@ -703,250 +387,566 @@ async function sourceRun(
     );
     if (!userMessage || !assistant || assistant.status === "queued" ||
       assistant.status === "streaming") return null;
-    if (assistant.status !== "complete" || !assistant.modelRunId) fail("chat_run");
-    return { assistant, current, userMessage };
+    if (assistant.status !== "complete" || !assistant.modelRunId) {
+      fail("chat_run", "memory_smoke_run_not_complete");
+    }
+    return { assistant, userMessage };
   });
   const outcome = decodeRunOutcomeResponse(await requestJson(
     "chat_run",
-    `/api/model-runs/${encodeURIComponent(detail.assistant.modelRunId!)}`
+    `/api/model-runs/${encodeURIComponent(settled.assistant.modelRunId!)}`
   ));
-  if (!outcome || outcome.status !== "complete") fail("chat_run");
-  return { assistant: detail.assistant, chat, userMessage: detail.userMessage };
+  if (!outcome || outcome.status !== "complete") {
+    fail("chat_run", "memory_smoke_run_outcome_invalid");
+  }
+  return {
+    assistant: settled.assistant,
+    chat,
+    modelRunId: settled.assistant.modelRunId!,
+    userMessage: settled.userMessage
+  };
 }
 
-async function allAutomaticMemories(): Promise<MemorySummary[]> {
-  const memories: MemorySummary[] = [];
+async function allConsumerMemories(): Promise<MemoryConsumerItem[]> {
+  const items: MemoryConsumerItem[] = [];
   let cursor: string | null = null;
   do {
-    const query = new URLSearchParams({ pageSize: "20", sourceMode: "AUTOMATIC", state: "ACTIVE" });
+    const query = new URLSearchParams({ pageSize: "20" });
     if (cursor) query.set("cursor", cursor);
-    const decoded = decodeMemoryListResponse(await requestJson(
+    const decoded = decodeMemoryConsumerListResponse(await requestJson(
       "automatic_learning",
       `/api/me/memories?${query.toString()}`
     ));
-    if (!decoded.ok) fail("automatic_learning");
-    memories.push(...decoded.value.memories);
+    if (!decoded.ok) fail("automatic_learning", decoded.code);
+    items.push(...decoded.value.items);
     cursor = decoded.value.nextCursor;
-  } while (cursor && memories.length < 1_000);
-  return memories;
+  } while (cursor && items.length < 1_000);
+  return items;
 }
 
-async function sourceEvidence(
-  summary: MemorySummary,
-  chatId: string,
-  messageId: string
-): Promise<boolean> {
-  let cursor: string | null = null;
-  do {
-    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
-    const decoded = decodeMemoryEvidenceResponse(await requestJson(
-      "automatic_learning",
-      `/api/me/memories/${encodeURIComponent(summary.id)}/evidence${suffix}`
-    ));
-    if (!decoded.ok) fail("automatic_learning");
-    if (decoded.value.evidence.some((item) =>
-      item.sourceType === "MESSAGE" && item.sourceChatId === chatId &&
-      item.sourceMessageId === messageId && item.sourceRole?.toUpperCase() === "USER"
-    )) return true;
-    cursor = decoded.value.nextCursor;
-  } while (cursor);
-  return false;
-}
-
-async function waitForLearnedFact(source: SourceRun, notBefore: number): Promise<LearnedFact> {
-  return poll("automatic_learning", async () => {
-    const candidates = (await allAutomaticMemories()).filter((summary) =>
-      summary.currentVersionId !== null && Date.parse(summary.updatedAt) >= notBefore - 60_000
-    );
-    for (const summary of candidates) {
-      if (await sourceEvidence(summary, source.chat.id, source.userMessage.id)) {
-        return { evidenceSourceBound: true, summary };
-      }
-    }
-    return null;
-  });
-}
-
-async function waitForHistoryReady(): Promise<void> {
-  await poll("history_index", async () => {
-    const settings = decodeSettings(await requestJson(
-      "history_index",
-      "/api/me/memory/settings"
-    ));
-    return settings.historyIndexing.state === "READY" ? true : null;
-  });
-  const health = decodeMemoryHealthResponse(await requestJson(
-    "history_index",
-    "/api/me/memory/health"
+async function searchConsumerMemories(queryText: string): Promise<MemoryConsumerItem[]> {
+  const decoded = decodeMemoryConsumerListResponse(await requestJson(
+    "automatic_learning",
+    "/api/me/memories/search",
+    { body: { pageSize: 20, query: queryText }, method: "POST" }
   ));
-  if (!health || !["READY", "FTS_ONLY"].includes(health.health.indexing.state)) {
-    fail("history_index");
+  if (!decoded.ok) fail("automatic_learning", decoded.code);
+  return decoded.value.items;
+}
+
+async function forgetConsumerMemory(memoryRef: string): Promise<void> {
+  const decoded = decodeMemoryConsumerForgetResponse(await requestJson(
+    "automatic_learning",
+    `/api/me/memories/${encodeURIComponent(memoryRef)}/forget`,
+    { body: { requestId: randomUUID() }, method: "POST" }
+  ));
+  if (!decoded.ok || decoded.value.status !== "FORGOTTEN") {
+    fail("automatic_learning", decoded.ok ? "memory_smoke_forget_failed" : decoded.code);
   }
+}
+
+async function excludeChatFromMemory(chatId: string): Promise<void> {
+  const decoded = decodeMemoryConsumerChatModeResponse(await requestJson(
+    "automatic_learning",
+    `/api/me/chats/${encodeURIComponent(chatId)}/memory-mode`,
+    { body: { mode: "EXCLUDED" }, method: "PATCH" }
+  ));
+  if (!decoded.ok || decoded.value.mode !== "EXCLUDED") {
+    fail("automatic_learning", decoded.ok
+      ? "memory_smoke_cleanup_failed"
+      : decoded.code);
+  }
+}
+
+async function commitMemoryTargetSelection(input: Readonly<{
+  action: "CORRECT" | "FORGET";
+  memoryRef: string;
+  statement?: string;
+}>): Promise<void> {
+  const decoded = decodeMemorySourceActionResponse(await requestJson(
+    "automatic_learning",
+    "/api/me/memory/source-actions",
+    {
+      body: {
+        action: input.action,
+        memoryRef: input.memoryRef,
+        requestNonce: randomUUID(),
+        ...(input.action === "CORRECT" ? { statement: input.statement } : {})
+      },
+      method: "POST"
+    }
+  ));
+  if (!decoded.ok || decoded.value.status !== "COMMITTED") {
+    fail("automatic_learning", decoded.ok
+      ? "memory_smoke_target_selection_failed"
+      : decoded.code);
+  }
+}
+
+const verifier = createPrismaMemorySemanticSmokeVerifier(prisma);
+
+async function waitForLearnedFact(source: SourceRun, notBefore: Date): Promise<void> {
+  await poll("automatic_learning", async () => {
+    const count = await verifier.currentAutomaticFactCount({
+      chatId: source.chat.id,
+      messageId: source.userMessage.id,
+      notBefore,
+      userId: authenticatedUserId
+    });
+    if (count < 1) return null;
+    const recentProjection = (await allConsumerMemories()).some((item) =>
+      item.provenance === "LEARNED" &&
+      Date.parse(item.updatedAt) >= notBefore.getTime() - 60_000
+    );
+    return recentProjection ? true : null;
+  });
+}
+
+async function waitForIndexedHistorySource(source: SourceRun): Promise<void> {
+  await poll("history_index", async () => {
+    const [settings, status] = await Promise.all([
+      consumerSettings(),
+      adminMemoryStatus("history_index")
+    ]);
+    if (status.worker.state !== "RUNNING") {
+      fail("history_index", "memory_smoke_worker_not_running");
+    }
+    if (!requireConsumerPreparation(settings)) {
+      if (status.index.readiness === "REBUILD_REQUIRED" ||
+        status.index.readiness === "NOT_CONFIGURED") {
+        fail("history_index", "memory_smoke_history_rebuild_required");
+      }
+      return null;
+    }
+    const count = await verifier.indexedHistorySourceCount({
+      chatId: source.chat.id,
+      messageId: source.userMessage.id,
+      userId: authenticatedUserId
+    });
+    return count > 0 ? true : null;
+  });
+}
+
+async function waitForConservativeExtraction(source: SourceRun, notBefore: Date): Promise<void> {
+  await poll("automatic_learning", async () => {
+    const jobs = await verifier.sourceJobStateCounts({
+      chatId: source.chat.id,
+      userId: authenticatedUserId
+    });
+    if (jobs.unsuccessfulTerminal > 0) {
+      fail("automatic_learning", "memory_smoke_source_job_failed");
+    }
+    if (jobs.total < 1 || jobs.active > 0) return null;
+    const strictExtractions = await verifier.successfulSourceExecutionCount({
+      chatId: source.chat.id,
+      role: "MEMORY_FACT_EXTRACT",
+      userId: authenticatedUserId
+    });
+    if (strictExtractions < 1) return null;
+    const acceptedFacts = await verifier.sourceBackedFactVersionCount({
+      chatId: source.chat.id,
+      messageId: source.userMessage.id,
+      notBefore,
+      userId: authenticatedUserId
+    });
+    if (acceptedFacts > 0) {
+      fail("automatic_learning", "memory_smoke_conservative_extraction_failed");
+    }
+    return true;
+  });
+}
+
+async function waitForNoAutomaticFact(source: SourceRun, notBefore: Date): Promise<void> {
+  await poll("automatic_learning", async () => {
+    const jobs = await verifier.sourceJobStateCounts({
+      chatId: source.chat.id,
+      userId: authenticatedUserId
+    });
+    if (jobs.unsuccessfulTerminal > 0) {
+      fail("automatic_learning", "memory_smoke_source_job_failed");
+    }
+    if (jobs.total < 1 || jobs.active > 0) return null;
+    const facts = await verifier.sourceBackedFactVersionCount({
+      chatId: source.chat.id,
+      messageId: source.userMessage.id,
+      notBefore,
+      userId: authenticatedUserId
+    });
+    return facts === 0 ? true : fail(
+      "automatic_learning",
+      "memory_smoke_secret_persisted"
+    );
+  });
+}
+
+function memoryAction(source: SourceRun): MemoryActionFeedback {
+  return source.assistant.artifactSummary?.memoryAction ??
+    fail("answer_recall", "memory_smoke_action_feedback_missing");
+}
+
+function requiredMemoryAction(
+  source: SourceRun,
+  operation: "FORGET" | "SAVE" | "UPDATE",
+  status: "AMBIGUOUS" | "COMMITTED"
+): MemoryActionFeedback {
+  const action = memoryAction(source);
+  if (action.operation !== operation || action.status !== status) {
+    fail("answer_recall", "memory_smoke_action_result_invalid");
+  }
+  return action;
+}
+
+async function assertStrictControlSucceeded(source: SourceRun): Promise<void> {
+  const count = await verifier.successfulRetrievalExecutionCount({
+    modelRunId: source.modelRunId,
+    role: "MEMORY_CONTROL",
+    userId: authenticatedUserId
+  });
+  if (count < 1) fail("answer_recall", "memory_smoke_strict_control_missing");
+}
+
+async function waitForAmbiguityTargets(marker: string): Promise<MemoryConsumerItem[]> {
+  return poll("automatic_learning", async () => {
+    const candidates = (await searchConsumerMemories(`${marker} reporting format`))
+      .filter((item) => item.provenance === "SAVED" && item.statement.includes(marker));
+    return candidates.length >= 2 ? candidates : null;
+  });
+}
+
+async function cleanupSmokeState(
+  marker: string,
+  explicitStatements: ReadonlySet<string>
+): Promise<number> {
+  for (const chat of createdSmokeChats) await excludeChatFromMemory(chat.id);
+
+  const items = await allConsumerMemories();
+  const owned = items.filter((item) =>
+    item.statement.includes(marker) || explicitStatements.has(item.statement)
+  );
+  if (owned.length > 20) fail("automatic_learning", "memory_smoke_cleanup_bound_exhausted");
+  for (const item of owned) await forgetConsumerMemory(item.memoryRef);
+
+  const remaining = (await allConsumerMemories()).some((item) =>
+    item.statement.includes(marker) || explicitStatements.has(item.statement)
+  );
+  if (remaining) fail("automatic_learning", "memory_smoke_cleanup_failed");
+  return owned.length;
+}
+
+function cgroupResourceLimits() {
+  return readCgroupResourceLimits((path) => {
+    try {
+      return readFileSync(path, "utf8").slice(0, 128);
+    } catch {
+      return null;
+    }
+  });
 }
 
 async function main(): Promise<void> {
   await authenticate();
-  let connections = providerCatalog(await requestJson(
-    "provider_catalog",
-    "/api/admin/providers"
-  ));
-  const modelPolicy = decodeAdminModelPolicyResponse(await requestJson(
-    "provider_catalog",
-    "/api/admin/providers/model-policy"
-  ));
-  const systemPolicy = decodeAdminSystemModelPolicyResponse(await requestJson(
-    "provider_catalog",
-    "/api/admin/providers/system-model-policy"
-  ));
-  const answerPolicy = modelPolicy?.modelPolicy.policy.defaultModel;
-  const systemModel = systemPolicy?.systemModelPolicy.policy.systemModel;
-  if (!answerPolicy || !systemPolicy || !systemModel) fail("provider_catalog");
 
-  let answer = targetFor(connections, answerPolicy.connectionId, answerPolicy.id);
-  ({ connections, target: answer } = await availableTarget(connections, answer));
-  let configuredSystem = targetFor(connections, systemModel.connectionId, systemModel.id);
-  ({ connections, target: configuredSystem } = await availableTarget(
-    connections,
-    configuredSystem
-  ));
-  let system = preferredNativeSystemTarget(connections, systemPolicy);
-  ({ connections, target: system } = await availableTarget(connections, system));
-  const previousSystemPolicy = systemPolicy.systemModelPolicy.policy;
-  const systemPolicyChangeRequired = system.modelId !== configuredSystem.modelId;
-  const previousSystemDefaultCredential = system.connection.defaultCredentialId;
-  const defaultCredentialChangeRequired =
-    previousSystemDefaultCredential !== system.credentialId;
-  // The checked System deployment is the semantic authority for extraction,
-  // relevance, and the bounded smoke answers.
-  answer = system;
-  let embedding = embeddingTarget(connections);
-  ({ connections, target: embedding } = await availableTarget(connections, embedding));
-  void connections;
-
-  let report: Record<string, unknown> | null = null;
-  let systemPolicyChanged = false;
+  // Every call through this point is read-only after authentication. Missing
+  // production bindings therefore fail before a chat or rebuild is admitted.
+  const [settings, initialStatus] = await Promise.all([
+    consumerSettings(),
+    adminMemoryStatus("capability_preflight")
+  ]);
+  requireConsumerPreparation(settings);
+  let encryptionKey: Buffer;
   try {
-    if (defaultCredentialChangeRequired) {
-      await setDefaultCredential(system.connection.id, system.credentialId);
+    encryptionKey = getSecretEncryptionKey();
+  } catch {
+    return fail("capability_preflight", "memory_smoke_credential_unreadable");
+  }
+  let answer: MemorySemanticSmokeTarget;
+  try {
+    answer = await preflightPrismaMemorySemanticSmoke(
+      prisma,
+      authenticatedUserId,
+      encryptionKey
+    );
+  } catch (error) {
+    if (error instanceof MemorySemanticSmokePreflightError) {
+      return fail("capability_preflight", error.code);
     }
-    if (systemPolicyChangeRequired) {
-      const updated = await setSystemPolicy(
-        previousSystemPolicy.version,
-        system.modelId,
-        null
-      );
-      if (updated.systemModelPolicy.policy.systemModel?.id !== system.modelId) {
-        fail("provider_catalog");
-      }
-      systemPolicyChanged = true;
-    }
-    if (process.env.AIQSA_SMOKE_REUSE_BOOTSTRAP_USER !== "1") {
-      await provisionSmokeUser([answer, system, embedding]);
-    }
+    return fail("capability_preflight", "memory_smoke_preflight_failed");
+  }
 
-    let settings = await configureMemory(embedding);
-    await acknowledgeAdminEgress();
-    settings = decodeSettings(await requestJson("memory_settings", "/api/me/memory/settings"));
-    await rebuildEmbedding(settings, embedding.modelId);
-    await waitForHistoryReady();
+  const rebuildActions = await ensureAdminMemoryReady(initialStatus, settings);
+  assertConsumerSettingsReady(await consumerSettings());
+  const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
+    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
+    .join("");
+  const scenarios = createMemorySemanticSmokeScenarioLedger();
+  const explicitStatements = new Set<string>();
+  let scenarioEvidence: Readonly<{
+    automaticFactsSourceBound: number;
+    automaticRecallAnswers: number;
+    historySourceBound: boolean;
+    scenarioCount: number;
+  }> | null = null;
+  let primaryError: unknown = null;
 
-    const marker = digest(randomUUID(), String(Date.now())).slice(0, 12);
+  try {
+    const historyStartedAt = new Date();
+    const historySource = await sourceRun(
+      `Memory smoke vector source ${marker}`,
+      `A project log reads: “For the one-off ${marker} aquarium launch, the temporary codename was Silver Mangrove.”`,
+      answer
+    );
+    await waitForIndexedHistorySource(historySource);
+    await waitForConservativeExtraction(historySource, historyStartedAt);
 
-    const historySource = await (async () => {
-      await setAutomaticLearning(false);
-      try {
-        const source = await sourceRun(
-          `Memory smoke vector source ${marker}`,
-          "A project log reads: “For the one-off aquarium launch, the temporary codename was Silver Mangrove.”",
-          answer
-        );
-        await waitForHistoryReady();
-        settings = decodeSettings(await requestJson(
-          "memory_settings",
-          "/api/me/memory/settings"
-        ));
-        await rebuildEmbedding(settings, embedding.modelId);
-        await waitForHistoryReady();
-        return source;
-      } finally {
-        await setAutomaticLearning(true);
-      }
-    })();
+    const irrelevantStartedAt = new Date();
+    const irrelevantHistorySource = await sourceRun(
+      `Memory smoke irrelevant vector source ${marker}`,
+      `A project log also reads: “For the one-off ${marker} aquarium launch, a temporary water-temperature trial used 24 degrees.”`,
+      answer
+    );
+    await waitForIndexedHistorySource(irrelevantHistorySource);
+    await waitForConservativeExtraction(irrelevantHistorySource, irrelevantStartedAt);
+    scenarios.complete("conservative_extraction");
 
-    const identityStartedAt = Date.now();
+    const identityStartedAt = new Date();
     const identitySource = await sourceRun(
       `Memory smoke identity ${marker}`,
-      "Привет, меня зовут Дима",
+      `Меня зовут Небула-${marker}. Это моё постоянное имя, а не временный псевдоним.`,
       answer
     );
-    const identityFact = await waitForLearnedFact(identitySource, identityStartedAt);
+    await waitForLearnedFact(identitySource, identityStartedAt);
     const identityRecall = await sourceRun(
       `Memory smoke identity recall ${marker}`,
-      "как меня зовут?",
+      `Как меня зовут? Для проверки используй контекст ${marker}.`,
       answer
     );
-    const identityAnswer = textFromContent(identityRecall.assistant.content);
-    const identityRecalled = /дима/iu.test(identityAnswer);
-    if (!identityRecalled) fail("answer_recall");
+    const identityRecalled = /небула/iu.test(
+      textFromContent(identityRecall.assistant.content)
+    );
+    const identitySourceBound = await verifier.recalledAutomaticFactCount({
+      chatId: identitySource.chat.id,
+      messageId: identitySource.userMessage.id,
+      notBefore: identityStartedAt,
+      recallModelRunId: identityRecall.modelRunId,
+      userId: authenticatedUserId
+    }) > 0;
+    if (!identityRecalled || !identitySourceBound) {
+      fail("answer_recall", "memory_smoke_identity_recall_failed");
+    }
+    scenarios.complete("russian");
 
-    const preferenceStartedAt = Date.now();
+    const preferenceStartedAt = new Date();
     const preferenceSource = await sourceRun(
       `Memory smoke preference ${marker}`,
-      "Я предпочитаю краткие ответы.",
+      `I prefer ${marker}-concise answers.`,
       answer
     );
-    const preferenceFact = await waitForLearnedFact(preferenceSource, preferenceStartedAt);
+    await waitForLearnedFact(preferenceSource, preferenceStartedAt);
     const preferenceRecall = await sourceRun(
       `Memory smoke preference recall ${marker}`,
-      "какие ответы я преподчитаю",
+      `Which response style do I prefer for ${marker}?`,
       answer
     );
-    const preferenceAnswer = textFromContent(preferenceRecall.assistant.content);
-    const preferenceRecalled = /(крат|лаконич|коротк)/iu.test(preferenceAnswer);
-    if (!preferenceRecalled) {
-      fail("answer_recall");
+    const preferenceRecalled = /(крат|лаконич|коротк|concise|brief)/iu.test(
+      textFromContent(preferenceRecall.assistant.content)
+    );
+    const preferenceSourceBound = await verifier.recalledAutomaticFactCount({
+      chatId: preferenceSource.chat.id,
+      messageId: preferenceSource.userMessage.id,
+      notBefore: preferenceStartedAt,
+      recallModelRunId: preferenceRecall.modelRunId,
+      userId: authenticatedUserId
+    }) > 0;
+    if (!preferenceRecalled || !preferenceSourceBound) {
+      fail("answer_recall", "memory_smoke_preference_recall_failed");
     }
+    scenarios.complete("english");
 
     const vectorRecall = await sourceRun(
       `Memory smoke vector recall ${marker}`,
-      "Какое кодовое название я выбрал для запуска проекта с рыбами?",
+      `Для ${marker} aquarium launch, what codename did I choose?`,
       answer
     );
-    const vectorAnswer = textFromContent(vectorRecall.assistant.content);
-    const historyRecalled = /(silver|mangrove|серебр|мангр)/iu.test(vectorAnswer);
-    if (!historyRecalled) {
-      fail("vector_recall");
+    const historyRecalled = /(silver|mangrove|серебр|мангр)/iu.test(
+      textFromContent(vectorRecall.assistant.content)
+    );
+    const historySourceBound = await verifier.recalledHistorySourceCount({
+      chatId: historySource.chat.id,
+      messageId: historySource.userMessage.id,
+      recallModelRunId: vectorRecall.modelRunId,
+      userId: authenticatedUserId
+    }) > 0;
+    const irrelevantSourceExcluded = await verifier.recalledHistorySourceCount({
+      chatId: irrelevantHistorySource.chat.id,
+      messageId: irrelevantHistorySource.userMessage.id,
+      recallModelRunId: vectorRecall.modelRunId,
+      userId: authenticatedUserId
+    }) === 0;
+    const successfulReranks = await verifier.successfulRetrievalExecutionCount({
+      modelRunId: vectorRecall.modelRunId,
+      role: "MEMORY_RERANK",
+      userId: authenticatedUserId
+    });
+    if (!historyRecalled || !historySourceBound) {
+      fail("vector_recall", "memory_smoke_history_recall_failed");
     }
+    if (!irrelevantSourceExcluded || successfulReranks < 1) {
+      fail("vector_recall", "memory_smoke_irrelevant_rerank_failed");
+    }
+    scenarios.complete("relevant_rerank");
+    scenarios.complete("irrelevant_rerank");
+    scenarios.complete("mixed_language");
 
-    report = {
-      automaticFactsSourceBound: Number(identityFact.evidenceSourceBound) +
-        Number(preferenceFact.evidenceSourceBound),
-      boundedResources: { cpu: 2, memoryGiB: 2 },
-      digests: {
-        identity: digest(identityFact.summary.id, identityFact.summary.currentVersionId ?? ""),
-        preference: digest(preferenceFact.summary.id, preferenceFact.summary.currentVersionId ?? ""),
-        vector: digest(historySource.chat.id, historySource.userMessage.id)
-      },
-      automaticRecallAnswers: Number(identityRecalled) + Number(preferenceRecalled),
-      happyPathCount: 2,
-      historyRecallAnswer: historyRecalled,
-      sanitizedAggregatesOnly: true,
-      status: "complete"
+    const firstSave = await sourceRun(
+      `Memory smoke implicit save weekly ${marker}`,
+      `Please carry this preference into future conversations: my ${marker} weekly reporting format is concise.`,
+      answer
+    );
+    const firstSaveAction = memoryAction(firstSave);
+    if (firstSaveAction.operation === "SAVE" && firstSaveAction.status === "COMMITTED" &&
+      firstSaveAction.statement) explicitStatements.add(firstSaveAction.statement);
+    requiredMemoryAction(firstSave, "SAVE", "COMMITTED");
+    await assertStrictControlSucceeded(firstSave);
+
+    const secondSave = await sourceRun(
+      `Memory smoke implicit save monthly ${marker}`,
+      `Please carry this preference into future conversations too: my ${marker} monthly reporting format is detailed.`,
+      answer
+    );
+    const secondSaveAction = memoryAction(secondSave);
+    if (secondSaveAction.operation === "SAVE" && secondSaveAction.status === "COMMITTED" &&
+      secondSaveAction.statement) explicitStatements.add(secondSaveAction.statement);
+    requiredMemoryAction(secondSave, "SAVE", "COMMITTED");
+    await assertStrictControlSucceeded(secondSave);
+    if (![firstSaveAction, secondSaveAction].every((action) =>
+      action.statement?.includes(marker))) {
+      fail("answer_recall", "memory_smoke_implicit_intent_failed");
+    }
+    scenarios.complete("intent_without_exact_keywords");
+
+    const ambiguityTargets = await waitForAmbiguityTargets(marker);
+    if (ambiguityTargets.length !== 2) {
+      fail("answer_recall", "memory_smoke_ambiguity_fixture_invalid");
+    }
+    const update = await sourceRun(
+      `Memory smoke ambiguous update ${marker}`,
+      `I now want the ${marker} reporting format to use visual summaries across the board.`,
+      answer
+    );
+    const updateAction = requiredMemoryAction(update, "UPDATE", "AMBIGUOUS");
+    await assertStrictControlSucceeded(update);
+    const updateCandidates = (updateAction.candidates ?? []).filter((candidate) =>
+      candidate.provenance === "SAVED" && candidate.statement.includes(marker));
+    const selectedUpdate = updateCandidates[0];
+    if (updateCandidates.length < 2 || !selectedUpdate || !updateAction.statement?.includes(marker)) {
+      fail("answer_recall", "memory_smoke_update_selection_failed");
+    }
+    explicitStatements.add(updateAction.statement);
+    await commitMemoryTargetSelection({
+      action: "CORRECT",
+      memoryRef: selectedUpdate.memoryRef,
+      statement: updateAction.statement
+    });
+    const updatedTargetVisible = (await allConsumerMemories()).some((item) =>
+      item.provenance === "SAVED" && item.statement === updateAction.statement);
+    if (!updatedTargetVisible) {
+      fail("answer_recall", "memory_smoke_update_selection_failed");
+    }
+    scenarios.complete("update_target_selection");
+
+    const postUpdateTargets = await waitForAmbiguityTargets(marker);
+    if (postUpdateTargets.length !== 2) {
+      fail("answer_recall", "memory_smoke_ambiguity_fixture_invalid");
+    }
+    const forget = await sourceRun(
+      `Memory smoke ambiguous forget ${marker}`,
+      `The ${marker} reporting-format preferences should no longer follow me into future conversations.`,
+      answer
+    );
+    const forgetAction = requiredMemoryAction(forget, "FORGET", "AMBIGUOUS");
+    await assertStrictControlSucceeded(forget);
+    const forgetCandidates = (forgetAction.candidates ?? []).filter((candidate) =>
+      candidate.provenance === "SAVED" && candidate.statement.includes(marker));
+    const selectedForget = forgetCandidates[0];
+    if (forgetCandidates.length < 2 || !selectedForget) {
+      fail("answer_recall", "memory_smoke_forget_selection_failed");
+    }
+    await commitMemoryTargetSelection({
+      action: "FORGET",
+      memoryRef: selectedForget.memoryRef
+    });
+    const forgottenTargetVisible = (await allConsumerMemories()).some((item) =>
+      item.provenance === "SAVED" && item.statement === selectedForget.statement);
+    if (forgottenTargetVisible) {
+      fail("answer_recall", "memory_smoke_forget_selection_failed");
+    }
+    scenarios.complete("forget_target_selection");
+
+    const secretStartedAt = new Date();
+    const secretToken = `blue-orchard-${marker}`;
+    const secret = await sourceRun(
+      `Memory smoke secret rejection ${marker}`,
+      `Add this to my reusable Personal Memory for future conversations: the password for my demonstration account is ${secretToken}.`,
+      answer
+    );
+    await assertStrictControlSucceeded(secret);
+    const secretAction = secret.assistant.artifactSummary?.memoryAction;
+    if (!secretAction || secretAction.operation !== "SAVE" ||
+      secretAction.status !== "REJECTED") {
+      fail("answer_recall", "memory_smoke_secret_rejection_failed");
+    }
+    await waitForNoAutomaticFact(secret, secretStartedAt);
+    const secretMutationRows = await verifier.mutationPersistenceCount({
+      modelRunId: secret.modelRunId,
+      userId: authenticatedUserId
+    });
+    const secretVisible = (await allConsumerMemories()).some((item) =>
+      item.statement.includes(secretToken));
+    if (secretMutationRows !== 0 || secretVisible) {
+      fail("automatic_learning", "memory_smoke_secret_persisted");
+    }
+    scenarios.complete("plain_language_secret_rejection");
+    scenarios.complete("strict_structured_output");
+
+    scenarioEvidence = {
+      automaticFactsSourceBound: 2,
+      automaticRecallAnswers: 2,
+      historySourceBound: true,
+      scenarioCount: scenarios.assertComplete()
     };
-  } finally {
-    if (systemPolicyChanged) {
-      await restoreSystemPolicy(previousSystemPolicy, system.modelId);
-    }
-    if (defaultCredentialChangeRequired) {
-      await setDefaultCredential(
-        system.connection.id,
-        previousSystemDefaultCredential
-      );
-    }
-    await acknowledgeAdminEgress();
+  } catch (error) {
+    primaryError = error;
   }
-  if (!report) fail("chat_run");
-  console.log(JSON.stringify(report, null, 2));
+
+  let cleanedMemoryItems = 0;
+  let cleanupError: unknown = null;
+  try {
+    cleanedMemoryItems = await cleanupSmokeState(marker, explicitStatements);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError || !scenarioEvidence) {
+    return fail("automatic_learning", "memory_smoke_cleanup_failed");
+  }
+
+  const resourceLimits = cgroupResourceLimits();
+  console.log(JSON.stringify({
+    ...scenarioEvidence,
+    cleanedMemoryItems,
+    configuredCapabilities: {
+      embedding: true,
+      reranker: true,
+      strictOutput: true,
+      systemModel: true
+    },
+    createdIdentityCount: 0,
+    excludedSmokeChats: createdSmokeChats.length,
+    rebuildActions,
+    ...(resourceLimits ? { resourceLimits } : {}),
+    sanitizedAggregatesOnly: true,
+    status: "complete"
+  }, null, 2));
 }
 
 main().catch((error: unknown) => {
@@ -959,4 +959,6 @@ main().catch((error: unknown) => {
     status: "error"
   }));
   process.exitCode = 1;
+}).finally(async () => {
+  await prisma.$disconnect().catch(() => undefined);
 });

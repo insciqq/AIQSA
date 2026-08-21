@@ -1,5 +1,6 @@
 "use client";
 
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import {
   UiV2Button,
   UiV2Icon,
@@ -24,6 +25,10 @@ import type {
   LibraryTabV2,
   MemoryOverviewV2
 } from "./contracts";
+
+function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
+  return memoryUiCopy(key);
+}
 
 const tabOrder: readonly LibraryTabIdV2[] = ["assistants", "knowledge", "files", "memory"];
 
@@ -447,6 +452,7 @@ function MemorySwitch({
     <div className="v2-memory-setting">
       <span>{label}</span>
       <button
+        aria-label={`${label}: ${value ? mt("common.on") : mt("common.off")}`}
         aria-checked={value}
         className="v2-memory-switch v2-focusable"
         data-on={value || undefined}
@@ -455,7 +461,7 @@ function MemorySwitch({
         type="button"
         onClick={() => onChange?.(!value)}
       >
-        {value ? "On" : "Off"}
+        {value ? mt("common.on") : mt("common.off")}
       </button>
     </div>
   );
@@ -466,94 +472,100 @@ export function MemoryPanelV2({
   onChangeAutomaticLearning,
   onChangeReferenceHistory,
   onChangeUseFacts,
-  onForget,
   onManage,
-  onOpenHistory,
-  onOpenOperations
+  onRetry
 }: Readonly<{
   memory: MemoryOverviewV2;
   onChangeAutomaticLearning?(value: boolean): void;
   onChangeReferenceHistory?(value: boolean): void;
   onChangeUseFacts?(value: boolean): void;
-  onForget?(id: string): void;
   onManage?(): void;
-  onOpenHistory?(): void;
-  onOpenOperations?(): void;
+  onRetry?(): void;
 }>) {
-  const gatesDisabled = memory.administratorDisabled;
+  const loadUnavailable = memory.loadState !== "ready";
+  const subordinateDisabled = memory.administratorDisabled || loadUnavailable;
+  const statusLabel = memory.loadState === "error"
+    ? mt("library.statusLoadError")
+    : memory.loadState !== "ready"
+      ? mt("settings.loading")
+      : memory.status === "ON"
+      ? mt("library.statusOn")
+      : memory.status === "PREPARING"
+        ? mt("library.statusPreparing")
+        : memory.status === "UNAVAILABLE"
+          ? mt("library.statusUnavailable")
+          : memory.status === "NEEDS_ADMIN_SETUP"
+            ? mt("library.statusNeedsSetup")
+            : memory.status === "PAUSED"
+              ? mt("library.statusPaused")
+              : mt("settings.loading");
+  const statusDescription = memory.loadState === "error"
+    ? mt("library.loadErrorDescription")
+    : memory.loadState !== "ready"
+      ? mt("library.loadingDescription")
+      : memory.status === "ON"
+      ? mt("library.onDescription")
+      : memory.status === "PREPARING"
+        ? mt("library.preparingDescription")
+        : memory.status === "UNAVAILABLE"
+          ? mt("library.unavailableDescription")
+          : memory.status === "NEEDS_ADMIN_SETUP"
+            ? memory.disabledReason ?? mt("library.needsSetupDescription")
+            : memory.status === "PAUSED"
+              ? mt("library.pausedDescription")
+              : mt("library.loadingDescription");
   return (
     <div data-testid="library-memory-panel">
-      <SectionHeading description="Control what AIQSA can remember and inspect the exact facts available to future runs.">
-        Memory
+      <SectionHeading description={mt("library.description")}>
+        {mt("settings.heading")}
       </SectionHeading>
 
-      {memory.administratorDisabled ? (
-        <div className="v2-memory-disabled" role="status">
-          <strong>Memory is disabled by the administrator</strong>
-          <span>{memory.disabledReason ?? "New answers do not use Memory."}</span>
-        </div>
-      ) : null}
-
-      <section className="v2-memory-pulse" aria-labelledby="v2-memory-health">
-        <span className="v2-memory-pulse-dot" data-ok={!memory.administratorDisabled || undefined} aria-hidden="true" />
+      <section
+        aria-busy={memory.loadState === "loading"}
+        aria-labelledby="v2-memory-health"
+        aria-live="polite"
+        className="v2-memory-pulse"
+      >
+        <span
+          aria-hidden="true"
+          className="v2-memory-pulse-dot"
+          data-ok={memory.loadState === "ready" && memory.status === "ON" || undefined}
+        />
         <div>
-          <h3 id="v2-memory-health">{memory.healthLabel}</h3>
-          <p>{memory.healthDetail}</p>
+          <h3 id="v2-memory-health">
+            {statusLabel}
+          </h3>
+          <p>
+            {statusDescription}
+          </p>
+          {memory.loadState === "error" ? (
+            <UiV2Button onClick={onRetry}>{mt("settings.retry")}</UiV2Button>
+          ) : null}
         </div>
       </section>
 
       <section className="v2-memory-section" aria-labelledby="v2-memory-controls">
-        <h3 id="v2-memory-controls">Memory controls</h3>
+        <h3 id="v2-memory-controls">{mt("library.controlsHeading")}</h3>
         <div className="v2-memory-settings">
-          <MemorySwitch disabled={gatesDisabled} label="Use saved memories" value={memory.useMemoryFacts} onChange={onChangeUseFacts} />
-          <MemorySwitch disabled={gatesDisabled} label="Reference chat history" value={memory.referenceChatHistory} onChange={onChangeReferenceHistory} />
-          <MemorySwitch disabled={gatesDisabled} label="Learn automatically" value={memory.automaticLearning} onChange={onChangeAutomaticLearning} />
+          <MemorySwitch disabled={subordinateDisabled} label={mt("settings.memoryLabel")} value={memory.useMemoryFacts} onChange={onChangeUseFacts} />
+          <MemorySwitch disabled={subordinateDisabled} label={mt("settings.searchPastChatsLabel")} value={memory.referenceChatHistory} onChange={onChangeReferenceHistory} />
+          <MemorySwitch disabled={subordinateDisabled} label={mt("settings.learnAutomaticallyLabel")} value={memory.automaticLearning} onChange={onChangeAutomaticLearning} />
         </div>
       </section>
 
-      <section className="v2-memory-section" aria-labelledby="v2-memory-facts">
-        <div className="v2-memory-section-heading">
-          <div>
-            <h3 id="v2-memory-facts">Saved memories</h3>
-            <p>Exact statements only. Source and history stay available in the detail task.</p>
-          </div>
-          <UiV2Button disabled={!memory.explicitCrudAvailable} onClick={onManage}>Manage memories</UiV2Button>
-        </div>
-        {memory.facts.length ? (
-          <ul className="v2-memory-fact-list">
-            {memory.facts.map((fact) => (
-              <li key={fact.id}>
-                <div>
-                  <p>{fact.statement}</p>
-                  <small>{fact.scope}{fact.pinned ? " · Pinned" : ""}</small>
-                </div>
-                <UiV2IconButton
-                  disabled={!memory.explicitCrudAvailable}
-                  icon="close"
-                  label={`Forget: ${fact.statement}`}
-                  onClick={() => onForget?.(fact.id)}
-                />
-              </li>
-            ))}
-          </ul>
-        ) : <p className="v2-resource-empty">No saved memories.</p>}
-      </section>
-
-      <section className="v2-memory-section" aria-labelledby="v2-memory-tools">
-        <h3 id="v2-memory-tools">Inspect and maintain</h3>
+      <section className="v2-memory-section" aria-labelledby="v2-memory-manage">
+        <h3 id="v2-memory-manage">{mt("library.savedHeading")}</h3>
+        <p>{mt("library.savedDescription")}</p>
         <div className="v2-resource-actions">
-          <UiV2Button icon="search" onClick={onOpenHistory}>Search chat history</UiV2Button>
-          <UiV2Button icon="settings" onClick={onOpenOperations}>Memory operations</UiV2Button>
+          <UiV2Button disabled={!memory.explicitCrudAvailable} onClick={onManage}>
+            {mt("settings.manageLabel")}
+          </UiV2Button>
         </div>
       </section>
 
-      <details className="v2-library-advanced">
-        <summary className="v2-focusable">Advanced evidence</summary>
-        <p>
-          Temporary chats do not use Memory. Turning a preference off is non-destructive;
-          deleting Memory does not rewrite retained chats or frozen accepted runs.
-        </p>
-      </details>
+      <p className="v2-resource-empty">
+        {mt("library.temporaryDescription")}
+      </p>
     </div>
   );
 }

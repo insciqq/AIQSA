@@ -3,13 +3,13 @@ import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 
 export const MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION =
-  "memory-fact-consolidation-v2";
+  "memory-fact-consolidation-v1";
 export const MEMORY_FACT_CONSOLIDATION_POLICY_VERSION =
-  "memory-fact-consolidation-policy-v2";
+  "memory-fact-consolidation-policy-v1";
 export const MEMORY_FACT_CONSOLIDATION_PROMPT_VERSION =
-  "memory-fact-consolidation-prompt-v4";
+  "memory-fact-consolidation-prompt-v1";
 export const MEMORY_FACT_CONSOLIDATION_SCHEMA_VERSION =
-  "memory-fact-consolidation-schema-v2";
+  "memory-fact-consolidation-schema-v1";
 export const MEMORY_FACT_VERIFICATION_PIPELINE_VERSION =
   "memory-fact-verification-v2";
 export const MEMORY_FACT_VERIFICATION_POLICY_VERSION =
@@ -24,6 +24,17 @@ export const MEMORY_FACT_MAX_RELATED_VERSIONS = 3;
 export const MEMORY_FACT_CONSOLIDATION_JOB_PREFIX = "consolidate-candidate:";
 export const MEMORY_FACT_VERIFICATION_JOB_PREFIX = "verify-candidate:";
 
+export const MEMORY_FACT_CONSOLIDATION_V1_OPERATIONS = Object.freeze([
+  "ADD", "REPLACE", "NOOP", "REJECT"
+] as const);
+export type MemoryFactConsolidationV1Operation =
+  (typeof MEMORY_FACT_CONSOLIDATION_V1_OPERATIONS)[number];
+export const MEMORY_FACT_CONSOLIDATION_COMPARISONS = Object.freeze([
+  "SAME", "REPLACES", "DIFFERENT", "AMBIGUOUS"
+] as const);
+export type MemoryFactConsolidationComparison =
+  (typeof MEMORY_FACT_CONSOLIDATION_COMPARISONS)[number];
+
 export const MEMORY_FACT_CONSOLIDATION_OPERATIONS = [
   "ADD",
   "REINFORCE",
@@ -34,12 +45,15 @@ export const MEMORY_FACT_CONSOLIDATION_OPERATIONS = [
   "DEFER"
 ] as const;
 
+/** Legacy model vocabulary used only while replaying pre-v1 persisted jobs. */
 export const MEMORY_FACT_CONSOLIDATION_MODEL_OPERATIONS = [
   "ADD", "REINFORCE", "SUPERSEDE", "CONFLICT", "EXPIRE", "NOOP"
 ] as const satisfies readonly MemoryFactConsolidationOperation[];
 
 export type MemoryFactConsolidationOperation =
   (typeof MEMORY_FACT_CONSOLIDATION_OPERATIONS)[number];
+export type MemoryFactConsolidationPlanOperation =
+  MemoryFactConsolidationOperation | MemoryFactConsolidationV1Operation;
 
 export const MEMORY_FACT_CONSOLIDATION_REASON_CODES = [
   "new_supported_fact",
@@ -50,6 +64,13 @@ export const MEMORY_FACT_CONSOLIDATION_REASON_CODES = [
   "duplicate_or_explicit",
   "insufficient_support"
 ] as const;
+
+export const MEMORY_FACT_CONSOLIDATION_V1_REASON_CODES = Object.freeze([
+  "new_fact",
+  "current_value_replaced",
+  "same_current_value",
+  "unsafe_or_ambiguous"
+] as const);
 
 export type MemoryFactConsolidationReasonCode =
   (typeof MEMORY_FACT_CONSOLIDATION_REASON_CODES)[number];
@@ -86,11 +107,15 @@ export type MemoryFactCandidateSnapshot = Readonly<{
   category: string;
   chatId: string;
   confidence: number;
+  confidenceBand?: "HIGH" | "MEDIUM" | "LOW";
+  correction?: boolean;
   coreEligible?: boolean;
   coreSalience?: "HIGH" | "LOW" | "MEDIUM" | "NONE";
   directness: "DIRECT" | "PARAPHRASED";
   displayText: string;
   evidence: readonly MemoryFactCandidateEvidenceSnapshot[];
+  extractionExecutionId: string;
+  futureUseful?: boolean;
   id: string;
   importance: number;
   languageCode: string;
@@ -167,7 +192,7 @@ export type MemoryFactConsolidationPlan = Readonly<{
   candidateId: string;
   effectiveFrom: string | null;
   evidenceIds: readonly string[];
-  operation: MemoryFactConsolidationOperation;
+  operation: MemoryFactConsolidationPlanOperation;
   outputHash: string;
   reasonCode: MemoryFactConsolidationReasonCode;
   targetFactId: string | null;

@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import {
+  MEMORY_CONFIRMATION_COPY_VERSION,
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+} from "../../../contracts/memory";
+import {
+  decodeMemoryActionIntent,
+  type MemoryActionIntent
+} from "../../../contracts/memoryActionIntent";
 import { textMessageContent } from "../../../domain/content";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
@@ -9,8 +16,19 @@ import {
   type ResolvedMemoryUtilityPolicy
 } from "../execution/policy";
 import { createMemorySettingsService } from "../settings/service";
+import { memoryActionLifecycleBudgetSnapshot } from "../actions/lifecycleSnapshot";
+import {
+  memoryControlAcceptedOutputHash,
+  memoryControlIntentHash
+} from "../actions/controlRuntime";
+import {
+  memoryTargetCandidateMapHash,
+  memoryTargetSelectionAcceptedOutputHash
+} from "../actions/targetSelector";
+import { scheduleTemporaryChatDeletion } from "../temporaryRetention";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import { MemoryPersistenceError } from "./errors";
+import { memorySha256 } from "./lexical";
 import {
   createPrismaMemoryFactRepository,
   type MemoryFactSaveInput,
@@ -26,7 +44,8 @@ import {
 import {
   consumeMemoryMutationAuthorization,
   createPrismaMemoryMutationAuthorizationRepository,
-  memoryMutationNonceHash
+  memoryMutationNonceHash,
+  memoryTargetAuthorizationPayloadHash
 } from "./authorizations";
 
 const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 1));
@@ -107,6 +126,362 @@ function saveInput(
   };
 }
 
+function controlExecutionSnapshot(input: Readonly<{
+  connectionId: string;
+  credentialId: string;
+  credentialVersionId: string;
+  providerModelId: string;
+}>) {
+  return {
+    acceptedUtilityEgressFingerprint: "1".repeat(64),
+    compatibilityId: "memory-control-test-v2",
+    compatibilityRequirement: {
+      compatibilityVersion: "memory-runtime-compatibility-v2",
+      configFingerprint: "2".repeat(64),
+      deploymentFingerprint: "3".repeat(64),
+      modelFingerprint: "4".repeat(64),
+      pipelineVersion: "memory-control-v2",
+      policyVersion: "memory-control-policy-v1",
+      promptVersion: "memory-control-prompt-v1",
+      providerFingerprint: "5".repeat(64),
+      retrievalConfigFingerprint: "6".repeat(64),
+      role: "MEMORY_CONTROL",
+      schemaVersion: "memory-action-intent-v1",
+      vectorSpaceFingerprint: null
+    },
+    credentialSource: "default",
+    destinationFingerprint: "7".repeat(64),
+    executionTargetFingerprint: "8".repeat(64),
+    logicalRole: "MEMORY_CONTROL",
+    policyRevision: null,
+    providerExecutionSnapshot: {
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://memory-control.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 30_000
+      },
+      connectionDisplayName: "Memory control race provider",
+      connectionId: input.connectionId,
+      credentialId: input.credentialId,
+      credentialVersionId: input.credentialVersionId,
+      model: {
+        adapterKind: "openai_responses_native",
+        answerSelectable: true,
+        capabilities: {
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          structuredOutput: true,
+          toolCalling: true,
+          vision: false
+        },
+        defaultParams: {},
+        modelClass: "answer",
+        upstreamModelId: "memory-control-race-model"
+      },
+      modelDisplayName: "Memory control race model",
+      providerFamily: "openai",
+      providerModelId: input.providerModelId,
+      version: 1
+    },
+    requiresStrictStructuredOutput: true,
+    utilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+    version: 2
+  } as const;
+}
+
+async function createControlAuthorizedSave(
+  userId: string,
+  label: string,
+  options: Readonly<{
+    controlIntent?: MemoryActionIntent;
+    mutation?: Readonly<{
+      action: "EDIT" | "FORGET" | "SAVE";
+      authorizedPayloadHash: string;
+      expectedTargetVersionId?: string;
+      targetFactId?: string;
+    }>;
+  }> = {}
+) {
+  const providerSuffix = randomUUID();
+  const connectionId = `memory-control-connection-${providerSuffix}`;
+  const credentialId = `memory-control-credential-${providerSuffix}`;
+  const credentialVersionId = `memory-control-version-${providerSuffix}`;
+  const providerModelId = `memory-control-model-${providerSuffix}`;
+  const activatedAt = new Date("2026-08-21T06:00:00.000Z");
+  const connectionConfig = {
+    allowPrivateNetwork: false,
+    apiRoot: "https://memory-control.example.test/v1",
+    authenticationMode: "bearer",
+    responseTimeoutMs: 30_000
+  };
+  await prisma.providerConnection.create({
+    data: {
+      activeConfig: connectionConfig,
+      activeVersion: 1,
+      activatedAt,
+      displayName: "Memory control race provider",
+      draftConfig: connectionConfig,
+      draftVersion: 1,
+      enabled: true,
+      family: "openai_compatible",
+      id: connectionId,
+      unassignedPolicy: "use_default"
+    }
+  });
+  await prisma.providerCredential.create({
+    data: {
+      activatedAt,
+      connectionId,
+      draftVersion: 1,
+      enabled: true,
+      id: credentialId,
+      label: "Memory control race credential",
+      testedAt: activatedAt
+    }
+  });
+  await prisma.providerCredentialVersion.create({
+    data: {
+      activatedAt,
+      credentialId,
+      id: credentialVersionId,
+      secretEnvelope: "test-only-envelope",
+      testedAt: activatedAt,
+      testEvidence: { authenticationMode: "bearer" },
+      version: 1
+    }
+  });
+  await prisma.providerCredential.update({
+    data: { activeVersionId: credentialVersionId },
+    where: { id: credentialId }
+  });
+  await prisma.providerConnection.update({
+    data: { defaultCredentialId: credentialId },
+    where: { id: connectionId }
+  });
+  await prisma.providerModel.create({
+    data: {
+      activeConfig: {},
+      activeVersion: 1,
+      activatedAt,
+      capabilities: {},
+      connectionId,
+      defaultParams: {},
+      displayName: "Memory control race model",
+      draftConfig: {},
+      draftVersion: 1,
+      enabled: true,
+      id: providerModelId,
+      modelClass: "answer",
+      modelId: "memory-control-race-model",
+      provider: "openai_compatible"
+    }
+  });
+  const sourceText = `Remember my ${label} preference.`;
+  const statement = "I prefer concise answers.";
+  const defaultControlIntent = {
+    action: "SAVE",
+    applyResponsePreferences: false,
+    category: "preferences",
+    categoryHint: null,
+    confidenceBand: "HIGH",
+    memoryUseful: false,
+    pastChatsUseful: false,
+    queryText: null,
+    reasonCode: "save_request",
+    recencyRequested: false,
+    referencedMemoryRef: null,
+    replacementStatement: null,
+    responsePreference: true,
+    sensitiveDomainHint: null,
+    sensitivity: "NORMAL",
+    statement,
+    targetQuery: null,
+    thisChatOnly: false
+  } as const;
+  const controlIntent = options.controlIntent ?? defaultControlIntent;
+  const executionSnapshot = controlExecutionSnapshot({
+    connectionId,
+    credentialId,
+    credentialVersionId,
+    providerModelId
+  });
+  const chat = await prisma.chat.create({
+    data: { title: `Control ${label}`, userId }
+  });
+  if (label === "temporary") {
+    const now = new Date();
+    const deadline = new Date(now.getTime() + 60_000);
+    await prisma.$transaction(async (tx) => {
+      await tx.chat.update({
+        data: {
+          memoryMode: "TEMPORARY",
+          temporaryRetentionDeadline: deadline,
+          temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+        },
+        where: { id: chat.id }
+      });
+      await scheduleTemporaryChatDeletion(tx, {
+        chatId: chat.id,
+        deadline,
+        now,
+        userId
+      });
+    });
+  }
+  const userMessage = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: textMessageContent(sourceText),
+      role: "user",
+      status: "complete"
+    }
+  });
+  const assistantMessage = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: textMessageContent(""),
+      parentMessageId: userMessage.id,
+      role: "assistant",
+      status: "streaming"
+    }
+  });
+  const admittedChat = await prisma.chat.update({
+    data: { activeLeafMessageId: assistantMessage.id },
+    where: { id: chat.id }
+  });
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+  const { binding, run } = await prisma.$transaction(async (tx) => {
+    const run = await tx.modelRun.create({
+      data: {
+        assistantMessageId: assistantMessage.id,
+        chatId: chat.id,
+        modelId: "memory-control-race-model",
+        provider: "memory-control-race-provider",
+        status: "preparing",
+        userId,
+        userMessageId: userMessage.id
+      }
+    });
+    const attempt = await tx.memoryRetrievalAttempt.create({
+      data: {
+        admissionKind: "NORMAL_SEND",
+        admittedAssistantLeafMessageId: assistantMessage.id,
+        admittedUserMessageId: userMessage.id,
+        attemptOrdinal: 0,
+        baseRequestHash: "b".repeat(64),
+        boundedPrivateBaseRequestSnapshot: {},
+        budgetSnapshot: memoryActionLifecycleBudgetSnapshot({
+          activeLeafMessageId: assistantMessage.id,
+          branchGeneration: admittedChat.memoryBranchGeneration,
+          sourceRevision: admittedChat.memorySourceRevision
+        }),
+        chatId: chat.id,
+        chatMemoryModeSnapshot: "NORMAL",
+        expiresAt: new Date(Date.now() + 60_000),
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        modelRunId: run.id,
+        queryHash: "c".repeat(64),
+        retrievalRevisionSnapshot: settings.memoryRevision,
+        settingsSnapshot: {},
+        state: "EXECUTING",
+        userId,
+        utilityEgressMode: "LOCAL_ONLY"
+      }
+    });
+    const executionAt = new Date();
+    const binding = await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memoryControlAcceptedOutputHash(
+          "f".repeat(64),
+          memoryControlIntentHash(controlIntent)
+        ),
+        completedAt: executionAt,
+        connectionId,
+        createdAt: executionAt,
+        credentialId,
+        credentialVersionId,
+        destinationFingerprint: "e".repeat(64),
+        inputHash: "f".repeat(64),
+        logicalRole: "MEMORY_CONTROL",
+        ordinal: 0,
+        ownerType: "RETRIEVAL_ATTEMPT",
+        pipelineVersion: "memory-control-race-v1",
+        policyVersion: "memory-control-race-v1",
+        promptVersion: "memory-control-race-v1",
+        providerId: "openai_compatible",
+        providerModelId,
+        retrievalAttemptId: attempt.id,
+        schemaVersion: "memory-control-race-v1",
+        secretFreeExecutionSnapshot: executionSnapshot,
+        startedAt: executionAt,
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.usageEvent.create({
+      data: {
+        cachedInputTokens: 0,
+        inputTokens: 1,
+        memoryExecutionBindingId: binding.id,
+        modelId: providerModelId,
+        outputTokens: 1,
+        provider: "openai_compatible",
+        providerModelId,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        userId
+      }
+    });
+    return { binding, run };
+  });
+  const mutation = options.mutation ?? {
+    action: "SAVE" as const,
+    authorizedPayloadHash: memorySha256(statement)
+  };
+  const authorizedPayloadHash = mutation.authorizedPayloadHash;
+  const authorization = await createPrismaMemoryMutationAuthorizationRepository(prisma)
+    .mintForControl(userId, {
+      action: mutation.action,
+      admissionDeadlineAtMs: Date.now() + 4_000,
+      authorizedPayloadHash,
+      bindingId: binding.id,
+      chatId: chat.id,
+      controlIntent,
+      modelRunId: run.id,
+      sourceText,
+      expectedTargetVersionId: mutation.expectedTargetVersionId,
+      targetFactId: mutation.targetFactId
+    });
+  return {
+    authorization,
+    authorizedPayloadHash,
+    binding,
+    chat,
+    controlIntent,
+    executionSnapshot,
+    run,
+    sourceText,
+    settings,
+    async cleanupProvider() {
+      await prisma.providerConnection.updateMany({
+        data: { defaultCredentialId: null },
+        where: { id: connectionId }
+      });
+      await prisma.providerCredential.updateMany({
+        data: { activeVersionId: null },
+        where: { id: credentialId }
+      });
+      await prisma.providerModel.deleteMany({ where: { id: providerModelId } });
+      await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
+      await prisma.providerCredential.deleteMany({ where: { id: credentialId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
+  };
+}
+
 function expectRejectedCode(
   result: PromiseSettledResult<unknown>,
   code: MemoryPersistenceError["code"]
@@ -148,11 +523,14 @@ describe("Prisma Memory persistence", () => {
         prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
         prisma.memoryIndexGeneration.findMany({ where: { userId } })
       ]);
+      const winner = fulfilled[0]?.status === "fulfilled"
+        ? fulfilled[0].value as { useMemoryFacts: boolean }
+        : null;
       expect(settings).toMatchObject({
-        memoryGeneration: 0,
         memoryRevision: 1,
         settingsRevision: 1
       });
+      expect(settings.memoryGeneration).toBe(winner?.useMemoryFacts === false ? 1 : 0);
       expect(generations).toHaveLength(1);
       expect(generations[0]).toMatchObject({
         id: settings.activeIndexGenerationId,
@@ -161,6 +539,163 @@ describe("Prisma Memory persistence", () => {
         state: "ACTIVE",
         targetMemoryRevision: 1
       });
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("pauses all personal work without changing subordinate preferences or backfilling on resume", async () => {
+    const userId = await createActiveUser("master-pause");
+    const pausedAt = new Date("2026-08-21T10:00:00.000Z");
+    const resumedAt = new Date("2026-08-21T10:10:00.000Z");
+    let currentTime = pausedAt;
+    const repository = createPrismaMemorySettingsRepository(prisma, {
+      now: () => currentTime
+    });
+    try {
+      const queued = await prisma.memoryJob.create({
+        data: {
+          idempotencyFingerprint: `master-pause-${randomUUID()}`,
+          kind: "REBUILD_INDEX",
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion: "master-pause-test-v1",
+          state: "QUEUED",
+          userId
+        }
+      });
+
+      const paused = await repository.patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: false
+      });
+      expect(paused).toMatchObject({
+        learnAutomatically: true,
+        memoryGeneration: 1,
+        memoryRevision: 1,
+        referenceChatHistory: true,
+        settingsRevision: 1,
+        useMemoryFacts: false
+      });
+      await expect(prisma.memoryPauseInterval.findFirstOrThrow({
+        where: { scope: "MASTER", userId }
+      })).resolves.toMatchObject({
+        memoryGeneration: 1,
+        pausedAt,
+        resumedAt: null
+      });
+      await expect(prisma.memorySourceBarrier.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: queued.id } }))
+        .resolves.toMatchObject({
+          errorCode: "memory_master_paused",
+          state: "CANCELLED"
+        });
+
+      currentTime = resumedAt;
+      const resumed = await repository.patch(userId, {
+        expectedMemoryRevision: paused.memoryRevision,
+        expectedSettingsRevision: paused.settingsRevision,
+        useMemoryFacts: true
+      });
+      expect(resumed).toMatchObject({
+        learnAutomatically: true,
+        memoryGeneration: paused.memoryGeneration,
+        memoryRevision: paused.memoryRevision + 1,
+        referenceChatHistory: true,
+        settingsRevision: paused.settingsRevision + 1,
+        useMemoryFacts: true
+      });
+      await expect(prisma.memoryPauseInterval.findFirstOrThrow({
+        where: { scope: "MASTER", userId }
+      })).resolves.toMatchObject({ pausedAt, resumedAt });
+      await expect(prisma.memorySourceBarrier.count({ where: { userId } }))
+        .resolves.toBe(0);
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("opens independent Search and Learn intervals and cancels only affected delayed work", async () => {
+    const userId = await createActiveUser("subordinate-pauses");
+    const pausedAt = new Date("2026-08-21T11:00:00.000Z");
+    const resumedAt = new Date("2026-08-21T11:10:00.000Z");
+    let currentTime = pausedAt;
+    const repository = createPrismaMemorySettingsRepository(prisma, {
+      now: () => currentTime
+    });
+    try {
+      const jobs = await Promise.all(([
+        "INDEX_HISTORY",
+        "EXTRACT_FACTS",
+        "CONSOLIDATE_CANDIDATE",
+        "VERIFY_CANDIDATE",
+        "REBUILD_INDEX"
+      ] as const).map((kind) => prisma.memoryJob.create({
+        data: {
+          idempotencyFingerprint: `subordinate-pause-${kind}-${randomUUID()}`,
+          kind,
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion: "subordinate-pause-test-v1",
+          state: "QUEUED",
+          userId
+        }
+      })));
+
+      const paused = await repository.patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        learnAutomatically: false,
+        referenceChatHistory: false
+      });
+      expect(paused).toMatchObject({
+        learnAutomatically: false,
+        referenceChatHistory: false,
+        useMemoryFacts: true
+      });
+      const intervals = await prisma.memoryPauseInterval.findMany({ where: { userId } });
+      expect(intervals).toHaveLength(2);
+      expect(intervals).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          pausedAt,
+          resumedAt: null,
+          scope: "AUTOMATIC_LEARNING"
+        }),
+        expect.objectContaining({
+          pausedAt,
+          resumedAt: null,
+          scope: "SEARCH_HISTORY"
+        })
+      ]));
+      const pausedJobs = await prisma.memoryJob.findMany({
+        orderBy: { kind: "asc" },
+        select: { kind: true, state: true },
+        where: { id: { in: jobs.map(({ id }) => id) } }
+      });
+      expect(pausedJobs).toHaveLength(5);
+      expect(pausedJobs).toEqual(expect.arrayContaining([
+        { kind: "CONSOLIDATE_CANDIDATE", state: "CANCELLED" },
+        { kind: "EXTRACT_FACTS", state: "CANCELLED" },
+        { kind: "INDEX_HISTORY", state: "CANCELLED" },
+        { kind: "REBUILD_INDEX", state: "QUEUED" },
+        { kind: "VERIFY_CANDIDATE", state: "CANCELLED" }
+      ]));
+
+      currentTime = resumedAt;
+      await repository.patch(userId, {
+        expectedMemoryRevision: paused.memoryRevision,
+        expectedSettingsRevision: paused.settingsRevision,
+        learnAutomatically: true,
+        referenceChatHistory: true
+      });
+      await expect(prisma.memoryPauseInterval.findMany({ where: { userId } }))
+        .resolves.toSatisfy((intervals: Array<{ resumedAt: Date | null }>) =>
+          intervals.length === 2 && intervals.every((interval) =>
+            interval.resumedAt?.getTime() === resumedAt.getTime()));
+      await expect(prisma.memorySourceBarrier.count({ where: { userId } }))
+        .resolves.toBe(0);
     } finally {
       await cleanupUser(userId);
     }
@@ -201,6 +736,498 @@ describe("Prisma Memory persistence", () => {
       })).resolves.toMatchObject({ consumedAt: createdAt, createdAt });
     } finally {
       await cleanupUser(userId);
+    }
+  });
+
+  it.each([
+    ["master pause", "PAUSED"],
+    ["Normal to Temporary", "TEMPORARY"],
+    ["Normal to Excluded", "EXCLUDED"]
+  ] as const)("rejects a control-backed save after %s before commit", async (_label, race) => {
+    const userId = await createActiveUser(`control-race-${race.toLowerCase()}`);
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const admitted = await createControlAuthorizedSave(userId, race.toLowerCase());
+      cleanupProvider = admitted.cleanupProvider;
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      if (race === "PAUSED") {
+        await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+          expectedMemoryRevision: admitted.settings.memoryRevision,
+          expectedSettingsRevision: admitted.settings.settingsRevision,
+          useMemoryFacts: false
+        });
+      } else if (race !== "TEMPORARY") {
+        await prisma.chat.update({
+          data: { memoryMode: race },
+          where: { id: admitted.chat.id }
+        });
+      }
+
+      const before = await Promise.all([
+        prisma.memoryFact.count({ where: { userId } }),
+        prisma.memoryFactVersion.count({ where: { userId } })
+      ]);
+      const value = factValue(
+        `control.race.${race.toLowerCase()}`,
+        "I prefer concise answers.",
+        "concise"
+      );
+      await expect(createPrismaMemoryFactRepository(suppressionKeyring, prisma).save(userId, {
+        ...saveInput(scope.id, `control-race-${race}-${randomUUID()}`, value),
+        authorization: {
+          action: "SAVE",
+          authorizationId: admitted.authorization.id,
+          authorizedPayloadHash: admitted.authorizedPayloadHash
+        },
+        requestId: admitted.authorization.requestId
+      })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+
+      await expect(Promise.all([
+        prisma.memoryFact.count({ where: { userId } }),
+        prisma.memoryFactVersion.count({ where: { userId } })
+      ])).resolves.toEqual(before);
+      await expect(prisma.memoryMutationAuthorization.findUniqueOrThrow({
+        where: { id: admitted.authorization.id }
+      })).resolves.toMatchObject({ consumedAt: null });
+    } finally {
+      if (race === "TEMPORARY") {
+        await prisma.$transaction(async (tx) => {
+          await tx.memoryDeletionOutbox.updateMany({
+            data: {
+              leaseExpiresAt: new Date(Date.now() + 60_000),
+              leaseToken: "control-race-cleanup",
+              state: "RUNNING"
+            },
+            where: { operation: "TEMPORARY_DELETE", userId }
+          });
+          await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
+          await tx.usageEvent.deleteMany({ where: { userId } });
+          await tx.chat.deleteMany({ where: { userId } });
+          await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
+          await tx.user.deleteMany({ where: { id: userId } });
+        });
+      } else {
+        await cleanupUser(userId);
+      }
+      await cleanupProvider?.();
+    }
+  });
+
+  it("binds fact safety to the exact ordinal-zero control decision", async () => {
+    const userId = await createActiveUser("control-safety-receipt");
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const admitted = await createControlAuthorizedSave(userId, "safety-receipt");
+      cleanupProvider = admitted.cleanupProvider;
+      const selectorAt = new Date();
+      const selector = await prisma.memoryExecutionBinding.create({
+        data: {
+          acceptedOutputHash: "9".repeat(64),
+          completedAt: selectorAt,
+          connectionId: admitted.binding.connectionId,
+          createdAt: selectorAt,
+          credentialId: admitted.binding.credentialId,
+          credentialVersionId: admitted.binding.credentialVersionId,
+          destinationFingerprint: admitted.binding.destinationFingerprint,
+          inputHash: "8".repeat(64),
+          logicalRole: "MEMORY_CONTROL",
+          ordinal: 1,
+          ownerType: "RETRIEVAL_ATTEMPT",
+          pipelineVersion: "memory-target-selection-v2",
+          policyVersion: "memory-target-selection-policy-v1",
+          promptVersion: "memory-target-selection-prompt-v1",
+          providerId: admitted.binding.providerId,
+          providerModelId: admitted.binding.providerModelId,
+          retrievalAttemptId: admitted.binding.retrievalAttemptId,
+          schemaVersion: "memory-target-selection-v1",
+          secretFreeExecutionSnapshot: admitted.executionSnapshot,
+          startedAt: selectorAt,
+          state: "SUCCEEDED",
+          userId
+        }
+      });
+      await prisma.usageEvent.create({
+        data: {
+          cachedInputTokens: 0,
+          inputTokens: 1,
+          memoryExecutionBindingId: selector.id,
+          modelId: admitted.binding.providerModelId!,
+          outputTokens: 1,
+          provider: admitted.binding.providerId!,
+          providerModelId: admitted.binding.providerModelId!,
+          reasoningTokens: 0,
+          totalTokens: 2,
+          userId
+        }
+      });
+      const value: MemoryFactValueInput = {
+        ...factValue(
+          `control.safety.${randomUUID()}`,
+          admitted.controlIntent.statement!,
+          "control-safety"
+        ),
+        category: "preferences",
+        modality: "PREFERENCE",
+        safetyClassification: {
+          executionId: selector.id,
+          intent: admitted.controlIntent,
+          kind: "CONTROL"
+        }
+      };
+      const input: MemoryFactSaveInput = {
+        ...saveInput(scope.id, `control-safety-${randomUUID()}`, value),
+        authorization: {
+          action: "SAVE",
+          authorizationId: admitted.authorization.id,
+          authorizedPayloadHash: admitted.authorizedPayloadHash
+        },
+        modelRunId: admitted.run.id,
+        requestId: admitted.authorization.requestId
+      };
+      const repository = createPrismaMemoryFactRepository(suppressionKeyring, prisma);
+      await expect(repository.save(userId, input)).rejects.toMatchObject({
+        code: "memory_input_invalid"
+      });
+      await expect(prisma.memoryMutationAuthorization.findUniqueOrThrow({
+        where: { id: admitted.authorization.id }
+      })).resolves.toMatchObject({ consumedAt: null });
+
+      await expect(repository.save(userId, {
+        ...input,
+        value: {
+          ...value,
+          safetyClassification: {
+            executionId: admitted.binding.id,
+            intent: admitted.controlIntent,
+            kind: "CONTROL"
+          }
+        }
+      })).resolves.toMatchObject({ outcome: "CREATED" });
+      await expect(prisma.memoryFactVersion.findFirstOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({
+        safetyClassificationReasonCode: "save_request",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: admitted.binding.id
+      });
+    } finally {
+      await cleanupUser(userId);
+      await cleanupProvider?.();
+    }
+  });
+
+  it("accepts a legacy SENSITIVE control decision only as ordinary persisted memory", async () => {
+    const userId = await createActiveUser("control-sensitive-normalization");
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const legacyIntent = {
+        action: "SAVE",
+        applyResponsePreferences: false,
+        category: "sensitive",
+        categoryHint: "preferences",
+        confidenceBand: "HIGH",
+        memoryUseful: false,
+        pastChatsUseful: false,
+        queryText: null,
+        reasonCode: "save_request",
+        recencyRequested: false,
+        referencedMemoryRef: null,
+        replacementStatement: null,
+        responsePreference: false,
+        sensitiveDomainHint: "legacy-private",
+        sensitivity: "SENSITIVE",
+        statement: "I prefer concise answers.",
+        targetQuery: null,
+        thisChatOnly: false
+      } as const;
+      const decoded = decodeMemoryActionIntent(legacyIntent);
+      if (!decoded.ok) throw new Error("legacy_sensitive_intent_invalid");
+      const admitted = await createControlAuthorizedSave(
+        userId,
+        "sensitive-normalization",
+        { controlIntent: decoded.value }
+      );
+      cleanupProvider = admitted.cleanupProvider;
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const value: MemoryFactValueInput = {
+        ...factValue(
+          `control.sensitive-normalization.${randomUUID()}`,
+          legacyIntent.statement,
+          "concise"
+        ),
+        category: "preferences",
+        safetyClassification: {
+          executionId: admitted.binding.id,
+          intent: legacyIntent,
+          kind: "CONTROL"
+        }
+      };
+      const repository = createPrismaMemoryFactRepository(suppressionKeyring, prisma);
+
+      const saved = await repository.save(userId, {
+        ...saveInput(scope.id, `control-sensitive-${randomUUID()}`, value),
+        authorization: {
+          action: "SAVE",
+          authorizationId: admitted.authorization.id,
+          authorizedPayloadHash: admitted.authorizedPayloadHash
+        },
+        modelRunId: admitted.run.id,
+        requestId: admitted.authorization.requestId
+      });
+
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: saved.versionId }
+      })).resolves.toMatchObject({
+        category: "preferences",
+        sensitivityClass: "NORMAL"
+      });
+    } finally {
+      await cleanupUser(userId);
+      await cleanupProvider?.();
+    }
+  });
+
+  it("rejects swapped selected target, control action, and payload evidence", async () => {
+    const userId = await createActiveUser("control-evidence-swap");
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const repository = createTestMemoryFactRepository();
+      const first = await repository.save(userId, saveInput(
+        scope.id,
+        `control-evidence-first-${randomUUID()}`,
+        factValue("control.evidence.first", "I prefer concise answers.", "concise")
+      ));
+      const second = await repository.save(userId, saveInput(
+        scope.id,
+        `control-evidence-second-${randomUUID()}`,
+        factValue("control.evidence.second", "I prefer detailed answers.", "detailed")
+      ));
+      const controlIntent: MemoryActionIntent = {
+        action: "FORGET",
+        applyResponsePreferences: false,
+        category: null,
+        categoryHint: null,
+        confidenceBand: "HIGH",
+        memoryUseful: false,
+        pastChatsUseful: false,
+        queryText: null,
+        reasonCode: "forget_request",
+        recencyRequested: false,
+        referencedMemoryRef: null,
+        replacementStatement: null,
+        responsePreference: false,
+        sensitiveDomainHint: null,
+        sensitivity: "NORMAL",
+        statement: null,
+        targetQuery: "the concise answer preference",
+        thisChatOnly: false
+      };
+      const firstPayload = memoryTargetAuthorizationPayloadHash({
+        action: "FORGET",
+        expectedTargetVersionId: first.versionId,
+        targetFactId: first.factId
+      });
+      const admitted = await createControlAuthorizedSave(userId, "evidence-swap", {
+        controlIntent,
+        mutation: {
+          action: "FORGET",
+          authorizedPayloadHash: firstPayload,
+          expectedTargetVersionId: first.versionId,
+          targetFactId: first.factId
+        }
+      });
+      cleanupProvider = admitted.cleanupProvider;
+      const candidates = [
+        {
+          handle: "c0",
+          target: {
+            factId: first.factId,
+            statement: "I prefer concise answers.",
+            summary: {} as never,
+            versionId: first.versionId
+          }
+        },
+        {
+          handle: "c1",
+          target: {
+            factId: second.factId,
+            statement: "I prefer detailed answers.",
+            summary: {} as never,
+            versionId: second.versionId
+          }
+        }
+      ];
+      const candidateMapHash = memoryTargetCandidateMapHash(candidates);
+      const selectorInputHash = memorySha256({ candidateMapHash, version: 2 });
+      const selectorOutputHash = memoryTargetSelectionAcceptedOutputHash({
+        candidateMapHash,
+        inputHash: selectorInputHash,
+        selectedFactId: first.factId,
+        selectedHandle: "c0",
+        selectedVersionId: first.versionId
+      });
+      const selectorExecutionAt = new Date();
+      const selector = await prisma.memoryExecutionBinding.create({
+        data: {
+          acceptedOutputHash: selectorOutputHash,
+          completedAt: selectorExecutionAt,
+          connectionId: admitted.binding.connectionId,
+          createdAt: selectorExecutionAt,
+          credentialId: admitted.binding.credentialId,
+          credentialVersionId: admitted.binding.credentialVersionId,
+          destinationFingerprint: admitted.binding.destinationFingerprint,
+          inputHash: selectorInputHash,
+          logicalRole: "MEMORY_CONTROL",
+          ordinal: 1,
+          ownerType: "RETRIEVAL_ATTEMPT",
+          pipelineVersion: "memory-target-selection-v2",
+          policyVersion: "memory-target-selection-policy-v1",
+          promptVersion: "memory-target-selection-prompt-v1",
+          providerId: admitted.binding.providerId,
+          providerModelId: admitted.binding.providerModelId,
+          retrievalAttemptId: admitted.binding.retrievalAttemptId,
+          schemaVersion: "memory-target-selection-v1",
+          secretFreeExecutionSnapshot: admitted.executionSnapshot,
+          startedAt: selectorExecutionAt,
+          state: "SUCCEEDED",
+          userId
+        }
+      });
+      const authorizations = createPrismaMemoryMutationAuthorizationRepository(prisma);
+      const before = await prisma.memoryMutationAuthorization.count({ where: { userId } });
+      const selectorEvidence = {
+        admissionDeadlineAtMs: Date.now() + 4_000,
+        targetSelectionBindingId: selector.id,
+        targetSelectionCandidateMapHash: candidateMapHash,
+        targetSelectionOutputHash: selectorOutputHash,
+        targetSelectionSelectedHandle: "c0"
+      };
+      const selectorAuthorization = await authorizations.mintForControl(userId, {
+        action: "FORGET",
+        authorizedPayloadHash: firstPayload,
+        bindingId: admitted.binding.id,
+        chatId: admitted.chat.id,
+        controlIntent,
+        expectedTargetVersionId: first.versionId,
+        modelRunId: admitted.run.id,
+        sourceText: admitted.sourceText,
+        targetFactId: first.factId,
+        ...selectorEvidence
+      });
+      await expect(authorizations.mintForControl(userId, {
+        action: "FORGET",
+        authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
+          action: "FORGET",
+          expectedTargetVersionId: second.versionId,
+          targetFactId: second.factId
+        }),
+        bindingId: admitted.binding.id,
+        chatId: admitted.chat.id,
+        controlIntent,
+        expectedTargetVersionId: second.versionId,
+        modelRunId: admitted.run.id,
+        sourceText: admitted.sourceText,
+        targetFactId: second.factId,
+        ...selectorEvidence
+      })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+      await expect(authorizations.mintForControl(userId, {
+        action: "SAVE",
+        admissionDeadlineAtMs: Date.now() + 4_000,
+        authorizedPayloadHash: memorySha256("I prefer concise answers."),
+        bindingId: admitted.binding.id,
+        chatId: admitted.chat.id,
+        controlIntent,
+        modelRunId: admitted.run.id,
+        sourceText: admitted.sourceText
+      })).rejects.toMatchObject({ code: "memory_input_invalid" });
+      await expect(authorizations.mintForControl(userId, {
+        action: "FORGET",
+        authorizedPayloadHash: "9".repeat(64),
+        bindingId: admitted.binding.id,
+        chatId: admitted.chat.id,
+        controlIntent,
+        expectedTargetVersionId: first.versionId,
+        modelRunId: admitted.run.id,
+        sourceText: admitted.sourceText,
+        targetFactId: first.factId,
+        ...selectorEvidence
+      })).rejects.toMatchObject({ code: "memory_input_invalid" });
+      await expect(prisma.memoryMutationAuthorization.count({ where: { userId } }))
+        .resolves.toBe(before + 1);
+
+      const consumeTampered = async (input: Readonly<{
+        action: "FORGET" | "SAVE";
+        authorizedPayloadHash: string;
+        expectedTargetVersionId?: string;
+        targetFactId?: string;
+      }>) => prisma.$transaction((tx) => consumeMemoryMutationAuthorization(
+        tx,
+        userId,
+        {
+          ...input,
+          authorizationId: selectorAuthorization.id,
+          requestId: selectorAuthorization.requestId
+        }
+      ));
+      const tamperedTargetPayload = memoryTargetAuthorizationPayloadHash({
+        action: "FORGET",
+        expectedTargetVersionId: second.versionId,
+        targetFactId: second.factId
+      });
+      await prisma.memoryMutationAuthorization.update({
+        data: {
+          authorizedPayloadHash: tamperedTargetPayload,
+          expectedTargetVersionId: second.versionId,
+          targetFactId: second.factId
+        },
+        where: { id: selectorAuthorization.id }
+      });
+      await expect(consumeTampered({
+        action: "FORGET",
+        authorizedPayloadHash: tamperedTargetPayload,
+        expectedTargetVersionId: second.versionId,
+        targetFactId: second.factId
+      })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+
+      const tamperedSavePayload = memorySha256("I prefer concise answers.");
+      await prisma.memoryMutationAuthorization.update({
+        data: {
+          action: "SAVE",
+          authorizedPayloadHash: tamperedSavePayload,
+          expectedTargetVersionId: null,
+          targetFactId: null
+        },
+        where: { id: selectorAuthorization.id }
+      });
+      await expect(consumeTampered({
+        action: "SAVE",
+        authorizedPayloadHash: tamperedSavePayload
+      })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+
+      const tamperedPayload = "9".repeat(64);
+      await prisma.memoryMutationAuthorization.update({
+        data: {
+          action: "FORGET",
+          authorizedPayloadHash: tamperedPayload,
+          expectedTargetVersionId: first.versionId,
+          targetFactId: first.factId
+        },
+        where: { id: selectorAuthorization.id }
+      });
+      await expect(consumeTampered({
+        action: "FORGET",
+        authorizedPayloadHash: tamperedPayload,
+        expectedTargetVersionId: first.versionId,
+        targetFactId: first.factId
+      })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+      await expect(prisma.memoryMutationAuthorization.findUniqueOrThrow({
+        where: { id: selectorAuthorization.id }
+      })).resolves.toMatchObject({ consumedAt: null });
+    } finally {
+      await cleanupUser(userId);
+      await cleanupProvider?.();
     }
   });
 
@@ -305,6 +1332,44 @@ describe("Prisma Memory persistence", () => {
         targetFactId: current.factId
       });
 
+      const legacyFolder = await prisma.folder.create({
+        data: { name: "Legacy authorization target", userId }
+      });
+      const legacyScope = await createPrismaMemoryScopeRepository(prisma).ensure(userId, {
+        targetId: legacyFolder.id,
+        type: "FOLDER"
+      });
+      const legacy = await createTestMemoryFactRepository().save(userId, saveInput(
+        legacyScope.id,
+        `tool-legacy-${randomUUID()}`,
+        factValue(
+          `legacy.tool.${randomUUID()}`,
+          "Legacy folder preference must remain dormant.",
+          "legacy"
+        )
+      ));
+      const legacyEditCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { replacement_text: "Never authorize this legacy target." },
+          modelRunId: run.id,
+          ordinal: 2,
+          providerCallId: randomUUID(),
+          roundIndex: 0,
+          toolName: "edit_memory"
+        }
+      });
+      await expect(repository.mintForTool(userId, {
+        action: "EDIT",
+        authorizedPayloadHash: "5".repeat(64),
+        chatId: chat.id,
+        expectedTargetVersionId: legacy.versionId,
+        modelRunId: run.id,
+        persistedToolCallId: legacyEditCall.id,
+        sourceText,
+        targetFactId: legacy.factId,
+        toolName: legacyEditCall.toolName
+      })).rejects.toMatchObject({ code: "memory_fact_not_found" });
+
       const otherScope = await createPrismaMemoryScopeRepository(prisma)
         .ensureGlobal(otherUserId);
       const other = await createTestMemoryFactRepository().save(otherUserId, saveInput(
@@ -316,7 +1381,7 @@ describe("Prisma Memory persistence", () => {
         data: {
           arguments: { replacement_text: "Do not cross owners." },
           modelRunId: run.id,
-          ordinal: 2,
+          ordinal: 3,
           providerCallId: randomUUID(),
           roundIndex: 0,
           toolName: "edit_memory"

@@ -230,15 +230,19 @@ function createPreparingMemoryMaterializer(
   adapter: ProviderAdapter,
   bridge: ProviderToolBridge | undefined
 ): PreparingRunMemoryMaterializer {
-  return (personalContext) => {
+  return (personalContext, memoryActionAnswerResult) => {
     const normalizedRequest: NormalizedRunRequest = {
       ...prepared.normalizedRequest,
-      personalContext
+      ...(personalContext ? { personalContext } : {}),
+      prompt: {
+        ...prepared.normalizedRequest.prompt,
+        ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+      }
     };
     const request: ProviderRunRequest = {
       ...prepared.providerRequest,
       ...normalizedRequest,
-      personalContext
+      ...(personalContext ? { personalContext } : {})
     };
     const budgeted = applyProviderRequestContextBudget({
       ...(bridge ? { bridge } : {}),

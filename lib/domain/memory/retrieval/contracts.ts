@@ -27,18 +27,23 @@ export type MemoryRetrievalFilters = Readonly<{
 }>;
 
 export type MemoryRetrievalPlan = Readonly<{
+  /** Allows only the narrow query-independent response-preference projection. */
+  applyResponsePreferences: boolean;
   filters: MemoryRetrievalFilters;
   lexicalQuery: string | null;
   normalizedExactQuery: string;
   normalizedQuery: string;
   plannerVersion: string;
   queryPresent: boolean;
+  recencyRequested: boolean;
 }>;
 
 export type MemoryRetrievalPlannerInput = Readonly<{
+  applyResponsePreferences?: boolean;
   currentUserText: string;
   filters?: Partial<MemoryRetrievalFilters>;
   now: Date;
+  recencyRequested?: boolean;
 }>;
 
 export type MemoryCandidateMetadata = Readonly<{
