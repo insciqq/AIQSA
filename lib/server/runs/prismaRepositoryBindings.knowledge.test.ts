@@ -88,6 +88,7 @@ describe("accepted Knowledge Source snapshot binding", () => {
     });
     const create = vi.fn(async () => ({}));
     const createScope = vi.fn(async () => ({}));
+    const createSession = vi.fn(async () => ({}));
     const queryRaw = vi.fn(async () => [{
       indexGenerationId: "generation-1",
       ownerUserId: "owner-1"
@@ -95,6 +96,7 @@ describe("accepted Knowledge Source snapshot binding", () => {
     const tx = {
       $queryRaw: queryRaw,
       knowledgeRunBinding: { create },
+      knowledgeRetrievalSession: { create: createSession },
       knowledgeRunScope: { create: createScope }
     } as unknown as Prisma.TransactionClient;
 
@@ -121,6 +123,13 @@ describe("accepted Knowledge Source snapshot binding", () => {
         modelRunId: "run-1",
         resolvedBaseCount: 1,
         resolvedSourceCount: 0
+      })
+    });
+    expect(createSession).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modelRunId: "run-1",
+        originalIntent: { kind: "tool_loop_v1" },
+        version: 2
       })
     });
   });
@@ -161,6 +170,7 @@ describe("accepted Knowledge Source snapshot binding", () => {
     const tx = {
       $queryRaw: vi.fn(async () => [{ ownerUserId: "owner-1" }]),
       knowledgeRunBinding: { create: vi.fn() },
+      knowledgeRetrievalSession: { create: vi.fn(async () => ({})) },
       knowledgeRunProfileBinding: { create: profileCreate },
       knowledgeRunScope: { create: vi.fn(async () => ({})) },
       knowledgeRunSourceBinding: { create: sourceCreate }
@@ -232,6 +242,7 @@ describe("accepted Knowledge Source snapshot binding", () => {
         profileRevisionId: "profile-revision-1"
       }]),
       knowledgeRunBinding: { create: baseCreate },
+      knowledgeRetrievalSession: { create: vi.fn(async () => ({})) },
       knowledgeRunProfileBinding: { create: profileCreate },
       knowledgeRunScope: { create: vi.fn(async () => ({})) },
       knowledgeRunSourceBinding: { create: vi.fn() }

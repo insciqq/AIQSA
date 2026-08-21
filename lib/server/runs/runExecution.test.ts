@@ -52,6 +52,7 @@ import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import {
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
@@ -653,6 +654,29 @@ function focusedKnowledgeExecutor(
     capability: "knowledge",
     execute,
     tool: knowledgeRetrievalTool
+  };
+  return { execute, executor };
+}
+
+function toolLoopKnowledgeExecutor(evidence = knowledgeEvidence()) {
+  const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async (call) => ({
+    callId: call.id,
+    content: knowledgeToolResultContent(evidence),
+    name: call.name,
+    rawPreview: {
+      knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+      knowledgeRetrieval: evidence,
+      providerCall: true
+    },
+    status: "complete"
+  }));
+  const executor: KnowledgeToolExecutor = {
+    accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+    capability: "knowledge",
+    execute,
+    preflight: vi.fn(async () => ({ kind: "admitted" as const })),
+    tool: knowledgeRetrievalTool,
+    tools: [knowledgeRetrievalTool]
   };
   return { execute, executor };
 }
@@ -2659,6 +2683,177 @@ describe("run execution", () => {
       })
     ]);
     expect(dispatch.order).toEqual(["prepare", "dispatch", "settle"]);
+  });
+
+  it("settles parallel Knowledge and Search calls before one continuation", async () => {
+    const providerRequests: ProviderRunRequest[] = [];
+    const repository = createRepository({
+      groundingResult: structuralGroundingResult("Combined answer [K1].")
+    });
+    const { execute, executor } = toolLoopKnowledgeExecutor();
+    const egress = createMemoryEgressRecorder();
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [
+            {
+              arguments: { query: "private retention policy" },
+              id: "knowledge-call-1",
+              name: KNOWLEDGE_SEARCH_TOOL_NAME
+            },
+            {
+              arguments: { query: "current public retention policy" },
+              id: "search-call-1",
+              name: "search_engine_1"
+            }
+          ]
+        });
+      }
+      return providerResult({ finalText: "Combined answer [K1]." });
+    });
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      async search() {
+        return {
+          artifacts: [],
+          finalProviderResponsePreview: {},
+          findings: "Current web evidence",
+          providerResponseId: "search-response-1",
+          requestPreview: {},
+          sources: [],
+          usage: usage(1, 0, 0)
+        };
+      }
+    };
+    const prepared = preparedData({
+      knowledgeBaseIds: ["base-1"],
+      modelId: "openai-answer-model",
+      provider: "openai",
+      searchPlan: perplexityClientSearchPlan()
+    });
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: executor,
+      memoryEgress: egress.service,
+      prepared,
+      repository: repository.repository,
+      searchAdapter
+    })).text();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(repository.searchRuns).toHaveLength(1);
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests[1]?.providerToolMessages).toHaveLength(4);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain(
+      "Bounded private passage"
+    );
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
+    expect(egress.began.some((receipt) => receipt.destinationKind === "knowledge"))
+      .toBe(true);
+  });
+
+  it("supports a sequential Knowledge then Search tool chain", async () => {
+    const providerRequests: ProviderRunRequest[] = [];
+    const repository = createRepository({
+      groundingResult: structuralGroundingResult("Sequential answer [K1].")
+    });
+    const { executor } = toolLoopKnowledgeExecutor();
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "private policy" },
+            id: "knowledge-call-1",
+            name: KNOWLEDGE_SEARCH_TOOL_NAME
+          }]
+        });
+      }
+      if (providerRequests.length === 2) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "public policy" },
+            id: "search-call-1",
+            name: "search_engine_1"
+          }]
+        });
+      }
+      return providerResult({ finalText: "Sequential answer [K1]." });
+    });
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      async search() {
+        return {
+          artifacts: [],
+          finalProviderResponsePreview: {},
+          findings: "Public result",
+          providerResponseId: "search-response-1",
+          requestPreview: {},
+          sources: [],
+          usage: usage(1, 0, 0)
+        };
+      }
+    };
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: executor,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai",
+        searchPlan: perplexityClientSearchPlan()
+      }),
+      repository: repository.repository,
+      searchAdapter
+    })).text();
+
+    expect(providerRequests).toHaveLength(3);
+    expect(repository.searchRuns).toHaveLength(1);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
+  });
+
+  it("continues after a completed zero-candidate Knowledge result", async () => {
+    const repository = createRepository({
+      groundingResult: structuralGroundingResult("No matching private passage was required.")
+    });
+    const { executor } = toolLoopKnowledgeExecutor(emptyKnowledgeEvidence());
+    let providerCalls = 0;
+    const adapter = createAdapter(async function* () {
+      providerCalls += 1;
+      return providerCalls === 1
+        ? providerResult({
+            finalText: "",
+            toolCalls: [{
+              arguments: { query: "missing private fact" },
+              id: "knowledge-call-1",
+              name: KNOWLEDGE_SEARCH_TOOL_NAME
+            }]
+          })
+        : providerResult({ finalText: "No matching private passage was required." });
+    });
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: executor,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(providerCalls).toBe(2);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
   });
 
   it("executes a Perplexity tool call, persists search evidence, and synthesizes with aggregate usage", async () => {

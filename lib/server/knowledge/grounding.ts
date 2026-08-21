@@ -38,10 +38,23 @@ const groupedCitation = /[\[(【]\s*((?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?)(?:\s*(?:[,
 const citationToken = /K[1-9]\d{0,3}(?:\.[1-9]\d?)?/giu;
 const bracketedKnowledgeToken = /\[\s*(K[^\]]{0,64})\s*\]/giu;
 const adjacentDuplicate = /(\[K[1-9]\d{0,3}(?:\.[1-9]\d?)?\])(?:\s*\1)+/giu;
+const commaGroupedCitation = /\[\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?(?:\s*,\s*K[1-9]\d{0,3}(?:\.[1-9]\d?)?)+)\s*\]/giu;
 const internalIdentity = /\b(?:sourceId|sourceArtifactId|sourceVersionId|documentId|documentVersionId|knowledgeBaseId|knowledgeBaseSnapshotId|indexGenerationId|chunkId|passageId|sectionId|evidenceItemId|evidencePackageId|manifestId|manifestHash|retrievalSessionId|knowledgeRunId|modelRunId|modelRunToolCallId|providerAttemptId|providerCallId|providerResponseId|profileRevisionId|embeddingProviderModelId|credentialId|receiptHash|contentHash|requestHash|checkpointHash|idempotencyKey|dispatchAttemptKey|fusedScore|vectorDistance|rawScore|(?:vector|lexical|semantic|hybrid|rrf|rerank|similarity|confidence)Score|confidenceBucket|preRerankRank|postRerankRank|knowledge_focused_v1)\b/iu;
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function normalizeToolLoopCitationSyntax(
+  value: string,
+  availableHandles: ReadonlySet<string>
+): string {
+  return value.replace(commaGroupedCitation, (match, body: string) => {
+    const handles = body.split(",").map((handle) => handle.trim().toUpperCase());
+    return handles.every((handle) => availableHandles.has(handle))
+      ? handles.map((handle) => `[${handle}]`).join("")
+      : match;
+  });
 }
 
 function containsEvidenceInternalIdentity(
@@ -92,6 +105,16 @@ function assertNoMalformedOrUnknownHandles(
       );
     }
     seen.push(raw);
+  }
+  const outsideBrackets = answer.replace(
+    /\[\s*K[1-9]\d{0,3}(?:\.[1-9]\d?)?\s*\]/giu,
+    ""
+  );
+  if (/\bK[1-9]\d{0,3}(?:\.[1-9]\d?)?\b/iu.test(outsideBrackets)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_citation_contract_failed",
+      "The Knowledge answer used a malformed citation handle"
+    );
   }
   return seen;
 }
@@ -145,6 +168,43 @@ export function groundKnowledgeAnswer(input: Readonly<{
     finalText: normalizedBody,
     originalAnswerHash: hash(input.answer),
     outcome: answered ? "answered" : "insufficient_evidence",
+    receiptHash: knowledgeEvidenceReceiptHash(input.evidence),
+    sessionId: input.evidence.sessionId,
+    version: KNOWLEDGE_GROUNDING_VERSION
+  });
+}
+
+/**
+ * Structural settlement for the ordinary answer-model tool loop. It keeps the
+ * answer as ordinary Markdown and only normalizes an unambiguous comma-group
+ * whose every handle belongs to provider-visible, still-available evidence.
+ */
+export function groundKnowledgeToolLoopAnswer(input: Readonly<{
+  answer: string;
+  evidence: KnowledgeEvidencePackage;
+}>): KnowledgeGroundingResult {
+  const original = input.answer.replace(/\r\n?/gu, "\n");
+  if (!original.trim() || internalIdentity.test(original) ||
+    containsEvidenceInternalIdentity(original, input.evidence)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      !original.trim()
+        ? "The answer body is empty"
+        : "The answer leaked an internal Knowledge identity"
+    );
+  }
+  const availableHandles = new Set(
+    input.evidence.items
+      .filter((item) => item.state === "available" && item.excerpt !== null)
+      .map((item) => item.handle)
+  );
+  const finalText = normalizeToolLoopCitationSyntax(original, availableHandles);
+  assertNoMalformedOrUnknownHandles(finalText, availableHandles);
+  return Object.freeze({
+    finalAnswerHash: hash(finalText),
+    finalText,
+    originalAnswerHash: hash(input.answer),
+    outcome: "answered",
     receiptHash: knowledgeEvidenceReceiptHash(input.evidence),
     sessionId: input.evidence.sessionId,
     version: KNOWLEDGE_GROUNDING_VERSION

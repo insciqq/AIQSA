@@ -45,6 +45,9 @@ export type KnowledgeOperationRequestEnvelopeV2 = Readonly<{
 export type KnowledgeFocusedOperationRequestV2 = KnowledgeOperationRequestEnvelopeV2 &
   Readonly<{ focused: KnowledgeFocusedRequestV1; operation: "automatic_search" }>;
 
+export type KnowledgeSearchOperationRequestV2 = KnowledgeOperationRequestEnvelopeV2 &
+  Readonly<{ operation: "automatic_search"; query: string }>;
+
 export type KnowledgeFindExactOperationRequestV2 = KnowledgeOperationRequestEnvelopeV2 &
   Readonly<{ exact: KnowledgeExactSearchRequest; operation: "find_exact" }>;
 
@@ -58,6 +61,7 @@ export type KnowledgeOperationRequestV2 =
   | KnowledgeDiscoverSourcesOperationRequestV2
   | KnowledgeFindExactOperationRequestV2
   | KnowledgeFocusedOperationRequestV2
+  | KnowledgeSearchOperationRequestV2
   | KnowledgeReadSourceOperationRequestV2;
 
 export type KnowledgeOperationTargetingV2 = Pick<
@@ -94,7 +98,7 @@ function integer(value: unknown, minimum: number, maximum: number): value is num
 function canonicalText(value: unknown, maximum: number): string | null {
   if (typeof value !== "string" || DISALLOWED_TEXT.test(value)) return null;
   const normalized = value.normalize("NFKC").trim();
-  return normalized.length > 0 && normalized.length <= maximum && normalized === value
+  return normalized.length > 0 && [...normalized].length <= maximum && normalized === value
     ? normalized
     : null;
 }
@@ -214,17 +218,28 @@ function decodeRead(value: unknown): NormalizedReadSourceRequest | null {
 /** Decodes only the focused operation and internal exact/read/discover primitives. */
 export function decodeKnowledgeOperationRequestV2(value: unknown): KnowledgeOperationRequestV2 | null {
   if (!record(value) || typeof value.operation !== "string") return null;
-  const variantKey = ({
-    automatic_search: "focused",
-    discover_sources: "discovery",
-    find_exact: "exact",
-    read_source: "read"
-  } as const)[value.operation as KnowledgeOperationKind];
+  let variantKey: "discovery" | "exact" | "focused" | "query" | "read" | undefined;
+  if (value.operation === "automatic_search") {
+    variantKey = Object.hasOwn(value, "query") ? "query" : "focused";
+  } else {
+    variantKey = ({
+      discover_sources: "discovery",
+      find_exact: "exact",
+      read_source: "read"
+    } as const)[value.operation as Exclude<KnowledgeOperationKind, "automatic_search">];
+  }
   if (!variantKey || !exactKeys(value, [...envelopeKeys, variantKey])) return null;
   const envelope = decodeEnvelope(value);
   if (!envelope) return null;
   switch (value.operation) {
     case "automatic_search": {
+      if (variantKey === "query") {
+        const query = canonicalText(value.query, KNOWLEDGE_QUERY_MAX_CHARACTERS);
+        return query && envelope.resolvedSourceIds.length >= 1 &&
+          envelope.sourceAliases.length === 0
+          ? Object.freeze({ ...envelope, operation: "automatic_search", query })
+          : null;
+      }
       const focused = decodeKnowledgeFocusedRequest(value.focused);
       return focused && envelope.phaseOrdinal === 0 && envelope.subqueryOrdinal === 0 &&
         envelope.resolvedSourceIds.length >= 1 &&

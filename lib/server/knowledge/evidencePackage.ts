@@ -103,10 +103,9 @@ export type KnowledgeEvidencePackage = Readonly<{
   }>;
   degradedFlags: readonly string[];
   items: readonly KnowledgeEvidencePackageItem[];
-  originalIntent: Readonly<{
-    kind: "focused_v1";
-    query: string;
-  }>;
+  originalIntent:
+    | Readonly<{ kind: "focused_v1"; query: string }>
+    | Readonly<{ kind: "tool_loop_v1" }>;
   readiness: Readonly<{
     excludedResources: number;
     readyBases: number;

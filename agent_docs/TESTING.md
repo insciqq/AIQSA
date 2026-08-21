@@ -56,15 +56,19 @@ Knowledge changes use small co-located tests through the same narrow, hermetic, 
 
 - tenant, Project, direct-Source, Base, and `All my knowledge` scope isolation;
 - one canonical Source vote across overlapping Bases;
-- one bounded current-plus-previous-user focused request with RU/EN Unicode preserved;
-- exactly one query embedding, one hybrid repository operation, and one logical answer attempt;
+- the sole strict `search_knowledge({ query })` descriptor, Unicode/code-point bounds, and rejection of hidden controls;
+- no generated focused request on new runs, plus read/recovery compatibility for accepted historical focused runs;
+- Search, Knowledge, MCP, attachments, Assistants, and Personal Memory context remain independently composable;
+- one query embedding per compatible Profile and one hybrid repository operation per accepted Knowledge call;
+- atomic four-call budgets, pre-I/O rejection of call five, authority/egress rechecks, and bounded timeout;
 - mandatory vector and `simple`/English/Russian lexical lanes fail closed together;
 - weighted reciprocal-rank fusion, fixed Source diversity, content deduplication, and same-Source neighbor bounds;
-- answer-provider requests contain no Knowledge tools and only exact manifest evidence;
-- exact status parsing, dispatched-handle binding, Source Version/locator attribution, and no second generation;
+- completed result replay in execution/recovery and normal continuation after zero candidates;
+- exact checkpoint-delivered handle binding, Source Version/locator attribution, ordinary Markdown, and no second generation;
 - distinct processing, partial-ready, zero-candidate, insufficient-evidence, retrieval, provider, and contract outcomes;
 - embedding-free Source-local reads, bounded exact search, and metadata-only discovery;
 - recovery never repeats settled or crash-ambiguous provider I/O;
+- one session per run, one receipt per Knowledge call, and four-binding receipt persistence/replay;
 - replacement/deletion immutability, private-payload purge, and content-free logs/client projections;
 - normalized page, heading, table, form, OCR, and layout locators remain attributable citation context.
 

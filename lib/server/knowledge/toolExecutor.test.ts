@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
   KNOWLEDGE_EXACT_TOOL_NAME,
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
   type KnowledgeAcceptedBinding
 } from "./retrievalTypes";
 
@@ -118,17 +120,18 @@ function executor() {
   };
 }
 
-describe("Knowledge focused executor surface", () => {
-  it("advertises no provider tools and accepts only focused/internal operation names", () => {
+describe("Knowledge executor surface", () => {
+  it("advertises and accepts only search_knowledge for answer models", () => {
     const { runtime } = executor();
-    expect(runtime.tools).toEqual([]);
+    expect(runtime.tools).toEqual([expect.objectContaining({ name: KNOWLEDGE_SEARCH_TOOL_NAME })]);
+    expect(runtime.accepts(KNOWLEDGE_SEARCH_TOOL_NAME)).toBe(true);
     for (const name of [
       KNOWLEDGE_FOCUSED_OPERATION_NAME,
       KNOWLEDGE_EXACT_TOOL_NAME,
       KNOWLEDGE_READ_SOURCE_TOOL_NAME,
-      KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME
-    ]) expect(runtime.accepts(name)).toBe(true);
-    for (const name of ["retrieve_knowledge", "search_knowledge", "structured_analysis",
+      KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
+      "retrieve_knowledge",
+      "structured_analysis",
       "visual_analysis"]) expect(runtime.accepts(name)).toBe(false);
   });
 
@@ -153,7 +156,7 @@ describe("Knowledge focused executor surface", () => {
     expect(store.hybridSearch).not.toHaveBeenCalled();
   });
 
-  it("fans one query embedding across compatible profile revisions in one repository operation", async () => {
+  it("fans one query embedding across four ready profiles and reports excluded sources", async () => {
     const embed = vi.fn(async () => ({
       model: "embedding-upstream",
       requestId: "embedding-request-1",
@@ -167,9 +170,9 @@ describe("Knowledge focused executor surface", () => {
       providerModelId: "embedding-model-1"
     }));
     const hybridSearch = vi.fn(async () => ({
-      bindingCount: 2,
+      bindingCount: 4,
       candidateCount: 1,
-      candidateCounts: { 0: 1, 1: 0 },
+      candidateCounts: { 0: 1, 1: 0, 2: 0, 3: 0 },
       canonicalSourceProvenance: [],
       passages: [{
         annRank: 1,
@@ -208,49 +211,49 @@ describe("Knowledge focused executor surface", () => {
     const runtime = createKnowledgeToolExecutor({
       embeddingRuntime: { resolve },
       store: {
+        budgetState: vi.fn(async () => ({
+          evidenceCount: 0,
+          excludedResources: 1,
+          invocationOrdinal: 1,
+          policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+          priorContentHashes: [],
+          stopReason: null,
+          usage: {
+            cumulativeCandidates: 0,
+            estimatedCostMicros: 0,
+            latencyMs: 0,
+            operations: 0,
+            queryEmbeddingCalls: 0,
+            retrievedTokens: 0
+          }
+        })),
         hybridSearch,
         invocationOrdinal: vi.fn(async () => 1),
-        loadBindings: vi.fn(async () => [{
+        loadBindings: vi.fn(async () => Array.from({ length: 4 }, (_, ordinal) => ({
           ...acceptedBinding,
-          profileRevisionId: "profile-revision-1"
-        }, {
-          ...acceptedBinding,
-          baseName: "Base 2",
-          indexGenerationId: "generation-2",
-          knowledgeBaseId: "base-2",
-          knowledgeBaseSnapshotId: "snapshot-2",
-          ordinal: 1,
-          profileRevisionId: "profile-revision-2"
-        }]),
-        loadScopeAliases: vi.fn(async () => [
-          {
-            alias: "S1",
-            bindingOrdinal: 0,
-            kind: "source" as const,
-            label: "Source",
-            sourceArtifactId: "artifact-1",
-            sourceId: "source-1",
-            sourceVersionId: "source-version-1"
-          },
-          {
-            alias: "S2",
-            bindingOrdinal: 1,
-            kind: "source" as const,
-            label: "Source 2",
-            sourceArtifactId: "artifact-2",
-            sourceId: "source-2",
-            sourceVersionId: "source-version-2"
-          }
-        ]),
+          baseName: `Base ${ordinal + 1}`,
+          indexGenerationId: `generation-${ordinal + 1}`,
+          knowledgeBaseId: `base-${ordinal + 1}`,
+          knowledgeBaseSnapshotId: `snapshot-${ordinal + 1}`,
+          ordinal,
+          profileRevisionId: `profile-revision-${ordinal + 1}`
+        }))),
+        loadScopeAliases: vi.fn(async () => Array.from({ length: 4 }, (_, ordinal) => ({
+          alias: `S${ordinal + 1}`,
+          bindingOrdinal: ordinal,
+          kind: "source" as const,
+          label: `Source ${ordinal + 1}`,
+          sourceArtifactId: `artifact-${ordinal + 1}`,
+          sourceId: `source-${ordinal + 1}`,
+          sourceVersionId: `source-version-${ordinal + 1}`
+        }))),
         persistReceipt
       }
     });
-    const focused = createKnowledgeFocusedRequest({ currentUserMessage: "Question" })!;
-
     const result = await runtime.execute({
-      arguments: focused,
+      arguments: { query: "Question" },
       id: "call-1",
-      name: KNOWLEDGE_FOCUSED_OPERATION_NAME
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
     }, {
       persistedToolCallId: "tool-call-1",
       request: request(),
@@ -259,6 +262,9 @@ describe("Knowledge focused executor surface", () => {
     });
 
     expect(result.status).toBe("complete");
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("partial_sources_ready")
+    });
     expect(resolve).toHaveBeenCalledOnce();
     expect(embed).toHaveBeenCalledOnce();
     expect(embed).toHaveBeenCalledWith({ mode: "query", texts: ["Question"] });
@@ -270,7 +276,9 @@ describe("Knowledge focused executor surface", () => {
       resultLimit: 8,
       vectors: [
         expect.objectContaining({ bindingOrdinal: 0 }),
-        expect.objectContaining({ bindingOrdinal: 1 })
+        expect.objectContaining({ bindingOrdinal: 1 }),
+        expect.objectContaining({ bindingOrdinal: 2 }),
+        expect.objectContaining({ bindingOrdinal: 3 })
       ]
     }));
     expect(persistReceipt).toHaveBeenCalledOnce();

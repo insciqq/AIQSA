@@ -80,6 +80,49 @@ describe("Prisma Knowledge canonical direct Source scope", () => {
     expect(baseFindMany).toHaveBeenCalledOnce();
   });
 
+  it("skips a processing-only profile while loading the ready profile subset", async () => {
+    const profileFindMany = vi.fn(async (input: unknown) => {
+      expect(input).toMatchObject({
+        where: {
+          sourceBindings: {
+            some: {
+              readinessState: "ready",
+              sourceId: { not: null },
+              tombstonedAt: null
+            }
+          }
+        }
+      });
+      return [{
+        embeddingConnectionId: "embedding-connection",
+        embeddingCredentialId: "embedding-credential",
+        embeddingCredentialSource: "default",
+        embeddingCredentialVersionId: "embedding-credential-version",
+        embeddingExecutionSnapshot: { version: 1 },
+        embeddingProviderModelId: "embedding-model",
+        id: "ready-profile-binding",
+        ordinal: 1,
+        profileRevisionId: "ready-profile-revision",
+        sourceBindings: [{ sourceId: "ready-source" }],
+        targetDimension: 1_024,
+        vectorSpaceFingerprint: "a".repeat(64)
+      }];
+    });
+    const store = createPrismaKnowledgeRetrievalStore({
+      knowledgeRunBinding: { findMany: vi.fn(async () => []) },
+      knowledgeRunProfileBinding: { findMany: profileFindMany }
+    } as never);
+
+    await expect(store.loadBindings({ runId: "run-1", userId: "owner-1" }))
+      .resolves.toEqual([
+        expect.objectContaining({
+          ordinal: 1,
+          profileRevisionId: "ready-profile-revision",
+          selectedSourceIds: ["ready-source"]
+        })
+      ]);
+  });
+
   it("keeps a Base alias bounded to its admitted canonical Source set", async () => {
     const store = createPrismaKnowledgeRetrievalStore({
       knowledgeRunBinding: {

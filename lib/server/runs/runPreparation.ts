@@ -1,5 +1,4 @@
 import { textMessageContent } from "../../domain/content";
-import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
   decodeKnowledgePlan,
   decodeKnowledgeSelection,
@@ -67,7 +66,7 @@ import type {
 } from "../skills/runMaterialization";
 import { withSelectedSkillContext } from "../skills/userContext";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
-import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import { knowledgeRetrievalTool } from "../knowledge/knowledgeTools";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   getRunAttachmentLimits,
@@ -847,6 +846,22 @@ function validateMcpCapabilities(input: Readonly<{
   return null;
 }
 
+function validateKnowledgeCapabilities(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  capabilities: ProviderModelCapabilities;
+  enabled: boolean;
+  modelId: string;
+  provider: string;
+}>): { code: string; status: 400 } | null {
+  if (!input.enabled) return null;
+  return input.bridge?.supportsToolCalling({
+    modelId: input.modelId,
+    provider: input.provider
+  }) && input.capabilities.toolCalling === true
+    ? null
+    : { code: "knowledge_tool_calling_not_supported", status: 400 };
+}
+
 export async function prepareRun(
   deps: RunPreparationDeps,
   input: RunPreparationInput
@@ -993,22 +1008,18 @@ export async function prepareRun(
       );
     }
   }
-  const focusedKnowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";
+  const knowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";
 
-  const decodedSearchPlan = focusedKnowledgeRequested
-    ? { ok: true as const, plan: { mode: "all_selected" as const, optionIds: [] as string[] } }
-    : assistantRun
+  const decodedSearchPlan = assistantRun
     ? null
     : decodeSearchPlan(body?.searchPlan ?? (project ? project.defaults.searchPlan : undefined));
-  if (!focusedKnowledgeRequested && !assistantRun && body?.searchPlan === undefined && !project) {
+  if (!assistantRun && body?.searchPlan === undefined && !project) {
     return failure("search_plan_invalid", 400);
   }
   if (decodedSearchPlan && !decodedSearchPlan.ok) {
     return failure(decodedSearchPlan.code, 400);
   }
-  let requestedSearchPlan = focusedKnowledgeRequested
-    ? { mode: "all_selected" as const, optionIds: [] as string[] }
-    : assistantRun
+  let requestedSearchPlan = assistantRun
     ? assistantRun.searchPlan
     : decodedSearchPlan && decodedSearchPlan.ok
       ? decodedSearchPlan.plan
@@ -1017,12 +1028,12 @@ export async function prepareRun(
     plan: import("../../domain/search").SearchPlan | null;
     source: "organization" | "personal";
   } | null = null;
-  if (!focusedKnowledgeRequested && project && body && (
+  if (project && body && (
     "searchPreferencePlan" in body || "searchPreferenceSource" in body
   )) {
     return failure("search_preference_invalid", 400);
   }
-  if (!focusedKnowledgeRequested && !assistantRun && body &&
+  if (!assistantRun && body &&
     ("searchPreferencePlan" in body || "searchPreferenceSource" in body)) {
     if (body.searchPreferenceSource === "organization") {
       requestedSearchPreference = { plan: null, source: "organization" };
@@ -1056,7 +1067,7 @@ export async function prepareRun(
   )) {
     return failure("assistant_not_available", 404);
   }
-  if (!focusedKnowledgeRequested && project && (
+  if (project && (
     requestedSearchPlan.optionIds.some((id) => !project.searchOptionIds.includes(id)) ||
     (project.searchOptionIds.length === 0 && requestedSearchPlan.optionIds.length > 0)
   )) {
@@ -1075,6 +1086,7 @@ export async function prepareRun(
       ...(project ? { executionScope: "project" as const } : {}),
       providerConnectionId: selectedProvider,
       providerModelId: selectedModelId,
+      ...(knowledgeRequested ? { requiresClientToolCoexistence: true } : {}),
       searchPlan: requestedSearchPlan,
       ...(requestedSearchPreference && !project
         ? {
@@ -1094,13 +1106,9 @@ export async function prepareRun(
     throw error;
   }
   modelConfiguration = admissionPlan.answer.modelConfiguration;
-  // Keep the provider-normalized selection for ordinary user defaults, while
-  // the focused execution snapshot below intentionally carries no Search.
   let acceptedSearchPlan = admissionPlan.requestedSearchPlan;
-  requestedSearchPlan = focusedKnowledgeRequested
-    ? { mode: "all_selected", optionIds: [] }
-    : acceptedSearchPlan;
-  if (!focusedKnowledgeRequested && project && requestedSearchPlan.optionIds.some((id) =>
+  requestedSearchPlan = acceptedSearchPlan;
+  if (project && requestedSearchPlan.optionIds.some((id) =>
     !project.searchOptionIds.includes(id)
   )) {
     return failure("search_plan_invalid", 404);
@@ -1132,32 +1140,31 @@ export async function prepareRun(
     return failure("content_required", 400);
   }
 
-  const ordinaryMcpSelection = focusedKnowledgeRequested || project || assistantRun ||
-    body?.tools === "none"
+  const ordinaryMcpSelection = project || assistantRun || body?.tools === "none"
     ? null
     : body?.mcp === undefined
       ? { mode: "auto" as const }
       : decodeMcpRunSelection(body.mcp);
-  if (!focusedKnowledgeRequested && !project && !assistantRun && body?.tools !== "none" &&
+  if (!project && !assistantRun && body?.tools !== "none" &&
     ordinaryMcpSelection === null) {
     return failure("mcp_selection_invalid", 400);
   }
-  const assistantMcpUnavailable = !focusedKnowledgeRequested && Boolean(
+  const assistantMcpUnavailable = Boolean(
     assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp
   );
-  const ordinaryLoadAllMcpUnavailable = !focusedKnowledgeRequested && Boolean(
+  const ordinaryLoadAllMcpUnavailable = Boolean(
     ordinaryMcpSelection?.mode === "load_all" && !deps.mcp
   );
-  const projectMcpSelection = !focusedKnowledgeRequested && project && body?.tools !== "none"
+  const projectMcpSelection = project && body?.tools !== "none"
     ? body?.mcp === undefined
       ? { mode: project.defaults.mcpMode }
       : decodeMcpRunSelection(body.mcp)
     : null;
-  if (!focusedKnowledgeRequested && project && body?.tools !== "none" &&
+  if (project && body?.tools !== "none" &&
     projectMcpSelection === null) {
     return failure("mcp_selection_invalid", 400);
   }
-  const projectMcpServerIds = focusedKnowledgeRequested ? [] : project
+  const projectMcpServerIds = project
     ? assistantRun
       ? assistantRun.mcpServerIds
       : projectMcpSelection?.mode === "off"
@@ -1173,7 +1180,7 @@ export async function prepareRun(
     return failure("project_external_tools_disabled", 403);
   }
   const projectMcpUnavailable = Boolean(projectMcpServerIds.length > 0 && !deps.mcp);
-  const mcpPlan = focusedKnowledgeRequested ? null : project
+  const mcpPlan = project
     ? projectMcpServerIds.length > 0 && deps.mcp
       ? deps.mcp.prepareProject
         ? await deps.mcp.prepareProject(projectMcpServerIds)
@@ -1190,7 +1197,7 @@ export async function prepareRun(
     : ordinaryMcpSelection?.mode === "load_all" && deps.mcp
       ? await deps.mcp.prepare(input.userId)
       : null;
-  const mcpCatalog = !focusedKnowledgeRequested && ordinaryMcpSelection?.mode === "auto" &&
+  const mcpCatalog = ordinaryMcpSelection?.mode === "auto" &&
     deps.mcp?.catalog
     ? await deps.mcp.catalog(input.userId)
     : null;
@@ -1214,9 +1221,7 @@ export async function prepareRun(
 
   const mcpToolsEnabled = mcpDiscoveryEnabled ||
     Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const requiresClientToolCoexistence = !focusedKnowledgeRequested && (
-    mcpToolsEnabled
-  );
+  const requiresClientToolCoexistence = knowledgeRequested || mcpToolsEnabled;
   if (
     requiresClientToolCoexistence &&
     admissionPlan.searches.some((candidate) =>
@@ -1328,23 +1333,6 @@ export async function prepareRun(
           input.source.source.userMessage.id
         );
   const contextMessages = withSelectedSkillContext(conversationMessages, skillRuns);
-  const currentKnowledgeQuery = textFromContentBlocks(
-    conversationMessages.at(-1)?.content ?? content
-  ).trim();
-  const previousKnowledgeQuery = [...conversationMessages.slice(0, -1)]
-    .reverse()
-    .find((message) => message.role === "user");
-  const knowledgeFocusedRequest = focusedKnowledgeRequested
-    ? createKnowledgeFocusedRequest({
-        currentUserMessage: currentKnowledgeQuery,
-        ...(previousKnowledgeQuery
-          ? { previousUserMessage: textFromContentBlocks(previousKnowledgeQuery.content) }
-          : {})
-      })
-    : undefined;
-  if (focusedKnowledgeRequested && !knowledgeFocusedRequest) {
-    return failure("knowledge_query_required", 400);
-  }
   const parameterControls = parameterControlsForModel({
     adapterKind: executionAdapterKind,
     defaultParams,
@@ -1415,6 +1403,16 @@ export async function prepareRun(
       affected ? `MCP tools are not ready: ${affected}.` : "MCP tools are not ready."
     );
   }
+  const knowledgeCompatibility = validateKnowledgeCapabilities({
+    ...(toolBridge ? { bridge: toolBridge } : {}),
+    capabilities: modelCapabilities,
+    enabled: knowledgeRequested,
+    modelId: executionModelId,
+    provider: executionProvider
+  });
+  if (knowledgeCompatibility) {
+    return failure(knowledgeCompatibility.code, knowledgeCompatibility.status);
+  }
   const mcpCompatibility = validateMcpCapabilities({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     capabilities: modelCapabilities,
@@ -1462,11 +1460,10 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    ...(knowledgeFocusedRequest ? { knowledgeFocusedRequest } : {}),
     knowledgePlan: decodedKnowledgePlan.plan,
     modelCapabilities,
     modelId: executionModelId,
-    ...(!focusedKnowledgeRequested && mcpDiscoveryEnabled && mcpCatalog
+    ...(mcpDiscoveryEnabled && mcpCatalog
       ? {
           mcpDiscovery: {
             catalog: mcpCatalog,
@@ -1475,7 +1472,7 @@ export async function prepareRun(
           }
         }
       : {}),
-    ...(!focusedKnowledgeRequested && mcpPlan?.ok && mcpPlan.snapshot.servers.length
+    ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length
       ? { mcp: mcpPlan.snapshot }
       : {}),
     ...(skillRuns.length > 0
@@ -1492,7 +1489,7 @@ export async function prepareRun(
     provider: executionProvider,
     searchPlan: {
       mode: requestedSearchPlan.mode,
-      options: (focusedKnowledgeRequested ? [] : admissionPlan.searches).map((candidate) => ({
+      options: admissionPlan.searches.map((candidate) => ({
         adapterKind: candidate.configuration.adapterKind,
         config: candidate.configuration.config,
         credentialMode: candidate.configuration.credentialMode,
@@ -1513,7 +1510,7 @@ export async function prepareRun(
       maxToolCalls: toolBudgets.maxToolCalls,
       maxToolRounds: toolBudgets.maxToolRounds
     },
-    toolMode: focusedKnowledgeRequested || body?.tools === "none" ? "none" : "auto"
+    toolMode: knowledgeRequested || body?.tools !== "none" ? "auto" : "none"
   };
   const plannedSearchTools = createSearchPlanToolRouter({
     plan: unbudgetedNormalizedRequest.searchPlan,
@@ -1522,6 +1519,7 @@ export async function prepareRun(
   const clientTools = unbudgetedNormalizedRequest.toolMode === "none"
     ? []
     : [
+        ...(knowledgeRequested ? [knowledgeRetrievalTool] : []),
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(unbudgetedNormalizedRequest.mcp)

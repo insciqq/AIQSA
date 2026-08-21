@@ -449,7 +449,8 @@ export function decodeKnowledgeRetrievedPassageForVersion(
 }
 
 type KnowledgeProviderEvidence = Pick<KnowledgeRetrievalEvidence,
-  "budget" | "discovery" | "exact" | "outcome" | "results" | "scopeAliases"> &
+  "budget" | "discovery" | "exact" | "failureCode" | "outcome" | "results" |
+  "scopeAliases"> &
   Partial<Pick<KnowledgeRetrievalEvidence, "version">>;
 
 function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): string {
@@ -678,7 +679,12 @@ export function knowledgeToolResultText(evidence: KnowledgeProviderEvidence): st
     return legacyKnowledgeToolResultText(evidence);
   }
   if (evidence.version === KNOWLEDGE_RESULT_VERSION) {
-    return sourceBoundKnowledgeToolResultText(evidence);
+    const text = sourceBoundKnowledgeToolResultText(evidence);
+    return evidence.failureCode === "partial_sources_ready"
+      ? `${text}\n\nCoverage limitation: partial_sources_ready. Some selected Knowledge ` +
+          "sources were still processing or unavailable, so this bounded result covers only " +
+          "the ready subset."
+      : text;
   }
   throw new Error("knowledge_result_version_unsupported");
 }

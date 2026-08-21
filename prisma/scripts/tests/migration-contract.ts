@@ -40,6 +40,8 @@ const KNOWLEDGE_H6_SEMANTIC_DEPLOYMENT_MIGRATION =
   "20260820173000_knowledge_h6_semantic_deployment";
 const KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION =
   "20260821000000_knowledge_basic_runtime_cleanup";
+const KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION =
+  "20260822020000_knowledge_tool_coexistence_constraints";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -3352,6 +3354,48 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
   app(database, ["npx", "prisma", "migrate", "deploy"]);
   assertDeployedMigrations(database, committed);
 
+  psqlScalar(database, `
+    INSERT INTO "ModelRunToolCall" (
+      id, "modelRunId", "roundIndex", ordinal, "providerCallId", "toolName",
+      arguments, state, "startedAt", "completedAt", "updatedAt"
+    ) VALUES (
+      'knowledge-coexistence-four-binding-call', 'knowledge-h4-run-2', 0, 3,
+      'knowledge-coexistence-four-binding-provider-call', 'search_knowledge',
+      '{"query":"four binding receipt"}'::jsonb, 'complete',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "KnowledgeRun" (
+      id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
+      outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
+      "baseEvidence", results, "providerText", "embeddingUsage", "durationMs", "updatedAt"
+    ) VALUES (
+      'knowledge-coexistence-four-binding-run', 'knowledge-h4-run-2',
+      'knowledge-coexistence-four-binding-call', 4, 'automatic_search',
+      'four binding receipt', 'base_empty', 'weighted_rrf_v2', 40, 8, 0,
+      (SELECT jsonb_agg(jsonb_build_object(
+        'baseName', 'Base ' || ordinal,
+        'knowledgeBaseId', 'base-' || ordinal,
+        'ordinal', ordinal - 1
+      ) ORDER BY ordinal) FROM generate_series(1, 4) AS ordinal),
+      '[]'::jsonb, 'No matching evidence.',
+      (SELECT jsonb_agg(jsonb_build_object(
+        'bindingOrdinal', ordinal - 1,
+        'providerModelId', 'embedding-' || ordinal
+      ) ORDER BY ordinal) FROM generate_series(1, 4) AS ordinal),
+      1, CURRENT_TIMESTAMP
+    );
+  `);
+  assert.equal(
+    psqlScalar(database, `
+      SELECT jsonb_array_length("baseEvidence")::text || ':' ||
+        jsonb_array_length("embeddingUsage")::text
+      FROM "KnowledgeRun"
+      WHERE id = 'knowledge-coexistence-four-binding-run';
+    `),
+    "4:4",
+    "Knowledge coexistence failed to persist a four-binding operation receipt",
+  );
+
   assert.equal(
     psqlScalar(database, `
       SELECT
@@ -3820,6 +3864,41 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
   );
 }
 
+function runKnowledgeToolCoexistenceMigrationProof(
+  committed: readonly string[],
+): void {
+  const cleanupIndex = committed.indexOf(KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION);
+  const coexistenceIndex = committed.indexOf(KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION);
+  assert.ok(
+    coexistenceIndex > cleanupIndex,
+    "Knowledge tool coexistence migration must follow the Basic runtime cleanup",
+  );
+  const coexistenceSql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.match(
+    coexistenceSql,
+    /jsonb_array_length\("baseEvidence"\) BETWEEN 1 AND 128/u,
+    "Knowledge tool coexistence must retain up to 128 admitted Base receipts",
+  );
+  assert.match(
+    coexistenceSql,
+    /jsonb_array_length\("embeddingUsage"\) <= 128/u,
+    "Knowledge tool coexistence must retain up to 128 embedding executions",
+  );
+  assert.equal(
+    (coexistenceSql.match(/IN \('knowledge_focused_v1', 'search_knowledge'\)/gu) ?? []).length,
+    2,
+    "Both immutable Knowledge receipt guards must cover the new model-facing tool",
+  );
+  assert.doesNotMatch(
+    coexistenceSql,
+    /\bUPDATE\s+"KnowledgeRun"\b/iu,
+    "Knowledge tool coexistence must not rewrite immutable historical receipts",
+  );
+}
+
 function main(
   mode: Mode,
   databases: readonly string[],
@@ -3854,6 +3933,7 @@ function main(
   runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, migrations);
   runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
   runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
+  runKnowledgeToolCoexistenceMigrationProof(migrations);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -3869,7 +3949,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

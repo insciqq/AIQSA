@@ -1383,6 +1383,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           : null;
         const isSearchCall = (name: string) =>
           searchPlanRouter?.accepts(name) === true;
+        const knowledgeTools = clientToolsEnabled && admittedKnowledgeReady
+          ? input.knowledgeExecutor?.tools ?? []
+          : [];
+        const isKnowledgeCall = (name: string) =>
+          knowledgeTools.length > 0 && input.knowledgeExecutor?.accepts(name) === true;
         let activeMcpSnapshot = normalizedRequest.mcp;
         let activeMcpDiscovery = normalizedRequest.mcpDiscovery;
         const materializeMcpTools = input.mcp?.materialize;
@@ -1397,6 +1402,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const isMcpDiscoveryCall = (name: string) =>
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
         const tools: RunTool[] = [
+          ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
           ...(clientToolsEnabled ? mcpRunTools(activeMcpSnapshot) : [])
@@ -1474,6 +1480,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     modelRunId: runId,
                     repository: input.repository
                   });
+                }
+              }
+              if (isKnowledgeCall(call.name)) {
+                for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
+                  rememberReportedUsage(
+                    attribution.provider,
+                    attribution.modelId,
+                    attribution.usage
+                  );
                 }
               }
               for (const artifact of result.artifacts ?? []) {
@@ -1582,9 +1597,40 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
                 }
-                const externalCall = !isMcpDiscoveryCall(call.name);
+                const executionContext = {
+                  persistedToolCallId: claim.call.id,
+                  request,
+                  runId,
+                  userId: input.userId
+                };
+                let preflightResult: ToolExecutionResult | null = null;
+                if (isKnowledgeCall(call.name)) {
+                  try {
+                    const admission = await input.knowledgeExecutor!.preflight?.(
+                      call,
+                      executionContext
+                    );
+                    if (admission && admission.kind !== "admitted") {
+                      preflightResult = admission.result;
+                    }
+                  } catch (error) {
+                    preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
+                  }
+                }
+                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name);
                 if (externalCall) {
-                  const destinationSnapshot = isSearchCall(call.name)
+                  if (!input.memoryEgress && process.env.NODE_ENV === "production") {
+                    throw new Error("memory_egress_receipt_unavailable");
+                  }
+                  const destinationSnapshot = isKnowledgeCall(call.name)
+                    ? {
+                        kind: "knowledge",
+                        scopeFingerprint: input.prepared.knowledgeAdmissionPlan?.fingerprint ?? null,
+                        selection: normalizedRequest.knowledgePlan,
+                        toolName: call.name,
+                        version: 1
+                      }
+                    : isSearchCall(call.name)
                       ? {
                           kind: "search",
                           optionIds: searchPlanRouter?.optionIdsForTool(call.name) ?? [],
@@ -1601,7 +1647,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                             version: 1
                           };
                         })();
-                  const currentAuthorization = await (isSearchCall(call.name)
+                  const currentAuthorization = await (isKnowledgeCall(call.name)
+                      ? currentKnowledgeDispatchAllowed()
+                      : isSearchCall(call.name)
                       ? currentSearchDispatchAllowed()
                       : (() => {
                           const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
@@ -1630,6 +1678,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       runId,
                       userId: input.userId
                     });
+                    if (isKnowledgeCall(call.name)) {
+                      fatalToolError = {
+                        code: "memory_egress_destination_revoked",
+                        fatal: true,
+                        message: "Knowledge access changed before retrieval."
+                      };
+                    }
                     throw new Error("memory_egress_destination_revoked");
                   }
                   externalReceipt = input.memoryEgress
@@ -1648,7 +1703,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       })
                     : null;
                 }
-                if (isMcpDiscoveryCall(call.name)) {
+                if (preflightResult) {
+                  result = preflightResult;
+                } else if (isMcpDiscoveryCall(call.name)) {
                   const batch = mcpDiscoveryBatches.get(call.id);
                   if (batch) {
                     const results = await batch.execute();
@@ -1704,6 +1761,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     request,
                     { signal: context.signal }
                   );
+                } else if (isKnowledgeCall(call.name)) {
+                  result = await input.knowledgeExecutor!.execute(
+                    call,
+                    executionContext,
+                    {
+                      signal: AbortSignal.any([
+                        context.signal,
+                        AbortSignal.timeout(30_000)
+                      ])
+                    }
+                  );
                 } else {
                   const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                   const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -1748,7 +1816,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   result = toolExecutionErrorResult(
                     call,
                     error,
-                    isSearchCall(call.name) ? "Search" : "Tool"
+                    isKnowledgeCall(call.name)
+                      ? "Knowledge"
+                      : isSearchCall(call.name) ? "Search" : "Tool"
                   );
                 }
               }
@@ -1820,7 +1890,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
-                if (!route && !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name)) {
+                if (!route && !isKnowledgeCall(call.name) &&
+                  !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -1923,6 +1994,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const builtInServer = call.name === "find_tools"
                 ? "Auto tools"
+                : isKnowledgeCall(call.name)
+                  ? "Knowledge"
                 : call.name.includes("memory")
                     ? "Memory"
                     : call.name.startsWith("search_engine_")
@@ -2050,7 +2123,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         const hasClientSearch = clientToolsEnabled && normalizedRequest.searchPlan.options.some((option) =>
           option.adapterKind === "provider_model_client");
-        const hasClientTools = hasClientSearch ||
+        const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
+          admittedKnowledgeReady &&
+          normalizedRequest.knowledgePlan.mode !== "none";
+        const hasClientTools = hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined;
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(
