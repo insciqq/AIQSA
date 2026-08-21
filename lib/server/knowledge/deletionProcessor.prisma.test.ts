@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPrismaAdminRepository } from "../auth/adminRepository";
@@ -12,32 +12,22 @@ import { createPrismaKnowledgeLifecycleRepository } from "./lifecycleRepository"
 import { createAccountKnowledgeDeletionHook } from "./accountDeletion";
 import { loadKnowledgeEvidencePackage } from "./evidenceRepository";
 import {
-  knowledgeEvidenceReceiptHash,
-  type KnowledgeEvidencePackage
+  knowledgeEvidenceReceiptHash
 } from "./evidencePackage";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
   createKnowledgeOperationRequestV2,
   hashKnowledgeOperationRequestV2
 } from "./knowledgeOperationRequest";
-import {
-  createKnowledgeStrategyDependencyV1,
-  createKnowledgeStrategyStepReceiptV1,
-  createKnowledgeStrategyStepTemplateV1,
-  hashKnowledgeAcceptedSourceSetV1,
-  hashKnowledgeStrategyStepRequestV1,
-  hashKnowledgeStrategyStepReceiptV1,
-  materializeKnowledgeStrategyStepRequestV1,
-  sealKnowledgeStrategyExecutionRequestV1,
-  type KnowledgeStrategyStepTemplateV1
-} from "./knowledgeStrategyExecution";
-import { createPrismaKnowledgeStrategyRepository } from "./knowledgeStrategyRepository";
-import {
-  createKnowledgeSemanticShadowContentFreeMetricsV1,
-  createStructuralKnowledgeSemanticShadowDiagnosticV1
-} from "./semanticShadow";
 
 const checksum = "a".repeat(64);
+const deletedKnowledgeReceiptHash = createHash("sha256")
+  .update("aiqsa:knowledge:evidence-deleted:v1", "utf8")
+  .digest("hex");
+
+function purgedProviderAttemptKey(attemptId: string): string {
+  return `purged:${createHash("sha256").update(attemptId, "utf8").digest("hex")}`;
+}
 
 type H2ProfileFixture = Readonly<{
   connectionId: string;
@@ -47,97 +37,6 @@ type H2ProfileFixture = Readonly<{
   profileId: string;
   profileRevisionId: string;
 }>;
-
-type H6SemanticShadowPrivacyAudit = Readonly<{
-  contentFreeMetrics: Prisma.InputJsonValue;
-  privateValues: readonly string[];
-  retrievalSessionId: string;
-}>;
-
-async function createH6SemanticShadowPrivacyAudit(input: Readonly<{
-  answer: string;
-  evidence: KnowledgeEvidencePackage;
-  profileRevisionId: string;
-}>): Promise<H6SemanticShadowPrivacyAudit> {
-  const diagnostic = createStructuralKnowledgeSemanticShadowDiagnosticV1({
-    answer: input.answer,
-    evidence: input.evidence
-  });
-  const contentFreeMetrics = createKnowledgeSemanticShadowContentFreeMetricsV1(diagnostic);
-  await prisma.knowledgeGroundingResult.create({
-    data: {
-      finalAnswerHash: diagnostic.answerHash,
-      issues: {
-        citationCoverage: 1,
-        citationPrecision: 1,
-        citedClaimCount: 1,
-        issueCodes: [],
-        sourceClaimCount: 1,
-        unsupportedClaimCount: 0,
-        version: 4
-      },
-      originalAnswerHash: diagnostic.answerHash,
-      outcome: "passed",
-      repairCount: 0,
-      retrievalSessionId: input.evidence.sessionId
-    }
-  });
-  await prisma.knowledgeSemanticShadowResult.create({
-    data: {
-      contentFreeMetrics: contentFreeMetrics as unknown as Prisma.InputJsonValue,
-      diagnostic: diagnostic as unknown as Prisma.InputJsonValue,
-      egressMode: diagnostic.validator.egress,
-      executionStatus: diagnostic.executionStatus,
-      profileRevisionIds: [input.profileRevisionId],
-      receiptHash: diagnostic.receiptHash,
-      retrievalSessionId: input.evidence.sessionId,
-      semanticProof: diagnostic.validator.semanticProof,
-      validatorProfile: diagnostic.validator.profileId,
-      validatorVersion: diagnostic.validator.profileVersion
-    }
-  });
-  return {
-    contentFreeMetrics: contentFreeMetrics as unknown as Prisma.InputJsonValue,
-    privateValues: [
-      input.profileRevisionId,
-      diagnostic.answerHash,
-      diagnostic.evidenceReceiptHash,
-      diagnostic.receiptHash,
-      ...diagnostic.claims.flatMap((claim) => [
-        claim.claimHash,
-        claim.contextKeyHash,
-        claim.neighborhoodHash
-      ].filter((value): value is string => value !== null))
-    ],
-    retrievalSessionId: input.evidence.sessionId
-  };
-}
-
-async function expectH6SemanticShadowPrivacyPurged(
-  audit: H6SemanticShadowPrivacyAudit
-): Promise<void> {
-  const row = await prisma.knowledgeSemanticShadowResult.findUnique({
-    select: {
-      contentFreeMetrics: true,
-      diagnostic: true,
-      profileRevisionIds: true,
-      purgedAt: true,
-      receiptHash: true
-    },
-    where: { retrievalSessionId: audit.retrievalSessionId }
-  });
-  expect(row).toEqual({
-    contentFreeMetrics: audit.contentFreeMetrics,
-    diagnostic: null,
-    profileRevisionIds: [],
-    purgedAt: expect.any(Date),
-    receiptHash: null
-  });
-  const retainedJson = JSON.stringify(row);
-  for (const privateValue of audit.privateValues) {
-    expect(retainedJson).not.toContain(privateValue);
-  }
-}
 
 async function createH2ProfileFixture(suffix: string): Promise<H2ProfileFixture> {
   const connectionId = `knowledge-delete-connection-${suffix}`;
@@ -370,6 +269,7 @@ async function createH2RunPrivacyAudit(input: Readonly<{
       dispatchedAt: settledAt,
       leaseExpiresAt: null,
       leaseToken: null,
+      providerResponseId: `private-attempt-response-${input.suffix}`,
       settledAt,
       state: "settled"
     },
@@ -403,21 +303,10 @@ async function createH2RunPrivacyAudit(input: Readonly<{
     operation: "discover_sources",
     originalQuery: { reference: input.messageId, sha256: checksum },
     phaseOrdinal: 0,
-    plan: {
-      allowedLanes: ["metadata"],
-      coverage: { expectedPassageCount: null, mode: "partial" },
-      exactTerms: [],
-      rewrittenQuery: "content-free audit",
-      strategy: "focused",
-      targetNames: [],
-      targetSourceIds: []
-    },
-    plannerVersion: 1,
     profileRevisionId: input.fixture.profileRevisionId,
     profileRevisionNumber: 1,
-    purpose: "source_discovery",
     reservationId,
-    resolvedSourceIds: [],
+    resolvedSourceIds: [input.sourceId],
     sourceAliases: [],
     subqueryOrdinal: 2,
     version: 2
@@ -428,10 +317,7 @@ async function createH2RunPrivacyAudit(input: Readonly<{
       actualCostMicros: 0,
       actualEmbeddingCalls: 0,
       actualLatencyMs: 1,
-      actualRerankerCalls: 0,
-      actualRepairSlots: 0,
       actualRetrievedTokens: 0,
-      actualValidationSlots: 0,
       createdAt: settledAt,
       dispatchAttemptKey: `dispatch:${input.suffix}`,
       dispatchedAt: settledAt,
@@ -439,10 +325,7 @@ async function createH2RunPrivacyAudit(input: Readonly<{
       estimatedCostMicros: 0,
       estimatedEmbeddingCalls: 0,
       estimatedLatencyMs: 1,
-      estimatedRerankerCalls: 0,
-      estimatedRepairSlots: 0,
       estimatedRetrievedTokens: 0,
-      estimatedValidationSlots: 0,
       id: reservationId,
       idempotencyKey,
       modelRunId: input.modelRunId,
@@ -468,338 +351,109 @@ async function createH2RunPrivacyAudit(input: Readonly<{
   };
 }
 
-async function createH4StrategyPrivacyAudit(input: Readonly<{
-  baseId: string;
+async function createActiveProviderAttemptPrivacyAudit(input: Readonly<{
   modelRunId: string;
-  providerAttemptId: string;
-  retrievalSessionId: string;
-  sourceArtifactId: string;
-  sourceBindingId: string;
-  sourceId: string;
-  sourceVersionId: string;
   suffix: string;
-}>): Promise<Readonly<{
-  executionId: string;
-  knowledgeRunId: string;
-  settledStepId: string;
-}>> {
-  const hierarchicalArtifactId = `delete-strategy-hierarchy-${input.suffix}`;
-  const hierarchicalChecksum = "8".repeat(64);
-  await prisma.knowledgeHierarchicalIndexArtifact.create({
-    data: {
-      checksum: hierarchicalChecksum,
-      derivationMode: "normalized_v2",
-      documentCount: 1,
-      exactEntryCount: 1,
-      id: hierarchicalArtifactId,
-      passageCount: 1,
-      readyAt: new Date(),
-      schemaVersion: 1,
-      sectionCount: 1,
-      sourceArtifactId: input.sourceArtifactId,
-      sourceVersionId: input.sourceVersionId,
-      state: "ready"
-    }
-  });
-  const sourceSet = [{
-    bindingId: input.sourceBindingId,
-    hierarchicalArtifactId,
-    hierarchicalChecksum,
-    ordinal: 0,
-    passageCount: 1,
-    sourceAlias: "S1",
-    sourceArtifactId: input.sourceArtifactId,
-    sourceId: input.sourceId,
-    sourceVersionId: input.sourceVersionId,
-    sourceVersionNumber: 1,
-    version: 1 as const
-  }];
-  const questionHashes = ["5".repeat(64), "6".repeat(64)] as const;
-  const execution = sealKnowledgeStrategyExecutionRequestV1({
-    config: { atomicQuestionHashes: questionHashes, kind: "multi_hop" },
-    executionId: `delete-strategy-execution-${input.suffix}`,
-    modelRunId: input.modelRunId,
-    plannerVersion: 1,
-    sourceSet,
-    sourceSetHash: hashKnowledgeAcceptedSourceSetV1(sourceSet),
-    strategy: "multi_hop",
-    version: 1
-  });
-  const template = (inputHash: string, kind: "multi_hop_follow_up" | "multi_hop_root",
-    ordinal: number): KnowledgeStrategyStepTemplateV1 => createKnowledgeStrategyStepTemplateV1({
-    comparisonDimensionHash: null,
-    cursor: null,
-    evidenceInputHash: null,
-    executionId: execution.executionId,
-    inputHash,
-    kind,
-    materializationMode: kind === "multi_hop_root"
-      ? "complete"
-      : "evidence_from_prerequisites",
-    ordinal,
-    pageOrdinal: 0,
-    phaseOrdinal: kind === "multi_hop_root" ? 0 : 1,
-    required: true,
-    sourceBindingId: null,
-    sourceSetHash: execution.sourceSetHash,
-    stepId: `delete-strategy-step-${ordinal}-${input.suffix}`,
-    strategy: "multi_hop",
-    streamId: `delete-strategy-stream-${ordinal}-${input.suffix}`,
-    targetOrdinal: null,
-    version: 1
-  });
-  const steps = [
-    template(questionHashes[0], "multi_hop_root", 0),
-    template(questionHashes[1], "multi_hop_follow_up", 1)
-  ];
-  const dependencies = [createKnowledgeStrategyDependencyV1({
-    dependentStepId: steps[1]!.stepId,
-    executionId: execution.executionId,
-    prerequisiteStepId: steps[0]!.stepId,
-    version: 1
-  })];
-  const toolCalls = await Promise.all(steps.map((step, ordinal) =>
-    prisma.modelRunToolCall.create({
-      data: {
-        arguments: { privateSourceId: input.sourceId },
-        modelRunId: input.modelRunId,
-        ordinal,
-        providerCallId: `delete-strategy-call-${ordinal}-${input.suffix}`,
-        roundIndex: 10,
-        state: "running",
-        toolName: "search_knowledge"
-      },
-      select: { id: true }
-    })));
-  const repository = createPrismaKnowledgeStrategyRepository(prisma);
-  await repository.createExecution({
-    dependencies,
-    execution,
-    retrievalSessionId: input.retrievalSessionId,
-    steps,
-    toolCallBindings: steps.map((step, ordinal) => ({
-      modelRunToolCallId: toolCalls[ordinal]!.id,
-      stepId: step.stepId
-    }))
-  });
+}>): Promise<Readonly<{ dispatchedId: string; reservedId: string }>> {
+  const estimatedUsage = {
+    cachedInputTokens: null,
+    cacheWriteInputTokens: null,
+    estimatedCostMicros: 0,
+    inputTokens: 1,
+    outputTokens: 0,
+    reasoningTokens: null,
+    totalTokens: 1
+  };
   const now = new Date();
-  const claim = await repository.claimToolCallStep({
-    leaseExpiresAt: new Date(now.valueOf() + 60_000),
-    leaseToken: `delete-strategy-lease-${input.suffix}`,
-    modelRunId: input.modelRunId,
-    modelRunToolCallId: toolCalls[0]!.id,
-    now
-  });
-  if (claim.kind !== "claimed" || !claim.step.request) {
-    throw new Error("delete_strategy_claim_missing");
-  }
-  const dispatched = await repository.markStepDispatched({
-    at: now,
-    executionId: execution.executionId,
-    leaseToken: claim.leaseToken,
-    providerAttemptId: input.providerAttemptId,
-    stateVersion: claim.step.lifecycle.stateVersion,
-    stepId: claim.step.request.stepId
-  });
-  const receipt = createKnowledgeStrategyStepReceiptV1({
-    cursorExhausted: true,
-    executionId: execution.executionId,
-    lastItemHash: "9".repeat(64),
-    nextCursor: null,
-    processedItemCount: 1,
-    processedItemsHash: "a".repeat(64),
-    reasonCode: null,
-    requestHash: hashKnowledgeStrategyStepRequestV1(claim.step.request),
-    status: "succeeded",
-    stepId: claim.step.request.stepId,
-    version: 1
-  });
-  const settled = await repository.settleStep({
-    at: new Date(now.valueOf() + 1),
-    executionId: execution.executionId,
-    includedPassageCount: 1,
-    leaseToken: claim.leaseToken,
-    receipt,
-    stateVersion: dispatched.step.lifecycle.stateVersion,
-    stepId: claim.step.request.stepId
-  });
-  if (!settled.step.request || !settled.step.receipt) {
-    throw new Error("delete_strategy_settlement_missing");
-  }
-  await prisma.knowledgeStrategyExecution.update({
+  const reserved = await prisma.knowledgeProviderAttempt.create({
     data: {
-      dispatchManifestHash: "b".repeat(64),
-      dispatchedPassageCount: 1,
-      dispatchSetHash: "c".repeat(64),
-      includedPassageCount: 1,
-      includedSetHash: "d".repeat(64),
-      processedPassageCount: 1,
-      processedSetHash: "e".repeat(64),
-      processedSourceCount: 1
-    },
-    where: { id: execution.executionId }
-  });
-  const requestHash = hashKnowledgeStrategyStepRequestV1(settled.step.request);
-  const resultHash = hashKnowledgeStrategyStepReceiptV1(settled.step.receipt);
-  const knowledgeRun = await prisma.knowledgeRun.create({
-    data: {
-      baseEvidence: [{ knowledgeBaseId: input.baseId }],
-      candidateCount: 1,
-      candidateLimit: 12,
-      durationMs: 1,
-      embeddingUsage: [],
-      fusion: "rrf_k60",
-      invocationOrdinal: 50,
+      checkpointHash: "6".repeat(64),
+      createdAt: now,
+      estimatedUsage,
+      idempotencyKey: `active-reserved:${input.suffix}`,
+      leaseExpiresAt: new Date(now.getTime() + 60_000),
+      leaseToken: `active-reserved-lease:${input.suffix}`,
       modelRunId: input.modelRunId,
-      modelRunToolCallId: toolCalls[0]!.id,
-      operation: "search_knowledge",
-      outcome: "complete",
-      providerText: "private strategy evidence",
-      query: "private strategy query",
-      retrievalSessionId: input.retrievalSessionId,
-      resultLimit: 8,
-      results: [{ sourceId: input.sourceId }],
-      strategyStepEvidence: {
-        executionId: execution.executionId,
-        kind: settled.step.request.kind,
-        ordinal: settled.step.request.ordinal,
-        requestHash,
-        resultHash,
-        stepId: settled.step.request.stepId,
-        version: 1
-      },
-      threshold: 0.2
+      ordinal: 2,
+      providerBindingKey: "answer",
+      purpose: "answer",
+      requestHash: "7".repeat(64),
+      roundIndex: 0,
+      state: "reserved"
     },
     select: { id: true }
   });
-  return {
-    executionId: execution.executionId,
-    knowledgeRunId: knowledgeRun.id,
-    settledStepId: settled.step.request.stepId
-  };
+  const dispatched = await prisma.knowledgeProviderAttempt.create({
+    data: {
+      checkpointHash: "8".repeat(64),
+      createdAt: now,
+      dispatchedAt: now,
+      estimatedUsage,
+      idempotencyKey: `active-dispatched:${input.suffix}`,
+      leaseExpiresAt: new Date(now.getTime() + 60_000),
+      leaseToken: `active-dispatched-lease:${input.suffix}`,
+      modelRunId: input.modelRunId,
+      ordinal: 3,
+      providerBindingKey: "answer",
+      providerResponseId: `private-active-response:${input.suffix}`,
+      purpose: "answer",
+      requestHash: "9".repeat(64),
+      roundIndex: 0,
+      state: "dispatched"
+    },
+    select: { id: true }
+  });
+  return { dispatchedId: dispatched.id, reservedId: reserved.id };
 }
 
-async function expectH4StrategyPrivacyPurged(input: Readonly<{
-  executionId: string;
-  knowledgeRunId: string;
-  settledStepId: string;
-}>): Promise<void> {
-  await expect(prisma.knowledgeStrategyExecution.findUnique({
-    select: {
-      coverageReceipt: true,
-      coverageReceiptHash: true,
-      dispatchManifestHash: true,
-      dispatchedPassageCount: true,
-      dispatchSetHash: true,
-      executionHash: true,
-      executionRequest: true,
-      expectedPassageCount: true,
-      expectedSourceCount: true,
-      includedPassageCount: true,
-      includedSetHash: true,
-      planHash: true,
-      processedPassageCount: true,
-      processedSetHash: true,
-      processedSourceCount: true,
-      purgedAt: true,
-      sourceSetHash: true,
-      state: true,
-      strategy: true
+async function createRetiredAnalysisPrivacyFixture(input: Readonly<{
+  baseEvidence: Prisma.InputJsonValue;
+  invocationOrdinal: number;
+  marker: string;
+  modelRunId: string;
+  operation: "structured_analysis" | "visual_analysis";
+  toolCallOrdinal: number;
+}>): Promise<Readonly<{ knowledgeRunId: string; toolCallId: string }>> {
+  const now = new Date();
+  const toolCall = await prisma.modelRunToolCall.create({
+    data: {
+      arguments: { legacyPayload: input.marker },
+      completedAt: now,
+      modelRunId: input.modelRunId,
+      ordinal: input.toolCallOrdinal,
+      providerCallId: `retired-${input.operation}-${randomUUID()}`,
+      result: { legacyPayload: input.marker },
+      roundIndex: 0,
+      startedAt: now,
+      state: "complete",
+      toolName: input.operation
     },
-    where: { id: input.executionId }
-  })).resolves.toEqual({
-    coverageReceipt: null,
-    coverageReceiptHash: null,
-    dispatchManifestHash: null,
-    dispatchedPassageCount: 1,
-    dispatchSetHash: null,
-    executionHash: null,
-    executionRequest: null,
-    expectedPassageCount: 1,
-    expectedSourceCount: 1,
-    includedPassageCount: 1,
-    includedSetHash: null,
-    planHash: null,
-    processedPassageCount: 1,
-    processedSetHash: null,
-    processedSourceCount: 1,
-    purgedAt: expect.any(Date),
-    sourceSetHash: null,
-    state: "running",
-    strategy: "multi_hop"
+    select: { id: true }
   });
-  const steps = await prisma.knowledgeStrategyStep.findMany({
-    orderBy: { ordinal: "asc" },
-    select: {
-      attemptCount: true,
-      comparisonDimensionHash: true,
-      cursor: true,
-      cursorHash: true,
-      evidenceInputHash: true,
-      failureCode: true,
-      id: true,
-      idempotencyKey: true,
-      includedPassageCount: true,
-      inputHash: true,
-      irreversibleDispatch: true,
-      leaseExpiresAt: true,
-      leaseToken: true,
-      materializedAt: true,
-      modelRunToolCallId: true,
-      processedItemsHash: true,
-      processedPassageCount: true,
-      providerAttemptId: true,
-      purgedAt: true,
-      request: true,
-      requestHash: true,
-      result: true,
-      resultHash: true,
-      sourceBindingId: true,
-      sourceSetHash: true,
-      state: true,
-      streamId: true,
-      templateHash: true
+  const results = input.operation === "structured_analysis"
+    ? [{ structuredAnalysis: { cells: [input.marker], summary: input.marker } }]
+    : [{ visualAnalysis: { observations: [input.marker], summary: input.marker } }];
+  const knowledgeRun = await prisma.knowledgeRun.create({
+    data: {
+      baseEvidence: input.baseEvidence,
+      candidateCount: 1,
+      candidateLimit: 1,
+      durationMs: 1,
+      embeddingUsage: [],
+      fusion: "rrf_k60",
+      invocationOrdinal: input.invocationOrdinal,
+      modelRunId: input.modelRunId,
+      modelRunToolCallId: toolCall.id,
+      operation: input.operation,
+      outcome: "complete",
+      providerText: input.marker,
+      query: "deleted_knowledge_resource",
+      resultLimit: 1,
+      results
     },
-    where: { executionId: input.executionId }
+    select: { id: true }
   });
-  expect(steps).toHaveLength(2);
-  for (const step of steps) {
-    expect(step).toMatchObject({
-      comparisonDimensionHash: null,
-      cursor: null,
-      cursorHash: null,
-      evidenceInputHash: null,
-      failureCode: null,
-      idempotencyKey: null,
-      inputHash: null,
-      leaseExpiresAt: null,
-      leaseToken: null,
-      materializedAt: null,
-      modelRunToolCallId: null,
-      processedItemsHash: null,
-      providerAttemptId: null,
-      purgedAt: expect.any(Date),
-      request: null,
-      requestHash: null,
-      result: null,
-      resultHash: null,
-      sourceBindingId: null,
-      sourceSetHash: null,
-      state: "purged",
-      streamId: null,
-      templateHash: null
-    });
-  }
-  expect(steps.find(({ id }) => id === input.settledStepId)).toMatchObject({
-    attemptCount: 1,
-    includedPassageCount: 1,
-    irreversibleDispatch: true,
-    processedPassageCount: 1
-  });
-  await expect(prisma.knowledgeRun.findUnique({
-    select: { strategyStepEvidence: true },
-    where: { id: input.knowledgeRunId }
-  })).resolves.toEqual({ strategyStepEvidence: null });
+  return { knowledgeRunId: knowledgeRun.id, toolCallId: toolCall.id };
 }
 
 async function cleanup(input: Readonly<{
@@ -1038,6 +692,15 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         chatId: chat.id,
         modelId: "test-model",
         normalizedRequest: {
+          knowledgeFocusedRequest: {
+            candidateLimit: 40,
+            fusion: "weighted_rrf_v2",
+            neighborWindow: 1,
+            originalQuery: `private focused Source query ${suffix}`,
+            resultLimit: 8,
+            retrievalQuery: `private focused Source query ${suffix}`,
+            version: 1
+          },
           knowledgePlan: {
             baseIds: [base.id],
             mode: "explicit",
@@ -1052,6 +715,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           }
         },
         provider: "test",
+        providerResponseId: `private-provider-response-${suffix}`,
         status: "complete",
         toolLoopState: {
           answerRoundUsage: [],
@@ -1114,22 +778,26 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           maximum: 2048,
           version: 2
         },
-        coverageRequirements: {
-          expectedPassageCount: 1,
-          mode: "verified_only",
-          namedTargets: [],
-          verified: false
-        },
         degradedFlags: [],
         modelRunId: run.id,
         nextEvidenceOrdinal: 2,
-        originalIntent: { intent: "fact_lookup", query: "private guide" },
+        originalIntent: {
+          kind: "focused_v1",
+          request: {
+            candidateLimit: 40,
+            fusion: "weighted_rrf_v2",
+            neighborWindow: 1,
+            originalQuery: `private focused Source query ${suffix}`,
+            resultLimit: 8,
+            retrievalQuery: `private focused Source query ${suffix}`,
+            version: 1
+          }
+        },
         readinessSummary: { excludedResources: 0, readyBases: 1, readySources: 1 },
         scopeSnapshot: {
           budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
           selection: { baseIds: [base.id], mode: "explicit", sourceIds: [source.id], version: 1 }
         },
-        strategySnapshot: { strategy: "focused" },
         version: 2
       },
       select: { id: true }
@@ -1233,7 +901,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           locator: { page: 7 },
           sourceId: source.id
         }],
-        threshold: 0.2
       },
       select: { id: true }
     });
@@ -1292,7 +959,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         retrievalSessionId: evidenceSession.id,
         resultLimit: 8,
         results: [],
-        threshold: 0.2
       },
       select: { id: true }
     });
@@ -1326,16 +992,13 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       sourceVersionId: sourceVersion.id,
       suffix
     });
-    const h4Audit = await createH4StrategyPrivacyAudit({
-      baseId: base.id,
+    const activeAttempts = await createActiveProviderAttemptPrivacyAudit({
       modelRunId: run.id,
-      providerAttemptId: h2Audit.attemptId,
-      retrievalSessionId: evidenceSession.id,
-      sourceArtifactId: sourceArtifact.id,
-      sourceBindingId: h2Audit.sourceBindingId,
-      sourceId: source.id,
-      sourceVersionId: sourceVersion.id,
       suffix
+    });
+    await prisma.modelRun.update({
+      data: { status: "in_progress" },
+      where: { id: run.id }
     });
     const discoveryProviderCallId = `knowledge-discovery-${suffix}`;
     const discoveryToolCall = await prisma.modelRunToolCall.create({
@@ -1406,7 +1069,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         retrievalSessionId: evidenceSession.id,
         resultLimit: 50,
         results: [],
-        threshold: 0
       },
       select: { id: true }
     });
@@ -1465,9 +1127,17 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         retrievalSessionId: evidenceSession.id,
         resultLimit: 50,
         results: [],
-        threshold: 0
       },
       select: { id: true }
+    });
+    const retiredStructuredMarker = `private retired structured payload ${suffix}`;
+    const retiredStructured = await createRetiredAnalysisPrivacyFixture({
+      baseEvidence: [{ knowledgeBaseId: base.id, name: "Product docs" }],
+      invocationOrdinal: 5,
+      marker: retiredStructuredMarker,
+      modelRunId: run.id,
+      operation: "structured_analysis",
+      toolCallOrdinal: 5
     });
     const acceptedEvidence = await loadKnowledgeEvidencePackage(prisma, {
       runId: run.id,
@@ -1478,11 +1148,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     await prisma.knowledgeRetrievalSession.update({
       data: { acceptedAt: new Date(), receiptHash: acceptedReceiptHash },
       where: { id: evidenceSession.id }
-    });
-    const h6Audit = await createH6SemanticShadowPrivacyAudit({
-      answer: `Private Source semantic assertion ${suffix} [K1].`,
-      evidence: acceptedEvidence!,
-      profileRevisionId: h2Fixture.profileRevisionId
     });
     const share = await prisma.sharedChatSnapshot.create({
       data: {
@@ -1563,8 +1228,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         sourceVersionId: null,
         tombstonedAt: expect.any(Date)
       });
-      await expectH4StrategyPrivacyPurged(h4Audit);
-      await expectH6SemanticShadowPrivacyPurged(h6Audit);
       await expect(prisma.knowledgeEvidenceDispatchManifest.findUnique({
         include: {
           exclusions: { select: { evidenceItemId: true, handle: true, reason: true } },
@@ -1609,7 +1272,14 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         purgedAt: expect.any(Date)
       });
       await expect(prisma.knowledgeProviderAttempt.findUnique({
-        select: { actualUsage: true, checkpointHash: true, state: true },
+        select: {
+          actualUsage: true,
+          checkpointHash: true,
+          idempotencyKey: true,
+          providerResponseId: true,
+          requestHash: true,
+          state: true
+        },
         where: { id: h2Audit.attemptId }
       })).resolves.toEqual({
         actualUsage: {
@@ -1621,8 +1291,67 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           reasoningTokens: null,
           totalTokens: 1
         },
-        checkpointHash: "e".repeat(64),
+        checkpointHash: "0".repeat(64),
+        idempotencyKey: purgedProviderAttemptKey(h2Audit.attemptId),
+        providerResponseId: null,
+        requestHash: "0".repeat(64),
         state: "settled"
+      });
+      await expect(prisma.knowledgeProviderAttempt.findMany({
+        orderBy: { ordinal: "asc" },
+        select: {
+          ambiguousAt: true,
+          checkpointHash: true,
+          failureCode: true,
+          id: true,
+          idempotencyKey: true,
+          leaseExpiresAt: true,
+          leaseToken: true,
+          providerResponseId: true,
+          releasedAt: true,
+          requestHash: true,
+          state: true
+        },
+        where: { id: { in: [activeAttempts.reservedId, activeAttempts.dispatchedId] } }
+      })).resolves.toEqual([
+        {
+          ambiguousAt: null,
+          checkpointHash: "0".repeat(64),
+          failureCode: "purged",
+          id: activeAttempts.reservedId,
+          idempotencyKey: purgedProviderAttemptKey(activeAttempts.reservedId),
+          leaseExpiresAt: null,
+          leaseToken: null,
+          providerResponseId: null,
+          releasedAt: expect.any(Date),
+          requestHash: "0".repeat(64),
+          state: "released"
+        },
+        {
+          ambiguousAt: expect.any(Date),
+          checkpointHash: "0".repeat(64),
+          failureCode: "purged",
+          id: activeAttempts.dispatchedId,
+          idempotencyKey: purgedProviderAttemptKey(activeAttempts.dispatchedId),
+          leaseExpiresAt: null,
+          leaseToken: null,
+          providerResponseId: null,
+          releasedAt: null,
+          requestHash: "0".repeat(64),
+          state: "ambiguous"
+        }
+      ]);
+      await expect(prisma.modelRun.findUnique({
+        select: { errorPayload: true, providerResponseId: true, status: true },
+        where: { id: run.id }
+      })).resolves.toEqual({
+        errorPayload: {
+          code: "knowledge_retrieval_failed",
+          message:
+            "Knowledge retrieval stopped because selected Knowledge was permanently deleted."
+        },
+        providerResponseId: null,
+        status: "cancelled"
       });
       await expect(prisma.knowledgeBudgetReservation.findUnique({
         select: {
@@ -1680,6 +1409,21 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       expect(JSON.stringify(historical)).not.toMatch(
         /private-guide|private deletion marker|Private deletion locator|documentVersionId|sourceId/u
       );
+      await expect(prisma.knowledgeRun.findUnique({
+        select: { baseEvidence: true, providerText: true, results: true },
+        where: { id: retiredStructured.knowledgeRunId }
+      })).resolves.toEqual({
+        baseEvidence: [{ knowledgeBaseId: base.id, name: "Product docs" }],
+        providerText: "Knowledge citation evidence was deleted.",
+        results: [{ deleted: true }]
+      });
+      await expect(prisma.modelRunToolCall.findUnique({
+        select: { arguments: true, result: true },
+        where: { id: retiredStructured.toolCallId }
+      })).resolves.toEqual({ arguments: { deleted: true }, result: null });
+      expect(JSON.stringify(await prisma.knowledgeRun.findUnique({
+        where: { id: retiredStructured.knowledgeRunId }
+      }))).not.toContain(retiredStructuredMarker);
       await expect(prisma.knowledgeRun.findUnique({
         select: {
           candidateLimit: true,
@@ -1755,12 +1499,14 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         where: { id: emptyExactToolCall.id }
       })).resolves.toEqual({ arguments: { deleted: true }, result: null });
       const scrubbedRun = await prisma.modelRun.findUnique({
-        select: { normalizedRequest: true, toolLoopState: true },
+        select: { normalizedRequest: true, providerResponseId: true, toolLoopState: true },
         where: { id: run.id }
       });
       expect(scrubbedRun?.normalizedRequest).toMatchObject({
         knowledgePlan: { baseIds: [base.id], sourceIds: [] }
       });
+      expect(scrubbedRun?.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
+      expect(scrubbedRun?.providerResponseId).toBeNull();
       expect(scrubbedRun?.toolLoopState).toMatchObject({
         providerContinuation: {
           providerToolMessages: [{
@@ -1774,9 +1520,12 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       for (const privateValue of [
         "heading: Private deletion locator",
         includedText,
+        `private-attempt-response-${suffix}`,
         providerCallId,
         emptyProviderCallId,
         `private-artifact-${suffix}`,
+        `private focused Source query ${suffix}`,
+        `private-provider-response-${suffix}`,
         source.id,
         sourceVersion.id
       ]) {
@@ -1814,23 +1563,30 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       expect(JSON.stringify(tombstone)).not.toMatch(
         /private-guide|private deletion marker|private-artifact|private-section/u
       );
-      const tombstonedReceipt = await loadKnowledgeEvidencePackage(prisma, {
+      await expect(loadKnowledgeEvidencePackage(prisma, {
         runId: run.id,
         userId: ownerUserId
-      });
-      expect(tombstonedReceipt).toMatchObject({
-        degradedFlags: ["evidence_deleted"],
-        items: [{ handle: "K1", provenance: [], state: "deleted" }]
-      });
+      })).resolves.toBeNull();
       await expect(prisma.knowledgeRunEvidence.count({
         where: { evidenceItemId: evidenceItem.id }
       })).resolves.toBe(0);
-      const tombstonedHash = knowledgeEvidenceReceiptHash(tombstonedReceipt!);
-      expect(tombstonedHash).not.toBe(acceptedReceiptHash);
       await expect(prisma.knowledgeRetrievalSession.findUnique({
-        select: { receiptHash: true },
+        select: {
+          degradedFlags: true,
+          originalIntent: true,
+          receiptHash: true,
+          scopeSnapshot: true
+        },
         where: { id: evidenceSession.id }
-      })).resolves.toEqual({ receiptHash: tombstonedHash });
+      })).resolves.toMatchObject({
+        degradedFlags: ["evidence_deleted"],
+        originalIntent: { deleted: true, version: 1 },
+        receiptHash: deletedKnowledgeReceiptHash,
+        scopeSnapshot: {
+          selection: { baseIds: [base.id], mode: "explicit", sourceIds: [], version: 1 }
+        }
+      });
+      expect(deletedKnowledgeReceiptHash).not.toBe(acceptedReceiptHash);
     } finally {
       try {
         await prisma.project.deleteMany({ where: { id: project.id } });
@@ -2033,6 +1789,15 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         chatId: chat.id,
         modelId: "test-model",
         normalizedRequest: {
+          knowledgeFocusedRequest: {
+            candidateLimit: 40,
+            fusion: "weighted_rrf_v2",
+            neighborWindow: 1,
+            originalQuery: `private focused Base query ${suffix}`,
+            resultLimit: 8,
+            retrievalQuery: `private focused Base query ${suffix}`,
+            version: 1
+          },
           knowledgePlan: {
             baseIds: [base.id, retainedBase.id],
             mode: "explicit",
@@ -2042,6 +1807,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           sourceId: source.id
         },
         provider: "test",
+        providerResponseId: `private-provider-response-${suffix}`,
         status: "complete",
         userId: ownerUserId,
         userMessageId: message.id
@@ -2051,16 +1817,21 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     const evidenceSession = await prisma.knowledgeRetrievalSession.create({
       data: {
         citationContract: { format: "K{ordinal}", legacyRead: true, maximum: 2048, version: 2 },
-        coverageRequirements: {
-          expectedPassageCount: 1,
-          mode: "verified_only",
-          namedTargets: [],
-          verified: false
-        },
         degradedFlags: [],
         modelRunId: run.id,
         nextEvidenceOrdinal: 3,
-        originalIntent: { intent: "fact_lookup", query: "reusable source" },
+        originalIntent: {
+          kind: "focused_v1",
+          request: {
+            candidateLimit: 40,
+            fusion: "weighted_rrf_v2",
+            neighborWindow: 1,
+            originalQuery: `private focused Base query ${suffix}`,
+            resultLimit: 8,
+            retrievalQuery: `private focused Base query ${suffix}`,
+            version: 1
+          }
+        },
         readinessSummary: { excludedResources: 0, readyBases: 2, readySources: 2 },
         scopeSnapshot: {
           budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
@@ -2071,7 +1842,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
             version: 1
           }
         },
-        strategySnapshot: { strategy: "focused" },
         version: 2
       },
       select: { id: true }
@@ -2184,17 +1954,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       },
       select: { id: true }
     });
-    const h4Audit = await createH4StrategyPrivacyAudit({
-      baseId: base.id,
-      modelRunId: run.id,
-      providerAttemptId: h2Audit.attemptId,
-      retrievalSessionId: evidenceSession.id,
-      sourceArtifactId: sourceArtifact.id,
-      sourceBindingId: h2Audit.sourceBindingId,
-      sourceId: source.id,
-      sourceVersionId: sourceVersion.id,
-      suffix: `base-${suffix}`
-    });
     const retainedResult = {
       documentId: retainedSource.id,
       documentVersionId: retainedSourceVersion.id,
@@ -2215,7 +1974,15 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     };
     const canonicalToolCall = await prisma.modelRunToolCall.create({
       data: {
-        arguments: { query: "base identity isolation" },
+        arguments: {
+          candidateLimit: 40,
+          fusion: "weighted_rrf_v2",
+          neighborWindow: 1,
+          originalQuery: `private focused Base query ${suffix}`,
+          resultLimit: 8,
+          retrievalQuery: `private focused Base query ${suffix}`,
+          version: 1
+        },
         completedAt: new Date(),
         modelRunId: run.id,
         ordinal: 3,
@@ -2224,7 +1991,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         roundIndex: 0,
         startedAt: new Date(),
         state: "complete",
-        toolName: "search_knowledge"
+        toolName: "knowledge_focused_v1"
       },
       select: { id: true }
     });
@@ -2232,23 +1999,32 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       data: {
         baseEvidence: [{ knowledgeBaseId: h2Audit.profileBindingId }],
         candidateCount: 2,
-        candidateLimit: 12,
+        candidateLimit: 40,
         durationMs: 1,
         embeddingUsage: [],
-        fusion: "rrf_k60",
+        fusion: "weighted_rrf_v2",
         invocationOrdinal: 1,
         modelRunId: run.id,
         modelRunToolCallId: canonicalToolCall.id,
-        operation: "search_knowledge",
+        operation: "automatic_search",
         outcome: "complete",
         providerText: [deletedEvidenceText, retainedEvidenceText].join("\n"),
-        query: "base identity isolation",
+        query: `private focused Base query ${suffix}`,
         retrievalSessionId: evidenceSession.id,
         resultLimit: 8,
         results: [deletedResult, retainedResult],
-        threshold: 0.2
       },
       select: { id: true }
+    });
+    const retiredVisualMarker = `private retired visual payload ${suffix}`;
+    const retiredBaseName = `private retired Base name ${suffix}`;
+    const retiredVisual = await createRetiredAnalysisPrivacyFixture({
+      baseEvidence: [{ baseName: retiredBaseName, ordinal: 0 }],
+      invocationOrdinal: 2,
+      marker: retiredVisualMarker,
+      modelRunId: run.id,
+      operation: "visual_analysis",
+      toolCallOrdinal: 4
     });
     await prisma.knowledgeRunEvidence.createMany({
       data: [evidenceItem.id, retainedEvidenceItem.id].map((evidenceItemId, resultOrdinal) => ({
@@ -2258,9 +2034,9 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         retrievalProvenance: {
           confidence: null,
           confidenceBucket: "unavailable",
-          fusion: "rrf_k60",
+          fusion: "weighted_rrf_v2",
           invocationOrdinal: 1,
-          operation: "search_knowledge",
+          operation: "automatic_search",
           postRerankRank: resultOrdinal + 1,
           preRerankRank: resultOrdinal + 1,
           rerankScore: null,
@@ -2278,11 +2054,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     await prisma.knowledgeRetrievalSession.update({
       data: { acceptedAt: new Date(), receiptHash: acceptedReceiptHash },
       where: { id: evidenceSession.id }
-    });
-    const h6Audit = await createH6SemanticShadowPrivacyAudit({
-      answer: `Private Base semantic assertion ${suffix} [K1].`,
-      evidence: acceptedEvidence!,
-      profileRevisionId: h2Fixture.profileRevisionId
     });
     await expect(prisma.knowledgeEvidenceItem.findUnique({
       select: {
@@ -2487,13 +2258,24 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         where: { evidenceItemId: retainedEvidenceItem.id }
       })).resolves.toBe(1);
       await expect(prisma.knowledgeRun.findUnique({
-        select: { results: true },
+        select: { baseEvidence: true, results: true },
         where: { id: canonicalKnowledgeRun.id }
       })).resolves.toEqual({
+        baseEvidence: [{ deleted: true }],
         results: [{ deleted: true, handle: "K1" }, retainedResult]
       });
-      await expectH4StrategyPrivacyPurged(h4Audit);
-      await expectH6SemanticShadowPrivacyPurged(h6Audit);
+      await expect(prisma.knowledgeRun.findUnique({
+        select: { baseEvidence: true, providerText: true, results: true },
+        where: { id: retiredVisual.knowledgeRunId }
+      })).resolves.toEqual({
+        baseEvidence: [{ deleted: true }],
+        providerText: "Knowledge citation evidence was deleted.",
+        results: [{ deleted: true }]
+      });
+      await expect(prisma.modelRunToolCall.findUnique({
+        select: { arguments: true, result: true },
+        where: { id: retiredVisual.toolCallId }
+      })).resolves.toEqual({ arguments: { deleted: true }, result: null });
       await expect(prisma.knowledgeEvidenceDispatchManifest.findUnique({
         include: { exclusions: true, items: true },
         where: { id: h2Audit.manifestId }
@@ -2520,9 +2302,31 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         purgedAt: expect.any(Date)
       });
       await expect(prisma.knowledgeProviderAttempt.findUnique({
-        select: { state: true },
+        select: {
+          actualUsage: true,
+          checkpointHash: true,
+          idempotencyKey: true,
+          providerResponseId: true,
+          requestHash: true,
+          state: true
+        },
         where: { id: h2Audit.attemptId }
-      })).resolves.toEqual({ state: "settled" });
+      })).resolves.toEqual({
+        actualUsage: {
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
+          estimatedCostMicros: 0,
+          inputTokens: 1,
+          outputTokens: 0,
+          reasoningTokens: null,
+          totalTokens: 1
+        },
+        checkpointHash: "0".repeat(64),
+        idempotencyKey: purgedProviderAttemptKey(h2Audit.attemptId),
+        providerResponseId: null,
+        requestHash: "0".repeat(64),
+        state: "settled"
+      });
       await expect(prisma.knowledgeBudgetReservation.findUnique({
         select: {
           actualCandidates: true,
@@ -2543,25 +2347,22 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         purgedAt: expect.any(Date),
         state: "settled"
       });
-      const purgedEvidence = await loadKnowledgeEvidencePackage(prisma, {
+      await expect(loadKnowledgeEvidencePackage(prisma, {
         runId: run.id,
         userId: ownerUserId
-      });
-      expect(purgedEvidence).toMatchObject({
-        degradedFlags: ["evidence_deleted"],
-        items: [
-          { handle: "K1", provenance: [], state: "deleted" },
-          { excerpt: retainedEvidenceText, handle: "K2", state: "available" }
-        ]
-      });
-      const purgedReceiptHash = knowledgeEvidenceReceiptHash(purgedEvidence!);
-      expect(purgedReceiptHash).not.toBe(acceptedReceiptHash);
+      })).resolves.toBeNull();
       await expect(prisma.knowledgeRetrievalSession.findUnique({
-        select: { degradedFlags: true, receiptHash: true, scopeSnapshot: true },
+        select: {
+          degradedFlags: true,
+          originalIntent: true,
+          receiptHash: true,
+          scopeSnapshot: true
+        },
         where: { id: evidenceSession.id }
       })).resolves.toMatchObject({
         degradedFlags: ["evidence_deleted"],
-        receiptHash: purgedReceiptHash,
+        originalIntent: { deleted: true, version: 1 },
+        receiptHash: deletedKnowledgeReceiptHash,
         scopeSnapshot: {
           selection: {
             baseIds: [retainedBase.id],
@@ -2571,10 +2372,12 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           }
         }
       });
-      await expect(prisma.modelRun.findUnique({
-        select: { normalizedRequest: true },
+      expect(deletedKnowledgeReceiptHash).not.toBe(acceptedReceiptHash);
+      const scrubbedRun = await prisma.modelRun.findUnique({
+        select: { normalizedRequest: true, providerResponseId: true },
         where: { id: run.id }
-      })).resolves.toMatchObject({
+      });
+      expect(scrubbedRun).toMatchObject({
         normalizedRequest: {
           knowledgePlan: {
             baseIds: [retainedBase.id],
@@ -2582,8 +2385,10 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
             sourceIds: [],
             version: 1
           }
-        }
+        },
+        providerResponseId: null
       });
+      expect(scrubbedRun?.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
       const privateRunState = {
         evidenceItem: await prisma.knowledgeEvidenceItem.findUnique({
           where: { id: evidenceItem.id }
@@ -2597,6 +2402,10 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
             results: true
           },
           where: { id: canonicalKnowledgeRun.id }
+        }),
+        retiredVisual: await prisma.knowledgeRun.findUnique({
+          select: { baseEvidence: true, providerText: true, results: true },
+          where: { id: retiredVisual.knowledgeRunId }
         }),
         manifest: await prisma.knowledgeEvidenceDispatchManifest.findUnique({
           include: { exclusions: true, items: true },
@@ -2614,6 +2423,12 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       for (const privateValue of [
         base.id,
         deletedEvidenceText,
+        `private-attempt-response-${suffix}`,
+        `private-base-target-${suffix}`,
+        `private focused Base query ${suffix}`,
+        `private-provider-response-${suffix}`,
+        retiredBaseName,
+        retiredVisualMarker,
         source.id,
         sourceArtifact.id,
         sourceVersion.id
@@ -2695,7 +2510,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         query: "private empty base",
         resultLimit: 8,
         results: [],
-        threshold: 0.2
       },
       select: { id: true }
     });

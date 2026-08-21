@@ -4,6 +4,7 @@ import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
+  ThreadKnowledgeAnswerState,
   ThreadKnowledgeCitation,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
@@ -41,6 +42,28 @@ function answerWebSources(artifact: ThreadArtifactSummary): readonly ThreadSearc
     url: citation.url
   }));
   return [...artifact.sources, ...citationSources];
+}
+
+function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerState }>) {
+  const insufficient = state.answer === "insufficient_evidence";
+  const partial = state.scope === "partial_sources_ready";
+  if (!insufficient && !partial) return null;
+  const text = insufficient && partial
+    ? "The ready documents did not contain enough evidence for a supported answer; some selected documents are still processing."
+    : insufficient
+      ? "The selected documents did not contain enough evidence for a supported answer."
+      : "Answered from the ready documents; some selected documents are still processing.";
+  return (
+    <p
+      className="v2-knowledge-answer-state"
+      data-answer={state.answer}
+      data-scope={state.scope}
+      role="status"
+    >
+      <UiV2Icon name="library" />
+      <span>{text}</span>
+    </p>
+  );
 }
 
 function KnowledgeSourceV2({
@@ -163,14 +186,20 @@ export function AnswerOutputsV2({
     artifact && showReasoning && artifact.reasoningText.some((text) => text.trim())
   );
   const hasMemoryAction = Boolean(artifact?.memoryAction);
+  const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
+    artifact.knowledgeState.answer === "insufficient_evidence" ||
+    artifact.knowledgeState.scope === "partial_sources_ready"
+  ));
 
-  if (!identitySlot && !hasSources && !hasSuggestions && !hasReasoning && !hasMemoryAction) {
+  if (!identitySlot && !hasSources && !hasSuggestions && !hasReasoning && !hasMemoryAction &&
+    !hasKnowledgeState) {
     return null;
   }
 
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
       {identitySlot ? <div className="v2-answer-identity">{identitySlot}</div> : null}
+      {artifact?.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
       {artifact && hasSources ? (
         <SourcesV2 artifact={artifact} knowledgeReference={knowledgeReference} />
       ) : null}

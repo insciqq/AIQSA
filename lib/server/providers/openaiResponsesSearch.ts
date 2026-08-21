@@ -151,7 +151,8 @@ function compatibleBody(
   body: OpenAIResponsesSearchRequestBody,
   mapping: ProviderReasoningRequestMapping
 ): Record<string, unknown> {
-  const output: Record<string, unknown> = { ...body };
+  const { background: _background, ...portable } = body;
+  const output: Record<string, unknown> = { ...portable };
   if (body.reasoning && !isCanonicalResponsesReasoningRequestMapping(mapping)) {
     delete output.reasoning;
     applyProviderReasoningRequestMapping(output, mapping, {
@@ -297,7 +298,7 @@ export function createOpenAIResponsesSearchAdapter(
       const body = requestBody(request, options);
       return {
         body: {
-          background: body.background,
+          ...(typeof body.background === "boolean" ? { background: body.background } : {}),
           max_output_tokens: body.max_output_tokens,
           model: body.model,
           reasoning: canonicalBody.reasoning,

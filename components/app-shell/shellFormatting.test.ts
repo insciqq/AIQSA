@@ -45,6 +45,20 @@ describe("shell error formatting", () => {
     );
   });
 
+  it.each([
+    ["sources_processing", "still processing"],
+    ["no_retrieval_candidates", "No matching passages"],
+    ["knowledge_retrieval_failed", "could not be retrieved"],
+    ["knowledge_answer_failed", "could not complete"],
+    ["knowledge_answer_contract_failed", "could not be safely accepted"],
+    ["knowledge_citation_contract_failed", "cited evidence that was not supplied"]
+  ])("keeps Knowledge state %s distinct and user-safe", (code, expected) => {
+    const message = humanizeErrorCode(code);
+    expect(message).toContain(expected);
+    expect(message).toContain(`(${code})`);
+    expect(message).not.toMatch(/providerResponseId|manifestHash|sourceArtifactId/u);
+  });
+
   it("prefers structured API errors and preserves plain response text", async () => {
     await expect(
       responseErrorMessage(

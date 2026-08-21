@@ -28,7 +28,6 @@ type OperationsRow = Readonly<{
   pendingDeletionObjects: number;
   processingArtifacts: number;
   readyArtifacts: number;
-  repairedAnswers24h: number;
   retrievalOperations24h: number;
   settledUploads24h: number;
   uploadedBytes24h: bigint;
@@ -188,7 +187,8 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
                   OR run."outcome" IN (
                     'embedding_model_unavailable',
                     'budget_exhausted',
-                    'structured_clarification_required'
+                    'base_indexing',
+                    'source_location_unavailable'
                   )
                   OR cardinality(session."degradedFlags") > 0
               )::integer AS "degradedOperations24h",
@@ -201,11 +201,8 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
               ON session."id" = run."retrievalSessionId"
             WHERE run."createdAt" >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
           ), grounding_stats AS (
-            SELECT
-              count(*) FILTER (WHERE "outcome" = 'no_answer')::integer
-                AS "noAnswerOperations24h",
-              count(*) FILTER (WHERE "outcome" = 'repaired')::integer
-                AS "repairedAnswers24h"
+            SELECT count(*) FILTER (WHERE "outcome" = 'insufficient_evidence')::integer
+              AS "noAnswerOperations24h"
             FROM "KnowledgeGroundingResult"
             WHERE "createdAt" >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
           )
@@ -287,10 +284,6 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
           "knowledge_operations_count_invalid"
         ),
         readyArtifacts: integer(row.readyArtifacts, "knowledge_operations_count_invalid"),
-        repairedAnswers24h: integer(
-          row.repairedAnswers24h,
-          "knowledge_operations_count_invalid"
-        ),
         retrievalOperations24h: integer(
           row.retrievalOperations24h,
           "knowledge_operations_count_invalid"
@@ -353,8 +346,7 @@ export function createAdminKnowledgeOperationsService(client: OperationsClient) 
           noAnswerOperations24h: normalized.noAnswerOperations24h,
           operations24h: normalized.retrievalOperations24h,
           p50DurationMs24h: normalized.p50RetrievalDurationMs24h,
-          p95DurationMs24h: normalized.p95RetrievalDurationMs24h,
-          repairedAnswers24h: normalized.repairedAnswers24h
+          p95DurationMs24h: normalized.p95RetrievalDurationMs24h
         }
       };
     }

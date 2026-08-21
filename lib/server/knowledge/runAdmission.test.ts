@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import {
+  authorizeKnowledgeRunAdmissionSnapshot,
   KnowledgeRunAdmissionError,
   knowledgeRunAdmissionStillAuthorizes,
   loadKnowledgeRunAdmissionPlan,
   sameKnowledgeRunAdmissionPlan,
+  type KnowledgeRunAdmissionAuthorizationSnapshot,
+  type KnowledgeRunAdmissionPlan,
+  type KnowledgeRunSnapshotAuthorizationStore,
   type KnowledgeRunAdmissionStore
 } from "./runAdmission";
 
@@ -44,7 +48,10 @@ type StoreOptions = Readonly<{
   checkAvailable?: boolean;
   fullAccess?: boolean;
   grantCount?: number;
+  embeddingProviderModelIdByBaseId?: Readonly<Record<string, string>>;
   profileAuthority?: "installation" | "legacy_user";
+  profileRevisionIdByBaseId?: Readonly<Record<string, string>>;
+  sourceIdsByBaseId?: Readonly<Record<string, readonly string[]>>;
   sourceOwnerUserId?: string;
   sourceSummary?: Readonly<{
     normalizedTextByteSize: number;
@@ -77,13 +84,30 @@ function store(options: StoreOptions = {}) {
       findFirst: vi.fn(async (input: { where: { id: string } }) =>
         options.baseAvailable === false
           ? null
-          : {
+          : (() => {
+              const embeddingProviderModelId =
+                options.embeddingProviderModelIdByBaseId?.[input.where.id] ?? "embedding-model-1";
+              const generationPin = createKnowledgeVectorSpacePin({
+                configuration: embeddingConfiguration,
+                deploymentId: embeddingProviderModelId
+              })!;
+              const profileRevisionId =
+                options.profileRevisionIdByBaseId?.[input.where.id] ?? "profile-revision-1";
+              const customSourceIds = options.sourceIdsByBaseId?.[input.where.id];
+              const sourceIds = customSourceIds ??
+                (options.sourceSummary
+                  ? Array.from(
+                      { length: options.sourceSummary.sourceCount },
+                      (_, index) => `source-${index + 1}`
+                    )
+                  : []);
+              return {
               activeIndexGeneration: {
-                embeddingConfiguration: vectorPin.configuration,
-                embeddingProviderModelId: "embedding-model-1",
+                embeddingConfiguration: generationPin.configuration,
+                embeddingProviderModelId,
                 id: `generation:${input.where.id}`,
                 indexedContentRevision: 4,
-                profileRevisionId: "profile-revision-1",
+                profileRevisionId,
                 profileRevision: {
                   executionAuthority: options.profileAuthority ?? "legacy_user",
                   profileConfiguration: null
@@ -91,13 +115,13 @@ function store(options: StoreOptions = {}) {
                 status: "active",
                 targetDimension: 1_536,
                 vectorSpaceFingerprint:
-                  options.vectorFingerprint ?? vectorPin.fingerprint
+                  options.vectorFingerprint ?? generationPin.fingerprint
               },
               contentRevision: 5,
               id: input.where.id,
               sourceMemberships: options.sourceSummary
-                ? Array.from({ length: options.sourceSummary.sourceCount }, (_, index) => ({
-                    sourceId: `source-${index + 1}`,
+                ? sourceIds.map((sourceId, index) => ({
+                    sourceId,
                     source: {
                       currentVersion: {
                         artifacts: [{
@@ -105,22 +129,27 @@ function store(options: StoreOptions = {}) {
                             passageCount: options.sourceSummary!.passageCount,
                             state: "ready"
                           }],
-                          id: `artifact-${index + 1}`,
+                          id: customSourceIds
+                            ? `artifact:${sourceId}:${profileRevisionId}`
+                            : `artifact-${index + 1}`,
                           normalizedTextByteSize: options.sourceSummary!.normalizedTextByteSize,
-                          profileRevisionId: "profile-revision-1",
+                          profileRevisionId,
                           state: "ready"
                         }],
                         byteSize: options.sourceSummary!.normalizedTextByteSize,
-                        fileName: `source-${index + 1}.md`,
-                        id: `source-version-${index + 1}`,
+                        fileName: `${sourceId}.md`,
+                        id: customSourceIds
+                          ? `source-version:${sourceId}`
+                          : `source-version-${index + 1}`,
                         versionNumber: 1
                       },
-                      name: `Source ${index + 1}`,
+                      name: customSourceIds ? `Source ${sourceId}` : `Source ${index + 1}`,
                       ownerUserId: options.sourceOwnerUserId ?? "user-1"
                     }
                   }))
                 : []
-            })
+              };
+            })())
     },
     knowledgeIndexProfile: {
       findUnique: vi.fn(async () => ({
@@ -159,7 +188,7 @@ function store(options: StoreOptions = {}) {
       findMany: vi.fn(async () => [])
     },
     providerModel: {
-      findFirst: vi.fn(async () => ({
+      findFirst: vi.fn(async (input?: { where?: { id?: string } }) => ({
         activeConfig: embeddingConfiguration,
         activeVersion: 2,
         connection: {
@@ -182,12 +211,13 @@ function store(options: StoreOptions = {}) {
         },
         connectionId: "embedding-connection-1",
         displayName: "Embedding model",
-        id: "embedding-model-1",
+        id: input?.where?.id ?? "embedding-model-1",
         provider: "openai_compatible"
       })),
-      findUnique: vi.fn(async () => ({
+      findUnique: vi.fn(async (input?: { where?: { id?: string } }) => ({
         connection: { family: "openai_compatible" },
-        connectionId: "embedding-connection-1"
+        connectionId: "embedding-connection-1",
+        id: input?.where?.id ?? "embedding-model-1"
       }))
     },
     providerModelCredentialCheck: {
@@ -205,6 +235,87 @@ function store(options: StoreOptions = {}) {
       findMany: vi.fn(async () => memberships)
     }
   };
+}
+
+function authorizationSnapshot(
+  plan: KnowledgeRunAdmissionPlan
+): KnowledgeRunAdmissionAuthorizationSnapshot {
+  return {
+    bindings: plan.bindings,
+    knowledgePlan: plan.knowledgePlan,
+    profiles: plan.profiles ?? [],
+    sources: plan.sources ?? []
+  };
+}
+
+function snapshotAuthorizationStore(options: Readonly<{
+  baseAuthorized?: boolean;
+  baseDeleting?: boolean;
+  projectActive?: boolean;
+  projectBaseBound?: boolean;
+  projectSourceBound?: boolean;
+  sourceDeleting?: boolean;
+  sourcePurged?: boolean;
+}> = {}) {
+  return {
+    knowledgeBase: {
+      findMany: vi.fn(async (input: { where: { id: { in: string[] } } }) =>
+        input.where.id.in.length === 0 ? [] : [{
+        activeIndexGenerationId: "generation:new",
+        archivedAt: new Date("2026-08-20T00:00:00.000Z"),
+        deletionRequestedAt: options.baseDeleting ? new Date("2026-08-21T00:00:00.000Z") : null,
+        id: "base-1",
+        indexGenerations: [{
+          embeddingProviderModelId: "embedding-model-1",
+          id: "generation:base-1",
+          profileRevisionId: "profile-revision-1",
+          status: "retired",
+          targetDimension: 1_536,
+          vectorSpaceFingerprint: vectorPin.fingerprint
+        }],
+        ownerUserId: "another-user",
+        projectBindings: options.projectBaseBound === false
+          ? []
+          : [{ projectId: "project-1" }],
+        publications: options.baseAuthorized === false
+          ? []
+          : [{ groupId: null, scope: "installation" }],
+        sourceMemberships: [],
+        trashedAt: new Date("2026-08-20T00:00:00.000Z")
+      }])
+    },
+    knowledgeSource: {
+      findMany: vi.fn(async () => options.sourcePurged
+        ? []
+        : [{
+            currentVersionId: "source-version-new",
+            deletionRequestedAt: options.sourceDeleting
+              ? new Date("2026-08-21T00:00:00.000Z")
+              : null,
+            id: "source-1",
+            ownerUserId: "user-1",
+            projectBindings: options.projectSourceBound === false
+              ? []
+              : [{ projectId: "project-1" }],
+            versions: [{
+              artifacts: [{
+                hierarchicalIndexes: [{ state: "ready" }],
+                id: "artifact-1",
+                profileRevisionId: "profile-revision-1",
+                state: "ready"
+              }],
+              id: "source-version-1"
+            }],
+            trashedAt: new Date("2026-08-20T00:00:00.000Z")
+          }])
+    },
+    project: {
+      findFirst: vi.fn(async () => options.projectActive === false ? null : { id: "project-1" })
+    },
+    user: {
+      findFirst: vi.fn(async () => ({ groups: [], id: "user-1" }))
+    }
+  } as unknown as KnowledgeRunSnapshotAuthorizationStore;
 }
 
 function admissionStore(options: StoreOptions = {}): KnowledgeRunAdmissionStore {
@@ -331,6 +442,174 @@ describe("Knowledge run admission", () => {
       profiles: plan.profiles,
       sources: plan.sources
     })).toBe(false);
+  });
+
+  it("keeps the accepted retired generation and exact Source artifact authorized across rollout", async () => {
+    const client = store({
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+    const authorizationStore = snapshotAuthorizationStore();
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(authorizationStore, {
+      snapshot: authorizationSnapshot(admitted),
+      userId: "user-1"
+    })).resolves.toBe(true);
+    expect(authorizationStore.knowledgeBase.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.not.objectContaining({ activeIndexGeneration: expect.anything() })
+      })
+    );
+    expect(authorizationStore.knowledgeSource.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.not.objectContaining({
+          baseMemberships: expect.anything(),
+          currentVersion: expect.anything()
+        })
+      })
+    );
+  });
+
+  it("blocks an accepted Base snapshot after its personal ACL is revoked", async () => {
+    const client = store({
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore({ baseAuthorized: false }),
+      { snapshot: authorizationSnapshot(admitted), userId: "user-1" }
+    )).resolves.toBe(false);
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore({ baseDeleting: true }),
+      { snapshot: authorizationSnapshot(admitted), userId: "user-1" }
+    )).resolves.toBe(false);
+  });
+
+  it("blocks a directly Project-bound Source after the Project binding is revoked", async () => {
+    const client = store();
+    client.knowledgeSource.findMany.mockResolvedValue([readySource()]);
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: [], mode: "explicit", sourceIds: ["source-1"], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+    const snapshot = authorizationSnapshot({
+      ...admitted,
+      sources: admitted.sources?.map((source) => ({
+        ...source,
+        authority: { knowledgeBaseIds: [], owner: false, projectId: "project-1" }
+      }))
+    });
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore({ projectSourceBound: false }),
+      {
+        executionScope: "project",
+        projectId: "project-1",
+        snapshot,
+        userId: "user-1"
+      }
+    )).resolves.toBe(false);
+  });
+
+  it("blocks an accepted Project Base after its canonical Project binding is revoked", async () => {
+    const client = store({
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+    const snapshot = authorizationSnapshot({
+      ...admitted,
+      sources: admitted.sources?.map((source) => ({
+        ...source,
+        authority: {
+          knowledgeBaseIds: source.authority.knowledgeBaseIds,
+          owner: false,
+          projectId: "project-1"
+        }
+      }))
+    });
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore({ projectBaseBound: false }),
+      {
+        executionScope: "project",
+        projectId: "project-1",
+        snapshot,
+        userId: "user-1"
+      }
+    )).resolves.toBe(false);
+  });
+
+  it("blocks a purged exact Source/Version/artifact tuple", async () => {
+    const client = store();
+    client.knowledgeSource.findMany.mockResolvedValue([readySource()]);
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: [], mode: "explicit", sourceIds: ["source-1"], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore({ sourcePurged: true }),
+      { snapshot: authorizationSnapshot(admitted), userId: "user-1" }
+    )).resolves.toBe(false);
+  });
+
+  it("blocks a deletion-requested Source while ordinary Trash remains snapshot-neutral", async () => {
+    const client = store();
+    client.knowledgeSource.findMany.mockResolvedValue([readySource()]);
+    const admitted = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: [], mode: "explicit", sourceIds: ["source-1"], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+    const snapshot = authorizationSnapshot(admitted);
+
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore(),
+      { snapshot, userId: "user-1" }
+    )).resolves.toBe(true);
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(
+      snapshotAuthorizationStore({ sourceDeleting: true }),
+      { snapshot, userId: "user-1" }
+    )).resolves.toBe(false);
   });
 
   it("materializes an owner Source through constant-size All my knowledge", async () => {
@@ -485,6 +764,238 @@ describe("Knowledge run admission", () => {
     expect(plan.resolvedSourceCount).toBe(1);
   });
 
+  it("retains compatible ready profile revisions during a mixed-profile rollout", async () => {
+    const client = store({
+      profileRevisionIdByBaseId: {
+        "base-a": "profile-revision-1",
+        "base-b": "profile-revision-2"
+      },
+      sourceIdsByBaseId: {
+        "base-a": ["source-a"],
+        "base-b": ["source-b1", "source-b2"]
+      },
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const input = {
+      knowledgePlan: {
+        baseIds: ["base-a", "base-b"],
+        mode: "explicit" as const,
+        sourceIds: [],
+        version: 1 as const
+      },
+      userId: "user-1"
+    };
+
+    const maximumCoverage = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      input
+    );
+    const acceptedGroup = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      { ...input, preferredProfileRevisionId: "profile-revision-1" }
+    );
+
+    expect(maximumCoverage.bindings).toEqual([
+      expect.objectContaining({ knowledgeBaseId: "base-a", ordinal: 0 }),
+      expect.objectContaining({ knowledgeBaseId: "base-b", ordinal: 1 })
+    ]);
+    expect(maximumCoverage.profiles).toEqual([
+      expect.objectContaining({ ordinal: 0, profileRevisionId: "profile-revision-1" }),
+      expect.objectContaining({ ordinal: 1, profileRevisionId: "profile-revision-2" })
+    ]);
+    expect(maximumCoverage.sources?.map(({ profileOrdinal, sourceAlias, sourceId }) => ({
+      profileOrdinal,
+      sourceAlias,
+      sourceId
+    }))).toEqual([
+      { profileOrdinal: 0, sourceAlias: "S1", sourceId: "source-a" },
+      { profileOrdinal: 1, sourceAlias: "S2", sourceId: "source-b1" },
+      { profileOrdinal: 1, sourceAlias: "S3", sourceId: "source-b2" }
+    ]);
+    expect(maximumCoverage.exclusions).toEqual([]);
+    expect(acceptedGroup).toEqual(maximumCoverage);
+
+    const profilesByRevision = new Map(maximumCoverage.profiles?.map((profile) => [
+      profile.profileRevisionId,
+      profile
+    ]) ?? []);
+    const authorizationStore = {
+      knowledgeBase: {
+        findMany: vi.fn(async (query: { where: { id: { in: string[] } } }) =>
+          query.where.id.in.map((knowledgeBaseId) => {
+            const binding = maximumCoverage.bindings.find((candidate) =>
+              candidate.knowledgeBaseId === knowledgeBaseId)!;
+            const source = maximumCoverage.sources?.find((candidate) =>
+              candidate.baseProvenance.some((provenance) =>
+                provenance.knowledgeBaseId === knowledgeBaseId))!;
+            const profile = profilesByRevision.get(source.profileRevisionId)!;
+            return {
+              deletionRequestedAt: null,
+              id: knowledgeBaseId,
+              indexGenerations: [{
+                embeddingProviderModelId: profile.embeddingProviderModelId,
+                id: binding.indexGenerationId,
+                profileRevisionId: profile.profileRevisionId,
+                status: "retired",
+                targetDimension: profile.targetDimension,
+                vectorSpaceFingerprint: profile.vectorSpaceFingerprint
+              }],
+              ownerUserId: "user-1",
+              projectBindings: [],
+              publications: []
+            };
+          }))
+      },
+      knowledgeSource: {
+        findMany: vi.fn(async (query: { where: { id: { in: string[] } } }) =>
+          query.where.id.in.map((sourceId) => {
+            const source = maximumCoverage.sources?.find((candidate) =>
+              candidate.sourceId === sourceId)!;
+            return {
+              deletionRequestedAt: null,
+              id: sourceId,
+              ownerUserId: "user-1",
+              projectBindings: [],
+              versions: [{
+                artifacts: [{
+                  hierarchicalIndexes: [{ state: "ready" }],
+                  id: source.sourceArtifactId,
+                  profileRevisionId: source.profileRevisionId,
+                  state: "ready"
+                }],
+                id: source.sourceVersionId
+              }]
+            };
+          }))
+      },
+      project: { findFirst: vi.fn() },
+      user: { findFirst: vi.fn(async () => ({ groups: [], id: "user-1" })) }
+    } as unknown as KnowledgeRunSnapshotAuthorizationStore;
+    await expect(authorizeKnowledgeRunAdmissionSnapshot(authorizationStore, {
+      snapshot: authorizationSnapshot(maximumCoverage),
+      userId: "user-1"
+    })).resolves.toBe(true);
+  });
+
+  it("keeps one deterministic embedding group and excludes only incompatible ready Sources", async () => {
+    const client = store({
+      embeddingProviderModelIdByBaseId: {
+        "base-a": "embedding-model-1",
+        "base-b": "embedding-model-2"
+      },
+      profileRevisionIdByBaseId: {
+        "base-a": "profile-revision-1",
+        "base-b": "profile-revision-2"
+      },
+      sourceIdsByBaseId: {
+        "base-a": ["source-a"],
+        "base-b": ["source-b1", "source-b2"]
+      },
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+
+    const plan = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-a", "base-b"],
+          mode: "explicit",
+          sourceIds: [],
+          version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.bindings).toEqual([
+      expect.objectContaining({ knowledgeBaseId: "base-b", ordinal: 0 })
+    ]);
+    expect(plan.profiles).toEqual([
+      expect.objectContaining({
+        embeddingProviderModelId: "embedding-model-2",
+        ordinal: 0,
+        profileRevisionId: "profile-revision-2"
+      })
+    ]);
+    expect(plan.sources?.map(({ sourceId }) => sourceId)).toEqual(["source-b1", "source-b2"]);
+    expect(plan.exclusions).toContainEqual({
+      count: 1,
+      reason: "not_ready",
+      resourceType: "source"
+    });
+  });
+
+  it("keeps a foreign explicit Source through the winning rollout profile", async () => {
+    const client = store({
+      profileRevisionIdByBaseId: {
+        "base-a": "profile-revision-1",
+        "base-b": "profile-revision-2"
+      },
+      sourceIdsByBaseId: {
+        "base-a": ["source-explicit"],
+        "base-b": ["source-explicit", "source-b2"]
+      },
+      sourceOwnerUserId: "source-owner",
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const source = readySource("source-owner", ["base-a", "base-b"]);
+    source.id = "source-explicit";
+    source.currentVersion.id = "source-version:source-explicit";
+    source.baseMemberships[1]!.knowledgeBase.activeIndexGeneration.profileRevisionId =
+      "profile-revision-2";
+    source.currentVersion.artifacts.push({
+      hierarchicalIndexes: [{ passageCount: 3, state: "ready" }],
+      id: "artifact-direct-2",
+      normalizedTextByteSize: 4_000,
+      profileRevisionId: "profile-revision-2",
+      state: "ready"
+    });
+    client.knowledgeSource.findMany.mockResolvedValue([source]);
+
+    const plan = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-b"],
+          mode: "explicit",
+          sourceIds: ["source-explicit"],
+          version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.profiles?.map(({ profileRevisionId }) => profileRevisionId)).toEqual([
+      "profile-revision-1",
+      "profile-revision-2"
+    ]);
+    expect(plan.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        directSelected: false,
+        selectionProvenance: ["base"],
+        sourceId: "source-b2"
+      }),
+      expect.objectContaining({
+        directSelected: true,
+        selectionProvenance: ["base", "explicit_source"],
+        sourceId: "source-explicit"
+      })
+    ]));
+    expect(plan.sources?.filter(({ sourceId }) => sourceId === "source-explicit"))
+      .toHaveLength(2);
+    const rolloutBindings = plan.sources?.filter(
+      ({ sourceId }) => sourceId === "source-explicit"
+    ) ?? [];
+    expect(new Set(rolloutBindings.map(({ sourceId }) => sourceId))).toEqual(
+      new Set(["source-explicit"])
+    );
+    expect(new Set(rolloutBindings.map(({ profileRevisionId }) => profileRevisionId)).size)
+      .toBe(2);
+    expect(new Set(rolloutBindings.map(({ sourceArtifactId }) => sourceArtifactId)).size)
+      .toBe(2);
+    expect(plan.exclusions).toEqual([]);
+  });
+
   it.each([
     { baseIds: ["same", "same"], mode: "explicit", sourceIds: [], version: 1 },
     {
@@ -602,6 +1113,57 @@ describe("Knowledge run admission", () => {
       readySourceCount: 1,
       sourceCount: 1
     });
+  });
+
+  it("records a processing Source inside an otherwise ready Base as partial readiness", async () => {
+    const client = store({
+      sourceSummary: { normalizedTextByteSize: 4_000, passageCount: 3, sourceCount: 1 }
+    });
+    const readyBase = await client.knowledgeBase.findFirst({ where: { id: "base-a" } });
+    if (!readyBase) throw new Error("missing_ready_base_fixture");
+    client.knowledgeBase.findFirst.mockResolvedValue({
+      ...readyBase,
+      sourceMemberships: [
+        ...readyBase.sourceMemberships,
+        {
+          sourceId: "source-processing",
+          source: {
+            currentVersion: {
+              artifacts: [{
+                hierarchicalIndexes: [],
+                id: "artifact-processing",
+                normalizedTextByteSize: 500,
+                profileRevisionId: "profile-revision-1",
+                state: "processing"
+              }],
+              byteSize: 500,
+              fileName: "processing.md",
+              id: "source-version-processing",
+              versionNumber: 1
+            },
+            name: "Processing Source",
+            ownerUserId: "user-1"
+          }
+        }
+      ]
+    });
+
+    const plan = await loadKnowledgeRunAdmissionPlan(
+      client as unknown as KnowledgeRunAdmissionStore,
+      {
+        knowledgePlan: {
+          baseIds: ["base-a"], mode: "explicit", sourceIds: [], version: 1
+        },
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.sources).toHaveLength(1);
+    expect(plan.exclusions).toEqual([{
+      count: 1,
+      reason: "not_ready",
+      resourceType: "source"
+    }]);
   });
 
   it("admits remaining ready Bases and records stale processing Bases as partial readiness", async () => {

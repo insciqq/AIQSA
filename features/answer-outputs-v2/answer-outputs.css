@@ -13,6 +13,21 @@
   color: var(--v2-color-text3);
 }
 
+.v2-knowledge-answer-state {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--v2-color-border);
+  color: var(--v2-color-text2);
+}
+
+.v2-knowledge-answer-state[data-scope="partial_sources_ready"] {
+  color: var(--v2-color-warn);
+}
+
 .v2-answer-sources {
   min-width: 0;
   border-top: 1px solid var(--v2-color-border);

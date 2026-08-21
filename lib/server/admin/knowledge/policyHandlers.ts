@@ -1,10 +1,6 @@
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
-import { isKnowledgeRetrievalPolicy } from "../../knowledge/knowledgePolicy";
-import {
-  AdminKnowledgePolicyServiceError,
-  type createAdminKnowledgePolicyService
-} from "./policyService";
+import type { createAdminKnowledgePolicyService } from "./policyService";
 import { AdminKnowledgeProfileServiceError } from "./profileService";
 
 type Service = ReturnType<typeof createAdminKnowledgePolicyService>;
@@ -40,12 +36,11 @@ function contentTypeIsJson(request: Request): boolean {
 }
 
 function failure(error: unknown): Response {
-  if (error instanceof AdminKnowledgePolicyServiceError ||
-    error instanceof AdminKnowledgeProfileServiceError) {
+  if (error instanceof AdminKnowledgeProfileServiceError) {
     return Response.json({ error: error.code }, { status: 409 });
   }
-  console.error("knowledge_policy_admin_action_failed");
-  return Response.json({ error: "knowledge_policy_admin_action_failed" }, { status: 500 });
+  console.error("knowledge_admin_action_failed");
+  return Response.json({ error: "knowledge_admin_action_failed" }, { status: 500 });
 }
 
 export function createAdminKnowledgePolicyHandlers(input: Readonly<{
@@ -74,22 +69,16 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
       if (bodyError) return bodyError;
       if (record(value) && value.action === "activate_profile") {
         const deploymentId = boundedId(value.deploymentId);
-        const visionDeploymentId = value.visionDeploymentId === null
-          ? null
-          : boundedId(value.visionDeploymentId);
-        if (!allowedKeys(value, ["action", "deploymentId", "expectedVersion", "visionDeploymentId"]) ||
+        if (!allowedKeys(value, ["action", "deploymentId", "expectedVersion"]) ||
           !deploymentId || !Number.isSafeInteger(value.expectedVersion) ||
-          Number(value.expectedVersion) < 1 ||
-          !("visionDeploymentId" in value) ||
-          value.visionDeploymentId !== null && !visionDeploymentId) {
+          Number(value.expectedVersion) < 1) {
           return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
         }
         try {
           await input.service.activateProfile({
             deploymentId,
             expectedVersion: Number(value.expectedVersion),
-            userId: auth.session.userId,
-            visionDeploymentId
+            userId: auth.session.userId
           });
           return Response.json({ knowledge: await input.service.list() });
         } catch (error) {
@@ -114,27 +103,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
           return failure(error);
         }
       }
-      const policy = record(value) ? {
-        candidateLimit: value.candidateLimit as number,
-        resultLimit: value.resultLimit as number,
-        scoreThreshold: value.scoreThreshold as number
-      } : null;
-      if (!record(value) ||
-        !allowedKeys(value, ["candidateLimit", "expectedVersion", "resultLimit", "scoreThreshold"]) ||
-        !Number.isSafeInteger(value.expectedVersion) ||
-        Number(value.expectedVersion) < 1 || !policy || !isKnowledgeRetrievalPolicy(policy)) {
-        return Response.json({ error: "knowledge_policy_update_invalid" }, { status: 400 });
-      }
-      try {
-        await input.service.update({
-          ...policy,
-          expectedVersion: Number(value.expectedVersion),
-          userId: auth.session.userId
-        });
-        return Response.json({ knowledge: await input.service.list() });
-      } catch (error) {
-        return failure(error);
-      }
+      return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
     }
   };
 }

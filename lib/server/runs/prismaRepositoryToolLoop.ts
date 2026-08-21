@@ -19,14 +19,18 @@ import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
 import {
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   KNOWLEDGE_SCOPE_MAX_SOURCES,
-  KNOWLEDGE_TOOL_NAME
+  KNOWLEDGE_FOCUSED_OPERATION_NAME
 } from "../knowledge/retrievalTypes";
 import { decodeKnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
-import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
+import type {
+  KnowledgeRunAdmissionExclusion,
+  KnowledgeRunAdmissionSourceAuthorization
+} from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
+import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
-import { decodeKnowledgePlannerPlan } from "../knowledge/planner";
+import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import {
   parseToolLoopCheckpoint,
   AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
@@ -110,6 +114,80 @@ function recoveryKnowledgeExclusions(
   return exclusions.some((entry) => entry === null)
     ? null
     : exclusions.filter((entry): entry is KnowledgeRunAdmissionExclusion => entry !== null);
+}
+
+function exactObjectKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function recoveryKnowledgeSourceAuthorization(input: Readonly<{
+  accessProvenance: unknown;
+  baseProvenance: unknown;
+  directSelected: boolean;
+  profileRevisionId: string;
+  readinessState: string;
+  sourceArtifactId: string | null;
+  sourceId: string | null;
+  sourceVersionId: string | null;
+  tombstonedAt: Date | null;
+}>): KnowledgeRunAdmissionSourceAuthorization | null {
+  if (input.readinessState !== "ready" || input.tombstonedAt !== null ||
+    !input.sourceId?.trim() || !input.sourceVersionId?.trim() ||
+    !input.sourceArtifactId?.trim() || !input.profileRevisionId.trim() ||
+    !isRecord(input.accessProvenance) ||
+    !exactObjectKeys(input.accessProvenance, ["authority", "selectionProvenance"]) ||
+    !isRecord(input.accessProvenance.authority) ||
+    !exactObjectKeys(input.accessProvenance.authority, ["knowledgeBaseIds", "owner", "projectId"]) ||
+    !Array.isArray(input.accessProvenance.authority.knowledgeBaseIds) ||
+    typeof input.accessProvenance.authority.owner !== "boolean" ||
+    input.accessProvenance.authority.projectId !== null &&
+      typeof input.accessProvenance.authority.projectId !== "string" ||
+    !Array.isArray(input.accessProvenance.selectionProvenance) ||
+    !Array.isArray(input.baseProvenance)) return null;
+
+  const knowledgeBaseIds = input.accessProvenance.authority.knowledgeBaseIds;
+  const selectionProvenance = input.accessProvenance.selectionProvenance;
+  const validSelections = new Set(["all_my_knowledge", "base", "explicit_source"]);
+  if (knowledgeBaseIds.some((value) => typeof value !== "string" || !value.trim()) ||
+    new Set(knowledgeBaseIds).size !== knowledgeBaseIds.length ||
+    selectionProvenance.length < 1 ||
+    selectionProvenance.some((value) => typeof value !== "string" ||
+      !validSelections.has(value)) ||
+    new Set(selectionProvenance).size !== selectionProvenance.length) return null;
+
+  const baseProvenance = input.baseProvenance.map((entry) =>
+    isRecord(entry) && exactObjectKeys(entry, ["indexGenerationId", "knowledgeBaseId"]) &&
+      typeof entry.indexGenerationId === "string" && entry.indexGenerationId.trim() &&
+      typeof entry.knowledgeBaseId === "string" && entry.knowledgeBaseId.trim()
+      ? {
+          indexGenerationId: entry.indexGenerationId,
+          knowledgeBaseId: entry.knowledgeBaseId
+        }
+      : null);
+  if (baseProvenance.some((entry) => entry === null) ||
+    new Set(baseProvenance.map((entry) => entry?.knowledgeBaseId)).size !==
+      baseProvenance.length) return null;
+
+  const authorityOwner = input.accessProvenance.authority.owner as boolean;
+  const authorityProjectId = input.accessProvenance.authority.projectId as string | null;
+  if (!authorityOwner && authorityProjectId === null && knowledgeBaseIds.length === 0) return null;
+  return Object.freeze({
+    authority: Object.freeze({
+      knowledgeBaseIds: Object.freeze([...knowledgeBaseIds]) as readonly string[],
+      owner: authorityOwner,
+      projectId: authorityProjectId
+    }),
+    baseProvenance: Object.freeze(baseProvenance.filter((entry): entry is NonNullable<
+      typeof entry
+    > => entry !== null)),
+    directSelected: input.directSelected,
+    profileRevisionId: input.profileRevisionId,
+    selectionProvenance: Object.freeze([...selectionProvenance]) as
+      KnowledgeRunAdmissionSourceAuthorization["selectionProvenance"],
+    sourceArtifactId: input.sourceArtifactId,
+    sourceId: input.sourceId,
+    sourceVersionId: input.sourceVersionId
+  });
 }
 
 type ToolLoopCallRecord = {
@@ -325,6 +403,9 @@ export type PrismaRunToolLoopOperations = Pick<
   | "claimAutomaticKnowledgeCall"
   | "claimToolLoopCall"
   | "loadCheckpointedToolLoopRun"
+  | "loadFocusedKnowledgeCall"
+  | "loadFocusedKnowledgeRecoveryScope"
+  | "loadFocusedKnowledgeScopeExclusions"
   | "loadProviderDispatchRecoveryRequest"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
@@ -340,7 +421,7 @@ const normalizedRequestKeys = new Set([
   "chatId",
   "content",
   "context",
-  "knowledgePlanner",
+  "knowledgeFocusedRequest",
   "knowledgePlan",
   "memoryActionTools",
   "memoryHistoryTool",
@@ -573,8 +654,10 @@ function decodeProviderDispatchRecoveryRequest(
     !validContext(value.context) || !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
-      "baseline", "developer", "system"
+      "baseline", "developer", "knowledgeAnswerContract", "system"
     ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
+    value.prompt.knowledgeAnswerContract !== undefined &&
+      value.prompt.knowledgeAnswerContract !== 1 ||
     !validSearchPlan(value.searchPlan) || !validMcpSnapshot(value.mcp) ||
     (value.toolMode !== "auto" && value.toolMode !== "none")) return null;
   if (value.prompt.baseline !== undefined && (!isRecord(value.prompt.baseline) ||
@@ -584,8 +667,18 @@ function decodeProviderDispatchRecoveryRequest(
     (value.prompt.baseline.timeZoneSource !== "client" &&
       value.prompt.baseline.timeZoneSource !== "utc_fallback"))) return null;
   if (!decodeKnowledgePlan(value.knowledgePlan).ok ||
-    value.knowledgePlanner !== undefined && !decodeKnowledgePlannerPlan(value.knowledgePlanner).ok ||
+    value.knowledgeFocusedRequest !== undefined &&
+      decodeKnowledgeFocusedRequest(value.knowledgeFocusedRequest) === null ||
+    value.prompt.knowledgeAnswerContract !== undefined &&
+      value.knowledgeFocusedRequest === undefined ||
     value.mcpDiscovery !== undefined && !decodeMcpDiscoveryState(value.mcpDiscovery, 100)) return null;
+  if (value.knowledgeFocusedRequest !== undefined && (
+    value.toolMode !== "none" ||
+    !isRecord(value.searchPlan) || !Array.isArray(value.searchPlan.options) ||
+    value.searchPlan.options.length !== 0 || value.mcp !== undefined ||
+    value.mcpDiscovery !== undefined || value.memoryActionTools !== undefined ||
+    value.memoryHistoryTool !== undefined
+  )) return null;
   if (value.memoryActionTools !== undefined && (!isRecord(value.memoryActionTools) ||
     !onlyKnownKeys(value.memoryActionTools, new Set(["version"])) ||
     value.memoryActionTools.version !== "model-driven-v2")) return null;
@@ -726,20 +819,15 @@ export function createPrismaRunToolLoopOperations(
       });
     },
     prepareAutomaticKnowledgeCallBatch: async (input) => {
-      if (input.calls.length < 1 || input.calls.length > KNOWLEDGE_SCOPE_MAX_BINDINGS) {
+      if (input.calls.length !== 1) {
         return { kind: "conflict" as const };
       }
-      const providerCallIds = new Set<string>();
-      for (const [index, call] of input.calls.entries()) {
-        const argumentsValue = toolLoopArguments(call.arguments);
-        if (call.ordinal !== index ||
-          call.providerCallId !== `${AUTOMATIC_KNOWLEDGE_CALL_PREFIX}${index + 1}` ||
-          call.providerCallId.length > toolLoopPersistenceLimits.providerCallIdLength ||
-          providerCallIds.has(call.providerCallId) || !argumentsValue) {
-          return { kind: "conflict" as const };
-        }
-        providerCallIds.add(call.providerCallId);
-      }
+      const requestedCall = input.calls[0]!;
+      const requestedArguments = toolLoopArguments(requestedCall.arguments);
+      const requestedFocused = decodeKnowledgeFocusedRequest(requestedArguments);
+      if (requestedCall.ordinal !== 0 ||
+        requestedCall.providerCallId !== `${AUTOMATIC_KNOWLEDGE_CALL_PREFIX}1` ||
+        !requestedArguments || !requestedFocused) return { kind: "conflict" as const };
       return prismaClient.$transaction(async (tx) => {
         const run = await lockToolLoopRun(tx, input);
         if (!run) return { kind: "not_found" as const };
@@ -747,13 +835,24 @@ export function createPrismaRunToolLoopOperations(
         if (!activeToolLoopRun(run) || run.toolLoopState !== null) {
           return { kind: "conflict" as const };
         }
+        const persistedRun = await tx.modelRun.findUnique({
+          select: { normalizedRequest: true },
+          where: { id: input.runId }
+        });
+        const persistedRequest = isRecord(persistedRun?.normalizedRequest)
+          ? decodeKnowledgeFocusedRequest(persistedRun.normalizedRequest.knowledgeFocusedRequest)
+          : null;
+        if (!persistedRequest || canonicalJson(
+          persistedRequest as unknown as ToolLoopJsonValue
+        ) !== canonicalJson(requestedFocused as unknown as ToolLoopJsonValue)) {
+          return { kind: "conflict" as const };
+        }
         const scope = await tx.knowledgeRunScope.findUnique({
           select: { budgetPolicy: true },
           where: { modelRunId: input.runId }
         });
         const budgetPolicy = decodeKnowledgeBudgetPolicy(scope?.budgetPolicy);
-        if (!budgetPolicy || input.calls.length > budgetPolicy.maxSubqueriesPerPhase ||
-          input.calls.length > budgetPolicy.maxOperations) {
+        if (!budgetPolicy || input.calls.length > budgetPolicy.maxOperations) {
           return { kind: "conflict" as const };
         }
         const existing = await tx.modelRunToolCall.findMany({
@@ -766,7 +865,8 @@ export function createPrismaRunToolLoopOperations(
             const expected = input.calls[index];
             const args = toolLoopArguments(call.arguments);
             return Boolean(expected && call.ordinal === expected.ordinal &&
-              call.providerCallId === expected.providerCallId && call.toolName === KNOWLEDGE_TOOL_NAME &&
+              call.providerCallId === expected.providerCallId &&
+              call.toolName === KNOWLEDGE_FOCUSED_OPERATION_NAME &&
               args && canonicalJson(args) === canonicalJson(expected.arguments));
           });
           return same
@@ -782,7 +882,7 @@ export function createPrismaRunToolLoopOperations(
               providerCallId: call.providerCallId,
               roundIndex: 0,
               state: "pending",
-              toolName: KNOWLEDGE_TOOL_NAME
+              toolName: KNOWLEDGE_FOCUSED_OPERATION_NAME
             }
           });
         }
@@ -802,9 +902,9 @@ export function createPrismaRunToolLoopOperations(
         where: {
           id: input.callId,
           modelRunId: input.runId,
-          providerCallId: { startsWith: AUTOMATIC_KNOWLEDGE_CALL_PREFIX },
+          providerCallId: `${AUTOMATIC_KNOWLEDGE_CALL_PREFIX}1`,
           roundIndex: 0,
-          toolName: KNOWLEDGE_TOOL_NAME
+          toolName: KNOWLEDGE_FOCUSED_OPERATION_NAME
         }
       });
       if (!call) return { kind: "not_found" as const };
@@ -1068,6 +1168,164 @@ export function createPrismaRunToolLoopOperations(
         throw new Error("provider_dispatch_recovery_request_invalid_in_storage");
       }
       return request;
+    },
+    loadFocusedKnowledgeCall: async (input) => {
+      const run = await prismaClient.modelRun.findFirst({
+        select: {
+          toolCalls: {
+            include: toolLoopCallInclude,
+            orderBy: { ordinal: "asc" },
+            where: {
+              providerCallId: `${AUTOMATIC_KNOWLEDGE_CALL_PREFIX}1`,
+              roundIndex: 0,
+              toolName: KNOWLEDGE_FOCUSED_OPERATION_NAME
+            }
+          }
+        },
+        where: { id: input.runId, userId: input.userId }
+      });
+      if (!run || run.toolCalls.length !== 1) return null;
+      return persistedToolLoopCall(run.toolCalls[0]!);
+    },
+    loadFocusedKnowledgeScopeExclusions: async (input) => {
+      const run = await prismaClient.modelRun.findFirst({
+        select: {
+          knowledgeRunScope: { select: { exclusions: true } }
+        },
+        where: { id: input.runId, userId: input.userId }
+      });
+      if (!run?.knowledgeRunScope) return null;
+      const exclusions = recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions);
+      if (!exclusions) throw new Error("knowledge_run_scope_invalid_in_storage");
+      return exclusions;
+    },
+    loadFocusedKnowledgeRecoveryScope: async (input) => {
+      const run = await prismaClient.modelRun.findFirst({
+        select: {
+          knowledgeRunBindings: {
+            orderBy: { ordinal: "asc" },
+            select: {
+              includeWholeBase: true,
+              indexGenerationId: true,
+              knowledgeBaseId: true,
+              ordinal: true,
+              selectedSourceIds: true,
+              vectorSpaceFingerprint: true
+            }
+          },
+          knowledgeRunProfileBindings: {
+            orderBy: { ordinal: "asc" },
+            select: {
+              embeddingCredentialSource: true,
+              embeddingExecutionSnapshot: true,
+              embeddingProviderModelId: true,
+              ordinal: true,
+              profileRevisionId: true,
+              targetDimension: true,
+              vectorSpaceFingerprint: true
+            }
+          },
+          knowledgeRunScope: {
+            select: {
+              exclusions: true,
+              resolvedBaseCount: true,
+              resolvedSourceCount: true,
+              selection: true
+            }
+          },
+          knowledgeRunSourceBindings: {
+            orderBy: { ordinal: "asc" },
+            select: {
+              accessProvenance: true,
+              baseProvenance: true,
+              directSelected: true,
+              ordinal: true,
+              profileBinding: { select: { profileRevisionId: true } },
+              readinessState: true,
+              sourceAlias: true,
+              sourceArtifactId: true,
+              sourceId: true,
+              sourceVersionId: true,
+              tombstonedAt: true
+            }
+          }
+        },
+        where: { id: input.runId, userId: input.userId }
+      });
+      if (!run?.knowledgeRunScope) return null;
+      const selection = decodeKnowledgePlan(run.knowledgeRunScope.selection);
+      const exclusions = recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions);
+      if (!selection.ok || !exclusions ||
+        run.knowledgeRunBindings.length !== run.knowledgeRunScope.resolvedBaseCount ||
+        run.knowledgeRunSourceBindings.length !== run.knowledgeRunScope.resolvedSourceCount ||
+        run.knowledgeRunBindings.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+        run.knowledgeRunSourceBindings.length > KNOWLEDGE_SCOPE_MAX_SOURCES ||
+        run.knowledgeRunBindings.some((binding, ordinal) =>
+          binding.ordinal !== ordinal || !/^[0-9a-f]{64}$/u.test(
+            binding.vectorSpaceFingerprint.trim()
+          )) ||
+        run.knowledgeRunProfileBindings.some((profile, ordinal) =>
+          profile.ordinal !== ordinal || !/^[0-9a-f]{64}$/u.test(
+            profile.vectorSpaceFingerprint.trim()
+          )) ||
+        run.knowledgeRunSourceBindings.some((source, ordinal) =>
+          source.ordinal !== ordinal || source.sourceAlias !== `S${ordinal + 1}`)) {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
+
+      let profiles;
+      try {
+        profiles = run.knowledgeRunProfileBindings.map((profile) => Object.freeze({
+          embeddingCredentialSource: profile.embeddingCredentialSource,
+          embeddingExecutionSnapshot: normalizeProviderExecutionSnapshot(
+            profile.embeddingExecutionSnapshot
+          ),
+          embeddingProviderModelId: profile.embeddingProviderModelId,
+          ordinal: profile.ordinal,
+          profileRevisionId: profile.profileRevisionId,
+          targetDimension: profile.targetDimension,
+          vectorSpaceFingerprint: profile.vectorSpaceFingerprint.trim()
+        }));
+      } catch {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
+      const sources = run.knowledgeRunSourceBindings.map((source) =>
+        recoveryKnowledgeSourceAuthorization({
+          ...source,
+          profileRevisionId: source.profileBinding.profileRevisionId
+        }));
+      if (sources.some((source) => source === null)) {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
+      const bindingsByBaseId = new Map(run.knowledgeRunBindings.map((binding) => [
+        binding.knowledgeBaseId,
+        binding
+      ]));
+      const profileRevisionIds = new Set(profiles.map((profile) => profile.profileRevisionId));
+      if (sources.some((source) => source !== null &&
+        (!profileRevisionIds.has(source.profileRevisionId) ||
+          source.baseProvenance.some((provenance) => {
+            const binding = bindingsByBaseId.get(provenance.knowledgeBaseId);
+            return !source.authority.knowledgeBaseIds.includes(provenance.knowledgeBaseId) ||
+              !binding || binding.indexGenerationId !== provenance.indexGenerationId;
+          })))) {
+        throw new Error("knowledge_run_scope_invalid_in_storage");
+      }
+      return Object.freeze({
+        bindings: Object.freeze(run.knowledgeRunBindings.map((binding) => Object.freeze({
+          includeWholeBase: binding.includeWholeBase,
+          indexGenerationId: binding.indexGenerationId,
+          knowledgeBaseId: binding.knowledgeBaseId,
+          selectedSourceIds: Object.freeze([...binding.selectedSourceIds]),
+          vectorSpaceFingerprint: binding.vectorSpaceFingerprint.trim()
+        }))),
+        exclusions: Object.freeze([...exclusions]),
+        knowledgePlan: selection.plan,
+        profiles: Object.freeze(profiles),
+        sources: Object.freeze(sources.filter((source): source is NonNullable<
+          typeof source
+        > => source !== null))
+      });
     },
     persistToolLoopCallBatch: async (input: PersistToolLoopCallBatchInput) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||

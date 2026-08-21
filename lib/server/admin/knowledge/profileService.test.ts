@@ -2,6 +2,10 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeVectorSpacePin } from "../../knowledge/indexProfile";
 import {
+  knowledgeProfileConfiguration,
+  knowledgeProfileEgressPolicy
+} from "../../knowledge/knowledgeProfile";
+import {
   AdminKnowledgeProfileServiceError,
   createAdminKnowledgeProfileService
 } from "./profileService";
@@ -30,13 +34,7 @@ function revision(overrides: Record<string, unknown> = {}) {
     activatedAt: NOW,
     chunkingProfileVersion: 1,
     createdAt: NOW,
-    egressPolicy: {
-      operations: [{
-        operation: "embeddings",
-        representations: ["document_text_chunks", "search_queries"]
-      }],
-      policyVersion: "knowledge-profile-egress-v1"
-    },
+    egressPolicy: knowledgeProfileEgressPolicy({ embeddingProviderModelId: "embedding-1" }),
     embeddingConfiguration: pin.configuration,
     embeddingProviderModel: {
       activeConfig: pin.configuration,
@@ -53,7 +51,9 @@ function revision(overrides: Record<string, unknown> = {}) {
     preflightCheckedAt: NOW,
     preflightErrorCode: null,
     preflightStatus: "ready",
-    profileConfiguration: { schemaVersion: 1 },
+    profileConfiguration: knowledgeProfileConfiguration({
+      embeddingProviderModelId: "embedding-1"
+    }),
     profileId: "installation",
     revisionNumber: 1,
     targetDimension: 1024,
@@ -74,22 +74,6 @@ describe("administrator Knowledge profile service", () => {
       knowledgeIndexProfileRevision: {
         create,
         findFirst: vi.fn().mockResolvedValue({ revisionNumber: 1 })
-      },
-      knowledgePolicy: {
-        findUnique: vi.fn().mockResolvedValue({
-          candidateLimit: 40,
-          resultLimit: 8,
-          scoreThreshold: 0.01
-        })
-      },
-      providerModel: {
-        findFirst: vi.fn().mockResolvedValue({
-          connection: { displayName: "Vision route" },
-          displayName: "Document vision",
-          id: "vision-1",
-          provider: "openai",
-          supportsVision: true
-        })
       }
     };
     const prisma = {
@@ -106,7 +90,6 @@ describe("administrator Knowledge profile service", () => {
     }));
     const service = createAdminKnowledgeProfileService(prisma, {
       resolveInstallationDestination,
-      resolveInstallationVisionDestination: vi.fn(async () => ({ supportsNativePdf: true })),
       scheduleMigration
     });
 
@@ -114,8 +97,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 4,
       now: NOW,
-      userId: "admin-1",
-      visionDeploymentId: "vision-1"
+      userId: "admin-1"
     });
 
     expect(create).toHaveBeenCalledWith({
@@ -125,31 +107,26 @@ describe("administrator Knowledge profile service", () => {
         embeddingProviderModelId: "embedding-1",
         executionAuthority: "installation",
         preflightStatus: "ready",
-        profileConfiguration: expect.objectContaining({
-          operationRoles: expect.arrayContaining([
-            expect.objectContaining({ mode: "disabled", operation: "query_planning" }),
-            expect.objectContaining({ mode: "local", operation: "reranking" }),
-            expect.objectContaining({ mode: "local", operation: "grounding_validation" }),
-            expect.objectContaining({ mode: "local", operation: "citation_repair" }),
-            expect.objectContaining({ mode: "disabled", operation: "answer_citation_retry" })
-          ]),
-          rolePolicyVersion: 1,
-          schemaVersion: 3,
-          visualAnalysis: expect.objectContaining({
-            providerModelId: "vision-1",
-            supportsNativePdf: true
-          })
-        }),
+        profileConfiguration: {
+          operationRoles: [expect.objectContaining({
+            mode: "external",
+            operation: "embeddings",
+            providerModelId: "embedding-1"
+          })],
+          rolePolicyVersion: 3,
+          schemaVersion: 5
+        },
         profileId: "installation",
         revisionNumber: 2,
         vectorSpaceFingerprint: pin.fingerprint,
-        egressPolicy: expect.objectContaining({
-          operations: expect.arrayContaining([expect.objectContaining({
-            operation: "vision_analysis",
-            providerModelId: "vision-1"
-          })]),
-          policyVersion: "knowledge-profile-egress-v3"
-        })
+        egressPolicy: {
+          operations: [expect.objectContaining({
+            mode: "external",
+            operation: "embeddings",
+            providerModelId: "embedding-1"
+          })],
+          policyVersion: "knowledge-profile-egress-v5"
+        }
       }),
       select: { id: true }
     });
@@ -206,16 +183,7 @@ describe("administrator Knowledge profile service", () => {
       },
       egress: {
         destination: "Embedding route / Multilingual embed",
-        representations: ["document_text_chunks", "search_queries"],
-        roles: [
-          { mode: "external", operation: "embeddings" },
-          { mode: "disabled", operation: "vision_analysis" },
-          { mode: "disabled", operation: "query_planning" },
-          { mode: "local", operation: "reranking" },
-          { mode: "local", operation: "grounding_validation" },
-          { mode: "local", operation: "citation_repair" },
-          { mode: "disabled", operation: "answer_citation_retry" }
-        ]
+        representations: ["document_text_chunks", "search_queries"]
       },
       health: { code: null, state: "ready" },
       migration: {
@@ -227,65 +195,6 @@ describe("administrator Knowledge profile service", () => {
       }
     });
     expect(JSON.stringify(result)).not.toMatch(/filename|passage|query text|base name/iu);
-  });
-
-  it("keeps embedding ready while exposing a pinned visual-policy failure as degraded", async () => {
-    const visual = {
-      connectionDisplayName: "Vision route",
-      modelDisplayName: "Document vision",
-      provider: "openai",
-      providerModelId: "vision-1",
-      supportsNativePdf: true
-    };
-    const active = revision({
-      egressPolicy: {
-        operations: [{
-          operation: "embeddings",
-          representations: ["document_text_chunks", "search_queries"]
-        }, {
-          operation: "vision_analysis",
-          providerModelId: "vision-1",
-          representations: ["visual_source_bytes", "visual_queries"]
-        }],
-        policyVersion: "knowledge-profile-egress-v2"
-      },
-      profileConfiguration: {
-        schemaVersion: 2,
-        visualAnalysis: visual
-      }
-    });
-    const prisma = {
-      knowledgeBase: { count: vi.fn().mockResolvedValue(0) },
-      knowledgeIndexGeneration: { count: vi.fn().mockResolvedValue(0) },
-      knowledgeIndexProfile: {
-        findUnique: vi.fn().mockResolvedValue({
-          activeRevision: active,
-          revisions: [active],
-          updatedAt: NOW,
-          updatedBy: { displayName: "Administrator", id: "admin-1" },
-          version: 2
-        })
-      },
-      providerModel: { findMany: vi.fn().mockResolvedValue([]) }
-    } as unknown as PrismaClient;
-    const service = createAdminKnowledgeProfileService(prisma, {
-      resolveInstallationDestination: vi.fn(async () => ({ pin })),
-      resolveInstallationVisionDestination: vi.fn(async () => null)
-    });
-
-    await expect(service.list()).resolves.toMatchObject({
-      activeRevision: { visionDestination: { deploymentId: "vision-1" } },
-      egress: {
-        visualAnalysis: {
-          destination: "Vision route / Document vision",
-          representations: ["visual_source_bytes", "visual_queries"]
-        }
-      },
-      health: {
-        code: "knowledge_profile_visual_unavailable",
-        state: "ready_with_warnings"
-      }
-    });
   });
 
   it("rejects stale activation before preflight and refuses an unavailable rollback", async () => {
@@ -310,8 +219,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 2,
       now: NOW,
-      userId: "admin-1",
-      visionDeploymentId: null
+      userId: "admin-1"
     })).rejects.toEqual(new AdminKnowledgeProfileServiceError("knowledge_profile_stale"));
     await expect(service.rollback({
       expectedVersion: 3,
@@ -373,5 +281,40 @@ describe("administrator Knowledge profile service", () => {
       now: NOW,
       profileRevisionId: "revision-1"
     });
+  });
+
+  it("keeps historical role-bearing revisions read-only during rollback", async () => {
+    const updateMany = vi.fn();
+    const tx = {
+      knowledgeIndexProfile: {
+        findUnique: vi.fn().mockResolvedValue({ activeRevisionId: "revision-2", version: 4 }),
+        updateMany
+      },
+      knowledgeIndexProfileRevision: {
+        findFirst: vi.fn().mockResolvedValue(revision({
+          egressPolicy: {
+            operations: [{ operation: "query_planning" }],
+            policyVersion: "knowledge-profile-egress-v3"
+          },
+          profileConfiguration: { schemaVersion: 3 }
+        }))
+      }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+        operation(tx))
+    } as unknown as PrismaClient;
+    const service = createAdminKnowledgeProfileService(prisma, {
+      resolveInstallationDestination: vi.fn(async () => ({ pin }))
+    });
+
+    await expect(service.rollback({
+      expectedVersion: 4,
+      revisionId: "revision-1",
+      userId: "admin-1"
+    })).rejects.toEqual(
+      new AdminKnowledgeProfileServiceError("knowledge_profile_revision_unavailable")
+    );
+    expect(updateMany).not.toHaveBeenCalled();
   });
 });

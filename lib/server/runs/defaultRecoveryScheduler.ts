@@ -1,6 +1,7 @@
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
+import { knowledgeProviderDispatchLifecycle } from "../knowledge/defaultEvidenceDispatch";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
@@ -19,6 +20,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
     const deps = {
       knowledgeAdmission: knowledgeRunAdmissionService,
       knowledgeExecutor: knowledgeToolExecutor,
+      knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
       memoryEgress: defaultMemoryToolEgressReceiptService,
       mcp: defaultMcpRunPlan,
       providerAdmission: providerAdmissionService,

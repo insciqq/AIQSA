@@ -27,7 +27,7 @@ function draft() {
     header: "<private_knowledge_evidence version=\"2\">",
     maximumBytes: 16_384,
     maximumTokens: 4_096,
-    plannerVersion: 2,
+    runtimeVersion: 2,
     profileId: "fake:model",
     promptFragmentVersion: 2
   });

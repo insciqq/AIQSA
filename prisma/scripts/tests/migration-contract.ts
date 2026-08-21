@@ -38,6 +38,8 @@ const KNOWLEDGE_H6_SEMANTIC_SHADOW_MIGRATION =
   "20260820070000_knowledge_h6_semantic_shadow";
 const KNOWLEDGE_H6_SEMANTIC_DEPLOYMENT_MIGRATION =
   "20260820173000_knowledge_h6_semantic_deployment";
+const KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION =
+  "20260821000000_knowledge_basic_runtime_cleanup";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -238,7 +240,7 @@ function deployedMigrations(database: string): string[] {
   const value = psqlScalar(
     database,
     `SELECT COALESCE(
-       string_agg(migration_name, E'\\n' ORDER BY started_at, id),
+       string_agg(migration_name, E'\\n' ORDER BY migration_name),
        ''
      )
      FROM "_prisma_migrations"
@@ -342,6 +344,53 @@ function deployAndVerify(
 }
 
 function runIntegrityProof(database: string): void {
+  const reviewedUnvalidatedConstraints = psqlScalar(database, `
+    SELECT COALESCE(
+      string_agg(
+        table_relation.relname || '.' || constraint_catalog.conname,
+        E'\\n'
+        ORDER BY table_relation.relname, constraint_catalog.conname
+      ),
+      ''
+    )
+    FROM pg_constraint AS constraint_catalog
+    INNER JOIN pg_class AS table_relation
+      ON table_relation.oid = constraint_catalog.conrelid
+    INNER JOIN pg_namespace AS namespace
+      ON namespace.oid = constraint_catalog.connamespace
+    WHERE namespace.nspname = current_schema()
+      AND NOT constraint_catalog.convalidated;
+  `);
+  assert.equal(
+    reviewedUnvalidatedConstraints,
+    [
+      "KnowledgeBudgetReservation.KnowledgeBudgetReservation_basic_operation_check",
+      "KnowledgeGroundingResult.KnowledgeGroundingResult_basic_shape_check",
+      "KnowledgeRun.KnowledgeRun_budgetReservation_fkey",
+      "KnowledgeRun.KnowledgeRun_evidence_shape_check",
+      "KnowledgeRun.KnowledgeRun_limits_check",
+      "KnowledgeRun.KnowledgeRun_outcome_shape_check",
+      "KnowledgeRun.KnowledgeRun_read_receipt_operation_check",
+    ].join("\n"),
+    "clean install has an unreviewed NOT VALID constraint set",
+  );
+  psqlScalar(database, `
+    ALTER TABLE "KnowledgeBudgetReservation"
+      VALIDATE CONSTRAINT "KnowledgeBudgetReservation_basic_operation_check";
+    ALTER TABLE "KnowledgeGroundingResult"
+      VALIDATE CONSTRAINT "KnowledgeGroundingResult_basic_shape_check";
+    ALTER TABLE "KnowledgeRun"
+      VALIDATE CONSTRAINT "KnowledgeRun_budgetReservation_fkey";
+    ALTER TABLE "KnowledgeRun"
+      VALIDATE CONSTRAINT "KnowledgeRun_evidence_shape_check";
+    ALTER TABLE "KnowledgeRun"
+      VALIDATE CONSTRAINT "KnowledgeRun_limits_check";
+    ALTER TABLE "KnowledgeRun"
+      VALIDATE CONSTRAINT "KnowledgeRun_outcome_shape_check";
+    ALTER TABLE "KnowledgeRun"
+      VALIDATE CONSTRAINT "KnowledgeRun_read_receipt_operation_check";
+    SELECT 1;
+  `);
   app(database, ["npx", "tsx", "prisma/schema-integrity-smoke.ts"]);
 }
 
@@ -817,10 +866,14 @@ function runKnowledgeReadReceiptMigrationProof(
         FROM pg_constraint
         WHERE conname = 'KnowledgeRun_read_receipt_operation_check'
           AND conrelid = '"KnowledgeRun"'::regclass
-          AND convalidated;
+          AND NOT convalidated
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_read_source_receipt_valid_v2%'
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_exact_receipt_valid%'
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_discovery_receipt_valid%'
+          AND pg_get_constraintdef(oid) NOT LIKE '%threshold%';
       `),
       "1",
-      "Knowledge read receipt operation constraint is missing or unvalidated",
+      "Current threshold-free read receipt constraint is missing or unexpectedly validated",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1149,10 +1202,10 @@ function runKnowledgeH2DurableDispatchMigrationProof(
           'KnowledgeRun_negative_outcome_check',
           'KnowledgeRun_outcome_shape_check',
           'KnowledgeRun_read_receipt_operation_check'
-        ) AND convalidated;
+        );
       `),
       "5",
-      "H3 purpose receipt and tombstone constraints are missing or unvalidated",
+      "H3 purpose receipt and tombstone constraints are missing after cleanup",
     );
 
     const oneSidedReceipt = compose([
@@ -1175,8 +1228,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         "subqueryOrdinal", operation, "policyVersion", "idempotencyKey",
         "operationRequest", "operationRequestHash", state,
         "estimatedCandidates", "estimatedRetrievedTokens", "estimatedEmbeddingCalls",
-        "estimatedRerankerCalls", "estimatedLatencyMs", "estimatedCostMicros",
-        "estimatedValidationSlots", "estimatedRepairSlots", "leaseToken",
+        "estimatedLatencyMs", "estimatedCostMicros", "leaseToken",
         "leaseExpiresAt", "createdAt", "updatedAt"
       ) VALUES
         (
@@ -1186,7 +1238,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'version', 2, 'reservationId', 'knowledge-h2-reservation-1',
             'idempotencyKey', 'knowledge-h2-reservation-key-1',
             'operation', 'automatic_search', 'phaseOrdinal', 0, 'subqueryOrdinal', 0
-          ), repeat('a', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
+          ), repeat('a', 64), 'reserved', 1, 1, 0, 10, 0,
           'knowledge-h2-lease-1', CURRENT_TIMESTAMP + interval '5 minutes',
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         ),
@@ -1197,61 +1249,58 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'version', 2, 'reservationId', 'knowledge-h2-reservation-2',
             'idempotencyKey', 'knowledge-h2-reservation-key-2',
             'operation', 'discover_sources', 'phaseOrdinal', 0, 'subqueryOrdinal', 1
-          ), repeat('b', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
+          ), repeat('b', 64), 'reserved', 1, 1, 0, 10, 0,
           'knowledge-h2-lease-2', CURRENT_TIMESTAMP + interval '5 minutes',
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         );
       SELECT 'knowledge-h2-reservations-ready';
     `);
-    psqlScalar(database, `
-      INSERT INTO "KnowledgeBudgetReservation" (
-        id, "modelRunId", "modelRunToolCallId", "operationOrdinal", "phaseOrdinal",
-        "subqueryOrdinal", operation, "policyVersion", "idempotencyKey",
-        "operationRequest", "operationRequestHash", state,
-        "estimatedCandidates", "estimatedRetrievedTokens", "estimatedEmbeddingCalls",
-        "estimatedRerankerCalls", "estimatedLatencyMs", "estimatedCostMicros",
-        "estimatedValidationSlots", "estimatedRepairSlots", "leaseToken",
-        "leaseExpiresAt", "createdAt", "updatedAt"
-      ) VALUES
-        (
-          'knowledge-h3-reservation-structured', 'knowledge-h2-run-1',
-          'knowledge-h3-call-structured', 4, 0, 3, 'structured_analysis', 1,
-          'knowledge-h3-reservation-key-structured',
-          jsonb_build_object(
-            'version', 2, 'reservationId', 'knowledge-h3-reservation-structured',
-            'idempotencyKey', 'knowledge-h3-reservation-key-structured',
-            'operation', 'structured_analysis', 'phaseOrdinal', 0, 'subqueryOrdinal', 3
-          ), repeat('e', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
-          'knowledge-h3-lease-structured', CURRENT_TIMESTAMP + interval '5 minutes',
-          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-        ),
-        (
-          'knowledge-h3-reservation-visual', 'knowledge-h2-run-1',
-          'knowledge-h3-call-visual', 5, 0, 4, 'visual_analysis', 1,
-          'knowledge-h3-reservation-key-visual',
-          jsonb_build_object(
-            'version', 2, 'reservationId', 'knowledge-h3-reservation-visual',
-            'idempotencyKey', 'knowledge-h3-reservation-key-visual',
-            'operation', 'visual_analysis', 'phaseOrdinal', 0, 'subqueryOrdinal', 4
-          ), repeat('f', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
-          'knowledge-h3-lease-visual', CURRENT_TIMESTAMP + interval '5 minutes',
-          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-        );
-      SELECT count(*) FROM "KnowledgeBudgetReservation"
-      WHERE operation IN ('structured_analysis', 'visual_analysis');
-    `);
-    assert.equal(
-      psqlScalar(database, `
-        SELECT count(*) FROM "KnowledgeBudgetReservation"
-        WHERE operation IN ('structured_analysis', 'visual_analysis');
-      `),
-      "2",
-      "H3 structured and visual operation reservations were not accepted",
-    );
+    for (const [operation, suffix, toolCallId, ordinal, subqueryOrdinal] of [
+      ["structured_analysis", "structured", "knowledge-h3-call-structured", 4, 3],
+      ["visual_analysis", "visual", "knowledge-h3-call-visual", 5, 4],
+    ] as const) {
+      const retiredReservation = compose([
+        "exec", "-T", POSTGRES_SERVICE,
+        "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+        "--dbname", database,
+        "--command", `
+          INSERT INTO "KnowledgeBudgetReservation" (
+            id, "modelRunId", "modelRunToolCallId", "operationOrdinal", "phaseOrdinal",
+            "subqueryOrdinal", operation, "policyVersion", "idempotencyKey",
+            "operationRequest", "operationRequestHash", state,
+            "estimatedCandidates", "estimatedRetrievedTokens", "estimatedEmbeddingCalls",
+            "estimatedLatencyMs", "estimatedCostMicros", "leaseToken",
+            "leaseExpiresAt", "createdAt", "updatedAt"
+          ) VALUES (
+            'knowledge-h3-reservation-${suffix}', 'knowledge-h2-run-1',
+            '${toolCallId}', ${ordinal}, 0, ${subqueryOrdinal}, '${operation}', 1,
+            'knowledge-h3-reservation-key-${suffix}',
+            jsonb_build_object(
+              'version', 2, 'reservationId', 'knowledge-h3-reservation-${suffix}',
+              'idempotencyKey', 'knowledge-h3-reservation-key-${suffix}',
+              'operation', '${operation}', 'phaseOrdinal', 0,
+              'subqueryOrdinal', ${subqueryOrdinal}
+            ), repeat('e', 64), 'reserved', 1, 1, 0, 10, 0,
+            'knowledge-h3-lease-${suffix}', CURRENT_TIMESTAMP + interval '5 minutes',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          );
+        `,
+      ]);
+      assert.notEqual(
+        retiredReservation.status,
+        0,
+        `Basic cleanup accepted a new ${operation} reservation`,
+      );
+      assert.match(
+        `${retiredReservation.stdout}\n${retiredReservation.stderr}`,
+        /KnowledgeBudgetReservation_basic_operation_check/u,
+        `Retired ${operation} reservation failed without the Basic operation fence`,
+      );
+    }
     const h3ReceiptInsert = (values: string): string => `
       INSERT INTO "KnowledgeRun" (
         id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
-        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount", threshold,
+        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
         "baseEvidence", results, "providerText", "embeddingUsage", "readReceipt",
         "durationMs", "updatedAt"
       ) VALUES ${values};
@@ -1262,7 +1311,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         values: `(
           'knowledge-h3-receipt-exact', 'knowledge-h2-run-1',
           'knowledge-h3-call-exact', 6, 'find_exact', 'policy',
-          'complete', 'none', 2, 2, 1, 0,
+          'complete', 'none', 2, 2, 1,
           '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[{"handle":"K1"}]'::jsonb,
           'Exact match.', '[]'::jsonb,
           '{"caseMode":"insensitive","cursor":null,"field":"filename","limit":2,"match":"token","matches":[{"field":"filename","resultOrdinal":0}],"nextCursor":null,"scannedBytes":0,"scanTruncated":false,"unexpected":true,"value":"policy","version":1}'::jsonb,
@@ -1274,35 +1323,10 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         values: `(
           'knowledge-h3-receipt-discovery', 'knowledge-h2-run-1',
           'knowledge-h3-call-discovery', 7, 'discover_sources', 'policy',
-          'complete', 'none', 2, 2, 1, 0,
+          'complete', 'none', 2, 2, 1,
           '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[]'::jsonb,
           'Source metadata match.', '[]'::jsonb,
           '{"cursor":null,"fields":["filename"],"limit":2,"nextCursor":null,"query":"policy","sources":[{"ambiguous":false,"fileName":"policy.txt","matchedFields":["filename"],"readiness":"ready","sourceAlias":"S1","sourceName":"Policy","sourceVersionNumber":1}],"unexpected":true,"version":1}'::jsonb,
-          1, CURRENT_TIMESTAMP
-        )`,
-      },
-      {
-        label: "structured_analysis",
-        values: `(
-          'knowledge-h3-receipt-structured', 'knowledge-h2-run-1',
-          'knowledge-h3-call-structured', 4, 'structured_analysis', 'sum revenue',
-          'structured_clarification_required', 'rrf_k60', 40, 8, 0, 0.01,
-          '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[]'::jsonb,
-          'Clarification required.', '[]'::jsonb,
-          '{"question":"Choose Sales or Forecast.","status":"needs_clarification","unexpected":true,"version":1}'::jsonb,
-          1, CURRENT_TIMESTAMP
-        )`,
-      },
-      {
-        label: "visual_analysis",
-        values: `(
-          'knowledge-h3-receipt-visual', 'knowledge-h2-run-1',
-          'knowledge-h3-call-visual', 5, 'visual_analysis', 'describe chart',
-          'complete', 'rrf_k60', 40, 8, 1, 0.01,
-          '[{"baseName":"H3 Base","ordinal":0}]'::jsonb,
-          '[{"visualAnalysis":{"status":"available"}}]'::jsonb,
-          'Visual analysis available.', '[]'::jsonb,
-          '{"status":"available","unexpected":true,"version":1}'::jsonb,
           1, CURRENT_TIMESTAMP
         )`,
       },
@@ -1325,6 +1349,50 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         `Malformed ${malformed.label} receipt failed without the H3 receipt constraint`,
       );
     }
+    for (const [operation, values] of [
+      [
+        "structured_analysis",
+        `(
+          'knowledge-h3-receipt-structured', 'knowledge-h2-run-1',
+          'knowledge-h3-call-structured', 4, 'structured_analysis', 'sum revenue',
+          'structured_clarification_required', 'rrf_k60', 40, 8, 0,
+          '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[]'::jsonb,
+          'Clarification required.', '[]'::jsonb,
+          '{"question":"Choose Sales or Forecast.","status":"needs_clarification","version":1}'::jsonb,
+          1, CURRENT_TIMESTAMP
+        )`,
+      ],
+      [
+        "visual_analysis",
+        `(
+          'knowledge-h3-receipt-visual', 'knowledge-h2-run-1',
+          'knowledge-h3-call-visual', 5, 'visual_analysis', 'describe chart',
+          'complete', 'rrf_k60', 40, 8, 1,
+          '[{"baseName":"H3 Base","ordinal":0}]'::jsonb,
+          '[{"visualAnalysis":{"status":"available"}}]'::jsonb,
+          'Visual analysis available.', '[]'::jsonb,
+          '{"status":"available","version":1}'::jsonb,
+          1, CURRENT_TIMESTAMP
+        )`,
+      ],
+    ] as const) {
+      const retiredReceipt = compose([
+        "exec", "-T", POSTGRES_SERVICE,
+        "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+        "--dbname", database,
+        "--command", h3ReceiptInsert(values),
+      ]);
+      assert.notEqual(
+        retiredReceipt.status,
+        0,
+        `Basic cleanup accepted a new ${operation} receipt`,
+      );
+      assert.match(
+        `${retiredReceipt.stdout}\n${retiredReceipt.stderr}`,
+        /KnowledgeRun_read_receipt_operation_check/u,
+        `Retired ${operation} receipt failed without the Basic operation fence`,
+      );
+    }
     const malformedH3Tombstones = [
       {
         constraint: /KnowledgeRun_limits_check/u,
@@ -1332,7 +1400,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         values: `(
           'knowledge-h3-tombstone-exact', 'knowledge-h2-run-1',
           'knowledge-h3-call-exact-tombstone', 8, 'find_exact', 'deleted',
-          'complete', 'rrf_k60', 8, 8, 1, 0.01,
+          'complete', 'rrf_k60', 8, 8, 1,
           '[{"baseName":"Deleted Knowledge","ordinal":0}]'::jsonb,
           '[{"deleted":true}]'::jsonb, 'Knowledge evidence was deleted.', '[]'::jsonb,
           NULL, 1, CURRENT_TIMESTAMP
@@ -1344,7 +1412,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         values: `(
           'knowledge-h3-tombstone-discovery', 'knowledge-h2-run-1',
           'knowledge-h3-call-discovery-tombstone', 9, 'discover_sources', 'deleted',
-          'complete', 'none', 8, 8, 1, 0,
+          'complete', 'none', 8, 8, 1,
           '[{"baseName":"Deleted Knowledge","ordinal":0}]'::jsonb,
           '[{"deleted":true}]'::jsonb, 'Knowledge evidence was deleted.', '[]'::jsonb,
           NULL, 1, CURRENT_TIMESTAMP
@@ -1372,33 +1440,14 @@ function runKnowledgeH2DurableDispatchMigrationProof(
     psqlScalar(database, `
       INSERT INTO "KnowledgeRun" (
         id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
-        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount", threshold,
+        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
         "baseEvidence", results, "providerText", "embeddingUsage", "readReceipt",
         "durationMs", "updatedAt"
       ) VALUES
         (
-          'knowledge-h3-receipt-structured', 'knowledge-h2-run-1',
-          'knowledge-h3-call-structured', 4, 'structured_analysis', 'sum revenue',
-          'structured_clarification_required', 'rrf_k60', 40, 8, 0, 0.01,
-          '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[]'::jsonb,
-          'Clarification required.', '[]'::jsonb,
-          '{"question":"Choose Sales or Forecast.","status":"needs_clarification","version":1}'::jsonb,
-          1, CURRENT_TIMESTAMP
-        ),
-        (
-          'knowledge-h3-receipt-visual', 'knowledge-h2-run-1',
-          'knowledge-h3-call-visual', 5, 'visual_analysis', 'describe chart',
-          'complete', 'rrf_k60', 40, 8, 1, 0.01,
-          '[{"baseName":"H3 Base","ordinal":0}]'::jsonb,
-          '[{"visualAnalysis":{"status":"available"}}]'::jsonb,
-          'Visual analysis available.', '[]'::jsonb,
-          '{"status":"available","version":1}'::jsonb,
-          1, CURRENT_TIMESTAMP
-        ),
-        (
           'knowledge-h3-receipt-exact', 'knowledge-h2-run-1',
           'knowledge-h3-call-exact', 6, 'find_exact', 'policy',
-          'complete', 'none', 2, 2, 1, 0,
+          'complete', 'none', 2, 2, 1,
           '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[{"handle":"K1"}]'::jsonb,
           'Exact match.', '[]'::jsonb,
           '{"caseMode":"insensitive","cursor":null,"field":"filename","limit":2,"match":"token","matches":[{"field":"filename","resultOrdinal":0}],"nextCursor":null,"scannedBytes":0,"scanTruncated":false,"value":"policy","version":1}'::jsonb,
@@ -1407,7 +1456,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         (
           'knowledge-h3-receipt-discovery', 'knowledge-h2-run-1',
           'knowledge-h3-call-discovery', 7, 'discover_sources', 'policy',
-          'complete', 'none', 2, 2, 1, 0,
+          'complete', 'none', 2, 2, 1,
           '[{"baseName":"H3 Base","ordinal":0}]'::jsonb, '[]'::jsonb,
           'Source metadata match.', '[]'::jsonb,
           '{"cursor":null,"fields":["filename"],"limit":2,"nextCursor":null,"query":"policy","sources":[{"ambiguous":false,"fileName":"policy.txt","matchedFields":["filename"],"readiness":"ready","sourceAlias":"S1","sourceName":"Policy","sourceVersionNumber":1}],"version":1}'::jsonb,
@@ -1419,25 +1468,24 @@ function runKnowledgeH2DurableDispatchMigrationProof(
       psqlScalar(database, `
         SELECT count(*) FROM "KnowledgeRun"
         WHERE id IN (
-          'knowledge-h3-receipt-discovery', 'knowledge-h3-receipt-exact',
-          'knowledge-h3-receipt-structured', 'knowledge-h3-receipt-visual'
+          'knowledge-h3-receipt-discovery', 'knowledge-h3-receipt-exact'
         )
           AND "readReceipt" IS NOT NULL;
       `),
-      "4",
-      "H3 purpose-specific receipts were not durably accepted",
+      "2",
+      "Current exact/discovery receipts were not durably accepted",
     );
     psqlScalar(database, `
       INSERT INTO "KnowledgeRun" (
         id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
-        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount", threshold,
+        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
         "baseEvidence", results, "providerText", "embeddingUsage", "readReceipt",
         "durationMs", "updatedAt"
       ) VALUES
         (
           'knowledge-h3-tombstone-exact', 'knowledge-h2-run-1',
           'knowledge-h3-call-exact-tombstone', 8, 'find_exact', 'deleted',
-          'complete', 'none', 100, 100, 9, 0,
+          'complete', 'none', 100, 100, 9,
           '[{"baseName":"Deleted Knowledge","ordinal":0}]'::jsonb,
           '[{"deleted":true},{"deleted":true},{"deleted":true},{"deleted":true},{"deleted":true},{"deleted":true},{"deleted":true},{"deleted":true},{"deleted":true}]'::jsonb,
           'Knowledge evidence was deleted.', '[]'::jsonb, NULL, 1, CURRENT_TIMESTAMP
@@ -1445,14 +1493,14 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         (
           'knowledge-h3-tombstone-discovery', 'knowledge-h2-run-1',
           'knowledge-h3-call-discovery-tombstone', 9, 'discover_sources', 'deleted',
-          'complete', 'none', 100, 100, 1, 0,
+          'complete', 'none', 100, 100, 1,
           '[{"baseName":"Deleted Knowledge","ordinal":0}]'::jsonb, '[]'::jsonb,
           'Knowledge evidence was deleted.', '[]'::jsonb, NULL, 1, CURRENT_TIMESTAMP
         ),
         (
           'knowledge-h3-tombstone-discovery-zero', 'knowledge-h2-run-1',
           'knowledge-h3-call-discovery-zero-tombstone', 10, 'discover_sources', 'deleted',
-          'zero_above_threshold', 'none', 100, 100, 0, 0,
+          'zero_above_threshold', 'none', 100, 100, 0,
           '[{"baseName":"Deleted Knowledge","ordinal":0}]'::jsonb, '[]'::jsonb,
           'Knowledge evidence was deleted.', '[]'::jsonb, NULL, 1, CURRENT_TIMESTAMP
         );
@@ -1490,7 +1538,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             "operationRequest" = jsonb_set(
               "operationRequest", '{operation}', to_jsonb('semantic_magic'::text)
             )
-        WHERE id = 'knowledge-h3-reservation-structured';`,
+        WHERE id = 'knowledge-h2-reservation-2';`,
     ]);
     assert.notEqual(
       unsupportedH3Operation.status,
@@ -1512,8 +1560,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
           "subqueryOrdinal", operation, "policyVersion", "idempotencyKey",
           "operationRequest", "operationRequestHash", state,
           "estimatedCandidates", "estimatedRetrievedTokens", "estimatedEmbeddingCalls",
-          "estimatedRerankerCalls", "estimatedLatencyMs", "estimatedCostMicros",
-          "estimatedValidationSlots", "estimatedRepairSlots", "createdAt", "updatedAt"
+          "estimatedLatencyMs", "estimatedCostMicros", "createdAt", "updatedAt"
         ) VALUES (
           'knowledge-h2-reservation-bad', 'knowledge-h2-run-1', 'knowledge-h2-call-3',
           3, 0, 2, 'discover_sources', 1, 'knowledge-h2-reservation-key-bad',
@@ -1521,7 +1568,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'version', 2, 'reservationId', 'knowledge-h2-reservation-bad',
             'idempotencyKey', 'knowledge-h2-reservation-key-bad',
             'operation', 'discover_sources', 'phaseOrdinal', 0, 'subqueryOrdinal', 2
-          ), repeat('c', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
+          ), repeat('c', 64), 'reserved', 1, 1, 0, 10, 0,
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         );
       `,
@@ -1540,8 +1587,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         "settledAt" = CURRENT_TIMESTAMP, "dispatchAttemptKey" = 'knowledge-h2-dispatch-1',
         "receiptHash" = repeat('d', 64), "actualCandidates" = 0,
         "actualRetrievedTokens" = 0, "actualEmbeddingCalls" = 0,
-        "actualRerankerCalls" = 0, "actualLatencyMs" = 3, "actualCostMicros" = 0,
-        "actualValidationSlots" = 0, "actualRepairSlots" = 0,
+        "actualLatencyMs" = 3, "actualCostMicros" = 0,
         "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = 'knowledge-h2-reservation-1';
       UPDATE "KnowledgeRun" SET
@@ -1577,13 +1623,13 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         'answer', 'default', '{}'::jsonb
       );
       INSERT INTO "KnowledgeRetrievalSession" (
-        id, "modelRunId", version, "originalIntent", "scopeSnapshot", "strategySnapshot",
-        "readinessSummary", "coverageRequirements", "citationContract", "updatedAt"
+        id, "modelRunId", version, "originalIntent", "scopeSnapshot",
+        "readinessSummary", "citationContract", "updatedAt"
       ) VALUES
         ('knowledge-h2-session-1', 'knowledge-h2-run-1', 2, '{}'::jsonb, '{}'::jsonb,
-         '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP),
+         '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP),
         ('knowledge-h2-session-2', 'knowledge-h2-run-2', 2, '{}'::jsonb, '{}'::jsonb,
-         '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP);
+         '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP);
       INSERT INTO "KnowledgeProviderAttempt" (
         id, "modelRunId", "providerBindingKey", ordinal, "roundIndex", purpose,
         "idempotencyKey", "checkpointHash", "requestHash", state, "estimatedUsage",
@@ -1683,8 +1729,10 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
 ): void {
   const h3Index = committed.indexOf(KNOWLEDGE_H3_OPERATION_SEMANTICS_MIGRATION);
   const h4Index = committed.indexOf(KNOWLEDGE_H4_STRATEGY_EXECUTION_MIGRATION);
+  const cleanupIndex = committed.indexOf(KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION);
   assert.ok(h3Index > 0, "Knowledge H3 operation semantics migration is missing");
   assert.ok(h4Index > h3Index, "Knowledge H4 strategy execution migration is missing");
+  assert.ok(cleanupIndex > h4Index, "Knowledge Basic runtime cleanup migration is missing");
   const probeParent = join(repositoryRoot, ".aiqsa");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
@@ -1768,7 +1816,7 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
       SELECT 'knowledge-h4-pre-migration-ready';
     `);
 
-    for (const migration of committed.slice(h4Index)) {
+    for (const migration of committed.slice(h4Index, cleanupIndex)) {
       cpSync(join(migrationsRoot, migration), join(probeMigrations, migration), {
         recursive: true,
       });
@@ -3195,6 +3243,577 @@ function runKnowledgeH6SemanticShadowMigrationProof(
   );
 }
 
+function runKnowledgeBasicRuntimeCleanupMigrationProof(
+  database: string,
+  committed: readonly string[],
+): void {
+  const cleanupIndex = committed.indexOf(KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION);
+  const deploymentIndex = committed.indexOf(KNOWLEDGE_H6_SEMANTIC_DEPLOYMENT_MIGRATION);
+  assert.ok(
+    cleanupIndex > deploymentIndex,
+    "Knowledge Basic runtime cleanup migration must follow the historical H6 migration",
+  );
+  const cleanupSql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    cleanupSql,
+    /\bUPDATE\s+"KnowledgeRun"\b/iu,
+    "Knowledge Basic cleanup must not rewrite immutable historical operation receipts",
+  );
+
+  psqlScalar(database, `
+    INSERT INTO "ModelRunToolCall" (
+      id, "modelRunId", "roundIndex", ordinal, "providerCallId", "toolName",
+      arguments, state, "startedAt", "completedAt", "updatedAt"
+    ) VALUES
+      (
+        'knowledge-basic-legacy-structured-call', 'knowledge-h4-run-2', 0, 1,
+        'knowledge-basic-legacy-structured-provider-call', 'retrieve_knowledge',
+        '{"operation":"structured_analysis"}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-basic-legacy-visual-call', 'knowledge-h4-run-2', 0, 2,
+        'knowledge-basic-legacy-visual-provider-call', 'retrieve_knowledge',
+        '{"operation":"visual_analysis"}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+    INSERT INTO "KnowledgeBudgetReservation" (
+      id, "modelRunId", "modelRunToolCallId", "operationOrdinal", "phaseOrdinal",
+      "subqueryOrdinal", operation, "policyVersion", "idempotencyKey",
+      "operationRequest", "operationRequestHash", state,
+      "estimatedCandidates", "estimatedRetrievedTokens", "estimatedEmbeddingCalls",
+      "estimatedRerankerCalls", "estimatedLatencyMs", "estimatedCostMicros",
+      "estimatedValidationSlots", "estimatedRepairSlots", "leaseToken",
+      "leaseExpiresAt", "createdAt", "updatedAt"
+    ) VALUES
+      (
+        'knowledge-basic-legacy-structured-reservation', 'knowledge-h4-run-2',
+        'knowledge-basic-legacy-structured-call', 2, 0, 1, 'structured_analysis', 1,
+        'knowledge-basic-legacy-structured-reservation-key',
+        jsonb_build_object(
+          'version', 2,
+          'reservationId', 'knowledge-basic-legacy-structured-reservation',
+          'idempotencyKey', 'knowledge-basic-legacy-structured-reservation-key',
+          'operation', 'structured_analysis', 'phaseOrdinal', 0, 'subqueryOrdinal', 1
+        ), repeat('1', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
+        'knowledge-basic-legacy-structured-lease',
+        CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-basic-legacy-visual-reservation', 'knowledge-h4-run-2',
+        'knowledge-basic-legacy-visual-call', 3, 0, 2, 'visual_analysis', 1,
+        'knowledge-basic-legacy-visual-reservation-key',
+        jsonb_build_object(
+          'version', 2,
+          'reservationId', 'knowledge-basic-legacy-visual-reservation',
+          'idempotencyKey', 'knowledge-basic-legacy-visual-reservation-key',
+          'operation', 'visual_analysis', 'phaseOrdinal', 0, 'subqueryOrdinal', 2
+        ), repeat('2', 64), 'reserved', 1, 1, 0, 0, 10, 0, 0, 0,
+        'knowledge-basic-legacy-visual-lease',
+        CURRENT_TIMESTAMP + interval '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+    INSERT INTO "KnowledgeRun" (
+      id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
+      outcome, fusion, "candidateLimit", "resultLimit", "candidateCount", threshold,
+      "baseEvidence", results, "providerText", "embeddingUsage", "readReceipt",
+      "durationMs", "updatedAt"
+    ) VALUES
+      (
+        'knowledge-basic-legacy-structured-run', 'knowledge-h4-run-2',
+        'knowledge-basic-legacy-structured-call', 2, 'structured_analysis', 'sum revenue',
+        'structured_clarification_required', 'rrf_k60', 40, 8, 0, 0.01,
+        '[{"baseName":"Legacy Basic Base","ordinal":0}]'::jsonb, '[]'::jsonb,
+        'Clarification required.', '[]'::jsonb,
+        '{"question":"Choose Sales or Forecast.","status":"needs_clarification","version":1}'::jsonb,
+        1, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-basic-legacy-visual-run', 'knowledge-h4-run-2',
+        'knowledge-basic-legacy-visual-call', 3, 'visual_analysis', 'describe chart',
+        'complete', 'rrf_k60', 40, 8, 1, 0.01,
+        '[{"baseName":"Legacy Basic Base","ordinal":0}]'::jsonb,
+        '[{"visualAnalysis":{"status":"available"}}]'::jsonb,
+        'Visual analysis available.', '[]'::jsonb,
+        '{"status":"available","version":1}'::jsonb,
+        1, CURRENT_TIMESTAMP
+      );
+    SELECT 'knowledge-basic-legacy-analysis-ready';
+  `);
+
+  app(database, ["npx", "prisma", "migrate", "deploy"]);
+  assertDeployedMigrations(database, committed);
+
+  assert.equal(
+    psqlScalar(database, `
+      SELECT
+        (SELECT count(*) FROM "KnowledgeRun"
+          WHERE id IN (
+            'knowledge-basic-legacy-structured-run',
+            'knowledge-basic-legacy-visual-run'
+          )
+          AND operation IN ('structured_analysis', 'visual_analysis')
+          AND "readReceipt" IS NOT NULL)
+        + (SELECT count(*) FROM "KnowledgeBudgetReservation"
+          WHERE id IN (
+            'knowledge-basic-legacy-structured-reservation',
+            'knowledge-basic-legacy-visual-reservation'
+          )
+          AND operation IN ('structured_analysis', 'visual_analysis'));
+    `),
+    "4",
+    "Basic cleanup rejected or rewrote accepted historical analysis records",
+  );
+
+  psqlScalar(database, `
+    BEGIN;
+      SET LOCAL aiqsa.knowledge_purge = 'on';
+      UPDATE "KnowledgeRun"
+      SET
+        query = 'deleted_knowledge_resource',
+        "baseEvidence" = '[{"deleted":true}]'::jsonb,
+        results = CASE operation
+          WHEN 'visual_analysis' THEN '[{"deleted":true}]'::jsonb
+          ELSE '[]'::jsonb
+        END,
+        "providerText" = 'Knowledge citation evidence was deleted.',
+        "readReceipt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id IN (
+        'knowledge-basic-legacy-structured-run',
+        'knowledge-basic-legacy-visual-run'
+      );
+      UPDATE "KnowledgeBudgetReservation"
+      SET
+        "dispatchAttemptKey" = NULL,
+        "failureCode" = NULL,
+        "idempotencyKey" = NULL,
+        "leaseExpiresAt" = NULL,
+        "leaseToken" = NULL,
+        "operationRequest" = NULL,
+        "operationRequestHash" = NULL,
+        "purgedAt" = GREATEST(CURRENT_TIMESTAMP, "createdAt"),
+        "receiptHash" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id IN (
+        'knowledge-basic-legacy-structured-reservation',
+        'knowledge-basic-legacy-visual-reservation'
+      );
+    COMMIT;
+    SELECT 'knowledge-basic-legacy-analysis-purged';
+  `);
+  assert.equal(
+    psqlScalar(database, `
+      SELECT
+        (SELECT count(*) FROM "KnowledgeRun"
+          WHERE id IN (
+            'knowledge-basic-legacy-structured-run',
+            'knowledge-basic-legacy-visual-run'
+          )
+          AND operation IN ('structured_analysis', 'visual_analysis')
+          AND query = 'deleted_knowledge_resource'
+          AND "readReceipt" IS NULL
+          AND "baseEvidence" = '[{"deleted":true}]'::jsonb
+          AND "providerText" = 'Knowledge citation evidence was deleted.'
+          AND results = CASE operation
+            WHEN 'visual_analysis' THEN '[{"deleted":true}]'::jsonb
+            ELSE '[]'::jsonb
+          END)
+        + (SELECT count(*) FROM "KnowledgeBudgetReservation"
+          WHERE id IN (
+            'knowledge-basic-legacy-structured-reservation',
+            'knowledge-basic-legacy-visual-reservation'
+          )
+          AND operation IN ('structured_analysis', 'visual_analysis')
+          AND "purgedAt" IS NOT NULL
+          AND "idempotencyKey" IS NULL
+          AND "operationRequest" IS NULL
+          AND "operationRequestHash" IS NULL
+          AND "leaseToken" IS NULL
+          AND "leaseExpiresAt" IS NULL
+          AND "dispatchAttemptKey" IS NULL
+          AND "receiptHash" IS NULL
+          AND "failureCode" IS NULL);
+    `),
+    "4",
+    "Basic cleanup blocked or incompletely scrubbed historical analysis tombstones",
+  );
+
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM unnest(ARRAY[
+        'KnowledgeStrategyExecution',
+        'KnowledgeStrategyStep',
+        'KnowledgeStrategyStepDependency',
+        'KnowledgeStrategyMapOutput'
+      ]) AS legacy(name)
+      WHERE to_regclass('public."' || legacy.name || '"') IS NOT NULL;
+    `),
+    "0",
+    "Basic cleanup retained a strategy runtime table",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      WHERE to_regclass('public."KnowledgePolicy"') IS NOT NULL;
+    `),
+    "0",
+    "Basic cleanup retained the obsolete mutable Knowledge policy table",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM pg_proc
+      WHERE proname IN (
+        'aiqsa_guard_knowledge_strategy_dag_cycle',
+        'aiqsa_guard_knowledge_strategy_dependency',
+        'aiqsa_guard_knowledge_strategy_execution',
+        'aiqsa_guard_knowledge_strategy_map_output',
+        'aiqsa_guard_knowledge_strategy_step',
+        'aiqsa_guard_knowledge_strategy_step_evidence',
+        'knowledge_strategy_step_evidence_valid'
+      );
+    `),
+    "0",
+    "Basic cleanup retained a strategy runtime function",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'KnowledgeRun'
+        AND column_name = 'strategyStepEvidence';
+    `),
+    "0",
+    "Basic cleanup retained the strategy receipt marker",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM information_schema.columns AS catalog
+      INNER JOIN (VALUES
+        ('KnowledgeRun', 'threshold'),
+        ('KnowledgeRun', 'stopReason'),
+        ('KnowledgeRun', 'rerankerBinding'),
+        ('KnowledgeRun', 'preRerankOrder'),
+        ('KnowledgeRun', 'postRerankOrder'),
+        ('KnowledgeRetrievalSession', 'strategySnapshot'),
+        ('KnowledgeRetrievalSession', 'coverageRequirements'),
+        ('KnowledgeGroundingResult', 'issues'),
+        ('KnowledgeGroundingResult', 'repairCount'),
+        ('KnowledgeBudgetReservation', 'estimatedRerankerCalls'),
+        ('KnowledgeBudgetReservation', 'estimatedValidationSlots'),
+        ('KnowledgeBudgetReservation', 'estimatedRepairSlots'),
+        ('KnowledgeBudgetReservation', 'actualRerankerCalls'),
+        ('KnowledgeBudgetReservation', 'actualValidationSlots'),
+        ('KnowledgeBudgetReservation', 'actualRepairSlots')
+      ) AS removed(table_name, column_name)
+        USING (table_name, column_name)
+      WHERE catalog.table_schema = 'public';
+    `),
+    "0",
+    "Basic cleanup retained a planner-era retrieval, grounding, or budget column",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'KnowledgeRun'
+        AND column_name = 'query'
+        AND data_type = 'text'
+        AND character_maximum_length IS NULL;
+    `),
+    "1",
+    "Basic cleanup did not widen focused query storage without narrowing historical rows",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM pg_constraint
+      WHERE conrelid = '"KnowledgeRun"'::regclass
+        AND conname IN (
+          'KnowledgeRun_evidence_shape_check',
+          'KnowledgeRun_limits_check',
+          'KnowledgeRun_outcome_shape_check'
+        )
+        AND pg_get_constraintdef(oid) NOT LIKE '%strategyStepEvidence%'
+        AND NOT convalidated;
+    `),
+    "3",
+    "Basic historical-upgrade constraints are missing, validated, or still depend on strategy state",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM pg_constraint
+      WHERE (
+        conrelid = '"KnowledgeRun"'::regclass
+        AND conname = 'KnowledgeRun_read_receipt_operation_check'
+        AND NOT convalidated
+        AND pg_get_constraintdef(oid) LIKE '%knowledge_read_source_receipt_valid_v2%'
+        AND pg_get_constraintdef(oid) LIKE '%knowledge_exact_receipt_valid%'
+        AND pg_get_constraintdef(oid) LIKE '%knowledge_discovery_receipt_valid%'
+        AND pg_get_constraintdef(oid) LIKE '%deleted_knowledge_resource%'
+        AND pg_get_constraintdef(oid) NOT LIKE '%threshold%'
+      ) OR (
+        conrelid = '"KnowledgeBudgetReservation"'::regclass
+        AND conname = 'KnowledgeBudgetReservation_basic_operation_check'
+        AND NOT convalidated
+        AND pg_get_constraintdef(oid) LIKE '%structured_analysis%'
+        AND pg_get_constraintdef(oid) LIKE '%visual_analysis%'
+        AND pg_get_constraintdef(oid) LIKE '%purgedAt%'
+        AND pg_get_constraintdef(oid) LIKE '%operationRequest%'
+        AND pg_get_constraintdef(oid) LIKE '%idempotencyKey%'
+      );
+    `),
+    "2",
+    "Basic retired-operation fences are missing or incompatible with historical rows",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM pg_trigger
+      WHERE tgname IN (
+        'KnowledgeRun_basic_focused_guard',
+        'ModelRunToolCall_basic_focused_guard'
+      )
+        AND tgenabled = 'O'
+        AND NOT tgisinternal;
+    `),
+    "2",
+    "Basic focused checkpoint guards are missing",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      WHERE to_regclass('public."KnowledgeSemanticShadowResult"') IS NOT NULL;
+    `),
+    "0",
+    "Basic cleanup retained pure semantic-shadow qualification storage",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM (VALUES
+        (to_regprocedure('guard_accepted_knowledge_semantic_shadow_result_write()')),
+        (to_regprocedure('knowledge_semantic_profile_authorized_shadow_result_valid(text,integer,text,text,text,integer,boolean,text,text[],jsonb,jsonb,text,timestamp without time zone,timestamp without time zone)')),
+        (to_regprocedure('knowledge_semantic_validator_deployment_released(jsonb)')),
+        (to_regprocedure('knowledge_semantic_validator_deployment_valid(jsonb)')),
+        (to_regprocedure('knowledge_semantic_shadow_result_valid(text,integer,text,text,text,integer,boolean,text,text[],jsonb,jsonb,text,timestamp without time zone,timestamp without time zone)')),
+        (to_regprocedure('knowledge_semantic_zero_usage_valid(jsonb)')),
+        (to_regprocedure('knowledge_semantic_count_record_valid(jsonb,text[],integer,integer)')),
+        (to_regprocedure('knowledge_semantic_string_array_valid(jsonb,integer,integer,text)')),
+        (to_regprocedure('knowledge_semantic_canonical_json(jsonb)')),
+        (to_regprocedure('knowledge_semantic_profile_revision_ids_valid(text[])'))
+      ) AS retired_semantic(runtime)
+      WHERE runtime IS NOT NULL;
+    `),
+    "0",
+    "Basic cleanup retained callable semantic-shadow validator functions",
+  );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*)
+      FROM pg_constraint
+      WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
+        AND conname = 'KnowledgeGroundingResult_basic_shape_check'
+        AND NOT convalidated
+        AND pg_get_constraintdef(oid) LIKE '%answered%'
+        AND pg_get_constraintdef(oid) LIKE '%insufficient_evidence%'
+        AND pg_get_constraintdef(oid) LIKE '%originalAnswerHash%'
+        AND pg_get_constraintdef(oid) LIKE '%finalAnswerHash%';
+    `),
+    "1",
+    "Basic grounding settlement constraint is missing or unexpectedly validated",
+  );
+
+  psqlScalar(database, `
+    INSERT INTO "KnowledgeGroundingResult" (
+      "retrievalSessionId", outcome, "originalAnswerHash", "finalAnswerHash"
+    ) VALUES (
+      'knowledge-h4-session-2', 'answered', repeat('a', 64), repeat('b', 64)
+    );
+  `);
+  const invalidGroundingOutcome = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeGroundingResult"
+      SET outcome = 'no_answer'
+      WHERE "retrievalSessionId" = 'knowledge-h4-session-2';`,
+  ]);
+  assert.notEqual(
+    invalidGroundingOutcome.status,
+    0,
+    "Basic cleanup accepted a retired Knowledge grounding outcome",
+  );
+  assert.match(
+    `${invalidGroundingOutcome.stdout}\n${invalidGroundingOutcome.stderr}`,
+    /KnowledgeGroundingResult_basic_shape_check/u,
+    "Retired grounding outcome failed without the current structural constraint",
+  );
+  const invalidGroundingHash = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeGroundingResult"
+      SET "finalAnswerHash" = 'not-a-sha'
+      WHERE "retrievalSessionId" = 'knowledge-h4-session-2';`,
+  ]);
+  assert.notEqual(
+    invalidGroundingHash.status,
+    0,
+    "Basic cleanup accepted a malformed Knowledge grounding hash",
+  );
+  assert.match(
+    `${invalidGroundingHash.stdout}\n${invalidGroundingHash.stderr}`,
+    /KnowledgeGroundingResult_basic_shape_check/u,
+    "Malformed grounding hash failed without the current structural constraint",
+  );
+
+  psqlScalar(database, `
+    UPDATE "ModelRunToolCall"
+    SET "toolName" = 'knowledge_focused_v1', "updatedAt" = CURRENT_TIMESTAMP
+    WHERE id = 'knowledge-h4-call-other-run';
+    INSERT INTO "KnowledgeRun" (
+      id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
+      outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
+      "baseEvidence", results, "providerText", "embeddingUsage", "durationMs", "updatedAt"
+    ) VALUES (
+      'knowledge-basic-query-3000', 'knowledge-h4-run-2',
+      'knowledge-h4-call-other-run', 1, 'automatic_search',
+      repeat('Ж', 1499) || E'\n\n' || repeat('я', 1499),
+      'base_empty', 'weighted_rrf_v2', 40, 8, 0,
+      '[{"baseName":"Basic Base","ordinal":0}]'::jsonb, '[]'::jsonb,
+      'No matching evidence.', '[]'::jsonb, 1, CURRENT_TIMESTAMP
+    );
+    SELECT char_length(query) FROM "KnowledgeRun"
+    WHERE id = 'knowledge-basic-query-3000';
+  `);
+  assert.equal(
+    psqlScalar(database, `
+      SELECT char_length(query) FROM "KnowledgeRun"
+      WHERE id = 'knowledge-basic-query-3000';
+    `),
+    "3000",
+    "Basic cleanup truncated the maximum multi-message focused query",
+  );
+
+  const unsafeQueryControl = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeRun" SET query = E'unsafe\\tquery'
+      WHERE id = 'knowledge-basic-query-3000';`,
+  ]);
+  assert.notEqual(
+    unsafeQueryControl.status,
+    0,
+    "Basic cleanup accepted a focused query with a non-LF control character",
+  );
+  assert.match(
+    `${unsafeQueryControl.stdout}\n${unsafeQueryControl.stderr}`,
+    /knowledge_basic_focused_run_contract_invalid/u,
+    "Unsafe focused query failed without the stable database boundary",
+  );
+
+  const oversizedQuery = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeRun" SET query = repeat('Ж', 3001)
+      WHERE id = 'knowledge-basic-query-3000';`,
+  ]);
+  assert.notEqual(oversizedQuery.status, 0, "Basic cleanup accepted a 3001-character query");
+  assert.match(
+    `${oversizedQuery.stdout}\n${oversizedQuery.stderr}`,
+    /knowledge_basic_focused_run_contract_invalid/u,
+    "Oversized focused query failed without the stable database boundary",
+  );
+
+  const oversizedResultLimit = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeRun" SET "resultLimit" = 9
+      WHERE id = 'knowledge-basic-query-3000';`,
+  ]);
+  assert.notEqual(
+    oversizedResultLimit.status,
+    0,
+    "Basic cleanup accepted a new automatic retrieval result limit above eight",
+  );
+  assert.match(
+    `${oversizedResultLimit.stdout}\n${oversizedResultLimit.stderr}`,
+    /knowledge_basic_focused_run_contract_invalid|KnowledgeRun_limits_check/u,
+    "Oversized Basic result limit failed without the fixed database boundary",
+  );
+
+  const mutatedFocusedContract = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeRun"
+      SET "candidateLimit" = 39, fusion = 'rrf_k60'
+      WHERE id = 'knowledge-basic-query-3000';`,
+  ]);
+  assert.notEqual(
+    mutatedFocusedContract.status,
+    0,
+    "Basic cleanup accepted mutated focused checkpoint constants",
+  );
+  assert.match(
+    `${mutatedFocusedContract.stdout}\n${mutatedFocusedContract.stderr}`,
+    /knowledge_basic_focused_run_contract_invalid/u,
+    "Mutated focused constants failed without the focused checkpoint guard",
+  );
+
+  const retiredFocusedOutcome = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `UPDATE "KnowledgeRun"
+      SET outcome = 'zero_above_threshold'
+      WHERE id = 'knowledge-basic-query-3000';`,
+  ]);
+  assert.notEqual(
+    retiredFocusedOutcome.status,
+    0,
+    "Basic cleanup accepted the retired threshold outcome on a focused checkpoint",
+  );
+  assert.match(
+    `${retiredFocusedOutcome.stdout}\n${retiredFocusedOutcome.stderr}`,
+    /knowledge_basic_focused_run_contract_invalid/u,
+    "Retired focused outcome failed without the focused checkpoint guard",
+  );
+
+  const promotedInvalidFocusedContract = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `BEGIN;
+      UPDATE "ModelRunToolCall"
+      SET "toolName" = 'knowledge_search_v1', "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = 'knowledge-h4-call-other-run';
+      UPDATE "KnowledgeRun"
+      SET "candidateLimit" = 39, fusion = 'rrf_k60'
+      WHERE id = 'knowledge-basic-query-3000';
+      UPDATE "ModelRunToolCall"
+      SET "toolName" = 'knowledge_focused_v1', "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = 'knowledge-h4-call-other-run';
+      COMMIT;`,
+  ]);
+  assert.notEqual(
+    promotedInvalidFocusedContract.status,
+    0,
+    "Basic cleanup promoted an invalid legacy receipt to a focused checkpoint",
+  );
+  assert.match(
+    `${promotedInvalidFocusedContract.stdout}\n${promotedInvalidFocusedContract.stderr}`,
+    /knowledge_basic_focused_run_contract_invalid/u,
+    "Invalid focused promotion failed without the tool-call checkpoint guard",
+  );
+}
+
 function main(
   mode: Mode,
   databases: readonly string[],
@@ -3228,6 +3847,7 @@ function main(
   runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, migrations);
   runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, migrations);
   runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
+  runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -3243,7 +3863,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, H4 durable strategy DAG/marker/purge constraints, H5 strict immutable passage-context constraints, H6 private semantic-shadow/immutability/purge constraints, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

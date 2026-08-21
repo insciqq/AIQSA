@@ -421,13 +421,17 @@ describe("admin provider draft tester", () => {
     });
     const [endpoint, request] = fetchFn.mock.calls[0] ?? [];
     expect(endpoint).toBe("https://responses.example.test/v1/responses");
-    expect(JSON.parse(String(request?.body))).toMatchObject({
-      background: false,
+    const requestBody = JSON.parse(String(request?.body));
+    expect(requestBody).toMatchObject({
+      ...(adapterKind === "openai_responses_native" ? { background: false } : {}),
       max_output_tokens: 128,
       store: false,
       stream: false,
       text: { format: { strict: true, type: "json_schema" } }
     });
+    if (adapterKind === "openai_responses_compatible") {
+      expect(requestBody).not.toHaveProperty("background");
+    }
   });
 
   it("uses the standard diagnostic output budget for Anthropic", async () => {

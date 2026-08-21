@@ -4,11 +4,9 @@ import {
   activateAdminKnowledgeProfile,
   adminKnowledgeErrorMessage,
   getAdminKnowledgeSettings,
-  rollbackAdminKnowledgeProfile,
-  updateAdminKnowledgePolicy
+  rollbackAdminKnowledgeProfile
 } from "@/components/admin/adminKnowledgeApi";
 import { inputClass, primaryButton, quietButton } from "@/components/admin/adminPrimitives";
-import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type {
   AdminKnowledgeOperationsAlert,
   AdminKnowledgeSettings
@@ -23,20 +21,6 @@ import {
   TriangleAlert
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-type Draft = {
-  candidateLimit: string;
-  resultLimit: string;
-  scoreThreshold: string;
-};
-
-function draftFrom(settings: AdminKnowledgeSettings): Draft {
-  return {
-    candidateLimit: String(settings.policy.candidateLimit),
-    resultLimit: String(settings.policy.resultLimit),
-    scoreThreshold: String(settings.policy.scoreThreshold)
-  };
-}
 
 function formatBytes(value: number): string {
   return value >= 1_000_000
@@ -71,11 +55,9 @@ export function AdminKnowledgeSection({
   onMutationCommitted?(): void | Promise<unknown>;
 }>) {
   const [settings, setSettings] = useState<AdminKnowledgeSettings | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedDestinationId, setSelectedDestinationId] = useState("");
-  const [selectedVisionDestinationId, setSelectedVisionDestinationId] = useState("");
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -83,19 +65,11 @@ export function AdminKnowledgeSection({
 
   const apply = useCallback((next: AdminKnowledgeSettings) => {
     setSettings(next);
-    setDraft(draftFrom(next));
     const activeDeploymentId = next.profile.activeRevision?.destination.deploymentId ?? "";
     setSelectedDestinationId(
       next.profile.availableDestinations.some(({ deploymentId }) => deploymentId === activeDeploymentId)
         ? activeDeploymentId
         : next.profile.availableDestinations[0]?.deploymentId ?? ""
-    );
-    const activeVisionDeploymentId = next.profile.activeRevision?.visionDestination?.deploymentId ?? "";
-    setSelectedVisionDestinationId(
-      next.profile.availableVisionDestinations.some(({ deploymentId }) =>
-        deploymentId === activeVisionDeploymentId)
-        ? activeVisionDeploymentId
-        : ""
     );
     setSelectedRevisionId(
       next.profile.recentRevisions.find((revision) =>
@@ -126,55 +100,6 @@ export function AdminKnowledgeSection({
     void refresh();
   }, [active, loading, refresh, settings]);
 
-  const values = draft ? {
-    candidateLimit: Number(draft.candidateLimit),
-    resultLimit: Number(draft.resultLimit),
-    scoreThreshold: Number(draft.scoreThreshold)
-  } : null;
-  const valid = Boolean(settings && values &&
-    Number.isSafeInteger(values.candidateLimit) &&
-    values.candidateLimit >= settings.retrievalBounds.candidateLimit.min &&
-    values.candidateLimit <= settings.retrievalBounds.candidateLimit.max &&
-    Number.isSafeInteger(values.resultLimit) &&
-    values.resultLimit >= settings.retrievalBounds.resultLimit.min &&
-    values.resultLimit <= settings.retrievalBounds.resultLimit.max &&
-    values.resultLimit <= values.candidateLimit &&
-    Number.isFinite(values.scoreThreshold) &&
-    values.scoreThreshold >= settings.retrievalBounds.scoreThreshold.min &&
-    values.scoreThreshold <= settings.retrievalBounds.scoreThreshold.max);
-  const dirty = Boolean(settings && values && (
-    values.candidateLimit !== settings.policy.candidateLimit ||
-    values.resultLimit !== settings.policy.resultLimit ||
-    values.scoreThreshold !== settings.policy.scoreThreshold
-  ));
-  const requestDiscard = useAdminDraftProtection({
-    dirty,
-    onDiscard: () => {
-      if (settings) setDraft(draftFrom(settings));
-    },
-    owner: "knowledge-retrieval-policy",
-    pending: dirty && busy
-  });
-
-  const save = async () => {
-    if (!settings || !values || !valid || !dirty || busy) return;
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    const result = await updateAdminKnowledgePolicy({
-      ...values,
-      expectedVersion: settings.policy.version
-    });
-    setBusy(false);
-    if (!result.ok) {
-      setError(adminKnowledgeErrorMessage(result.error));
-      return;
-    }
-    apply(result.data);
-    setNotice("Knowledge retrieval policy updated.");
-    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
-  };
-
   const activateProfile = async () => {
     if (!settings || !selectedDestinationId || busy) return;
     setBusy(true);
@@ -182,8 +107,7 @@ export function AdminKnowledgeSection({
     setNotice(null);
     const result = await activateAdminKnowledgeProfile({
       deploymentId: selectedDestinationId,
-      expectedVersion: settings.profile.version,
-      visionDeploymentId: selectedVisionDestinationId || null
+      expectedVersion: settings.profile.version
     });
     setBusy(false);
     if (!result.ok) {
@@ -220,16 +144,12 @@ export function AdminKnowledgeSection({
   const healthLabel = settings?.profile.health.state === "ready"
     ? "Ready"
     : settings?.profile.health.state === "ready_with_warnings"
-      ? settings.profile.health.code === "knowledge_profile_visual_unavailable"
-        ? "Visual fallback"
-        : "Legacy compatibility"
+      ? "Legacy compatibility"
       : settings?.profile.health.state === "unavailable"
         ? "Unavailable"
         : "Not configured";
   const activationChangesProfile = Boolean(settings && selectedDestinationId && (
     selectedDestinationId !== activeProfile?.destination.deploymentId ||
-    (selectedVisionDestinationId || null) !==
-      (activeProfile?.visionDestination?.deploymentId ?? null) ||
     settings.profile.health.state !== "ready"
   ));
   const profileRollout = settings?.profile.migration ?? null;
@@ -242,16 +162,16 @@ export function AdminKnowledgeSection({
       <div className="max-w-5xl">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-trace-subtle pb-4">
           <div>
-            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation policy</p>
+            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation settings</p>
             <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="admin-knowledge-heading">Knowledge processing</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">
-              Choose the installation route for indexing and search, then tune bounded retrieval. Changes apply to future work; accepted runs keep their exact profile and policy.
+              Choose the installation route for indexing and query embeddings. Retrieval limits are fixed by the application; profile changes apply only to future work.
             </p>
           </div>
           <button
             className={quietButton}
             disabled={loading || busy}
-            onClick={() => requestDiscard(() => void refresh())}
+            onClick={() => void refresh()}
             type="button"
           >
             <RefreshCw aria-hidden="true" className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -267,7 +187,7 @@ export function AdminKnowledgeSection({
         {error ? <p className="mt-4 bg-critical/10 px-3 py-2 text-xs text-critical" role="alert">{error}</p> : null}
         {notice ? <p className="mt-4 bg-positive/10 px-3 py-2 text-xs text-positive" role="status">{notice}</p> : null}
 
-        {settings && draft ? (
+        {settings ? (
           <div className="mt-6 space-y-8">
             <section aria-labelledby="knowledge-profile-heading">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -298,24 +218,11 @@ export function AdminKnowledgeSection({
                 <p className="mt-2 text-xs leading-5 text-ink-muted">
                   The destination receives bounded normalized document text during indexing and search queries during retrieval. Activating a profile is the installation data-processing decision; the active profile, not an ordinary request, controls this destination.
                 </p>
-                <p className="mt-2 text-xs leading-5 text-ink-muted">
-                  Visual evidence: {activeProfile?.visionDestination
-                    ? `${activeProfile.visionDestination.connectionDisplayName} / ${activeProfile.visionDestination.modelDisplayName} receives bounded original visual bytes and the visual question.`
-                    : "asset-only; original figures remain viewable, but no visual bytes leave the installation for analysis."}
-                </p>
-                <p className="mt-2 text-xs leading-5 text-ink-muted">
-                  Policy modes: {settings.profile.egress.roles.slice(2).map((role) =>
-                    `${role.operation.replaceAll("_", " ")}: ${role.mode}`).join(" · ")}
-                </p>
               </div>
 
               {settings.profile.health.code === "knowledge_profile_legacy_authority" ? (
                 <p className="mt-3 border-l-2 border-caution bg-caution/[0.06] px-3 py-2 text-xs leading-5 text-ink-secondary">
                   Existing indexes are using the legacy per-user credential path. Activate a ready destination below to move future Bases and reprocessing to installation authority without changing accepted runs.
-                </p>
-              ) : settings.profile.health.code === "knowledge_profile_visual_unavailable" ? (
-                <p className="mt-3 border-l-2 border-caution bg-caution/[0.06] px-3 py-2 text-xs leading-5 text-ink-secondary">
-                  The visual-analysis destination is unavailable. Text retrieval and original visual regions remain available; repair the model in Providers or activate asset-only mode.
                 </p>
               ) : settings.profile.health.state === "unavailable" ? (
                 <p className="mt-3 border-l-2 border-critical bg-critical/[0.06] px-3 py-2 text-xs leading-5 text-ink-secondary">
@@ -327,7 +234,7 @@ export function AdminKnowledgeSection({
                 </p>
               ) : null}
 
-              <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+              <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
                 <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
                   Embedding destination
                   <select
@@ -345,23 +252,6 @@ export function AdminKnowledgeSection({
                         ))}
                   </select>
                   <span className="font-normal text-ink-muted">Only enabled embedding models with a tested installation credential appear here.</span>
-                </label>
-                <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
-                  Visual-analysis destination
-                  <select
-                    className={inputClass}
-                    disabled={busy}
-                    onChange={(event) => setSelectedVisionDestinationId(event.currentTarget.value)}
-                    value={selectedVisionDestinationId}
-                  >
-                    <option value="">Asset-only · no external vision</option>
-                    {settings.profile.availableVisionDestinations.map((item) => (
-                      <option key={item.deploymentId} value={item.deploymentId}>
-                        {item.connectionDisplayName} / {item.modelDisplayName}{item.supportsNativePdf ? " · native PDF" : " · images"}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="font-normal text-ink-muted">Optional. Only enabled vision models with a tested installation credential appear here.</span>
                 </label>
                 <button
                   className={primaryButton}
@@ -513,59 +403,24 @@ export function AdminKnowledgeSection({
 
             <div className="grid gap-8 border-t border-trace-subtle pt-7 xl:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
               <div>
-                <h3 className="text-sm font-semibold text-ink">Retrieval policy</h3>
-                <p className="mt-1 text-xs leading-5 text-ink-muted">Applied at each invocation and retained with its private recovery record.</p>
-                <div className="mt-4 grid gap-4 sm:grid-cols-3">
-                  <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
-                    Candidate passages
-                    <input
-                      className={inputClass}
-                      disabled={busy}
-                      max={settings.retrievalBounds.candidateLimit.max}
-                      min={settings.retrievalBounds.candidateLimit.min}
-                      onChange={(event) => setDraft({ ...draft, candidateLimit: event.currentTarget.value })}
-                      type="number"
-                      value={draft.candidateLimit}
-                    />
-                    <span className="font-normal text-ink-muted">Hybrid candidates, {settings.retrievalBounds.candidateLimit.min}–{settings.retrievalBounds.candidateLimit.max}.</span>
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
-                    Returned passages
-                    <input
-                      className={inputClass}
-                      disabled={busy}
-                      max={settings.retrievalBounds.resultLimit.max}
-                      min={settings.retrievalBounds.resultLimit.min}
-                      onChange={(event) => setDraft({ ...draft, resultLimit: event.currentTarget.value })}
-                      type="number"
-                      value={draft.resultLimit}
-                    />
-                    <span className="font-normal text-ink-muted">At most {settings.retrievalBounds.resultLimit.max}, never above candidates.</span>
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
-                    Score threshold
-                    <input
-                      className={inputClass}
-                      disabled={busy}
-                      max={settings.retrievalBounds.scoreThreshold.max}
-                      min={settings.retrievalBounds.scoreThreshold.min}
-                      onChange={(event) => setDraft({ ...draft, scoreThreshold: event.currentTarget.value })}
-                      step="0.01"
-                      type="number"
-                      value={draft.scoreThreshold}
-                    />
-                    <span className="font-normal text-ink-muted">Fused score floor from 0 to 1.</span>
-                  </label>
-                </div>
-                {!valid ? <p className="mt-3 text-xs text-critical">Enter values inside the shown bounds; returned passages cannot exceed candidates.</p> : null}
-                <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-trace-subtle pt-4">
-                  <button className={primaryButton} disabled={busy || !valid || !dirty} onClick={() => void save()} type="button">
-                    Save retrieval policy
-                  </button>
-                  <span className="text-xs text-ink-muted">
-                    Version {settings.policy.version}{settings.policy.updatedBy ? ` · changed by ${settings.policy.updatedBy.displayName}` : ""}
-                  </span>
-                </div>
+                <h3 className="text-sm font-semibold text-ink">Fixed retrieval</h3>
+                <p className="mt-1 text-xs leading-5 text-ink-muted">
+                  Code-owned limits are applied to every focused Knowledge request and cannot be changed from Control Center.
+                </p>
+                <dl className="mt-4 grid border-y border-trace-subtle text-xs sm:grid-cols-2">
+                  <div className="px-3 py-3 sm:border-r sm:border-trace-subtle">
+                    <dt className="text-ink-muted">Hybrid candidates</dt>
+                    <dd className="mt-1 text-base font-semibold tabular-nums text-ink">
+                      {settings.retrieval.candidateLimit}
+                    </dd>
+                  </div>
+                  <div className="border-t border-trace-subtle px-3 py-3 sm:border-t-0">
+                    <dt className="text-ink-muted">Returned passages</dt>
+                    <dd className="mt-1 text-base font-semibold tabular-nums text-ink">
+                      {settings.retrieval.resultLimit}
+                    </dd>
+                  </div>
+                </dl>
               </div>
 
               <aside className="border-l border-trace-subtle pl-5" aria-label="Effective Knowledge ingestion limits">

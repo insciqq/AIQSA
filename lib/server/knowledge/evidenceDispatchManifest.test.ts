@@ -4,10 +4,10 @@ import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
   KNOWLEDGE_EVIDENCE_SHORTENING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
-  type KnowledgeEvidenceDispatchCandidate
+  type CurrentKnowledgeEvidenceDispatchCandidate
 } from "./evidenceDispatchManifest";
 
-type AvailableCandidate = Extract<KnowledgeEvidenceDispatchCandidate, { state: "available" }>;
+type AvailableCandidate = Extract<CurrentKnowledgeEvidenceDispatchCandidate, { state: "available" }>;
 
 function candidate(overrides: Partial<AvailableCandidate> = {}): AvailableCandidate {
   return {
@@ -29,7 +29,7 @@ function candidate(overrides: Partial<AvailableCandidate> = {}): AvailableCandid
 }
 
 function pack(input: Readonly<{
-  candidates?: readonly KnowledgeEvidenceDispatchCandidate[];
+  candidates?: readonly CurrentKnowledgeEvidenceDispatchCandidate[];
   maximumBytes?: number;
   maximumTokens?: number;
 }> = {}) {
@@ -40,7 +40,7 @@ function pack(input: Readonly<{
     header: "<private_knowledge_evidence version=\"2\">",
     maximumBytes: input.maximumBytes ?? 64 * 1_024,
     maximumTokens: input.maximumTokens ?? 64 * 1_024,
-    plannerVersion: 1,
+    runtimeVersion: 1,
     profileId: "answer:test-model",
     promptFragmentVersion: 2
   });
@@ -163,7 +163,7 @@ describe("Knowledge evidence dispatch manifest", () => {
   });
 
   it("records unavailable candidates without accepting an error payload field", () => {
-    const unavailable: KnowledgeEvidenceDispatchCandidate = {
+    const unavailable: CurrentKnowledgeEvidenceDispatchCandidate = {
       evidenceId: "unavailable-1",
       handle: null,
       operationOrdinal: 1,

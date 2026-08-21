@@ -968,7 +968,7 @@ describe("AdminPanel", () => {
     expect(window.location.search).toBe("?section=users");
   });
 
-  it("guards Knowledge refresh and keeps failed saves dirty until a canonical save succeeds", async () => {
+  it("refreshes Knowledge directly because retrieval has no mutable draft", async () => {
     window.history.replaceState(null, "", "/admin?section=knowledge");
     const knowledge = {
       ingestionLimits: {
@@ -978,24 +978,13 @@ describe("AdminPanel", () => {
         maxPages: 2_000
       },
       operations: adminKnowledgeOperationsFixture(),
-      policy: {
-        candidateLimit: 40,
-        resultLimit: 8,
-        scoreThreshold: 0.01,
-        updatedAt: "2026-08-09T00:00:00.000Z",
-        updatedBy: null,
-        version: 1
-      },
       profile: adminKnowledgeProfileFixture(),
-      retrievalBounds: {
-        candidateLimit: { max: 100, min: 1 },
-        resultLimit: { max: 8, min: 1 },
-        scoreThreshold: { max: 1, min: 0 }
+      retrieval: {
+        candidateLimit: 40,
+        resultLimit: 8
       }
     };
-    const failedSave = deferred<Response>();
     let knowledgeGets = 0;
-    let knowledgePatches = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url === "/api/admin") return dashboardResponse();
@@ -1003,54 +992,21 @@ describe("AdminPanel", () => {
         knowledgeGets += 1;
         return dashboardResponse({ knowledge });
       }
-      if (url === "/api/admin/knowledge" && init?.method === "PATCH") {
-        knowledgePatches += 1;
-        if (knowledgePatches === 1) return failedSave.promise;
-        return dashboardResponse({
-          knowledge: {
-            ...knowledge,
-            policy: { ...knowledge.policy, candidateLimit: 24, version: 2 }
-          }
-        });
-      }
       return dashboardResponse({ error: "unexpected_request" }, 500);
     });
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const candidates = await screen.findByLabelText(/Candidate passages/);
-    fireEvent.change(candidates, { target: { value: "24" } });
+    await screen.findByRole("heading", { name: "Fixed retrieval" });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-    expect(knowledgeGets).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(candidates).toHaveValue(24);
-
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(knowledgeGets).toBe(2));
-    expect(candidates).toHaveValue(40);
-    fireEvent.change(candidates, { target: { value: "24" } });
-
-    fireEvent.click(screen.getByRole("button", { name: "Save retrieval policy" }));
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toBeDisabled());
-    expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute("aria-disabled", "true");
-    const pendingUnload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(pendingUnload);
-    expect(pendingUnload.defaultPrevented).toBe(true);
-
-    failedSave.resolve(dashboardResponse({ error: "knowledge_policy_stale" }, 409));
-    await screen.findByText("Knowledge settings changed elsewhere. Refresh before saving again.");
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toBeEnabled());
-    expect(candidates).toHaveValue(24);
-    const failedUnload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(failedUnload);
-    expect(failedUnload.defaultPrevented).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "Save retrieval policy" }));
-    await screen.findByText("Knowledge retrieval policy updated.");
-    const savedUnload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(savedUnload);
-    expect(savedUnload.defaultPrevented).toBe(false);
+    expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save retrieval policy" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Providers" })).toBeEnabled();
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
   });
 
   it("keeps global session reset scoped to Safety", async () => {

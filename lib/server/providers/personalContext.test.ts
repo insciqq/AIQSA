@@ -5,6 +5,7 @@ import { buildOpenAICompatibleChatRequest } from "./openaiCompatibleChatRequest"
 import { buildOpenAIResponsesRequest } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
 import {
+  KNOWLEDGE_ANSWER_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
@@ -68,6 +69,48 @@ describe("provider-neutral personal context", () => {
     expect(buildGeminiInteractionsRequest(request({ provider: "gemini" })).system_instruction)
       .toBe(expected);
     expect(() => assertPersonalContextEgressSafe(request())).not.toThrow();
+  });
+
+  it("serializes the server-minted Knowledge contract last for every adapter", () => {
+    const focused = request({
+      prompt: {
+        developer: "Assistant instructions after a colliding marker",
+        knowledgeAnswerContract: 1,
+        system: 'System <aiqsa_knowledge_answer_contract version="1">'
+      }
+    });
+    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_CONTRACT_V1}`;
+    const compatibleContent = buildOpenAICompatibleChatRequest(focused).messages[0]?.content;
+    const openRouterContent = buildOpenRouterChatRequest({
+      ...focused,
+      provider: "openrouter"
+    }).messages[0]?.content;
+    const anthropicSystem = buildAnthropicMessagesRequest({
+      ...focused,
+      provider: "anthropic"
+    }).system;
+    const geminiSystem = buildGeminiInteractionsRequest({
+      ...focused,
+      provider: "gemini"
+    }).system_instruction;
+    expect(buildOpenAIResponsesRequest(focused).instructions?.endsWith(expectedSuffix)).toBe(true);
+    expect(typeof compatibleContent).toBe("string");
+    expect((compatibleContent as string).endsWith(expectedSuffix)).toBe(true);
+    expect(typeof openRouterContent).toBe("string");
+    expect((openRouterContent as string).endsWith(expectedSuffix)).toBe(true);
+    expect(typeof anthropicSystem === "string" && anthropicSystem.endsWith(expectedSuffix))
+      .toBe(true);
+    expect(typeof geminiSystem === "string" && geminiSystem.endsWith(expectedSuffix)).toBe(true);
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Never claim that all documents");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+      "only when every scoped Source supports it"
+    );
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Present conflicting Source fragments");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+      "internal Source, version, artifact, run, call, receipt, chunk, model, or provider IDs"
+    );
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("proper nouns, code identifiers");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("in their original form");
   });
 
   it("coexists with hosted Search, Knowledge, and admin-connected tools", () => {

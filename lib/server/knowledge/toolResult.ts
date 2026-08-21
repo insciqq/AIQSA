@@ -20,11 +20,8 @@ import {
   type KnowledgeRetrievalOutcome,
   type KnowledgeResultVersion,
   type KnowledgeRetrievedPassageEvidence,
-  type KnowledgeSourceBoundRetrievedPassageEvidence,
   type KnowledgeSourceDiscoveryEvidence,
   type KnowledgeSourceDiscoveryField,
-  type KnowledgeStructuredRetrievalEvidence,
-  type KnowledgeVisualRetrievalEvidence,
   type KnowledgeRetrievalUsageAttribution,
   type KnowledgeVectorSearchEvidence
 } from "./retrievalTypes";
@@ -32,7 +29,9 @@ import {
   isKnowledgeOperationKind,
   knowledgeBudgetStopReasons,
   type KnowledgeBudgetEvidence,
-  type KnowledgeBudgetUsage
+  type KnowledgeBudgetUsage,
+  type LegacyKnowledgeBudgetEvidence,
+  type LegacyKnowledgeBudgetUsage
 } from "./knowledgeBudget";
 import {
   canonicalReadSourceLocator,
@@ -51,12 +50,6 @@ import type {
   KnowledgeRerankerBindingEvidence,
   KnowledgeRetrievalLane
 } from "./retrievalRanking";
-import { decodeKnowledgeStrategyStepEvidenceV1 } from "./knowledgeStrategyExecution";
-import {
-  decodeKnowledgeStrategySummaryResultEvidenceV2,
-  renderKnowledgeStrategySummaryResultProviderTextV2,
-  verifyKnowledgeStrategySummaryResultEvidenceV2
-} from "./knowledgeStrategySummaryEvidence";
 
 function persistedContentMarker(version: KnowledgeResultVersion) {
   return Object.freeze({
@@ -67,6 +60,11 @@ function persistedContentMarker(version: KnowledgeResultVersion) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
 }
 
 function isKnowledgeResultVersion(value: unknown): value is KnowledgeResultVersion {
@@ -106,8 +104,7 @@ function nullablePositiveRank(value: unknown): number | null | undefined {
 function outcome(value: unknown): KnowledgeRetrievalOutcome | null {
   return value === "base_empty" || value === "base_indexing" ||
     value === "budget_exhausted" || value === "complete" ||
-    value === "embedding_model_unavailable" || value === "structured_clarification_required" ||
-    value === "source_location_unavailable" ||
+    value === "embedding_model_unavailable" || value === "source_location_unavailable" ||
     value === "zero_above_threshold"
     ? value
     : null;
@@ -270,7 +267,8 @@ function decodeSignal(value: unknown): KnowledgeCandidateSignal | null {
 
 function decodePassage(
   value: unknown,
-  version: KnowledgeResultVersion
+  version: KnowledgeResultVersion,
+  historicalAnalysis = false
 ): KnowledgeRetrievedPassageEvidence | null {
   if (!isRecord(value)) return null;
   const annRank = nullablePositiveRank(value.annRank);
@@ -340,11 +338,16 @@ function decodePassage(
       : null;
   const structuredAnalysis = value.structuredAnalysis === undefined
     ? undefined
-    : decodeStructuredAnalysisResult(value.structuredAnalysis) ?? null;
+    : historicalAnalysis
+      ? decodeStructuredAnalysisResult(value.structuredAnalysis) ?? null
+      : null;
   const visualAnalysis = value.visualAnalysis === undefined
     ? undefined
-    : decodeKnowledgeVisualAnalysisResult(value.visualAnalysis) ?? null;
+    : historicalAnalysis
+      ? decodeKnowledgeVisualAnalysisResult(value.visualAnalysis) ?? null
+      : null;
   const advanced = signalProvenance !== undefined;
+  const legacyRankingMetrics = version === KNOWLEDGE_LEGACY_RESULT_VERSION;
   const expectedFusedScore = (annRank === null || annRank === undefined ? 0 : 1 / (60 + annRank)) +
     (ftsRank === null || ftsRank === undefined ? 0 : 1 / (60 + ftsRank));
   if (
@@ -372,15 +375,18 @@ function decodePassage(
     structuredAnalysis === null || visualAnalysis === null ||
     structuredAnalysis !== undefined && visualAnalysis !== undefined ||
     (version === KNOWLEDGE_RESULT_VERSION && (
-      !sourceAlias || !sourceArtifactId || !sourceName
+      !sourceAlias || !sourceArtifactId || !sourceName ||
+      confidence !== undefined || rerankScore !== undefined
     )) ||
     (!advanced && Math.abs(fusedScore - expectedFusedScore) > 1e-12) ||
     (advanced && (
       signalProvenance === null || signalProvenance.length < 1 ||
       signalProvenance.some((signal) => signal === null) ||
-      confidence === null || confidence === undefined || confidence < 0 || confidence > 1 ||
       !contentHash || !/^[0-9a-f]{64}$/u.test(contentHash) || headingPath === null ||
-      rerankScore === undefined || rerankScore !== null && (rerankScore < 0 || rerankScore > 1) ||
+      legacyRankingMetrics && (
+        confidence === null || confidence === undefined || confidence < 0 || confidence > 1 ||
+        rerankScore === undefined || rerankScore !== null && (rerankScore < 0 || rerankScore > 1)
+      ) ||
       sectionId === null && value.sectionId !== null ||
       sourceArtifactId === null && value.sourceArtifactId !== null ||
       !sourceName || fusedScore > 1
@@ -428,32 +434,11 @@ function decodePassage(
   };
 }
 
-function decodeStructuredEvidence(value: unknown): KnowledgeStructuredRetrievalEvidence | null {
-  if (!isRecord(value) || value.version !== 1 ||
-    value.status !== "complete" && value.status !== "needs_clarification" ||
-    (value.status === "complete" && (value.question !== undefined || Object.keys(value).length !== 2)) ||
-    (value.status === "needs_clarification" && (
-      !boundedString(value.question, 2_000) || Object.keys(value).length !== 3
-    ))) return null;
-  return {
-    ...(value.status === "needs_clarification" ? { question: value.question as string } : {}),
-    status: value.status,
-    version: 1
-  };
-}
-
-function decodeVisualEvidence(value: unknown): KnowledgeVisualRetrievalEvidence | null {
-  return isRecord(value) && Object.keys(value).length === 2 && value.version === 1 &&
-    (value.status === "available" || value.status === "unavailable")
-    ? { status: value.status, version: 1 }
-    : null;
-}
-
 /** Strict decoder for one persisted result used by reauthorized citation reads. */
 export function decodeKnowledgeRetrievedPassage(
   value: unknown
 ): KnowledgeRetrievedPassageEvidence | null {
-  return decodePassage(value, KNOWLEDGE_LEGACY_RESULT_VERSION);
+  return decodePassage(value, KNOWLEDGE_LEGACY_RESULT_VERSION, true);
 }
 
 export function decodeKnowledgeRetrievedPassageForVersion(
@@ -464,15 +449,10 @@ export function decodeKnowledgeRetrievedPassageForVersion(
 }
 
 type KnowledgeProviderEvidence = Pick<KnowledgeRetrievalEvidence,
-  "budget" | "discovery" | "exact" | "outcome" | "results" | "scopeAliases" |
-  "strategySummaryEvidence" | "structured" | "visual"> &
+  "budget" | "discovery" | "exact" | "outcome" | "results" | "scopeAliases"> &
   Partial<Pick<KnowledgeRetrievalEvidence, "version">>;
 
 function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): string {
-  if (evidence.structured?.status === "needs_clarification") {
-    return `Structured analysis needs clarification: ${evidence.structured.question} ` +
-      "Do not guess the sheet, columns, or hidden-data policy.";
-  }
   if (evidence.outcome === "complete") {
     const compact = (
       value: string | undefined,
@@ -522,11 +502,7 @@ function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): str
               `${entry.alias} — ${compact(entry.label, "unnamed source", 160)}`).join("\n")
           ]
         : []),
-      evidence.structured?.status === "complete"
-        ? "Structured Knowledge calculation evidence:"
-        : evidence.visual
-          ? "Visual Knowledge evidence:"
-        : "Knowledge passages grouped by immutable Source:",
+      "Knowledge passages grouped by immutable Source:",
       ...groupedPassages,
       "Treat every SOURCE block as independent. Keep each date, label, value, and citation " +
         "inside its own Source; never combine fields from different SOURCE blocks. " +
@@ -545,8 +521,6 @@ function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): str
       "Knowledge retrieval could not embed the query: embedding_model_unavailable.",
     source_location_unavailable:
       "The requested location was not found inside that admitted Source. Use another exact heading, page, or evidence handle; do not guess.",
-    structured_clarification_required:
-      "Structured analysis needs clarification before it can run safely.",
     zero_above_threshold:
       "Knowledge retrieval found no passage above the configured threshold: zero_above_threshold."
   };
@@ -559,10 +533,6 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, maximum);
-  if (evidence.structured?.status === "needs_clarification") {
-    return `Structured analysis needs clarification: ${evidence.structured.question} ` +
-      "Do not guess the sheet, columns, or hidden-data policy.";
-  }
   if (evidence.discovery) {
     if (evidence.outcome !== "complete") {
       return "No admitted ready Source matched the requested metadata fields. " +
@@ -590,13 +560,6 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
       `${evidence.exact.field} with ${evidence.exact.caseMode} case matching.`;
   }
   if (evidence.outcome !== "complete") return legacyKnowledgeToolResultText(evidence);
-  if (evidence.strategySummaryEvidence) {
-    return renderKnowledgeStrategySummaryResultProviderTextV2({
-      evidence: evidence.strategySummaryEvidence,
-      results: evidence.results as readonly KnowledgeSourceBoundRetrievedPassageEvidence[]
-    });
-  }
-
   const sourceAliases = new Set(evidence.scopeAliases?.flatMap((entry) =>
     entry.kind === "source" ? [entry.alias] : []) ?? []);
   const exactByResult = new Map(evidence.exact?.matches.map((match) => [
@@ -692,11 +655,7 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
     ].join("\n");
   });
   return [
-    evidence.structured?.status === "complete"
-      ? "Structured Knowledge calculation evidence as atomic Source-bound blocks:"
-      : evidence.visual
-        ? "Visual Knowledge evidence as atomic Source-bound blocks:"
-        : "Knowledge passages as atomic Source-bound evidence:",
+    "Knowledge passages as atomic Source-bound evidence:",
     ...blocks,
     "Treat every SOURCE EVIDENCE block as independent. Keep each date, label, value, and " +
       "citation inside its own Source; never combine fields from different blocks" +
@@ -729,6 +688,20 @@ function decodeBudgetUsage(value: unknown): KnowledgeBudgetUsage | null {
   const keys = [
     "cumulativeCandidates",
     "estimatedCostMicros",
+    "latencyMs",
+    "operations",
+    "queryEmbeddingCalls",
+    "retrievedTokens"
+  ] as const;
+  if (Object.keys(value).length !== keys.length || keys.some((key) =>
+    !Object.hasOwn(value, key) || nonNegativeInteger(value[key]) === null)) return null;
+  return Object.fromEntries(keys.map((key) => [key, Number(value[key])])) as KnowledgeBudgetUsage;
+}
+
+function decodeLegacyBudgetUsage(value: unknown): LegacyKnowledgeBudgetUsage | null {
+  const keys = [
+    "cumulativeCandidates",
+    "estimatedCostMicros",
     "followUpOperations",
     "latencyMs",
     "lowNoveltyStreak",
@@ -739,25 +712,52 @@ function decodeBudgetUsage(value: unknown): KnowledgeBudgetUsage | null {
     "searchPhases",
     "subqueriesInCurrentPhase"
   ] as const;
-  if (Object.keys(value).length !== keys.length || keys.some((key) =>
-    !Object.hasOwn(value, key) || nonNegativeInteger(value[key]) === null)) return null;
-  return Object.fromEntries(keys.map((key) => [key, Number(value[key])])) as KnowledgeBudgetUsage;
+  if (!isRecord(value) || !exactKeys(value, keys) || keys.some((key) =>
+    nonNegativeInteger(value[key]) === null)) return null;
+  return Object.fromEntries(keys.map((key) => [key, Number(value[key])])) as
+    LegacyKnowledgeBudgetUsage;
 }
 
 function decodeBudgetEvidence(value: unknown): KnowledgeBudgetEvidence | null {
-  if (!isRecord(value) || value.version !== 1 || !isKnowledgeOperationKind(value.operation) ||
+  if (!isRecord(value) || !exactKeys(value, ["operation", "stopReason", "usage", "version"]) ||
+    value.version !== 1 || !isKnowledgeOperationKind(value.operation) ||
     value.stopReason !== null && !knowledgeBudgetStopReasons.includes(
       value.stopReason as (typeof knowledgeBudgetStopReasons)[number]
-    ) || value.noveltyRatio !== null && (
-      typeof value.noveltyRatio !== "number" || !Number.isFinite(value.noveltyRatio) ||
-      value.noveltyRatio < 0 || value.noveltyRatio > 1
     )) return null;
   const usage = decodeBudgetUsage(value.usage);
   if (!usage) return null;
   return {
-    noveltyRatio: value.noveltyRatio as number | null,
     operation: value.operation,
     stopReason: value.stopReason as KnowledgeBudgetEvidence["stopReason"],
+    usage,
+    version: 1
+  };
+}
+
+function decodeLegacyBudgetEvidence(value: unknown): LegacyKnowledgeBudgetEvidence | null {
+  const legacyStopReasons = new Set([
+    ...knowledgeBudgetStopReasons,
+    "follow_up_budget",
+    "low_novelty",
+    "phase_budget",
+    "reranker_budget",
+    "subquery_budget"
+  ]);
+  if (!isRecord(value) || !exactKeys(value, [
+    "noveltyRatio", "operation", "stopReason", "usage", "version"
+  ]) || value.version !== 1 || !isKnowledgeOperationKind(value.operation) ||
+    value.stopReason !== null && (
+      typeof value.stopReason !== "string" || !legacyStopReasons.has(value.stopReason)
+    ) || value.noveltyRatio !== null && (
+      typeof value.noveltyRatio !== "number" || !Number.isFinite(value.noveltyRatio) ||
+      value.noveltyRatio < 0 || value.noveltyRatio > 1
+    )) return null;
+  const usage = decodeLegacyBudgetUsage(value.usage);
+  if (!usage) return null;
+  return {
+    noveltyRatio: value.noveltyRatio as number | null,
+    operation: value.operation,
+    stopReason: value.stopReason as LegacyKnowledgeBudgetEvidence["stopReason"],
     usage,
     version: 1
   };
@@ -989,7 +989,7 @@ function decodeDiscoveryEvidence(value: unknown): KnowledgeSourceDiscoveryEviden
   const cursor = exactCursor(value.cursor);
   const nextCursor = exactCursor(value.nextCursor);
   const limit = nonNegativeInteger(value.limit);
-  const query = boundedString(value.query, 500);
+  const query = boundedString(value.query, 3_000);
   const fields = value.fields as unknown[];
   if (fields.some((field) => typeof field !== "string" ||
     !discoveryFieldSet.has(field as KnowledgeSourceDiscoveryField)) ||
@@ -1052,7 +1052,11 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     value.embeddingExecutions.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
     !Array.isArray(value.results) || value.results.length > 100) return null;
   const bases = value.bases.map(decodeBase);
-  const budget = value.budget === undefined ? undefined : decodeBudgetEvidence(value.budget);
+  const budget = value.budget === undefined
+    ? undefined
+    : value.version === KNOWLEDGE_LEGACY_RESULT_VERSION
+      ? decodeLegacyBudgetEvidence(value.budget)
+      : decodeBudgetEvidence(value.budget);
   const embeddingExecutions = value.embeddingExecutions.map(decodeEmbedding);
   const version = value.version;
   const results = value.results.map((entry) => decodePassage(entry, version));
@@ -1083,55 +1087,41 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     : Array.isArray(value.scopeAliases) && value.scopeAliases.length <= 256
       ? value.scopeAliases.map(decodeScopeAlias)
       : null;
-  const structured = value.structured === undefined
-    ? undefined
-    : decodeStructuredEvidence(value.structured) ?? null;
-  const strategyStepEvidence = value.strategyStepEvidence === undefined
-    ? undefined
-    : version === KNOWLEDGE_RESULT_VERSION
-      ? decodeKnowledgeStrategyStepEvidenceV1(value.strategyStepEvidence) ?? null
-      : null;
-  const strategySummaryEvidence = value.strategySummaryEvidence === undefined
-    ? undefined
-    : version === KNOWLEDGE_RESULT_VERSION
-      ? decodeKnowledgeStrategySummaryResultEvidenceV2(value.strategySummaryEvidence) ?? null
-      : null;
-  const highCardinalityStrategyResult = strategyStepEvidence !== undefined &&
-    strategyStepEvidence !== null && (
-      strategyStepEvidence.kind === "exhaustive_page" ||
-      strategyStepEvidence.kind === "corpus_summary_reduce"
-    );
-  const visual = value.visual === undefined
-    ? undefined
-    : decodeVisualEvidence(value.visual) ?? null;
   const decodedOutcome = outcome(value.outcome);
   const providerText = boundedString(value.providerText, 64 * 1024);
-  const query = boundedString(value.query, 500);
+  const query = boundedString(value.query, 3_000);
   const resultLimit = nonNegativeInteger(value.resultLimit);
-  const threshold = finiteNumber(value.threshold);
+  const threshold = value.threshold === undefined ? undefined : finiteNumber(value.threshold);
   const fusion = value.fusion === "none" || value.fusion === "rrf_k60" ||
     value.fusion === "weighted_rrf_v2"
     ? value.fusion
     : null;
-  const rerankerBinding = value.rerankerBinding === null
-    ? null
-    : decodeRerankerBinding(value.rerankerBinding);
-  const preRerankOrder = value.preRerankOrder === null
-    ? null
-    : decodeCandidateOrder(value.preRerankOrder);
-  const postRerankOrder = value.postRerankOrder === null
-    ? null
-    : decodeCandidateOrder(value.postRerankOrder);
+  const rerankerBinding = value.rerankerBinding === undefined
+    ? undefined
+    : value.rerankerBinding === null ? null : decodeRerankerBinding(value.rerankerBinding);
+  const preRerankOrder = value.preRerankOrder === undefined
+    ? undefined
+    : value.preRerankOrder === null ? null : decodeCandidateOrder(value.preRerankOrder);
+  const postRerankOrder = value.postRerankOrder === undefined
+    ? undefined
+    : value.postRerankOrder === null ? null : decodeCandidateOrder(value.postRerankOrder);
+  const legacyRankingFields = value.threshold !== undefined ||
+    value.rerankerBinding !== undefined || value.preRerankOrder !== undefined ||
+    value.postRerankOrder !== undefined;
+  const completeLegacyRankingFields = value.threshold !== undefined &&
+    value.rerankerBinding !== undefined && value.preRerankOrder !== undefined &&
+    value.postRerankOrder !== undefined;
   const failureCode = value.failureCode === undefined
     ? undefined
     : boundedString(value.failureCode, 128);
   if (
     bases.some((base) => base === null) || budget === null || operation === null || read === null ||
-    exact === null || discovery === null || structured === null ||
-    strategyStepEvidence === null || strategySummaryEvidence === null || visual === null ||
-    [read, exact, discovery, structured, visual].filter((entry) => entry !== undefined).length > 1 ||
+    exact === null || discovery === null || value.structured !== undefined ||
+    value.visual !== undefined ||
+    [read, exact, discovery].filter((entry) => entry !== undefined).length > 1 ||
     scopeAliases === null || scopeAliases?.some((alias) => alias === null) ||
-    (budget === undefined) !== (operation === undefined) ||
+    (version === KNOWLEDGE_LEGACY_RESULT_VERSION &&
+      (budget === undefined) !== (operation === undefined)) ||
     budget !== undefined && budget.operation !== operation ||
     read !== undefined && (operation !== "read_source" || query !== read.locator) ||
     exact !== undefined && (operation !== "find_exact" || query !== exact.value) ||
@@ -1141,23 +1131,28 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     candidateLimit < 1 || durationMs === null || invocationOrdinal === null || invocationOrdinal < 1 ||
     invocationOrdinal > 256 || !decodedOutcome || !fusion ||
     !providerText || !query ||
-    (value.rerankerBinding !== null && rerankerBinding === null) ||
-    (value.preRerankOrder !== null && preRerankOrder === null) ||
-    (value.postRerankOrder !== null && postRerankOrder === null) ||
+    (value.rerankerBinding !== undefined && value.rerankerBinding !== null &&
+      rerankerBinding === null) ||
+    (value.preRerankOrder !== undefined && value.preRerankOrder !== null &&
+      preRerankOrder === null) ||
+    (value.postRerankOrder !== undefined && value.postRerankOrder !== null &&
+      postRerankOrder === null) ||
+    (version === KNOWLEDGE_RESULT_VERSION && legacyRankingFields) ||
+    (version === KNOWLEDGE_LEGACY_RESULT_VERSION && !completeLegacyRankingFields) ||
     (fusion === "none" && (
-      rerankerBinding !== null || preRerankOrder !== null || postRerankOrder !== null
+      rerankerBinding != null || preRerankOrder != null || postRerankOrder != null
     )) ||
     (fusion === "rrf_k60" && (
-      rerankerBinding !== null || preRerankOrder !== null || postRerankOrder !== null
+      rerankerBinding != null || preRerankOrder != null || postRerankOrder != null
     )) ||
-    (fusion === "weighted_rrf_v2" && (
-      rerankerBinding === null || preRerankOrder === null || postRerankOrder === null
+    (version === KNOWLEDGE_LEGACY_RESULT_VERSION && fusion === "weighted_rrf_v2" && (
+      rerankerBinding == null || preRerankOrder == null || postRerankOrder == null
     )) ||
     resultLimit === null || resultLimit < 1 ||
-    resultLimit > (exact || discovery || highCardinalityStrategyResult
+    resultLimit > (exact || discovery
       ? 100
       : KNOWLEDGE_RESULT_LIMIT) ||
-    threshold === null || threshold < 0 || threshold > 1 ||
+    threshold !== undefined && (threshold === null || threshold < 0 || threshold > 1) ||
     (value.failureCode !== undefined && !failureCode)
   ) return null;
   const decodedBases = bases as KnowledgeBaseRetrievalEvidence[];
@@ -1177,21 +1172,17 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     invocationOrdinal,
     ...(operation ? { operation } : {}),
     outcome: decodedOutcome,
-    postRerankOrder,
-    preRerankOrder,
+    ...(postRerankOrder !== undefined ? { postRerankOrder } : {}),
+    ...(preRerankOrder !== undefined ? { preRerankOrder } : {}),
     providerText,
     query,
     ...(read ? { read } : {}),
-    rerankerBinding,
+    ...(rerankerBinding !== undefined ? { rerankerBinding } : {}),
     resultLimit,
     results: decodedResults,
     ...(scopeAliases ? { scopeAliases: scopeAliases as KnowledgeEvidenceScopeAlias[] } : {}),
-    ...(strategySummaryEvidence ? { strategySummaryEvidence } : {}),
-    ...(strategyStepEvidence ? { strategyStepEvidence } : {}),
-    ...(structured ? { structured } : {}),
-    threshold,
-    version,
-    ...(visual ? { visual } : {})
+    ...(threshold !== undefined ? { threshold } : {}),
+    version
   };
   let renderedProviderText: string | null = null;
   try {
@@ -1209,9 +1200,6 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     .filter((entry) => entry.status === "error")
     .flatMap((entry) => entry.bindingOrdinals));
   const advanced = fusion === "weighted_rrf_v2";
-  const structuredComplete = structured?.status === "complete";
-  const structuredClarification = structured?.status === "needs_clarification";
-  const visualComplete = visual !== undefined;
   const resultHandles = decodedResults.map((result) =>
     decodeKnowledgeCitationHandle(result.handle));
   const sourceAliases = scopeAliases?.filter((alias): alias is KnowledgeEvidenceScopeAlias =>
@@ -1260,23 +1248,11 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   const deterministicRead = operation === "read_source";
   const deterministicExact = operation === "find_exact";
   const deterministicDiscovery = operation === "discover_sources";
-  const deterministicStrategy = strategyStepEvidence !== undefined &&
-    strategyStepEvidence !== null && (
-      strategyStepEvidence.kind === "full_context_page" ||
-      strategyStepEvidence.kind === "exhaustive_page" ||
-      strategyStepEvidence.kind === "corpus_summary_reduce"
-    );
-  const corpusSummaryReduce = strategyStepEvidence?.kind === "corpus_summary_reduce";
-  const validStrategySummaryEvidence = strategySummaryEvidence === undefined ||
-    version === KNOWLEDGE_RESULT_VERSION && verifyKnowledgeStrategySummaryResultEvidenceV2({
-      evidence: strategySummaryEvidence,
-      results: decodedResults as KnowledgeSourceBoundRetrievedPassageEvidence[]
-    });
   const deterministicOperation = deterministicRead || deterministicExact ||
-    deterministicDiscovery || deterministicStrategy;
+    deterministicDiscovery;
   const embeddingForbidden = deterministicOperation;
   const invalidExact = exact !== undefined && (
-    fusion !== "none" || threshold !== 0 || candidateCount !== decodedResults.length ||
+    fusion !== "none" || (threshold ?? 0) !== 0 || candidateCount !== decodedResults.length ||
     exact.limit !== resultLimit || exact.limit !== candidateLimit ||
     exact.matches.length !== decodedResults.length ||
     exact.matches.some((match, index) => match.resultOrdinal !== index ||
@@ -1287,7 +1263,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   );
   const discoveryAliases = new Map(sourceAliases.map((alias) => [alias.alias, alias.label]));
   const invalidDiscovery = discovery !== undefined && (
-    fusion !== "none" || threshold !== 0 || decodedResults.length !== 0 ||
+    fusion !== "none" || (threshold ?? 0) !== 0 || decodedResults.length !== 0 ||
     candidateCount !== discovery.sources.length || discovery.limit !== resultLimit ||
     discovery.limit !== candidateLimit || sourceAliases.length !== discovery.sources.length ||
     discovery.sources.some((source) =>
@@ -1311,21 +1287,8 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     )) ||
     (deterministicRead && (
       decodedEmbeddings.length !== 0 || fusion !== "rrf_k60" || Boolean(failureCode) ||
-      structured !== undefined || visual !== undefined || rerankerBinding !== null ||
-      preRerankOrder !== null || postRerankOrder !== null
+      rerankerBinding != null || preRerankOrder != null || postRerankOrder != null
     )) ||
-    (deterministicStrategy && (
-      operation !== "automatic_search" || fusion !== "rrf_k60" || threshold !== 0 ||
-      structured !== undefined || visual !== undefined || rerankerBinding !== null ||
-      preRerankOrder !== null || postRerankOrder !== null ||
-      candidateCount !== decodedResults.length ||
-      decodedResults.some((result) => result.annRank !== null || result.ftsRank !== null ||
-        result.ftsScore !== null || result.vectorDistance !== null ||
-        result.vectorScore !== null || result.fusedScore !== 0 ||
-        result.signalProvenance !== undefined)
-    )) ||
-    !validStrategySummaryEvidence ||
-    corpusSummaryReduce !== (strategySummaryEvidence !== undefined) ||
     (deterministicExact && exact === undefined) ||
     (deterministicDiscovery && discovery === undefined) ||
     (!deterministicExact && exact !== undefined) ||
@@ -1342,17 +1305,13 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     decodedResults.some((result) =>
       result.annRank !== null && result.annRank > (advanced ? 100 : candidateLimit) ||
       result.ftsRank !== null && result.ftsRank > (advanced ? 100 : candidateLimit) ||
-      (structuredComplete
-        ? result.structuredAnalysis === undefined
-        : result.structuredAnalysis !== undefined) ||
-      (visualComplete
-        ? result.visualAnalysis === undefined
-        : result.visualAnalysis !== undefined) ||
-      (structuredComplete || visualComplete || deterministicRead || deterministicExact
+      result.structuredAnalysis !== undefined || result.visualAnalysis !== undefined ||
+      (deterministicRead || deterministicExact
         ? false
-        : advanced
-        ? result.confidence === undefined || result.confidence < threshold
-        : result.fusedScore < threshold) ||
+        : version === KNOWLEDGE_LEGACY_RESULT_VERSION && advanced
+        ? result.confidence === undefined || result.confidence < (threshold ?? 0)
+        : version === KNOWLEDGE_LEGACY_RESULT_VERSION &&
+          result.fusedScore < (threshold ?? 0)) ||
       !basesByOrdinal.has(result.bindingOrdinal) ||
       basesByOrdinal.get(result.bindingOrdinal)?.knowledgeBaseId !== result.knowledgeBaseId) ||
     decodedResults.some((result) => result.sourceAlias !== undefined &&
@@ -1363,7 +1322,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
       (operation === "read_source") !== (read !== undefined)) ||
     invalidV2SourceBindings ||
     candidateCount < decodedResults.length ||
-    (!structured && !visual && !embeddingForbidden && retrievalCompleted && !embeddingDegraded && (
+    (!embeddingForbidden && retrievalCompleted && !embeddingDegraded && (
       decodedEmbeddings.some((entry) => entry.status !== "complete") ||
       embeddedOrdinals.length !== decodedBases.length ||
       decodedBases.some((base) => !completedEmbeddingOrdinals.has(base.ordinal))
@@ -1387,35 +1346,20 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
       operation !== "read_source" || candidateCount !== 0 || decodedResults.length !== 0 ||
       decodedEmbeddings.length !== 0
     )) ||
-    (decodedOutcome === "zero_above_threshold" && candidateCount === 0 &&
+    (decodedOutcome === "zero_above_threshold" && (
+      version !== KNOWLEDGE_LEGACY_RESULT_VERSION || candidateCount === 0) &&
       !deterministicExact && !deterministicDiscovery) ||
     (deterministicExact && (decodedOutcome === "complete") !== (candidateCount > 0)) ||
     (deterministicDiscovery && (decodedOutcome === "complete") !== (candidateCount > 0)) ||
     (deterministicOperation && fusion === "weighted_rrf_v2") ||
     (!deterministicExact && !deterministicDiscovery && fusion === "none") ||
-    (structuredComplete && (
-      decodedOutcome !== "complete" || decodedResults.length < 1 ||
-      decodedEmbeddings.length !== 0 || candidateCount !== decodedResults.length ||
-      fusion !== "rrf_k60"
-    )) ||
-    (structuredClarification && (
-      decodedOutcome !== "structured_clarification_required" || decodedResults.length !== 0 ||
-      decodedEmbeddings.length !== 0 || candidateCount !== 0 || fusion !== "rrf_k60"
-    )) ||
-    (!structured && decodedOutcome === "structured_clarification_required") ||
-    (visualComplete && (
-      decodedOutcome !== "complete" || decodedResults.length !== 1 ||
-      decodedEmbeddings.length !== 0 || candidateCount !== 1 || fusion !== "rrf_k60" ||
-      decodedResults[0]?.visualAnalysis?.status !== visual.status ||
-      decodedResults.some((result) => result.annRank !== null || result.ftsRank !== null ||
-        result.ftsScore !== null || result.vectorDistance !== null || result.vectorScore !== null ||
-        result.fusedScore !== 0 || result.signalProvenance !== undefined)
-    )) ||
-    (advanced && !structured && (
+    (advanced && (
       decodedResults.some((result) => result.signalProvenance === undefined) ||
-      preRerankOrder!.length !== candidateCount ||
-      postRerankOrder!.length !== candidateCount ||
-      decodedResults.some((result) => !postRerankOrder!.includes(result.chunkId)) ||
+      version === KNOWLEDGE_LEGACY_RESULT_VERSION && (
+        preRerankOrder?.length !== candidateCount ||
+        postRerankOrder?.length !== candidateCount ||
+        decodedResults.some((result) => !postRerankOrder?.includes(result.chunkId))
+      ) ||
       !embeddingForbidden && (
         decodedBases.some((base) => base.vectorSearch === undefined) ||
         decodedBases.some((base) => {
@@ -1467,31 +1411,19 @@ export function knowledgeUsageAttributionsFromToolResult(
           }
         }]
       : []),
-    ...evidence.results.flatMap((passage) => passage.visualAnalysis?.provider
-      ? [{
-          modelId: passage.visualAnalysis.provider.modelId,
-          provider: passage.visualAnalysis.provider.provider,
-          usage: passage.visualAnalysis.provider.usage
-        }]
-      : [])
   ];
 }
 
 export function aggregateKnowledgeUsage(
-  executions: readonly KnowledgeEmbeddingExecutionEvidence[],
-  results: readonly KnowledgeRetrievedPassageEvidence[] = []
+  executions: readonly KnowledgeEmbeddingExecutionEvidence[]
 ): ModelRunUsage {
-  const usages: ModelRunUsage[] = [
-    ...executions.flatMap((execution) => execution.status === "complete" ? [{
+  const usages: ModelRunUsage[] = executions.flatMap((execution) =>
+    execution.status === "complete" ? [{
       inputTokens: execution.inputTokens,
       outputTokens: 0,
       reasoningTokens: 0,
       totalTokens: execution.totalTokens
-    }] : []),
-    ...results.flatMap((passage) => passage.visualAnalysis?.provider
-      ? [passage.visualAnalysis.provider.usage]
-      : [])
-  ];
+    }] : []);
   const normalized = usages.map(normalizeTokenUsage);
   return normalized.reduce<ModelRunUsage>((total, usage) => ({
     cachedInputTokens: (total.cachedInputTokens ?? 0) + usage.cachedInputTokens,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
+import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
   createKnowledgeBudgetReservation,
   decideKnowledgeBudgetReservation,
@@ -22,7 +23,6 @@ import {
 } from "./knowledgeBudgetReservation";
 import {
   decodeKnowledgeBudgetPolicy,
-  isAutomaticKnowledgeOperation,
   type KnowledgeOperationKind
 } from "./knowledgeBudget";
 import {
@@ -37,9 +37,8 @@ import {
 import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
   KNOWLEDGE_EXACT_TOOL_NAME,
+  KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
-  KNOWLEDGE_SEARCH_TOOL_NAME,
-  KNOWLEDGE_TOOL_NAME
 } from "./retrievalTypes";
 
 const MIN_LEASE_MS = 1_000;
@@ -49,14 +48,30 @@ const MAX_LEASE_MS = MAX_ACCEPTED_OPERATION_LATENCY_MS + LEASE_SAFETY_MARGIN_MS;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const LEASE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function embeddingCompatibilityKey(value: Readonly<{
+  embeddingExecutionSnapshot: unknown;
+  vectorSpaceFingerprint: string;
+}>): string {
+  return `${value.vectorSpaceFingerprint.trim()}\u0000${canonicalJson(
+    normalizeProviderExecutionSnapshot(value.embeddingExecutionSnapshot)
+  )}`;
+}
+
 const operationToolNames: Readonly<Record<KnowledgeOperationKind, string>> = Object.freeze({
-  automatic_search: KNOWLEDGE_TOOL_NAME,
+  automatic_search: KNOWLEDGE_FOCUSED_OPERATION_NAME,
   discover_sources: KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
   find_exact: KNOWLEDGE_EXACT_TOOL_NAME,
-  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME,
-  search_knowledge: KNOWLEDGE_SEARCH_TOOL_NAME,
-  structured_analysis: KNOWLEDGE_TOOL_NAME,
-  visual_analysis: KNOWLEDGE_TOOL_NAME
+  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME
 });
 
 const reservationSelect = {
@@ -64,10 +79,7 @@ const reservationSelect = {
   actualCostMicros: true,
   actualEmbeddingCalls: true,
   actualLatencyMs: true,
-  actualRepairSlots: true,
-  actualRerankerCalls: true,
   actualRetrievedTokens: true,
-  actualValidationSlots: true,
   ambiguousAt: true,
   createdAt: true,
   dispatchAttemptKey: true,
@@ -76,10 +88,7 @@ const reservationSelect = {
   estimatedCostMicros: true,
   estimatedEmbeddingCalls: true,
   estimatedLatencyMs: true,
-  estimatedRepairSlots: true,
-  estimatedRerankerCalls: true,
   estimatedRetrievedTokens: true,
-  estimatedValidationSlots: true,
   expiredAt: true,
   failureCode: true,
   id: true,
@@ -132,10 +141,7 @@ const resourceEstimateKeys = [
   "costMicros",
   "latencyMs",
   "queryEmbeddingCalls",
-  "repairCalls",
-  "rerankerCalls",
-  "retrievedTokens",
-  "validationCalls"
+  "retrievedTokens"
 ] as const;
 
 type KnowledgeBudgetResourceKey = typeof resourceEstimateKeys[number];
@@ -302,68 +308,43 @@ function strictLeaseToken(value: unknown): string | null {
   return typeof value === "string" && LEASE_TOKEN.test(value) ? value : null;
 }
 
-function operationKind(value: string): KnowledgeOperationKind | null {
-  return Object.hasOwn(operationToolNames, value) ? value as KnowledgeOperationKind : null;
-}
+const storedOperationKinds = new Set<string>([
+  ...Object.keys(operationToolNames),
+  "search_knowledge",
+  "structured_analysis",
+  "visual_analysis"
+]);
 
-function structuralAmount(request: KnowledgeOperationRequestV2): Readonly<{
-  followUpOperationSlots: 0 | 1;
+function structuralAmount(): Readonly<{
   operationSlots: 1;
-  searchPhaseSlots: 0 | 1;
-  subquerySlots: 1;
 }> {
-  return structuralAmountFor(request.operation, request.subqueryOrdinal);
-}
-
-function structuralAmountFor(
-  operation: KnowledgeOperationKind,
-  subqueryOrdinal: number
-): Readonly<{
-  followUpOperationSlots: 0 | 1;
-  operationSlots: 1;
-  searchPhaseSlots: 0 | 1;
-  subquerySlots: 1;
-}> {
-  return Object.freeze({
-    followUpOperationSlots: isAutomaticKnowledgeOperation(operation) ? 0 : 1,
-    operationSlots: 1,
-    searchPhaseSlots: subqueryOrdinal === 0 ? 1 : 0,
-    subquerySlots: 1
-  });
+  return Object.freeze({ operationSlots: 1 });
 }
 
 function persistedEstimate(
-  row: KnowledgeBudgetReservationPersistenceRow,
-  structural: ReturnType<typeof structuralAmountFor>
+  row: KnowledgeBudgetReservationPersistenceRow
 ): KnowledgeBudgetEstimate {
   const estimate = decodeKnowledgeBudgetEstimate({
     candidateCount: row.estimatedCandidates,
     costMicros: row.estimatedCostMicros,
     latencyMs: row.estimatedLatencyMs,
     queryEmbeddingCalls: row.estimatedEmbeddingCalls,
-    repairCalls: row.estimatedRepairSlots,
-    rerankerCalls: row.estimatedRerankerCalls,
     retrievedTokens: row.estimatedRetrievedTokens,
-    ...structural,
-    validationCalls: row.estimatedValidationSlots
+    ...structuralAmount()
   });
   return estimate ?? invalidStorage();
 }
 
 function persistedActual(
-  row: KnowledgeBudgetReservationPersistenceRow,
-  structural: ReturnType<typeof structuralAmountFor>
+  row: KnowledgeBudgetReservationPersistenceRow
 ): KnowledgeBudgetActual {
   const actual = decodeKnowledgeBudgetActual({
     candidateCount: row.actualCandidates,
     costMicros: row.actualCostMicros,
     latencyMs: row.actualLatencyMs,
     queryEmbeddingCalls: row.actualEmbeddingCalls,
-    repairCalls: row.actualRepairSlots,
-    rerankerCalls: row.actualRerankerCalls,
     retrievedTokens: row.actualRetrievedTokens,
-    ...structural,
-    validationCalls: row.actualValidationSlots
+    ...structuralAmount()
   });
   return actual ?? invalidStorage();
 }
@@ -380,8 +361,8 @@ function decodePurgedKnowledgeBudgetReservation(
   purgedAt: string,
   createdAt: string
 ): PurgedStoredKnowledgeBudgetReservation {
-  const operation = operationKind(row.operation);
-  if (!operation || row.policyVersion !== KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION ||
+  if (!storedOperationKinds.has(row.operation) ||
+    row.policyVersion !== KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION ||
     purgedAt < createdAt || !allNull([
       row.dispatchAttemptKey,
       row.failureCode,
@@ -392,11 +373,9 @@ function decodePurgedKnowledgeBudgetReservation(
       row.operationRequestHash,
       row.receiptHash
     ])) invalidStorage();
-  const structural = structuralAmountFor(operation, row.subqueryOrdinal);
   const common = {
     createdAt,
-    estimate: persistedEstimate(row, structural),
-    followUp: !isAutomaticKnowledgeOperation(operation),
+    estimate: persistedEstimate(row),
     id: row.id,
     idempotencyKey: `purged:${row.id}`,
     operationOrdinal: row.operationOrdinal,
@@ -410,10 +389,7 @@ function decodePurgedKnowledgeBudgetReservation(
     row.actualCostMicros,
     row.actualEmbeddingCalls,
     row.actualLatencyMs,
-    row.actualRepairSlots,
-    row.actualRerankerCalls,
-    row.actualRetrievedTokens,
-    row.actualValidationSlots
+    row.actualRetrievedTokens
   ];
   let reservation: KnowledgeBudgetReservation;
   if (row.state === "reserved") {
@@ -456,7 +432,7 @@ function decodePurgedKnowledgeBudgetReservation(
     ])) invalidStorage();
     reservation = {
       ...common,
-      actual: persistedActual(row, structural),
+      actual: persistedActual(row),
       dispatchKey: `purged:${row.id}`,
       dispatchedAt,
       settledAt,
@@ -541,11 +517,10 @@ export function decodeKnowledgeBudgetReservationPersistenceRow(
     !requestHash || !SHA256.test(requestHash) ||
     hashKnowledgeOperationRequestV2(operationRequest) !== requestHash) invalidStorage();
 
-  const estimate = persistedEstimate(row, structuralAmount(operationRequest));
+  const estimate = persistedEstimate(row);
   const common = {
     createdAt,
     estimate,
-    followUp: !isAutomaticKnowledgeOperation(operationRequest.operation),
     id: row.id,
     idempotencyKey: operationRequest.idempotencyKey,
     operationOrdinal: row.operationOrdinal,
@@ -559,10 +534,7 @@ export function decodeKnowledgeBudgetReservationPersistenceRow(
     row.actualCostMicros,
     row.actualEmbeddingCalls,
     row.actualLatencyMs,
-    row.actualRepairSlots,
-    row.actualRerankerCalls,
-    row.actualRetrievedTokens,
-    row.actualValidationSlots
+    row.actualRetrievedTokens
   ];
   let reservation: KnowledgeBudgetReservation;
 
@@ -620,7 +592,7 @@ export function decodeKnowledgeBudgetReservationPersistenceRow(
       ])) invalidStorage();
     reservation = {
       ...common,
-      actual: persistedActual(row, structuralAmount(operationRequest)),
+      actual: persistedActual(row),
       dispatchKey: row.dispatchAttemptKey,
       dispatchedAt,
       settledAt,
@@ -700,7 +672,7 @@ export function decodeKnowledgeBudgetReservationPersistenceRow(
   });
 }
 
-/** Extends the accepted legacy run policy without changing its active limits. */
+/** Maps the fixed focused policy into the durable reservation envelope. */
 export function knowledgeBudgetReservationPolicyFromRunScope(
   value: unknown
 ): KnowledgeBudgetReservationPolicy | null {
@@ -709,16 +681,10 @@ export function knowledgeBudgetReservationPolicyFromRunScope(
   return Object.freeze({
     maxCumulativeCandidates: policy.maxCumulativeCandidates,
     maxEstimatedCostMicros: policy.maxEstimatedCostMicros,
-    maxFollowUpOperations: policy.maxFollowUpOperations,
     maxLatencyMs: policy.maxLatencyMs,
     maxOperations: policy.maxOperations,
     maxQueryEmbeddingCalls: policy.maxQueryEmbeddingCalls,
-    maxRepairCalls: Math.min(1, policy.maxOperations),
-    maxRerankerCalls: policy.maxRerankerCalls,
     maxRetrievedTokens: policy.maxRetrievedTokens,
-    maxSearchPhases: policy.maxSearchPhases,
-    maxSubqueriesPerPhase: policy.maxSubqueriesPerPhase,
-    maxValidationCalls: policy.maxOperations,
     version: KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION
   });
 }
@@ -757,7 +723,7 @@ function resourceEstimate(
 ): KnowledgeBudgetEstimate | null {
   return decodeKnowledgeBudgetEstimate({
     ...value,
-    ...structuralAmount(request)
+    ...structuralAmount()
   });
 }
 
@@ -767,7 +733,7 @@ function resourceActual(
 ): KnowledgeBudgetActual | null {
   return decodeKnowledgeBudgetActual({
     ...value,
-    ...structuralAmount(request)
+    ...structuralAmount()
   });
 }
 
@@ -798,11 +764,10 @@ function sourceScopeMatches(
   const sourceAliases = new Map<string, string>();
   const sourcesByBase = new Map<string, Set<string>>();
   for (const source of sources) {
-    if (!source.sourceId || available.has(source.sourceId) ||
-      sourceAliases.has(source.sourceAlias)) return false;
+    if (!source.sourceId || sourceAliases.has(source.sourceAlias)) return false;
     const provenance = baseIds(source.baseProvenance);
     if (!provenance) return false;
-    available.set(source.sourceId, source);
+    if (!available.has(source.sourceId)) available.set(source.sourceId, source);
     sourceAliases.set(source.sourceAlias, source.sourceId);
     for (const baseId of provenance) {
       const selected = sourcesByBase.get(baseId) ?? new Set<string>();
@@ -1003,10 +968,7 @@ export async function settleKnowledgeBudgetReservationReceipt(
       actualCostMicros: acceptedActual.costMicros,
       actualEmbeddingCalls: acceptedActual.queryEmbeddingCalls,
       actualLatencyMs: acceptedActual.latencyMs,
-      actualRepairSlots: acceptedActual.repairCalls,
-      actualRerankerCalls: acceptedActual.rerankerCalls,
       actualRetrievedTokens: acceptedActual.retrievedTokens,
-      actualValidationSlots: acceptedActual.validationCalls,
       leaseExpiresAt: null,
       leaseToken: null,
       receiptHash: input.receiptHash,
@@ -1206,17 +1168,27 @@ export function createPrismaKnowledgeBudgetReservationRepository(
         if (operationOrdinal > 256) {
           return { kind: "conflict", reason: "operation_sequence_exhausted" } as const;
         }
-        const profile = await tx.knowledgeRunProfileBinding.findFirst({
+        const profiles = await tx.knowledgeRunProfileBinding.findMany({
           select: {
+            embeddingExecutionSnapshot: true,
             id: true,
-            profileRevision: { select: { revisionNumber: true } }
+            profileRevision: { select: { revisionNumber: true } },
+            profileRevisionId: true,
+            vectorSpaceFingerprint: true
           },
-          where: {
-            modelRunId: input.runId,
-            profileRevisionId: input.operationRequest.profileRevisionId
-          }
+          where: { modelRunId: input.runId }
         });
+        const profile = profiles.find(({ profileRevisionId }) =>
+          profileRevisionId === input.operationRequest.profileRevisionId);
         if (!profile) return { kind: "conflict", reason: "scope_mismatch" } as const;
+        let compatibleProfileBindingIds: string[];
+        try {
+          const compatibilityKey = embeddingCompatibilityKey(profile);
+          compatibleProfileBindingIds = profiles.filter((candidate) =>
+            embeddingCompatibilityKey(candidate) === compatibilityKey).map(({ id }) => id);
+        } catch {
+          return { kind: "conflict", reason: "scope_mismatch" } as const;
+        }
         const reservationId = existingForCall?.reservation.id ?? uuid();
         let request: KnowledgeOperationRequestV2;
         try {
@@ -1242,7 +1214,7 @@ export function createPrismaKnowledgeBudgetReservationRepository(
             select: { baseProvenance: true, sourceAlias: true, sourceId: true },
             where: {
               modelRunId: input.runId,
-              profileBindingId: profile.id,
+              profileBindingId: { in: compatibleProfileBindingIds },
               readinessState: "ready",
               tombstonedAt: null
             }
@@ -1267,7 +1239,6 @@ export function createPrismaKnowledgeBudgetReservationRepository(
         const proposal = {
           createdAt,
           estimate,
-          followUp: !isAutomaticKnowledgeOperation(request.operation),
           id: reservationId,
           idempotencyKey: request.idempotencyKey,
           leaseExpiresAt: proposalLease,
@@ -1312,10 +1283,7 @@ export function createPrismaKnowledgeBudgetReservationRepository(
             estimatedCostMicros: estimate.costMicros,
             estimatedEmbeddingCalls: estimate.queryEmbeddingCalls,
             estimatedLatencyMs: estimate.latencyMs,
-            estimatedRepairSlots: estimate.repairCalls,
-            estimatedRerankerCalls: estimate.rerankerCalls,
             estimatedRetrievedTokens: estimate.retrievedTokens,
-            estimatedValidationSlots: estimate.validationCalls,
             id: reservationId,
             idempotencyKey: request.idempotencyKey,
             leaseExpiresAt: new Date(proposalLease),
@@ -1368,10 +1336,7 @@ export function createPrismaKnowledgeBudgetReservationRepository(
           actualCostMicros: acceptedActual.costMicros,
           actualEmbeddingCalls: acceptedActual.queryEmbeddingCalls,
           actualLatencyMs: acceptedActual.latencyMs,
-          actualRepairSlots: acceptedActual.repairCalls,
-          actualRerankerCalls: acceptedActual.rerankerCalls,
           actualRetrievedTokens: acceptedActual.retrievedTokens,
-          actualValidationSlots: acceptedActual.validationCalls,
           leaseExpiresAt: null,
           leaseToken: null,
           receiptHash: input.receiptHash,

@@ -1,0 +1,87 @@
+name: Release technical gates
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-technical-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hermetic:
+    name: Hermetic checks
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  dependency-security:
+    name: Dependency advisory gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          cache: npm
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check dependency advisories
+        run: npm run security:deps
+
+  migration-and-container:
+    name: Migration and disposable container contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          cache: npm
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start the disposable application topology
+        run: docker compose -f docker-compose.dev.yml up -d --build --wait --wait-timeout 300 app
+
+      - name: Verify migration contracts
+        run: npm run db:migration:smoke
+
+      - name: Discard migration-smoke state and writers
+        run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
+
+      - name: Start fresh disposable dependencies without application writers
+        run: >-
+          docker compose -f docker-compose.dev.yml up -d --wait --wait-timeout 300
+          postgres minio
+
+      - name: Initialize fresh disposable object storage
+        run: >-
+          docker compose -f docker-compose.dev.yml run --rm -T --no-deps
+          minio-init
+
+      - name: Run full disposable container checks
+        run: npm run check:container
+
+      - name: Remove disposable state
+        if: always()
+        run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans

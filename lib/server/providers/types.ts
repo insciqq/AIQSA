@@ -12,7 +12,7 @@ import type {
   ValidatedSearchQuery
 } from "../../domain/search";
 import type { KnowledgePlan } from "../../contracts/knowledge";
-import type { KnowledgePlannerPlan } from "../knowledge/planner";
+import type { KnowledgeFocusedRequestV1 } from "../knowledge/focusedRequest";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -85,9 +85,9 @@ export type NormalizedRunRequest = {
       truncation?: ContextTruncationSummary;
     };
   };
-  /** Immutable intent/strategy decision used for automatic private Knowledge
-   * retrieval before the first answer-provider round. */
-  knowledgePlanner?: KnowledgePlannerPlan;
+  /** Exact immutable request for the single internal focused Knowledge
+   * retrieval operation. It is never exposed as an answer-model tool. */
+  knowledgeFocusedRequest?: KnowledgeFocusedRequestV1;
   knowledgePlan: KnowledgePlan;
   /** Model-driven tools. Mutation authority is minted at execution from the
    * exact accepted USER message and exact owned target/version. */
@@ -129,6 +129,9 @@ export type NormalizedRunRequest = {
       timeZoneSource: "client" | "utc_fallback";
     };
     developer: string | null;
+    /** Server-minted fixed contract serialized after every other instruction
+     * and untrusted personal-context block for one-shot Knowledge answers. */
+    knowledgeAnswerContract?: 1;
     system: string | null;
   };
   provider: string;

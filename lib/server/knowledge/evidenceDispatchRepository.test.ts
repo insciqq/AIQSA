@@ -11,7 +11,7 @@ import {
 } from "./evidenceDispatchRepository";
 import {
   packKnowledgeEvidenceDispatchManifest,
-  type KnowledgeEvidenceDispatchCandidate,
+  type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
 
@@ -372,9 +372,9 @@ function createFakePrisma(input: Readonly<{
 }
 
 function availableCandidate(overrides: Partial<Extract<
-  KnowledgeEvidenceDispatchCandidate,
+  CurrentKnowledgeEvidenceDispatchCandidate,
   { state: "available" }
->> = {}): Extract<KnowledgeEvidenceDispatchCandidate, { state: "available" }> {
+>> = {}): Extract<CurrentKnowledgeEvidenceDispatchCandidate, { state: "available" }> {
   return {
     ambiguity: "none",
     evidenceId: "dispatch-evidence-1",
@@ -394,7 +394,7 @@ function availableCandidate(overrides: Partial<Extract<
 }
 
 function draft(
-  candidates: readonly KnowledgeEvidenceDispatchCandidate[] = [availableCandidate()],
+  candidates: readonly CurrentKnowledgeEvidenceDispatchCandidate[] = [availableCandidate()],
   maximumBytes = 64 * 1_024
 ): KnowledgeEvidenceDispatchManifestDraft {
   return packKnowledgeEvidenceDispatchManifest({
@@ -404,7 +404,7 @@ function draft(
     header: "<private_knowledge_evidence version=\"2\">",
     maximumBytes,
     maximumTokens: 64 * 1_024,
-    plannerVersion: 1,
+    runtimeVersion: 1,
     profileId: "answer:test-model",
     promptFragmentVersion: 2
   });
@@ -474,6 +474,21 @@ describe("Knowledge evidence dispatch repository", () => {
     expect(decodeKnowledgeProviderAttemptUsage({ ...usage(), prompt: "private" })).toBeNull();
     expect(decodeKnowledgeProviderAttemptUsage({ ...usage(), inputTokens: 0.5 })).toBeNull();
   });
+
+  it.each(["answer_citation_retry", "citation_repair", "tool_follow_up"] as const)(
+    "rejects new %s attempts while retaining historical read compatibility",
+    async (purpose) => {
+      const fake = createFakePrisma();
+      const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+
+      await expectRepositoryError(repository.reserve({
+        ...reserveInput(),
+        purpose
+      } as unknown as ReserveKnowledgeEvidenceDispatchInput), "invalid_input");
+      expect(fake.state.attempts).toEqual([]);
+      expect(fake.state.manifests).toEqual([]);
+    }
+  );
 
   it("persists the full canonical K1..K2048 handle range and rejects K2049", async () => {
     const fake = createFakePrisma({

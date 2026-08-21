@@ -315,12 +315,6 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
-  await tx.knowledgePolicy.upsert({
-    create: { id: "installation" },
-    // Bootstrap adoption repairs only a missing row and preserves operator policy.
-    update: {},
-    where: { id: "installation" }
-  });
   await tx.knowledgeIndexProfile.upsert({
     create: { id: "installation" },
     // Profile activation is an administrator-owned egress decision. Bootstrap

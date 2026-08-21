@@ -5,21 +5,11 @@ import {
   type KnowledgeExtractionConfig
 } from "../../knowledge/knowledgeExtractionConfig";
 import {
-  isKnowledgeRetrievalPolicy,
-  KNOWLEDGE_RETRIEVAL_BOUNDS,
-  type KnowledgeRetrievalPolicy
-} from "../../knowledge/knowledgePolicy";
+  KNOWLEDGE_CANDIDATE_LIMIT,
+  KNOWLEDGE_RESULT_LIMIT
+} from "../../knowledge/retrievalTypes";
 import { createAdminKnowledgeOperationsService } from "./operationsService";
 import { createAdminKnowledgeProfileService } from "./profileService";
-
-export type AdminKnowledgePolicyServiceErrorCode = "knowledge_policy_stale";
-
-export class AdminKnowledgePolicyServiceError extends Error {
-  constructor(readonly code: AdminKnowledgePolicyServiceErrorCode) {
-    super(code);
-    this.name = "AdminKnowledgePolicyServiceError";
-  }
-}
 
 export function createAdminKnowledgePolicyService(
   prisma: PrismaClient,
@@ -37,19 +27,10 @@ export function createAdminKnowledgePolicyService(
     activateProfile: profileService.activate,
 
     async list(): Promise<AdminKnowledgeSettings> {
-      const [policy, profile, operations] = await Promise.all([
-        prisma.knowledgePolicy.findUnique({
-          include: { updatedBy: { select: { displayName: true, id: true } } },
-          where: { id: "installation" }
-        }),
+      const [profile, operations] = await Promise.all([
         profileService.list(),
         operationsService.read()
       ]);
-      if (!policy) throw new Error("installation_knowledge_policy_missing");
-      const retrievalPolicy: KnowledgeRetrievalPolicy = policy;
-      if (!isKnowledgeRetrievalPolicy(retrievalPolicy)) {
-        throw new Error("installation_knowledge_policy_invalid");
-      }
       const ingestion = extractionConfig();
       return {
         ingestionLimits: {
@@ -59,41 +40,14 @@ export function createAdminKnowledgePolicyService(
           maxPages: ingestion.maxPages
         },
         operations,
-        policy: {
-          candidateLimit: policy.candidateLimit,
-          resultLimit: policy.resultLimit,
-          scoreThreshold: policy.scoreThreshold,
-          updatedAt: policy.updatedAt.toISOString(),
-          updatedBy: policy.updatedBy,
-          version: policy.version
-        },
         profile,
-        retrievalBounds: KNOWLEDGE_RETRIEVAL_BOUNDS
+        retrieval: {
+          candidateLimit: KNOWLEDGE_CANDIDATE_LIMIT,
+          resultLimit: KNOWLEDGE_RESULT_LIMIT
+        }
       };
     },
 
-    rollbackProfile: profileService.rollback,
-
-    async update(input: KnowledgeRetrievalPolicy & Readonly<{
-      expectedVersion: number;
-      userId: string;
-    }>): Promise<void> {
-      if (!isKnowledgeRetrievalPolicy(input)) {
-        throw new Error("knowledge_policy_update_invalid");
-      }
-      const updated = await prisma.knowledgePolicy.updateMany({
-        data: {
-          candidateLimit: input.candidateLimit,
-          resultLimit: input.resultLimit,
-          scoreThreshold: input.scoreThreshold,
-          updatedByUserId: input.userId,
-          version: { increment: 1 }
-        },
-        where: { id: "installation", version: input.expectedVersion }
-      });
-      if (updated.count !== 1) {
-        throw new AdminKnowledgePolicyServiceError("knowledge_policy_stale");
-      }
-    }
+    rollbackProfile: profileService.rollback
   };
 }

@@ -108,4 +108,28 @@ describe("answer outputs v2", () => {
     );
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("distinguishes insufficient evidence and a partially ready selected scope", () => {
+    render(
+      <AnswerOutputsV2
+        artifact={{
+          citations: [],
+          knowledgeCitations: [],
+          knowledgeState: {
+            answer: "insufficient_evidence",
+            scope: "partial_sources_ready"
+          },
+          reasoningText: [],
+          sources: []
+        }}
+        showReasoning={false}
+      />
+    );
+
+    const state = screen.getByRole("status");
+    expect(state).toHaveAttribute("data-answer", "insufficient_evidence");
+    expect(state).toHaveAttribute("data-scope", "partial_sources_ready");
+    expect(state).toHaveTextContent(/ready documents did not contain enough evidence/iu);
+    expect(state).toHaveTextContent(/still processing/iu);
+  });
 });

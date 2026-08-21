@@ -14,12 +14,60 @@ function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
+function embeddingExecutionSnapshot(input: Readonly<{
+  connectionId: string;
+  credentialId: string;
+  credentialVersionId: string;
+  modelId: string;
+}>): Prisma.InputJsonValue {
+  return json({
+    connection: {
+      allowPrivateNetwork: false,
+      apiRoot: "https://embedding.example.test/v1",
+      authenticationMode: "bearer",
+      responseTimeoutMs: 30_000
+    },
+    connectionDisplayName: "Budget test connection",
+    connectionId: input.connectionId,
+    credentialId: input.credentialId,
+    credentialVersionId: input.credentialVersionId,
+    model: {
+      adapterKind: "openai_embeddings_compatible",
+      answerSelectable: false,
+      capabilities: {
+        contextWindow: 8_192,
+        nativePdfInput: false,
+        nativeSearch: false,
+        pdf: false,
+        reasoning: false,
+        streaming: false,
+        toolCalling: false,
+        vision: false
+      },
+      defaultParams: {},
+      embedding: {
+        nativeDimension: 1_024,
+        providerFamily: "openai_compatible",
+        queryInstructionTemplate: null,
+        supportsMrl: false,
+        targetDimension: 1_024
+      },
+      modelClass: "embedding",
+      upstreamModelId: "budget-embedding"
+    },
+    modelDisplayName: "Budget embedding model",
+    providerFamily: "openai_compatible",
+    providerModelId: input.modelId,
+    version: 1
+  });
+}
+
 describe("Knowledge budget reservation PostgreSQL serialization", () => {
   afterAll(async () => {
     await prisma.$disconnect();
   });
 
-  it("admits only one of eight concurrent branches at the cumulative limit", async () => {
+  it("admits only one of eight concurrent operations at the fixed operation limit", async () => {
     const suffix = randomUUID();
     const connectionId = `knowledge-budget-connection-${suffix}`;
     const credentialId = randomUUID();
@@ -125,7 +173,12 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
           embeddingCredentialId: credentialId,
           embeddingCredentialSource: "default",
           embeddingCredentialVersionId: credentialVersionId,
-          embeddingExecutionSnapshot: json({ synthetic: true }),
+          embeddingExecutionSnapshot: embeddingExecutionSnapshot({
+            connectionId,
+            credentialId,
+            credentialVersionId,
+            modelId
+          }),
           embeddingProviderModelId: modelId,
           modelRunId: run.id,
           ordinal: 0,
@@ -156,18 +209,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
           query: "Find policy sources"
         },
         operation: "discover_sources",
-        plan: {
-          allowedLanes: ["metadata"],
-          coverage: { expectedPassageCount: null, mode: "partial" },
-          exactTerms: [],
-          rewrittenQuery: "Find policy sources",
-          strategy: "focused",
-          targetNames: [],
-          targetSourceIds: []
-        },
-        plannerVersion: 1,
         profileRevisionId,
-        purpose: "source_discovery",
         resolvedSourceIds: [],
         sourceAliases: []
       };
@@ -180,10 +222,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
           costMicros: 0,
           latencyMs: 10,
           queryEmbeddingCalls: 0,
-          repairCalls: 0,
-          rerankerCalls: 0,
-          retrievedTokens: 1,
-          validationCalls: 0
+          retrievedTokens: 1
         },
         operationRequest,
         originalQuerySha256,
@@ -201,7 +240,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
 
       expect(results.filter((result) => result.kind === "admitted")).toHaveLength(1);
       expect(results.filter((result) =>
-        result.kind === "rejected" && result.reason === "candidate_budget")).toHaveLength(7);
+        result.kind === "rejected" && result.reason === "operation_budget")).toHaveLength(7);
       await expect(prisma.knowledgeBudgetReservation.count({
         where: { modelRunId: run.id }
       })).resolves.toBe(1);
@@ -244,7 +283,6 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
         receiptVersion: 2,
         resultLimit: 1,
         results: json([]),
-        threshold: 0
       };
       await expect(prisma.knowledgeRun.create({
         data: { ...knowledgeRunData, modelRunToolCallId: otherCall.id }
@@ -259,10 +297,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
         costMicros: 0,
         latencyMs: 3,
         queryEmbeddingCalls: 0,
-        repairCalls: 0,
-        rerankerCalls: 0,
-        retrievedTokens: 0,
-        validationCalls: 0
+        retrievedTokens: 0
       } as const;
       await expect(prisma.$transaction(async (tx) => {
         await tx.knowledgeRun.create({

@@ -6,7 +6,10 @@ import {
   createPrismaEmbeddingRuntime,
   type EmbeddingRuntimeStore
 } from "../providerRuntime/embeddingRuntime";
-import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import {
+  normalizeProviderExecutionSnapshot,
+  type ProviderExecutionSnapshot
+} from "../providers/runtimeFactory";
 import { prisma } from "../prisma";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import {
@@ -82,6 +85,27 @@ export type KnowledgeRunAdmissionSource = Readonly<{
   sourceVersionNumber: number;
 }>;
 
+export type KnowledgeRunAdmissionSourceAuthorization = Pick<
+  KnowledgeRunAdmissionSource,
+  | "authority"
+  | "baseProvenance"
+  | "directSelected"
+  | "profileRevisionId"
+  | "selectionProvenance"
+  | "sourceArtifactId"
+  | "sourceId"
+  | "sourceVersionId"
+>;
+
+export type KnowledgeRunAdmissionAuthorizationSnapshot = Readonly<{
+  bindings: readonly Pick<KnowledgeRunAdmissionBinding,
+    "includeWholeBase" | "indexGenerationId" | "knowledgeBaseId" |
+    "selectedSourceIds" | "vectorSpaceFingerprint">[];
+  knowledgePlan: KnowledgePlan;
+  profiles: readonly KnowledgeRunAdmissionProfile[];
+  sources: readonly KnowledgeRunAdmissionSourceAuthorization[];
+}>;
+
 export type KnowledgeRunAdmissionPlan = Readonly<{
   bindings: readonly KnowledgeRunAdmissionBinding[];
   budgetPolicy: KnowledgeBudgetPolicy;
@@ -125,6 +149,11 @@ export type KnowledgeRunAdmissionStore = EmbeddingRuntimeStore & Pick<
   PrismaClient,
   "knowledgeBase" | "knowledgeIndexProfile" | "knowledgeSource" | "userGroup"
 > & ProjectKnowledgeSourceBindingStore;
+
+export type KnowledgeRunSnapshotAuthorizationStore = Pick<
+  PrismaClient,
+  "knowledgeBase" | "knowledgeSource" | "project" | "user"
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -560,7 +589,7 @@ async function resolveSelectionScopes(
         });
         continue;
       }
-      const eligible = source.baseMemberships.find(({ knowledgeBase }) => {
+      const eligible = source.baseMemberships.filter(({ knowledgeBase }) => {
         const generation = knowledgeBase.activeIndexGeneration;
         return generation?.status === "active" && Boolean(generation.profileRevisionId) &&
           source.currentVersion?.artifacts.some((artifact) =>
@@ -568,7 +597,7 @@ async function resolveSelectionScopes(
             artifact.state === "ready" &&
             artifact.hierarchicalIndexes.some((hierarchy) => hierarchy.state === "ready"));
       });
-      if (!eligible) {
+      if (eligible.length === 0) {
         incrementExclusion(
           exclusions,
           "source",
@@ -577,7 +606,7 @@ async function resolveSelectionScopes(
         continue;
       }
       baseAuthorizedSourceIds.add(source.id);
-      addSource(eligible.knowledgeBase.id, source.id);
+      for (const { knowledgeBase } of eligible) addSource(knowledgeBase.id, source.id);
     }
   }
 
@@ -605,6 +634,13 @@ async function resolveSelectionScopes(
 
 type AdmissionProfileSeed = Omit<KnowledgeRunAdmissionProfile, "ordinal">;
 
+function embeddingCompatibilityKey(profile: Pick<AdmissionProfileSeed,
+  "embeddingExecutionSnapshot" | "vectorSpaceFingerprint">): string {
+  return `${profile.vectorSpaceFingerprint}\u0000${canonicalJson(
+    normalizeProviderExecutionSnapshot(profile.embeddingExecutionSnapshot)
+  )}`;
+}
+
 type MutableAdmissionSource = {
   approxTokens: number;
   artifactId: string;
@@ -626,7 +662,13 @@ type MutableAdmissionSource = {
 
 export async function loadKnowledgeRunAdmissionPlan(
   client: KnowledgeRunAdmissionStore,
-  input: Readonly<{ executionScope?: "project"; knowledgePlan: KnowledgePlan; projectId?: string; userId: string }>
+  input: Readonly<{
+    executionScope?: "project";
+    knowledgePlan: KnowledgePlan;
+    preferredProfileRevisionId?: string;
+    projectId?: string;
+    userId: string;
+  }>
 ): Promise<KnowledgeRunAdmissionPlan> {
   const decodedKnowledgePlan = decodeKnowledgePlan(input.knowledgePlan);
   if (!decodedKnowledgePlan.ok) throw new KnowledgeRunAdmissionError();
@@ -651,18 +693,21 @@ export async function loadKnowledgeRunAdmissionPlan(
   });
   const embeddingRuntime = createPrismaEmbeddingRuntime(client);
   const bindings: KnowledgeRunAdmissionBinding[] = [];
+  const bindingProfileKeys = new Map<string, string>();
+  const budgetPoliciesByProfileKey = new Map<string, KnowledgeBudgetPolicy>();
+  const compatibilityKeysByProfileKey = new Map<string, string>();
   const profilesByKey = new Map<string, AdmissionProfileSeed>();
   const sourcesByKey = new Map<string, MutableAdmissionSource>();
-  let budgetPolicy: KnowledgeBudgetPolicy | null = null;
+  const unavailableMembershipSourceIds = new Set<string>();
+  const exclusions = new Map(resolved.exclusions.map((exclusion) => [
+    `${exclusion.resourceType}:${exclusion.reason}`,
+    exclusion
+  ]));
 
   const resolveProfile = async (revision: DirectProfileRevision): Promise<string> => {
     const resolvedBudgetPolicy = knowledgeBudgetPolicyFromProfileConfiguration(
       revision.profileConfiguration
     );
-    if (budgetPolicy && canonicalJson(budgetPolicy) !== canonicalJson(resolvedBudgetPolicy)) {
-      throw new KnowledgeRunAdmissionError();
-    }
-    budgetPolicy = resolvedBudgetPolicy;
     const embedding = projectScope
       ? await embeddingRuntime.resolveForProject({
           providerModelId: revision.embeddingProviderModelId
@@ -698,6 +743,8 @@ export async function loadKnowledgeRunAdmissionPlan(
     } satisfies AdmissionProfileSeed;
     const key = canonicalJson(profile);
     profilesByKey.set(key, profile);
+    budgetPoliciesByProfileKey.set(key, resolvedBudgetPolicy);
+    compatibilityKeysByProfileKey.set(key, embeddingCompatibilityKey(profile));
     return key;
   };
 
@@ -899,6 +946,7 @@ export async function loadKnowledgeRunAdmissionPlan(
         targetDimension: generation.targetDimension,
         vectorSpaceFingerprint: profile.vectorSpaceFingerprint
       });
+      bindingProfileKeys.set(base.id, profileKey);
       for (const membership of base.sourceMemberships ?? []) {
         const version = membership.source.currentVersion;
         const artifact = version?.artifacts.find((candidate) =>
@@ -908,7 +956,10 @@ export async function loadKnowledgeRunAdmissionPlan(
         const summary = version && artifact
           ? readyArtifactSummary({ artifact, versionByteSize: version.byteSize })
           : null;
-        if (!version || !artifact || !summary) continue;
+        if (!version || !artifact || !summary) {
+          unavailableMembershipSourceIds.add(membership.sourceId);
+          continue;
+        }
         const baseAuthorized = resolved.baseAuthorizedSourceIds.includes(membership.sourceId);
         addSource({
           approxTokens: summary.approxTokens,
@@ -973,14 +1024,7 @@ export async function loadKnowledgeRunAdmissionPlan(
     }
   }
 
-  const orderedProfiles = [...profilesByKey.entries()]
-    .sort(([left], [right]) => left.localeCompare(right));
-  const profileOrdinals = new Map(orderedProfiles.map(([key], ordinal) => [key, ordinal]));
-  const profiles: KnowledgeRunAdmissionProfile[] = orderedProfiles.map(([, profile], ordinal) => ({
-    ...profile,
-    ordinal
-  }));
-  const orderedSources = [...sourcesByKey.values()].sort((left, right) =>
+  const allOrderedSources = [...sourcesByKey.values()].sort((left, right) =>
     canonicalJson([
       left.sourceId,
       left.sourceVersionId,
@@ -992,6 +1036,72 @@ export async function loadKnowledgeRunAdmissionPlan(
       right.artifactId,
       right.profileRevisionId
     ])));
+  const profileKeysByCompatibility = new Map<string, string[]>();
+  for (const profileKey of profilesByKey.keys()) {
+    const compatibilityKey = compatibilityKeysByProfileKey.get(profileKey)!;
+    const profileKeys = profileKeysByCompatibility.get(compatibilityKey) ?? [];
+    profileKeys.push(profileKey);
+    profileKeysByCompatibility.set(compatibilityKey, profileKeys);
+  }
+  const readySourceIdsByCompatibility = new Map<string, Set<string>>();
+  for (const source of allOrderedSources) {
+    const compatibilityKey = compatibilityKeysByProfileKey.get(source.profileKey)!;
+    const sourceIds = readySourceIdsByCompatibility.get(compatibilityKey) ?? new Set<string>();
+    sourceIds.add(source.sourceId);
+    readySourceIdsByCompatibility.set(compatibilityKey, sourceIds);
+  }
+  const bindingCompatibilityKeys = new Set([...bindingProfileKeys.values()].map((profileKey) =>
+    compatibilityKeysByProfileKey.get(profileKey)!));
+  const eligibleCompatibilityKeys = [...profileKeysByCompatibility.keys()].filter(
+    (compatibilityKey) =>
+      (readySourceIdsByCompatibility.get(compatibilityKey)?.size ?? 0) > 0 ||
+      bindingCompatibilityKeys.has(compatibilityKey)
+  );
+  const orderedCompatibilityKeys = eligibleCompatibilityKeys.sort((left, right) => {
+    const leftPreferred = (profileKeysByCompatibility.get(left) ?? []).some((profileKey) =>
+      profilesByKey.get(profileKey)?.profileRevisionId === input.preferredProfileRevisionId);
+    const rightPreferred = (profileKeysByCompatibility.get(right) ?? []).some((profileKey) =>
+      profilesByKey.get(profileKey)?.profileRevisionId === input.preferredProfileRevisionId);
+    if (leftPreferred !== rightPreferred) return leftPreferred ? -1 : 1;
+    const sourceCount = (readySourceIdsByCompatibility.get(right)?.size ?? 0) -
+      (readySourceIdsByCompatibility.get(left)?.size ?? 0);
+    return sourceCount || left.localeCompare(right);
+  });
+  const selectedCompatibilityKey = orderedCompatibilityKeys[0] ?? null;
+  const selectedProfileKeys = selectedCompatibilityKey
+    ? [...(profileKeysByCompatibility.get(selectedCompatibilityKey) ?? [])].sort()
+    : [];
+  if (new Set(selectedProfileKeys.map((profileKey) =>
+    canonicalJson(budgetPoliciesByProfileKey.get(profileKey)))).size > 1) {
+    throw new KnowledgeRunAdmissionError();
+  }
+  const profileOrdinals = new Map(selectedProfileKeys.map((profileKey, ordinal) => [
+    profileKey,
+    ordinal
+  ]));
+  const profiles: KnowledgeRunAdmissionProfile[] = selectedProfileKeys.map(
+    (profileKey, ordinal) => ({ ...profilesByKey.get(profileKey)!, ordinal })
+  );
+  const selectedBindings = bindings
+    .filter((binding) => {
+      const profileKey = bindingProfileKeys.get(binding.knowledgeBaseId);
+      return profileKey !== undefined &&
+        compatibilityKeysByProfileKey.get(profileKey) === selectedCompatibilityKey;
+    })
+    .map((binding, ordinal) => ({ ...binding, ordinal }));
+  const orderedSources = selectedCompatibilityKey
+    ? allOrderedSources.filter((source) =>
+        compatibilityKeysByProfileKey.get(source.profileKey) === selectedCompatibilityKey)
+    : [];
+  const selectedSourceIds = new Set(orderedSources.map((source) => source.sourceId));
+  const omittedReadySourceIds = new Set(allOrderedSources
+    .filter((source) => !selectedSourceIds.has(source.sourceId))
+    .map((source) => source.sourceId));
+  incrementExclusion(exclusions, "source", "not_ready", omittedReadySourceIds.size);
+  const availableSourceIds = new Set(allOrderedSources.map((source) => source.sourceId));
+  const unavailableMembershipCount = [...unavailableMembershipSourceIds].filter((sourceId) =>
+    !availableSourceIds.has(sourceId)).length;
+  incrementExclusion(exclusions, "source", "not_ready", unavailableMembershipCount);
   const sources: KnowledgeRunAdmissionSource[] = orderedSources.map((source, ordinal) => ({
     approxTokens: source.approxTokens,
     authority: {
@@ -1023,9 +1133,14 @@ export async function loadKnowledgeRunAdmissionPlan(
   }));
 
   const accepted = {
-    bindings,
-    budgetPolicy: budgetPolicy ?? knowledgeBudgetPolicyFromProfileConfiguration(null),
-    exclusions: resolved.exclusions,
+    bindings: selectedBindings,
+    budgetPolicy: selectedProfileKeys[0]
+      ? budgetPoliciesByProfileKey.get(selectedProfileKeys[0])!
+      : knowledgeBudgetPolicyFromProfileConfiguration(null),
+    exclusions: [...exclusions.values()].sort((left, right) =>
+      `${left.resourceType}:${left.reason}`.localeCompare(
+        `${right.resourceType}:${right.reason}`
+      )),
     knowledgePlan,
     profiles,
     resolvedSourceCount: sources.length,
@@ -1041,6 +1156,218 @@ export function sameKnowledgeRunAdmissionPlan(
   right: KnowledgeRunAdmissionPlan
 ): boolean {
   return left.fingerprint === right.fingerprint && canonicalJson(left) === canonicalJson(right);
+}
+
+function validKnowledgeAuthorizationSnapshot(
+  snapshot: KnowledgeRunAdmissionAuthorizationSnapshot,
+  projectId: string | undefined
+): boolean {
+  const decodedPlan = decodeKnowledgePlan(snapshot.knowledgePlan);
+  if (!decodedPlan.ok || decodedPlan.plan.mode === "none" || snapshot.profiles.length < 1 ||
+    snapshot.sources.length === 0 || snapshot.profiles.some((profile, ordinal) =>
+      profile.ordinal !== ordinal)) return false;
+  const profilesByRevision = new Map(snapshot.profiles.map((profile) => [
+    profile.profileRevisionId,
+    profile
+  ]));
+  if (profilesByRevision.size !== snapshot.profiles.length ||
+    new Set(snapshot.profiles.map(embeddingCompatibilityKey)).size !== 1) return false;
+  const vectorSpaceFingerprint = snapshot.profiles[0]!.vectorSpaceFingerprint;
+  const bindingIds = new Set<string>();
+  for (const binding of snapshot.bindings) {
+    if (!binding.knowledgeBaseId.trim() || !binding.indexGenerationId.trim() ||
+      !/^[0-9a-f]{64}$/u.test(binding.vectorSpaceFingerprint.trim()) ||
+      binding.vectorSpaceFingerprint !== vectorSpaceFingerprint ||
+      bindingIds.has(binding.knowledgeBaseId)) return false;
+    bindingIds.add(binding.knowledgeBaseId);
+  }
+  const sourceTuples = new Set<string>();
+  for (const source of snapshot.sources) {
+    const sourceTuple = canonicalJson([
+      source.sourceId,
+      source.sourceVersionId,
+      source.sourceArtifactId
+    ]);
+    if (!source.sourceId.trim() || !source.sourceVersionId.trim() ||
+      !source.sourceArtifactId.trim() || !profilesByRevision.has(source.profileRevisionId) ||
+      sourceTuples.has(sourceTuple) || (projectId
+        ? source.authority.projectId !== projectId || source.authority.owner
+        : source.authority.projectId !== null)) return false;
+    sourceTuples.add(sourceTuple);
+    const authorityBaseIds = new Set(source.authority.knowledgeBaseIds);
+    if (authorityBaseIds.size !== source.authority.knowledgeBaseIds.length ||
+      [...authorityBaseIds].some((knowledgeBaseId) => !bindingIds.has(knowledgeBaseId)) ||
+      !source.authority.owner && !projectId && authorityBaseIds.size === 0) return false;
+    const provenanceBaseIds = new Set<string>();
+    for (const provenance of source.baseProvenance) {
+      const binding = snapshot.bindings.find((candidate) =>
+        candidate.knowledgeBaseId === provenance.knowledgeBaseId);
+      if (!binding || !authorityBaseIds.has(provenance.knowledgeBaseId) ||
+        binding.indexGenerationId !== provenance.indexGenerationId ||
+        provenanceBaseIds.has(provenance.knowledgeBaseId)) return false;
+      provenanceBaseIds.add(provenance.knowledgeBaseId);
+    }
+    if (provenanceBaseIds.size !== authorityBaseIds.size) return false;
+  }
+  return true;
+}
+
+/**
+ * Reauthorizes an already accepted immutable Knowledge snapshot. Current
+ * pointers intentionally do not participate: activation, Source replacement,
+ * and Base membership edits affect future admission only. The exact accepted
+ * rows must still exist, while live user/Project/resource authority and
+ * deletion fences are checked again before private retrieval or provider
+ * egress.
+ */
+export async function authorizeKnowledgeRunAdmissionSnapshot(
+  client: KnowledgeRunSnapshotAuthorizationStore,
+  input: Readonly<{
+    executionScope?: "project";
+    projectId?: string;
+    snapshot: KnowledgeRunAdmissionAuthorizationSnapshot;
+    userId: string;
+  }>
+): Promise<boolean> {
+  const projectScope = input.executionScope === "project";
+  if (projectScope !== Boolean(input.projectId) ||
+    !validKnowledgeAuthorizationSnapshot(input.snapshot, input.projectId)) return false;
+
+  const user = await client.user.findFirst({
+    select: {
+      groups: {
+        select: { groupId: true },
+        where: { group: { archivedAt: null } }
+      },
+      id: true
+    },
+    where: { id: input.userId, status: "active" }
+  });
+  if (!user) return false;
+  const groupIds = user.groups.map(({ groupId }) => groupId);
+  if (projectScope) {
+    const project = await client.project.findFirst({
+      select: { id: true },
+      where: {
+        archivedAt: null,
+        deletionRequestedAt: null,
+        grants: {
+          some: {
+            OR: [
+              { userId: input.userId },
+              ...(groupIds.length > 0 ? [{ groupId: { in: groupIds } }] : [])
+            ],
+            role: { in: ["CONTRIBUTOR", "MANAGER", "OWNER"] }
+          }
+        },
+        id: input.projectId,
+        status: "ACTIVE"
+      }
+    });
+    if (!project) return false;
+  }
+
+  const generationIds = input.snapshot.bindings.map(({ indexGenerationId }) =>
+    indexGenerationId);
+  const bases = await client.knowledgeBase.findMany({
+    select: {
+      deletionRequestedAt: true,
+      id: true,
+      indexGenerations: {
+        select: {
+          embeddingProviderModelId: true,
+          id: true,
+          profileRevisionId: true,
+          status: true,
+          targetDimension: true,
+          vectorSpaceFingerprint: true
+        },
+        where: { id: { in: generationIds } }
+      },
+      ownerUserId: true,
+      projectBindings: {
+        select: { projectId: true },
+        ...(input.projectId ? { where: { projectId: input.projectId } } : {})
+      },
+      publications: { select: { groupId: true, scope: true } }
+    },
+    where: { id: { in: input.snapshot.bindings.map(({ knowledgeBaseId }) => knowledgeBaseId) } }
+  });
+  if (bases.length !== input.snapshot.bindings.length) return false;
+  const basesById = new Map(bases.map((base) => [base.id, base]));
+  const profilesByRevision = new Map(input.snapshot.profiles.map((profile) => [
+    profile.profileRevisionId,
+    profile
+  ]));
+  for (const binding of input.snapshot.bindings) {
+    const base = basesById.get(binding.knowledgeBaseId);
+    if (!base || base.deletionRequestedAt !== null) return false;
+    const authorityCurrent = projectScope
+      ? base.projectBindings.some(({ projectId }) => projectId === input.projectId)
+      : base.ownerUserId === input.userId || base.publications.some((publication) =>
+          publication.scope === "installation" ||
+          publication.scope === "group" && publication.groupId !== null &&
+            groupIds.includes(publication.groupId));
+    if (!authorityCurrent) return false;
+    const generation = base.indexGenerations.find(({ id }) => id === binding.indexGenerationId);
+    const profile = generation?.profileRevisionId
+      ? profilesByRevision.get(generation.profileRevisionId)
+      : null;
+    if (!generation || !["active", "ready", "retired"].includes(generation.status) ||
+      !profile ||
+      generation.embeddingProviderModelId !== profile.embeddingProviderModelId ||
+      generation.targetDimension !== profile.targetDimension ||
+      generation.vectorSpaceFingerprint.trim() !== binding.vectorSpaceFingerprint) return false;
+  }
+
+  const sourceVersionIds = input.snapshot.sources.map(({ sourceVersionId }) => sourceVersionId);
+  const sourceArtifactIds = input.snapshot.sources.map(({ sourceArtifactId }) => sourceArtifactId);
+  const sources = await client.knowledgeSource.findMany({
+    select: {
+      deletionRequestedAt: true,
+      id: true,
+      ownerUserId: true,
+      projectBindings: {
+        select: { projectId: true },
+        ...(input.projectId ? { where: { projectId: input.projectId } } : {})
+      },
+      versions: {
+        select: {
+          artifacts: {
+            select: {
+              hierarchicalIndexes: {
+                select: { state: true },
+                where: { state: "ready" }
+              },
+              id: true,
+              profileRevisionId: true,
+              state: true
+            },
+            where: { id: { in: sourceArtifactIds } }
+          },
+          id: true
+        },
+        where: { id: { in: sourceVersionIds } }
+      }
+    },
+    where: { id: { in: input.snapshot.sources.map(({ sourceId }) => sourceId) } }
+  });
+  if (sources.length !== new Set(input.snapshot.sources.map(({ sourceId }) => sourceId)).size) {
+    return false;
+  }
+  const sourcesById = new Map(sources.map((source) => [source.id, source]));
+  for (const accepted of input.snapshot.sources) {
+    const source = sourcesById.get(accepted.sourceId);
+    const version = source?.versions.find(({ id }) => id === accepted.sourceVersionId);
+    const artifact = version?.artifacts.find(({ id }) => id === accepted.sourceArtifactId);
+    if (!source || source.deletionRequestedAt !== null || !version || !artifact ||
+      artifact.state !== "ready" || artifact.profileRevisionId !== accepted.profileRevisionId ||
+      !artifact.hierarchicalIndexes.some(({ state }) => state === "ready")) return false;
+    if (accepted.authority.owner && source.ownerUserId !== input.userId) return false;
+    if (projectScope && (accepted.directSelected || accepted.baseProvenance.length === 0) &&
+      !source.projectBindings.some(({ projectId }) => projectId === input.projectId)) return false;
+  }
+  return true;
 }
 
 /** Reauthorization may observe newly admitted resources for constant-size modes
@@ -1120,10 +1447,24 @@ export function knowledgeRunAdmissionStillAuthorizes(
 }
 
 export function createKnowledgeRunAdmissionService(
-  client: KnowledgeRunAdmissionStore = prisma
+  client: KnowledgeRunAdmissionStore & KnowledgeRunSnapshotAuthorizationStore = prisma
 ) {
   return {
-    load(input: Readonly<{ executionScope?: "project"; knowledgePlan: KnowledgePlan; projectId?: string; userId: string }>) {
+    authorizeSnapshot(input: Readonly<{
+      executionScope?: "project";
+      projectId?: string;
+      snapshot: KnowledgeRunAdmissionAuthorizationSnapshot;
+      userId: string;
+    }>) {
+      return authorizeKnowledgeRunAdmissionSnapshot(client, input);
+    },
+    load(input: Readonly<{
+      executionScope?: "project";
+      knowledgePlan: KnowledgePlan;
+      preferredProfileRevisionId?: string;
+      projectId?: string;
+      userId: string;
+    }>) {
       return loadKnowledgeRunAdmissionPlan(client, input);
     }
   };

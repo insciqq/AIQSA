@@ -195,7 +195,7 @@ export function buildOpenAIResponsesStructuredOutputRequest(
   }
   const normalized = normalizeRequest(request);
   const body: Record<string, unknown> = {
-    background: false,
+    ...(model.adapterKind === "openai_responses_native" ? { background: false } : {}),
     input: [{
       content: [{ text: normalized.userPrompt, type: "input_text" }],
       role: "user"

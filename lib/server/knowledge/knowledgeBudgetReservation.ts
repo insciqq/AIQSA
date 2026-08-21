@@ -24,16 +24,10 @@ const REASON = /^[a-z][a-z0-9_]{0,63}$/u;
 const amountKeys = [
   "candidateCount",
   "costMicros",
-  "followUpOperationSlots",
   "latencyMs",
   "operationSlots",
   "queryEmbeddingCalls",
-  "repairCalls",
-  "rerankerCalls",
-  "retrievedTokens",
-  "searchPhaseSlots",
-  "subquerySlots",
-  "validationCalls"
+  "retrievedTokens"
 ] as const;
 
 export type KnowledgeBudgetAmountKey = typeof amountKeys[number];
@@ -45,23 +39,16 @@ export type KnowledgeBudgetCharge = KnowledgeBudgetEstimate;
 export type KnowledgeBudgetReservationPolicy = Readonly<{
   maxCumulativeCandidates: number;
   maxEstimatedCostMicros: number;
-  maxFollowUpOperations: number;
   maxLatencyMs: number;
   maxOperations: number;
   maxQueryEmbeddingCalls: number;
-  maxRepairCalls: number;
-  maxRerankerCalls: number;
   maxRetrievedTokens: number;
-  maxSearchPhases: number;
-  maxSubqueriesPerPhase: number;
-  maxValidationCalls: number;
   version: typeof KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION;
 }>;
 
 type KnowledgeBudgetReservationCommon = Readonly<{
   createdAt: string;
   estimate: KnowledgeBudgetEstimate;
-  followUp: boolean;
   id: string;
   idempotencyKey: string;
   operationOrdinal: number;
@@ -124,15 +111,9 @@ export type KnowledgeBudgetReservationStopReason =
   | "candidate_budget"
   | "cost_budget"
   | "embedding_budget"
-  | "follow_up_budget"
   | "latency_budget"
   | "operation_budget"
-  | "phase_budget"
-  | "repair_budget"
-  | "reranker_budget"
-  | "retrieved_token_budget"
-  | "subquery_budget"
-  | "validation_budget";
+  | "retrieved_token_budget";
 
 export type KnowledgeBudgetReservationDecision =
   | Readonly<{
@@ -221,12 +202,9 @@ function decodeAmount(
   })) return null;
   const decoded = Object.fromEntries(amountKeys.map((key) => [key, value[key]])) as
     Record<KnowledgeBudgetAmountKey, number | null>;
-  if (decoded.operationSlots !== null && decoded.operationSlots > STRUCTURAL_OPERATION_MAX ||
-    decoded.followUpOperationSlots !== null && decoded.followUpOperationSlots > 1 ||
-    decoded.searchPhaseSlots !== null && decoded.searchPhaseSlots > 1 ||
-    decoded.subquerySlots !== null && decoded.subquerySlots > 1 ||
-    decoded.followUpOperationSlots !== null && decoded.operationSlots !== null &&
-      decoded.followUpOperationSlots > decoded.operationSlots) return null;
+  if (decoded.operationSlots !== null && decoded.operationSlots > STRUCTURAL_OPERATION_MAX) {
+    return null;
+  }
   return Object.freeze(decoded) as KnowledgeBudgetActual | KnowledgeBudgetEstimate;
 }
 
@@ -244,34 +222,20 @@ export function decodeKnowledgeBudgetReservationPolicy(
   const keys = [
     "maxCumulativeCandidates",
     "maxEstimatedCostMicros",
-    "maxFollowUpOperations",
     "maxLatencyMs",
     "maxOperations",
     "maxQueryEmbeddingCalls",
-    "maxRepairCalls",
-    "maxRerankerCalls",
     "maxRetrievedTokens",
-    "maxSearchPhases",
-    "maxSubqueriesPerPhase",
-    "maxValidationCalls",
     "version"
   ] as const;
   if (!record(value) || !exactKeys(value, keys) ||
     value.version !== KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION ||
     !integer(value.maxCumulativeCandidates, 1, 1_000_000) ||
     !integer(value.maxEstimatedCostMicros, 0, 1_000_000_000) ||
-    !integer(value.maxFollowUpOperations, 0, 128) ||
     !integer(value.maxLatencyMs, 100, 3_600_000) ||
     !integer(value.maxOperations, 1, STRUCTURAL_OPERATION_MAX) ||
     !integer(value.maxQueryEmbeddingCalls, 0, STRUCTURAL_OPERATION_MAX) ||
-    !integer(value.maxRepairCalls, 0, STRUCTURAL_OPERATION_MAX) ||
-    !integer(value.maxRerankerCalls, 0, STRUCTURAL_OPERATION_MAX) ||
-    !integer(value.maxRetrievedTokens, 1, 10_000_000) ||
-    !integer(value.maxSearchPhases, 1, STRUCTURAL_PHASE_MAX) ||
-    !integer(value.maxSubqueriesPerPhase, 1, STRUCTURAL_SUBQUERY_MAX) ||
-    !integer(value.maxValidationCalls, 0, STRUCTURAL_OPERATION_MAX) ||
-    Number(value.maxFollowUpOperations) > Number(value.maxOperations) ||
-    Number(value.maxSearchPhases) > Number(value.maxOperations)) return null;
+    !integer(value.maxRetrievedTokens, 1, 10_000_000)) return null;
   return Object.freeze(Object.fromEntries(keys.map((key) => [key, value[key]]))) as
     KnowledgeBudgetReservationPolicy;
 }
@@ -279,7 +243,6 @@ export function decodeKnowledgeBudgetReservationPolicy(
 const commonKeys = [
   "createdAt",
   "estimate",
-  "followUp",
   "id",
   "idempotencyKey",
   "operationOrdinal",
@@ -296,16 +259,13 @@ function decodeCommon(value: Record<string, unknown>): KnowledgeBudgetReservatio
     typeof value.id !== "string" || !UUID.test(value.id) ||
     typeof value.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(value.idempotencyKey) ||
     typeof value.requestHash !== "string" || !SHA256.test(value.requestHash) ||
-    typeof value.followUp !== "boolean" ||
     !integer(value.operationOrdinal, 1, STRUCTURAL_OPERATION_MAX) ||
     !integer(value.phaseOrdinal, 0, STRUCTURAL_PHASE_MAX - 1) ||
     !integer(value.subqueryOrdinal, 0, STRUCTURAL_SUBQUERY_MAX - 1) ||
-    value.version !== KNOWLEDGE_BUDGET_RESERVATION_VERSION ||
-    estimate.followUpOperationSlots !== (value.followUp ? 1 : 0)) return null;
+    value.version !== KNOWLEDGE_BUDGET_RESERVATION_VERSION) return null;
   return Object.freeze({
     createdAt,
     estimate,
-    followUp: value.followUp,
     id: value.id,
     idempotencyKey: value.idempotencyKey,
     operationOrdinal: Number(value.operationOrdinal),
@@ -320,7 +280,6 @@ function commonFields(reservation: KnowledgeBudgetReservation): KnowledgeBudgetR
   return {
     createdAt: reservation.createdAt,
     estimate: reservation.estimate,
-    followUp: reservation.followUp,
     id: reservation.id,
     idempotencyKey: reservation.idempotencyKey,
     operationOrdinal: reservation.operationOrdinal,
@@ -512,26 +471,19 @@ function sameReservationAttempt(
     existing.operationOrdinal === proposal.operationOrdinal &&
     existing.phaseOrdinal === proposal.phaseOrdinal &&
     existing.subqueryOrdinal === proposal.subqueryOrdinal &&
-    existing.followUp === proposal.followUp && sameAmount(existing.estimate, proposal.estimate);
+    sameAmount(existing.estimate, proposal.estimate);
 }
 
 function stopReason(
   policy: KnowledgeBudgetReservationPolicy,
-  charge: KnowledgeBudgetCharge,
-  subqueriesInPhase: number
+  charge: KnowledgeBudgetCharge
 ): KnowledgeBudgetReservationStopReason | null {
-  if (charge.searchPhaseSlots > policy.maxSearchPhases) return "phase_budget";
-  if (subqueriesInPhase > policy.maxSubqueriesPerPhase) return "subquery_budget";
   if (charge.operationSlots > policy.maxOperations) return "operation_budget";
-  if (charge.followUpOperationSlots > policy.maxFollowUpOperations) return "follow_up_budget";
   if (charge.candidateCount > policy.maxCumulativeCandidates) return "candidate_budget";
-  if (charge.rerankerCalls > policy.maxRerankerCalls) return "reranker_budget";
   if (charge.queryEmbeddingCalls > policy.maxQueryEmbeddingCalls) return "embedding_budget";
   if (charge.retrievedTokens > policy.maxRetrievedTokens) return "retrieved_token_budget";
   if (charge.latencyMs > policy.maxLatencyMs) return "latency_budget";
   if (charge.costMicros > policy.maxEstimatedCostMicros) return "cost_budget";
-  if (charge.validationCalls > policy.maxValidationCalls) return "validation_budget";
-  if (charge.repairCalls > policy.maxRepairCalls) return "repair_budget";
   return null;
 }
 
@@ -560,11 +512,7 @@ export function decideKnowledgeBudgetReservation(
   }
   const chargeBefore = aggregateKnowledgeBudgetReservations(reservations);
   const chargeAfter = addAmount(chargeBefore, proposal.estimate);
-  const subqueriesInPhase = reservations.reduce((total, reservation) =>
-    reservation.phaseOrdinal === proposal.phaseOrdinal
-      ? total + knowledgeBudgetReservationCharge(reservation).subquerySlots
-      : total, proposal.estimate.subquerySlots);
-  const reason = stopReason(policy, chargeAfter, subqueriesInPhase);
+  const reason = stopReason(policy, chargeAfter);
   return reason
     ? Object.freeze({ chargeAfter, chargeBefore, kind: "rejected" as const, reason })
     : Object.freeze({ chargeAfter, chargeBefore, kind: "admitted" as const });

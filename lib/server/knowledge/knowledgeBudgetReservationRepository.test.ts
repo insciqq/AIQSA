@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
+import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import {
   createPrismaKnowledgeBudgetReservationRepository,
   decodeKnowledgeBudgetReservationPersistenceRow,
@@ -14,7 +15,6 @@ import {
   createKnowledgeOperationRequestV2,
   hashKnowledgeOperationRequestV2
 } from "./knowledgeOperationRequest";
-import { KNOWLEDGE_TOOL_NAME } from "./retrievalTypes";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const CALL_ID = "22222222-2222-4222-8222-222222222222";
@@ -25,36 +25,61 @@ const LEASE_TOKEN = "66666666-6666-4666-8666-666666666666";
 const SOURCE_ID = "99999999-9999-4999-8999-999999999999";
 const NOW = new Date("2026-08-19T12:00:00.000Z");
 const LEASE = new Date("2026-08-19T12:05:00.000Z");
+const focused = createKnowledgeFocusedRequest({ currentUserMessage: "Find policy sources" })!;
+const embeddingExecutionSnapshot = {
+  connection: {
+    allowPrivateNetwork: false,
+    apiRoot: "https://embedding.example.test/v1",
+    authenticationMode: "bearer" as const,
+    responseTimeoutMs: 30_000
+  },
+  connectionDisplayName: "Embedding",
+  connectionId: "embedding-connection-1",
+  credentialId: "embedding-credential-1",
+  credentialVersionId: "embedding-credential-version-1",
+  model: {
+    adapterKind: "openai_embeddings_compatible" as const,
+    answerSelectable: false,
+    capabilities: {
+      contextWindow: 8_192,
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      toolCalling: false,
+      vision: false
+    },
+    defaultParams: {},
+    embedding: {
+      nativeDimension: 1_024,
+      providerFamily: "openai_compatible" as const,
+      queryInstructionTemplate: null,
+      supportsMrl: false,
+      targetDimension: 1_024
+    },
+    modelClass: "embedding" as const,
+    upstreamModelId: "embedding-upstream"
+  },
+  modelDisplayName: "Embedding model",
+  providerFamily: "openai_compatible" as const,
+  providerModelId: "embedding-model-1",
+  version: 1 as const
+};
 
 function operationRequest(overrides: Record<string, unknown> = {}) {
   return createKnowledgeOperationRequestV2({
-    discovery: {
-      cursor: null,
-      fields: ["filename", "heading", "source_name", "tag", "title"],
-      limit: 40,
-      query: "Find policy sources"
-    },
+    focused,
     idempotencyKey: "run:one:operation:one",
-    operation: "discover_sources",
+    operation: "automatic_search",
     originalQuery: { reference: MESSAGE_ID, sha256: "a".repeat(64) },
-    phaseOrdinal: 2,
-    plan: {
-      allowedLanes: ["metadata"],
-      coverage: { expectedPassageCount: null, mode: "partial" },
-      exactTerms: [],
-      rewrittenQuery: "Find policy sources",
-      strategy: "focused",
-      targetNames: [],
-      targetSourceIds: []
-    },
-    plannerVersion: 1,
+    phaseOrdinal: 0,
     profileRevisionId: PROFILE_ID,
     profileRevisionNumber: 3,
-    purpose: "source_discovery",
     reservationId: RESERVATION_ID,
-    resolvedSourceIds: [],
+    resolvedSourceIds: [SOURCE_ID],
     sourceAliases: [],
-    subqueryOrdinal: 3,
+    subqueryOrdinal: 0,
     version: 2,
     ...overrides
   });
@@ -69,22 +94,16 @@ function persistenceRow(
     actualCostMicros: null,
     actualEmbeddingCalls: null,
     actualLatencyMs: null,
-    actualRepairSlots: null,
-    actualRerankerCalls: null,
     actualRetrievedTokens: null,
-    actualValidationSlots: null,
     ambiguousAt: null,
     createdAt: NOW,
     dispatchAttemptKey: null,
     dispatchedAt: null,
     estimatedCandidates: 8,
     estimatedCostMicros: 12,
-    estimatedEmbeddingCalls: 0,
+    estimatedEmbeddingCalls: 1,
     estimatedLatencyMs: 100,
-    estimatedRepairSlots: 0,
-    estimatedRerankerCalls: 0,
     estimatedRetrievedTokens: 200,
-    estimatedValidationSlots: 0,
     expiredAt: null,
     failureCode: null,
     id: request.reservationId,
@@ -110,26 +129,10 @@ function persistenceRow(
 }
 
 const requestInput: KnowledgeBudgetOperationRequestInput = {
-  discovery: {
-    cursor: null,
-    fields: ["filename", "heading", "source_name", "tag", "title"],
-    limit: 40,
-    query: "Find policy sources"
-  },
-  operation: "discover_sources",
-  plan: {
-    allowedLanes: ["metadata"],
-    coverage: { expectedPassageCount: null, mode: "partial" },
-    exactTerms: [],
-    rewrittenQuery: "Find policy sources",
-    strategy: "focused",
-    targetNames: [],
-    targetSourceIds: []
-  },
-  plannerVersion: 1,
+  focused,
+  operation: "automatic_search",
   profileRevisionId: PROFILE_ID,
-  purpose: "source_discovery",
-  resolvedSourceIds: [],
+  resolvedSourceIds: [SOURCE_ID],
   sourceAliases: []
 };
 
@@ -137,11 +140,8 @@ const estimate: KnowledgeBudgetResourceEstimate = Object.freeze({
   candidateCount: 8,
   costMicros: 12,
   latencyMs: 100,
-  queryEmbeddingCalls: 0,
-  repairCalls: 0,
-  rerankerCalls: 0,
-  retrievedTokens: 200,
-  validationCalls: 0
+  queryEmbeddingCalls: 1,
+  retrievedTokens: 200
 });
 
 function sqlText(value: unknown): string {
@@ -171,10 +171,7 @@ function repositoryHarness(options: Readonly<{
       estimatedCostMicros: data.estimatedCostMicros as number,
       estimatedEmbeddingCalls: data.estimatedEmbeddingCalls as number,
       estimatedLatencyMs: data.estimatedLatencyMs as number,
-      estimatedRepairSlots: data.estimatedRepairSlots as number,
-      estimatedRerankerCalls: data.estimatedRerankerCalls as number,
       estimatedRetrievedTokens: data.estimatedRetrievedTokens as number,
-      estimatedValidationSlots: data.estimatedValidationSlots as number,
       id: data.id as string,
       idempotencyKey: data.idempotencyKey as string,
       leaseExpiresAt: data.leaseExpiresAt as Date,
@@ -221,16 +218,41 @@ function repositoryHarness(options: Readonly<{
     }
     return { count };
   });
+  const profileFindMany = vi.fn(async () => [{
+    embeddingExecutionSnapshot,
+    id: "77777777-7777-4777-8777-777777777777",
+    profileRevision: { revisionNumber: 3 },
+    profileRevisionId: PROFILE_ID,
+    vectorSpaceFingerprint: "f".repeat(64)
+  }, {
+    embeddingExecutionSnapshot,
+    id: "88888888-8888-4888-8888-888888888889",
+    profileRevision: { revisionNumber: 4 },
+    profileRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+    vectorSpaceFingerprint: "f".repeat(64)
+  }]);
+  const sourceFindMany = vi.fn(async () => options.sources ?? [
+    {
+      baseProvenance: null,
+      sourceAlias: "S1",
+      sourceId: SOURCE_ID
+    },
+    {
+      baseProvenance: null,
+      sourceAlias: "S2",
+      sourceId: SOURCE_ID
+    }
+  ]);
   const tx = {
     $queryRaw: vi.fn(async (query: unknown) => {
       lockQueries.push(query);
       return sqlText(query).includes('call."roundIndex"')
         ? [{
             budgetPolicy: options.budgetPolicy ?? DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-            roundIndex: 2,
-            toolCallOrdinal: 3,
+            roundIndex: 0,
+            toolCallOrdinal: 0,
             toolCallState: "running",
-            toolName: options.toolName ?? "discover_sources",
+            toolName: options.toolName ?? "knowledge_focused_v1",
             userMessageId: MESSAGE_ID
           }]
         : [{
@@ -249,12 +271,11 @@ function repositoryHarness(options: Readonly<{
     },
     knowledgeRunBinding: { findMany: vi.fn(async () => []) },
     knowledgeRunProfileBinding: {
-      findFirst: vi.fn(async () => ({
-        id: "77777777-7777-4777-8777-777777777777",
-        profileRevision: { revisionNumber: 3 }
-      }))
+      findMany: profileFindMany
     },
-    knowledgeRunSourceBinding: { findMany: vi.fn(async () => options.sources ?? []) }
+    knowledgeRunSourceBinding: {
+      findMany: sourceFindMany
+    }
   } as unknown as Prisma.TransactionClient;
   const client = {
     $transaction: vi.fn(async (consume: (value: Prisma.TransactionClient) => Promise<unknown>) =>
@@ -264,13 +285,13 @@ function repositoryHarness(options: Readonly<{
     now: options.now ?? (() => new Date(NOW)),
     uuid: () => uuidValues.shift() ?? "88888888-8888-4888-8888-888888888888"
   });
-  return { create, lockQueries, repository, rows };
+  return { create, lockQueries, profileFindMany, repository, rows, sourceFindMany };
 }
 
 describe("Knowledge budget reservation Prisma repository", () => {
   it("maps each nullable persistence state into the strict domain state", () => {
     expect(decodeKnowledgeBudgetReservationPersistenceRow(persistenceRow()).reservation)
-      .toMatchObject({ state: "reserved", followUp: true, phaseOrdinal: 2, subqueryOrdinal: 3 });
+      .toMatchObject({ state: "reserved", phaseOrdinal: 0, subqueryOrdinal: 0 });
 
     const dispatched = persistenceRow({
       dispatchAttemptKey: "provider:attempt:one",
@@ -286,10 +307,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
       actualCostMicros: 9,
       actualEmbeddingCalls: 0,
       actualLatencyMs: 80,
-      actualRepairSlots: 0,
-      actualRerankerCalls: 0,
       actualRetrievedTokens: null,
-      actualValidationSlots: 0,
       dispatchAttemptKey: "provider:attempt:one",
       dispatchedAt: new Date("2026-08-19T12:01:00.000Z"),
       leaseExpiresAt: null,
@@ -341,10 +359,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
       actualCostMicros: 9,
       actualEmbeddingCalls: 0,
       actualLatencyMs: 80,
-      actualRepairSlots: 0,
-      actualRerankerCalls: 0,
       actualRetrievedTokens: 90,
-      actualValidationSlots: 0,
       dispatchAttemptKey: null,
       dispatchedAt: new Date("2026-08-19T12:01:00.000Z"),
       idempotencyKey: null,
@@ -371,6 +386,10 @@ describe("Knowledge budget reservation Prisma repository", () => {
       ...purged,
       operationRequest: operationRequest() as unknown as Prisma.JsonValue
     })).toThrow("knowledge_budget_reservation_invalid_in_storage");
+    expect(decodeKnowledgeBudgetReservationPersistenceRow({
+      ...purged,
+      operation: "structured_analysis"
+    }).reservation.state).toBe("settled");
   });
 
   it("counts purged settled usage but fences every further mutation", async () => {
@@ -380,10 +399,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
       actualCostMicros: 9,
       actualEmbeddingCalls: 0,
       actualLatencyMs: 80,
-      actualRepairSlots: 0,
-      actualRerankerCalls: 0,
       actualRetrievedTokens: 90,
-      actualValidationSlots: 0,
       dispatchAttemptKey: null,
       dispatchedAt: new Date("2026-08-19T12:01:00.000Z"),
       id: "99999999-9999-4999-8999-999999999999",
@@ -398,7 +414,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
       settledAt: new Date("2026-08-19T12:02:00.000Z"),
       state: "settled"
     }));
-    const admitted = await harness.repository.reserve({
+    const rejected = await harness.repository.reserve({
       estimate,
       idempotencyKey: "run:one:operation:one",
       modelRunToolCallId: CALL_ID,
@@ -407,9 +423,10 @@ describe("Knowledge budget reservation Prisma repository", () => {
       runId: RUN_ID,
       userId: "owner-one"
     });
-    expect(admitted).toMatchObject({
+    expect(rejected).toMatchObject({
       chargeBefore: { candidateCount: 5, retrievedTokens: 90 },
-      kind: "admitted"
+      kind: "rejected",
+      reason: "operation_budget"
     });
     await expect(harness.repository.settle({
       actual: estimate,
@@ -421,12 +438,10 @@ describe("Knowledge budget reservation Prisma repository", () => {
     })).resolves.toMatchObject({ kind: "conflict", reason: "invalid_state" });
   });
 
-  it("extends the accepted run policy with bounded validation and one repair slot", () => {
+  it("maps only the focused reservation limits", () => {
     expect(knowledgeBudgetReservationPolicyFromRunScope(DEFAULT_KNOWLEDGE_BUDGET_POLICY))
       .toMatchObject({
         maxOperations: DEFAULT_KNOWLEDGE_BUDGET_POLICY.maxOperations,
-        maxRepairCalls: 1,
-        maxValidationCalls: DEFAULT_KNOWLEDGE_BUDGET_POLICY.maxOperations,
         version: 1
       });
     expect(knowledgeBudgetReservationPolicyFromRunScope({ maxOperations: 14 })).toBeNull();
@@ -456,115 +471,39 @@ describe("Knowledge budget reservation Prisma repository", () => {
     expect(harness.rows).toHaveLength(1);
     expect(harness.rows[0]).toMatchObject({
       operationOrdinal: 1,
-      phaseOrdinal: 2,
-      subqueryOrdinal: 3
+      phaseOrdinal: 0,
+      subqueryOrdinal: 0
     });
     if (admitted.kind === "admitted") {
       expect(admitted.record.operationRequest).toMatchObject({
         originalQuery: { reference: MESSAGE_ID, sha256: "a".repeat(64) },
-        phaseOrdinal: 2,
+        phaseOrdinal: 0,
         profileRevisionNumber: 3,
         reservationId: RESERVATION_ID,
-        subqueryOrdinal: 3
+        subqueryOrdinal: 0
       });
       expect(admitted.record.leaseToken).toBe(LEASE_TOKEN);
     }
     expect(harness.lockQueries.some((query) =>
       sqlText(query).includes("FOR UPDATE OF scope"))).toBe(true);
+    expect(harness.sourceFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        profileBindingId: {
+          in: [
+            "77777777-7777-4777-8777-777777777777",
+            "88888888-8888-4888-8888-888888888889"
+          ]
+        }
+      })
+    }));
 
     await expect(harness.repository.reserve({
       ...input,
       operationRequest: {
         ...requestInput,
-        discovery: { ...requestInput.discovery, query: "Different query" },
-        plan: { ...requestInput.plan, rewrittenQuery: "Different query" }
+        focused: createKnowledgeFocusedRequest({ currentUserMessage: "Different query" })!
       }
     })).resolves.toMatchObject({ kind: "conflict", reason: "idempotency_conflict" });
-  });
-
-  it.each([
-    {
-      name: "structured analysis",
-      operation: "structured_analysis",
-      operationRequest: {
-        operation: "structured_analysis",
-        plan: {
-          allowedLanes: [],
-          coverage: { expectedPassageCount: null, mode: "partial" },
-          exactTerms: [],
-          rewrittenQuery: "Sum Revenue",
-          strategy: "structured_data",
-          targetNames: ["Sales workbook"],
-          targetSourceIds: [SOURCE_ID]
-        },
-        plannerVersion: 2,
-        profileRevisionId: PROFILE_ID,
-        purpose: "answer",
-        resolvedSourceIds: [SOURCE_ID],
-        sourceAliases: ["S1"],
-        structured: {
-          query: "Sum Revenue",
-          selector: {
-            columns: ["Revenue"],
-            includeHidden: false,
-            operation: "aggregate",
-            range: null,
-            sheet: null
-          },
-          targetSourceIds: [SOURCE_ID]
-        }
-      } satisfies KnowledgeBudgetOperationRequestInput
-    },
-    {
-      name: "visual analysis",
-      operation: "visual_analysis",
-      operationRequest: {
-        operation: "visual_analysis",
-        plan: {
-          allowedLanes: [],
-          coverage: { expectedPassageCount: null, mode: "partial" },
-          exactTerms: [],
-          rewrittenQuery: "Inspect the chart",
-          strategy: "focused",
-          targetNames: ["Quarterly report"],
-          targetSourceIds: [SOURCE_ID]
-        },
-        plannerVersion: 2,
-        profileRevisionId: PROFILE_ID,
-        purpose: "answer",
-        resolvedSourceIds: [SOURCE_ID],
-        sourceAliases: ["S1"],
-        visual: {
-          query: "Inspect the chart",
-          selector: null,
-          targetSourceIds: [SOURCE_ID]
-        }
-      } satisfies KnowledgeBudgetOperationRequestInput
-    }
-  ])("maps $name to the internal Knowledge tool and automatic accounting", async ({
-    operation,
-    operationRequest
-  }) => {
-    const harness = repositoryHarness({
-      sources: [{ baseProvenance: [], sourceAlias: "S1", sourceId: SOURCE_ID }],
-      toolName: KNOWLEDGE_TOOL_NAME
-    });
-
-    await expect(harness.repository.reserve({
-      estimate,
-      idempotencyKey: "run:one:operation:one",
-      modelRunToolCallId: CALL_ID,
-      operationRequest,
-      originalQuerySha256: "a".repeat(64),
-      runId: RUN_ID,
-      userId: "owner-one"
-    })).resolves.toMatchObject({
-      kind: "admitted",
-      record: {
-        operationRequest: { operation },
-        reservation: { followUp: false }
-      }
-    });
   });
 
   it("expires stale pre-dispatch work and makes stale dispatched work ambiguous", async () => {
@@ -635,10 +574,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
         costMicros: 7,
         latencyMs: 40,
         queryEmbeddingCalls: 0,
-        repairCalls: 0,
-        rerankerCalls: 0,
-        retrievedTokens: 90,
-        validationCalls: 0
+        retrievedTokens: 90
       },
       leaseToken: LEASE_TOKEN,
       receiptHash: "c".repeat(64),

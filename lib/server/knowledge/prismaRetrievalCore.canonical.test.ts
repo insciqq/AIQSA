@@ -1,27 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
-import type {
-  KnowledgeCandidateReranker,
-  KnowledgeRetrievalLane
-} from "./retrievalRanking";
+import type { KnowledgeRetrievalLane } from "./retrievalRanking";
 
 type CoreClient = Parameters<typeof executeKnowledgeRetrievalCore>[0];
 type MockCoreClient = CoreClient & Readonly<{
   $queryRaw: ReturnType<typeof vi.fn>;
+  vectors: readonly Readonly<{
+    bindingOrdinal: number;
+    indexGenerationId: string;
+    knowledgeBaseId: string;
+    targetDimension: 1_024;
+    vector: readonly number[];
+  }>[];
 }>;
-
-const reranker: KnowledgeCandidateReranker = {
-  async rerank(input) {
-    return input.candidates.map((candidate) => ({ chunkId: candidate.chunkId, score: 0.9 }));
-  }
-};
 
 function scope(bindingOrdinal: number, baseName: string, knowledgeBaseId: string) {
   return {
     baseName,
     bindingOrdinal,
-    eligibleRows: 0,
+    eligibleRows: 1,
     indexGenerationId: `generation-${bindingOrdinal}`,
     knowledgeBaseId,
     targetDimension: 1_024
@@ -33,6 +31,7 @@ function row(input: Readonly<{
   baseName: string;
   bindingOrdinal: number;
   chunkId: string;
+  chunkIndex?: number;
   contributingBindingOrdinals?: readonly number[];
   contentHash?: string;
   documentContext?: unknown;
@@ -51,7 +50,7 @@ function row(input: Readonly<{
     baseName: input.baseName,
     bindingOrdinal: input.bindingOrdinal,
     chunkId: input.chunkId,
-    chunkIndex: 0,
+    chunkIndex: input.chunkIndex ?? 0,
     contributingBindingOrdinals: input.contributingBindingOrdinals ?? [input.bindingOrdinal],
     contentHash: input.contentHash ?? "a".repeat(64),
     documentId: input.sourceId,
@@ -77,10 +76,19 @@ function row(input: Readonly<{
 }
 
 function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockCoreClient {
-  const responses = [[...scopes], [...rows], []] as unknown[][];
+  const vectors = scopes.map((value) => {
+    const accepted = value as ReturnType<typeof scope>;
+    return {
+      bindingOrdinal: accepted.bindingOrdinal,
+      indexGenerationId: accepted.indexGenerationId,
+      knowledgeBaseId: accepted.knowledgeBaseId,
+      targetDimension: 1_024 as const,
+      vector: Array.from({ length: 1_024 }, () => 0)
+    };
+  });
   return {
-    $queryRaw: vi.fn(async () => responses.shift() ?? []),
-    $transaction: vi.fn()
+    $queryRaw: vi.fn(async () => [{ candidates: [...rows], scopes: [...scopes] }]),
+    vectors
   } as unknown as MockCoreClient;
 }
 
@@ -88,20 +96,34 @@ function sqlText(value: unknown): string {
   return (value as { strings: readonly string[] }).strings.join("?");
 }
 
-async function execute(client: CoreClient) {
+async function execute(
+  client: MockCoreClient,
+  overrides: Partial<Parameters<typeof executeKnowledgeRetrievalCore>[1]> = {}
+) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 40,
     query: "canonical source evidence",
-    reranker,
     resultLimit: 8,
     runId: "run-1",
-    scoreThreshold: 0.01,
     userId: "user-1",
-    vectors: []
+    vectors: client.vectors,
+    ...overrides
   });
 }
 
 describe("Prisma retrieval core canonical Source identity", () => {
+  it("enforces the fixed focused limits and fails closed without vector rows", async () => {
+    const admitted = scope(0, "Base A", "base-a");
+    const client = mockClient([admitted], []);
+
+    await expect(execute(client, { candidateLimit: 39 })).rejects.toThrow(
+      "knowledge_retrieval_request_invalid"
+    );
+    await expect(execute(mockClient([{ ...admitted, eligibleRows: 0 }], []))).rejects.toThrow(
+      "knowledge_retrieval_vector_unavailable"
+    );
+  });
+
   it("returns one non-inflated candidate for the same artifact admitted through Bases A+B", async () => {
     const contributingBindingOrdinals = [0, 1];
     const baseA = row({
@@ -231,8 +253,13 @@ describe("Prisma retrieval core canonical Source identity", () => {
 
     expect(result.passages[0]!.documentContext).toEqual(documentContext);
     expect(result.passages[0]!.layoutKind).toBe("table_row");
-    expect(client.$queryRaw).toHaveBeenCalledTimes(3);
-    const neighborSql = sqlText(client.$queryRaw.mock.calls[2]![0]);
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
+    const neighborSql = sqlText(client.$queryRaw.mock.calls[0]![0]);
+    expect(neighborSql).toContain("websearch_to_tsquery('simple'::regconfig");
+    expect(neighborSql).toContain("websearch_to_tsquery('english'::regconfig");
+    expect(neighborSql).toContain("websearch_to_tsquery('russian'::regconfig");
+    expect(neighborSql).toContain("<=>");
+    expect(neighborSql).toContain(`60.0 + candidate."laneRank"`);
     expect(neighborSql).toContain(
       `source."documentContext" IS NULL AND neighbor."documentContext" IS NULL`
     );
@@ -242,6 +269,86 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(neighborSql).toContain(
       `neighbor."documentContext"->'locator'->>'fieldGroupId' =`
     );
+  });
+
+  it("attaches bounded same-Source neighbors as context without promoting them to primaries", async () => {
+    const common = {
+      artifactId: "artifact-neighbors",
+      baseName: "Policies",
+      bindingOrdinal: 0,
+      knowledgeBaseId: "base-policies",
+      sourceId: "source-policies",
+      sourceVersionId: "version-policies"
+    } as const;
+    const result = await execute(mockClient([scope(0, "Policies", "base-policies")], [
+      row({
+        ...common,
+        chunkId: "chunk-primary",
+        chunkIndex: 4,
+        contentHash: "1".repeat(64),
+        text: "Primary evidence."
+      }),
+      row({
+        ...common,
+        chunkId: "chunk-previous",
+        chunkIndex: 3,
+        contentHash: "2".repeat(64),
+        lane: "neighbor",
+        text: "Previous context."
+      }),
+      row({
+        ...common,
+        chunkId: "chunk-next",
+        chunkIndex: 5,
+        contentHash: "3".repeat(64),
+        lane: "neighbor",
+        text: "Next context."
+      }),
+      row({
+        ...common,
+        artifactId: "artifact-other",
+        chunkId: "chunk-other-source",
+        chunkIndex: 5,
+        contentHash: "4".repeat(64),
+        lane: "neighbor",
+        sourceId: "source-other",
+        sourceVersionId: "version-other",
+        text: "Must not leak."
+      })
+    ]));
+
+    expect(result.passages).toHaveLength(1);
+    expect(result.passages[0]).toMatchObject({
+      chunkId: "chunk-primary",
+      expandedContext: [
+        "Previous same-Source context:\nPrevious context.",
+        "Next same-Source context:\nNext context."
+      ].join("\n\n")
+    });
+    expect(result.passages[0]?.expandedContext).not.toContain("Must not leak");
+  });
+
+  it("caps the canonical RRF pool at forty chunks inside the one focused operation", async () => {
+    const acceptedScope = scope(0, "Lab", "base-lab");
+    const rows = Array.from({ length: 50 }, (_, index) => row({
+      artifactId: `artifact-${index}`,
+      baseName: "Lab",
+      bindingOrdinal: 0,
+      chunkId: `chunk-${index}`,
+      contentHash: index.toString(16).padStart(64, "0"),
+      knowledgeBaseId: "base-lab",
+      laneRank: index + 1,
+      sourceId: `source-${index}`,
+      sourceVersionId: `version-${index}`
+    }));
+    const client = mockClient([acceptedScope], rows);
+
+    const result = await execute(client);
+
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
+    expect(result.candidateCount).toBe(40);
+    expect(result.candidateCounts).toEqual({ 0: 40 });
+    expect(result.passages).toHaveLength(8);
   });
 
   it("fails closed when a retrieval row carries malformed document context", async () => {

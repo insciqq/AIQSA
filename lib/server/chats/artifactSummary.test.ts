@@ -214,6 +214,31 @@ describe("summarizeMessageRunArtifacts", () => {
     );
   });
 
+  it("projects only the completed Knowledge answer and readiness state", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      knowledgeRetrievalSession: {
+        degradedFlags: ["partial_readiness", "private-internal-diagnostic"],
+        evidenceItems: [],
+        groundingResult: { outcome: "no_answer" }
+      },
+      knowledgeRuns: [],
+      searchRuns: []
+    });
+
+    expect(summary).toEqual({
+      citations: [],
+      knowledgeCitations: [],
+      knowledgeState: {
+        answer: "insufficient_evidence",
+        scope: "partial_sources_ready"
+      },
+      reasoningText: [],
+      sources: []
+    });
+    expect(JSON.stringify(summary)).not.toContain("private-internal-diagnostic");
+  });
+
   it("keeps only a committed Memory action", () => {
     const action = { operation: "UPDATE" as const, status: "COMMITTED" as const };
     const withAction = summarizeMessageRunArtifacts(

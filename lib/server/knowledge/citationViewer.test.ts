@@ -6,7 +6,7 @@ import { finalizeParsedDocument } from "../parsing/assessment";
 import type { StorageAdapter } from "../uploads/storage";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
-import { executeStructuredPlan, STRUCTURED_PLAN_VERSION } from "./structuredData";
+import { STRUCTURED_PLAN_VERSION } from "./structuredData";
 import {
   createKnowledgeFieldContextSegments,
   createKnowledgeTableDocumentContext
@@ -286,18 +286,33 @@ const structuredEncoded = encodeKnowledgeNormalizedDocument(structuredParsed, co
   sourceDisplayName: "sales.xlsx"
 });
 
-const structuredAnalysis = executeStructuredPlan(structuredParsed.workbook!, {
-  aggregate: "sum",
-  filters: [],
-  groupBy: [],
-  includeHidden: false,
-  limit: 20,
-  operation: "aggregate",
-  select: [],
-  target: { range: "A1:B3", sheet: "Sales" },
-  valueColumn: "Revenue",
-  version: STRUCTURED_PLAN_VERSION
-});
+const structuredAnalysis = {
+  columns: ["sum Revenue"],
+  receipt: {
+    formulaCellsUsed: 0,
+    hiddenRowsExcluded: 0,
+    inputRanges: [{ range: "B2:B3", role: "value", sheet: "Sales", sheetIndex: 0 }],
+    operation: "aggregate",
+    operationSummary: "sum Revenue",
+    outputRows: 1,
+    plan: {
+      aggregate: "sum",
+      filters: [],
+      groupBy: [],
+      includeHidden: false,
+      limit: 20,
+      operation: "aggregate",
+      select: [],
+      target: { range: "A1:B3", sheet: "Sales" },
+      valueColumn: "Revenue",
+      version: STRUCTURED_PLAN_VERSION
+    },
+    rowsMatched: 2,
+    rowsScanned: 2,
+    warnings: []
+  },
+  rows: [[300]]
+} as const;
 
 function storage(body = encoded.body): StorageAdapter {
   return {
@@ -401,6 +416,9 @@ function defaultVersion() {
 }
 
 function personalClient(input: Readonly<{
+  accessKind?: "personal" | "project";
+  assistantText?: string;
+  baseOwnerUserId?: string;
   baseProvenance?: readonly Readonly<{
     indexGenerationId: string;
     knowledgeBaseId: string;
@@ -412,18 +430,51 @@ function personalClient(input: Readonly<{
     sourceId: string;
     sourceVersionId: string;
   }>;
+  baseTrashed?: boolean;
   bindingVisible?: boolean;
-  evidence?: Record<string, unknown>;
+  deletedEvidenceFallback?: boolean;
+  evidence?: Record<string, unknown> | null;
+  evidenceRetrievalSessionId?: string;
+  groupIds?: readonly string[];
+  manifestRetrievalSessionId?: string;
+  projectSourceBindingVisible?: boolean;
+  sourceDeletionRequested?: boolean;
+  sourceTrashed?: boolean;
   versionVisible?: boolean;
 }> = {}) {
-  const evidenceFindFirst = vi.fn().mockResolvedValue(input.evidence ?? defaultEvidence());
+  const evidence = input.evidence === undefined ? defaultEvidence() : input.evidence;
+  const dispatchManifestItemFindFirst = vi.fn().mockResolvedValue(evidence
+    ? {
+        evidenceItem: {
+          ...evidence,
+          retrievalSessionId: input.evidenceRetrievalSessionId ?? "retrieval-session-1"
+        },
+        manifest: {
+          retrievalSessionId: input.manifestRetrievalSessionId ?? "retrieval-session-1"
+        }
+      }
+    : null);
+  const deletedEvidenceFindFirst = vi.fn().mockResolvedValue(
+    input.deletedEvidenceFallback ? { handle: "K1" } : null
+  );
   const baseFindFirst = vi.fn().mockResolvedValue(input.baseVisible === false ? null : {
     name: "Engineering handbook",
-    ownerUserId: "user-1",
-    trashedAt: null
+    ownerUserId: input.baseOwnerUserId ?? "user-1",
+    trashedAt: input.baseTrashed ? new Date("2026-08-21T00:00:00.000Z") : null
   });
+  const version = defaultVersion();
+  if (input.sourceDeletionRequested) {
+    Object.assign(version.source, {
+      deletionRequestedAt: new Date("2026-08-21T00:00:00.000Z")
+    });
+  }
+  if (input.sourceTrashed) {
+    Object.assign(version.source, {
+      trashedAt: new Date("2026-08-21T00:00:00.000Z")
+    });
+  }
   const versionFindFirst = vi.fn().mockResolvedValue(
-    input.versionVisible === false ? null : defaultVersion()
+    input.versionVisible === false ? null : version
   );
   const bindingTuple = input.bindingTuple ?? {
     sourceArtifactId: "artifact-1",
@@ -454,27 +505,60 @@ function personalClient(input: Readonly<{
           sourceVersionNumber: 1
         }
   ));
+  const projectSourceBindingFindUnique = vi.fn().mockResolvedValue(
+    input.projectSourceBindingVisible === false ? null : { projectId: "project-1" }
+  );
   return {
     baseFindFirst,
     bindingFindFirst,
-    evidenceFindFirst,
+    deletedEvidenceFindFirst,
+    dispatchManifestItemFindFirst,
+    projectSourceBindingFindUnique,
     value: {
       chat: {
         findUnique: vi.fn().mockResolvedValue({
           archived: false,
           permanentDeletionAt: null,
-          projectId: null,
-          userId: "user-1"
+          projectId: input.accessKind === "project" ? "project-1" : null,
+          userId: input.accessKind === "project" ? null : "user-1"
         })
       },
       knowledgeBase: { findFirst: baseFindFirst },
-      knowledgeEvidenceItem: { findFirst: evidenceFindFirst },
+      knowledgeEvidenceDispatchManifestItem: { findFirst: dispatchManifestItemFindFirst },
+      knowledgeEvidenceItem: { findFirst: deletedEvidenceFindFirst },
       knowledgeRunSourceBinding: { findFirst: bindingFindFirst },
       knowledgeSourceVersion: { findFirst: versionFindFirst },
       modelRun: {
-        findFirst: vi.fn().mockResolvedValue({ chatId: "chat-1", id: "run-1" })
+        findFirst: vi.fn().mockResolvedValue({
+          assistantMessage: {
+            content: {
+              blocks: [{ text: input.assistantText ?? "Supported answer [K1]", type: "text" }]
+            }
+          },
+          chatId: "chat-1",
+          id: "run-1"
+        })
       },
-      userGroup: { findMany: vi.fn().mockResolvedValue([]) }
+      project: {
+        findUnique: vi.fn().mockResolvedValue({
+          accessRevision: 1,
+          grants: [{ group: null, groupId: null, role: "VIEWER", userId: "user-1" }],
+          id: "project-1",
+          instructionsRevision: 1,
+          memoryRevision: 1,
+          policyRevision: 1,
+          status: "ACTIVE"
+        })
+      },
+      projectKnowledgeSourceBinding: {
+        findUnique: projectSourceBindingFindUnique
+      },
+      user: { findFirst: vi.fn().mockResolvedValue({ groups: [], id: "user-1" }) },
+      userGroup: {
+        findMany: vi.fn().mockResolvedValue(
+          (input.groupIds ?? []).map((groupId) => ({ groupId }))
+        )
+      }
     },
     versionFindFirst
   };
@@ -535,6 +619,64 @@ describe("Knowledge citation viewer authorization and projection", () => {
     ]) {
       expect(clientCitation).not.toContain(privateId);
     }
+    expect(fixture.dispatchManifestItemFindFirst).toHaveBeenCalledWith({
+      select: {
+        evidenceItem: { select: expect.objectContaining({ handle: true }) },
+        manifest: { select: { retrievalSessionId: true } }
+      },
+      where: {
+        evidenceItem: {
+          is: {
+            handle: "K1",
+            retrievalSession: { modelRunId: "run-1" }
+          }
+        },
+        handle: "K1",
+        manifest: {
+          is: {
+            modelRunId: "run-1",
+            providerAttempt: {
+              is: {
+                modelRunId: "run-1",
+                purpose: "answer",
+                state: "settled"
+              }
+            },
+            purgedAt: null,
+            retrievalSession: { is: { modelRunId: "run-1" } }
+          }
+        }
+      }
+    });
+  });
+
+  it.each(["undispatched", "exclusion-only"])(
+    "does not expose %s v2 evidence",
+    async () => {
+      const fixture = personalClient({ evidence: null });
+
+      await expect(resolveKnowledgeCitationViewer(
+        fixture.value as never,
+        storage(),
+        request
+      )).resolves.toBeNull();
+      expect(fixture.dispatchManifestItemFindFirst).toHaveBeenCalledOnce();
+      expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+    }
+  );
+
+  it("fails closed when the manifest and evidence item belong to different retrieval sessions", async () => {
+    const fixture = personalClient({
+      evidenceRetrievalSessionId: "retrieval-session-evidence",
+      manifestRetrievalSessionId: "retrieval-session-manifest"
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toBeNull();
+    expect(fixture.versionFindFirst).not.toHaveBeenCalled();
   });
 
   it("opens only the exact original table row with its repeated header lineage", async () => {
@@ -995,27 +1137,8 @@ describe("Knowledge citation viewer authorization and projection", () => {
 
   it("returns a metadata-free deletion state after answer access", async () => {
     const fixture = personalClient({
-      evidence: {
-        baseName: null,
-        contentHash: null,
-        contextBoundaries: null,
-        documentId: null,
-        documentVersionId: null,
-        excerpt: null,
-        fileName: null,
-        handle: "K1",
-        headingPath: [],
-        knowledgeBaseId: null,
-        page: null,
-        passageId: null,
-        sourceArtifactId: null,
-        sourceId: null,
-        sourceName: null,
-        sourceVersionId: null,
-        sourceVersionNumber: null,
-        state: "deleted",
-        textTruncated: null
-      }
+      deletedEvidenceFallback: true,
+      evidence: null
     });
     await expect(resolveKnowledgeCitationViewer(
       fixture.value as never,
@@ -1025,7 +1148,30 @@ describe("Knowledge citation viewer authorization and projection", () => {
       citation: { handle: "K1", state: "deleted" },
       original: null
     });
+    expect(fixture.deletedEvidenceFindFirst).toHaveBeenCalledWith({
+      select: { handle: true },
+      where: {
+        handle: "K1",
+        retrievalSession: { modelRunId: "run-1" },
+        state: "deleted"
+      }
+    });
     expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("does not turn an undispatched deleted item into a valid citation", async () => {
+    const fixture = personalClient({
+      assistantText: "Supported answer [K1]",
+      deletedEvidenceFallback: true,
+      evidence: null
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      { ...request, handle: "K2" }
+    )).resolves.toBeNull();
+    expect(fixture.deletedEvidenceFindFirst).not.toHaveBeenCalled();
   });
 
   it("exposes nothing after current Base authority is lost", async () => {
@@ -1036,6 +1182,83 @@ describe("Knowledge citation viewer authorization and projection", () => {
       request
     )).resolves.toBeNull();
     expect(fixture.versionFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("keeps accepted group-published evidence readable when the Base moves to Trash", async () => {
+    const fixture = personalClient({
+      baseOwnerUserId: "owner-2",
+      baseTrashed: true,
+      bindingOwnerUserId: "owner-2",
+      groupIds: ["group-1"]
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { source: { statuses: expect.arrayContaining(["trash"]) }, state: "available" }
+    });
+    const query = fixture.baseFindFirst.mock.calls[0]?.[0] as {
+      where: Record<string, unknown>;
+    };
+    expect(query.where).not.toHaveProperty("trashedAt");
+    expect(JSON.stringify(query.where.OR)).not.toContain("trashedAt");
+  });
+
+  it("keeps accepted Project Base evidence readable when the Base moves to Trash", async () => {
+    const fixture = personalClient({
+      accessKind: "project",
+      baseOwnerUserId: "owner-2",
+      baseTrashed: true,
+      bindingOwnerUserId: "owner-2"
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { source: { statuses: expect.arrayContaining(["trash"]) }, state: "available" }
+    });
+    const query = fixture.baseFindFirst.mock.calls[0]?.[0] as {
+      where: Record<string, unknown>;
+    };
+    expect(query.where).toMatchObject({
+      projectBindings: { some: { projectId: "project-1" } }
+    });
+    expect(query.where).not.toHaveProperty("trashedAt");
+  });
+
+  it("keeps a Project-bound direct Source readable in Trash but not during deletion", async () => {
+    const trashed = personalClient({
+      accessKind: "project",
+      baseProvenance: [],
+      bindingOwnerUserId: "owner-2",
+      sourceTrashed: true
+    });
+    await expect(resolveKnowledgeCitationViewer(
+      trashed.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { source: { statuses: expect.arrayContaining(["trash"]) }, state: "available" }
+    });
+    expect(trashed.baseFindFirst).not.toHaveBeenCalled();
+    expect(trashed.projectSourceBindingFindUnique).toHaveBeenCalledOnce();
+
+    const deleting = personalClient({
+      accessKind: "project",
+      baseProvenance: [],
+      bindingOwnerUserId: "owner-2",
+      sourceDeletionRequested: true,
+      sourceTrashed: true
+    });
+    await expect(resolveKnowledgeCitationViewer(
+      deleting.value as never,
+      storage(),
+      request
+    )).resolves.toBeNull();
   });
 
   it("reauthorizes a direct personal Source without treating its profile binding as a Base", async () => {
@@ -1187,7 +1410,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
   });
 
   it("does not inspect evidence after current Project access is lost", async () => {
-    const evidenceFindFirst = vi.fn();
+    const dispatchManifestItemFindFirst = vi.fn();
     const client = {
       chat: {
         findUnique: vi.fn().mockResolvedValue({
@@ -1197,7 +1420,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
           userId: null
         })
       },
-      knowledgeEvidenceItem: { findFirst: evidenceFindFirst },
+      knowledgeEvidenceDispatchManifestItem: { findFirst: dispatchManifestItemFindFirst },
       modelRun: {
         findFirst: vi.fn().mockResolvedValue({ chatId: "chat-1", id: "run-1" })
       },
@@ -1209,7 +1432,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
       storage(),
       request
     )).resolves.toBeNull();
-    expect(evidenceFindFirst).not.toHaveBeenCalled();
+    expect(dispatchManifestItemFindFirst).not.toHaveBeenCalled();
   });
 
   it("keeps legacy historical handles readable without inventing native coordinates", async () => {

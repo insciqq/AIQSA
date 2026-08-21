@@ -74,6 +74,16 @@ export function humanizeErrorCode(code: string): string {
       "The enabled MCP tools exceed the per-run limit. Disable some servers and try again",
     mcp_selection_invalid: "Choose Auto, Load all, or Off for MCP tools and try again",
     mcp_tool_calling_not_supported: "Choose a model with tool calling to use MCP",
+    knowledge_answer_contract_failed:
+      "The Knowledge answer could not be safely accepted. Try again or choose another model",
+    knowledge_answer_failed:
+      "The model could not complete the Knowledge answer. Try again",
+    knowledge_citation_contract_failed:
+      "The Knowledge answer cited evidence that was not supplied. Try again or choose another model",
+    knowledge_retrieval_failed:
+      "The selected documents could not be retrieved. Try again",
+    no_retrieval_candidates:
+      "No matching passages were found in the ready documents. Rephrase the question or change the selection",
     provider_not_available: "Provider is not available",
     run_malformed: "Run response was malformed",
     search_provider_not_available: "Search provider is not available",
@@ -81,6 +91,8 @@ export function humanizeErrorCode(code: string): string {
     skill_not_available:
       "A selected Skill is no longer available. Review Skills and try again",
     skills_invalid: "Choose up to 8 distinct Skills and try again",
+    sources_processing:
+      "The selected documents are still processing. Try again when they are ready",
     structured_output_not_supported:
       "The selected System Model does not have verified structured output",
     unsupported_attachment_type: "Attachment is not supported by this model",

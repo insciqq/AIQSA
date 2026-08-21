@@ -3,18 +3,18 @@ import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import {
   decodeKnowledgeEvidenceDispatchManifestDraft,
+  LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION,
   KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION,
   KNOWLEDGE_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_EVIDENCE_SHORTENING_VERSION,
   type KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
 import {
-  decodeKnowledgeStrategySummaryDispatchCandidateV2,
-  decodeKnowledgeStrategySummarySupportBindingV2,
-  resolveKnowledgeStrategySummaryCandidateSupportsV2,
-  type KnowledgeStrategySummaryDispatchCandidateV2,
-  type KnowledgeStrategySummarySupportBindingV2
-} from "./knowledgeStrategySummaryEvidence";
+  decodeLegacyKnowledgeSummaryDispatchCandidate,
+  decodeLegacyKnowledgeSummarySupportBinding,
+  type LegacyKnowledgeSummaryDispatchCandidate,
+  type LegacyKnowledgeSummarySupportBinding
+} from "./legacySummaryReceipt";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
@@ -22,7 +22,8 @@ const SAFE_REASON = /^[a-z][a-z0-9_]{0,63}$/u;
 const SOURCE_ALIAS = /^S[1-9][0-9]{0,2}$/u;
 const MAX_ACCOUNTING_VALUE = 2_147_483_647;
 const SERIALIZABLE_ATTEMPTS = 3;
-const STORED_DISPATCH_METADATA_VERSION = 1 as const;
+const STORED_DISPATCH_METADATA_VERSION = 2 as const;
+const LEGACY_STORED_DISPATCH_METADATA_VERSION = 1 as const;
 
 function isCurrentKnowledgeHandle(value: string): boolean {
   const decoded = decodeKnowledgeCitationHandle(value);
@@ -49,7 +50,10 @@ export type KnowledgeProviderAttemptUsage = Readonly<{
   totalTokens: number | null;
 }>;
 
-export type KnowledgeProviderAttemptPurpose =
+export type KnowledgeProviderAttemptPurpose = "answer";
+
+/** Accepted-record decoder only; current reservations accept `answer` only. */
+type LegacyKnowledgeProviderAttemptPurpose =
   | "answer"
   | "answer_citation_retry"
   | "citation_repair"
@@ -70,7 +74,7 @@ export type KnowledgeProviderAttemptRecord = Readonly<{
   ordinal: number;
   providerBindingKey: string;
   providerResponseId: string | null;
-  purpose: KnowledgeProviderAttemptPurpose;
+  purpose: LegacyKnowledgeProviderAttemptPurpose;
   releasedAt: Date | null;
   requestHash: string;
   roundIndex: number;
@@ -99,8 +103,8 @@ export type StoredKnowledgeEvidenceDispatch = Readonly<{
     handle: string;
     sourceArtifactId: string;
     sourceVersionId: string;
-    summary?: KnowledgeStrategySummaryDispatchCandidateV2;
-    summarySupportBindings?: readonly KnowledgeStrategySummarySupportBindingV2[];
+    summary?: LegacyKnowledgeSummaryDispatchCandidate;
+    summarySupportBindings?: readonly LegacyKnowledgeSummarySupportBinding[];
   }>[];
   profileRevisionIds: readonly string[];
   retrievalSessionId: string;
@@ -237,16 +241,20 @@ export type KnowledgeProviderAttemptTransition = Readonly<{
   kind: "idempotent" | "transitioned";
 }>;
 
-type StoredDispatchRoot = Readonly<{
+type StoredDispatchRootBase = Readonly<{
   coverageStatement: string;
   footer: string;
   header: string;
   limits: Readonly<{ maximumBytes: number; maximumTokens: number }>;
   manifestHash: string;
-  plannerVersion: number;
   profileId: string;
   shorteningPolicy: "disabled" | typeof KNOWLEDGE_EVIDENCE_SHORTENING_VERSION;
 }>;
+
+type StoredDispatchRoot = StoredDispatchRootBase & (
+  | Readonly<{ runtimeVersion: number }>
+  | Readonly<{ plannerVersion: number }>
+);
 
 type StoredDispatchProvenance = Readonly<{
   evidenceId: string;
@@ -262,7 +270,8 @@ type StoredDispatchMetadata = Readonly<{
   exclusions: readonly StoredExclusionProvenance[];
   items: readonly (StoredDispatchProvenance & Readonly<{ dispatchOrdinal: number }>)[];
   root: StoredDispatchRoot;
-  version: typeof STORED_DISPATCH_METADATA_VERSION;
+  version: typeof LEGACY_STORED_DISPATCH_METADATA_VERSION |
+    typeof STORED_DISPATCH_METADATA_VERSION;
 }>;
 
 type StoredSafeMetadata = Readonly<{
@@ -276,7 +285,7 @@ type StoredSafeMetadata = Readonly<{
 
 type StoredSummarySafeMetadata = StoredSafeMetadata & Readonly<{
   kind: "source_summary";
-  summary: KnowledgeStrategySummaryDispatchCandidateV2;
+  summary: LegacyKnowledgeSummaryDispatchCandidate;
 }>;
 
 type StoredContextBoundaries = Readonly<{
@@ -288,7 +297,7 @@ type StoredContextBoundaries = Readonly<{
 
 type StoredSummaryContextBoundaries = StoredContextBoundaries & Readonly<{
   kind: "source_summary";
-  supportBindings: readonly KnowledgeStrategySummarySupportBindingV2[];
+  supportBindings: readonly LegacyKnowledgeSummarySupportBinding[];
 }>;
 
 const attemptInclude = {
@@ -370,7 +379,7 @@ function repositoryError(code: KnowledgeEvidenceDispatchRepositoryErrorCode): ne
   throw new KnowledgeEvidenceDispatchRepositoryError(code);
 }
 
-function validPurpose(value: unknown): value is KnowledgeProviderAttemptPurpose {
+function validPurpose(value: unknown): value is LegacyKnowledgeProviderAttemptPurpose {
   return value === "answer" || value === "answer_citation_retry" ||
     value === "citation_repair" || value === "tool_follow_up";
 }
@@ -390,13 +399,15 @@ function validateReserveInput(
 }> {
   const draft = decodeKnowledgeEvidenceDispatchManifestDraft(input.draft);
   const estimatedUsage = decodeKnowledgeProviderAttemptUsage(input.estimatedUsage);
-  if (!draft || !estimatedUsage || !safeString(input.modelRunId) ||
+  if (!draft || draft.version !== KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION ||
+    draft.items.some((item) => "kind" in item) || !estimatedUsage ||
+    !safeString(input.modelRunId) ||
     input.retrievalSessionId !== undefined && !safeString(input.retrievalSessionId) ||
     !safeString(input.providerBindingKey, 128) ||
     !SAFE_IDENTITY.test(input.idempotencyKey) || !SAFE_IDENTITY.test(input.leaseToken) ||
     !SHA256.test(input.checkpointHash) || !SHA256.test(input.requestHash) ||
     !integer(input.ordinal, 1, 256) || !integer(input.roundIndex, 0, 255) ||
-    !validPurpose(input.purpose) || !validDate(input.now) || !validDate(input.leaseExpiresAt) ||
+    input.purpose !== "answer" || !validDate(input.now) || !validDate(input.leaseExpiresAt) ||
     input.leaseExpiresAt <= input.now || (input.evidenceBindings?.length ?? 0) > 4_096) {
     repositoryError("invalid_input");
   }
@@ -404,20 +415,26 @@ function validateReserveInput(
 }
 
 function decodeStoredRoot(value: unknown): StoredDispatchRoot | null {
-  if (!record(value) || !exactKeys(value, [
+  if (!record(value)) return null;
+  const versionField = Object.hasOwn(value, "runtimeVersion")
+    ? "runtimeVersion"
+    : Object.hasOwn(value, "plannerVersion")
+      ? "plannerVersion"
+      : null;
+  if (!versionField || !exactKeys(value, [
     "coverageStatement",
     "footer",
     "header",
     "limits",
     "manifestHash",
-    "plannerVersion",
+    versionField,
     "profileId",
     "shorteningPolicy"
   ]) || typeof value.coverageStatement !== "string" || !safeString(value.footer, 64_000) ||
     !safeString(value.header, 64_000) || !record(value.limits) ||
     !exactKeys(value.limits, ["maximumBytes", "maximumTokens"]) ||
     !integer(value.limits.maximumBytes, 1) || !integer(value.limits.maximumTokens, 1) ||
-    !SHA256.test(String(value.manifestHash)) || !integer(value.plannerVersion, 1) ||
+    !SHA256.test(String(value.manifestHash)) || !integer(value[versionField], 1) ||
     !safeString(value.profileId, 1_024) ||
     value.shorteningPolicy !== "disabled" &&
       value.shorteningPolicy !== KNOWLEDGE_EVIDENCE_SHORTENING_VERSION) return null;
@@ -433,7 +450,8 @@ function decodeStoredProvenance(value: unknown): StoredDispatchProvenance | null
 
 function decodeStoredDispatchMetadata(value: unknown): StoredDispatchMetadata | null {
   if (!record(value) || !exactKeys(value, ["exclusions", "items", "root", "version"]) ||
-    value.version !== STORED_DISPATCH_METADATA_VERSION || !Array.isArray(value.items) ||
+    value.version !== STORED_DISPATCH_METADATA_VERSION &&
+      value.version !== LEGACY_STORED_DISPATCH_METADATA_VERSION || !Array.isArray(value.items) ||
     !Array.isArray(value.exclusions) || value.items.length > 4_096 ||
     value.exclusions.length > 4_096) return null;
   const root = decodeStoredRoot(value.root);
@@ -468,13 +486,14 @@ function decodeStoredDispatchMetadata(value: unknown): StoredDispatchMetadata | 
       ? { ...provenance, duplicateOfEvidenceId: entry.duplicateOfEvidenceId as string | null }
       : null;
   });
-  if (!root || items.some((entry) => entry === null) ||
+  if (!root || (value.version === STORED_DISPATCH_METADATA_VERSION) !==
+      ("runtimeVersion" in root) || items.some((entry) => entry === null) ||
     exclusions.some((entry) => entry === null)) return null;
   return {
     exclusions: exclusions as StoredExclusionProvenance[],
     items: items as (StoredDispatchProvenance & { dispatchOrdinal: number })[],
     root,
-    version: STORED_DISPATCH_METADATA_VERSION
+    version: value.version
   };
 }
 
@@ -483,7 +502,7 @@ function decodeSafeMetadata(
 ): StoredSafeMetadata | StoredSummarySafeMetadata | null {
   if (!record(value)) return null;
   const summary = Object.hasOwn(value, "kind") || Object.hasOwn(value, "summary")
-    ? decodeKnowledgeStrategySummaryDispatchCandidateV2(value.summary)
+    ? decodeLegacyKnowledgeSummaryDispatchCandidate(value.summary)
     : null;
   const baseValue = summary
     ? Object.fromEntries(Object.entries(value).filter(([key]) =>
@@ -516,7 +535,7 @@ function decodeContextBoundaries(
     ? value.supportBindings
     : null;
   const supports = Array.isArray(rawSupports)
-    ? rawSupports.map(decodeKnowledgeStrategySummarySupportBindingV2)
+    ? rawSupports.map(decodeLegacyKnowledgeSummarySupportBinding)
     : null;
   const summary = value.kind === "source_summary" && supports !== null &&
     supports.length > 0 && supports.every((support) => support !== null) &&
@@ -545,7 +564,7 @@ function decodeContextBoundaries(
     ? {
         ...base,
         kind: "source_summary",
-        supportBindings: supports as KnowledgeStrategySummarySupportBindingV2[]
+        supportBindings: supports as LegacyKnowledgeSummarySupportBinding[]
       }
     : base;
 }
@@ -784,13 +803,17 @@ function storedDispatch(row: AttemptRow): StoredKnowledgeEvidenceDispatch {
     messageHash: manifest.messageHash,
     messageTokens: manifest.totalTokens,
     packingVersion: manifest.packingVersion,
-    plannerVersion: metadata.root.plannerVersion,
+    ...( "runtimeVersion" in metadata.root
+      ? { runtimeVersion: metadata.root.runtimeVersion }
+      : { plannerVersion: metadata.root.plannerVersion }),
     profileId: metadata.root.profileId,
     promptFragmentVersion,
     shorteningPolicy: metadata.root.shorteningPolicy,
     version: manifest.version
   });
-  if (!draft || manifest.version !== KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION ||
+  if (!draft || manifest.version !== draft.version ||
+    manifest.version !== KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION &&
+      manifest.version !== LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION ||
     manifest.packingVersion !== KNOWLEDGE_EVIDENCE_PACKING_VERSION ||
     manifest.shortenedCount !== items.filter((item) => item.representation !== "full").length) {
     repositoryError("stored_manifest_invalid");
@@ -924,7 +947,9 @@ function storedMetadata(draft: KnowledgeEvidenceDispatchManifestDraft): StoredDi
       header: draft.header,
       limits: draft.limits,
       manifestHash: draft.manifestHash,
-      plannerVersion: draft.plannerVersion,
+      ...(draft.version === KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION
+        ? { runtimeVersion: draft.runtimeVersion }
+        : { plannerVersion: draft.plannerVersion }),
       profileId: draft.profileId,
       shorteningPolicy: draft.shorteningPolicy
     },
@@ -1149,44 +1174,19 @@ async function materializeManifestRows(
   });
 
   const persistedItems = draft.items.map((item) => {
+    if ("kind" in item) repositoryError("invalid_input");
     const evidenceItemId = bindingMap.get(item.evidenceId);
     const evidence = evidenceItemId ? evidenceById.get(evidenceItemId) : undefined;
-    const summary = "kind" in item
-      ? decodeKnowledgeStrategySummaryDispatchCandidateV2(item.summary)
-      : null;
-    let summarySupportBindings: readonly KnowledgeStrategySummarySupportBindingV2[] = [];
-    if (summary) {
-      try {
-        summarySupportBindings = resolveKnowledgeStrategySummaryCandidateSupportsV2({
-          candidate: summary,
-          evidenceItems
-        });
-      } catch {
-        repositoryError("evidence_mismatch");
-      }
-    }
     const sourceBinding = evidence ? sourceBindings.find((binding) =>
       binding.sourceVersionId === evidence.sourceVersionId &&
       binding.sourceArtifactId === evidence.sourceArtifactId &&
       binding.sourceAlias === item.sourceAlias) : undefined;
     const sourceLabel = sourceBinding?.sourceNameSnapshot ?? evidence?.sourceName ?? "";
     const fileName = sourceBinding?.fileNameSnapshot ?? evidence?.fileName ?? "";
-    const summaryAnchor = summarySupportBindings[0];
-    const summaryManifestItem = "kind" in item ? item : null;
-    const ordinaryExcerptMatches = !summary && evidence?.excerpt === item.exactExcerpt;
-    const summaryMatches = summary && summaryAnchor && sourceBinding?.id === summary.sourceBindingId &&
-      evidenceItemId === summaryAnchor.evidenceItemId && evidence?.handle === summaryAnchor.handle &&
-      evidence?.sourceArtifactId === summaryAnchor.sourceArtifactId &&
-      evidence?.sourceVersionId === summaryAnchor.sourceVersionId && summaryManifestItem !== null &&
-      summaryManifestItem.summary.candidateHash === summary.candidateHash &&
-      item.text === summary.providerText &&
-      item.exactExcerpt === summary.providerText && item.itemHash === summary.itemHash &&
-      item.exactExcerptHash === summary.itemHash && item.itemBytes === summary.providerTextBytes &&
-      item.exactExcerptBytes === summary.providerTextBytes && item.representation === "full" &&
-      item.sourceTruncated === false;
+    const ordinaryExcerptMatches = evidence?.excerpt === item.exactExcerpt;
     if (!evidenceItemId || !evidence || evidence.state !== "available" || !sourceBinding ||
       !isCurrentKnowledgeHandle(item.handle) || !SOURCE_ALIAS.test(item.sourceAlias) ||
-      evidence.handle !== item.handle || !ordinaryExcerptMatches && !summaryMatches ||
+      evidence.handle !== item.handle || !ordinaryExcerptMatches ||
       evidence.sourceVersionId === null || evidence.sourceArtifactId === null ||
       evidence.sourceVersionNumber !== item.sourceVersionNumber ||
       sourceBinding.sourceVersionNumber !== item.sourceVersionNumber ||
@@ -1198,10 +1198,7 @@ async function materializeManifestRows(
         expandedContext: item.expandedContext,
         expandedContextOriginalBytes: item.expandedContextOriginalBytes,
         expandedContextOriginalHash: item.expandedContextOriginalHash,
-        expandedContextState: item.expandedContextState,
-        ...(summary
-          ? { kind: "source_summary", supportBindings: summarySupportBindings }
-          : {})
+        expandedContextState: item.expandedContextState
       }),
       evidenceItem: { connect: { id: evidenceItemId } },
       exactExcerpt: item.exactExcerpt,
@@ -1221,7 +1218,6 @@ async function materializeManifestRows(
         sourceLabel: item.sourceLabel,
         sourceTruncated: item.sourceTruncated,
         sourceVersionNumber: item.sourceVersionNumber,
-        ...(summary ? { kind: "source_summary", summary } : {})
       }),
       sourceAlias: item.sourceAlias,
       sourceArtifactId: evidence.sourceArtifactId,
