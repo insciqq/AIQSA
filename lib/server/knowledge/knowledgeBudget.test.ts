@@ -30,19 +30,22 @@ describe("Knowledge execution budgets", () => {
     })).toEqual(DEFAULT_KNOWLEDGE_BUDGET_POLICY);
   });
 
-  it("allows exactly one operation and embedding without planner-era dimensions", () => {
+  it("allows four operations and embeddings without planner-era dimensions", () => {
     const policy = DEFAULT_KNOWLEDGE_BUDGET_POLICY;
     expect(policy).toMatchObject({
-      maxOperations: 1,
-      maxQueryEmbeddingCalls: 1
+      maxCumulativeCandidates: 160,
+      maxLatencyMs: 120_000,
+      maxOperations: 4,
+      maxQueryEmbeddingCalls: 4,
+      maxRetrievedTokens: 49_152
     });
     expect(Object.hasOwn(policy, "maxRerankerCalls")).toBe(false);
     expect(Object.hasOwn(policy, "maxSearchPhases")).toBe(false);
-    expect(knowledgeBudgetStopReason(policy, usage({ operations: 1 }))).toBeNull();
-    expect(knowledgeBudgetStopReason(policy, usage({ operations: 2 })))
+    expect(knowledgeBudgetStopReason(policy, usage({ operations: 4 }))).toBeNull();
+    expect(knowledgeBudgetStopReason(policy, usage({ operations: 5 })))
       .toBe("operation_budget");
-    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 1 }))).toBeNull();
-    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 2 })))
+    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 4 }))).toBeNull();
+    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 5 })))
       .toBe("embedding_budget");
   });
 

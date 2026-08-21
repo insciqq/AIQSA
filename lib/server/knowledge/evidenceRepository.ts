@@ -13,8 +13,13 @@ import {
 } from "./evidencePackage";
 import {
   groundKnowledgeAnswer,
+  groundKnowledgeToolLoopAnswer,
   type KnowledgeGroundingResult
 } from "./grounding";
+import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
+import { knowledgeEvidenceFromToolResult } from "./toolResult";
+import { parsePersistedToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { parseToolLoopCheckpoint } from "../runs/toolLoopPersistence";
 import {
   loadFinalKnowledgeGroundingDispatch,
   type KnowledgeGroundingDispatchSelection,
@@ -481,6 +486,8 @@ export async function loadKnowledgeEvidencePackage(
   const focusedRequest = session.originalIntent.kind === "focused_v1"
     ? decodeKnowledgeFocusedRequest(session.originalIntent.request)
     : null;
+  const toolLoopIntent = session.originalIntent.kind === "tool_loop_v1" &&
+    Object.keys(session.originalIntent).length === 1;
   const query = focusedRequest?.originalQuery ?? null;
   const readyBases = integer(session.readinessSummary.readyBases);
   const readySources = integer(session.readinessSummary.readySources);
@@ -495,7 +502,8 @@ export async function loadKnowledgeEvidencePackage(
   const items = budgetPolicy
     ? session.evidenceItems.map((item) => evidenceItem(item, budgetPolicy.maxOperations))
     : [];
-  if (!query || readyBases === null || readySources === null || excludedResources === null ||
+  if ((!query && !toolLoopIntent) || readyBases === null || readySources === null ||
+    excludedResources === null ||
     !budgetPolicy ||
     operationLinkCount > budgetPolicy.maxOperations * 100 ||
     items.some((item) => item === null) || session.citationContract.version !== 2 ||
@@ -514,7 +522,9 @@ export async function loadKnowledgeEvidencePackage(
     },
     degradedFlags: [...session.degradedFlags],
     items: decodedItems,
-    originalIntent: { kind: "focused_v1", query },
+    originalIntent: toolLoopIntent
+      ? { kind: "tool_loop_v1" }
+      : { kind: "focused_v1", query: query! },
     readiness: { excludedResources, readyBases, readySources },
     runId: session.modelRunId,
     scopeSnapshot: session.scopeSnapshot,
@@ -647,6 +657,71 @@ async function loadKnowledgeGroundingEvidencePackage(
 ): Promise<KnowledgeGroundingEvidence | null> {
   const evidence = await loadKnowledgeEvidencePackage(client, input);
   if (!evidence) return null;
+  if (evidence.originalIntent.kind === "tool_loop_v1") {
+    const run = await client.modelRun.findFirst({
+      select: {
+        toolCalls: {
+          orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+          select: {
+            knowledgeRun: {
+              select: {
+                evidenceLinks: { select: { evidenceItemId: true } },
+                providerText: true,
+                retrievalSessionId: true
+              }
+            },
+            providerCallId: true,
+            result: true,
+            roundIndex: true,
+            state: true,
+            toolName: true
+          },
+          where: { toolName: KNOWLEDGE_SEARCH_TOOL_NAME }
+        },
+        toolLoopState: true
+      },
+      where: { id: input.runId, userId: input.userId }
+    });
+    const checkpoint = parseToolLoopCheckpoint(run?.toolLoopState);
+    if (!run || !checkpoint || checkpoint.phase !== "provider_running") {
+      throw new Error("knowledge_evidence_dispatch_grounding_mismatch");
+    }
+    const visibleItemIds = new Set<string>();
+    for (const call of run.toolCalls) {
+      if (call.state !== "complete") {
+        if (call.state !== "error" && call.roundIndex < checkpoint.roundIndex) {
+          throw new Error("knowledge_evidence_dispatch_grounding_mismatch");
+        }
+        continue;
+      }
+      const stored = parsePersistedToolExecutionResult(
+        { id: call.providerCallId, name: call.toolName },
+        call.result as never
+      );
+      const retrieval = stored ? knowledgeEvidenceFromToolResult(stored) : null;
+      if (!retrieval || !call.knowledgeRun ||
+        call.knowledgeRun.retrievalSessionId !== evidence.sessionId ||
+        retrieval.providerText !== call.knowledgeRun.providerText) {
+        throw new Error("knowledge_evidence_dispatch_grounding_mismatch");
+      }
+      if (call.roundIndex < checkpoint.roundIndex) {
+        for (const link of call.knowledgeRun.evidenceLinks) {
+          visibleItemIds.add(link.evidenceItemId);
+        }
+      }
+    }
+    const items = evidence.items.filter((item) => visibleItemIds.has(item.id));
+    if (items.length !== visibleItemIds.size) {
+      throw new Error("knowledge_evidence_dispatch_grounding_mismatch");
+    }
+    return Object.freeze({
+      evidence: Object.freeze({
+        ...evidence,
+        coverage: { ...evidence.coverage, verified: false },
+        items
+      })
+    });
+  }
   const selection = await loadFinalKnowledgeGroundingDispatch(client, {
     modelRunId: evidence.runId,
     retrievalSessionId: evidence.sessionId
@@ -673,10 +748,15 @@ export async function groundKnowledgeRunAnswer(
     }
     return null;
   }
-  const grounding = groundKnowledgeAnswer({
-    answer: input.answer,
-    evidence: authorization.evidence
-  });
+  const grounding = authorization.evidence.originalIntent.kind === "tool_loop_v1"
+    ? groundKnowledgeToolLoopAnswer({
+        answer: input.answer,
+        evidence: authorization.evidence
+      })
+    : groundKnowledgeAnswer({
+        answer: input.answer,
+        evidence: authorization.evidence
+      });
   return Object.freeze({ grounding });
 }
 

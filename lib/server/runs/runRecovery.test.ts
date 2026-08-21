@@ -55,6 +55,7 @@ import { knowledgeRetrievalTool } from "../knowledge/knowledgeTools";
 import {
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
@@ -1851,11 +1852,76 @@ describe("run recovery", () => {
       error: {
         code: "knowledge_legacy_runtime_retired",
         message:
-          "Checkpointed Knowledge tool loops are retired; only focused one-shot recovery is valid."
+          "Checkpointed legacy Knowledge calls cannot be replayed through the generic tool loop."
       },
       runId
     }]);
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+  });
+
+  it("recovers a pending search_knowledge call and replays its result into continuation", async () => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const egress = createRecoveryMemoryEgressRecorder();
+    const execute = vi.fn(async (call: { id: string; name: string }) => {
+      const result = focusedKnowledgeRetrievalResult();
+      return { ...result, callId: call.id, name: call.name };
+    });
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight: vi.fn(async () => ({ kind: "admitted" as const })),
+        tool: knowledgeRetrievalTool,
+        tools: [knowledgeRetrievalTool]
+      },
+      memoryEgress: egress.service,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return providerResult;
+          }
+        }
+      }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "remember this" },
+      mcpBinding: null,
+      providerCallId: "knowledge-provider-call-1",
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [knowledgeCall], phase: "tools_pending" }),
+      knowledgeScope: {
+        bindings: authorization.admitted.bindings,
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan,
+        resolvedSourceCount: 1
+      },
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain(
+      "Recovered focused evidence"
+    );
+    expect(egress.began.some((receipt) => receipt.destinationKind === "knowledge"))
+      .toBe(true);
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered answer" });
+    expect(harness.state.failed).toEqual([]);
   });
 
   it("rebuilds and dispatches an expired non-checkpointed RESERVED attempt exactly once", async () => {

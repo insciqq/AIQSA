@@ -394,7 +394,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
 
   it("counts purged settled usage but fences every further mutation", async () => {
     const harness = repositoryHarness();
-    harness.rows.push(persistenceRow({
+    harness.rows.push(...Array.from({ length: 4 }, (_, index) => persistenceRow({
       actualCandidates: 5,
       actualCostMicros: 9,
       actualEmbeddingCalls: 0,
@@ -402,18 +402,19 @@ describe("Knowledge budget reservation Prisma repository", () => {
       actualRetrievedTokens: 90,
       dispatchAttemptKey: null,
       dispatchedAt: new Date("2026-08-19T12:01:00.000Z"),
-      id: "99999999-9999-4999-8999-999999999999",
+      id: `${index + 6}9999999-9999-4999-8999-999999999999`,
       idempotencyKey: null,
       leaseExpiresAt: null,
       leaseToken: null,
-      modelRunToolCallId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      modelRunToolCallId: `${index + 6}aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
+      operationOrdinal: index + 1,
       operationRequest: null,
       operationRequestHash: null,
       purgedAt: new Date("2026-08-19T12:03:00.000Z"),
       receiptHash: null,
       settledAt: new Date("2026-08-19T12:02:00.000Z"),
       state: "settled"
-    }));
+    })));
     const rejected = await harness.repository.reserve({
       estimate,
       idempotencyKey: "run:one:operation:one",
@@ -424,7 +425,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
       userId: "owner-one"
     });
     expect(rejected).toMatchObject({
-      chargeBefore: { candidateCount: 5, retrievedTokens: 90 },
+      chargeBefore: { candidateCount: 20, retrievedTokens: 360 },
       kind: "rejected",
       reason: "operation_budget"
     });
@@ -432,7 +433,7 @@ describe("Knowledge budget reservation Prisma repository", () => {
       actual: estimate,
       leaseToken: LEASE_TOKEN,
       receiptHash: "c".repeat(64),
-      reservationId: "99999999-9999-4999-8999-999999999999",
+      reservationId: "69999999-9999-4999-8999-999999999999",
       runId: RUN_ID,
       userId: "owner-one"
     })).resolves.toMatchObject({ kind: "conflict", reason: "invalid_state" });

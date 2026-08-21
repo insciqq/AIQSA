@@ -67,7 +67,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
     await prisma.$disconnect();
   });
 
-  it("admits only one of eight concurrent operations at the fixed operation limit", async () => {
+  it("admits only four of eight concurrent operations at the fixed operation limit", async () => {
     const suffix = randomUUID();
     const connectionId = `knowledge-budget-connection-${suffix}`;
     const credentialId = randomUUID();
@@ -156,10 +156,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
       });
       await prisma.knowledgeRunScope.create({
         data: {
-          budgetPolicy: json({
-            ...DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-            maxCumulativeCandidates: 1
-          }),
+          budgetPolicy: json(DEFAULT_KNOWLEDGE_BUDGET_POLICY),
           exclusions: [],
           modelRunId: run.id,
           resolvedBaseCount: 0,
@@ -238,18 +235,18 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
 
       const results = await Promise.all(inputs.map((input) => repository.reserve(input)));
 
-      expect(results.filter((result) => result.kind === "admitted")).toHaveLength(1);
+      expect(results.filter((result) => result.kind === "admitted")).toHaveLength(4);
       expect(results.filter((result) =>
-        result.kind === "rejected" && result.reason === "operation_budget")).toHaveLength(7);
+        result.kind === "rejected" && result.reason === "operation_budget")).toHaveLength(4);
       await expect(prisma.knowledgeBudgetReservation.count({
         where: { modelRunId: run.id }
-      })).resolves.toBe(1);
+      })).resolves.toBe(4);
       const admittedIndex = results.findIndex((result) => result.kind === "admitted");
       await expect(repository.reserve(inputs[admittedIndex]!))
         .resolves.toMatchObject({ kind: "idempotent" });
       await expect(prisma.knowledgeBudgetReservation.count({
         where: { modelRunId: run.id }
-      })).resolves.toBe(1);
+      })).resolves.toBe(4);
 
       const admitted = results.find((result) => result.kind === "admitted");
       if (!admitted || admitted.kind !== "admitted" || admitted.record.purgedAt !== null ||

@@ -19,6 +19,7 @@ import type { KnowledgeDocumentContextV1 } from "./documentContext";
 /** Server-only checkpoint operation. This name is never advertised to an
  * answer provider. */
 export const KNOWLEDGE_FOCUSED_OPERATION_NAME = "knowledge_focused_v1";
+export const KNOWLEDGE_SEARCH_TOOL_NAME = "search_knowledge";
 export const KNOWLEDGE_EXACT_TOOL_NAME = "find_exact";
 export const KNOWLEDGE_READ_SOURCE_TOOL_NAME = "read_source";
 export const KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME = "discover_sources";
@@ -28,6 +29,7 @@ export const KNOWLEDGE_INTERNAL_OPERATION_NAMES = Object.freeze([
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME
 ] as const);
 export const KNOWLEDGE_EXECUTION_TOOL_NAMES = Object.freeze([
+  KNOWLEDGE_SEARCH_TOOL_NAME,
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   ...KNOWLEDGE_INTERNAL_OPERATION_NAMES
 ] as const);

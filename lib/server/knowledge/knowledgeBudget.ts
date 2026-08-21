@@ -78,12 +78,12 @@ export type LegacyKnowledgeBudgetEvidence = Readonly<{
 
 export const DEFAULT_KNOWLEDGE_BUDGET_POLICY: KnowledgeBudgetPolicy = Object.freeze({
   estimatedEmbeddingCostMicrosPerThousandTokens: 100,
-  maxCumulativeCandidates: 40,
+  maxCumulativeCandidates: 160,
   maxEstimatedCostMicros: 10_000,
-  maxLatencyMs: 30_000,
-  maxOperations: 1,
-  maxQueryEmbeddingCalls: 1,
-  maxRetrievedTokens: 12_288,
+  maxLatencyMs: 120_000,
+  maxOperations: 4,
+  maxQueryEmbeddingCalls: 4,
+  maxRetrievedTokens: 49_152,
   version: KNOWLEDGE_BUDGET_POLICY_VERSION
 });
 

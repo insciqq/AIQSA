@@ -647,6 +647,11 @@ function isRecoveredSearchCall(context: RecoveryToolContext, name: string): bool
   return context.searchExecutor?.accepts(name) === true;
 }
 
+function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): boolean {
+  return context.run.normalizedRequest.knowledgePlan.mode !== "none" &&
+    context.deps.knowledgeExecutor?.accepts(name) === true;
+}
+
 function isRecoveredMcpDiscoveryCall(
   context: RecoveryToolContext,
   name: string
@@ -890,6 +895,24 @@ async function recordRecoveredSearchResult(input: Readonly<{
   }
 }
 
+function recordRecoveredKnowledgeResult(input: Readonly<{
+  context: RecoveryToolContext;
+  includeUsage: boolean;
+  result: ToolExecutionResult;
+}>): void {
+  const evidence = knowledgeEvidenceFromToolResult(input.result);
+  if (input.result.status === "complete" && !evidence) {
+    throw new ToolLoopRecoveryError(
+      "tool_call_result_invalid",
+      "Persisted Knowledge result evidence is invalid and cannot be replayed safely."
+    );
+  }
+  if (!input.includeUsage) return;
+  input.context.usageAttributions.push(
+    ...knowledgeUsageAttributionsFromToolResult(input.result)
+  );
+}
+
 async function executeRecoveredMcpDiscovery(
   call: ModelToolCall,
   persisted: PersistedToolLoopCall,
@@ -1064,6 +1087,16 @@ async function executePersistedToolCall(
         result
       });
     }
+    if (isRecoveredKnowledgeCall(context, call.name)) {
+      recordRecoveredKnowledgeResult({
+        context,
+        includeUsage: settledSearchUsageNeedsRecovery(
+          claim.call,
+          context.persistedUsageRecordedAt
+        ),
+        result
+      });
+    }
     return {
       call,
       ordinal: persisted.ordinal,
@@ -1079,13 +1112,41 @@ async function executePersistedToolCall(
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
     }
-    const externalCall = !isRecoveredMcpDiscoveryCall(context, call.name);
+    const executionContext = {
+      persistedToolCallId: claim.call.id,
+      request: context.providerRequest,
+      runId: context.run.id,
+      userId: context.run.userId
+    };
+    let preflightResult: ToolExecutionResult | null = null;
+    if (isRecoveredKnowledgeCall(context, call.name)) {
+      try {
+        const admission = await context.deps.knowledgeExecutor!.preflight?.(
+          call,
+          executionContext
+        );
+        if (admission && admission.kind !== "admitted") {
+          preflightResult = admission.result;
+        }
+      } catch (error) {
+        preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
+      }
+    }
+    const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name);
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
       }
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
-      const destinationSnapshot = isRecoveredSearchCall(context, call.name)
+      const destinationSnapshot = isRecoveredKnowledgeCall(context, call.name)
+          ? {
+              kind: "knowledge",
+              scopeFingerprint: memorySha256(context.run.knowledgeScope ?? null),
+              selection: context.run.normalizedRequest.knowledgePlan,
+              toolName: call.name,
+              version: 1
+            }
+          : isRecoveredSearchCall(context, call.name)
           ? {
               kind: "search",
               optionIds: context.run.normalizedRequest.searchPlan.options.map((option) => option.optionId),
@@ -1100,7 +1161,13 @@ async function executePersistedToolCall(
               version: 1
             };
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
-      const allowed = isRecoveredSearchCall(context, call.name)
+      const allowed = isRecoveredKnowledgeCall(context, call.name)
+          ? (await currentFocusedKnowledgeRecoveryAuthorization(context.deps, {
+              ...(context.run.project ? { project: context.run.project } : {}),
+              runId: context.run.id,
+              userId: context.run.userId
+            })).authorized
+          : isRecoveredSearchCall(context, call.name)
           ? await currentRecoverySearchDispatchAllowed(context)
           : generationId
             ? await currentRecoveryMcpDispatchAllowed(context, call.name, generationId)
@@ -1120,6 +1187,12 @@ async function executePersistedToolCall(
           runId: context.run.id,
           userId: context.run.userId
         });
+        if (isRecoveredKnowledgeCall(context, call.name)) {
+          fatalToolError = new ToolLoopRecoveryError(
+            "memory_egress_destination_revoked",
+            "Knowledge access changed before retrieval."
+          );
+        }
         throw new Error("memory_egress_destination_revoked");
       }
       externalReceipt = context.deps.memoryEgress
@@ -1138,7 +1211,9 @@ async function executePersistedToolCall(
           })
         : null;
     }
-    if (isRecoveredMcpDiscoveryCall(context, call.name)) {
+    if (preflightResult) {
+      result = preflightResult;
+    } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
@@ -1148,6 +1223,13 @@ async function executePersistedToolCall(
         signal
       );
       await recordRecoveredSearchResult({ context, includeUsage: true, result });
+    } else if (isRecoveredKnowledgeCall(context, call.name)) {
+      result = await context.deps.knowledgeExecutor!.execute(
+        call,
+        executionContext,
+        { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }
+      );
+      recordRecoveredKnowledgeResult({ context, includeUsage: true, result });
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -1188,7 +1270,9 @@ async function executePersistedToolCall(
       result = toolExecutionErrorResult(
         call,
         error,
-        context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
+        isRecoveredKnowledgeCall(context, call.name)
+          ? "Knowledge"
+          : context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
       );
     }
   }
@@ -1325,11 +1409,21 @@ async function recoverCheckpointedToolLoop(
         "Checkpointed answer-model Memory tools cannot be replayed."
       );
     }
-    if (run.knowledgeScope || run.normalizedRequest.knowledgePlan.mode !== "none" ||
-      run.calls.some(isFocusedKnowledgeCall)) {
+    if (run.calls.some(isFocusedKnowledgeCall) ||
+      run.calls.some((call) => call.toolName === "retrieve_knowledge")) {
       throw new ToolLoopRecoveryError(
         "knowledge_legacy_runtime_retired",
-        "Checkpointed Knowledge tool loops are retired; only focused one-shot recovery is valid."
+        "Checkpointed legacy Knowledge calls cannot be replayed through the generic tool loop."
+      );
+    }
+    const recoveredKnowledgeEnabled =
+      run.normalizedRequest.knowledgePlan.mode !== "none";
+    if (recoveredKnowledgeEnabled &&
+      (!run.knowledgeScope || (run.knowledgeScope.resolvedSourceCount ?? 0) < 1 ||
+        !deps.knowledgeExecutor?.tools?.length)) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_retrieval_failed",
+        "The saved Knowledge tool configuration is unavailable."
       );
     }
     const providerRuntime = await resolveAnswerRuntime(deps, run.id, run.provider);
@@ -1467,6 +1561,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const tools: RunTool[] = [
+      ...(recoveredKnowledgeEnabled ? deps.knowledgeExecutor?.tools ?? [] : []),
       ...(searchExecutor?.tools ?? []),
       ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
@@ -1773,7 +1868,8 @@ async function recoverCheckpointedToolLoop(
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
-          if (!route && searchExecutor?.accepts(call.name) !== true &&
+          if (!route && !isRecoveredKnowledgeCall(context, call.name) &&
+            searchExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",

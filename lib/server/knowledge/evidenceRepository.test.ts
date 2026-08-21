@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import {
+  toolLoopCheckpoint,
+  toolLoopPersistenceLimits
+} from "../runs/toolLoopPersistence";
 import {
   groundKnowledgeRunAnswer,
   knowledgeEvidencePackageForGroundingDispatch,
@@ -9,6 +14,12 @@ import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchReposito
 import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
 import { groundKnowledgeAnswer } from "./grounding";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
+import {
+  KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
+  type KnowledgeRetrievalEvidence
+} from "./retrievalTypes";
+import { knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -95,6 +106,7 @@ function client(value: unknown, input: Readonly<{
   attempts?: readonly unknown[];
   currentOperation?: unknown;
   normalizedRequest?: unknown;
+  toolLoopRun?: unknown;
 }> = {}) {
   return {
     knowledgeProviderAttempt: {
@@ -107,11 +119,96 @@ function client(value: unknown, input: Readonly<{
       findFirst: vi.fn(async () => input.currentOperation ?? null)
     },
     modelRun: {
-      findFirst: vi.fn(async () => input.normalizedRequest === undefined
-        ? null
-        : { normalizedRequest: input.normalizedRequest })
+      findFirst: vi.fn(async () => input.toolLoopRun ?? (
+        input.normalizedRequest === undefined
+          ? null
+          : { normalizedRequest: input.normalizedRequest }
+      ))
     }
   } as never;
+}
+
+function toolLoopRetrieval(): KnowledgeRetrievalEvidence {
+  const includedText = "Completed Atlas exports are retained for 30 days after completion.";
+  const draft: KnowledgeRetrievalEvidence = {
+    bases: [{
+      baseContentRevision: 1,
+      baseName: "Policies",
+      candidateCount: 1,
+      indexedContentRevision: 1,
+      indexGenerationId: "generation-1",
+      knowledgeBaseId: "base-private-id",
+      ordinal: 0,
+      state: "ready",
+      targetDimension: 1_024,
+      vectorSpaceFingerprint: "a".repeat(64)
+    }],
+    candidateCount: 1,
+    candidateLimit: 40,
+    durationMs: 3,
+    embeddingExecutions: [{
+      bindingOrdinals: [0],
+      durationMs: 1,
+      inputTokens: 2,
+      modelId: "embedding-v1",
+      provider: "test",
+      providerModelId: "embedding-deployment-1",
+      requestId: null,
+      status: "complete",
+      totalTokens: 2
+    }],
+    fusion: "rrf_k60",
+    invocationOrdinal: 1,
+    outcome: "complete",
+    providerText: "pending",
+    query: "Atlas retention",
+    resultLimit: 8,
+    results: [{
+      annRank: 1,
+      baseName: "Policies",
+      bindingOrdinal: 0,
+      chunkId: "passage-private-id",
+      chunkIndex: 0,
+      documentId: "document-private-id",
+      documentVersionId: "document-version-private-id",
+      documentVersionNumber: 3,
+      fileName: "retention.md",
+      ftsRank: 1,
+      ftsScore: 0.5,
+      fusedScore: 2 / 61,
+      handle: "K1",
+      includedText,
+      includedTextBytes: Buffer.byteLength(includedText, "utf8"),
+      knowledgeBaseId: "base-private-id",
+      page: 2,
+      sourceAlias: "S1",
+      sourceArtifactId: "artifact-private-id",
+      sourceName: "Atlas retention",
+      sourceTextBytes: Buffer.byteLength(includedText, "utf8"),
+      textTruncated: false,
+      vectorDistance: 0.1,
+      vectorScore: 0.9
+    }],
+    scopeAliases: [{ alias: "S1", kind: "source", label: "Atlas retention" }],
+    version: KNOWLEDGE_RESULT_VERSION
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
+function persistedToolLoopKnowledgeResult(evidence: KnowledgeRetrievalEvidence) {
+  const persisted = snapshotToolExecutionResult({
+    callId: "knowledge-provider-call-1",
+    content: knowledgeToolResultContent(evidence),
+    name: KNOWLEDGE_SEARCH_TOOL_NAME,
+    rawPreview: {
+      knowledgeResultVersion: evidence.version,
+      knowledgeRetrieval: evidence,
+      providerCall: true
+    },
+    status: "complete"
+  }, toolLoopPersistenceLimits.resultBytes);
+  if (!persisted) throw new Error("tool_loop_knowledge_result_fixture_invalid");
+  return persisted;
 }
 
 function exactItems(count: number) {
@@ -306,6 +403,91 @@ describe("Knowledge Evidence v2 repository projection", () => {
       readinessSummary: { excludedResources: 1, readyBases: 1, readySources: 1 }
     })), { runId: "run-1", userId: "user-1" });
     expect(evidence?.coverage.verified).toBe(false);
+  });
+
+  it("grounds a tool-loop handle only after its exact result reached a provider checkpoint", async () => {
+    const evidence = toolLoopRetrieval();
+    const persisted = persistedToolLoopKnowledgeResult(evidence);
+    const toolCall = {
+      knowledgeRun: {
+        evidenceLinks: [{ evidenceItemId: "evidence-private-id" }],
+        providerText: evidence.providerText,
+        retrievalSessionId: "session-1"
+      },
+      providerCallId: "knowledge-provider-call-1",
+      result: persisted,
+      roundIndex: 1,
+      state: "complete",
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const checkpoint = toolLoopCheckpoint({
+      phase: "provider_running",
+      providerContinuation: { responseId: "response-after-tools" },
+      roundIndex: 2
+    });
+    if (!checkpoint) throw new Error("tool_loop_checkpoint_fixture_invalid");
+    const toolLoopRow = row({ originalIntent: { kind: "tool_loop_v1" } });
+
+    await expect(groundKnowledgeRunAnswer(client(toolLoopRow, {
+      toolLoopRun: { toolCalls: [toolCall], toolLoopState: checkpoint }
+    }), {
+      answer: "Atlas retains completed exports for 30 days [K1].",
+      runId: "run-1",
+      userId: "user-1"
+    })).resolves.toMatchObject({
+      grounding: {
+        finalText: "Atlas retains completed exports for 30 days [K1].",
+        outcome: "answered",
+        sessionId: "session-1"
+      }
+    });
+
+    const undispatched = toolLoopCheckpoint({
+      phase: "provider_running",
+      providerContinuation: null,
+      roundIndex: 1
+    });
+    if (!undispatched) throw new Error("tool_loop_checkpoint_fixture_invalid");
+    await expect(groundKnowledgeRunAnswer(client(toolLoopRow, {
+      toolLoopRun: { toolCalls: [toolCall], toolLoopState: undispatched }
+    }), {
+      answer: "Undispatched claim [K1].",
+      runId: "run-1",
+      userId: "user-1"
+    })).rejects.toThrow("outside the final evidence manifest");
+  });
+
+  it("fails tool-loop grounding when the persisted result and receipt text diverge", async () => {
+    const evidence = toolLoopRetrieval();
+    const checkpoint = toolLoopCheckpoint({
+      phase: "provider_running",
+      providerContinuation: null,
+      roundIndex: 2
+    });
+    if (!checkpoint) throw new Error("tool_loop_checkpoint_fixture_invalid");
+    await expect(groundKnowledgeRunAnswer(client(row({
+      originalIntent: { kind: "tool_loop_v1" }
+    }), {
+      toolLoopRun: {
+        toolCalls: [{
+          knowledgeRun: {
+            evidenceLinks: [{ evidenceItemId: "evidence-private-id" }],
+            providerText: "tampered provider text",
+            retrievalSessionId: "session-1"
+          },
+          providerCallId: "knowledge-provider-call-1",
+          result: persistedToolLoopKnowledgeResult(evidence),
+          roundIndex: 1,
+          state: "complete",
+          toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+        }],
+        toolLoopState: checkpoint
+      }
+    }), {
+      answer: "Tampered claim [K1].",
+      runId: "run-1",
+      userId: "user-1"
+    })).rejects.toThrow("knowledge_evidence_dispatch_grounding_mismatch");
   });
 
   it("fails closed on malformed or identity-bearing tombstones", async () => {

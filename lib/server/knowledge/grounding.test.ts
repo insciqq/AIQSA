@@ -3,7 +3,11 @@ import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
   type KnowledgeEvidencePackage
 } from "./evidencePackage";
-import { groundKnowledgeAnswer, KnowledgeAnswerContractError } from "./grounding";
+import {
+  groundKnowledgeAnswer,
+  groundKnowledgeToolLoopAnswer,
+  KnowledgeAnswerContractError
+} from "./grounding";
 
 function evidence(): KnowledgeEvidencePackage {
   return {
@@ -45,6 +49,24 @@ function evidence(): KnowledgeEvidencePackage {
     scopeSnapshot: {},
     sessionId: "session-1",
     version: 2
+  };
+}
+
+function toolLoopEvidence(): KnowledgeEvidencePackage {
+  const base = evidence();
+  return {
+    ...base,
+    items: [
+      ...base.items,
+      {
+        ...base.items[0]!,
+        handle: "K2",
+        id: "evidence-2",
+        ordinal: 2,
+        passageId: "passage-2"
+      }
+    ],
+    originalIntent: { kind: "tool_loop_v1" }
   };
 }
 
@@ -163,5 +185,55 @@ describe("Knowledge answer citation contract", () => {
       ].join("\n"),
       evidence: evidence()
     }).outcome).toBe("insufficient_evidence");
+  });
+});
+
+describe("Knowledge tool-loop citation contract", () => {
+  it("keeps ordinary Markdown and permits an answer without a Knowledge citation", () => {
+    const answer = "## Result\n\nNo selected Knowledge passage was needed; see [web](https://example.test).";
+    expect(groundKnowledgeToolLoopAnswer({
+      answer,
+      evidence: toolLoopEvidence()
+    })).toMatchObject({ finalText: answer, outcome: "answered" });
+  });
+
+  it("accepts mixed Knowledge and Web citations", () => {
+    const answer = "The policy says 30 days [K1], while the current web page says 45 days [W1].";
+    expect(groundKnowledgeToolLoopAnswer({
+      answer,
+      evidence: toolLoopEvidence()
+    }).finalText).toBe(answer);
+  });
+
+  it("narrowly normalizes a comma group only when every handle is valid", () => {
+    expect(groundKnowledgeToolLoopAnswer({
+      answer: "Supported by both passages [K1, K2].",
+      evidence: toolLoopEvidence()
+    }).finalText).toBe("Supported by both passages [K1][K2].");
+    expect(() => groundKnowledgeToolLoopAnswer({
+      answer: "Unsupported group [K1, K3].",
+      evidence: toolLoopEvidence()
+    })).toThrow(KnowledgeAnswerContractError);
+  });
+
+  it("rejects unknown, deleted, non-dispatched, and malformed handles", () => {
+    const current = toolLoopEvidence();
+    const deleted: KnowledgeEvidencePackage = {
+      ...current,
+      items: current.items.map((item, index) => index === 0
+        ? { ...item, state: "deleted" as const }
+        : item)
+    };
+    for (const [answer, selectedEvidence] of [
+      ["Unknown [K3].", toolLoopEvidence()],
+      ["Deleted [K1].", deleted],
+      ["Malformed citation K1.", toolLoopEvidence()],
+      ["Malformed [K1 and K2].", toolLoopEvidence()]
+    ] as const) {
+      expect(() => groundKnowledgeToolLoopAnswer({
+        answer,
+        evidence: selectedEvidence
+      })).toThrow(KnowledgeAnswerContractError);
+    }
   });
 });

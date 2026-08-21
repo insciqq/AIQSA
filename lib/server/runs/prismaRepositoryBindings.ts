@@ -26,6 +26,7 @@ import {
   sameKnowledgeRunAdmissionPlan,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
+import { KNOWLEDGE_EVIDENCE_CITATION_CONTRACT } from "../knowledge/evidencePackage";
 import {
   KnowledgeSourceSnapshotConflictError,
   materializeKnowledgeBaseSnapshot
@@ -903,6 +904,32 @@ export async function insertAcceptedKnowledgeRunBindings(
       resolvedBaseCount: current.bindings.length,
       resolvedSourceCount: current.resolvedSourceCount,
       selection: json(current.knowledgePlan)
+    }
+  });
+  const excludedResources = current.exclusions.reduce(
+    (total, exclusion) => total + exclusion.count,
+    0
+  );
+  await tx.knowledgeRetrievalSession.create({
+    data: {
+      citationContract: json(KNOWLEDGE_EVIDENCE_CITATION_CONTRACT),
+      degradedFlags: excludedResources > 0 ? ["partial_readiness"] : [],
+      id: randomUUID(),
+      modelRunId: input.runId,
+      originalIntent: json({ kind: "tool_loop_v1" }),
+      readinessSummary: json({
+        excludedResources,
+        readyBases: current.bindings.length,
+        readySources: current.resolvedSourceCount
+      }),
+      scopeSnapshot: json({
+        budgetPolicy: current.budgetPolicy,
+        exclusions: current.exclusions,
+        resolvedBaseCount: current.bindings.length,
+        resolvedSourceCount: current.resolvedSourceCount,
+        selection: current.knowledgePlan
+      }),
+      version: 2
     }
   });
   for (const profile of canonicalBindings?.profiles ?? []) {

@@ -21,6 +21,7 @@ import {
   KNOWLEDGE_QUERY_MAX_CHARACTERS,
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   type KnowledgeAcceptedBinding,
   type KnowledgeBaseRetrievalEvidence,
@@ -175,6 +176,7 @@ export type KnowledgeScopeAlias = Readonly<{
 
 export type KnowledgeBudgetState = Readonly<{
   evidenceCount?: number;
+  excludedResources?: number;
   invocationOrdinal: number;
   policy: KnowledgeBudgetPolicy;
   priorContentHashes: readonly string[];
@@ -192,7 +194,7 @@ export type KnowledgeToolExecutor = ToolExecutor & Readonly<{
     call: ModelToolCall,
     context: ToolExecutionContext
   ): Promise<KnowledgeExecutionAdmission>;
-  /** Answer providers receive no Knowledge tools. */
+  /** Model-facing Knowledge tools; current runs expose only search_knowledge. */
   tools?: readonly RunTool[];
 }>;
 
@@ -575,7 +577,9 @@ function operationRequestInput(input: Readonly<{
     case "automatic_search":
       return Object.freeze({
         ...common,
-        focused: input.request.focused,
+        ...(input.request.focused
+          ? { focused: input.request.focused }
+          : { query: input.request.query }),
         operation: "automatic_search" as const
       });
     case "find_exact":
@@ -746,8 +750,12 @@ function bindingGroups(bindings: readonly KnowledgeAcceptedBinding[]): Array<{
 
 function validBindings(bindings: readonly KnowledgeAcceptedBinding[]): boolean {
   return bindings.length >= 1 && bindings.length <= KNOWLEDGE_SCOPE_MAX_BINDINGS &&
+    new Set(bindings.map((binding) => binding.ordinal)).size === bindings.length &&
     bindings.every((binding, index) =>
-    binding.ordinal === index && binding.baseContentRevision >= 0 &&
+    Number.isSafeInteger(binding.ordinal) && binding.ordinal >= 0 &&
+    binding.ordinal < KNOWLEDGE_SCOPE_MAX_BINDINGS &&
+    (index === 0 || bindings[index - 1]!.ordinal < binding.ordinal) &&
+    binding.baseContentRevision >= 0 &&
     binding.indexedContentRevision >= 0 &&
     typeof binding.knowledgeBaseSnapshotId === "string" &&
     binding.knowledgeBaseSnapshotId.length > 0 &&
@@ -771,7 +779,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
     resultLimit: KNOWLEDGE_RESULT_LIMIT
   });
 
-  const acceptedToolNames = new Set<string>(KNOWLEDGE_EXECUTION_TOOL_NAMES);
+  const acceptedToolNames = new Set<string>([KNOWLEDGE_SEARCH_TOOL_NAME]);
   const reserveAtomicBudget = async (reservationInput: Readonly<{
     aliases: readonly KnowledgeScopeAlias[];
     bindings: readonly KnowledgeAcceptedBinding[];
@@ -1423,6 +1431,9 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         candidateLimit,
         durationMs,
         embeddingExecutions,
+        ...(budgetState.excludedResources
+          ? { failureCode: "partial_sources_ready" }
+          : {}),
         fusion: ranking.fusion,
         invocationOrdinal: budgetState.invocationOrdinal,
         operation: request.operation,
@@ -1448,6 +1459,6 @@ export function createKnowledgeToolExecutor(input: Readonly<{
     },
     preflight,
     tool: knowledgeRetrievalTool,
-    tools: Object.freeze([])
+    tools: Object.freeze([knowledgeRetrievalTool])
   };
 }

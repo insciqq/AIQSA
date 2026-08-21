@@ -8,6 +8,7 @@ import {
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
+import { KNOWLEDGE_SEARCH_TOOL_NAME } from "../knowledge/retrievalTypes";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { ProviderAdapter, ProviderModelCapabilities } from "../providers/types";
 import { prepareRun, type RunPreparationDeps } from "./runPreparation";
@@ -123,7 +124,7 @@ function fakeAdmissionPlan(input: AdmissionInput, toolCalling = true): ProviderA
     vision: false
   };
   const modelConfiguration = {
-    adapterKind: "fake" as const,
+    adapterKind: "openai_chat_completions_compatible" as const,
     capabilities,
     defaultParams: {}
   };
@@ -133,23 +134,25 @@ function fakeAdmissionPlan(input: AdmissionInput, toolCalling = true): ProviderA
       modelConfiguration,
       snapshot: {
         connection: {
-          allowPrivateNetwork: true,
-          apiRoot: "http://127.0.0.1",
-          authenticationMode: "none",
+          allowPrivateNetwork: false,
+          apiRoot: "https://compatible.example.test/v1",
+          authenticationMode: "bearer",
           responseTimeoutMs: 300_000
         },
         connectionDisplayName: "Fake",
         connectionId: input.providerConnectionId,
-        credentialId: null,
-        credentialVersionId: null,
+        credentialId: "credential-compatible",
+        credentialVersionId: "credential-version-compatible",
         model: {
-          adapterKind: "fake",
+          adapterKind: "openai_chat_completions_compatible",
+          answerSelectable: true,
           capabilities,
           defaultParams: {},
+          modelClass: "answer",
           upstreamModelId: input.providerModelId
         },
         modelDisplayName: "Fake model",
-        providerFamily: "fake",
+        providerFamily: "openai_compatible",
         providerModelId: input.providerModelId,
         version: 1
       }
@@ -309,11 +312,11 @@ describe("ordinary Knowledge plan resolution", () => {
       expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
         knowledgeSelection(expected)
       );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
-        originalQuery: "Hello",
-        retrievalQuery: "Hello",
-        version: 1
-      });
+      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
+      expect(result.prepared.normalizedRequest.toolMode).toBe("auto");
+      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        KNOWLEDGE_SEARCH_TOOL_NAME
+      ]);
     }
   });
 
@@ -349,7 +352,7 @@ describe("ordinary Knowledge plan resolution", () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  it("keeps focused Knowledge active while explicit tool suppression removes provider tools", async () => {
+  it("keeps selected Knowledge active when ordinary client tools are suppressed", async () => {
     const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
       knowledgeAdmissionPlan(input, "c"));
     const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
@@ -365,19 +368,17 @@ describe("ordinary Knowledge plan resolution", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.prepared.normalizedRequest).toMatchObject({
-        knowledgeFocusedRequest: {
-          originalQuery: "Hello",
-          retrievalQuery: "Hello",
-          version: 1
-        },
         knowledgePlan: knowledgeSelection(["base-1"]),
-        toolMode: "none"
+        toolMode: "auto"
       });
-      expect(result.prepared.providerRequest.tools).toBeUndefined();
+      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
+      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        KNOWLEDGE_SEARCH_TOOL_NAME
+      ]);
     }
   });
 
-  it("keeps focused Knowledge active for a non-tool answer model", async () => {
+  it("rejects selected Knowledge for a non-tool answer model", async () => {
     const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
       knowledgeAdmissionPlan(input, "d"));
     const result = await prepareRun(deps({
@@ -393,19 +394,11 @@ describe("ordinary Knowledge plan resolution", () => {
       userId: "user-1"
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
-        knowledgeSelection(["base-1"])
-      );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
-        originalQuery: "Hello",
-        retrievalQuery: "Hello",
-        version: 1
-      });
-      expect(result.prepared.normalizedRequest.toolMode).toBe("none");
-      expect(result.prepared.providerRequest.tools).toBeUndefined();
-    }
+    expect(result).toMatchObject({
+      code: "knowledge_tool_calling_not_supported",
+      ok: false,
+      status: 400
+    });
   });
 
   it("applies the same explicit-plan wire contract to regeneration", async () => {
@@ -443,11 +436,10 @@ describe("ordinary Knowledge plan resolution", () => {
       expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
         knowledgeSelection(["regeneration-base"])
       );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
-        originalQuery: "Stored question",
-        retrievalQuery: "Stored question",
-        version: 1
-      });
+      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
+      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        KNOWLEDGE_SEARCH_TOOL_NAME
+      ]);
     }
   });
 
@@ -545,12 +537,10 @@ describe("assistant run admission", () => {
       expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
         knowledgeSelection(["base-a", "base-b"])
       );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
-        originalQuery: "Review this",
-        retrievalQuery: "Review this",
-        version: 1
-      });
-      expect(result.prepared.providerRequest.tools).toBeUndefined();
+      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
+      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        KNOWLEDGE_SEARCH_TOOL_NAME
+      ]);
     }
   });
 
@@ -631,18 +621,12 @@ describe("assistant run admission", () => {
           sourceId
         })
       ]);
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toEqual({
-        candidateLimit: 40,
-        fusion: "weighted_rrf_v2",
-        neighborWindow: 1,
-        originalQuery: "Review this",
-        resultLimit: 8,
-        retrievalQuery: "Review this",
-        version: 1
-      });
+      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
       expect(result.prepared.normalizedRequest).not.toHaveProperty("knowledgePlanner");
-      expect(result.prepared.normalizedRequest.toolMode).toBe("none");
-      expect(result.prepared.providerRequest.tools).toBeUndefined();
+      expect(result.prepared.normalizedRequest.toolMode).toBe("auto");
+      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        KNOWLEDGE_SEARCH_TOOL_NAME
+      ]);
     }
   });
 

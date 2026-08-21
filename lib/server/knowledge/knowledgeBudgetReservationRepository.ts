@@ -39,6 +39,7 @@ import {
   KNOWLEDGE_EXACT_TOOL_NAME,
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
+  KNOWLEDGE_SEARCH_TOOL_NAME,
 } from "./retrievalTypes";
 
 const MIN_LEASE_MS = 1_000;
@@ -67,11 +68,14 @@ function embeddingCompatibilityKey(value: Readonly<{
   )}`;
 }
 
-const operationToolNames: Readonly<Record<KnowledgeOperationKind, string>> = Object.freeze({
-  automatic_search: KNOWLEDGE_FOCUSED_OPERATION_NAME,
-  discover_sources: KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
-  find_exact: KNOWLEDGE_EXACT_TOOL_NAME,
-  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME
+const operationToolNames: Readonly<Record<KnowledgeOperationKind, readonly string[]>> = Object.freeze({
+  automatic_search: Object.freeze([
+    KNOWLEDGE_SEARCH_TOOL_NAME,
+    KNOWLEDGE_FOCUSED_OPERATION_NAME
+  ]),
+  discover_sources: Object.freeze([KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME]),
+  find_exact: Object.freeze([KNOWLEDGE_EXACT_TOOL_NAME]),
+  read_source: Object.freeze([KNOWLEDGE_READ_SOURCE_TOOL_NAME])
 });
 
 const reservationSelect = {
@@ -1145,7 +1149,7 @@ export function createPrismaKnowledgeBudgetReservationRepository(
         if (!Number.isSafeInteger(context.roundIndex) || context.roundIndex < 0 ||
           context.roundIndex > 63 || !Number.isSafeInteger(context.toolCallOrdinal) ||
           context.toolCallOrdinal < 0 || context.toolCallOrdinal > 127 ||
-          operationToolNames[operation] !== context.toolName) {
+          !operationToolNames[operation].includes(context.toolName)) {
           return { kind: "conflict", reason: "tool_call_mismatch" } as const;
         }
         const now = validNow(currentTime());

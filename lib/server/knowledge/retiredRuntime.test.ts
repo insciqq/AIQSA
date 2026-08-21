@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const serverRoot = join(repositoryRoot, "lib/server");
 const runExecutionPath = join(serverRoot, "runs", "runExecution.ts");
+const runPreparationPath = join(serverRoot, "runs", "runPreparation.ts");
 
 const retiredKnowledgeRuntimeModules = [
   "knowledgeStrategyDispatchLineage",
@@ -58,15 +59,18 @@ describe("retired Knowledge runtime surface", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps the focused route on its single server-side Knowledge operation", () => {
-    const source = readFileSync(runExecutionPath, "utf8");
+  it("uses search_knowledge for new tool loops while retaining historical focused replay", () => {
+    const execution = readFileSync(runExecutionPath, "utf8");
+    const preparation = readFileSync(runPreparationPath, "utf8");
 
     // These assertions make the active graph fail closed if the removed
     // planner/strategy loop is accidentally reintroduced under a new import.
-    expect(source.match(/input\.knowledgeExecutor\.execute\(/gu)).toHaveLength(1);
-    expect(source.match(/focusedKnowledgeEvidenceDispatchDraft\(/gu)).toHaveLength(1);
-    expect(source).not.toMatch(/knowledgePlanner|automaticKnowledgeBranchesForDispatch/u);
-    expect(source).toContain("toolChoice: \"none\"");
-    expect(source).toContain("tools: undefined");
+    expect(execution.match(/input\.knowledgeExecutor(?:!)?\.execute\(/gu)).toHaveLength(2);
+    expect(execution.match(/focusedKnowledgeEvidenceDispatchDraft\(/gu)).toHaveLength(1);
+    expect(execution).toContain("isKnowledgeCall(call.name)");
+    expect(execution).not.toMatch(/knowledgePlanner|automaticKnowledgeBranchesForDispatch/u);
+    expect(preparation).toContain("knowledgeRetrievalTool");
+    expect(preparation).not.toContain("createKnowledgeFocusedRequest");
+    expect(preparation).not.toContain("knowledgeFocusedRequest");
   });
 });

@@ -320,6 +320,90 @@ function persistedReadEvidence(): KnowledgeRetrievalEvidence {
   return { ...draft, providerText: knowledgeToolResultText(draft) };
 }
 
+function fourBindingAutomaticEvidence(): KnowledgeRetrievalEvidence {
+  const current = persistedReadEvidence();
+  const { read: _read, ...withoutRead } = current;
+  const bases = Array.from({ length: 4 }, (_, ordinal) => ({
+    ...current.bases[0]!,
+    baseName: `Base ${ordinal + 1}`,
+    candidateCount: ordinal === 0 ? 1 : 0,
+    indexGenerationId: `generation-${ordinal + 1}`,
+    knowledgeBaseId: `base-${ordinal + 1}`,
+    ordinal,
+    state: ordinal === 0 ? "ready" as const : "empty" as const,
+    vectorSearch: {
+      bindingOrdinal: ordinal,
+      candidateCount: ordinal === 0 ? 1 : 0,
+      eligibleRows: ordinal === 0 ? 1 : 0,
+      mode: "exact" as const,
+      scan: {
+        efSearch: null,
+        iterativeScan: null,
+        maxScanTuples: null,
+        retrievalBucket: 0
+      },
+      targetDimension: 1024 as const
+    }
+  }));
+  const embeddingExecutions = bases.map((base) => ({
+    bindingOrdinals: [base.ordinal],
+    durationMs: 1,
+    inputTokens: 4,
+    modelId: `embedding-${base.ordinal + 1}`,
+    provider: "test",
+    providerModelId: `embedding-provider-${base.ordinal + 1}`,
+    requestId: null,
+    status: "complete" as const,
+    totalTokens: 4
+  }));
+  const draft: KnowledgeRetrievalEvidence = {
+    ...withoutRead,
+    bases,
+    budget: {
+      operation: "automatic_search",
+      stopReason: null,
+      usage: {
+        cumulativeCandidates: 1,
+        estimatedCostMicros: 0,
+        latencyMs: 2,
+        operations: 1,
+        queryEmbeddingCalls: 4,
+        retrievedTokens: 4
+      },
+      version: 1
+    },
+    candidateLimit: 40,
+    embeddingExecutions,
+    fusion: "weighted_rrf_v2",
+    invocationOrdinal: 1,
+    operation: "automatic_search",
+    providerText: "pending",
+    query: "four binding retrieval",
+    resultLimit: 8,
+    results: current.results.map((result) => ({
+      ...result,
+      baseName: "Base 1",
+      signalProvenance: [{
+        exactKind: null,
+        lane: "passage_semantic" as const,
+        rank: 1,
+        rawScore: 0.9,
+        vectorDistance: 0.1,
+        vectorMode: "exact" as const
+      }]
+    })),
+    scopeAliases: [
+      ...bases.map((base) => ({
+        alias: `B${base.ordinal + 1}`,
+        kind: "base" as const,
+        label: base.baseName
+      })),
+      { alias: "S1", kind: "source", label: "Dated report" }
+    ]
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
 function legacyPersistedReadEvidence(): KnowledgeRetrievalEvidence {
   const current = persistedReadEvidence();
   const { read: _read, ...withoutRead } = current;
@@ -1188,6 +1272,38 @@ describe("Prisma Knowledge deterministic source read", () => {
         modelRunToolCallId: "tool-call-4"
       }
     }));
+  });
+
+  it("reconstructs and replays a durable four-binding automatic receipt", async () => {
+    const evidence = fourBindingAutomaticEvidence();
+    const store = createPrismaKnowledgeRetrievalStore({
+      knowledgeRun: {
+        findFirst: vi.fn(async () => ({
+          baseEvidence: evidence.bases,
+          budgetEvidence: evidence.budget,
+          candidateCount: evidence.candidateCount,
+          candidateLimit: evidence.candidateLimit,
+          durationMs: evidence.durationMs,
+          embeddingUsage: evidence.embeddingExecutions,
+          failureCode: null,
+          fusion: evidence.fusion,
+          invocationOrdinal: evidence.invocationOrdinal,
+          operation: evidence.operation,
+          outcome: evidence.outcome,
+          providerText: evidence.providerText,
+          query: evidence.query,
+          readReceipt: null,
+          resultLimit: evidence.resultLimit,
+          results: evidence.results
+        }))
+      }
+    } as never);
+
+    await expect(store.loadReceipt!({
+      modelRunToolCallId: "tool-call-four-bindings",
+      runId: "run-1",
+      userId: "user-1"
+    })).resolves.toEqual(evidence);
   });
 
   it("reconstructs the selected Source identity for a committed empty read", async () => {

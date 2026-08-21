@@ -65,7 +65,8 @@ import {
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
-  KNOWLEDGE_FOCUSED_OPERATION_NAME
+  KNOWLEDGE_FOCUSED_OPERATION_NAME,
+  KNOWLEDGE_SEARCH_TOOL_NAME
 } from "./retrievalTypes";
 import { settleKnowledgeBudgetReservationReceipt } from "./knowledgeBudgetReservationRepository";
 
@@ -99,11 +100,11 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const operationToolNames: Record<KnowledgeOperationKind, string> = {
-  automatic_search: KNOWLEDGE_FOCUSED_OPERATION_NAME,
-  discover_sources: KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
-  find_exact: KNOWLEDGE_EXACT_TOOL_NAME,
-  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME
+const operationToolNames: Record<KnowledgeOperationKind, readonly string[]> = {
+  automatic_search: [KNOWLEDGE_SEARCH_TOOL_NAME, KNOWLEDGE_FOCUSED_OPERATION_NAME],
+  discover_sources: [KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME],
+  find_exact: [KNOWLEDGE_EXACT_TOOL_NAME],
+  read_source: [KNOWLEDGE_READ_SOURCE_TOOL_NAME]
 };
 function embeddingTokens(value: unknown): number {
   if (!Array.isArray(value)) return 0;
@@ -263,7 +264,9 @@ export function createPrismaKnowledgeRetrievalStore(
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
   return {
     async budgetState(input): Promise<KnowledgeBudgetState | null> {
-      const expectedToolName = operationToolNames[input.operation];
+      const expectedToolNames = Prisma.sql`ARRAY[${Prisma.join(
+        operationToolNames[input.operation]
+      )}]::text[]`;
       const toolNames = Prisma.sql`ARRAY[${Prisma.join(
         [...KNOWLEDGE_EXECUTION_TOOL_NAMES]
       )}]::text[]`;
@@ -287,12 +290,12 @@ export function createPrismaKnowledgeRetrievalStore(
            )
           WHERE target."id" = ${input.modelRunToolCallId}
             AND target."modelRunId" = ${input.runId}
-            AND target."toolName" = ${expectedToolName}
+            AND target."toolName" = ANY(${expectedToolNames})
             AND run."userId" = ${input.userId}
           GROUP BY target."id", target."roundIndex"
         `),
         client.knowledgeRunScope.findFirst({
-          select: { budgetPolicy: true },
+          select: { budgetPolicy: true, exclusions: true },
           where: { modelRun: { id: input.runId, userId: input.userId }, modelRunId: input.runId }
         }),
         client.knowledgeRun.findMany({
@@ -309,8 +312,15 @@ export function createPrismaKnowledgeRetrievalStore(
       ]);
       const summary = summaryRows[0];
       const policy = decodeKnowledgeBudgetPolicy(scope?.budgetPolicy);
-      if (!summary || !policy || summary.invocationOrdinal < 1 ||
+      if (!summary || !policy || !Array.isArray(scope?.exclusions) ||
+        summary.invocationOrdinal < 1 ||
         summary.invocationOrdinal > 256) return null;
+      let excludedResources = 0;
+      for (const exclusion of scope.exclusions) {
+        const count = record(exclusion) ? nonNegativeInteger(exclusion.count) : null;
+        if (count === null) return null;
+        excludedResources += count;
+      }
 
       let cumulativeCandidates = 0;
       let evidenceCount = 0;
@@ -343,6 +353,7 @@ export function createPrismaKnowledgeRetrievalStore(
       };
       return {
         evidenceCount,
+        excludedResources,
         invocationOrdinal: summary.invocationOrdinal,
         policy,
         priorContentHashes: [...new Set(priorContentHashes)],
@@ -1088,16 +1099,20 @@ export function createPrismaKnowledgeRetrievalStore(
           vectorSpaceFingerprint: true
         },
         where: {
-          modelRun: { id: input.runId, userId: input.userId }
+          modelRun: { id: input.runId, userId: input.userId },
+          sourceBindings: {
+            some: {
+              readinessState: "ready",
+              sourceId: { not: null },
+              tombstonedAt: null
+            }
+          }
         }
       });
       if (profiles.length > 0) {
         return profiles.map((profile): KnowledgeAcceptedBinding => {
           const selectedSourceIds = profile.sourceBindings.flatMap((source) =>
             source.sourceId ? [source.sourceId] : []);
-          if (selectedSourceIds.length === 0) {
-            throw new Error("knowledge_run_source_binding_unavailable");
-          }
           return {
             baseContentRevision: 0,
             baseName: "Pinned Knowledge Profile",
@@ -1453,7 +1468,7 @@ export function createPrismaKnowledgeRetrievalStore(
           ? decodeKnowledgeFocusedRequest(normalizedRequest.knowledgeFocusedRequest)
           : null;
         const scope = context?.knowledgeRunScope;
-        if (!scope || !focusedRequest) throw new Error("knowledge_evidence_context_invalid");
+        if (!scope) throw new Error("knowledge_evidence_context_invalid");
 
         const exclusions = Array.isArray(scope.exclusions) ? scope.exclusions : [];
         const excludedResources = exclusions.reduce<number>((total, value) => {
@@ -1465,6 +1480,7 @@ export function createPrismaKnowledgeRetrievalStore(
           where: { modelRunId: input.runId }
         });
         if (!session) {
+          if (!focusedRequest) throw new Error("knowledge_evidence_context_invalid");
           const degradedFlags = [
             ...(excludedResources > 0 ? ["partial_readiness"] : [])
           ];
@@ -1490,6 +1506,13 @@ export function createPrismaKnowledgeRetrievalStore(
               version: 2
             }
           });
+        }
+        const originalIntent = record(session.originalIntent)
+          ? session.originalIntent
+          : null;
+        if (!originalIntent || originalIntent.kind !== "tool_loop_v1" &&
+          originalIntent.kind !== "focused_v1") {
+          throw new Error("knowledge_evidence_context_invalid");
         }
         if (session.acceptedAt || session.receiptHash) {
           throw new Error("knowledge_evidence_already_accepted");
