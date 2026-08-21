@@ -248,6 +248,11 @@ describe("chat wire contracts", () => {
         knowledgeBaseId: "private-base-id",
         page: 12
       }],
+      knowledgeState: {
+        answer: "insufficient_evidence",
+        privateReason: "private-retrieval-diagnostic",
+        scope: "partial_sources_ready"
+      },
       knowledgeInvocationCount: 1,
       knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "complete" }],
       memoryReceipt: { itemCount: 1, summary: "private receipt" },
@@ -289,6 +294,10 @@ describe("chat wire contracts", () => {
       knowledgeCitations: [{
         handle: "K1.1"
       }],
+      knowledgeState: {
+        answer: "insufficient_evidence",
+        scope: "partial_sources_ready"
+      },
       reasoningText: ["Checked reasoning"],
       sources: [{
         rank: 1,

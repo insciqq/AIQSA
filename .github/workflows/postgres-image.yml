@@ -44,11 +44,11 @@ jobs:
           fi
 
   quality:
-    name: Release quality gates
+    name: Release technical gates
     needs: prepare
     permissions:
       contents: read
-    uses: ./.github/workflows/knowledge-quality.yml
+    uses: ./.github/workflows/release-technical.yml
 
   build:
     name: Build Postgres ${{ matrix.platform }}

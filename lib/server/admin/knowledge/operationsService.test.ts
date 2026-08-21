@@ -46,7 +46,6 @@ describe("administrator Knowledge operations service", () => {
         pendingDeletionObjects: 3,
         processingArtifacts: 1,
         readyArtifacts: 20,
-        repairedAnswers24h: 2,
         retrievalOperations24h: 20,
         settledUploads24h: 12,
         uploadedBytes24h: 2_048n,
@@ -56,6 +55,14 @@ describe("administrator Knowledge operations service", () => {
     const client = { $queryRaw: queryRaw } as unknown as PrismaClient;
 
     const result = await createAdminKnowledgeOperationsService(client).read();
+    const operationsSql = queryRaw.mock.calls[0]?.[0] as { strings?: string[] } | undefined;
+    const operationsSqlText = operationsSql?.strings?.join(" ") ?? "";
+    const retiredStructuredOutcome = ["structured", "clarification", "required"].join("_");
+    const retiredNoAnswerOutcome = ["no", "answer"].join("_");
+    expect(operationsSqlText).not.toContain(retiredStructuredOutcome);
+    expect(operationsSqlText).not.toContain(retiredNoAnswerOutcome);
+    expect(operationsSqlText).toMatch(/base_indexing|source_location_unavailable/u);
+    expect(operationsSqlText).toContain("insufficient_evidence");
 
     expect(result).toMatchObject({
       alerts: [
@@ -107,7 +114,6 @@ describe("administrator Knowledge operations service", () => {
         pendingDeletionObjects: 0,
         processingArtifacts: 0,
         readyArtifacts: 0,
-        repairedAnswers24h: 0,
         retrievalOperations24h: 0,
         settledUploads24h: 0,
         uploadedBytes24h: 0n,

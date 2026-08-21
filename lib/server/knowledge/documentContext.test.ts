@@ -8,7 +8,6 @@ import {
   normalizeKnowledgeObservationValue,
   normalizeKnowledgeTableHeaderPeriodV1
 } from "./documentContext";
-import { assessKnowledgeObservationGroundingV1 } from "./observationGrounding";
 
 describe("Knowledge document context v1", () => {
   it("normalizes unambiguous EN/RU decimals and dates without conflating thousands", () => {
@@ -137,32 +136,6 @@ describe("Knowledge document context v1", () => {
     });
     const serialized = decodeKnowledgeDocumentContext(JSON.parse(JSON.stringify(context)));
     expect(serialized).toEqual(context);
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: "Revenue actual is 100 in 2024.",
-      context: serialized!
-    })).toMatchObject({ matchedObservationIndexes: [1], reasonCodes: [], supported: true });
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: "Revenue actual is 100 in 2025.",
-      context: serialized!
-    })).toMatchObject({ matchedObservationIndexes: [2], reasonCodes: [], supported: true });
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: "Revenue actual is 100 in 2026.",
-      context: serialized!
-    })).toMatchObject({
-      reasonCodes: ["observation_context_mismatch"],
-      supported: false
-    });
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: "Revenue actual is 25 in Q1 2026.",
-      context: serialized!
-    })).toMatchObject({ matchedObservationIndexes: [3], reasonCodes: [], supported: true });
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: "Revenue actual is 25 in Q2 2026.",
-      context: serialized!
-    })).toMatchObject({
-      reasonCodes: ["observation_context_mismatch"],
-      supported: false
-    });
   });
 
   it("serializes attached evidence units and rejects a conflicting authoritative unit", () => {
@@ -190,45 +163,6 @@ describe("Knowledge document context v1", () => {
       ambiguityReasons: ["ambiguous_role"],
       normalizedValue: "1000",
       unit: null
-    });
-  });
-
-  it.each([
-    ["Dose", "5 mg", "Dose actual is 5mg.", "Dose actual is 5g."],
-    ["Temperature", "37°C", "Temperature actual is 37°C.", "Temperature actual is 37°F."],
-    ["Count", "1e3mg", "Count actual is 1e3mg.", "Count actual is 1e3g."],
-    ["Temperature", "−5 mg", "Temperature actual is −5mg.", "Temperature actual is 5mg."]
-  ])("grounds a claim against serialized producer evidence %s = %s", (
-    metric,
-    evidenceValue,
-    claim,
-    rejectedClaim
-  ) => {
-    const context = createKnowledgeTableDocumentContext({
-      blockId: `block-${metric}`,
-      cells: [
-        { columnEnd: 0, columnStart: 0, text: metric! },
-        { columnEnd: 1, columnStart: 1, text: evidenceValue! }
-      ],
-      headerLineage: [
-        { columnEnd: 0, columnStart: 0, rowIndex: 0, text: "Metric" },
-        { columnEnd: 1, columnStart: 1, rowIndex: 0, text: "Actual" }
-      ],
-      rowIndex: 1
-    });
-    const serialized = decodeKnowledgeDocumentContext(JSON.parse(JSON.stringify(context)));
-
-    expect(serialized).not.toBeNull();
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: claim!,
-      context: serialized!
-    })).toMatchObject({ reasonCodes: [], supported: true });
-    expect(assessKnowledgeObservationGroundingV1({
-      claim: rejectedClaim!,
-      context: serialized!
-    })).toMatchObject({
-      reasonCodes: ["observation_context_mismatch"],
-      supported: false
     });
   });
 

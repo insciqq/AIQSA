@@ -81,11 +81,17 @@ export type ThreadAssistantIdentity = {
 export type ThreadArtifactSummary = {
   citations: ThreadCitation[];
   groundingDisplay?: ThreadGroundingDisplay | null;
+  knowledgeState?: ThreadKnowledgeAnswerState;
   knowledgeCitations?: ThreadKnowledgeCitation[];
   memoryAction?: MemoryActionFeedback;
   reasoningText: string[];
   sources: ThreadSearchSource[];
 };
+
+export type ThreadKnowledgeAnswerState = Readonly<{
+  answer: "answered" | "insufficient_evidence";
+  scope: "partial_sources_ready" | "ready";
+}>;
 
 export type ThreadToolActivity = {
   calls: ThreadToolActivityCall[];
@@ -121,8 +127,7 @@ export type ThreadKnowledgeOutcome = {
     | "base_empty"
     | "base_indexing"
     | "complete"
-    | "embedding_model_unavailable"
-    | "zero_above_threshold";
+    | "embedding_model_unavailable";
 };
 
 export type ThreadGroundingDisplay = {
@@ -719,6 +724,19 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     }
   }
 
+  let knowledgeState: ThreadKnowledgeAnswerState | undefined;
+  if (value.knowledgeState !== undefined) {
+    if (!isRecord(value.knowledgeState) ||
+      value.knowledgeState.answer !== "answered" &&
+        value.knowledgeState.answer !== "insufficient_evidence" ||
+      value.knowledgeState.scope !== "ready" &&
+        value.knowledgeState.scope !== "partial_sources_ready") return null;
+    knowledgeState = {
+      answer: value.knowledgeState.answer,
+      scope: value.knowledgeState.scope
+    };
+  }
+
   let memoryAction: MemoryActionFeedback | undefined;
   if (value.memoryAction !== undefined) {
     const decoded = decodeMemoryActionFeedback(value.memoryAction);
@@ -731,6 +749,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
       (citation): citation is ThreadCitation => citation !== null
     ),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
+    ...(knowledgeState ? { knowledgeState } : {}),
     ...(knowledgeCitations !== undefined ? { knowledgeCitations } : {}),
     ...(memoryAction ? { memoryAction } : {}),
     reasoningText: value.reasoningText as string[],

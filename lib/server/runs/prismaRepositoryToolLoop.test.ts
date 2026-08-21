@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
+import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
 
 type ToolCallRow = {
@@ -41,6 +42,35 @@ type ToolCallUpdate = {
     state: ToolCallRow["state"];
   };
 };
+
+const focusedEmbeddingSnapshot = {
+  connection: {
+    allowPrivateNetwork: true,
+    apiRoot: "http://127.0.0.1",
+    authenticationMode: "none",
+    responseTimeoutMs: 300_000
+  },
+  connectionDisplayName: "Fake",
+  connectionId: "embedding-connection",
+  credentialId: null,
+  credentialVersionId: null,
+  model: {
+    adapterKind: "fake",
+    capabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      vision: false
+    },
+    defaultParams: {},
+    upstreamModelId: "embedding-model"
+  },
+  modelDisplayName: "Embedding model",
+  providerFamily: "fake",
+  providerModelId: "embedding-model",
+  version: 1
+} as const;
 
 function cancellationHarness(options: Readonly<{
   failToolCallUpdate?: boolean;
@@ -321,6 +351,197 @@ describe("provider dispatch recovery request loading", () => {
     });
   });
 
+  it("round-trips only the server-minted focused Knowledge contract version", async () => {
+    const focusedRequest = createKnowledgeFocusedRequest({ currentUserMessage: "Question" })!;
+    for (const [contract, accepted] of [[1, true], [2, false]] as const) {
+      const request = {
+        ...normalizedRequest,
+        knowledgeFocusedRequest: focusedRequest,
+        knowledgePlan: {
+          baseIds: ["base-one"],
+          mode: "explicit" as const,
+          sourceIds: [],
+          version: 1 as const
+        },
+        prompt: { ...normalizedRequest.prompt, knowledgeAnswerContract: contract }
+      };
+      const operations = createPrismaRunToolLoopOperations({
+        modelRun: {
+          findUnique: vi.fn(async () => ({
+            chat: { projectId: null, userId: "owner-one" },
+            chatId: "chat-one",
+            modelId: "model-one",
+            normalizedRequest: request,
+            provider: "provider-one"
+          }))
+        }
+      } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+      const loaded = operations.loadProviderDispatchRecoveryRequest!({
+        runId: "run-one",
+        userId: "owner-one"
+      });
+
+      if (accepted) await expect(loaded).resolves.toEqual(request);
+      else await expect(loaded).rejects.toThrow(
+        "provider_dispatch_recovery_request_invalid_in_storage"
+      );
+    }
+  });
+
+  it("loads immutable focused exclusions from the accepted run scope", async () => {
+    const exclusions = [{
+      count: 2,
+      reason: "not_ready",
+      resourceType: "source"
+    }] as const;
+    const findFirst = vi.fn(async () => ({ knowledgeRunScope: { exclusions } }));
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: { findFirst }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadFocusedKnowledgeScopeExclusions!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).resolves.toEqual(exclusions);
+    expect(findFirst).toHaveBeenCalledWith({
+      select: {
+        knowledgeRunScope: { select: { exclusions: true } }
+      },
+      where: { id: "run-one", userId: "owner-one" }
+    });
+  });
+
+  it("loads the exact immutable focused Source authorization snapshot", async () => {
+    const findFirst = vi.fn(async () => ({
+      knowledgeRunBindings: [{
+        includeWholeBase: true,
+        indexGenerationId: "generation-one",
+        knowledgeBaseId: "base-one",
+        ordinal: 0,
+        selectedSourceIds: [],
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      knowledgeRunProfileBindings: [{
+        embeddingCredentialSource: "default",
+        embeddingExecutionSnapshot: focusedEmbeddingSnapshot,
+        embeddingProviderModelId: "embedding-model",
+        ordinal: 0,
+        profileRevisionId: "profile-revision-one",
+        targetDimension: 1_024,
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      knowledgeRunScope: {
+        exclusions: [{ count: 1, reason: "not_ready", resourceType: "source" }],
+        resolvedBaseCount: 1,
+        resolvedSourceCount: 1,
+        selection: { baseIds: ["base-one"], mode: "explicit", sourceIds: [], version: 1 }
+      },
+      knowledgeRunSourceBindings: [{
+        accessProvenance: {
+          authority: { knowledgeBaseIds: ["base-one"], owner: false, projectId: null },
+          selectionProvenance: ["base"]
+        },
+        baseProvenance: [{
+          indexGenerationId: "generation-one",
+          knowledgeBaseId: "base-one"
+        }],
+        directSelected: false,
+        ordinal: 0,
+        profileBinding: { profileRevisionId: "profile-revision-one" },
+        readinessState: "ready",
+        sourceAlias: "S1",
+        sourceArtifactId: "artifact-one",
+        sourceId: "source-one",
+        sourceVersionId: "source-version-one",
+        tombstonedAt: null
+      }]
+    }));
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: { findFirst }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadFocusedKnowledgeRecoveryScope!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).resolves.toMatchObject({
+      bindings: [{
+        indexGenerationId: "generation-one",
+        knowledgeBaseId: "base-one"
+      }],
+      exclusions: [{ count: 1, reason: "not_ready", resourceType: "source" }],
+      knowledgePlan: { baseIds: ["base-one"], mode: "explicit", sourceIds: [], version: 1 },
+      profiles: [{ profileRevisionId: "profile-revision-one" }],
+      sources: [{
+        authority: { knowledgeBaseIds: ["base-one"], owner: false, projectId: null },
+        baseProvenance: [{
+          indexGenerationId: "generation-one",
+          knowledgeBaseId: "base-one"
+        }],
+        sourceArtifactId: "artifact-one",
+        sourceId: "source-one",
+        sourceVersionId: "source-version-one"
+      }]
+    });
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "run-one", userId: "owner-one" }
+    }));
+  });
+
+  it("rejects a focused Source snapshot whose Base provenance is not in the accepted scope", async () => {
+    const findFirst = vi.fn(async () => ({
+      knowledgeRunBindings: [{
+        includeWholeBase: true,
+        indexGenerationId: "generation-one",
+        knowledgeBaseId: "base-one",
+        ordinal: 0,
+        selectedSourceIds: [],
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      knowledgeRunProfileBindings: [{
+        embeddingCredentialSource: "default",
+        embeddingExecutionSnapshot: focusedEmbeddingSnapshot,
+        embeddingProviderModelId: "embedding-model",
+        ordinal: 0,
+        profileRevisionId: "profile-revision-one",
+        targetDimension: 1_024,
+        vectorSpaceFingerprint: "a".repeat(64)
+      }],
+      knowledgeRunScope: {
+        exclusions: [],
+        resolvedBaseCount: 1,
+        resolvedSourceCount: 1,
+        selection: { baseIds: ["base-one"], mode: "explicit", sourceIds: [], version: 1 }
+      },
+      knowledgeRunSourceBindings: [{
+        accessProvenance: {
+          authority: { knowledgeBaseIds: ["base-two"], owner: false, projectId: null },
+          selectionProvenance: ["base"]
+        },
+        baseProvenance: [{
+          indexGenerationId: "generation-two",
+          knowledgeBaseId: "base-two"
+        }],
+        directSelected: false,
+        ordinal: 0,
+        profileBinding: { profileRevisionId: "profile-revision-one" },
+        readinessState: "ready",
+        sourceAlias: "S1",
+        sourceArtifactId: "artifact-one",
+        sourceId: "source-one",
+        sourceVersionId: "source-version-one",
+        tombstonedAt: null
+      }]
+    }));
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: { findFirst }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadFocusedKnowledgeRecoveryScope!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).rejects.toThrow("knowledge_run_scope_invalid_in_storage");
+  });
+
   it("accepts a persisted MCP server-only snapshot", async () => {
     const acceptedRequest: NormalizedRunRequest = {
       ...normalizedRequest,
@@ -351,6 +572,48 @@ describe("provider dispatch recovery request loading", () => {
       runId: "run-one",
       userId: "owner-one"
     })).resolves.toEqual(acceptedRequest);
+  });
+
+  it("rejects focused recovery requests that can expose any model tool route", async () => {
+    const focusedRequest = createKnowledgeFocusedRequest({ currentUserMessage: "Question" })!;
+    for (const unsafe of [
+      { toolMode: "auto" as const },
+      { mcp: { servers: [], tools: [], version: 1 as const } },
+      { mcpDiscovery: { catalog: { servers: [] }, epochs: [], version: 2 as const } },
+      { memoryActionTools: { version: "model-driven-v2" as const } },
+      { memoryHistoryTool: { maxCalls: 2 as const, pageSize: 20 as const } },
+      { searchPlan: {
+          mode: "all_selected" as const,
+          options: [{ unsafe: true }]
+        } }
+    ]) {
+      const operations = createPrismaRunToolLoopOperations({
+        modelRun: {
+          findUnique: vi.fn(async () => ({
+            chat: { projectId: null, userId: "owner-one" },
+            chatId: "chat-one",
+            modelId: "model-one",
+            normalizedRequest: {
+              ...normalizedRequest,
+              knowledgeFocusedRequest: focusedRequest,
+              knowledgePlan: {
+                baseIds: ["base-one"],
+                mode: "explicit",
+                sourceIds: [],
+                version: 1
+              },
+              ...unsafe
+            },
+            provider: "provider-one"
+          }))
+        }
+      } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+      await expect(operations.loadProviderDispatchRecoveryRequest!({
+        runId: "run-one",
+        userId: "owner-one"
+      })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
   });
 
   it("rejects a stored request with an unrecognized private projection", async () => {

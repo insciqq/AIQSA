@@ -14,7 +14,10 @@ import {
   type KnowledgeViewerWorkbook,
   type KnowledgeViewerSourceStatus
 } from "../../contracts/knowledgeCitations";
-import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
+import {
+  decodeKnowledgeCitationHandle,
+  knowledgeCitationHandlesFromText
+} from "../../contracts/knowledge";
 import type { StorageAdapter } from "../uploads/storage";
 import { resolveChatAccess, type ChatAccess } from "../projects/access";
 import { getKnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
@@ -37,6 +40,19 @@ import {
 import { utils as spreadsheetUtils } from "xlsx";
 
 type CitationViewerClient = PrismaClient | Prisma.TransactionClient;
+
+function messageText(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  if (!Array.isArray(record.blocks)) return "";
+  return record.blocks.flatMap((block) =>
+    block && typeof block === "object" && !Array.isArray(block) &&
+      (block as Record<string, unknown>).type === "text" &&
+      typeof (block as Record<string, unknown>).text === "string"
+      ? [(block as Record<string, unknown>).text as string]
+      : []).join("\n");
+}
 
 export type KnowledgeViewerOriginal = Readonly<{
   byteSize: number;
@@ -123,6 +139,30 @@ type EvidenceItem = Readonly<{
   textTruncated: boolean | null;
 }>;
 
+const evidenceItemViewerSelect = {
+  baseName: true,
+  contentHash: true,
+  contextBoundaries: true,
+  documentId: true,
+  documentVersionId: true,
+  excerpt: true,
+  fileName: true,
+  handle: true,
+  headingPath: true,
+  knowledgeBaseId: true,
+  locator: true,
+  page: true,
+  passageId: true,
+  retrievalSessionId: true,
+  sourceArtifactId: true,
+  sourceId: true,
+  sourceName: true,
+  sourceVersionId: true,
+  sourceVersionNumber: true,
+  state: true,
+  textTruncated: true
+} satisfies Prisma.KnowledgeEvidenceItemSelect;
+
 type EvidenceAuthority = Readonly<{
   base: CurrentBase | null;
   knowledgeBaseId: string | null;
@@ -145,7 +185,10 @@ function acceptedBaseIds(value: Prisma.JsonValue | null): readonly string[] | nu
   return new Set(result).size === result.length ? Object.freeze(result) : null;
 }
 
-function installationOrGroupPublication(groupIds: readonly string[]): Prisma.KnowledgeBaseWhereInput {
+function installationOrGroupPublication(
+  groupIds: readonly string[],
+  includeTrash = false
+): Prisma.KnowledgeBaseWhereInput {
   return {
     archivedAt: null,
     publications: {
@@ -162,7 +205,7 @@ function installationOrGroupPublication(groupIds: readonly string[]): Prisma.Kno
         ]
       }
     },
-    trashedAt: null
+    ...(includeTrash ? {} : { trashedAt: null })
   };
 }
 
@@ -180,8 +223,7 @@ async function currentBaseForAccess(
       where: {
         deletionRequestedAt: null,
         id: input.knowledgeBaseId,
-        projectBindings: { some: { projectId: input.access.project.projectId } },
-        trashedAt: null
+        projectBindings: { some: { projectId: input.access.project.projectId } }
       }
     });
   }
@@ -197,7 +239,7 @@ async function currentBaseForAccess(
       id: input.knowledgeBaseId,
       OR: [
         { ownerUserId: input.userId },
-        installationOrGroupPublication(memberships.map(({ groupId }) => groupId))
+        installationOrGroupPublication(memberships.map(({ groupId }) => groupId), true)
       ]
     }
   });
@@ -708,21 +750,12 @@ function sourceStatuses(input: Readonly<{
         entry.knowledgeBaseId === input.knowledgeBaseId)
     : null;
   if (input.knowledgeBaseId && (!membership || membership.removedAt)) statuses.push("removed");
-  if ((input.base?.trashedAt || input.version.source.trashedAt) &&
-    input.version.source.ownerUserId === input.userId) statuses.push("trash");
+  if (input.base?.trashedAt || input.version.source.trashedAt) statuses.push("trash");
   return statuses;
 }
 
-function sourceCurrentlyReadable(
-  access: ChatAccess,
-  userId: string,
-  version: ViewerSourceVersion
-): boolean {
-  if (version.source.deletionRequestedAt) return false;
-  if (version.source.trashedAt) {
-    return access.kind === "personal" && version.source.ownerUserId === userId;
-  }
-  return true;
+function sourceCurrentlyReadable(version: ViewerSourceVersion): boolean {
+  return version.source.deletionRequestedAt === null;
 }
 
 async function citationFromEvidence(
@@ -757,7 +790,7 @@ async function citationFromEvidence(
     item: input.item,
     knowledgeBaseId: authority.knowledgeBaseId
   });
-  if (!version || !sourceCurrentlyReadable(input.access, input.userId, version)) return null;
+  if (!version || !sourceCurrentlyReadable(version)) return null;
   const artifact = version.artifacts[0] ?? null;
   const passage = artifact?.hierarchicalIndexes[0]?.passageIndexes[0] ?? null;
   const visual = visualAnalysis(input.item);
@@ -905,7 +938,11 @@ export async function resolveKnowledgeCitationViewer(
   const decodedHandle = decodeKnowledgeCitationHandle(input.handle);
   if (!input.assistantMessageId || !input.runId || !input.userId || !decodedHandle) return null;
   const run = await client.modelRun.findFirst({
-    select: { chatId: true, id: true },
+    select: {
+      assistantMessage: { select: { content: true } },
+      chatId: true,
+      id: true
+    },
     where: { assistantMessageId: input.assistantMessageId, id: input.runId }
   });
   if (!run) return null;
@@ -916,42 +953,62 @@ export async function resolveKnowledgeCitationViewer(
   if (!access) return null;
 
   if ("evidenceOrdinal" in decodedHandle) {
-    const item = await client.knowledgeEvidenceItem.findFirst({
+    const dispatchedItem = await client.knowledgeEvidenceDispatchManifestItem.findFirst({
       select: {
-        baseName: true,
-        contentHash: true,
-        contextBoundaries: true,
-        documentId: true,
-        documentVersionId: true,
-        excerpt: true,
-        fileName: true,
-        handle: true,
-        headingPath: true,
-        knowledgeBaseId: true,
-        locator: true,
-        page: true,
-        passageId: true,
-        sourceArtifactId: true,
-        sourceId: true,
-        sourceName: true,
-        sourceVersionId: true,
-        sourceVersionNumber: true,
-        state: true,
-        textTruncated: true
+        evidenceItem: { select: evidenceItemViewerSelect },
+        manifest: { select: { retrievalSessionId: true } }
       },
       where: {
+        evidenceItem: {
+          is: {
+            handle: decodedHandle.handle,
+            retrievalSession: { modelRunId: run.id }
+          }
+        },
         handle: decodedHandle.handle,
-        retrievalSession: { modelRunId: run.id }
+        manifest: {
+          is: {
+            modelRunId: run.id,
+            providerAttempt: {
+              is: {
+                modelRunId: run.id,
+                purpose: "answer",
+                state: "settled"
+              }
+            },
+            purgedAt: null,
+            retrievalSession: { is: { modelRunId: run.id } }
+          }
+        }
       }
     });
-    return item
-      ? citationFromEvidence(client, storage, {
-          access,
-          item,
-          runId: run.id,
-          userId: input.userId
-        })
-      : null;
+    if (!dispatchedItem?.evidenceItem) {
+      if (!run.assistantMessage || !knowledgeCitationHandlesFromText(
+        messageText(run.assistantMessage.content)
+      ).includes(decodedHandle.handle)) return null;
+      const deletedItem = await client.knowledgeEvidenceItem.findFirst({
+        select: { handle: true },
+        where: {
+          handle: decodedHandle.handle,
+          retrievalSession: { modelRunId: run.id },
+          state: "deleted"
+        }
+      });
+      return deletedItem
+        ? {
+            citation: { handle: decodedHandle.handle, state: "deleted" },
+            original: null
+          }
+        : null;
+    }
+    const item = dispatchedItem.evidenceItem;
+    if (item.retrievalSessionId !== dispatchedItem.manifest.retrievalSessionId) return null;
+    return citationFromEvidence(client, storage, {
+      access,
+      item,
+      runId: run.id,
+      userId: input.userId
+    });
   }
 
   return citationFromLegacyRun(client, {

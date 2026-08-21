@@ -71,8 +71,6 @@ import {
   groundKnowledgeRunAnswer,
   settleKnowledgeGrounding
 } from "../knowledge/evidenceRepository";
-import type { KnowledgeSemanticLocalValidatorExecutor } from
-  "../knowledge/semanticShadow";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -144,7 +142,6 @@ export function createPrismaRunRepository(
     memoryExecutionAuthority?: MemoryExecutionAuthorityDependencies;
     memoryRetrieval?: MemoryRunRetrievalService;
     memorySourceHooks?: MemorySourceMutationHooks;
-    semanticShadowExecutor?: KnowledgeSemanticLocalValidatorExecutor;
   }> = {}
 ): RunRepository {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
@@ -332,10 +329,7 @@ export function createPrismaRunRepository(
   }
 
   return {
-    groundKnowledgeAnswer: (input) =>
-      groundKnowledgeRunAnswer(prismaClient, input, {
-        semanticShadowExecutor: options.semanticShadowExecutor
-      }),
+    groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input),
     admitPreparingRun: (input) =>
       admitPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     beginPreparingRunAttempt: (input) =>

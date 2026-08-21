@@ -14,27 +14,11 @@ import {
   rehydratePersistedKnowledgeToolExecutionResult
 } from "./toolResult";
 import {
-  KNOWLEDGE_STRATEGY_EXECUTION_VERSION,
-  type KnowledgeStrategyStepEvidenceV1
-} from "./knowledgeStrategyExecution";
-import {
   createKnowledgeTableDocumentContext,
   knowledgeTableRowId
 } from "./documentContext";
 
 const vectorSpaceFingerprint = "a".repeat(64);
-
-function strategyStepEvidence(): KnowledgeStrategyStepEvidenceV1 {
-  return {
-    executionId: "strategy-execution-1",
-    kind: "full_context_page",
-    ordinal: 0,
-    requestHash: "b".repeat(64),
-    resultHash: "c".repeat(64),
-    stepId: "strategy-step-1",
-    version: KNOWLEDGE_STRATEGY_EXECUTION_VERSION
-  };
-}
 
 function passage(): KnowledgeRetrievedPassageEvidence {
   const includedText = "Verified passage";
@@ -99,15 +83,11 @@ function currentEvidence(
     fusion: "rrf_k60",
     invocationOrdinal: 1,
     outcome: "complete",
-    postRerankOrder: null,
-    preRerankOrder: null,
     providerText: "pending",
     query: "Question",
-    rerankerBinding: null,
     resultLimit: 8,
     results: [passage()],
     scopeAliases: [{ alias: "S1", kind: "source", label: "Source label" }],
-    threshold: 0.01,
     version: KNOWLEDGE_RESULT_VERSION,
     ...overrides
   };
@@ -127,9 +107,13 @@ function legacyEvidence(): KnowledgeRetrievalEvidence {
   });
   const draft: KnowledgeRetrievalEvidence = {
     ...current,
+    postRerankOrder: null,
+    preRerankOrder: null,
     providerText: "pending",
+    rerankerBinding: null,
     results: legacyPassages,
     scopeAliases: undefined,
+    threshold: 0.01,
     version: KNOWLEDGE_LEGACY_RESULT_VERSION
   };
   return { ...draft, providerText: knowledgeToolResultText(draft) };
@@ -162,21 +146,15 @@ function readEvidence(): KnowledgeRetrievalEvidence {
   };
   return currentEvidence({
     budget: {
-      noveltyRatio: 1,
       operation: "read_source",
       stopReason: null,
       usage: {
         cumulativeCandidates: 1,
         estimatedCostMicros: 0,
-        followUpOperations: 1,
         latencyMs: 3,
-        lowNoveltyStreak: 0,
         operations: 1,
         queryEmbeddingCalls: 0,
-        rerankerCalls: 0,
-        retrievedTokens: 4,
-        searchPhases: 1,
-        subqueriesInCurrentPhase: 1
+        retrievedTokens: 4
       },
       version: 1
     },
@@ -205,63 +183,6 @@ function readEvidence(): KnowledgeRetrievalEvidence {
 }
 
 describe("Knowledge result contract versioning", () => {
-  it("accepts only an exact V2 strategy-step marker and keeps it out of provider text", () => {
-    const marker = strategyStepEvidence();
-    const localPassage = {
-      ...passage(),
-      annRank: null,
-      ftsRank: null,
-      ftsScore: null,
-      fusedScore: 0,
-      vectorDistance: null,
-      vectorScore: null
-    };
-    const evidence = currentEvidence({
-      budget: {
-        noveltyRatio: 1,
-        operation: "automatic_search",
-        stopReason: null,
-        usage: {
-          cumulativeCandidates: 1,
-          estimatedCostMicros: 0,
-          followUpOperations: 0,
-          latencyMs: 3,
-          lowNoveltyStreak: 0,
-          operations: 1,
-          queryEmbeddingCalls: 0,
-          rerankerCalls: 0,
-          retrievedTokens: 4,
-          searchPhases: 1,
-          subqueriesInCurrentPhase: 1
-        },
-        version: 1
-      },
-      candidateLimit: 1,
-      embeddingExecutions: [],
-      operation: "automatic_search",
-      resultLimit: 1,
-      results: [localPassage],
-      strategyStepEvidence: marker,
-      threshold: 0
-    });
-
-    expect(decodeKnowledgeRetrievalEvidence(evidence)?.strategyStepEvidence).toEqual(marker);
-    expect(evidence.providerText).not.toContain(marker.executionId);
-    expect(evidence.providerText).not.toContain(marker.stepId);
-    expect(decodeKnowledgeRetrievalEvidence({
-      ...evidence,
-      strategyStepEvidence: { ...marker, unexpected: true }
-    })).toBeNull();
-    expect(decodeKnowledgeRetrievalEvidence({
-      ...evidence,
-      strategyStepEvidence: { ...marker, resultHash: "invalid" }
-    })).toBeNull();
-    expect(decodeKnowledgeRetrievalEvidence({
-      ...legacyEvidence(),
-      strategyStepEvidence: marker
-    })).toBeNull();
-  });
-
   it("keeps the legacy V1 provider bytes and does not invent a Source alias while decoding", () => {
     const legacy = legacyEvidence();
 
@@ -305,6 +226,22 @@ describe("Knowledge result contract versioning", () => {
       ...evidence,
       results: [{ ...evidence.results[0]!, handle: "K1.1" }]
     })).toBeNull();
+  });
+
+  it("keeps planner-era ranking fields decode-only and version-bound", () => {
+    const current = currentEvidence();
+    for (const legacyField of [
+      { postRerankOrder: null },
+      { preRerankOrder: null },
+      { rerankerBinding: null },
+      { threshold: 0 }
+    ]) {
+      expect(decodeKnowledgeRetrievalEvidence({ ...current, ...legacyField })).toBeNull();
+    }
+
+    const legacy = legacyEvidence();
+    const { threshold: _threshold, ...missingThreshold } = legacy;
+    expect(decodeKnowledgeRetrievalEvidence(missingThreshold)).toBeNull();
   });
 
   it("allows combining only one complete non-truncated table-row projection group", () => {
@@ -379,21 +316,15 @@ describe("Knowledge result contract versioning", () => {
     };
     const evidence = currentEvidence({
       budget: {
-        noveltyRatio: 1,
         operation: "find_exact",
         stopReason: null,
         usage: {
           cumulativeCandidates: 1,
           estimatedCostMicros: 0,
-          followUpOperations: 1,
           latencyMs: 3,
-          lowNoveltyStreak: 0,
           operations: 1,
           queryEmbeddingCalls: 0,
-          rerankerCalls: 0,
-          retrievedTokens: 4,
-          searchPhases: 1,
-          subqueriesInCurrentPhase: 1
+          retrievedTokens: 4
         },
         version: 1
       },
@@ -416,8 +347,7 @@ describe("Knowledge result contract versioning", () => {
       operation: "find_exact",
       query: "Verified",
       resultLimit: 8,
-      results: [result],
-      threshold: 0
+      results: [result]
     });
 
     expect(decodeKnowledgeRetrievalEvidence(evidence)).not.toBeNull();
@@ -436,21 +366,15 @@ describe("Knowledge result contract versioning", () => {
     const ordinary = currentEvidence();
     const evidence = currentEvidence({
       budget: {
-        noveltyRatio: null,
         operation: "discover_sources",
         stopReason: null,
         usage: {
           cumulativeCandidates: 1,
           estimatedCostMicros: 0,
-          followUpOperations: 1,
           latencyMs: 3,
-          lowNoveltyStreak: 0,
           operations: 1,
           queryEmbeddingCalls: 0,
-          rerankerCalls: 0,
-          retrievedTokens: 0,
-          searchPhases: 1,
-          subqueriesInCurrentPhase: 1
+          retrievedTokens: 0
         },
         version: 1
       },
@@ -477,8 +401,7 @@ describe("Knowledge result contract versioning", () => {
       operation: "discover_sources",
       query: "Source",
       resultLimit: 8,
-      results: [],
-      threshold: 0
+      results: []
     });
 
     expect(decodeKnowledgeRetrievalEvidence(evidence)).not.toBeNull();

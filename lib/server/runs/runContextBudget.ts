@@ -11,6 +11,7 @@ import {
   providerAttachmentTextLabel,
   truncateProviderAttachmentText
 } from "../providers/attachmentPayload";
+import { KNOWLEDGE_ANSWER_CONTRACT_V1 } from "../providers/personalContext";
 import type {
   NormalizedRunRequest,
   ProviderConversationMessage,
@@ -99,7 +100,13 @@ export function applyRunContextBudget(input: Readonly<{
     maxOutputTokens: maxOutputTokensForBudget(input.params, input.modelCapabilities, input.provider),
     messageExtraTokens,
     messages: budgetMessages,
-    prompt: input.prompt
+    prompt: {
+      developer: [
+        input.prompt.developer,
+        input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null
+      ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
+      system: input.prompt.system
+    }
   });
 
   if (!budget.ok) {
@@ -256,7 +263,10 @@ function fitProviderAttachmentText(input: Readonly<{
     });
     const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
     const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
-      estimateApproxTokens(input.request.prompt.developer ?? "");
+      estimateApproxTokens(input.request.prompt.developer ?? "") +
+      (input.request.prompt.knowledgeAnswerContract === 1
+        ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
+        : 0);
     const internalContextTokens = (input.request.context?.messages ?? [])
       .filter((message) => message.purpose !== undefined)
       .reduce((total, message) => total + estimateApproxTokens(message.content), 0);

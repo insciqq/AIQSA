@@ -23,6 +23,7 @@ const vectorSearchEvidence = [{
 
 describe("Prisma Knowledge vector evidence projection", () => {
   beforeEach(() => {
+    vi.mocked(executeKnowledgeRetrievalCore).mockClear();
     vi.mocked(executeKnowledgeRetrievalCore).mockResolvedValue({
       bindingCount: 1,
       candidateCount: 0,
@@ -38,7 +39,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
     ["find_exact", 0],
     ["discover_sources", 0],
     ["automatic_search", 1],
-    ["search_knowledge", 1]
+    ["knowledge_focused_v1", 1]
   ] as const)("projects vector evidence for %s", async (operation, expectedLength) => {
     const store = createPrismaKnowledgeRetrievalStore({} as never);
     const result = await store.hybridSearch({
@@ -47,11 +48,11 @@ describe("Prisma Knowledge vector evidence projection", () => {
       query: "local deterministic query",
       resultLimit: 4,
       runId: "run-1",
-      threshold: 0.01,
       userId: "user-1",
       vectors: []
     });
 
     expect(result.vectorSearchEvidence).toHaveLength(expectedLength);
+    expect(executeKnowledgeRetrievalCore).toHaveBeenCalledOnce();
   });
 });

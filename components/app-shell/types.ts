@@ -20,6 +20,7 @@ export type {
   ThreadCitation,
   ThreadGroundingDisplay,
   ThreadKnowledgeCitation,
+  ThreadKnowledgeAnswerState,
   ThreadKnowledgeOutcome,
   ThreadMessage,
   ThreadToolActivity,

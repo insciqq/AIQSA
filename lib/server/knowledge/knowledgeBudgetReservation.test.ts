@@ -34,16 +34,10 @@ function estimate(overrides: Partial<KnowledgeBudgetEstimate> = {}): KnowledgeBu
   return {
     candidateCount: 100,
     costMicros: 50,
-    followUpOperationSlots: 0,
     latencyMs: 500,
     operationSlots: 1,
     queryEmbeddingCalls: 1,
-    repairCalls: 0,
-    rerankerCalls: 1,
     retrievedTokens: 1_000,
-    searchPhaseSlots: 1,
-    subquerySlots: 1,
-    validationCalls: 0,
     ...overrides
   };
 }
@@ -54,16 +48,10 @@ function actual(
   return {
     candidateCount: 40,
     costMicros: 20,
-    followUpOperationSlots: 0,
     latencyMs: 300,
     operationSlots: 1,
     queryEmbeddingCalls: 1,
-    repairCalls: 0,
-    rerankerCalls: 1,
     retrievedTokens: 600,
-    searchPhaseSlots: 1,
-    subquerySlots: 1,
-    validationCalls: 0,
     ...overrides
   };
 }
@@ -74,7 +62,6 @@ function reserved(
   return createKnowledgeBudgetReservation({
     createdAt: CREATED,
     estimate: estimate(),
-    followUp: false,
     id: "11111111-1111-4111-8111-111111111111",
     idempotencyKey: "run:1:operation:1",
     leaseExpiresAt: LEASE,
@@ -104,16 +91,10 @@ function dispatch(
 const policy: KnowledgeBudgetReservationPolicy = {
   maxCumulativeCandidates: 1_400,
   maxEstimatedCostMicros: 10_000,
-  maxFollowUpOperations: 6,
   maxLatencyMs: 30_000,
   maxOperations: 14,
   maxQueryEmbeddingCalls: 14,
-  maxRepairCalls: 1,
-  maxRerankerCalls: 14,
   maxRetrievedTokens: 32_000,
-  maxSearchPhases: 4,
-  maxSubqueriesPerPhase: 8,
-  maxValidationCalls: 14,
   version: KNOWLEDGE_BUDGET_RESERVATION_POLICY_VERSION
 };
 
@@ -133,10 +114,9 @@ describe("Knowledge budget reservation contract", () => {
     expect(decodeKnowledgeBudgetReservationPolicy({ ...policy, unknown: true })).toBeNull();
     expect(decodeKnowledgeBudgetReservation({ ...reserved(), unknown: true })).toBeNull();
     expect(decodeKnowledgeBudgetReservation({ ...reserved(), leaseExpiresAt: CREATED })).toBeNull();
-    expect(decodeKnowledgeBudgetReservation({
-      ...reserved(),
-      estimate: estimate({ followUpOperationSlots: 1 }),
-      followUp: false
+    expect(decodeKnowledgeBudgetEstimate({
+      ...estimate(),
+      rerankerCalls: 1
     })).toBeNull();
     expect(() => createKnowledgeBudgetReservation({})).toThrow(
       "knowledge_budget_reservation_invalid"
@@ -362,29 +342,4 @@ describe("Knowledge budget reservation contract", () => {
       .toMatchObject({ kind: "conflict", reason: "idempotency_conflict" });
   });
 
-  it("counts subquery slots inside their phase rather than across unrelated phases", () => {
-    const phaseZero = reserved();
-    const samePhase = reserved({
-      estimate: estimate({ searchPhaseSlots: 0 }),
-      id: "22222222-2222-4222-8222-222222222222",
-      idempotencyKey: "run:1:operation:2",
-      operationOrdinal: 2,
-      requestHash: "b".repeat(64),
-      subqueryOrdinal: 1
-    });
-    const oneSubqueryPolicy = { ...policy, maxSubqueriesPerPhase: 1 };
-    expect(decideKnowledgeBudgetReservation(oneSubqueryPolicy, [phaseZero], samePhase))
-      .toMatchObject({ kind: "rejected", reason: "subquery_budget" });
-
-    const nextPhase = reserved({
-      estimate: estimate({ searchPhaseSlots: 1 }),
-      id: "33333333-3333-4333-8333-333333333333",
-      idempotencyKey: "run:1:operation:3",
-      operationOrdinal: 3,
-      phaseOrdinal: 1,
-      requestHash: "c".repeat(64)
-    });
-    expect(decideKnowledgeBudgetReservation(oneSubqueryPolicy, [phaseZero], nextPhase))
-      .toMatchObject({ kind: "admitted" });
-  });
 });

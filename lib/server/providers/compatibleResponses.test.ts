@@ -98,11 +98,11 @@ describe("compatible Responses adapter", () => {
     const body = buildCompatibleResponsesRequest(request());
 
     expect(body).toMatchObject({
-      background: false,
       model: "compatible-model",
       store: false,
       stream: false
     });
+    expect(body).not.toHaveProperty("background");
     expect(body).not.toHaveProperty("previous_response_id");
     expect(body).not.toHaveProperty("prompt_cache_key");
     expect(body).not.toHaveProperty("prompt_cache_options");
@@ -126,16 +126,17 @@ describe("compatible Responses adapter", () => {
   });
 
   it("serializes standard hosted web search while remaining stateless", () => {
-    expect(buildCompatibleResponsesRequest(
+    const body = buildCompatibleResponsesRequest(
       request({
         searchPlan: { mode: "model_choice", options: [hostedSearchOption()] }
       })
-    )).toMatchObject({
-      background: false,
+    );
+    expect(body).toMatchObject({
       include: ["web_search_call.action.sources"],
       store: false,
       tools: [{ type: "web_search" }]
     });
+    expect(body).not.toHaveProperty("background");
   });
 
   it("keeps canonical effort and pro mode with the Responses default mapping", () => {
@@ -174,8 +175,11 @@ describe("compatible Responses adapter", () => {
 
     expect(body).toMatchObject({ mode: "pro", reason: "high" });
     expect(body).not.toHaveProperty("reasoning");
+    expect(body).not.toHaveProperty("background");
     expect(preview?.body).toMatchObject({ mode: "pro", reason: "high" });
     expect(preview?.body).not.toHaveProperty("reasoning");
+    expect(preview?.body).not.toHaveProperty("background");
+    expect(preview?.body).toHaveProperty("store", false);
   });
 
   it("normalizes a completed non-streaming response", async () => {

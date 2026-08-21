@@ -1,8 +1,7 @@
 import type {
   AdminKnowledgeOperations,
   AdminKnowledgeProfileDestination,
-  AdminKnowledgeProfileSettings,
-  AdminKnowledgeVisionDestination
+  AdminKnowledgeProfileSettings
 } from "@/lib/contracts/adminKnowledge";
 
 export function adminKnowledgeOperationsFixture(
@@ -47,8 +46,7 @@ export function adminKnowledgeOperationsFixture(
       noAnswerOperations24h: 0,
       operations24h: 0,
       p50DurationMs24h: null,
-      p95DurationMs24h: null,
-      repairedAnswers24h: 0
+      p95DurationMs24h: null
     },
     ...overrides
   };
@@ -62,14 +60,6 @@ export const adminKnowledgeDestinationFixture: AdminKnowledgeProfileDestination 
   targetDimension: 1024
 };
 
-export const adminKnowledgeVisionDestinationFixture: AdminKnowledgeVisionDestination = {
-  connectionDisplayName: "Vision provider",
-  deploymentId: "vision-model-1",
-  modelDisplayName: "Document vision",
-  provider: "openai",
-  supportsNativePdf: true
-};
-
 export function adminKnowledgeProfileFixture(
   overrides: Partial<AdminKnowledgeProfileSettings> = {}
 ): AdminKnowledgeProfileSettings {
@@ -78,27 +68,14 @@ export function adminKnowledgeProfileFixture(
     destination: adminKnowledgeDestinationFixture,
     executionAuthority: "installation" as const,
     id: "profile-revision-1",
-    revisionNumber: 1,
-    visionDestination: null
+    revisionNumber: 1
   };
   return {
     activeRevision,
     availableDestinations: [adminKnowledgeDestinationFixture],
-    availableVisionDestinations: [],
     egress: {
       destination: "Local embeddings / Multilingual embed",
-      policyVersion: "knowledge-profile-egress-v3",
-      representations: ["document_text_chunks", "search_queries"],
-      roles: [
-        { mode: "external", operation: "embeddings" },
-        { mode: "disabled", operation: "vision_analysis" },
-        { mode: "disabled", operation: "query_planning" },
-        { mode: "local", operation: "reranking" },
-        { mode: "local", operation: "grounding_validation" },
-        { mode: "local", operation: "citation_repair" },
-        { mode: "disabled", operation: "answer_citation_retry" }
-      ],
-      visualAnalysis: null
+      representations: ["document_text_chunks", "search_queries"]
     },
     health: { checkedAt: "2026-08-18T00:00:00.000Z", code: null, state: "ready" },
     migration: {

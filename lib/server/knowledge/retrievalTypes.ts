@@ -7,6 +7,7 @@ import type {
 } from "./retrievalRanking";
 import type {
   KnowledgeBudgetEvidence,
+  LegacyKnowledgeBudgetEvidence,
   KnowledgeOperationKind
 } from "./knowledgeBudget";
 import type { StructuredAnalysisResult } from "./structuredData";
@@ -14,29 +15,21 @@ import type { KnowledgeVisualAnalysisResult } from "./visualEvidence";
 import type { NormalizedReadSourceRequest } from "./readSourceLocator";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
-import type {
-  KnowledgeAcceptedSourceTupleV1,
-  KnowledgeStrategyCursorV1,
-  KnowledgeStrategyPassageItemV1,
-  KnowledgeStrategyStepEvidenceV1
-} from "./knowledgeStrategyExecution";
-import type { KnowledgeStrategySummaryResultEvidenceV2 } from
-  "./knowledgeStrategySummaryEvidence";
 
-export const KNOWLEDGE_TOOL_NAME = "retrieve_knowledge";
-export const KNOWLEDGE_SEARCH_TOOL_NAME = "search_knowledge";
+/** Server-only checkpoint operation. This name is never advertised to an
+ * answer provider. */
+export const KNOWLEDGE_FOCUSED_OPERATION_NAME = "knowledge_focused_v1";
 export const KNOWLEDGE_EXACT_TOOL_NAME = "find_exact";
 export const KNOWLEDGE_READ_SOURCE_TOOL_NAME = "read_source";
 export const KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME = "discover_sources";
-export const KNOWLEDGE_FOLLOW_UP_TOOL_NAMES = Object.freeze([
-  KNOWLEDGE_SEARCH_TOOL_NAME,
+export const KNOWLEDGE_INTERNAL_OPERATION_NAMES = Object.freeze([
   KNOWLEDGE_EXACT_TOOL_NAME,
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME
 ] as const);
 export const KNOWLEDGE_EXECUTION_TOOL_NAMES = Object.freeze([
-  KNOWLEDGE_TOOL_NAME,
-  ...KNOWLEDGE_FOLLOW_UP_TOOL_NAMES
+  KNOWLEDGE_FOCUSED_OPERATION_NAME,
+  ...KNOWLEDGE_INTERNAL_OPERATION_NAMES
 ] as const);
 export const KNOWLEDGE_LEGACY_RESULT_VERSION = 1 as const;
 export const KNOWLEDGE_RESULT_VERSION = 2 as const;
@@ -44,10 +37,9 @@ export const KNOWLEDGE_RESULT_VERSIONS = Object.freeze([
   KNOWLEDGE_LEGACY_RESULT_VERSION,
   KNOWLEDGE_RESULT_VERSION
 ] as const);
-export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 500;
+export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 3_000;
 export const KNOWLEDGE_CANDIDATE_LIMIT = 40;
 export const KNOWLEDGE_RESULT_LIMIT = 8;
-export const KNOWLEDGE_SCORE_THRESHOLD = 0.01;
 export const KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES = 48 * 1024;
 export const KNOWLEDGE_SCOPE_MAX_BINDINGS = 128;
 export const KNOWLEDGE_SCOPE_MAX_SOURCES = 999;
@@ -93,7 +85,6 @@ export type KnowledgeRetrievalOutcome =
   | "complete"
   | "embedding_model_unavailable"
   | "source_location_unavailable"
-  | "structured_clarification_required"
   | "zero_above_threshold";
 
 export type KnowledgePassageLayoutKind =
@@ -103,17 +94,6 @@ export type KnowledgePassageLayoutKind =
   | "table_ambiguous"
   | "table_row"
   | "table_row_projection";
-
-export type KnowledgeStructuredRetrievalEvidence = Readonly<{
-  question?: string;
-  status: "complete" | "needs_clarification";
-  version: 1;
-}>;
-
-export type KnowledgeVisualRetrievalEvidence = Readonly<{
-  status: "available" | "unavailable";
-  version: 1;
-}>;
 
 export type KnowledgeAcceptedBinding = Readonly<{
   baseContentRevision: number;
@@ -189,6 +169,7 @@ export type KnowledgeHybridPassage = Readonly<{
   documentVersionId: string;
   documentVersionNumber: number;
   documentContext?: KnowledgeDocumentContextV1 | null;
+  expandedContext?: string;
   fileName: string;
   ftsRank: number | null;
   ftsScore: number | null;
@@ -202,10 +183,12 @@ export type KnowledgeHybridPassage = Readonly<{
   signalProvenance?: readonly KnowledgeCandidateSignal[];
   sourceArtifactId?: string | null;
   sourceName?: string;
+  /** Read-only compatibility for immutable citation receipts. */
   structuredAnalysis?: StructuredAnalysisResult;
   text: string;
   vectorDistance: number | null;
   vectorScore: number | null;
+  /** Read-only compatibility for immutable citation receipts. */
   visualAnalysis?: KnowledgeVisualAnalysisResult;
 }>;
 
@@ -281,7 +264,7 @@ export type KnowledgeSourceDiscoveryEvidence = KnowledgeSourceDiscoveryRequest &
 
 export type KnowledgeRetrievalEvidence = Readonly<{
   bases: readonly KnowledgeBaseRetrievalEvidence[];
-  budget?: KnowledgeBudgetEvidence;
+  budget?: KnowledgeBudgetEvidence | LegacyKnowledgeBudgetEvidence;
   candidateCount: number;
   candidateLimit: number;
   durationMs: number;
@@ -293,29 +276,25 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   invocationOrdinal: number;
   operation?: KnowledgeOperationKind;
   outcome: KnowledgeRetrievalOutcome;
-  postRerankOrder: null | readonly string[];
-  preRerankOrder: null | readonly string[];
+  /** Decode-only fields from accepted planner-era receipts. */
+  postRerankOrder?: null | readonly string[];
+  preRerankOrder?: null | readonly string[];
   providerText: string;
   query: string;
   read?: KnowledgeReadReceipt;
-  rerankerBinding: null | KnowledgeRerankerBindingEvidence;
+  /** Non-null only when decoding an immutable legacy receipt. */
+  rerankerBinding?: null | KnowledgeRerankerBindingEvidence;
   resultLimit: number;
   results: readonly KnowledgeRetrievedPassageEvidence[];
   scopeAliases?: readonly KnowledgeEvidenceScopeAlias[];
-  strategySummaryEvidence?: KnowledgeStrategySummaryResultEvidenceV2;
-  strategyStepEvidence?: KnowledgeStrategyStepEvidenceV1;
-  structured?: KnowledgeStructuredRetrievalEvidence;
-  threshold: number;
+  /** Decode-only confidence threshold from accepted planner-era receipts. */
+  threshold?: number;
   version: KnowledgeResultVersion;
-  visual?: KnowledgeVisualRetrievalEvidence;
 }>;
 
 export type KnowledgeRetrievalEvidenceV1 =
-  Omit<KnowledgeRetrievalEvidence,
-    "read" | "strategyStepEvidence" | "strategySummaryEvidence" | "version"> & Readonly<{
+  Omit<KnowledgeRetrievalEvidence, "read" | "version"> & Readonly<{
     read?: never;
-    strategySummaryEvidence?: never;
-    strategyStepEvidence?: never;
     version: typeof KNOWLEDGE_LEGACY_RESULT_VERSION;
   }>;
 
@@ -352,14 +331,6 @@ export type KnowledgeSourceDiscoveryResult = Readonly<{
   candidateCounts: Readonly<Record<number, number>>;
   nextCursor: string | null;
   sources: readonly KnowledgeDiscoveredSourceEvidence[];
-}>;
-
-export type KnowledgeStrategyPassagePage = Readonly<{
-  complete: boolean;
-  items: readonly KnowledgeStrategyPassageItemV1[];
-  nextCursor: KnowledgeStrategyCursorV1 | null;
-  passages: readonly KnowledgeHybridPassage[];
-  source: KnowledgeAcceptedSourceTupleV1;
 }>;
 
 export type KnowledgeRetrievalUsageAttribution = Readonly<{

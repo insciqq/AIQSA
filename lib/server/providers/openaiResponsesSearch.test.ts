@@ -413,19 +413,21 @@ describe("OpenAI Responses query-only Search adapter", () => {
         reasoningPolicy: "lowest_supported"
       })
     });
+    expect(adapter.buildRequestPreview(request).body).not.toHaveProperty("background");
 
     const error = await adapter.search(request).then(() => null, (value: unknown) => value);
     expect(isProviderSearchExecutionError(error)).toBe(true);
     if (!isProviderSearchExecutionError(error)) throw new Error("expected typed Search error");
     expect(error.reason).toBeUndefined();
-    expect(create.mock.calls[0]?.[0]).toMatchObject({
-      background: false,
+    const outboundBody = create.mock.calls[0]?.[0];
+    expect(outboundBody).toMatchObject({
       max_output_tokens: 4_096,
       reasoning_effort: "low",
       store: false,
       stream: false
     });
-    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("reasoning");
-    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("temperature");
+    expect(outboundBody).not.toHaveProperty("background");
+    expect(outboundBody).not.toHaveProperty("reasoning");
+    expect(outboundBody).not.toHaveProperty("temperature");
   });
 });

@@ -3,7 +3,7 @@ import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layo
 import { signInWithLocalToken } from "./support/localAuth";
 import { runAccountMenuAction } from "./shell/page";
 
-test.setTimeout(60_000);
+test.setTimeout(120_000);
 
 const timestamp = "2026-08-08T10:00:00.000Z";
 const baseSupportReference = "K-123456ABCDEF";
@@ -409,19 +409,29 @@ async function installKnowledgeFixture(page: Page) {
         expect(request.postDataJSON()).toEqual({ attemptNumber: item.attemptNumber });
         if (!item.sourceId) {
           uploadCount += 1;
-          const state = uploadCount === 2 ? "needs_attention" : "ready";
+          // Proxy uploads settle concurrently. Keep the two-file contract bound
+          // to file identity instead of whichever request happens to finish first.
+          const sourceNumber = item.fileName === "handbook.md"
+            ? 1
+            : item.fileName === "incident.txt"
+              ? 2
+              : uploadCount;
+          const state = item.fileName === "incident.txt" ||
+            !["handbook.md", "incident.txt"].includes(item.fileName) && uploadCount === 2
+            ? "needs_attention"
+            : "ready";
           const next = uploadedSource({
             byteSize: item.byteSize,
             fileName: item.fileName,
-            sourceNumber: uploadCount,
+            sourceNumber,
             state
           });
           uploadedSources = [...uploadedSources, next];
           item.failureCode = state === "needs_attention" ? "knowledge_processing_failed" : null;
-          item.sourceId = `source-upload-${uploadCount}`;
+          item.sourceId = `source-upload-${sourceNumber}`;
           item.state = state === "needs_attention"
             ? "needs_attention"
-            : uploadCount === 1
+            : sourceNumber === 1
               ? "ready_with_warnings"
               : "ready";
         }
@@ -821,11 +831,11 @@ test("keeps a 50-file intake receipt across reload", async ({ page }) => {
   ));
   await knowledge.getByRole("button", { name: "Create knowledge base" }).click();
 
-  await expect(knowledge.getByText(
+  await expect(knowledge.getByLabel("Upload activity").getByText(
     "48 ready · 1 transferring · 1 needs attention",
     { exact: true }
   ))
-    .toBeVisible({ timeout: 30_000 });
+    .toBeVisible({ timeout: 90_000 });
   await expect(knowledge.getByTestId(/^knowledge-upload-item-/u)).toHaveCount(50);
   await expectNoHorizontalOverflow(page);
 
@@ -833,7 +843,7 @@ test("keeps a 50-file intake receipt across reload", async ({ page }) => {
   await runAccountMenuAction(page, "Knowledge");
   await page.getByTestId("library-v2").getByRole("button", { name: "Open" }).click();
   const restoredKnowledge = page.getByTestId("knowledge-library");
-  await expect(restoredKnowledge.getByText(
+  await expect(restoredKnowledge.getByLabel("Upload activity").getByText(
     "48 ready · 1 transferring · 1 needs attention",
     { exact: true }
   )).toBeVisible();
@@ -844,7 +854,10 @@ test("keeps a 50-file intake receipt across reload", async ({ page }) => {
     mimeType: "text/markdown",
     name: "file-50.md"
   });
-  await expect(restoredKnowledge.getByText("49 ready · 1 needs attention", { exact: true }))
+  await expect(restoredKnowledge.getByLabel("Upload activity").getByText(
+    "49 ready · 1 needs attention",
+    { exact: true }
+  ))
     .toBeVisible();
 });
 

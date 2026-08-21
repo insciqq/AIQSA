@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import {
-  decodeKnowledgeStrategySummaryDispatchCandidateV2,
-  type KnowledgeStrategySummaryDispatchCandidateV2
-} from "./knowledgeStrategySummaryEvidence";
+  decodeLegacyKnowledgeSummaryDispatchCandidate,
+  type LegacyKnowledgeSummaryDispatchCandidate
+} from "./legacySummaryReceipt";
 
-export const KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 1 as const;
+export const KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 2 as const;
+export const LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION = 1 as const;
 export const KNOWLEDGE_EVIDENCE_PACKING_VERSION = "whole_source_item_v1" as const;
 export const KNOWLEDGE_EVIDENCE_SHORTENING_VERSION =
   "omit_expanded_context_v1" as const;
@@ -35,7 +36,7 @@ export type KnowledgeEvidenceDispatchCandidate =
       operationOrdinal: number;
       resultOrdinal: number;
       state: "available";
-      summary: KnowledgeStrategySummaryDispatchCandidateV2;
+      summary: LegacyKnowledgeSummaryDispatchCandidate;
     }>
   | Readonly<{
       evidenceId: string;
@@ -44,6 +45,11 @@ export type KnowledgeEvidenceDispatchCandidate =
       resultOrdinal: number;
       state: "unavailable";
     }>;
+
+export type CurrentKnowledgeEvidenceDispatchCandidate = Exclude<
+  KnowledgeEvidenceDispatchCandidate,
+  { kind: "source_summary" }
+>;
 
 export type KnowledgeEvidenceDispatchExclusionReason =
   | "budget"
@@ -89,7 +95,7 @@ type KnowledgeEvidenceDispatchManifestPassageItem = Readonly<{
 export type KnowledgeEvidenceDispatchManifestSummaryItem = Readonly<
   KnowledgeEvidenceDispatchManifestPassageItem & {
     kind: "source_summary";
-    summary: KnowledgeStrategySummaryDispatchCandidateV2;
+    summary: LegacyKnowledgeSummaryDispatchCandidate;
   }
 >;
 
@@ -97,7 +103,7 @@ export type KnowledgeEvidenceDispatchManifestItem =
   | KnowledgeEvidenceDispatchManifestPassageItem
   | KnowledgeEvidenceDispatchManifestSummaryItem;
 
-export type KnowledgeEvidenceDispatchManifestDraft = Readonly<{
+type KnowledgeEvidenceDispatchManifestBody = Readonly<{
   coverageStatement: string;
   exclusions: readonly KnowledgeEvidenceDispatchManifestExclusion[];
   footer: string;
@@ -113,22 +119,31 @@ export type KnowledgeEvidenceDispatchManifestDraft = Readonly<{
   messageHash: string;
   messageTokens: number;
   packingVersion: typeof KNOWLEDGE_EVIDENCE_PACKING_VERSION;
-  plannerVersion: number;
   profileId: string;
   promptFragmentVersion: number;
   shorteningPolicy: "disabled" | typeof KNOWLEDGE_EVIDENCE_SHORTENING_VERSION;
-  version: typeof KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
 }>;
+
+export type KnowledgeEvidenceDispatchManifestDraft =
+  | KnowledgeEvidenceDispatchManifestBody & Readonly<{
+      runtimeVersion: number;
+      version: typeof KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
+    }>
+  | KnowledgeEvidenceDispatchManifestBody & Readonly<{
+      /** Read-only compatibility for manifests accepted before the focused runtime. */
+      plannerVersion: number;
+      version: typeof LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
+    }>;
 
 export type PackKnowledgeEvidenceDispatchManifestInput = Readonly<{
   allowExpandedContextOmission?: boolean;
-  candidates: readonly KnowledgeEvidenceDispatchCandidate[];
+  candidates: readonly CurrentKnowledgeEvidenceDispatchCandidate[];
   coverageStatement: string;
   footer: string;
   header: string;
   maximumBytes: number;
   maximumTokens: number;
-  plannerVersion: number;
+  runtimeVersion: number;
   profileId: string;
   promptFragmentVersion: number;
 }>;
@@ -156,7 +171,7 @@ type AvailablePassageCandidate = Extract<
   { ambiguity: "none" | "table_cell_associations_ambiguous"; state: "available" }
 >;
 
-const manifestKeys = [
+const manifestBaseKeys = [
   "coverageStatement",
   "exclusions",
   "footer",
@@ -169,7 +184,6 @@ const manifestKeys = [
   "messageHash",
   "messageTokens",
   "packingVersion",
-  "plannerVersion",
   "profileId",
   "promptFragmentVersion",
   "shorteningPolicy",
@@ -317,7 +331,7 @@ function validateCandidate(candidate: KnowledgeEvidenceDispatchCandidate): void 
     return;
   }
   if ("kind" in candidate && candidate.kind === "source_summary") {
-    const summary = decodeKnowledgeStrategySummaryDispatchCandidateV2(candidate.summary);
+    const summary = decodeLegacyKnowledgeSummaryDispatchCandidate(candidate.summary);
     if (!summary || candidate.evidenceId !== summary.evidenceId ||
       candidate.operationOrdinal !== summary.operationOrdinal ||
       candidate.resultOrdinal !== summary.supportBindings[0]?.resultOrdinal ||
@@ -347,9 +361,9 @@ function validateCandidate(candidate: KnowledgeEvidenceDispatchCandidate): void 
 
 function summaryCandidate(
   candidate: Extract<KnowledgeEvidenceDispatchCandidate, { state: "available" }>
-): KnowledgeStrategySummaryDispatchCandidateV2 | null {
+): LegacyKnowledgeSummaryDispatchCandidate | null {
   return "kind" in candidate && candidate.kind === "source_summary"
-    ? decodeKnowledgeStrategySummaryDispatchCandidateV2(candidate.summary)
+    ? decodeLegacyKnowledgeSummaryDispatchCandidate(candidate.summary)
     : null;
 }
 
@@ -489,7 +503,7 @@ export function packKnowledgeEvidenceDispatchManifest(
     !nonEmptyString(input.header) || !nonEmptyString(input.footer) ||
     typeof input.coverageStatement !== "string" ||
     !positiveInteger(input.maximumBytes) || !positiveInteger(input.maximumTokens) ||
-    !positiveInteger(input.plannerVersion) || !positiveInteger(input.promptFragmentVersion) ||
+    !positiveInteger(input.runtimeVersion) || !positiveInteger(input.promptFragmentVersion) ||
     !nonEmptyString(input.profileId)
   ) throw new Error("knowledge_evidence_dispatch_config_invalid");
 
@@ -510,6 +524,9 @@ export function packKnowledgeEvidenceDispatchManifest(
   const allowExpandedContextOmission = input.allowExpandedContextOmission !== false;
 
   for (const candidate of candidates) {
+    if ("kind" in candidate) {
+      throw new Error("knowledge_evidence_dispatch_legacy_summary_write_forbidden");
+    }
     validateCandidate(candidate);
     if (evidenceIds.has(candidate.evidenceId)) {
       throw new Error("knowledge_evidence_dispatch_duplicate_evidence_id");
@@ -602,7 +619,7 @@ export function packKnowledgeEvidenceDispatchManifest(
     messageHash: sha256Utf8(message),
     messageTokens: estimateApproxTokens(message),
     packingVersion: KNOWLEDGE_EVIDENCE_PACKING_VERSION,
-    plannerVersion: input.plannerVersion,
+    runtimeVersion: input.runtimeVersion,
     profileId: input.profileId,
     promptFragmentVersion: input.promptFragmentVersion,
     shorteningPolicy: allowExpandedContextOmission
@@ -621,7 +638,7 @@ function validSummaryDispatchItem(
   expectedOrdinal: number
 ): boolean {
   if (!hasExactKeys(value, summaryItemKeys) || value.kind !== "source_summary") return false;
-  const summary = decodeKnowledgeStrategySummaryDispatchCandidateV2(value.summary);
+  const summary = decodeLegacyKnowledgeSummaryDispatchCandidate(value.summary);
   const primarySupport = summary?.supportBindings[0];
   return Boolean(summary && primarySupport && value.dispatchOrdinal === expectedOrdinal &&
     value.evidenceId === summary.evidenceId && value.handle === primarySupport.handle &&
@@ -729,12 +746,15 @@ function validExclusion(value: unknown): value is Record<string, unknown> {
 export function decodeKnowledgeEvidenceDispatchManifestDraft(
   value: unknown
 ): KnowledgeEvidenceDispatchManifestDraft | null {
-  if (!record(value) || !hasExactKeys(value, manifestKeys) ||
-    value.version !== KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION ||
+  if (!record(value)) return null;
+  const current = value.version === KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
+  const legacy = value.version === LEGACY_KNOWLEDGE_EVIDENCE_DISPATCH_MANIFEST_VERSION;
+  const versionField = current ? "runtimeVersion" : legacy ? "plannerVersion" : null;
+  if (!versionField || !hasExactKeys(value, [...manifestBaseKeys, versionField]) ||
     value.packingVersion !== KNOWLEDGE_EVIDENCE_PACKING_VERSION ||
     value.shorteningPolicy !== "disabled" &&
       value.shorteningPolicy !== KNOWLEDGE_EVIDENCE_SHORTENING_VERSION ||
-    !positiveInteger(value.plannerVersion) || !positiveInteger(value.promptFragmentVersion) ||
+    !positiveInteger(value[versionField]) || !positiveInteger(value.promptFragmentVersion) ||
     !nonEmptyString(value.profileId) || !nonEmptyString(value.header) ||
     !nonEmptyString(value.footer) || typeof value.coverageStatement !== "string" ||
     !Array.isArray(value.items) || !Array.isArray(value.exclusions) ||
@@ -763,7 +783,7 @@ export function decodeKnowledgeEvidenceDispatchManifestDraft(
   if (new Set(evidenceIds).size !== evidenceIds.length) return null;
   const handles = items.flatMap((item) => {
     if (item.kind !== "source_summary") return [item.handle as string];
-    const summary = decodeKnowledgeStrategySummaryDispatchCandidateV2(item.summary);
+    const summary = decodeLegacyKnowledgeSummaryDispatchCandidate(item.summary);
     return summary?.supportBindings.map(({ handle }) => handle) ?? [];
   });
   if (new Set(handles).size !== handles.length) return null;

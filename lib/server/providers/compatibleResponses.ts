@@ -49,6 +49,7 @@ function stripNativeExtensions(
   reasoningRequestMapping: ProviderReasoningRequestMapping
 ): Record<string, unknown> {
   const {
+    background: _background,
     include,
     metadata: _metadata,
     previous_response_id: _previousResponseId,
@@ -59,7 +60,6 @@ function stripNativeExtensions(
   } = body;
   const output: Record<string, unknown> = {
     ...portable,
-    background: false,
     ...(preserveWebSearchSources && include ? { include } : {}),
     store: false
   };

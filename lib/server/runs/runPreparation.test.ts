@@ -5,11 +5,6 @@ import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
-import { knowledgeFollowUpTools } from "../knowledge/knowledgeTools";
-import {
-  KNOWLEDGE_PLANNER_VERSION,
-  planKnowledgeRequest
-} from "../knowledge/planner";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import {
   ProviderAdmissionError,
@@ -925,14 +920,14 @@ describe("run preparation", () => {
     expect(prepared.defaults).toBeNull();
   });
 
-  it("keeps Project provider and Knowledge scope on hosted Search coexistence re-admission", async () => {
-    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
+  it("keeps Project Knowledge scope while suppressing hosted Search admission", async () => {
+    const { hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
     );
     const admissionLoad = vi.fn(async (input: {
       executionScope?: "project";
       requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? client : hosted);
+    }) => hosted);
     const knowledgeLoad = vi.fn<
       NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
     >(async (input) => admittedKnowledge(input, "c"));
@@ -965,11 +960,13 @@ describe("run preparation", () => {
     );
 
     expect(result).toMatchObject({ code: "context_too_large", ok: false });
-    expect(admissionLoad).toHaveBeenCalledTimes(2);
-    expect(admissionLoad.mock.calls.map(([input]) => input.executionScope)).toEqual([
-      "project",
-      "project"
-    ]);
+    expect(admissionLoad).toHaveBeenCalledOnce();
+    expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
+      executionScope: "project"
+    }));
+    expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
+      "requiresClientToolCoexistence"
+    );
     expect(knowledgeLoad).toHaveBeenCalledWith(expect.objectContaining({
       executionScope: "project",
       projectId: "project-1"
@@ -1978,7 +1975,7 @@ describe("run preparation", () => {
     }]);
   });
 
-  it("materializes request runtime only from the final coexistence admission binding", async () => {
+  it("keeps the admitted answer binding while focused Knowledge suppresses Search", async () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
     );
@@ -2038,22 +2035,18 @@ describe("run preparation", () => {
 
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(2);
-    expect(prepared.providerAdmissionPlan).toEqual(finalClient);
+    expect(admissionLoad).toHaveBeenCalledOnce();
+    expect(prepared.providerAdmissionPlan).toEqual(hosted);
     expect(prepared.normalizedRequest).toMatchObject({
-      modelCapabilities: { contextWindow: 65_536 },
-      modelId: finalModelId,
+      modelCapabilities: {
+        contextWindow: hosted.answer.modelConfiguration.capabilities.contextWindow
+      },
+      modelId: hosted.answer.snapshot.model.upstreamModelId,
       provider: "gemini"
     });
-    expect(prepared.providerRequest).toMatchObject({
-      modelCapabilities: { contextWindow: 65_536 },
-      modelId: finalModelId,
-      provider: "gemini"
-    });
-    expect(prepared.providerRequestPreview).toMatchObject({
-      body: { model: finalModelId },
-      provider: "gemini"
-    });
+    expect(prepared.normalizedRequest.searchPlan.options).toEqual([]);
+    expect(prepared.normalizedRequest.toolMode).toBe("none");
+    expect(prepared.providerRequest.tools).toBeUndefined();
     expect(result.toolBridge?.provider).toBe("gemini");
   });
 
@@ -2071,8 +2064,8 @@ describe("run preparation", () => {
       protocol: "anthropic_web_search"
     }
   ])(
-    "re-admits hosted $provider Search as a query-only route when Knowledge must coexist",
-    async ({ adapterKind, hostedPreviewMarker, protocol, provider }) => {
+    "suppresses hosted $provider Search and all model tools for focused Knowledge",
+    async ({ adapterKind, hostedPreviewMarker }) => {
       const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
       const admissionLoad = vi.fn(async (input: {
         requiresClientToolCoexistence?: boolean;
@@ -2098,34 +2091,24 @@ describe("run preparation", () => {
 
       if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
       const prepared = materializePreparedRunData(result.prepared);
-      expect(admissionLoad).toHaveBeenCalledTimes(2);
+      expect(admissionLoad).toHaveBeenCalledOnce();
       expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
         "requiresClientToolCoexistence"
       );
-      expect(admissionLoad.mock.calls[1]?.[0]).toMatchObject({
-        requiresClientToolCoexistence: true,
-        searchPlan: { mode: "model_choice", optionIds: [optionId] }
-      });
       expect(knowledgeLoad).toHaveBeenCalledWith({
         knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
         userId: "user-1"
       });
-      expect(prepared.normalizedRequest.searchPlan).toMatchObject({
-        mode: "model_choice",
-        options: [expect.objectContaining({
-          adapterKind: "provider_model_client",
-          optionId,
-          protocol,
-          provider,
-          providerModelId: hosted.selection.providerModelId
-        })]
+      expect(prepared.normalizedRequest.searchPlan).toEqual({
+        mode: "all_selected",
+        options: []
       });
-      expect(prepared.providerAdmissionPlan).toEqual(client);
-      expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        ...knowledgeFollowUpTools.map((tool) => tool.name),
-        "search_engine_1",
-        ...memoryToolNames
-      ]);
+      expect(prepared.providerAdmissionPlan).toEqual(hosted);
+      expect(prepared.normalizedRequest).not.toHaveProperty("mcp");
+      expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
+      expect(prepared.normalizedRequest).not.toHaveProperty("memoryHistoryTool");
+      expect(prepared.normalizedRequest.toolMode).toBe("none");
+      expect(prepared.providerRequest.tools).toBeUndefined();
       expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain(
         hostedPreviewMarker
       );
@@ -2136,7 +2119,7 @@ describe("run preparation", () => {
     }
   );
 
-  it("persists an automatic full-context plan for a small ready source even when the model has no tools", async () => {
+  it("persists one fixed focused request from the previous and current user messages", async () => {
     const harness = createHarness({
       capabilities: { ...baseCapabilities, contextWindow: 16_000, toolCalling: false }
     });
@@ -2172,14 +2155,17 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
-      automaticRetrieval: true,
-      coverage: { expectedPassageCount: 6, mode: "verified_only" },
-      evidenceMode: "fuller",
-      intent: "single_source_summary",
-      strategy: "full_context",
-      version: KNOWLEDGE_PLANNER_VERSION
+    expect(prepared.normalizedRequest.knowledgeFocusedRequest).toEqual({
+      candidateLimit: 40,
+      fusion: "weighted_rrf_v2",
+      neighborWindow: 1,
+      originalQuery: "Summarize this source",
+      resultLimit: 8,
+      retrievalQuery: "Summarize this source\n\nServer-owned prior question",
+      version: 1
     });
+    expect(prepared.normalizedRequest).not.toHaveProperty("knowledgePlanner");
+    expect(prepared.normalizedRequest.toolMode).toBe("none");
     expect(prepared.providerRequest.tools).toBeUndefined();
   });
 
@@ -2191,7 +2177,6 @@ describe("run preparation", () => {
       sourceIds: [sourceId],
       version: 1
     };
-    const planner = vi.fn(async (input) => planKnowledgeRequest(input));
     const harness = createHarness();
     const prepared = preparedFrom(await prepareRun(
       {
@@ -2236,8 +2221,7 @@ describe("run preparation", () => {
               }]
             };
           }
-        },
-        knowledgePlanner: { plan: planner }
+        }
       },
       sendInput(successBody({
         content: textMessageContent("Summarize this source"),
@@ -2245,35 +2229,51 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(planner).toHaveBeenCalledOnce();
-    expect(planner.mock.calls[0]?.[0].directSources).toEqual([]);
-    expect(planner.mock.calls[0]?.[0].sources).toEqual([{
-      fileName: "source-1.md",
-      sourceAlias: "S1",
-      sourceId,
-      sourceName: "Source 1",
-      versionNumber: 1
-    }]);
-    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
-      automaticRetrieval: true,
-      intent: "single_source_summary",
-      strategy: "full_context"
+    expect(prepared.normalizedRequest.knowledgePlan).toEqual(selection);
+    expect(prepared.knowledgeAdmissionPlan?.sources).toEqual([
+      expect.objectContaining({
+        directSelected: true,
+        selectionProvenance: ["base", "explicit_source"],
+        sourceId
+      })
+    ]);
+    expect(prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
+      originalQuery: "Summarize this source",
+      version: 1
     });
   });
 
-  it("records a deterministic degraded planner decision when an injected planner is unavailable", async () => {
-    const harness = createHarness();
+  it("uses only the nearest previous user message in the focused retrieval query", async () => {
+    const harness = createHarness({
+      sendContext: [
+        {
+          content: textMessageContent("Older user question"),
+          id: "older-user-message",
+          role: "user"
+        },
+        {
+          content: textMessageContent("Assistant response"),
+          id: "assistant-message",
+          role: "assistant"
+        },
+        {
+          content: textMessageContent("Nearest user question"),
+          id: "nearest-user-message",
+          role: "user"
+        },
+        {
+          content: textMessageContent("Most recent assistant response"),
+          id: "recent-assistant-message",
+          role: "assistant"
+        }
+      ]
+    });
     const prepared = preparedFrom(await prepareRun(
       {
         ...harness.deps,
         knowledgeAdmission: {
           async load(input) {
             return admittedKnowledge(input, "c");
-          }
-        },
-        knowledgePlanner: {
-          async plan() {
-            throw new Error("planner offline");
           }
         }
       },
@@ -2283,18 +2283,15 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
-      automaticRetrieval: true,
-      failureCode: "classifier_unavailable",
-      intent: "fact_lookup",
-      status: "degraded",
-      strategy: "focused"
+    expect(prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
+      originalQuery: "What is the retention policy?",
+      retrievalQuery: "What is the retention policy?\n\nNearest user question"
     });
   });
 
-  it("keeps Knowledge intent explicit when every selected resource is still processing", async () => {
+  it("returns a terminal readiness state before provider preparation when no Source is ready", async () => {
     const harness = createHarness();
-    const prepared = preparedFrom(await prepareRun(
+    const result = await prepareRun(
       {
         ...harness.deps,
         knowledgeAdmission: {
@@ -2320,19 +2317,20 @@ describe("run preparation", () => {
         content: textMessageContent("What is the retention policy?"),
         knowledgePlan: knowledgeSelection(["knowledge-base-1"])
       }))
-    ));
+    );
 
-    expect(prepared.normalizedRequest.knowledgePlanner).toMatchObject({
-      automaticRetrieval: false,
-      intent: "fact_lookup",
-      strategy: "none",
-      subqueries: []
+    expect(result).toMatchObject({
+      code: "sources_processing",
+      message: "Selected Knowledge sources are still processing.",
+      ok: false,
+      status: 409
     });
-    expect(prepared.providerRequest.tools?.map((tool) => tool.capability) ?? [])
-      .not.toContain("knowledge");
+    expect(harness.calls).not.toContain("entitlements");
+    expect(harness.calls).not.toContain("capabilities");
+    expect(harness.calls).not.toContain("context:send");
   });
 
-  it("re-admits hosted Search once when Knowledge and MCP tools both coexist", async () => {
+  it("suppresses Search, MCP, and Memory provider tools on the focused Knowledge path", async () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
     );
@@ -2363,16 +2361,46 @@ describe("run preparation", () => {
 
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(2);
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      ...knowledgeFollowUpTools.map((tool) => tool.name),
-      "search_engine_1",
-      ...memoryToolNames,
-      "mcp_team_lookup_1"
-    ]);
+    expect(admissionLoad).toHaveBeenCalledOnce();
+    expect(prepared.normalizedRequest.searchPlan.options).toEqual([]);
+    expect(prepared.normalizedRequest).not.toHaveProperty("mcp");
+    expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
+    expect(prepared.normalizedRequest).not.toHaveProperty("memoryHistoryTool");
+    expect(prepared.normalizedRequest.toolMode).toBe("none");
+    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(harness.mcpPrepareCalls).toEqual([]);
   });
 
-  it("uses the same query-only coexistence path for Assistant-owned Knowledge", async () => {
+  it("does not decode or prepare stale Search and MCP selections for focused Knowledge", async () => {
+    const harness = createHarness({ mcpPlan: readyMcpPlan() });
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        knowledgeAdmission: {
+          async load(input) {
+            return admittedKnowledge(input, "d");
+          }
+        }
+      },
+      sendInput(successBody({
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
+        mcp: { mode: "retired-selection" } as never,
+        searchPlan: { mode: "retired-selection", optionIds: ["stale"] } as never
+      }))
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.searchPlan).toEqual({
+      mode: "all_selected",
+      options: []
+    });
+    expect(prepared.normalizedRequest.toolMode).toBe("none");
+    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(harness.mcpPrepareCalls).toEqual([]);
+  });
+
+  it("uses the same tool-free focused path for Assistant-owned Knowledge", async () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "anthropic_messages"
     );
@@ -2422,26 +2450,26 @@ describe("run preparation", () => {
 
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(2);
+    expect(admissionLoad).toHaveBeenCalledOnce();
     expect(prepared.assistant).toEqual({
       assistantId: "assistant-1",
       revisionId: "assistant-revision-1"
     });
-    expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
-      "provider_model_client"
-    );
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      ...knowledgeFollowUpTools.map((tool) => tool.name),
-      "search_engine_1",
-      ...memoryToolNames
-    ]);
+    expect(prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
+      originalQuery: "Use my Knowledge",
+      retrievalQuery: "Use my Knowledge\n\nServer-owned prior question",
+      version: 1
+    });
+    expect(prepared.normalizedRequest.searchPlan.options).toEqual([]);
+    expect(prepared.normalizedRequest.toolMode).toBe("none");
+    expect(prepared.providerRequest.tools).toBeUndefined();
   });
 
   it.each([
     "gemini_interactions_native" as const,
     "anthropic_messages" as const
   ])(
-    "returns a typed failure when $0 hosted Search has no Knowledge-compatible route",
+    "does not require a $0 Search coexistence route for focused Knowledge",
     async (adapterKind) => {
       const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
       const admissionLoad = vi.fn(async (input: {
@@ -2473,12 +2501,14 @@ describe("run preparation", () => {
         }))
       );
 
-      expect(result).toMatchObject({
-        code: "search_strategy_not_available",
-        ok: false,
-        status: 403
-      });
-      expect(admissionLoad).toHaveBeenCalledTimes(2);
+      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+      const prepared = materializePreparedRunData(result.prepared);
+      expect(admissionLoad).toHaveBeenCalledOnce();
+      expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
+        "requiresClientToolCoexistence"
+      );
+      expect(prepared.normalizedRequest.searchPlan.options).toEqual([]);
+      expect(prepared.providerRequest.tools).toBeUndefined();
     }
   );
 
@@ -2486,7 +2516,7 @@ describe("run preparation", () => {
     "gemini_interactions_native" as const,
     "anthropic_messages" as const
   ])(
-    "keeps $0 hosted Search when an admitted Knowledge plan is suppressed by tools none",
+    "keeps focused Knowledge active and $0 Search suppressed when tools are none",
     async (adapterKind) => {
       const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
       const admissionLoad = vi.fn(async () => hosted);
@@ -2515,9 +2545,12 @@ describe("run preparation", () => {
       if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
       const prepared = materializePreparedRunData(result.prepared);
       expect(admissionLoad).toHaveBeenCalledTimes(1);
-      expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
-        "answer_provider_hosted"
-      );
+      expect(prepared.normalizedRequest.knowledgeFocusedRequest).toMatchObject({
+        originalQuery: "Shared question",
+        version: 1
+      });
+      expect(prepared.normalizedRequest.searchPlan.options).toEqual([]);
+      expect(prepared.normalizedRequest.toolMode).toBe("none");
       expect(prepared.providerRequest.tools).toBeUndefined();
     }
   );

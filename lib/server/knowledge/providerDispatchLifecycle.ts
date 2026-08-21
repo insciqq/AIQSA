@@ -7,7 +7,6 @@ import type {
 } from "./evidenceDispatchManifest";
 import type {
   KnowledgeProviderAttemptRecovery,
-  KnowledgeProviderAttemptPurpose,
   KnowledgeProviderAttemptUsage,
   StoredKnowledgeEvidenceDispatch,
   createPrismaKnowledgeEvidenceDispatchRepository
@@ -136,7 +135,7 @@ export function createKnowledgeProviderDispatchLifecycle(
       modelRunId: string;
       ordinal: number;
       providerBindingKey?: string;
-      purpose: KnowledgeProviderAttemptPurpose;
+      purpose: "answer";
       requestPreview: unknown;
       roundIndex: number;
     }>): Promise<PreparedKnowledgeProviderDispatch> {

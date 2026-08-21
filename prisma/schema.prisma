@@ -572,7 +572,6 @@ model User {
   knowledgeBasePublications           KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
   knowledgeBases                      KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
   knowledgeIndexProfileUpdates        KnowledgeIndexProfile[]            @relation("KnowledgeIndexProfileUpdater")
-  knowledgePolicyUpdates              KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
   knowledgeSources                    KnowledgeSource[]                  @relation("KnowledgeSourceOwner")
   knowledgeUploadBatches              KnowledgeUploadBatch[]
   memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
@@ -840,20 +839,6 @@ model SearchPolicy {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   updatedBy       User?    @relation("SearchPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
-
-  @@index([updatedByUserId])
-}
-
-model KnowledgePolicy {
-  id              String   @id
-  candidateLimit  Int      @default(40)
-  resultLimit     Int      @default(8)
-  scoreThreshold  Float    @default(0.01)
-  version         Int      @default(1)
-  updatedByUserId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  updatedBy       User?    @relation("KnowledgePolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([updatedByUserId])
 }
@@ -2436,8 +2421,6 @@ model ModelRun {
   knowledgeBudgetReservations KnowledgeBudgetReservation[]
   knowledgeProviderAttempts   KnowledgeProviderAttempt[]
   knowledgeDispatchManifests  KnowledgeEvidenceDispatchManifest[]
-  knowledgeStrategyExecution  KnowledgeStrategyExecution?
-  knowledgeStrategySteps      KnowledgeStrategyStep[]
   memoryHistoryRuns           MemoryHistoryRun[]
   memoryToolEgressReceipts    MemoryToolEgressReceipt[]
   providerRunBindings         ProviderRunBinding[]
@@ -2689,7 +2672,6 @@ model ModelRunToolCall {
   modelRun                   ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
   knowledgeRun               KnowledgeRun?
   knowledgeBudgetReservation KnowledgeBudgetReservation?
-  knowledgeStrategyStep      KnowledgeStrategyStep?
   memoryHistoryRun           MemoryHistoryRun?
   memoryToolEgressReceipts   MemoryToolEgressReceipt[]
 
@@ -2701,41 +2683,35 @@ model ModelRunToolCall {
 }
 
 model KnowledgeRun {
-  id                   String                      @id @default(uuid())
-  modelRunId           String
-  modelRunToolCallId   String                      @unique
-  retrievalSessionId   String?
-  invocationOrdinal    Int
-  operation            String                      @default("search") @db.VarChar(32)
-  query                String                      @db.VarChar(500)
-  outcome              KnowledgeRunOutcome
-  fusion               String                      @db.VarChar(32)
-  candidateLimit       Int
-  resultLimit          Int
-  candidateCount       Int
-  threshold            Float
-  baseEvidence         Json
-  results              Json
-  providerText         String
-  embeddingUsage       Json
-  durationMs           Int
-  failureCode          String?                     @db.VarChar(128)
-  budgetEvidence       Json                        @default("{}")
-  readReceipt          Json?
-  strategyStepEvidence Json?
-  stopReason           String?                     @db.VarChar(64)
-  receiptVersion       Int?
-  budgetReservationId  String?                     @unique
-  rerankerBinding      Json?
-  preRerankOrder       Json?
-  postRerankOrder      Json?
-  createdAt            DateTime                    @default(now())
-  updatedAt            DateTime                    @updatedAt
-  modelRun             ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  modelRunToolCall     ModelRunToolCall            @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
-  retrievalSession     KnowledgeRetrievalSession?  @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  evidenceLinks        KnowledgeRunEvidence[]
-  budgetReservation    KnowledgeBudgetReservation? @relation(fields: [modelRunId, modelRunToolCallId, budgetReservationId], references: [modelRunId, modelRunToolCallId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRun_budgetReservation_fkey")
+  id                  String                      @id @default(uuid())
+  modelRunId          String
+  modelRunToolCallId  String                      @unique
+  retrievalSessionId  String?
+  invocationOrdinal   Int
+  operation           String                      @default("search") @db.VarChar(32)
+  query               String
+  outcome             KnowledgeRunOutcome
+  fusion              String                      @db.VarChar(32)
+  candidateLimit      Int
+  resultLimit         Int
+  candidateCount      Int
+  baseEvidence        Json
+  results             Json
+  providerText        String
+  embeddingUsage      Json
+  durationMs          Int
+  failureCode         String?                     @db.VarChar(128)
+  budgetEvidence      Json                        @default("{}")
+  readReceipt         Json?
+  receiptVersion      Int?
+  budgetReservationId String?                     @unique
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  modelRun            ModelRun                    @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall    ModelRunToolCall            @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
+  retrievalSession    KnowledgeRetrievalSession?  @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  evidenceLinks       KnowledgeRunEvidence[]
+  budgetReservation   KnowledgeBudgetReservation? @relation(fields: [modelRunId, modelRunToolCallId, budgetReservationId], references: [modelRunId, modelRunToolCallId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRun_budgetReservation_fkey")
 
   @@unique([modelRunId, modelRunToolCallId])
   @@unique([modelRunId, budgetReservationId])
@@ -2799,8 +2775,6 @@ model KnowledgeRunSourceBinding {
   source              KnowledgeSource?              @relation(fields: [sourceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   sourceVersion       KnowledgeSourceVersion?       @relation(fields: [sourceId, sourceVersionId], references: [sourceId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunSourceBinding_version_fkey")
   sourceArtifact      KnowledgeSourceIndexArtifact? @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunSourceBinding_artifact_fkey")
-  strategySteps       KnowledgeStrategyStep[]
-  strategyMapOutputs  KnowledgeStrategyMapOutput[]
 
   @@unique([modelRunId, sourceId, sourceVersionId, sourceArtifactId], map: "KnowledgeRunSourceBinding_source_key")
   @@unique([modelRunId, ordinal])
@@ -2826,19 +2800,13 @@ model KnowledgeBudgetReservation {
   estimatedCandidates      Int
   estimatedRetrievedTokens Int
   estimatedEmbeddingCalls  Int
-  estimatedRerankerCalls   Int
   estimatedLatencyMs       Int
   estimatedCostMicros      Int
-  estimatedValidationSlots Int                             @default(0)
-  estimatedRepairSlots     Int                             @default(0)
   actualCandidates         Int?
   actualRetrievedTokens    Int?
   actualEmbeddingCalls     Int?
-  actualRerankerCalls      Int?
   actualLatencyMs          Int?
   actualCostMicros         Int?
-  actualValidationSlots    Int?
-  actualRepairSlots        Int?
   leaseToken               String?                         @db.VarChar(128)
   leaseExpiresAt           DateTime?
   dispatchAttemptKey       String?                         @db.VarChar(128)
@@ -2891,7 +2859,6 @@ model KnowledgeProviderAttempt {
   modelRun           ModelRun                           @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
   providerBinding    ProviderRunBinding                 @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeProviderAttempt_providerBinding_fkey")
   manifest           KnowledgeEvidenceDispatchManifest?
-  strategyStep       KnowledgeStrategyStep?
 
   @@unique([modelRunId, id])
   @@unique([modelRunId, ordinal])
@@ -2992,9 +2959,7 @@ model KnowledgeRetrievalSession {
   version              Int                                 @default(2)
   originalIntent       Json
   scopeSnapshot        Json
-  strategySnapshot     Json
   readinessSummary     Json
-  coverageRequirements Json
   degradedFlags        String[]                            @default([])
   citationContract     Json
   nextEvidenceOrdinal  Int                                 @default(1)
@@ -3006,171 +2971,7 @@ model KnowledgeRetrievalSession {
   operations           KnowledgeRun[]
   evidenceItems        KnowledgeEvidenceItem[]
   groundingResult      KnowledgeGroundingResult?
-  semanticShadowResult KnowledgeSemanticShadowResult?
   dispatchManifests    KnowledgeEvidenceDispatchManifest[]
-  strategyExecution    KnowledgeStrategyExecution?
-}
-
-model KnowledgeStrategyExecution {
-  id                     String                       @id @default(uuid())
-  modelRunId             String                       @unique
-  retrievalSessionId     String                       @unique
-  version                Int                          @default(1)
-  plannerVersion         Int
-  strategy               String                       @db.VarChar(32)
-  state                  String                       @default("planned") @db.VarChar(16)
-  executionRequest       Json?
-  planHash               String?                      @db.Char(64)
-  executionHash          String?                      @db.Char(64)
-  sourceSetHash          String?                      @db.Char(64)
-  expectedSourceCount    Int
-  expectedPassageCount   Int
-  processedSourceCount   Int                          @default(0)
-  processedPassageCount  Int                          @default(0)
-  includedPassageCount   Int                          @default(0)
-  dispatchedPassageCount Int                          @default(0)
-  processedSetHash       String?                      @db.Char(64)
-  includedSetHash        String?                      @db.Char(64)
-  dispatchSetHash        String?                      @db.Char(64)
-  dispatchManifestHash   String?                      @db.Char(64)
-  coverageStatus         String?                      @db.VarChar(16)
-  coverageReceipt        Json?
-  coverageReceiptHash    String?                      @db.Char(64)
-  failureCode            String?                      @db.VarChar(64)
-  startedAt              DateTime?
-  settledAt              DateTime?
-  failedAt               DateTime?
-  ambiguousAt            DateTime?
-  cancelledAt            DateTime?
-  purgedAt               DateTime?
-  createdAt              DateTime                     @default(now())
-  updatedAt              DateTime                     @updatedAt
-  modelRun               ModelRun                     @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  retrievalSession       KnowledgeRetrievalSession    @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  steps                  KnowledgeStrategyStep[]
-  mapOutputs             KnowledgeStrategyMapOutput[]
-
-  @@unique([modelRunId, id])
-  @@index([state, updatedAt])
-}
-
-model KnowledgeStrategyStep {
-  id                      String                            @id @default(uuid())
-  executionId             String
-  modelRunId              String
-  modelRunToolCallId      String?                           @unique
-  sourceBindingId         String?
-  providerAttemptId       String?                           @unique
-  ordinal                 Int
-  kind                    String                            @db.VarChar(32)
-  phaseOrdinal            Int
-  streamId                String?                           @db.VarChar(128)
-  pageOrdinal             Int
-  targetOrdinal           Int?
-  required                Boolean                           @default(true)
-  state                   String                            @default("pending") @db.VarChar(16)
-  materializationMode     String                            @db.VarChar(32)
-  templateHash            String?                           @db.Char(64)
-  materializedAt          DateTime?
-  idempotencyKey          String?                           @db.VarChar(128)
-  request                 Json?
-  requestHash             String?                           @db.Char(64)
-  inputHash               String?                           @db.Char(64)
-  evidenceInputHash       String?                           @db.Char(64)
-  comparisonDimensionHash String?                           @db.Char(64)
-  sourceSetHash           String?                           @db.Char(64)
-  cursor                  Json?
-  cursorHash              String?                           @db.Char(64)
-  result                  Json?
-  resultHash              String?                           @db.Char(64)
-  processedItemsHash      String?                           @db.Char(64)
-  processedSourceCount    Int                               @default(0)
-  processedPassageCount   Int                               @default(0)
-  includedPassageCount    Int                               @default(0)
-  attemptCount            Int                               @default(0)
-  stateVersion            Int                               @default(0)
-  irreversibleDispatch    Boolean                           @default(false)
-  leaseToken              String?                           @db.VarChar(128)
-  leaseExpiresAt          DateTime?
-  failureCode             String?                           @db.VarChar(64)
-  startedAt               DateTime?
-  ioStartedAt             DateTime?
-  settledAt               DateTime?
-  failedAt                DateTime?
-  ambiguousAt             DateTime?
-  cancelledAt             DateTime?
-  purgedAt                DateTime?
-  createdAt               DateTime                          @default(now())
-  updatedAt               DateTime                          @updatedAt
-  execution               KnowledgeStrategyExecution        @relation(fields: [modelRunId, executionId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyStep_execution_fkey")
-  modelRun                ModelRun                          @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  modelRunToolCall        ModelRunToolCall?                 @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeStrategyStep_toolCall_fkey")
-  providerAttempt         KnowledgeProviderAttempt?         @relation(fields: [providerAttemptId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  sourceBinding           KnowledgeRunSourceBinding?        @relation(fields: [sourceBindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  dependencies            KnowledgeStrategyStepDependency[] @relation("KnowledgeStrategyStepDependencies")
-  dependents              KnowledgeStrategyStepDependency[] @relation("KnowledgeStrategyStepDependents")
-  mapOutput               KnowledgeStrategyMapOutput?       @relation("KnowledgeStrategyTerminalMapOutput")
-
-  @@unique([executionId, id])
-  @@unique([executionId, ordinal])
-  @@unique([executionId, idempotencyKey])
-  @@unique([executionId, modelRunToolCallId])
-  @@unique([modelRunId, modelRunToolCallId])
-  @@unique([executionId, kind, sourceBindingId, phaseOrdinal, pageOrdinal], map: "KnowledgeStrategyStep_source_page_key")
-  @@index([executionId, state, leaseExpiresAt])
-  @@index([sourceBindingId])
-  @@index([providerAttemptId])
-}
-
-model KnowledgeStrategyStepDependency {
-  executionId     String
-  stepId          String
-  dependsOnStepId String
-  createdAt       DateTime              @default(now())
-  step            KnowledgeStrategyStep @relation("KnowledgeStrategyStepDependencies", fields: [executionId, stepId], references: [executionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyStepDependency_step_fkey")
-  dependsOnStep   KnowledgeStrategyStep @relation("KnowledgeStrategyStepDependents", fields: [executionId, dependsOnStepId], references: [executionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyStepDependency_dependsOn_fkey")
-
-  @@id([executionId, stepId, dependsOnStepId])
-  @@index([executionId, dependsOnStepId])
-}
-
-model KnowledgeStrategyMapOutput {
-  id                     String                     @id @default(uuid())
-  executionId            String
-  modelRunId             String
-  terminalStepId         String                     @unique
-  sourceBindingId        String?
-  sourceOrdinal          Int
-  version                Int                        @default(2)
-  state                  String                     @default("available") @db.VarChar(16)
-  output                 Json?
-  receipt                Json?
-  mapInputHash           String?                    @db.Char(64)
-  outputHash             String?                    @db.Char(64)
-  receiptHash            String?                    @db.Char(64)
-  inputPageReceiptCount  Int
-  inputPageReceiptsHash  String?                    @db.Char(64)
-  inputPassageCount      Int
-  inputPassageItemsHash  String?                    @db.Char(64)
-  inputSectionCount      Int
-  inputSectionHashesHash String?                    @db.Char(64)
-  processedPassageCount  Int
-  summaryItemCount       Int
-  summaryItemsHash       String?                    @db.Char(64)
-  settledAt              DateTime
-  purgedAt               DateTime?
-  createdAt              DateTime                   @default(now())
-  updatedAt              DateTime                   @updatedAt
-  execution              KnowledgeStrategyExecution @relation(fields: [modelRunId, executionId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyMapOutput_execution_fkey")
-  terminalStep           KnowledgeStrategyStep      @relation("KnowledgeStrategyTerminalMapOutput", fields: [executionId, terminalStepId], references: [executionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeStrategyMapOutput_terminalStep_fkey")
-  sourceBinding          KnowledgeRunSourceBinding? @relation(fields: [sourceBindingId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-
-  @@unique([executionId, sourceOrdinal])
-  @@unique([executionId, sourceBindingId])
-  @@unique([executionId, terminalStepId])
-  @@index([modelRunId])
-  @@index([sourceBindingId])
-  @@index([executionId, state, sourceOrdinal])
 }
 
 model KnowledgeEvidenceItem {
@@ -3234,26 +3035,6 @@ model KnowledgeGroundingResult {
   outcome            String                    @db.VarChar(32)
   originalAnswerHash String                    @db.Char(64)
   finalAnswerHash    String                    @db.Char(64)
-  issues             Json
-  repairCount        Int
-  createdAt          DateTime                  @default(now())
-  retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-}
-
-model KnowledgeSemanticShadowResult {
-  retrievalSessionId String                    @id
-  version            Int                       @default(1)
-  mode               String                    @default("shadow") @db.VarChar(16)
-  executionStatus    String                    @db.VarChar(16)
-  validatorProfile   String                    @db.VarChar(80)
-  validatorVersion   Int
-  semanticProof      Boolean                   @default(false)
-  egressMode         String                    @db.VarChar(16)
-  profileRevisionIds String[]                  @default([])
-  diagnostic         Json?
-  contentFreeMetrics Json
-  receiptHash        String?                   @db.Char(64)
-  purgedAt           DateTime?
   createdAt          DateTime                  @default(now())
   retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 }

@@ -10,7 +10,6 @@ import {
 } from "../providerRuntime/embeddingRuntime";
 import type { ProviderConnectionConfiguration } from "../providers/providerConfiguration";
 import { SPREADSHEET_MAX_REGIONS_PER_SHEET } from "../parsing/spreadsheetLimits";
-import type { StorageAdapter } from "../uploads/storage";
 import { memorySha256 } from "../memory/persistence/lexical";
 import type {
   KnowledgeAcceptedEmbeddingRuntime,
@@ -26,25 +25,10 @@ import type {
   KnowledgeHybridPassage,
   KnowledgeHybridSearchResult,
   KnowledgeRetrievalEvidence,
-  KnowledgeSourceBoundRetrievedPassageEvidence,
-  KnowledgeSourceDiscoveryResult,
-  KnowledgeStrategyPassagePage
+  KnowledgeSourceDiscoveryResult
 } from "./retrievalTypes";
-import {
-  decodeKnowledgeAcceptedSourceSetV1,
-  decodeKnowledgeAcceptedSourceTupleV1,
-  decodeKnowledgeStrategyCursorV1,
-  decodeKnowledgeStrategyStepEvidenceV1,
-  hashKnowledgeStrategyPassageItemV1,
-  type KnowledgeAcceptedSourceTupleV1,
-  type KnowledgeStrategyPassageItemV1
-} from "./knowledgeStrategyExecution";
 import { createPrismaKnowledgeHierarchicalRetrievalRepository } from
   "./prismaHierarchicalRetrievalRepository";
-import {
-  canonicalizeKnowledgeSourceArtifactCandidates,
-  type KnowledgeCanonicalSourceProvenance
-} from "./canonicalSourceCandidates";
 import {
   decodeKnowledgeDocumentContext,
   isCompleteKnowledgeTableRowProjectionSequence,
@@ -54,35 +38,19 @@ import {
   READ_SOURCE_MAX_WINDOW,
   readSourceA1RangeContains
 } from "./readSourceLocator";
-import { getKnowledgeExtractionConfig, type KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
-import { analyzeStructuredKnowledgeSources } from "./structuredRetrieval";
-import {
-  analyzeVisualKnowledgeSources,
-  type KnowledgeVisualAnalysisRuntime
-} from "./visualEvidence";
-import {
-  knowledgeVisionEgressApproved,
-  knowledgeVisionProfileFromConfiguration
-} from "./knowledgeProfile";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
   KNOWLEDGE_STORED_EVIDENCE_PROVENANCE_VERSION,
-  knowledgeEvidenceConfidenceBucket,
   knowledgeSourceEvidenceKey
 } from "./evidencePackage";
-import { decodeKnowledgePlannerPlan } from "./planner";
+import { decodeKnowledgeFocusedRequest } from "./focusedRequest";
 import {
   decodeKnowledgeRetrievalEvidence,
-  decodeKnowledgeRetrievedPassageForVersion,
   knowledgeToolResultText
 } from "./toolResult";
 import {
-  buildKnowledgeStrategySummaryResultEvidenceV2
-} from "./knowledgeStrategySummaryEvidence";
-import {
   executeKnowledgeRetrievalCore
 } from "./prismaRetrievalCore";
-import type { KnowledgeCandidateReranker } from "./retrievalRanking";
 import {
   decodeKnowledgeBudgetPolicy,
   estimatedKnowledgeEmbeddingCostMicros,
@@ -94,15 +62,12 @@ import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
   KNOWLEDGE_EXACT_TOOL_NAME,
   KNOWLEDGE_EXECUTION_TOOL_NAMES,
-  KNOWLEDGE_LEGACY_RESULT_VERSION,
   KNOWLEDGE_READ_SOURCE_TOOL_NAME,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
-  KNOWLEDGE_SEARCH_TOOL_NAME,
-  KNOWLEDGE_TOOL_NAME
+  KNOWLEDGE_FOCUSED_OPERATION_NAME
 } from "./retrievalTypes";
 import { settleKnowledgeBudgetReservationReceipt } from "./knowledgeBudgetReservationRepository";
-import { settleKnowledgeStrategyStepReceipt } from "./knowledgeStrategyRepository";
 
 type RetrievalPrisma = Pick<
   PrismaClient,
@@ -113,8 +78,6 @@ type RetrievalPrisma = Pick<
   | "knowledgeRunBinding"
   | "knowledgeRunProfileBinding"
   | "knowledgeRunSourceBinding"
-  | "knowledgeStrategyExecution"
-  | "knowledgeStrategyMapOutput"
   | "knowledgeRetrievalSession"
   | "knowledgeRunScope"
   | "knowledgeArtifactSectionIndex"
@@ -136,25 +99,11 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function evidenceRank(
-  order: null | readonly string[],
-  chunkId: string,
-  resultOrdinal: number
-): number {
-  if (order === null) return resultOrdinal + 1;
-  const rank = order.indexOf(chunkId);
-  if (rank < 0) throw new Error("knowledge_evidence_ranking_provenance_invalid");
-  return rank + 1;
-}
-
 const operationToolNames: Record<KnowledgeOperationKind, string> = {
-  automatic_search: KNOWLEDGE_TOOL_NAME,
+  automatic_search: KNOWLEDGE_FOCUSED_OPERATION_NAME,
   discover_sources: KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
   find_exact: KNOWLEDGE_EXACT_TOOL_NAME,
-  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME,
-  search_knowledge: KNOWLEDGE_SEARCH_TOOL_NAME,
-  structured_analysis: KNOWLEDGE_TOOL_NAME,
-  visual_analysis: KNOWLEDGE_TOOL_NAME
+  read_source: KNOWLEDGE_READ_SOURCE_TOOL_NAME
 };
 function embeddingTokens(value: unknown): number {
   if (!Array.isArray(value)) return 0;
@@ -181,14 +130,6 @@ function resultMetrics(value: unknown): Readonly<{
     bytes += includedTextBytes ?? 0;
   }
   return { contentHashes, retrievedTokens: Math.ceil(bytes / 4) };
-}
-
-function noveltyRatio(value: unknown): number | null {
-  if (!record(value) || value.noveltyRatio === null) return null;
-  return typeof value.noveltyRatio === "number" && Number.isFinite(value.noveltyRatio) &&
-    value.noveltyRatio >= 0 && value.noveltyRatio <= 1
-    ? value.noveltyRatio
-    : null;
 }
 
 function passageDocumentContext(
@@ -316,122 +257,11 @@ function coherentSourceReadTableRow<T extends SourceReadPassageRow>(
   return Object.freeze(projected.map(({ row }) => row));
 }
 
-function selectedArtifactProvenance(
-  provenance: readonly KnowledgeCanonicalSourceProvenance[],
-  passage: Pick<KnowledgeHybridPassage,
-    "documentId" | "documentVersionId" | "sourceArtifactId">
-): readonly KnowledgeCanonicalSourceProvenance[] {
-  const selected = provenance.filter((entry) =>
-    entry.sourceId === passage.documentId &&
-    entry.sourceVersionId === passage.documentVersionId &&
-    entry.artifactId === passage.sourceArtifactId);
-  if (selected.length !== 1) throw new Error("knowledge_canonical_source_provenance_invalid");
-  return Object.freeze(selected);
-}
-
 export function createPrismaKnowledgeRetrievalStore(
-  client: RetrievalPrisma,
-  options: Readonly<{
-    extractionConfig?: KnowledgeExtractionConfig;
-    reranker?: KnowledgeCandidateReranker;
-    storage?: Pick<StorageAdapter, "getObject">;
-    visualRuntime?: KnowledgeVisualAnalysisRuntime;
-  }> = {}
+  client: RetrievalPrisma
 ): KnowledgeRetrievalStore {
-  const structuredStorage = options.storage;
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
   return {
-    async prepareStrategySession(input): Promise<Readonly<{ id: string }>> {
-      return client.$transaction(async (tx) => {
-        const lockedRun = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT run."id"
-          FROM "ModelRun" AS run
-          WHERE run."id" = ${input.runId}
-            AND run."userId" = ${input.userId}
-          FOR UPDATE
-        `);
-        if (lockedRun.length !== 1) throw new Error("knowledge_run_context_unavailable");
-        const context = await tx.modelRun.findUnique({
-          select: {
-            knowledgeRunScope: {
-              select: {
-                budgetPolicy: true,
-                exclusions: true,
-                resolvedBaseCount: true,
-                resolvedSourceCount: true,
-                selection: true
-              }
-            },
-            normalizedRequest: true
-          },
-          where: { id: input.runId }
-        });
-        const normalizedRequest = record(context?.normalizedRequest)
-          ? context.normalizedRequest
-          : null;
-        const planner = normalizedRequest
-          ? decodeKnowledgePlannerPlan(normalizedRequest.knowledgePlanner)
-          : null;
-        const scope = context?.knowledgeRunScope;
-        if (!scope || !planner?.ok || !planner.plan.automaticRetrieval) {
-          throw new Error("knowledge_strategy_context_invalid");
-        }
-        const exclusions = Array.isArray(scope.exclusions) ? scope.exclusions : [];
-        const excludedResources = exclusions.reduce<number>((total, value) => {
-          if (!record(value)) return total;
-          const count = nonNegativeInteger(value.count);
-          return total + (count ?? 0);
-        }, 0);
-        const existing = await tx.knowledgeRetrievalSession.findUnique({
-          where: { modelRunId: input.runId }
-        });
-        if (existing) {
-          if (existing.acceptedAt !== null || existing.receiptHash !== null) {
-            throw new Error("knowledge_evidence_already_accepted");
-          }
-          return Object.freeze({ id: existing.id });
-        }
-        const degradedFlags = [
-          ...(planner.plan.status === "degraded" ? ["planner_degraded"] : []),
-          ...(planner.plan.failureCode ? [planner.plan.failureCode] : []),
-          ...(excludedResources > 0 ? ["partial_readiness"] : [])
-        ];
-        const session = await tx.knowledgeRetrievalSession.create({
-          data: {
-            citationContract: json(KNOWLEDGE_EVIDENCE_CITATION_CONTRACT),
-            coverageRequirements: json({ ...planner.plan.coverage, verified: false }),
-            degradedFlags,
-            id: randomUUID(),
-            modelRunId: input.runId,
-            originalIntent: json({
-              intent: planner.plan.intent,
-              query: planner.plan.originalQuery
-            }),
-            readinessSummary: json({
-              excludedResources,
-              readyBases: scope.resolvedBaseCount,
-              readySources: scope.resolvedSourceCount
-            }),
-            scopeSnapshot: json({
-              budgetPolicy: scope.budgetPolicy,
-              exclusions: scope.exclusions,
-              resolvedBaseCount: scope.resolvedBaseCount,
-              resolvedSourceCount: scope.resolvedSourceCount,
-              selection: scope.selection
-            }),
-            strategySnapshot: json({
-              automaticRetrieval: planner.plan.automaticRetrieval,
-              evidenceMode: planner.plan.evidenceMode,
-              failureCode: planner.plan.failureCode ?? null,
-              status: planner.plan.status,
-              strategy: planner.plan.strategy
-            }),
-            version: 2
-          }
-        });
-        return Object.freeze({ id: session.id });
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    },
     async budgetState(input): Promise<KnowledgeBudgetState | null> {
       const expectedToolName = operationToolNames[input.operation];
       const toolNames = Prisma.sql`ARRAY[${Prisma.join(
@@ -439,21 +269,12 @@ export function createPrismaKnowledgeRetrievalStore(
       )}]::text[]`;
       const [summaryRows, scope, receipts] = await Promise.all([
         client.$queryRaw<Array<{
-          followUpOperations: number;
           invocationOrdinal: number;
           operations: number;
-          searchPhases: number;
-          subqueriesInCurrentPhase: number;
         }>>(Prisma.sql`
           SELECT
             count(preceding."id")::integer AS "invocationOrdinal",
-            count(preceding."id")::integer AS operations,
-            count(preceding."id") FILTER (WHERE preceding."roundIndex" > 0)::integer
-              AS "followUpOperations",
-            count(DISTINCT preceding."roundIndex")::integer AS "searchPhases",
-            count(preceding."id") FILTER (
-              WHERE preceding."roundIndex" = target."roundIndex"
-            )::integer AS "subqueriesInCurrentPhase"
+            count(preceding."id")::integer AS operations
           FROM "ModelRunToolCall" AS target
           INNER JOIN "ModelRun" AS run ON run."id" = target."modelRunId"
           INNER JOIN "ModelRunToolCall" AS preceding
@@ -477,12 +298,10 @@ export function createPrismaKnowledgeRetrievalStore(
         client.knowledgeRun.findMany({
           orderBy: { invocationOrdinal: "asc" },
           select: {
-            budgetEvidence: true,
             candidateCount: true,
             durationMs: true,
             embeddingUsage: true,
             invocationOrdinal: true,
-            rerankerBinding: true,
             results: true
           },
           where: { modelRun: { id: input.runId, userId: input.userId }, modelRunId: input.runId }
@@ -497,7 +316,6 @@ export function createPrismaKnowledgeRetrievalStore(
       let evidenceCount = 0;
       let latencyMs = 0;
       let queryEmbeddingCalls = 0;
-      let rerankerCalls = 0;
       let retrievedTokens = 0;
       let totalEmbeddingTokens = 0;
       const priorContentHashes: string[] = [];
@@ -507,17 +325,10 @@ export function createPrismaKnowledgeRetrievalStore(
         const usage = Array.isArray(receipt.embeddingUsage) ? receipt.embeddingUsage : [];
         queryEmbeddingCalls += usage.length;
         totalEmbeddingTokens += embeddingTokens(usage);
-        rerankerCalls += receipt.rerankerBinding === null ? 0 : 1;
         const result = resultMetrics(receipt.results);
         evidenceCount += Array.isArray(receipt.results) ? receipt.results.length : 0;
         retrievedTokens += result.retrievedTokens;
         priorContentHashes.push(...result.contentHashes);
-      }
-      let lowNoveltyStreak = 0;
-      for (const receipt of [...receipts].reverse()) {
-        const ratio = noveltyRatio(receipt.budgetEvidence);
-        if (ratio === null || ratio >= policy.minNoveltyRatio) break;
-        lowNoveltyStreak += 1;
       }
       const usage: KnowledgeBudgetUsage = {
         cumulativeCandidates,
@@ -525,15 +336,10 @@ export function createPrismaKnowledgeRetrievalStore(
           policy,
           totalEmbeddingTokens
         ),
-        followUpOperations: summary.followUpOperations,
         latencyMs,
-        lowNoveltyStreak,
         operations: summary.operations,
         queryEmbeddingCalls,
-        rerankerCalls,
-        retrievedTokens,
-        searchPhases: summary.searchPhases,
-        subqueriesInCurrentPhase: summary.subqueriesInCurrentPhase
+        retrievedTokens
       };
       return {
         evidenceCount,
@@ -558,10 +364,8 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
         query: input.query,
-        ...(options.reranker ? { reranker: options.reranker } : {}),
         resultLimit: input.resultLimit,
         runId: input.runId,
-        scoreThreshold: input.threshold,
         ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
         userId: input.userId,
         vectors: input.vectors
@@ -577,7 +381,6 @@ export function createPrismaKnowledgeRetrievalStore(
           bindingOrdinal: passage.bindingOrdinal,
           chunkId: passage.chunkId,
           chunkIndex: passage.chunkIndex,
-          confidence: passage.confidence,
           contentHash: passage.contentHash,
           documentId: passage.documentId,
           ...(passage.documentContext ? { documentContext: passage.documentContext } : {}),
@@ -591,7 +394,6 @@ export function createPrismaKnowledgeRetrievalStore(
           knowledgeBaseId: passage.knowledgeBaseId,
           layoutKind: passage.layoutKind,
           page: passage.page,
-          rerankScore: passage.rerankScore,
           sectionId: passage.sectionId,
           signalProvenance: passage.signals,
           sourceArtifactId: passage.sourceArtifactId,
@@ -606,240 +408,6 @@ export function createPrismaKnowledgeRetrievalStore(
             ? []
             : result.vectorSearchEvidence
       };
-    },
-    async loadStrategySources(input): Promise<readonly KnowledgeAcceptedSourceTupleV1[]> {
-      const run = await client.modelRun.findFirst({
-        select: { createdAt: true },
-        where: { id: input.runId, userId: input.userId }
-      });
-      if (!run) throw new Error("knowledge_strategy_run_unavailable");
-      const bindings = await client.knowledgeRunSourceBinding.findMany({
-        orderBy: { ordinal: "asc" },
-        select: {
-          id: true,
-          ordinal: true,
-          sourceAlias: true,
-          sourceArtifact: {
-            select: {
-              hierarchicalIndexes: {
-                orderBy: { schemaVersion: "desc" },
-                select: { checksum: true, id: true, passageCount: true },
-                take: 1,
-                where: { createdAt: { lte: run.createdAt }, state: "ready" }
-              },
-              id: true,
-              state: true
-            }
-          },
-          sourceArtifactId: true,
-          sourceId: true,
-          sourceVersionId: true,
-          sourceVersionNumber: true
-        },
-        where: {
-          modelRun: { id: input.runId, userId: input.userId },
-          readinessState: "ready",
-          sourceArtifactId: { not: null },
-          sourceId: { not: null },
-          sourceVersionId: { not: null },
-          tombstonedAt: null
-        }
-      });
-      const sources = bindings.map((binding) => {
-        const artifact = binding.sourceArtifact;
-        const hierarchy = artifact?.hierarchicalIndexes[0];
-        const checksum = hierarchy?.checksum?.trim();
-        if (!binding.sourceArtifactId || !binding.sourceId || !binding.sourceVersionId ||
-          !artifact || artifact.id !== binding.sourceArtifactId || artifact.state !== "ready" ||
-          !hierarchy || !checksum || !/^[0-9a-f]{64}$/u.test(checksum) ||
-          !Number.isSafeInteger(hierarchy.passageCount) || hierarchy.passageCount < 1) {
-          throw new Error("knowledge_strategy_source_unavailable");
-        }
-        return {
-          bindingId: binding.id,
-          hierarchicalArtifactId: hierarchy.id,
-          hierarchicalChecksum: checksum,
-          ordinal: binding.ordinal,
-          passageCount: hierarchy.passageCount,
-          sourceAlias: binding.sourceAlias,
-          sourceArtifactId: binding.sourceArtifactId,
-          sourceId: binding.sourceId,
-          sourceVersionId: binding.sourceVersionId,
-          sourceVersionNumber: binding.sourceVersionNumber,
-          version: 1 as const
-        };
-      });
-      const decoded = decodeKnowledgeAcceptedSourceSetV1(sources);
-      if (!decoded) throw new Error("knowledge_strategy_source_set_invalid");
-      return decoded;
-    },
-    async loadStrategyPassagePage(input): Promise<KnowledgeStrategyPassagePage> {
-      const source = decodeKnowledgeAcceptedSourceTupleV1(input.source);
-      if (!source || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 256 ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(input.executionId) ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(input.streamId)) {
-        throw new Error("knowledge_strategy_page_request_invalid");
-      }
-      const cursor = input.cursor === null ? null : decodeKnowledgeStrategyCursorV1(input.cursor);
-      if (input.cursor !== null && !cursor || cursor && (
-        cursor.executionId !== input.executionId || cursor.streamId !== input.streamId ||
-        cursor.sourceBindingId !== source.bindingId || cursor.sourceOrdinal !== source.ordinal
-      )) throw new Error("knowledge_strategy_cursor_mismatch");
-      const binding = await client.knowledgeRunSourceBinding.findFirst({
-        select: {
-          fileNameSnapshot: true,
-          id: true,
-          ordinal: true,
-          profileBinding: { select: { id: true, ordinal: true } },
-          sourceAlias: true,
-          sourceArtifact: {
-            select: {
-              hierarchicalIndexes: {
-                select: { checksum: true, id: true, passageCount: true, state: true },
-                where: { id: source.hierarchicalArtifactId }
-              },
-              id: true,
-              state: true
-            }
-          },
-          sourceArtifactId: true,
-          sourceId: true,
-          sourceNameSnapshot: true,
-          sourceVersionId: true,
-          sourceVersionNumber: true
-        },
-        where: {
-          id: source.bindingId,
-          modelRun: { id: input.runId, userId: input.userId },
-          readinessState: "ready",
-          tombstonedAt: null
-        }
-      });
-      const hierarchy = binding?.sourceArtifact?.hierarchicalIndexes[0];
-      if (!binding || !binding.sourceId || !binding.sourceVersionId ||
-        !binding.sourceArtifactId || !binding.sourceNameSnapshot || !binding.fileNameSnapshot ||
-        binding.id !== source.bindingId || binding.ordinal !== source.ordinal ||
-        binding.sourceAlias !== source.sourceAlias || binding.sourceId !== source.sourceId ||
-        binding.sourceVersionId !== source.sourceVersionId ||
-        binding.sourceArtifactId !== source.sourceArtifactId ||
-        binding.sourceVersionNumber !== source.sourceVersionNumber ||
-        binding.sourceArtifact?.id !== source.sourceArtifactId ||
-        binding.sourceArtifact.state !== "ready" || hierarchy?.state !== "ready" ||
-        hierarchy.id !== source.hierarchicalArtifactId ||
-        hierarchy.checksum?.trim() !== source.hierarchicalChecksum ||
-        hierarchy.passageCount !== source.passageCount) {
-        throw new Error("knowledge_strategy_source_changed");
-      }
-      const nextPassageOrdinal = cursor?.nextPassageOrdinal ?? 0;
-      if (nextPassageOrdinal > source.passageCount) {
-        throw new Error("knowledge_strategy_cursor_out_of_range");
-      }
-      const passageSelect = {
-        contentHash: true,
-        contextPrefix: true,
-        documentContext: true,
-        headingPath: true,
-        id: true,
-        ordinal: true,
-        page: true,
-        sectionId: true,
-        sourceName: true,
-        text: true
-      } satisfies Prisma.KnowledgeArtifactPassageIndexSelect;
-      const [previous, rows] = await Promise.all([
-        cursor
-          ? client.knowledgeArtifactPassageIndex.findFirst({
-              select: passageSelect,
-              where: {
-                indexArtifactId: source.hierarchicalArtifactId,
-                ordinal: cursor.nextPassageOrdinal - 1
-              }
-            })
-          : null,
-        client.knowledgeArtifactPassageIndex.findMany({
-          orderBy: { ordinal: "asc" },
-          select: passageSelect,
-          take: input.limit + 1,
-          where: {
-            indexArtifactId: source.hierarchicalArtifactId,
-            ordinal: { gte: nextPassageOrdinal }
-          }
-        })
-      ]);
-      const item = (row: typeof rows[number]): KnowledgeStrategyPassageItemV1 => ({
-        contentHash: row.contentHash.trim(),
-        passageId: row.id,
-        passageOrdinal: row.ordinal,
-        sourceArtifactId: source.sourceArtifactId,
-        sourceBindingId: source.bindingId,
-        sourceOrdinal: source.ordinal,
-        version: 1
-      });
-      if (cursor && (!previous ||
-        hashKnowledgeStrategyPassageItemV1(item(previous)) !== cursor.previousItemHash)) {
-        throw new Error("knowledge_strategy_cursor_predecessor_mismatch");
-      }
-      const selected = rows.slice(0, input.limit);
-      if (selected.some((row, index) =>
-        row.ordinal !== nextPassageOrdinal + index ||
-        !/^[0-9a-f]{64}$/u.test(row.contentHash.trim())) ||
-        selected.length < Math.min(input.limit, source.passageCount - nextPassageOrdinal) ||
-        rows.length > 0 && rows.at(-1)!.ordinal >= source.passageCount) {
-        throw new Error("knowledge_strategy_passage_sequence_invalid");
-      }
-      const items = Object.freeze(selected.map(item));
-      const passages = Object.freeze(selected.map((row): KnowledgeHybridPassage => {
-        const documentContext = passageDocumentContext(row.documentContext);
-        return {
-          annRank: null,
-          baseName: "Pinned Knowledge Profile",
-          bindingOrdinal: binding.profileBinding.ordinal,
-          chunkId: row.id,
-          chunkIndex: row.ordinal,
-          contentHash: row.contentHash.trim(),
-          documentId: source.sourceId,
-          documentVersionId: source.sourceVersionId,
-          documentVersionNumber: source.sourceVersionNumber,
-          ...(documentContext ? { documentContext } : {}),
-          fileName: binding.fileNameSnapshot!,
-          ftsRank: null,
-          ftsScore: null,
-          fusedScore: 0,
-          headingPath: row.headingPath,
-          knowledgeBaseId: binding.profileBinding.id,
-          layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
-          page: row.page,
-          sectionId: row.sectionId,
-          sourceArtifactId: source.sourceArtifactId,
-          sourceName: row.sourceName || binding.sourceNameSnapshot!,
-          text: row.text,
-          vectorDistance: null,
-          vectorScore: null
-        };
-      }));
-      const consumed = nextPassageOrdinal + selected.length;
-      const complete = consumed === source.passageCount;
-      const last = items.at(-1);
-      const nextCursor = complete || !last
-        ? null
-        : decodeKnowledgeStrategyCursorV1({
-            executionId: input.executionId,
-            nextPassageOrdinal: consumed,
-            pageOrdinal: (cursor?.pageOrdinal ?? 0) + 1,
-            previousItemHash: hashKnowledgeStrategyPassageItemV1(last),
-            sourceBindingId: source.bindingId,
-            sourceOrdinal: source.ordinal,
-            streamId: input.streamId,
-            version: 1
-          });
-      if (!complete && !nextCursor) throw new Error("knowledge_strategy_cursor_invalid");
-      return Object.freeze({
-        complete,
-        items,
-        nextCursor,
-        passages,
-        source
-      });
     },
     async findExact(input): Promise<KnowledgeExactSearchResult> {
       const sourceBindings = await client.knowledgeRunSourceBinding.findMany({
@@ -1358,383 +926,6 @@ export function createPrismaKnowledgeRetrievalStore(
         passages
       };
     },
-    ...(structuredStorage ? {
-      async structuredSearch(input) {
-        const requestedArtifactIds = [...new Set(input.sourceArtifactIds)].slice(0, 1_000);
-        if (requestedArtifactIds.length === 0) return { kind: "not_applicable" as const };
-        const profileBindings = input.bindings.filter((binding) =>
-          binding.executionScope === "profile");
-        const baseBindings = input.bindings.filter((binding) =>
-          binding.executionScope !== "profile");
-        const bindingByProfile = new Map(profileBindings.map((binding) => [
-          binding.knowledgeBaseId,
-          binding
-        ]));
-        const bindingBySnapshot = new Map(baseBindings.map((binding) => [
-          `${binding.knowledgeBaseId}:${binding.knowledgeBaseSnapshotId}`,
-          binding
-        ]));
-        const snapshotWhere: Prisma.KnowledgeBaseSnapshotSourceWhereInput = {
-          OR: baseBindings.map((binding) => ({
-            knowledgeBaseId: binding.knowledgeBaseId,
-            snapshotId: binding.knowledgeBaseSnapshotId,
-            ...(!binding.includeWholeBase
-              ? { sourceId: { in: [...binding.selectedSourceIds] } }
-              : {})
-          }))
-        };
-        const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
-          orderBy: { id: "asc" },
-          select: {
-            hierarchicalIndexes: {
-              orderBy: { schemaVersion: "desc" },
-              select: { id: true },
-              take: 1,
-              where: { state: "ready" }
-            },
-            id: true,
-            normalizedTextByteSize: true,
-            normalizedTextChecksum: true,
-            normalizedTextStorageKey: true,
-            sourceVersion: {
-              select: {
-                fileName: true,
-                id: true,
-                versionNumber: true,
-                source: { select: { name: true } }
-              }
-            },
-            snapshotSources: {
-              select: {
-                knowledgeBaseId: true,
-                snapshotId: true,
-                sourceId: true,
-                sourceVersionId: true
-              },
-              where: baseBindings.length > 0 ? snapshotWhere : { snapshotId: "__none__" }
-            },
-            runSourceBindings: {
-              orderBy: { ordinal: "asc" },
-              select: {
-                profileBindingId: true,
-                sourceId: true,
-                sourceVersionId: true
-              },
-              where: {
-                profileBindingId: { in: profileBindings.map((binding) => binding.knowledgeBaseId) },
-                readinessState: "ready",
-                sourceId: { not: null },
-                sourceVersionId: { not: null },
-                tombstonedAt: null
-              }
-            }
-          },
-          where: {
-            id: { in: requestedArtifactIds },
-            normalizedTextByteSize: { not: null },
-            normalizedTextChecksum: { not: null },
-            normalizedTextStorageKey: { not: null },
-            state: "ready",
-            OR: [
-              ...(baseBindings.length > 0 ? [{ snapshotSources: { some: snapshotWhere } }] : []),
-              ...(profileBindings.length > 0 ? [{
-                runSourceBindings: {
-                  some: {
-                    profileBindingId: {
-                      in: profileBindings.map((binding) => binding.knowledgeBaseId)
-                    },
-                    readinessState: "ready" as const,
-                    tombstonedAt: null
-                  }
-                }
-              }] : [])
-            ]
-          }
-        });
-        const hierarchyByArtifact = new Map(artifacts.flatMap((artifact) =>
-          artifact.hierarchicalIndexes[0]
-            ? [[artifact.id, artifact.hierarchicalIndexes[0].id] as const]
-            : []));
-        const rawCandidates = artifacts.flatMap((artifact) => [
-          ...artifact.snapshotSources.flatMap((snapshot) => {
-          const binding = bindingBySnapshot.get(
-            `${snapshot.knowledgeBaseId}:${snapshot.snapshotId}`
-          );
-          if (!binding || !artifact.normalizedTextStorageKey ||
-            artifact.normalizedTextByteSize === null || !artifact.normalizedTextChecksum ||
-            !/^[0-9a-f]{64}$/u.test(artifact.normalizedTextChecksum.trim()) ||
-            !hierarchyByArtifact.has(artifact.id)) return [];
-          return [{
-            artifactId: artifact.id,
-            baseName: binding.baseName,
-            bindingOrdinal: binding.ordinal,
-            documentId: snapshot.sourceId,
-            documentVersionId: snapshot.sourceVersionId,
-            documentVersionNumber: artifact.sourceVersion.versionNumber,
-            fileName: artifact.sourceVersion.fileName,
-            knowledgeBaseId: snapshot.knowledgeBaseId,
-            normalizedTextByteSize: artifact.normalizedTextByteSize,
-            normalizedTextChecksum: artifact.normalizedTextChecksum.trim(),
-            normalizedTextStorageKey: artifact.normalizedTextStorageKey,
-            sourceName: artifact.sourceVersion.source.name
-          }];
-          }),
-          ...(artifact.runSourceBindings ?? []).flatMap((source) => {
-            const binding = bindingByProfile.get(source.profileBindingId);
-            if (!binding || !source.sourceId || !source.sourceVersionId ||
-              !artifact.normalizedTextStorageKey || artifact.normalizedTextByteSize === null ||
-              !artifact.normalizedTextChecksum ||
-              !/^[0-9a-f]{64}$/u.test(artifact.normalizedTextChecksum.trim()) ||
-              !hierarchyByArtifact.has(artifact.id)) return [];
-            return [{
-              artifactId: artifact.id,
-              baseName: binding.baseName,
-              bindingOrdinal: binding.ordinal,
-              documentId: source.sourceId,
-              documentVersionId: source.sourceVersionId,
-              documentVersionNumber: artifact.sourceVersion.versionNumber,
-              fileName: artifact.sourceVersion.fileName,
-              knowledgeBaseId: binding.knowledgeBaseId,
-              normalizedTextByteSize: artifact.normalizedTextByteSize,
-              normalizedTextChecksum: artifact.normalizedTextChecksum.trim(),
-              normalizedTextStorageKey: artifact.normalizedTextStorageKey,
-              sourceName: artifact.sourceVersion.source.name
-            }];
-          })
-        ]);
-        const canonical = canonicalizeKnowledgeSourceArtifactCandidates(rawCandidates);
-        const result = await analyzeStructuredKnowledgeSources({
-          candidates: canonical.candidates,
-          config: options.extractionConfig ?? getKnowledgeExtractionConfig(),
-          async loadAnchor(candidate, page) {
-            const indexArtifactId = hierarchyByArtifact.get(candidate.artifactId);
-            if (!indexArtifactId) return null;
-            return client.knowledgeArtifactPassageIndex.findFirst({
-              orderBy: { ordinal: "asc" },
-              select: {
-                contentHash: true,
-                headingPath: true,
-                id: true,
-                ordinal: true,
-                sectionId: true
-              },
-              where: { indexArtifactId, page }
-            });
-          },
-          query: input.query,
-          ...(input.signal ? { signal: input.signal } : {}),
-          storage: structuredStorage
-        });
-        return result.kind === "complete"
-          ? Object.freeze({
-              ...result,
-              canonicalSourceProvenance: selectedArtifactProvenance(
-                canonical.sourceProvenance,
-                result.passage
-              )
-            })
-          : result;
-      }
-    } : {}),
-    ...(structuredStorage ? {
-      async visualSearch(input) {
-        const requestedArtifactIds = [...new Set(input.sourceArtifactIds)].slice(0, 1_000);
-        if (requestedArtifactIds.length === 0) return { kind: "not_applicable" as const };
-        const profileBindings = input.bindings.filter((binding) =>
-          binding.executionScope === "profile");
-        const baseBindings = input.bindings.filter((binding) =>
-          binding.executionScope !== "profile");
-        const bindingByProfile = new Map(profileBindings.map((binding) => [
-          binding.knowledgeBaseId,
-          binding
-        ]));
-        const bindingBySnapshot = new Map(baseBindings.map((binding) => [
-          `${binding.knowledgeBaseId}:${binding.knowledgeBaseSnapshotId}`,
-          binding
-        ]));
-        const snapshotWhere: Prisma.KnowledgeBaseSnapshotSourceWhereInput = {
-          OR: baseBindings.map((binding) => ({
-            knowledgeBaseId: binding.knowledgeBaseId,
-            snapshotId: binding.knowledgeBaseSnapshotId,
-            ...(!binding.includeWholeBase
-              ? { sourceId: { in: [...binding.selectedSourceIds] } }
-              : {})
-          }))
-        };
-        const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
-          orderBy: { id: "asc" },
-          select: {
-            id: true,
-            normalizedTextByteSize: true,
-            normalizedTextChecksum: true,
-            normalizedTextStorageKey: true,
-            profileRevision: {
-              select: { egressPolicy: true, profileConfiguration: true }
-            },
-            profileRevisionId: true,
-            sourceVersion: {
-              select: {
-                byteSize: true,
-                checksum: true,
-                fileName: true,
-                id: true,
-                mimeType: true,
-                originalStorageKey: true,
-                versionNumber: true,
-                source: { select: { name: true } }
-              }
-            },
-            snapshotSources: {
-              select: {
-                knowledgeBaseId: true,
-                snapshotId: true,
-                sourceId: true,
-                sourceVersionId: true
-              },
-              where: baseBindings.length > 0 ? snapshotWhere : { snapshotId: "__none__" }
-            },
-            runSourceBindings: {
-              orderBy: { ordinal: "asc" },
-              select: {
-                profileBindingId: true,
-                sourceId: true,
-                sourceVersionId: true
-              },
-              where: {
-                profileBindingId: { in: profileBindings.map((binding) => binding.knowledgeBaseId) },
-                readinessState: "ready",
-                sourceId: { not: null },
-                sourceVersionId: { not: null },
-                tombstonedAt: null
-              }
-            }
-          },
-          where: {
-            id: { in: requestedArtifactIds },
-            normalizedTextByteSize: { not: null },
-            normalizedTextChecksum: { not: null },
-            normalizedTextStorageKey: { not: null },
-            state: "ready",
-            OR: [
-              ...(baseBindings.length > 0 ? [{ snapshotSources: { some: snapshotWhere } }] : []),
-              ...(profileBindings.length > 0 ? [{
-                runSourceBindings: {
-                  some: {
-                    profileBindingId: {
-                      in: profileBindings.map((binding) => binding.knowledgeBaseId)
-                    },
-                    readinessState: "ready" as const,
-                    tombstonedAt: null
-                  }
-                }
-              }] : [])
-            ]
-          }
-        });
-        const rawCandidates = artifacts.flatMap((artifact) => {
-          const profile = knowledgeVisionProfileFromConfiguration(
-            artifact.profileRevision.profileConfiguration
-          );
-          if (profile.kind === "invalid") return [];
-          const destination = profile.kind === "configured" ? profile.destination : null;
-          const egressApproved = Boolean(destination && knowledgeVisionEgressApproved(
-            artifact.profileRevision.egressPolicy,
-            destination.providerModelId
-          ));
-          return [
-            ...artifact.snapshotSources.flatMap((snapshot) => {
-            const binding = bindingBySnapshot.get(
-              `${snapshot.knowledgeBaseId}:${snapshot.snapshotId}`
-            );
-            const sourceVersion = artifact.sourceVersion;
-            if (!binding || !artifact.normalizedTextStorageKey ||
-              artifact.normalizedTextByteSize === null || !artifact.normalizedTextChecksum ||
-              !/^[0-9a-f]{64}$/u.test(artifact.normalizedTextChecksum.trim()) ||
-              !/^[0-9a-f]{64}$/u.test(sourceVersion.checksum.trim()) ||
-              sourceVersion.byteSize < 1) return [];
-            const visionProviderModelId = destination && egressApproved &&
-              (sourceVersion.mimeType !== "application/pdf" || destination.supportsNativePdf)
-              ? destination.providerModelId
-              : null;
-            return [{
-              artifactId: artifact.id,
-              baseName: binding.baseName,
-              bindingOrdinal: binding.ordinal,
-              documentId: snapshot.sourceId,
-              documentVersionId: snapshot.sourceVersionId,
-              documentVersionNumber: sourceVersion.versionNumber,
-              fileName: sourceVersion.fileName,
-              knowledgeBaseId: snapshot.knowledgeBaseId,
-              mimeType: sourceVersion.mimeType,
-              normalizedTextByteSize: artifact.normalizedTextByteSize,
-              normalizedTextChecksum: artifact.normalizedTextChecksum.trim(),
-              normalizedTextStorageKey: artifact.normalizedTextStorageKey,
-              originalByteSize: sourceVersion.byteSize,
-              originalChecksum: sourceVersion.checksum.trim(),
-              originalStorageKey: sourceVersion.originalStorageKey,
-              profileRevisionId: artifact.profileRevisionId,
-              sourceName: sourceVersion.source.name,
-              visionEgressApproved: Boolean(visionProviderModelId),
-              visionProviderModelId
-            }];
-            }),
-            ...(artifact.runSourceBindings ?? []).flatMap((source) => {
-              const binding = bindingByProfile.get(source.profileBindingId);
-              const sourceVersion = artifact.sourceVersion;
-              if (!binding || !source.sourceId || !source.sourceVersionId ||
-                !artifact.normalizedTextStorageKey || artifact.normalizedTextByteSize === null ||
-                !artifact.normalizedTextChecksum ||
-                !/^[0-9a-f]{64}$/u.test(artifact.normalizedTextChecksum.trim()) ||
-                !/^[0-9a-f]{64}$/u.test(sourceVersion.checksum.trim()) ||
-                sourceVersion.byteSize < 1) return [];
-              const visionProviderModelId = destination && egressApproved &&
-                (sourceVersion.mimeType !== "application/pdf" || destination.supportsNativePdf)
-                ? destination.providerModelId
-                : null;
-              return [{
-                artifactId: artifact.id,
-                baseName: binding.baseName,
-                bindingOrdinal: binding.ordinal,
-                documentId: source.sourceId,
-                documentVersionId: source.sourceVersionId,
-                documentVersionNumber: sourceVersion.versionNumber,
-                fileName: sourceVersion.fileName,
-                knowledgeBaseId: binding.knowledgeBaseId,
-                mimeType: sourceVersion.mimeType,
-                normalizedTextByteSize: artifact.normalizedTextByteSize,
-                normalizedTextChecksum: artifact.normalizedTextChecksum.trim(),
-                normalizedTextStorageKey: artifact.normalizedTextStorageKey,
-                originalByteSize: sourceVersion.byteSize,
-                originalChecksum: sourceVersion.checksum.trim(),
-                originalStorageKey: sourceVersion.originalStorageKey,
-                profileRevisionId: artifact.profileRevisionId,
-                sourceName: sourceVersion.source.name,
-                visionEgressApproved: Boolean(visionProviderModelId),
-                visionProviderModelId
-              }];
-            })
-          ];
-        });
-        const canonical = canonicalizeKnowledgeSourceArtifactCandidates(rawCandidates);
-        const result = await analyzeVisualKnowledgeSources({
-          candidates: canonical.candidates,
-          config: options.extractionConfig ?? getKnowledgeExtractionConfig(),
-          query: input.query,
-          ...(options.visualRuntime ? { runtime: options.visualRuntime } : {}),
-          ...(input.signal ? { signal: input.signal } : {}),
-          storage: structuredStorage
-        });
-        return result.kind === "complete"
-          ? Object.freeze({
-              ...result,
-              canonicalSourceProvenance: selectedArtifactProvenance(
-                canonical.sourceProvenance,
-                result.passage
-              )
-            })
-          : result;
-      }
-    } : {}),
     async invocationOrdinal(input) {
       const toolNames = Prisma.sql`ARRAY[${Prisma.join(
         [...KNOWLEDGE_EXECUTION_TOOL_NAMES]
@@ -1774,16 +965,11 @@ export function createPrismaKnowledgeRetrievalStore(
           invocationOrdinal: true,
           operation: true,
           outcome: true,
-          postRerankOrder: true,
-          preRerankOrder: true,
           providerText: true,
           query: true,
           readReceipt: true,
-          rerankerBinding: true,
           resultLimit: true,
           results: true,
-          strategyStepEvidence: true,
-          threshold: true
         },
         where: {
           modelRun: { id: input.runId, userId: input.userId },
@@ -1793,56 +979,6 @@ export function createPrismaKnowledgeRetrievalStore(
       });
       if (!receipt || !Array.isArray(receipt.baseEvidence) ||
         !Array.isArray(receipt.results) || !Array.isArray(receipt.embeddingUsage)) return null;
-      const persistedStepEvidence = receipt.strategyStepEvidence === null
-        ? null
-        : decodeKnowledgeStrategyStepEvidenceV1(receipt.strategyStepEvidence);
-      if (receipt.strategyStepEvidence !== null && !persistedStepEvidence) return null;
-      let strategySummaryEvidence: KnowledgeRetrievalEvidence["strategySummaryEvidence"];
-      if (persistedStepEvidence?.kind === "corpus_summary_reduce") {
-        const [execution, outputRows] = await Promise.all([
-          client.knowledgeStrategyExecution.findFirst({
-            select: {
-              expectedSourceCount: true,
-              purgedAt: true,
-              strategy: true
-            },
-            where: {
-              id: persistedStepEvidence.executionId,
-              modelRunId: input.runId
-            }
-          }),
-          client.knowledgeStrategyMapOutput.findMany({
-            orderBy: { sourceOrdinal: "asc" },
-            select: { output: true, sourceOrdinal: true },
-            where: {
-              executionId: persistedStepEvidence.executionId,
-              modelRunId: input.runId,
-              purgedAt: null,
-              state: "available"
-            }
-          })
-        ]);
-        const decodedResults = receipt.results.map((result) =>
-          decodeKnowledgeRetrievedPassageForVersion(result, KNOWLEDGE_RESULT_VERSION));
-        const sourceBoundResults = decodedResults.every((result) => result !== null &&
-          typeof result.sourceAlias === "string" &&
-          typeof result.sourceArtifactId === "string" &&
-          typeof result.sourceName === "string")
-          ? decodedResults as KnowledgeSourceBoundRetrievedPassageEvidence[]
-          : null;
-        if (!execution || execution.purgedAt !== null || execution.strategy !== "corpus_summary" ||
-          execution.expectedSourceCount < 1 || outputRows.length !== execution.expectedSourceCount ||
-          outputRows.some((row, sourceOrdinal) => row.sourceOrdinal !== sourceOrdinal) ||
-          !sourceBoundResults) return null;
-        try {
-          strategySummaryEvidence = buildKnowledgeStrategySummaryResultEvidenceV2({
-            outputs: outputRows.map(({ output }) => output),
-            results: sourceBoundResults
-          });
-        } catch {
-          return null;
-        }
-      }
       const baseAliases = receipt.baseEvidence.flatMap((value) => {
         if (!record(value) || !Number.isSafeInteger(value.ordinal) ||
           typeof value.baseName !== "string") return [];
@@ -1889,9 +1025,13 @@ export function createPrismaKnowledgeRetrievalStore(
         alias.alias,
         alias
       ])).values()];
+      const budgetEvidence = record(receipt.budgetEvidence) &&
+        Object.keys(receipt.budgetEvidence).length === 0
+        ? undefined
+        : receipt.budgetEvidence;
       const common = {
         bases: receipt.baseEvidence,
-        budget: receipt.budgetEvidence,
+        budget: budgetEvidence,
         candidateCount: receipt.candidateCount,
         candidateLimit: receipt.candidateLimit,
         durationMs: receipt.durationMs,
@@ -1901,19 +1041,11 @@ export function createPrismaKnowledgeRetrievalStore(
         invocationOrdinal: receipt.invocationOrdinal,
         operation: receipt.operation,
         outcome: receipt.outcome,
-        postRerankOrder: receipt.postRerankOrder,
-        preRerankOrder: receipt.preRerankOrder,
         providerText: receipt.providerText,
         query: receipt.query,
-        rerankerBinding: receipt.rerankerBinding,
         resultLimit: receipt.resultLimit,
         results: receipt.results,
-        scopeAliases,
-        ...(receipt.strategyStepEvidence === null
-          ? {}
-          : { strategyStepEvidence: receipt.strategyStepEvidence }),
-        ...(strategySummaryEvidence ? { strategySummaryEvidence } : {}),
-        threshold: receipt.threshold
+        scopeAliases
       };
       const operationReceipt = receipt.readReceipt === null
         ? {}
@@ -1923,27 +1055,11 @@ export function createPrismaKnowledgeRetrievalStore(
             ? { exact: receipt.readReceipt }
             : receipt.operation === "discover_sources"
               ? { discovery: receipt.readReceipt }
-              : receipt.operation === "structured_analysis"
-                ? { structured: receipt.readReceipt }
-                : receipt.operation === "visual_analysis"
-                  ? { visual: receipt.readReceipt }
-                  : receipt.operation === "automatic_search" && record(receipt.readReceipt)
-                    ? receipt.readReceipt.status === "complete" ||
-                        receipt.readReceipt.status === "needs_clarification"
-                      ? { structured: receipt.readReceipt }
-                      : receipt.readReceipt.status === "available" ||
-                          receipt.readReceipt.status === "unavailable"
-                        ? { visual: receipt.readReceipt }
-                        : {}
-                    : {};
-      const current = decodeKnowledgeRetrievalEvidence({
+              : {};
+      return decodeKnowledgeRetrievalEvidence({
         ...common,
         ...operationReceipt,
         version: KNOWLEDGE_RESULT_VERSION
-      });
-      return current ?? decodeKnowledgeRetrievalEvidence({
-        ...common,
-        version: KNOWLEDGE_LEGACY_RESULT_VERSION
       });
     },
     async loadBindings(input) {
@@ -2262,44 +1378,34 @@ export function createPrismaKnowledgeRetrievalStore(
       if (input.evidence.version !== KNOWLEDGE_RESULT_VERSION) {
         throw new Error("knowledge_legacy_receipt_write_forbidden");
       }
-      const strategyStepEvidence = input.evidence.strategyStepEvidence === undefined
-        ? undefined
-        : decodeKnowledgeStrategyStepEvidenceV1(input.evidence.strategyStepEvidence);
-      if (input.evidence.strategyStepEvidence !== undefined && !strategyStepEvidence) {
-        throw new Error("knowledge_strategy_step_evidence_invalid");
-      }
-      if (input.strategyStep && strategyStepEvidence) {
-        throw new Error("knowledge_strategy_step_evidence_conflict");
+      if (input.evidence.outcome === "zero_above_threshold") {
+        throw new Error("knowledge_legacy_outcome_write_forbidden");
       }
       const receiptCount = [
         input.evidence.read,
         input.evidence.exact,
-        input.evidence.discovery,
-        input.evidence.structured,
-        input.evidence.visual
+        input.evidence.discovery
       ].filter((receipt) => receipt !== undefined).length;
-      const structuredReceiptRequired = input.evidence.outcome === "complete" ||
-        input.evidence.outcome === "structured_clarification_required";
-      const visualReceiptRequired = input.evidence.outcome === "complete";
       if ((input.evidence.operation === "read_source") !== Boolean(input.evidence.read) ||
         (input.evidence.operation === "find_exact") !== Boolean(input.evidence.exact) ||
         (input.evidence.operation === "discover_sources") !== Boolean(input.evidence.discovery) ||
-        input.evidence.operation === "structured_analysis" &&
-          structuredReceiptRequired !== Boolean(input.evidence.structured) ||
-        input.evidence.operation === "visual_analysis" &&
-          visualReceiptRequired !== Boolean(input.evidence.visual) ||
-        input.evidence.operation === "automatic_search" &&
-          input.evidence.structured !== undefined && !structuredReceiptRequired ||
-        input.evidence.operation === "automatic_search" &&
-          input.evidence.visual !== undefined && !visualReceiptRequired ||
-        input.evidence.structured !== undefined &&
-          input.evidence.operation !== "automatic_search" &&
-          input.evidence.operation !== "structured_analysis" ||
-        input.evidence.visual !== undefined &&
-          input.evidence.operation !== "automatic_search" &&
-          input.evidence.operation !== "visual_analysis" ||
         receiptCount > 1) {
         throw new Error("knowledge_operation_receipt_invalid");
+      }
+      if (input.evidence.postRerankOrder !== undefined ||
+        input.evidence.preRerankOrder !== undefined ||
+        input.evidence.rerankerBinding !== undefined || input.evidence.threshold !== undefined ||
+        input.evidence.budget && (
+          "noveltyRatio" in input.evidence.budget ||
+          "lowNoveltyStreak" in input.evidence.budget.usage
+        ) ||
+        input.evidence.results.some((result) =>
+          result.confidence !== undefined || result.rerankScore !== undefined)) {
+        throw new Error("knowledge_legacy_ranking_write_forbidden");
+      }
+      if (input.evidence.results.some((result) =>
+        result.structuredAnalysis !== undefined || result.visualAnalysis !== undefined)) {
+        throw new Error("knowledge_historical_analysis_write_forbidden");
       }
       return client.$transaction(async (tx) => {
         const lockedRun = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -2343,28 +1449,11 @@ export function createPrismaKnowledgeRetrievalStore(
         const normalizedRequest = record(context?.normalizedRequest)
           ? context.normalizedRequest
           : null;
-        const planner = normalizedRequest
-          ? decodeKnowledgePlannerPlan(normalizedRequest.knowledgePlanner)
+        const focusedRequest = normalizedRequest
+          ? decodeKnowledgeFocusedRequest(normalizedRequest.knowledgeFocusedRequest)
           : null;
         const scope = context?.knowledgeRunScope;
-        if (!scope) throw new Error("knowledge_evidence_context_invalid");
-        const plannerPlan = planner?.ok ? planner.plan : {
-          automaticRetrieval: true,
-          coverage: {
-            expectedPassageCount: null,
-            mode: "partial" as const,
-            namedTargets: [] as string[]
-          },
-          evidenceMode: "compact" as const,
-          failureCode: "classifier_unavailable" as const,
-          intent: "fact_lookup" as const,
-          originalQuery: input.evidence.query,
-          status: "degraded" as const,
-          strategy: "focused" as const
-        };
-        const structuredClarification = input.evidence.structured?.status === "needs_clarification"
-          ? input.evidence.structured.question
-          : null;
+        if (!scope || !focusedRequest) throw new Error("knowledge_evidence_context_invalid");
 
         const exclusions = Array.isArray(scope.exclusions) ? scope.exclusions : [];
         const excludedResources = exclusions.reduce<number>((total, value) => {
@@ -2377,21 +1466,15 @@ export function createPrismaKnowledgeRetrievalStore(
         });
         if (!session) {
           const degradedFlags = [
-            ...(plannerPlan.status === "degraded" ? ["planner_degraded"] : []),
-            ...(plannerPlan.failureCode ? [plannerPlan.failureCode] : []),
             ...(excludedResources > 0 ? ["partial_readiness"] : [])
           ];
           session = await tx.knowledgeRetrievalSession.create({
             data: {
               citationContract: json(KNOWLEDGE_EVIDENCE_CITATION_CONTRACT),
-              coverageRequirements: json({ ...plannerPlan.coverage, verified: false }),
               degradedFlags,
               id: randomUUID(),
               modelRunId: input.runId,
-              originalIntent: json({
-                intent: plannerPlan.intent,
-                query: plannerPlan.originalQuery
-              }),
+              originalIntent: json({ kind: "focused_v1", request: focusedRequest }),
               readinessSummary: json({
                 excludedResources,
                 readyBases: scope.resolvedBaseCount,
@@ -2403,16 +1486,6 @@ export function createPrismaKnowledgeRetrievalStore(
                 resolvedBaseCount: scope.resolvedBaseCount,
                 resolvedSourceCount: scope.resolvedSourceCount,
                 selection: scope.selection
-              }),
-              strategySnapshot: json({
-                automaticRetrieval: plannerPlan.automaticRetrieval,
-                evidenceMode: plannerPlan.evidenceMode,
-                failureCode: plannerPlan.failureCode ?? null,
-                status: plannerPlan.status,
-                strategy: plannerPlan.strategy,
-                ...(structuredClarification
-                  ? { structuredClarifications: [structuredClarification] }
-                  : {})
               }),
               version: 2
             }
@@ -2542,13 +1615,7 @@ export function createPrismaKnowledgeRetrievalStore(
                   ...(entry.result.layoutKind
                     ? { layoutKind: entry.result.layoutKind }
                     : {}),
-                  sourceTextBytes: entry.result.sourceTextBytes,
-                  ...(entry.result.structuredAnalysis
-                    ? { structuredAnalysis: entry.result.structuredAnalysis }
-                    : {}),
-                  ...(entry.result.visualAnalysis
-                    ? { visualAnalysis: entry.result.visualAnalysis }
-                    : {})
+                  sourceTextBytes: entry.result.sourceTextBytes
                 }),
                 documentId: entry.result.documentId,
                 documentVersionId: entry.result.documentVersionId,
@@ -2560,12 +1627,7 @@ export function createPrismaKnowledgeRetrievalStore(
                 headingPath: [...(entry.result.headingPath ?? [])],
                 id,
                 knowledgeBaseId: entry.result.knowledgeBaseId,
-                locator: json({
-                  page: entry.result.page,
-                  ...(entry.result.structuredAnalysis
-                    ? { ranges: entry.result.structuredAnalysis.receipt.inputRanges }
-                    : {})
-                }),
+                locator: json({ page: entry.result.page }),
                 ordinal: nextEvidenceOrdinal,
                 page: entry.result.page,
                 passageId: entry.result.chunkId,
@@ -2598,71 +1660,18 @@ export function createPrismaKnowledgeRetrievalStore(
           degradedFlags.add(`retrieval_${input.evidence.outcome}`);
         }
         if (input.evidence.budget?.stopReason) degradedFlags.add("budget_exhausted");
-        if (input.evidence.visual?.status === "unavailable") {
-          degradedFlags.add("visual_analysis_unavailable");
-        }
-        const strategySnapshot = record(session.strategySnapshot)
-          ? session.strategySnapshot
-          : null;
-        const rawStructuredClarifications = strategySnapshot?.structuredClarifications;
-        const storedStructuredClarifications = rawStructuredClarifications === undefined
-          ? []
-          : Array.isArray(rawStructuredClarifications) &&
-              rawStructuredClarifications.length <= 16 &&
-              rawStructuredClarifications.every((question) =>
-                typeof question === "string" && question.length > 0 && question.length <= 2_000 &&
-                !/\u0000/u.test(question))
-            ? rawStructuredClarifications as string[]
-            : null;
-        if (!strategySnapshot || !storedStructuredClarifications) {
-          throw new Error("knowledge_evidence_context_invalid");
-        }
-        const structuredClarifications = [...new Set([
-          ...storedStructuredClarifications,
-          ...(structuredClarification ? [structuredClarification] : [])
-        ])];
-        if (structuredClarifications.length > 16) {
-          throw new Error("knowledge_evidence_context_invalid");
-        }
-        const nextStrategySnapshot = { ...strategySnapshot };
-        delete nextStrategySnapshot.structuredClarifications;
-        if (structuredClarifications.length > 0) {
-          nextStrategySnapshot.structuredClarifications = structuredClarifications;
-        }
         await tx.knowledgeRetrievalSession.update({
           data: {
             degradedFlags: [...degradedFlags].sort(),
-            nextEvidenceOrdinal,
-            strategySnapshot: json(nextStrategySnapshot)
+            nextEvidenceOrdinal
           },
           where: { id: session.id }
         });
 
-        const settledStrategyStep = input.strategyStep
-          ? await settleKnowledgeStrategyStepReceipt(tx, input.strategyStep)
-          : null;
-        const persistedStrategyStepEvidence = settledStrategyStep?.evidence ?? strategyStepEvidence;
-        const corpusSummaryReduce = persistedStrategyStepEvidence?.kind ===
-          "corpus_summary_reduce";
-        if (corpusSummaryReduce !== (input.evidence.strategySummaryEvidence !== undefined)) {
-          throw new Error("knowledge_strategy_summary_result_evidence_missing");
-        }
-        const persistedStrategySummaryEvidence = input.evidence.strategySummaryEvidence
-          ? buildKnowledgeStrategySummaryResultEvidenceV2({
-              outputs: input.evidence.strategySummaryEvidence.outputs,
-              results: acceptedResults as KnowledgeSourceBoundRetrievedPassageEvidence[]
-            })
-          : undefined;
         const draftEvidence: KnowledgeRetrievalEvidence = {
           ...input.evidence,
           providerText: "pending",
-          results: acceptedResults,
-          ...(persistedStrategySummaryEvidence
-            ? { strategySummaryEvidence: persistedStrategySummaryEvidence }
-            : {}),
-          ...(persistedStrategyStepEvidence
-            ? { strategyStepEvidence: persistedStrategyStepEvidence }
-            : {})
+          results: acceptedResults
         };
         const evidence: KnowledgeRetrievalEvidence = {
           ...draftEvidence,
@@ -2694,29 +1703,13 @@ export function createPrismaKnowledgeRetrievalStore(
             outcome: evidence.outcome,
             providerText: evidence.providerText,
             query: evidence.query,
-            rerankerBinding: evidence.rerankerBinding === null
-              ? Prisma.JsonNull
-              : json(evidence.rerankerBinding),
             resultLimit: evidence.resultLimit,
             results: json(evidence.results),
-            ...(persistedStrategyStepEvidence
-              ? { strategyStepEvidence: json(persistedStrategyStepEvidence) }
-              : {}),
-            postRerankOrder: evidence.postRerankOrder === null
-              ? Prisma.JsonNull
-              : json(evidence.postRerankOrder),
-            preRerankOrder: evidence.preRerankOrder === null
-              ? Prisma.JsonNull
-              : json(evidence.preRerankOrder),
-            ...(evidence.read || evidence.exact || evidence.discovery ||
-              evidence.structured || evidence.visual
+            ...(evidence.read || evidence.exact || evidence.discovery
               ? {
-                  readReceipt: json(evidence.read ?? evidence.exact ?? evidence.discovery ??
-                    evidence.structured ?? evidence.visual)
+                  readReceipt: json(evidence.read ?? evidence.exact ?? evidence.discovery)
                 }
               : {}),
-            stopReason: evidence.budget?.stopReason ?? null,
-            threshold: evidence.threshold
           }
         });
         if (evidenceItems.length > 0) {
@@ -2726,22 +1719,9 @@ export function createPrismaKnowledgeRetrievalStore(
               knowledgeRunId,
               resultOrdinal: item.resultOrdinal,
               retrievalProvenance: json({
-                confidence: item.result.confidence ?? null,
-                confidenceBucket: knowledgeEvidenceConfidenceBucket(item.result.confidence),
                 fusion: evidence.fusion,
                 invocationOrdinal: evidence.invocationOrdinal,
                 operation: evidence.operation ?? "automatic_search",
-                postRerankRank: evidenceRank(
-                  evidence.postRerankOrder,
-                  item.result.chunkId,
-                  item.resultOrdinal
-                ),
-                preRerankRank: evidenceRank(
-                  evidence.preRerankOrder,
-                  item.result.chunkId,
-                  item.resultOrdinal
-                ),
-                rerankScore: item.result.rerankScore ?? null,
                 signals: [...(item.result.signalProvenance ?? [])],
                 source: {
                   artifactId: item.sourceProvenance.artifactId,

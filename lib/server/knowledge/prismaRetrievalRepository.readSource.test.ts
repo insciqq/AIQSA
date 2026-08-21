@@ -13,7 +13,7 @@ import {
 } from "./documentContext";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
 import { normalizeReadSourceRequest } from "./readSourceLocator";
-import { knowledgeToolResultText } from "./toolResult";
+import { decodeKnowledgeRetrievalEvidence, knowledgeToolResultText } from "./toolResult";
 import { chunkKnowledgeDocument } from "./chunking";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
@@ -247,21 +247,15 @@ function persistedReadEvidence(): KnowledgeRetrievalEvidence {
       vectorSpaceFingerprint: "a".repeat(64)
     }],
     budget: {
-      noveltyRatio: 1,
       operation: "read_source",
       stopReason: null,
       usage: {
         cumulativeCandidates: 1,
         estimatedCostMicros: 0,
-        followUpOperations: 1,
         latencyMs: 2,
-        lowNoveltyStreak: 0,
         operations: 4,
         queryEmbeddingCalls: 0,
-        rerankerCalls: 0,
-        retrievedTokens: 4,
-        searchPhases: 2,
-        subqueriesInCurrentPhase: 1
+        retrievedTokens: 4
       },
       version: 1
     },
@@ -273,8 +267,6 @@ function persistedReadEvidence(): KnowledgeRetrievalEvidence {
     invocationOrdinal: 4,
     operation: "read_source",
     outcome: "complete",
-    postRerankOrder: null,
-    preRerankOrder: null,
     providerText: "pending",
     query: normalized.locator,
     read: {
@@ -288,7 +280,6 @@ function persistedReadEvidence(): KnowledgeRetrievalEvidence {
       },
       version: 1
     },
-    rerankerBinding: null,
     resultLimit: 3,
     results: [{
       annRank: null,
@@ -324,7 +315,6 @@ function persistedReadEvidence(): KnowledgeRetrievalEvidence {
       { alias: "B1", kind: "base", label: "Reports" },
       { alias: "S1", kind: "source", label: "Dated report" }
     ],
-    threshold: 0.01,
     version: KNOWLEDGE_RESULT_VERSION
   };
   return { ...draft, providerText: knowledgeToolResultText(draft) };
@@ -335,7 +325,30 @@ function legacyPersistedReadEvidence(): KnowledgeRetrievalEvidence {
   const { read: _read, ...withoutRead } = current;
   const draft = {
     ...withoutRead,
+    budget: {
+      operation: "read_source" as const,
+      noveltyRatio: 1,
+      stopReason: null,
+      usage: {
+        cumulativeCandidates: 1,
+        estimatedCostMicros: 0,
+        followUpOperations: 1,
+        latencyMs: 2,
+        lowNoveltyStreak: 0,
+        operations: 4,
+        queryEmbeddingCalls: 0,
+        rerankerCalls: 0,
+        retrievedTokens: 4,
+        searchPhases: 2,
+        subqueriesInCurrentPhase: 1
+      },
+      version: 1 as const
+    },
+    postRerankOrder: null,
+    preRerankOrder: null,
     providerText: "pending",
+    rerankerBinding: null,
+    threshold: 0.01,
     version: 1 as const
   } satisfies KnowledgeRetrievalEvidence;
   return { ...draft, providerText: knowledgeToolResultText(draft) };
@@ -347,13 +360,17 @@ function persistedReadMissEvidence(): KnowledgeRetrievalEvidence {
     ...current,
     bases: current.bases.map((base) => ({ ...base, candidateCount: 0 })),
     budget: {
-      ...current.budget!,
-      noveltyRatio: null,
+      operation: "read_source",
+      stopReason: null,
       usage: {
-        ...current.budget!.usage,
         cumulativeCandidates: 0,
+        estimatedCostMicros: 0,
+        latencyMs: 2,
+        operations: 4,
+        queryEmbeddingCalls: 0,
         retrievedTokens: 0
-      }
+      },
+      version: 1
     },
     candidateCount: 0,
     outcome: "source_location_unavailable",
@@ -1149,16 +1166,11 @@ describe("Prisma Knowledge deterministic source read", () => {
       invocationOrdinal: evidence.invocationOrdinal,
       operation: evidence.operation,
       outcome: evidence.outcome,
-      postRerankOrder: evidence.postRerankOrder,
-      preRerankOrder: evidence.preRerankOrder,
       providerText: evidence.providerText,
       query: evidence.query,
       readReceipt: evidence.read,
-      rerankerBinding: evidence.rerankerBinding,
       resultLimit: evidence.resultLimit,
-      results: evidence.results,
-      strategyStepEvidence: null,
-      threshold: evidence.threshold
+      results: evidence.results
     }));
     const store = createPrismaKnowledgeRetrievalStore({
       knowledgeRun: { findFirst }
@@ -1194,16 +1206,11 @@ describe("Prisma Knowledge deterministic source read", () => {
           invocationOrdinal: evidence.invocationOrdinal,
           operation: evidence.operation,
           outcome: evidence.outcome,
-          postRerankOrder: evidence.postRerankOrder,
-          preRerankOrder: evidence.preRerankOrder,
           providerText: evidence.providerText,
           query: evidence.query,
           readReceipt: evidence.read,
-          rerankerBinding: evidence.rerankerBinding,
           resultLimit: evidence.resultLimit,
-          results: evidence.results,
-          strategyStepEvidence: null,
-          threshold: evidence.threshold
+          results: evidence.results
         }))
       }
     } as never);
@@ -1215,8 +1222,9 @@ describe("Prisma Knowledge deterministic source read", () => {
     })).resolves.toEqual(evidence);
   });
 
-  it("keeps a legacy read receipt byte-readable without inventing current read semantics", async () => {
+  it("keeps serialized legacy evidence readable without reinterpreting a cleaned row", async () => {
     const evidence = legacyPersistedReadEvidence();
+    expect(decodeKnowledgeRetrievalEvidence(evidence)).toEqual(evidence);
     const store = createPrismaKnowledgeRetrievalStore({
       knowledgeRun: {
         findFirst: vi.fn(async () => ({
@@ -1231,16 +1239,11 @@ describe("Prisma Knowledge deterministic source read", () => {
           invocationOrdinal: evidence.invocationOrdinal,
           operation: evidence.operation,
           outcome: evidence.outcome,
-          postRerankOrder: evidence.postRerankOrder,
-          preRerankOrder: evidence.preRerankOrder,
           providerText: evidence.providerText,
           query: evidence.query,
           readReceipt: null,
-          rerankerBinding: evidence.rerankerBinding,
           resultLimit: evidence.resultLimit,
-          results: evidence.results,
-          strategyStepEvidence: null,
-          threshold: evidence.threshold
+          results: evidence.results
         }))
       }
     } as never);
@@ -1249,7 +1252,7 @@ describe("Prisma Knowledge deterministic source read", () => {
       modelRunToolCallId: "tool-call-legacy",
       runId: "run-1",
       userId: "user-1"
-    })).resolves.toEqual(evidence);
+    })).resolves.toBeNull();
   });
 
   it("fails closed when committed read provider text does not match structured evidence", async () => {
@@ -1268,16 +1271,11 @@ describe("Prisma Knowledge deterministic source read", () => {
           invocationOrdinal: evidence.invocationOrdinal,
           operation: evidence.operation,
           outcome: evidence.outcome,
-          postRerankOrder: evidence.postRerankOrder,
-          preRerankOrder: evidence.preRerankOrder,
           providerText: "tampered private evidence",
           query: evidence.query,
           readReceipt: evidence.read,
-          rerankerBinding: evidence.rerankerBinding,
           resultLimit: evidence.resultLimit,
-          results: evidence.results,
-          strategyStepEvidence: null,
-          threshold: evidence.threshold
+          results: evidence.results
         }))
       }
     } as never);
@@ -1307,6 +1305,32 @@ describe("Prisma Knowledge deterministic source read", () => {
       runId: "run-1",
       userId: "user-1"
     })).rejects.toThrow("knowledge_legacy_receipt_write_forbidden");
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects planner-era ranking fields on current receipt writes", async () => {
+    const transaction = vi.fn();
+    const store = createPrismaKnowledgeRetrievalStore({ $transaction: transaction } as never);
+
+    await expect(store.persistReceipt({
+      evidence: { ...persistedReadEvidence(), threshold: 0 },
+      modelRunToolCallId: "tool-call-current-with-legacy-ranking",
+      runId: "run-1",
+      userId: "user-1"
+    })).rejects.toThrow("knowledge_legacy_ranking_write_forbidden");
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects the retired threshold outcome on current receipt writes", async () => {
+    const transaction = vi.fn();
+    const store = createPrismaKnowledgeRetrievalStore({ $transaction: transaction } as never);
+
+    await expect(store.persistReceipt({
+      evidence: { ...persistedReadEvidence(), outcome: "zero_above_threshold" },
+      modelRunToolCallId: "tool-call-current-with-retired-outcome",
+      runId: "run-1",
+      userId: "user-1"
+    })).rejects.toThrow("knowledge_legacy_outcome_write_forbidden");
     expect(transaction).not.toHaveBeenCalled();
   });
 });

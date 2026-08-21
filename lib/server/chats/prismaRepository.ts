@@ -101,10 +101,12 @@ const assistantRunDetailSelect = {
   },
   knowledgeRetrievalSession: {
     select: {
+      degradedFlags: true,
       evidenceItems: {
         orderBy: { ordinal: "asc" },
         select: { handle: true, state: true }
-      }
+      },
+      groundingResult: { select: { outcome: true } }
     }
   },
   searchRuns: {
@@ -214,7 +216,9 @@ type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweig
 type ArtifactSummaryRun = {
   events: { payload: unknown }[];
   knowledgeRetrievalSession?: {
+    degradedFlags?: string[];
     evidenceItems: { handle: string; state: string }[];
+    groundingResult?: { outcome: string } | null;
   } | null;
   knowledgeRuns?: {
     invocationOrdinal: number;
@@ -1048,12 +1052,26 @@ export function summarizeMessageRunArtifacts(
     .filter((citation, index, all) =>
       all.findIndex((candidate) => candidate.handle === citation.handle) === index)
     .slice(0, 24);
+  const groundingOutcome = run.knowledgeRetrievalSession?.groundingResult?.outcome;
+  const knowledgeState = groundingOutcome === "answered" ||
+    groundingOutcome === "insufficient_evidence" ||
+    groundingOutcome === "passed" || groundingOutcome === "no_answer"
+    ? {
+        answer: groundingOutcome === "answered" || groundingOutcome === "passed"
+          ? "answered" as const
+          : "insufficient_evidence" as const,
+        scope: run.knowledgeRetrievalSession?.degradedFlags?.includes("partial_readiness")
+          ? "partial_sources_ready" as const
+          : "ready" as const
+      }
+    : undefined;
 
   if (
     citations.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
+    !knowledgeState &&
     !memoryAction
   ) {
     return null;
@@ -1061,6 +1079,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(knowledgeState ? { knowledgeState } : {}),
     knowledgeCitations,
     ...(memoryAction ? { memoryAction } : {}),
     reasoningText: reasoningTexts,

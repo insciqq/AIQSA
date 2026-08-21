@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
   knowledgeProfileConfiguration,
-  knowledgeProfileEgressPolicy,
-  type KnowledgeSemanticValidatorDeploymentV1
+  knowledgeProfileEgressPolicy
 } from "./knowledgeProfile";
 import {
   groundKnowledgeRunAnswer,
@@ -19,7 +17,7 @@ import {
   type KnowledgeRetrievalEvidence,
   type KnowledgeRetrievedPassageEvidence
 } from "./retrievalTypes";
-import type { KnowledgeSemanticLocalValidatorExecutor } from "./semanticShadow";
+import { createKnowledgeFocusedRequest } from "./focusedRequest";
 
 const vectorSpaceFingerprint = "e".repeat(64);
 const evidenceProfileFixture = Object.freeze({
@@ -30,85 +28,12 @@ const evidenceProfileFixture = Object.freeze({
   profileRevisionId: "knowledge-evidence-v2-test-profile-revision",
   providerModelId: "knowledge-evidence-v2-test-model"
 });
-const semanticProfileFixture = Object.freeze({
-  profileId: "knowledge-evidence-v2-semantic-test-profile",
-  profileRevisionId: "knowledge-evidence-v2-semantic-test-profile-revision"
-});
-const semanticDeployment: KnowledgeSemanticValidatorDeploymentV1 = Object.freeze({
-  authorization: "profile_authorized",
-  calibrationOutputSha256: "d".repeat(64),
-  candidateId: "local_multilingual_nli_v1",
-  candidateIdentitySha256: "a".repeat(64),
-  candidateImplementationSha256: "b".repeat(64),
-  egress: "local",
-  executionClass: "real_model",
-  finalOutputSha256: "e".repeat(64),
-  profileId: "local-nli-v1",
-  qualityEvidenceSha256: "f".repeat(64),
-  recoveryMode: "deterministic_replay",
-  selectionFreezeVersion: "knowledge-semantic-selection-freeze-v1",
-  selectionManifestSha256: "c".repeat(64),
-  semanticProof: true,
-  validatorVersion: 4,
-  version: 1
-});
-
-function stagedSemanticProfileDocuments() {
-  const configuration = knowledgeProfileConfiguration({
-    candidateLimit: 40,
-    embeddingProviderModelId: evidenceProfileFixture.providerModelId,
-    resultLimit: 8,
-    scoreThreshold: 0.01
-  }) as Record<string, unknown>;
-  const egressPolicy = knowledgeProfileEgressPolicy({
-    embeddingProviderModelId: evidenceProfileFixture.providerModelId
-  }) as Record<string, unknown>;
-  const withDeployment = (roles: unknown) => (roles as Record<string, unknown>[]).map((role) =>
-    role.operation === "grounding_validation"
-      ? { ...role, semanticValidator: semanticDeployment }
-      : role);
-  return {
-    configuration: {
-      ...configuration,
-      operationRoles: withDeployment(configuration.operationRoles),
-      rolePolicyVersion: 2,
-      schemaVersion: 4
-    },
-    egressPolicy: {
-      ...egressPolicy,
-      operations: withDeployment(egressPolicy.operations),
-      policyVersion: "knowledge-profile-egress-v4"
-    }
-  };
-}
 
 type RunFixture = Readonly<{
   chatId: string;
   runId: string;
   userId: string;
 }>;
-
-function planner(query: string) {
-  return {
-    automaticRetrieval: true,
-    coverage: { expectedPassageCount: null, mode: "partial", namedTargets: [] },
-    evidenceMode: "compact",
-    intent: "fact_lookup",
-    originalQuery: query,
-    rewrite: { exactTerms: [], query },
-    status: "ready",
-    strategy: "focused",
-    subqueries: [{
-      exactTerms: [],
-      lanes: ["semantic", "lexical"],
-      ordinal: 0,
-      purpose: "answer",
-      query,
-      targetNames: []
-    }],
-    version: 1
-  } as const;
-}
 
 async function createRunFixture(input: Readonly<{
   query: string;
@@ -137,8 +62,10 @@ async function createRunFixture(input: Readonly<{
       chatId: chat.id,
       modelId: "answer-test",
       normalizedRequest: {
+        knowledgeFocusedRequest: createKnowledgeFocusedRequest({
+          currentUserMessage: input.query
+        }),
         knowledgePlan: { baseIds: [], mode: "explicit", sourceIds: [], version: 1 },
-        knowledgePlanner: planner(input.query)
       },
       provider: "test",
       status: "in_progress",
@@ -151,7 +78,7 @@ async function createRunFixture(input: Readonly<{
     data: {
       budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
       exclusions: input.readySources === 0
-        ? [{ count: 1, reason: "processing", resourceType: "source" }]
+        ? [{ count: 1, reason: "not_ready", resourceType: "source" }]
         : [],
       modelRunId: run.id,
       resolvedBaseCount: input.readyBases,
@@ -160,11 +87,6 @@ async function createRunFixture(input: Readonly<{
     }
   });
   return { chatId: chat.id, runId: run.id, userId };
-}
-
-async function cleanupRunFixture(fixture: RunFixture): Promise<void> {
-  await prisma.chat.deleteMany({ where: { id: fixture.chatId, userId: fixture.userId } });
-  await prisma.user.deleteMany({ where: { id: fixture.userId } });
 }
 
 async function ensureEvidenceProfileFixture(): Promise<string> {
@@ -237,10 +159,7 @@ async function ensureEvidenceProfileFixture(): Promise<string> {
         preflightCheckedAt: new Date(),
         preflightStatus: "ready",
         profileConfiguration: knowledgeProfileConfiguration({
-          candidateLimit: 40,
-          embeddingProviderModelId: evidenceProfileFixture.providerModelId,
-          resultLimit: 8,
-          scoreThreshold: 0.01
+          embeddingProviderModelId: evidenceProfileFixture.providerModelId
         }),
         profileId: evidenceProfileFixture.profileId,
         revisionNumber: 1,
@@ -250,41 +169,6 @@ async function ensureEvidenceProfileFixture(): Promise<string> {
     });
   }
   return evidenceProfileFixture.profileRevisionId;
-}
-
-async function ensureSemanticProfileFixture(): Promise<string> {
-  await ensureEvidenceProfileFixture();
-  const staged = stagedSemanticProfileDocuments();
-  await prisma.knowledgeIndexProfile.upsert({
-    create: { id: semanticProfileFixture.profileId },
-    update: {},
-    where: { id: semanticProfileFixture.profileId }
-  });
-  const existing = await prisma.knowledgeIndexProfileRevision.findUnique({
-    select: { id: true },
-    where: { id: semanticProfileFixture.profileRevisionId }
-  });
-  if (!existing) {
-    await prisma.knowledgeIndexProfileRevision.create({
-      data: {
-        activatedAt: new Date(),
-        chunkingProfileVersion: 1,
-        egressPolicy: staged.egressPolicy as unknown as Prisma.InputJsonObject,
-        embeddingConfiguration: {},
-        embeddingProviderModelId: evidenceProfileFixture.providerModelId,
-        executionAuthority: "installation",
-        id: semanticProfileFixture.profileRevisionId,
-        preflightCheckedAt: new Date(),
-        preflightStatus: "ready",
-        profileConfiguration: staged.configuration as unknown as Prisma.InputJsonObject,
-        profileId: semanticProfileFixture.profileId,
-        revisionNumber: 1,
-        targetDimension: 1024,
-        vectorSpaceFingerprint
-      }
-    });
-  }
-  return semanticProfileFixture.profileRevisionId;
 }
 
 function passage(input: Readonly<{
@@ -351,81 +235,15 @@ function evidence(input: Readonly<{
     candidateLimit: 40,
     durationMs: 4,
     embeddingExecutions: [],
-    fusion: "rrf_k60",
+    fusion: "weighted_rrf_v2",
     invocationOrdinal: input.invocationOrdinal,
     operation: "automatic_search",
     outcome: "complete",
-    postRerankOrder: input.results.map((entry) => entry.chunkId),
-    preRerankOrder: input.results.map((entry) => entry.chunkId),
     providerText: "pending",
     query: input.query,
-    rerankerBinding: null,
     resultLimit: 8,
     results: input.results,
     scopeAliases: [{ alias: "S1", kind: "source", label: first.sourceName! }],
-    threshold: 0.01,
-    version: KNOWLEDGE_RESULT_VERSION
-  };
-}
-
-function clarificationEvidence(input: Readonly<{
-  query: string;
-  question: string;
-}>): KnowledgeRetrievalEvidence {
-  return {
-    bases: [{
-      baseContentRevision: 1,
-      baseName: "Finance",
-      candidateCount: 0,
-      indexedContentRevision: 1,
-      indexGenerationId: "generation-structured-clarification",
-      knowledgeBaseId: "base-structured-clarification",
-      ordinal: 0,
-      state: "empty",
-      targetDimension: 1024,
-      vectorSpaceFingerprint
-    }],
-    budget: {
-      noveltyRatio: null,
-      operation: "automatic_search",
-      stopReason: null,
-      usage: {
-        cumulativeCandidates: 0,
-        estimatedCostMicros: 0,
-        followUpOperations: 0,
-        latencyMs: 1,
-        lowNoveltyStreak: 0,
-        operations: 1,
-        queryEmbeddingCalls: 0,
-        rerankerCalls: 0,
-        retrievedTokens: 0,
-        searchPhases: 1,
-        subqueriesInCurrentPhase: 1
-      },
-      version: 1
-    },
-    candidateCount: 0,
-    candidateLimit: 40,
-    durationMs: 1,
-    embeddingExecutions: [],
-    fusion: "rrf_k60",
-    invocationOrdinal: 1,
-    operation: "automatic_search",
-    outcome: "structured_clarification_required",
-    postRerankOrder: null,
-    preRerankOrder: null,
-    providerText: "pending",
-    query: input.query,
-    rerankerBinding: null,
-    resultLimit: 8,
-    results: [],
-    scopeAliases: [{ alias: "B1", kind: "base", label: "Finance" }],
-    structured: {
-      question: input.question,
-      status: "needs_clarification",
-      version: 1
-    },
-    threshold: 0.01,
     version: KNOWLEDGE_RESULT_VERSION
   };
 }
@@ -435,7 +253,7 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
     await prisma.$disconnect();
   });
 
-  it("deduplicates stable handles, persists operation provenance, and seals accepted evidence", async () => {
+  it("persists one focused operation with stable handles and seals accepted evidence", async () => {
     const fixture = await createRunFixture({
       query: "How long are Atlas exports retained?",
       readyBases: 1,
@@ -502,16 +320,16 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
       });
       artifactId = artifact.id;
 
-      const firstCall = await prisma.modelRunToolCall.create({
+      const focusedCall = await prisma.modelRunToolCall.create({
         data: {
-          arguments: { query: "Atlas retention" },
+          arguments: { query: "How long are Atlas exports retained?" },
           modelRunId: fixture.runId,
           ordinal: 0,
-          providerCallId: `knowledge-evidence-call-1-${suffix}`,
+          providerCallId: `knowledge-evidence-focused-call-${suffix}`,
           roundIndex: 0,
           startedAt: new Date(),
           state: "running",
-          toolName: "retrieve_knowledge"
+          toolName: "knowledge_focused_v1"
         },
         select: { id: true }
       });
@@ -523,32 +341,6 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
         sourceVersionId,
         text: "Completed Atlas exports are retained for 30 days after completion."
       });
-      const store = createPrismaKnowledgeRetrievalStore(prisma);
-      const first = await store.persistReceipt({
-        evidence: evidence({
-          invocationOrdinal: 1,
-          query: "Atlas retention",
-          results: [firstPassage]
-        }),
-        modelRunToolCallId: firstCall.id,
-        runId: fixture.runId,
-        userId: fixture.userId
-      });
-      expect(first?.results.map((entry) => entry.handle)).toEqual(["K1"]);
-
-      const secondCall = await prisma.modelRunToolCall.create({
-        data: {
-          arguments: { query: "Atlas deletion" },
-          modelRunId: fixture.runId,
-          ordinal: 1,
-          providerCallId: `knowledge-evidence-call-2-${suffix}`,
-          roundIndex: 0,
-          startedAt: new Date(),
-          state: "running",
-          toolName: "retrieve_knowledge"
-        },
-        select: { id: true }
-      });
       const secondPassage = passage({
         artifactId,
         baseId,
@@ -557,20 +349,21 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
         sourceVersionId,
         text: "Atlas export deletion runs automatically after the 30-day retention period."
       });
-      const second = await store.persistReceipt({
+      const store = createPrismaKnowledgeRetrievalStore(prisma);
+      const focused = await store.persistReceipt({
         evidence: evidence({
-          invocationOrdinal: 2,
-          query: "Atlas deletion",
+          invocationOrdinal: 1,
+          query: "How long are Atlas exports retained?",
           results: [firstPassage, secondPassage]
         }),
-        modelRunToolCallId: secondCall.id,
+        modelRunToolCallId: focusedCall.id,
         runId: fixture.runId,
         userId: fixture.userId
       });
-      expect(second?.results.map((entry) => entry.handle)).toEqual(["K1", "K2"]);
-      expect(second?.providerText).toContain("[K1]");
-      expect(second?.providerText).toContain("[K2]");
-      expect(second?.providerText).not.toMatch(/\[K\d+\.\d+\]/u);
+      expect(focused?.results.map((entry) => entry.handle)).toEqual(["K1", "K2"]);
+      expect(focused?.providerText).toContain("[K1]");
+      expect(focused?.providerText).toContain("[K2]");
+      expect(focused?.providerText).not.toMatch(/\[K\d+\.\d+\]/u);
 
       const receipt = await loadKnowledgeEvidencePackage(prisma, {
         runId: fixture.runId,
@@ -580,47 +373,32 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
         items: [{
           handle: "K1",
           provenance: [
-            { confidenceBucket: "unavailable", invocationOrdinal: 1, postRerankRank: 1 },
-            { confidenceBucket: "unavailable", invocationOrdinal: 2, postRerankRank: 1 }
+            { invocationOrdinal: 1, operation: "automatic_search", resultOrdinal: 0, version: 2 }
           ]
         }, {
           handle: "K2",
           provenance: [
-            { confidenceBucket: "unavailable", invocationOrdinal: 2, postRerankRank: 2 }
+            { invocationOrdinal: 1, operation: "automatic_search", resultOrdinal: 1, version: 2 }
           ]
         }],
-        originalIntent: { intent: "fact_lookup" },
+        originalIntent: {
+          kind: "focused_v1",
+          query: "How long are Atlas exports retained?"
+        },
         version: 2
       });
       await expect(prisma.knowledgeRunEvidence.count({
         where: { evidenceItem: { retrievalSessionId: receipt!.sessionId } }
-      })).resolves.toBe(3);
+      })).resolves.toBe(2);
 
       const grounded = await groundKnowledgeRunAnswer(prisma, {
-        answer: "Atlas exports are retained for 30 days [K1].",
+        answer: "AIQSA_KB_STATUS=ANSWERED\nAtlas exports are retained for 30 days [K1].",
         runId: fixture.runId,
         userId: fixture.userId
       });
-      expect(grounded).toMatchObject({ grounding: { outcome: "passed", repairCount: 0 } });
+      expect(grounded).toMatchObject({ grounding: { outcome: "answered" } });
       await prisma.$transaction(async (tx) => settleKnowledgeGrounding(tx, grounded!));
       await prisma.$transaction(async (tx) => settleKnowledgeGrounding(tx, grounded!));
-      const semanticShadow = await prisma.knowledgeSemanticShadowResult.findUniqueOrThrow({
-        select: {
-          contentFreeMetrics: true,
-          diagnostic: true,
-          egressMode: true,
-          executionStatus: true,
-          profileRevisionIds: true,
-          semanticProof: true
-        },
-        where: { retrievalSessionId: receipt!.sessionId }
-      });
-      expect(semanticShadow).toMatchObject({
-        egressMode: "none",
-        executionStatus: "complete",
-        profileRevisionIds: [profileRevisionId],
-        semanticProof: false
-      });
       await expect(prisma.knowledgeProviderAttempt.count({
         where: { modelRunId: fixture.runId }
       })).resolves.toBe(0);
@@ -654,22 +432,8 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
         where: { id: sealedLink.knowledgeRunId }
       })).rejects.toThrow(/immutable/u);
       await expect(prisma.knowledgeGroundingResult.update({
-        data: { repairCount: 1 },
+        data: { finalAnswerHash: "0".repeat(64) },
         where: { retrievalSessionId: receipt!.sessionId }
-      })).rejects.toThrow(/immutable/u);
-      await expect(prisma.knowledgeSemanticShadowResult.update({
-        data: { validatorVersion: 2 },
-        where: { retrievalSessionId: receipt!.sessionId }
-      })).rejects.toThrow(/immutable/u);
-      await expect(prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe("SET LOCAL aiqsa.knowledge_purge = 'on'");
-        await tx.knowledgeSemanticShadowResult.update({
-          data: {
-            validatorProfile: "local-nli-v1",
-            validatorVersion: 4
-          },
-          where: { retrievalSessionId: receipt!.sessionId }
-        });
       })).rejects.toThrow(/immutable/u);
       await expect(prisma.$transaction(async (tx) =>
         settleKnowledgeGrounding(tx, grounded!))).resolves.toBeUndefined();
@@ -696,169 +460,4 @@ describe("Prisma Knowledge Evidence v2 receipts", () => {
     }
   });
 
-  it("materializes an empty receipt and returns an honest no-answer when no Source is ready", async () => {
-    const fixture = await createRunFixture({
-      query: "What is the private launch date?",
-      readyBases: 0,
-      readySources: 0
-    });
-    try {
-      const grounded = await groundKnowledgeRunAnswer(prisma, {
-        answer: "The private launch date is 2026-09-10.",
-        runId: fixture.runId,
-        userId: fixture.userId
-      });
-      expect(grounded).toMatchObject({
-        grounding: { outcome: "no_answer", repairCount: 1 }
-      });
-      expect(grounded?.grounding.finalText).toMatch(/couldn't find enough support/iu);
-      const receipt = await loadKnowledgeEvidencePackage(prisma, {
-        runId: fixture.runId,
-        userId: fixture.userId
-      });
-      expect(receipt).toMatchObject({
-        degradedFlags: ["no_ready_evidence", "partial_readiness"],
-        items: [],
-        readiness: { excludedResources: 1, readyBases: 0, readySources: 0 }
-      });
-      await prisma.$transaction(async (tx) => settleKnowledgeGrounding(tx, grounded!));
-    } finally {
-      await cleanupRunFixture(fixture);
-    }
-  });
-
-  it("settles an unreleased staged semantic selection as unavailable without provider I/O", async () => {
-    const fixture = await createRunFixture({
-      query: "What is the private launch date?",
-      readyBases: 0,
-      readySources: 0
-    });
-    const answer = "I couldn't find enough support in the selected sources to answer reliably.";
-    try {
-      const profileRevisionId = await ensureSemanticProfileFixture();
-      await prisma.knowledgeRunProfileBinding.create({
-        data: {
-          embeddingConnectionId: evidenceProfileFixture.connectionId,
-          embeddingCredentialId: evidenceProfileFixture.credentialId,
-          embeddingCredentialSource: "default",
-          embeddingCredentialVersionId: evidenceProfileFixture.credentialVersionId,
-          embeddingExecutionSnapshot: { synthetic: true },
-          embeddingProviderModelId: evidenceProfileFixture.providerModelId,
-          modelRunId: fixture.runId,
-          ordinal: 0,
-          profileRevisionId,
-          targetDimension: 1_024,
-          vectorSpaceFingerprint
-        }
-      });
-      const validate = vi.fn(async (
-        { request }: Parameters<KnowledgeSemanticLocalValidatorExecutor["validate"]>[0]
-      ) => request.claims.map((claim) => ({
-        attributableHandles: [],
-        claimOrdinal: claim.ordinal,
-        confidence: 0.98,
-        decision: "supported",
-        reasonFamily: "entailed",
-        validatorProfile: semanticDeployment.profileId,
-        validatorVersion: semanticDeployment.validatorVersion,
-        version: 1
-      })));
-      const grounded = await groundKnowledgeRunAnswer(prisma, {
-        answer,
-        runId: fixture.runId,
-        userId: fixture.userId
-      }, {
-        semanticShadowExecutor: { deployment: semanticDeployment, validate }
-      });
-
-      expect(grounded?.grounding.finalText).toBe(answer);
-      expect(validate).not.toHaveBeenCalled();
-      await prisma.$transaction(async (tx) => settleKnowledgeGrounding(tx, grounded!));
-      await prisma.$transaction(async (tx) => settleKnowledgeGrounding(tx, grounded!));
-      await expect(prisma.knowledgeSemanticShadowResult.findUniqueOrThrow({
-        select: {
-          egressMode: true,
-          executionStatus: true,
-          profileRevisionIds: true,
-          semanticProof: true,
-          validatorProfile: true,
-          validatorVersion: true
-        },
-        where: { retrievalSessionId: grounded!.grounding.sessionId }
-      })).resolves.toEqual({
-        egressMode: "none",
-        executionStatus: "unavailable",
-        profileRevisionIds: [profileRevisionId],
-        semanticProof: false,
-        validatorProfile: "structural-baseline-v1",
-        validatorVersion: 1
-      });
-      await expect(prisma.knowledgeProviderAttempt.count({
-        where: { modelRunId: fixture.runId }
-      })).resolves.toBe(0);
-    } finally {
-      await cleanupRunFixture(fixture);
-    }
-  });
-
-  it("persists a structured clarification and deterministically returns it at finalization", async () => {
-    const query = "Покажи итог по этой таблице";
-    const question = "Уточните лист: Sales или Forecast?";
-    const fixture = await createRunFixture({ query, readyBases: 1, readySources: 1 });
-    try {
-      const call = await prisma.modelRunToolCall.create({
-        data: {
-          arguments: { query },
-          modelRunId: fixture.runId,
-          ordinal: 0,
-          providerCallId: `knowledge-structured-clarification-${randomUUID()}`,
-          roundIndex: 0,
-          startedAt: new Date(),
-          state: "running",
-          toolName: "retrieve_knowledge"
-        },
-        select: { id: true }
-      });
-      const store = createPrismaKnowledgeRetrievalStore(prisma);
-      const persisted = await store.persistReceipt({
-        evidence: clarificationEvidence({ query, question }),
-        modelRunToolCallId: call.id,
-        runId: fixture.runId,
-        userId: fixture.userId
-      });
-      expect(persisted).toMatchObject({
-        outcome: "structured_clarification_required",
-        structured: { question, status: "needs_clarification" }
-      });
-      await expect(store.loadReceipt!({
-        modelRunToolCallId: call.id,
-        runId: fixture.runId,
-        userId: fixture.userId
-      })).resolves.toEqual(persisted);
-
-      const receipt = await loadKnowledgeEvidencePackage(prisma, {
-        runId: fixture.runId,
-        userId: fixture.userId
-      });
-      expect(receipt).toMatchObject({
-        items: [],
-        structuredClarifications: [question]
-      });
-      const grounded = await groundKnowledgeRunAnswer(prisma, {
-        answer: "Наверное, это Sales.",
-        runId: fixture.runId,
-        userId: fixture.userId
-      });
-      expect(grounded).toMatchObject({
-        grounding: {
-          finalText: question,
-          outcome: "repaired",
-          repairCount: 1
-        }
-      });
-      await prisma.$transaction(async (tx) => settleKnowledgeGrounding(tx, grounded!));
-    } finally {
-      await cleanupRunFixture(fixture);
-    }
-  });
 });

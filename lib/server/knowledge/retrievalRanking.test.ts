@@ -1,58 +1,53 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   boundKnowledgeCandidates,
   fuseKnowledgeCandidates,
-  KNOWLEDGE_MIN_CONFIDENCE,
   rankKnowledgeCandidates,
   type KnowledgeCandidateSignal,
   type KnowledgeRetrievalCandidate,
   type KnowledgeRetrievalLane
 } from "./retrievalRanking";
 
-function signal(
-  lane: KnowledgeRetrievalLane,
-  rank: number,
-  overrides: Partial<KnowledgeCandidateSignal> = {}
-): KnowledgeCandidateSignal {
+function signal(lane: KnowledgeRetrievalLane, rank: number): KnowledgeCandidateSignal {
   return {
     exactKind: lane === "exact" ? "identifier" : null,
     lane,
     rank,
     rawScore: 1,
     vectorDistance: lane === "passage_semantic" ? 0.05 : null,
-    vectorMode: lane === "passage_semantic" ? "exact" : null,
-    ...overrides
+    vectorMode: lane === "passage_semantic" ? "exact" : null
   };
 }
 
 function candidate(input: Readonly<{
+  artifactId?: string;
   chunkId: string;
   contentHash?: string;
-  fileName?: string;
   bindingOrdinal?: number;
-  signals: readonly KnowledgeCandidateSignal[];
-  sourceName?: string;
-  text: string;
+  source?: string;
+  sourceId?: string;
+  signals?: readonly KnowledgeCandidateSignal[];
 }>): KnowledgeRetrievalCandidate {
+  const source = input.source ?? input.chunkId;
   return {
     baseName: "Policies",
     bindingOrdinal: input.bindingOrdinal ?? 0,
     chunkId: input.chunkId,
     chunkIndex: Number(input.chunkId.replace(/\D/gu, "")) || 0,
     contentHash: input.contentHash ?? `hash-${input.chunkId}`,
-    documentId: `document-${input.chunkId}`,
-    documentVersionId: `version-${input.chunkId}`,
+    documentId: input.sourceId ?? `document-${source}`,
+    documentVersionId: `version-${source}`,
     documentVersionNumber: 1,
-    fileName: input.fileName ?? `${input.chunkId}.txt`,
+    fileName: `${source}.txt`,
     headingPath: ["Policy"],
     knowledgeBaseId: "base-1",
     layoutKind: "body",
     page: 1,
     sectionId: `section-${input.chunkId}`,
-    signals: input.signals,
-    sourceArtifactId: `artifact-${input.chunkId}`,
-    sourceName: input.sourceName ?? input.chunkId,
-    text: input.text
+    signals: input.signals ?? [signal("passage_lexical", 1)],
+    sourceArtifactId: input.artifactId ?? `artifact-${source}`,
+    sourceName: source,
+    text: `Evidence ${input.chunkId}`
   };
 }
 
@@ -61,10 +56,8 @@ describe("Knowledge retrieval ranking", () => {
     const candidates = Array.from({ length: 1_200 }, (_, index) => candidate({
       bindingOrdinal: index % 3,
       chunkId: `dense-${index}`,
-      signals: [signal("passage_lexical", index + 1)],
-      text: `Dense candidate ${index}`
+      signals: [signal("passage_lexical", index + 1)]
     }));
-
     const bounded = boundKnowledgeCandidates(candidates, 3);
     const counts = [0, 1, 2].map((bindingOrdinal) =>
       bounded.filter((entry) => entry.bindingOrdinal === bindingOrdinal).length);
@@ -72,155 +65,118 @@ describe("Knowledge retrieval ranking", () => {
     expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
   });
 
-  it("fuses bounded lanes without allowing duplicate signals from one lane to dominate", () => {
+  it("uses each lane's best signal once in weighted RRF", () => {
     const [fused] = fuseKnowledgeCandidates([candidate({
       chunkId: "c1",
-      signals: [signal("passage_lexical", 1), signal("passage_lexical", 2), signal("exact", 3)],
-      text: "AX20260842"
+      signals: [signal("passage_lexical", 1), signal("passage_lexical", 2), signal("exact", 3)]
     })]);
     const [single] = fuseKnowledgeCandidates([candidate({
       chunkId: "c2",
-      signals: [signal("passage_lexical", 1)],
-      text: "AX20260842"
+      signals: [signal("passage_lexical", 1)]
     })]);
     expect(fused!.fusedScore).toBeGreaterThan(single!.fusedScore);
-    expect(fused!.fusedScore).toBeLessThanOrEqual(1);
   });
 
-  it("ranks English and Russian evidence and rejects a weak vector-only no-answer candidate", async () => {
+  it("never drops a non-empty candidate pool because of a confidence threshold", async () => {
+    const result = await rankKnowledgeCandidates({
+      candidates: [candidate({
+        chunkId: "weak",
+        signals: [signal("neighbor", 999), signal("passage_semantic", 999)]
+      })],
+      resultLimit: 8
+    });
+    expect(result.selected.map((entry) => entry.chunkId)).toEqual(["weak"]);
+    expect(result.evidence.candidateOrder).toEqual(["weak"]);
+  });
+
+  it("takes the best item from up to four Sources before global fill", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [
-        candidate({
-          chunkId: "english",
-          signals: [signal("passage_lexical", 1)],
-          text: "Atlas retains completed exports for 37 days."
-        }),
-        candidate({
-          chunkId: "russian",
-          signals: [signal("passage_lexical", 1)],
-          text: "Материалы Береста находятся на хранении сорок пять дней."
-        }),
-        candidate({
-          chunkId: "distractor",
-          signals: [signal("passage_semantic", 1, { vectorDistance: 0.646 })],
-          text: "Unrelated synthetic benchmark passage."
-        })
+        candidate({ chunkId: "a1", source: "a", signals: [signal("exact", 1)] }),
+        candidate({ chunkId: "a2", source: "a", signals: [signal("exact", 2)] }),
+        candidate({ chunkId: "b1", source: "b", signals: [signal("passage_lexical", 1)] }),
+        candidate({ chunkId: "c1", source: "c", signals: [signal("passage_lexical", 2)] }),
+        candidate({ chunkId: "d1", source: "d", signals: [signal("passage_lexical", 3)] }),
+        candidate({ chunkId: "e1", source: "e", signals: [signal("passage_lexical", 4)] })
       ],
-      query: "Сколько дней нужно хранить материалы Береста?",
-      resultLimit: 8,
-      scoreThreshold: 0.01
+      resultLimit: 5
     });
-    expect(result.selected.map((entry) => entry.chunkId)).toEqual(["russian"]);
-    expect(result.selected[0]!.confidence).toBeGreaterThanOrEqual(KNOWLEDGE_MIN_CONFIDENCE);
-    expect(result.evidence.rerankerBinding).toEqual({
-      egress: "none",
-      kind: "deterministic_token_vector_heuristic",
-      languages: ["en", "ru"],
-      profile: "deterministic-token-vector-heuristic-v1",
-      status: "complete",
-      version: 1
-    });
+    expect(result.selected.slice(0, 4).map((entry) => entry.sourceName)).toEqual([
+      "a", "b", "c", "d"
+    ]);
   });
 
-  it("covers every explicitly named comparison target before filling more passages", async () => {
+  it("caps each Source at three primary chunks when multiple Sources exist", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [
-        candidate({
-          chunkId: "alpha-1",
-          signals: [signal("passage_semantic", 1)],
-          sourceName: "Alpha plan",
-          text: "Alpha cancellation notice is 30 days."
-        }),
-        candidate({
-          chunkId: "alpha-2",
-          signals: [signal("passage_semantic", 2)],
-          sourceName: "Alpha plan",
-          text: "Alpha has another relevant paragraph."
-        }),
-        candidate({
-          chunkId: "beta-1",
-          signals: [signal("passage_semantic", 3)],
-          sourceName: "Beta plan",
-          text: "Beta cancellation notice is 45 days."
-        }),
-        candidate({
-          chunkId: "gamma-1",
-          signals: [signal("passage_semantic", 4)],
-          sourceName: "Gamma plan",
-          text: "Gamma cancellation notice is 60 days."
-        })
+        ...Array.from({ length: 7 }, (_, index) => candidate({
+          chunkId: `a${index}`,
+          source: "a",
+          signals: [signal("exact", index + 1)]
+        })),
+        candidate({ chunkId: "b1", source: "b", signals: [signal("passage_lexical", 1)] })
       ],
-      query: "Compare the cancellation notice for Alpha, Beta, and Gamma.",
-      resultLimit: 3,
-      scoreThreshold: 0.01
+      resultLimit: 8
     });
-    expect(new Set(result.selected.map((entry) => entry.sourceName))).toEqual(
-      new Set(["Alpha plan", "Beta plan", "Gamma plan"])
-    );
+    expect(result.selected.filter((entry) => entry.sourceName === "a")).toHaveLength(3);
+    expect(result.selected.filter((entry) => entry.sourceName === "b")).toHaveLength(1);
   });
 
-  it("deduplicates repeated content while preserving named comparison coverage", async () => {
+  it("shares one diversity slot and primary cap across compatible artifacts of one Source", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [
+        ...Array.from({ length: 4 }, (_, index) => candidate({
+          artifactId: "artifact-a-v1",
+          chunkId: `a-v1-${index}`,
+          source: "a-v1",
+          sourceId: "source-a",
+          signals: [signal("exact", index * 2 + 1)]
+        })),
+        ...Array.from({ length: 4 }, (_, index) => candidate({
+          artifactId: "artifact-a-v2",
+          chunkId: `a-v2-${index}`,
+          source: "a-v2",
+          sourceId: "source-a",
+          signals: [signal("exact", index * 2 + 2)]
+        })),
         candidate({
-          chunkId: "copy-1",
-          contentHash: "same",
-          signals: [signal("passage_lexical", 1)],
-          text: "Repeated policy evidence."
-        }),
-        candidate({
-          chunkId: "copy-2",
-          contentHash: "same",
-          signals: [signal("passage_lexical", 2)],
-          text: "Repeated policy evidence."
+          artifactId: "artifact-b",
+          chunkId: "b-1",
+          source: "b",
+          sourceId: "source-b",
+          signals: [signal("passage_lexical", 1)]
         })
       ],
-      query: "Repeated policy evidence",
-      resultLimit: 8,
-      scoreThreshold: 0.01
+      resultLimit: 8
     });
-    expect(result.selected).toHaveLength(1);
+
+    expect(result.selected.slice(0, 2).map((entry) => entry.documentId)).toEqual([
+      "source-a",
+      "source-b"
+    ]);
+    expect(result.selected.filter((entry) => entry.documentId === "source-a")).toHaveLength(3);
+    expect(new Set(result.selected
+      .filter((entry) => entry.documentId === "source-a")
+      .map((entry) => entry.sourceArtifactId))).toEqual(new Set([
+      "artifact-a-v1",
+      "artifact-a-v2"
+    ]));
   });
 
-  it("falls back to deterministic fusion order when the reranker is unavailable", async () => {
-    const rerank = vi.fn(async () => {
-      throw new Error("sidecar unavailable");
+  it("uses all slots for one Source, deduplicates content, and excludes neighbor-only rows", async () => {
+    const result = await rankKnowledgeCandidates({
+      candidates: [
+        ...Array.from({ length: 8 }, (_, index) => candidate({
+          chunkId: `a${index}`,
+          contentHash: index === 7 ? "hash-a6" : `hash-a${index}`,
+          source: "a",
+          signals: [signal("passage_lexical", index + 1)]
+        })),
+        candidate({ chunkId: "neighbor", source: "a", signals: [signal("neighbor", 1)] })
+      ],
+      resultLimit: 8
     });
-    const candidates = [
-      candidate({
-        chunkId: "exact",
-        signals: [signal("exact", 1), signal("passage_lexical", 1)],
-        text: "Policy identifier AX20260842."
-      }),
-      candidate({
-        chunkId: "semantic",
-        signals: [signal("passage_semantic", 1)],
-        text: "Other policy."
-      })
-    ];
-    const first = await rankKnowledgeCandidates({
-      candidates,
-      query: "Find AX20260842",
-      reranker: { rerank },
-      resultLimit: 8,
-      scoreThreshold: 0.01
-    });
-    const second = await rankKnowledgeCandidates({
-      candidates,
-      query: "Find AX20260842",
-      reranker: { rerank },
-      resultLimit: 8,
-      scoreThreshold: 0.01
-    });
-    expect(first.evidence.rerankerBinding).toMatchObject({
-      failureCode: "knowledge_reranker_unavailable",
-      kind: "deterministic_weighted_rrf_fallback",
-      profile: "weighted-rrf-v2",
-      status: "degraded"
-    });
-    expect(first.evidence.postRerankOrder).toEqual(first.evidence.preRerankOrder);
-    expect(first.selected.map((entry) => entry.chunkId)).toEqual(
-      second.selected.map((entry) => entry.chunkId)
-    );
+    expect(result.selected).toHaveLength(7);
+    expect(result.selected.some((entry) => entry.chunkId === "neighbor")).toBe(false);
   });
 });

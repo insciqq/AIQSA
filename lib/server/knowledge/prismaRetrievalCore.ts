@@ -7,12 +7,13 @@ import {
 } from "./canonicalSourceCandidates";
 import { decodeKnowledgeDocumentContext } from "./documentContext";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION, knowledgeExactNormalizedValue } from "./hierarchicalIndex";
-import { KNOWLEDGE_SCOPE_MAX_BINDINGS } from "./retrievalTypes";
 import {
-  boundKnowledgeCandidates,
+  KNOWLEDGE_CANDIDATE_LIMIT,
+  KNOWLEDGE_SCOPE_MAX_BINDINGS
+} from "./retrievalTypes";
+import {
   fuseKnowledgeCandidates,
   rankKnowledgeCandidates,
-  type KnowledgeCandidateReranker,
   type KnowledgeCandidateSignal,
   type KnowledgeRankingEvidence,
   type KnowledgeRetrievalCandidate,
@@ -20,14 +21,11 @@ import {
   type KnowledgeVectorSearchMode
 } from "./retrievalRanking";
 
-export const KNOWLEDGE_VECTOR_EXACT_MAX_ROWS = 512;
-export const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
-export const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
-export const KNOWLEDGE_RETRIEVAL_POOL_MIN = 80;
-export const KNOWLEDGE_RETRIEVAL_POOL_MAX = 100;
-export const KNOWLEDGE_VECTOR_BUCKET_COUNT = 16;
+const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
+const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
+const KNOWLEDGE_VECTOR_BUCKET_COUNT = 16;
 
-type RetrievalCoreClient = Pick<PrismaClient, "$queryRaw" | "$transaction">;
+type RetrievalCoreClient = Pick<PrismaClient, "$queryRaw">;
 
 type QueryVector = Readonly<{
   bindingOrdinal: number;
@@ -62,6 +60,11 @@ type CandidateRow = Omit<KnowledgeRetrievalCandidate, "signals" | "sourceArtifac
   vectorMode: KnowledgeVectorSearchMode | null;
 }>;
 
+type HybridQueryEnvelopeRow = Readonly<{
+  candidates: unknown;
+  scopes: unknown;
+}>;
+
 export type KnowledgeVectorSearchEvidence = Readonly<{
   bindingOrdinal: number;
   candidateCount: number;
@@ -78,11 +81,10 @@ export type KnowledgeVectorSearchEvidence = Readonly<{
 
 export type KnowledgeRetrievalCorePassage = KnowledgeRetrievalCandidate & Readonly<{
   annRank: number | null;
-  confidence: number;
+  expandedContext?: string;
   ftsRank: number | null;
   ftsScore: number | null;
   fusedScore: number;
-  rerankScore: number | null;
   vectorDistance: number | null;
   vectorScore: number | null;
 }>;
@@ -423,7 +425,7 @@ function vectorLiteral(vector: readonly number[]): string {
   return `[${vector.join(",")}]`;
 }
 
-export function knowledgeVectorRetrievalBucket(knowledgeBaseId: string): number {
+function knowledgeVectorRetrievalBucket(knowledgeBaseId: string): number {
   return createHash("md5").update(knowledgeBaseId).digest()[0]! % KNOWLEDGE_VECTOR_BUCKET_COUNT;
 }
 
@@ -442,10 +444,9 @@ function vectorDistanceExpression(vector: QueryVector, alias: string): Prisma.Sq
     : Prisma.sql`${row}."embedding"::vector(1536) <=> ${queryVector}`;
 }
 
-export function knowledgeAdaptiveVectorSearchSql(input: Readonly<{
+function knowledgeVectorLaneSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
-  mode: KnowledgeVectorSearchMode;
   runId: string;
   sourceIds?: readonly string[];
   userId: string;
@@ -453,57 +454,35 @@ export function knowledgeAdaptiveVectorSearchSql(input: Readonly<{
 }>): Prisma.Sql {
   const bindings = retrievalBindingsSql(input);
   const scopedPassages = scopedPassagesSql();
-  const scopedDistance = vectorDistanceExpression(input.vector, "passage");
   const globalDistance = vectorDistanceExpression(input.vector, "embedding");
-  const vectorHits = input.mode === "exact"
-    ? Prisma.sql`
-      scoped AS MATERIALIZED (
-        SELECT passage."chunkId", ${scopedDistance} AS "vectorDistance"
-        FROM scoped_passages AS passage
-        WHERE passage."bindingOrdinal" = ${input.vector.bindingOrdinal}
-          AND passage."knowledgeBaseId" = ${input.vector.knowledgeBaseId}
-          AND passage."indexGenerationId" = ${input.vector.indexGenerationId}
-          AND passage."targetDimension" = ${input.vector.targetDimension}
-          AND passage."embeddingDimension" = ${input.vector.targetDimension}
-          AND passage."embedding" IS NOT NULL
-      ),
-      vector_hits AS (
-        SELECT * FROM scoped
-        ORDER BY "vectorDistance", "chunkId"
-        LIMIT ${input.candidateLimit}
-      )
-    `
-    : Prisma.sql`
-      vector_hits AS (
-        SELECT embedding."passageId" AS "chunkId", ${globalDistance} AS "vectorDistance"
-        FROM "KnowledgeArtifactPassageEmbedding" AS embedding
-        INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
-          ON passage."indexArtifactId" = embedding."indexArtifactId"
-         AND passage."id" = embedding."passageId"
-        INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
-          ON hierarchy."id" = passage."indexArtifactId"
-         AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-         AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
-        WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
-          AND EXISTS (
-            SELECT 1
-            FROM scoped_passages AS scoped
-            WHERE scoped."bindingOrdinal" = ${input.vector.bindingOrdinal}
-              AND scoped."knowledgeBaseId" = ${input.vector.knowledgeBaseId}
-              AND scoped."indexGenerationId" = ${input.vector.indexGenerationId}
-              AND scoped."targetDimension" = ${input.vector.targetDimension}
-              AND scoped."indexArtifactId" = hierarchy."id"
-              AND scoped."chunkId" = embedding."passageId"
-          )
-        ORDER BY ${globalDistance}
-        LIMIT ${input.candidateLimit}
-      )
-    `;
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
     scoped_passages AS MATERIALIZED (${scopedPassages}),
-    ${vectorHits},
+    vector_hits AS (
+      SELECT embedding."passageId" AS "chunkId", ${globalDistance} AS "vectorDistance"
+      FROM "KnowledgeArtifactPassageEmbedding" AS embedding
+      INNER JOIN "KnowledgeArtifactPassageIndex" AS indexed_passage
+        ON indexed_passage."indexArtifactId" = embedding."indexArtifactId"
+       AND indexed_passage."id" = embedding."passageId"
+      INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
+        ON hierarchy."id" = indexed_passage."indexArtifactId"
+       AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
+       AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
+      WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
+        AND EXISTS (
+          SELECT 1
+          FROM scoped_passages AS scoped
+          WHERE scoped."bindingOrdinal" = ${input.vector.bindingOrdinal}
+            AND scoped."knowledgeBaseId" = ${input.vector.knowledgeBaseId}
+            AND scoped."indexGenerationId" = ${input.vector.indexGenerationId}
+            AND scoped."targetDimension" = ${input.vector.targetDimension}
+            AND scoped."indexArtifactId" = hierarchy."id"
+            AND scoped."chunkId" = embedding."passageId"
+        )
+      ORDER BY ${globalDistance}
+      LIMIT ${input.candidateLimit}
+    ),
     ranked AS (
       SELECT hit.*,
         row_number() OVER (ORDER BY hit."vectorDistance")::integer AS "laneRank"
@@ -534,7 +513,7 @@ export function knowledgeAdaptiveVectorSearchSql(input: Readonly<{
       (1.0 - ranked."vectorDistance")::double precision AS "rawScore",
       NULL::text AS "exactKind",
       ranked."vectorDistance"::double precision AS "vectorDistance",
-      ${input.mode}::text AS "vectorMode"
+      'ann'::text AS "vectorMode"
     FROM ranked
     INNER JOIN bindings AS binding
       ON binding."ordinal" = ${input.vector.bindingOrdinal}
@@ -569,7 +548,7 @@ function lexicalMatch(alias: string): Prisma.Sql {
   )`;
 }
 
-export function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
+function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   query: string;
@@ -636,28 +615,6 @@ export function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       CROSS JOIN query_terms
       WHERE ${documentMatch}
     ),
-    exact_raw AS (
-      SELECT chunk.*, 'exact'::text AS lane,
-        1.0::double precision AS "rawScore",
-        entry."kind"::text AS "exactKind"
-      FROM scoped_chunks AS chunk
-      INNER JOIN "KnowledgeArtifactExactEntry" AS entry
-        ON entry."indexArtifactId" = chunk."indexArtifactId"
-       AND (
-         entry."passageId" = chunk."chunkId"
-         OR (entry."passageId" IS NULL AND entry."sectionId" = chunk."sectionId"
-           AND chunk."chunkIndex" = (
-             SELECT min(section_passage."ordinal")
-             FROM "KnowledgeArtifactPassageIndex" AS section_passage
-             WHERE section_passage."indexArtifactId" = entry."indexArtifactId"
-               AND section_passage."sectionId" = entry."sectionId"
-           ))
-         OR (entry."passageId" IS NULL AND entry."sectionId" IS NULL
-           AND chunk."chunkIndex" = 0)
-       )
-      WHERE char_length(entry."normalizedValue") >= 3
-        AND strpos(${normalizedQuery}, entry."normalizedValue") > 0
-    ),
     metadata_raw AS (
       SELECT chunk.*, 'metadata'::text AS lane,
         word_similarity(entry."normalizedValue", ${normalizedQuery})::double precision AS "rawScore",
@@ -679,7 +636,6 @@ export function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       SELECT * FROM passage_raw
       UNION ALL SELECT * FROM section_raw
       UNION ALL SELECT * FROM document_raw
-      UNION ALL SELECT * FROM exact_raw
       UNION ALL SELECT * FROM metadata_raw
     ),
     ranked AS (
@@ -722,26 +678,92 @@ export function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
   `;
 }
 
-function knowledgeNeighborExpansionSql(input: Readonly<{
-  anchors: readonly Readonly<{ bindingOrdinal: number; chunkId: string; rank: number }>[];
+/**
+ * Builds the complete focused hybrid retrieval as one PostgreSQL statement.
+ * The nested lane statements remain private implementation details of this
+ * single operation; callers receive one envelope from one `$queryRaw` call.
+ */
+function knowledgeFocusedHybridSearchSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
+  candidateLimit: number;
+  query: string;
+  resultLimit: number;
   runId: string;
   sourceIds?: readonly string[];
   userId: string;
+  vectors: readonly QueryVector[];
 }>): Prisma.Sql {
+  const scopeQuery = knowledgeRetrievalScopeSql(input);
   const bindings = retrievalBindingsSql(input);
   const scopedPassages = scopedPassagesSql();
-  const anchors = Prisma.join(input.anchors.map((anchor) => Prisma.sql`(
-    ${anchor.bindingOrdinal}::integer,
-    ${anchor.chunkId}::text,
-    ${anchor.rank}::integer
-  )`));
+  const lexicalQuery = knowledgeMultiLaneLexicalSearchSql(input);
+  const vectorQueries = Prisma.join(input.vectors.map((vector) => {
+    const query = knowledgeVectorLaneSql({
+      ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+      candidateLimit: input.candidateLimit,
+      runId: input.runId,
+      ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+      userId: input.userId,
+      vector
+    });
+    return Prisma.sql`
+      SELECT vector_candidate.*
+      FROM runtime_settings
+      CROSS JOIN LATERAL (${query}) AS vector_candidate
+    `;
+  }), " UNION ALL ");
   return Prisma.sql`
     WITH
+    runtime_settings AS MATERIALIZED (
+      SELECT
+        set_config('statement_timeout', '30000', true),
+        set_config('hnsw.iterative_scan', 'strict_order', true),
+        set_config('hnsw.ef_search', ${String(KNOWLEDGE_VECTOR_ANN_EF_SEARCH)}, true),
+        set_config(
+          'hnsw.max_scan_tuples',
+          ${String(KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES)},
+          true
+        )
+    ),
+    scopes AS MATERIALIZED (${scopeQuery}),
     bindings AS MATERIALIZED (${bindings}),
     scoped_passages AS MATERIALIZED (${scopedPassages}),
-    anchors("bindingOrdinal", "chunkId", "anchorRank") AS (VALUES ${anchors}),
-    expanded AS (
+    lexical_candidates AS MATERIALIZED (${lexicalQuery}),
+    vector_candidates AS MATERIALIZED (${vectorQueries}),
+    primary_candidates AS MATERIALIZED (
+      SELECT * FROM lexical_candidates
+      UNION ALL
+      SELECT * FROM vector_candidates
+    ),
+    anchor_scores AS (
+      SELECT
+        candidate."bindingOrdinal",
+        candidate."chunkId",
+        sum(
+          CASE candidate.lane
+            WHEN 'document_lexical' THEN 0.7
+            WHEN 'metadata' THEN 1.2
+            WHEN 'passage_lexical' THEN 1.3
+            WHEN 'passage_semantic' THEN 1.15
+            WHEN 'section_lexical' THEN 0.9
+            ELSE 0.0
+          END / (60.0 + candidate."laneRank")
+        )::double precision AS "fusedScore"
+      FROM primary_candidates AS candidate
+      GROUP BY candidate."bindingOrdinal", candidate."chunkId"
+    ),
+    anchors AS MATERIALIZED (
+      SELECT
+        score."bindingOrdinal",
+        score."chunkId",
+        row_number() OVER (
+          ORDER BY score."fusedScore" DESC, score."bindingOrdinal", score."chunkId"
+        )::integer AS "anchorRank"
+      FROM anchor_scores AS score
+      ORDER BY score."fusedScore" DESC, score."bindingOrdinal", score."chunkId"
+      LIMIT ${input.candidateLimit}
+    ),
+    neighbor_candidates AS (
       SELECT
         neighbor."baseName",
         neighbor."bindingOrdinal",
@@ -764,9 +786,14 @@ function knowledgeNeighborExpansionSql(input: Readonly<{
         neighbor."text",
         'neighbor'::text AS lane,
         row_number() OVER (
-          ORDER BY anchor."anchorRank", abs(neighbor."chunkIndex" - source."chunkIndex"), neighbor."chunkId"
+          ORDER BY
+            anchor."anchorRank",
+            abs(neighbor."chunkIndex" - source."chunkIndex"),
+            neighbor."chunkId"
         )::integer AS "laneRank",
-        (1.0 / (1 + anchor."anchorRank" + abs(neighbor."chunkIndex" - source."chunkIndex")))::double precision AS "rawScore",
+        (1.0 / (
+          1 + anchor."anchorRank" + abs(neighbor."chunkIndex" - source."chunkIndex")
+        ))::double precision AS "rawScore",
         NULL::text AS "exactKind",
         NULL::double precision AS "vectorDistance",
         NULL::text AS "vectorMode"
@@ -777,6 +804,9 @@ function knowledgeNeighborExpansionSql(input: Readonly<{
       INNER JOIN scoped_passages AS neighbor
         ON neighbor."bindingOrdinal" = source."bindingOrdinal"
        AND neighbor."indexArtifactId" = source."indexArtifactId"
+       AND neighbor."documentId" = source."documentId"
+       AND neighbor."documentVersionId" = source."documentVersionId"
+       AND neighbor."sourceArtifactId" = source."sourceArtifactId"
        AND abs(neighbor."chunkIndex" - source."chunkIndex") = 1
        AND (
          source."documentContext" IS NULL AND neighbor."documentContext" IS NULL
@@ -787,10 +817,25 @@ function knowledgeNeighborExpansionSql(input: Readonly<{
            AND neighbor."documentContext"->'locator'->>'fieldGroupId' =
              source."documentContext"->'locator'->>'fieldGroupId'
        )
+    ),
+    all_candidates AS (
+      SELECT * FROM primary_candidates
+      UNION ALL
+      SELECT * FROM neighbor_candidates
     )
-    SELECT * FROM expanded
-    ORDER BY "laneRank"
-    LIMIT 16
+    SELECT
+      COALESCE((
+        SELECT jsonb_agg(
+          to_jsonb(candidate)
+          ORDER BY candidate."bindingOrdinal", candidate.lane, candidate."laneRank",
+            candidate."chunkId"
+        )
+        FROM all_candidates AS candidate
+      ), '[]'::jsonb) AS candidates,
+      COALESCE((
+        SELECT jsonb_agg(to_jsonb(scope) ORDER BY scope."bindingOrdinal")
+        FROM scopes AS scope
+      ), '[]'::jsonb) AS scopes
   `;
 }
 
@@ -979,40 +1024,29 @@ function decodeRows(rows: readonly unknown[]): CandidateRow[] {
   return decoded as CandidateRow[];
 }
 
-function poolLimit(candidateLimit: number, resultLimit: number): number {
-  return Math.min(
-    KNOWLEDGE_RETRIEVAL_POOL_MAX,
-    Math.max(KNOWLEDGE_RETRIEVAL_POOL_MIN, candidateLimit, resultLimit * 10)
-  );
+function decodeHybridQueryEnvelope(rows: readonly unknown[]): Readonly<{
+  candidates: CandidateRow[];
+  scopes: ScopeRow[];
+}> {
+  if (rows.length !== 1 || !record(rows[0])) {
+    throw new Error("knowledge_retrieval_envelope_invalid");
+  }
+  const envelope = rows[0] as HybridQueryEnvelopeRow;
+  if (!Array.isArray(envelope.candidates) || !Array.isArray(envelope.scopes)) {
+    throw new Error("knowledge_retrieval_envelope_invalid");
+  }
+  const scopes = envelope.scopes.map(decodeScope);
+  if (scopes.some((scope) => scope === null)) {
+    throw new Error("knowledge_retrieval_scope_invalid");
+  }
+  return Object.freeze({
+    candidates: decodeRows(envelope.candidates),
+    scopes: scopes as ScopeRow[]
+  });
 }
 
-async function vectorRows(
-  client: RetrievalCoreClient,
-  input: Readonly<{
-    candidateLimit: number;
-    bindingOrdinals?: readonly number[];
-    mode: KnowledgeVectorSearchMode;
-    runId: string;
-    sourceIds?: readonly string[];
-    userId: string;
-    vector: QueryVector;
-  }>
-): Promise<CandidateRow[]> {
-  const rows = await client.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL statement_timeout = '1000ms'`;
-    await tx.$executeRaw`SET LOCAL plan_cache_mode = force_custom_plan`;
-    if (input.mode === "ann") {
-      await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
-      await tx.$executeRaw`SET LOCAL enable_bitmapscan = off`;
-      await tx.$executeRaw`SET LOCAL enable_sort = off`;
-      await tx.$executeRaw`SET LOCAL jit = off`;
-      await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = 'strict_order'`;
-      await tx.$executeRaw`SELECT set_config('hnsw.ef_search', ${String(KNOWLEDGE_VECTOR_ANN_EF_SEARCH)}, true)`;
-      await tx.$executeRaw`SELECT set_config('hnsw.max_scan_tuples', ${String(KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES)}, true)`;
-    }
-    return tx.$queryRaw<unknown[]>(knowledgeAdaptiveVectorSearchSql(input));
-  });
-  return decodeRows(rows);
+function hasPrimarySignal(candidate: KnowledgeRetrievalCandidate): boolean {
+  return candidate.signals.some((signal) => signal.lane !== "neighbor");
 }
 
 export async function executeKnowledgeRetrievalCore(
@@ -1021,10 +1055,8 @@ export async function executeKnowledgeRetrievalCore(
     candidateLimit: number;
     bindingOrdinals?: readonly number[];
     query: string;
-    reranker?: KnowledgeCandidateReranker;
     resultLimit: number;
     runId: string;
-    scoreThreshold: number;
     sourceIds?: readonly string[];
     userId: string;
     vectors: readonly QueryVector[];
@@ -1032,6 +1064,12 @@ export async function executeKnowledgeRetrievalCore(
 ): Promise<KnowledgeRetrievalCoreResult> {
   const requestedBindingOrdinals = input.bindingOrdinals ?? [];
   const requestedSourceIds = input.sourceIds ?? [];
+  if (
+    input.candidateLimit !== KNOWLEDGE_CANDIDATE_LIMIT ||
+    input.resultLimit !== 8 ||
+    typeof input.query !== "string" || !input.query.trim() ||
+    [...input.query].length > 3_000
+  ) throw new Error("knowledge_retrieval_request_invalid");
   if (
     requestedBindingOrdinals.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
     requestedBindingOrdinals.some((ordinal) =>
@@ -1042,20 +1080,45 @@ export async function executeKnowledgeRetrievalCore(
       typeof sourceId !== "string" || !sourceId || sourceId.length > 512) ||
     new Set(requestedSourceIds).size !== requestedSourceIds.length
   ) throw new Error("knowledge_retrieval_scope_filter_invalid");
-  const scopesRaw = await client.$queryRaw<unknown[]>(knowledgeRetrievalScopeSql(input));
-  const scopes = scopesRaw.map(decodeScope);
-  if (scopes.some((scope) => scope === null)) {
-    throw new Error("knowledge_retrieval_scope_invalid");
-  }
-  const acceptedScopes = scopes as ScopeRow[];
+  if (
+    input.vectors.length < 1 || input.vectors.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+    new Set(input.vectors.map((vector) => vector.bindingOrdinal)).size !== input.vectors.length ||
+    input.vectors.some((vector) =>
+      !Number.isSafeInteger(vector.bindingOrdinal) || vector.bindingOrdinal < 0 ||
+      vector.bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+      !vector.knowledgeBaseId || !vector.indexGenerationId ||
+      vector.vector.length !== vector.targetDimension ||
+      vector.vector.some((value) => !Number.isFinite(value)))
+  ) throw new Error("knowledge_query_vector_invalid");
+
+  const envelope = decodeHybridQueryEnvelope(await client.$queryRaw<unknown[]>(
+    knowledgeFocusedHybridSearchSql({
+      ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
+      candidateLimit: input.candidateLimit,
+      query: input.query,
+      resultLimit: input.resultLimit,
+      runId: input.runId,
+      ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
+      userId: input.userId,
+      vectors: input.vectors
+    })
+  ));
+  const acceptedScopes = envelope.scopes;
+  const vectorUnavailable = acceptedScopes.some((scope) => scope.eligibleRows < 1);
   if (
     acceptedScopes.length < 1 || acceptedScopes.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
     new Set(acceptedScopes.map((scope) => scope.bindingOrdinal)).size !== acceptedScopes.length ||
+    vectorUnavailable ||
     acceptedScopes.some((scope, index) => index > 0 &&
       scope.bindingOrdinal <= acceptedScopes[index - 1]!.bindingOrdinal)
-  ) throw new Error("knowledge_retrieval_scope_invalid");
+  ) throw new Error(vectorUnavailable
+    ? "knowledge_retrieval_vector_unavailable"
+    : "knowledge_retrieval_scope_invalid");
 
   const byOrdinal = new Map(acceptedScopes.map((scope) => [scope.bindingOrdinal, scope]));
+  if (input.vectors.length !== acceptedScopes.length) {
+    throw new Error("knowledge_query_vector_invalid");
+  }
   for (const vector of input.vectors) {
     const scope = byOrdinal.get(vector.bindingOrdinal);
     if (
@@ -1066,112 +1129,33 @@ export async function executeKnowledgeRetrievalCore(
       vector.vector.some((value) => !Number.isFinite(value))
     ) throw new Error("knowledge_query_vector_invalid");
   }
-  if (new Set(input.vectors.map((vector) => vector.bindingOrdinal)).size !== input.vectors.length) {
-    throw new Error("knowledge_query_vector_invalid");
-  }
-
-  const candidatePoolLimit = poolLimit(input.candidateLimit, input.resultLimit);
-  const vectorEvidence: KnowledgeVectorSearchEvidence[] = [];
-  const vectorPromises: Promise<CandidateRow[]>[] = [];
-  for (const scope of acceptedScopes) {
-    const vector = input.vectors.find((entry) => entry.bindingOrdinal === scope.bindingOrdinal);
-    if (!vector || scope.eligibleRows === 0) {
-      vectorEvidence.push(Object.freeze({
-        bindingOrdinal: scope.bindingOrdinal,
-        candidateCount: 0,
-        eligibleRows: scope.eligibleRows,
-        mode: "unavailable",
-        scan: Object.freeze({
-          efSearch: null,
-          iterativeScan: null,
-          maxScanTuples: null,
-          retrievalBucket: knowledgeVectorRetrievalBucket(scope.knowledgeBaseId)
-        }),
-        targetDimension: scope.targetDimension as 1_024 | 1_536
-      }));
-      continue;
-    }
-    const mode: KnowledgeVectorSearchMode = scope.eligibleRows <= KNOWLEDGE_VECTOR_EXACT_MAX_ROWS
-      ? "exact"
-      : "ann";
-    const evidenceIndex = vectorEvidence.length;
-    vectorEvidence.push(Object.freeze({
+  const vectorEvidence = acceptedScopes.map((scope): KnowledgeVectorSearchEvidence => {
+    const candidateCount = envelope.candidates.filter((candidate) =>
+      candidate.bindingOrdinal === scope.bindingOrdinal &&
+      candidate.lane === "passage_semantic").length;
+    const available = scope.eligibleRows > 0;
+    return Object.freeze({
       bindingOrdinal: scope.bindingOrdinal,
-      candidateCount: -1,
+      candidateCount,
       eligibleRows: scope.eligibleRows,
-      mode,
+      mode: available ? "ann" : "unavailable",
       scan: Object.freeze({
-        efSearch: mode === "ann" ? KNOWLEDGE_VECTOR_ANN_EF_SEARCH : null,
-        iterativeScan: mode === "ann" ? "strict_order" : null,
-        maxScanTuples: mode === "ann" ? KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES : null,
+        efSearch: available ? KNOWLEDGE_VECTOR_ANN_EF_SEARCH : null,
+        iterativeScan: available ? "strict_order" : null,
+        maxScanTuples: available ? KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES : null,
         retrievalBucket: knowledgeVectorRetrievalBucket(scope.knowledgeBaseId)
       }),
       targetDimension: scope.targetDimension as 1_024 | 1_536
-    }));
-    vectorPromises.push(vectorRows(client, {
-      ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
-      candidateLimit: candidatePoolLimit,
-      mode,
-      runId: input.runId,
-      ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
-      userId: input.userId,
-      vector
-    }).then((rows) => {
-      vectorEvidence[evidenceIndex] = Object.freeze({
-        ...vectorEvidence[evidenceIndex]!,
-        candidateCount: rows.length
-      });
-      return rows;
-    }));
-  }
-
-  const [lexicalRows, vectors] = await Promise.all([
-    client.$queryRaw<unknown[]>(knowledgeMultiLaneLexicalSearchSql({
-      ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
-      candidateLimit: candidatePoolLimit,
-      query: input.query,
-      runId: input.runId,
-      ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
-      userId: input.userId
-    })).then(decodeRows),
-    Promise.all(vectorPromises)
-  ]);
-  let merged = mergedCandidates([...lexicalRows, ...vectors.flat()], byOrdinal);
-  let canonical = canonicalizeKnowledgeSourceCandidates(
+    });
+  });
+  const merged = mergedCandidates(envelope.candidates, byOrdinal);
+  const canonical = canonicalizeKnowledgeSourceCandidates(
     merged.candidates,
     merged.sourceBindings
   );
-  let candidates = [...canonical.candidates];
-  if (candidates.length > 0) {
-    const anchors = fuseKnowledgeCandidates(candidates)
-      .slice(0, Math.min(8, input.resultLimit * 2))
-      .map((candidate, index) => ({
-        bindingOrdinal: candidate.bindingOrdinal,
-        chunkId: candidate.chunkId,
-        rank: index + 1
-      }));
-    if (anchors.length > 0) {
-      const neighborRows = decodeRows(await client.$queryRaw<unknown[]>(
-        knowledgeNeighborExpansionSql({
-          anchors,
-          ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
-          runId: input.runId,
-          ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
-          userId: input.userId
-        })
-      ));
-      merged = mergedCandidates([...lexicalRows, ...vectors.flat(), ...neighborRows], byOrdinal);
-      canonical = canonicalizeKnowledgeSourceCandidates(
-        merged.candidates,
-        merged.sourceBindings
-      );
-      candidates = [...canonical.candidates];
-    }
-  }
-  candidates = boundKnowledgeCandidates(
-    candidates,
-    acceptedScopes.map((scope) => scope.bindingOrdinal)
-  );
+  const candidates = fuseKnowledgeCandidates(
+    canonical.candidates.filter(hasPrimarySignal)
+  ).slice(0, input.candidateLimit);
   const retainedChunkIds = new Set(candidates.map((candidate) => candidate.chunkId));
   const retainedCandidateProvenance = canonical.candidateProvenance.filter((entry) =>
     retainedChunkIds.has(entry.chunkId));
@@ -1188,10 +1172,7 @@ export async function executeKnowledgeRetrievalCore(
     retainedSourceKeys.has(JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
   const ranking = await rankKnowledgeCandidates({
     candidates,
-    query: input.query,
-    ...(input.reranker ? { reranker: input.reranker } : {}),
-    resultLimit: input.resultLimit,
-    scoreThreshold: input.scoreThreshold
+    resultLimit: input.resultLimit
   });
 
   const candidateCounts: Record<number, number> = Object.fromEntries(
@@ -1200,6 +1181,8 @@ export async function executeKnowledgeRetrievalCore(
       candidates.filter((candidate) => candidate.bindingOrdinal === scope.bindingOrdinal).length
     ])
   );
+  const selectedContentHashes = new Set(ranking.selected.map((candidate) => candidate.contentHash));
+  const assignedContextHashes = new Set<string>();
   const passages = ranking.selected.map((candidate): KnowledgeRetrievalCorePassage => {
     const semantic = candidate.signals
       .filter((signal) => signal.lane === "passage_semantic")
@@ -1207,11 +1190,28 @@ export async function executeKnowledgeRetrievalCore(
     const lexical = candidate.signals
       .filter((signal) => signal.lane.endsWith("_lexical"))
       .sort((left, right) => left.rank - right.rank)[0] ?? null;
+    const context = canonical.candidates
+      .filter((neighbor) =>
+        neighbor.chunkId !== candidate.chunkId &&
+        neighbor.documentId === candidate.documentId &&
+        neighbor.documentVersionId === candidate.documentVersionId &&
+        neighbor.sourceArtifactId === candidate.sourceArtifactId &&
+        Math.abs(neighbor.chunkIndex - candidate.chunkIndex) === 1 &&
+        !selectedContentHashes.has(neighbor.contentHash) &&
+        !assignedContextHashes.has(neighbor.contentHash))
+      .sort((left, right) => left.chunkIndex - right.chunkIndex ||
+        left.chunkId.localeCompare(right.chunkId))
+      .slice(0, 2);
+    for (const neighbor of context) assignedContextHashes.add(neighbor.contentHash);
+    const expandedContext = context.map((neighbor) =>
+      `${neighbor.chunkIndex < candidate.chunkIndex ? "Previous" : "Next"} same-Source context:\n${neighbor.text}`
+    ).join("\n\n");
     return Object.freeze({
       ...candidate,
       annRank: semantic?.rank ?? null,
       ftsRank: lexical?.rank ?? null,
       ftsScore: lexical?.rawScore ?? null,
+      ...(expandedContext ? { expandedContext } : {}),
       vectorDistance: semantic?.vectorDistance ?? null,
       vectorScore: semantic?.vectorDistance === null || semantic === null
         ? null

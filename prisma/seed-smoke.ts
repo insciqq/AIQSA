@@ -68,7 +68,6 @@ async function main() {
   }
 
   const [
-    knowledgePolicy,
     memoryEgressAdminPolicy,
     modelPolicy,
     searchPolicy,
@@ -76,7 +75,6 @@ async function main() {
     systemModelPolicy,
     fakeModel
   ] = await Promise.all([
-    prisma.knowledgePolicy.findUnique({ where: { id: "installation" } }),
     prisma.memoryEgressAdminPolicy.findUnique({ where: { id: "installation" } }),
     prisma.modelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.searchPolicy.findUnique({ where: { id: "installation" } }),
@@ -89,9 +87,6 @@ async function main() {
   ]);
 
   if (
-    !knowledgePolicy ||
-    knowledgePolicy.version < 1 ||
-    knowledgePolicy.candidateLimit < knowledgePolicy.resultLimit ||
     !memoryEgressAdminPolicy ||
     !modelPolicy ||
     modelPolicy.version < 1 ||

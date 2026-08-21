@@ -1,9 +1,9 @@
 import {
   isGroundingDisplaySseEvent,
+  textFromContentBlocks,
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
-import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   normalizeTokenUsage,
   subtractTokenUsage,
@@ -60,8 +60,7 @@ import type {
   PreparedKnowledgeProviderDispatch
 } from "../knowledge/providerDispatchLifecycle";
 import {
-  knowledgeRunAdmissionHasReadySources,
-  knowledgeRunAdmissionStillAuthorizes,
+  type KnowledgeRunAdmissionAuthorizationSnapshot,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
@@ -72,26 +71,16 @@ import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExe
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { memorySha256 } from "../memory/persistence/lexical";
 import {
-  automaticKnowledgeBranchesFromPersistedCalls,
-  automaticKnowledgeCallArgumentsMatch,
-  automaticKnowledgeEvidenceDispatchDraft,
-  automaticKnowledgeProviderCallId,
-  finalizeAutomaticKnowledgeEvidenceVerifiedDispatchDraft,
-  isAutomaticKnowledgeCall,
+  FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID,
+  KNOWLEDGE_EVIDENCE_MESSAGE_ID,
+  focusedKnowledgeCallArgumentsMatch,
+  focusedKnowledgeEvidenceDispatchDraft,
+  isFocusedKnowledgeCall,
   knowledgeEvidenceMessageFromDispatchDraft,
-  knowledgeToolEvidenceDispatchDraft,
-  prepareAutomaticKnowledgeEvidenceVerifiedDispatchDraft,
-  unavailableKnowledgeEvidenceMessage,
-  withAutomaticKnowledgeEvidence,
-  type AutomaticKnowledgeBranchResult
+  withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
-import type { KnowledgeEvidenceDispatchManifestDraft } from "../knowledge/evidenceDispatchManifest";
-import { knowledgeMeasuredStrategyForPlannerStrategy } from "../knowledge/evidencePackage";
-import {
-  decodeKnowledgePlannerPlan,
-  type KnowledgePlannerPlan,
-  type KnowledgePlannerPlanV2
-} from "../knowledge/planner";
+import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -130,7 +119,11 @@ import {
   validatePersistedAttachmentReferences
 } from "./runAttachmentMaterialization";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
-import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
+import type {
+  FocusedKnowledgeRecoveryScope,
+  RunRepository,
+  RunUsageAttribution
+} from "./runRepositoryContract";
 import type { ToolLoopSettledCall } from "./toolLoop";
 import {
   parsePersistedToolExecutionResult,
@@ -179,6 +172,8 @@ export type RunRecoveryRepository = Pick<
   | "getRunControlForUser"
   | "loadAttachments"
   | "loadCheckpointedToolLoopRun"
+  | "loadFocusedKnowledgeCall"
+  | "loadFocusedKnowledgeScopeExclusions"
   | "loadModelPricing"
   | "loadRunUsageAttributions"
   | "markAssistantMessageGroundedLiveOnly"
@@ -196,6 +191,7 @@ export type RunRecoveryRepository = Pick<
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
+  | "loadFocusedKnowledgeRecoveryScope"
   | "claimAutomaticKnowledgeCall"
   | "loadEntitlements"
 >>;
@@ -216,9 +212,16 @@ export type RunRecoveryDeps = Readonly<{
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   knowledgeAdmission?: Readonly<{
+    authorizeSnapshot?(input: {
+      executionScope?: "project";
+      projectId?: string;
+      snapshot: KnowledgeRunAdmissionAuthorizationSnapshot;
+      userId: string;
+    }): Promise<boolean>;
     load(input: {
       executionScope?: "project";
       knowledgePlan: ProviderRunRequest["knowledgePlan"];
+      preferredProfileRevisionId?: string;
       projectId?: string;
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
@@ -344,15 +347,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function exactKnowledgeEvidenceDispatchDraft(
-  left: KnowledgeEvidenceDispatchManifestDraft,
-  right: KnowledgeEvidenceDispatchManifestDraft
-): boolean {
-  return left.manifestHash === right.manifestHash &&
-    left.messageHash === right.messageHash && left.message === right.message &&
-    left.messageBytes === right.messageBytes && left.items.length === right.items.length &&
-    left.items.every((item, index) => item.evidenceId === right.items[index]?.evidenceId &&
-      item.itemHash === right.items[index]?.itemHash);
+type FocusedKnowledgeFailureCode =
+  | "sources_processing"
+  | "no_retrieval_candidates"
+  | "knowledge_retrieval_failed"
+  | "knowledge_answer_failed"
+  | "knowledge_answer_contract_failed"
+  | "knowledge_citation_contract_failed";
+
+function focusedKnowledgeFailure(
+  code: FocusedKnowledgeFailureCode
+): Readonly<{ code: FocusedKnowledgeFailureCode; message: string }> {
+  const messages: Record<FocusedKnowledgeFailureCode, string> = {
+    knowledge_answer_contract_failed:
+      "The Knowledge answer did not satisfy the required output contract.",
+    knowledge_answer_failed: "The Knowledge answer provider failed.",
+    knowledge_citation_contract_failed:
+      "The Knowledge answer cited evidence outside the final manifest.",
+    knowledge_retrieval_failed: "Knowledge retrieval failed.",
+    no_retrieval_candidates:
+      "No retrieval candidates were found in the ready Knowledge sources.",
+    sources_processing: "The selected Knowledge sources are still processing."
+  };
+  return { code, message: messages[code] };
+}
+
+function recoveryErrorCode(error: unknown): string | null {
+  if (error instanceof ToolLoopRecoveryError) return error.code;
+  if (isRecord(error) && typeof error.code === "string") return error.code;
+  return error instanceof Error ? error.message : null;
+}
+
+function focusedRetrievalFailure(error: unknown): ReturnType<typeof focusedKnowledgeFailure> {
+  const code = recoveryErrorCode(error);
+  if (code === "no_retrieval_candidates") {
+    return focusedKnowledgeFailure("no_retrieval_candidates");
+  }
+  if (code === "knowledge_sources_not_ready" || code === "sources_processing") {
+    return focusedKnowledgeFailure("sources_processing");
+  }
+  if (code === "attachment_not_available" || code === "context_too_large" ||
+    code === "provider_not_available") {
+    return focusedKnowledgeFailure("knowledge_answer_failed");
+  }
+  return focusedKnowledgeFailure("knowledge_retrieval_failed");
+}
+
+function focusedAnswerFailure(error: unknown): ReturnType<typeof focusedKnowledgeFailure> {
+  const code = recoveryErrorCode(error);
+  if (code === "knowledge_answer_contract_failed" ||
+    code === "knowledge_citation_contract_failed") {
+    return focusedKnowledgeFailure(code);
+  }
+  return focusedKnowledgeFailure("knowledge_answer_failed");
 }
 
 function modelToolCall(call: PersistedToolLoopCall): ModelToolCall {
@@ -598,7 +645,6 @@ type RecoveryToolContext = {
   providerRequest: ProviderRunRequest;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
-  knowledgeExecutor: KnowledgeToolExecutor | null;
   memoryActionExecutor: MemoryActionExecutor | null;
   memoryHistoryToolExecutor: MemoryHistoryToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
@@ -608,10 +654,6 @@ type RecoveryToolContext = {
 
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
   return context.searchExecutor?.accepts(name) === true;
-}
-
-function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): boolean {
-  return context.knowledgeExecutor?.accepts(name) === true;
 }
 
 function isRecoveredMemoryCall(context: RecoveryToolContext, name: string): boolean {
@@ -689,6 +731,48 @@ async function currentDirectAnswerDispatchAllowed(
   }
 }
 
+async function currentFocusedKnowledgeRecoveryAuthorization(
+  deps: RunRecoveryDeps,
+  input: Readonly<{
+    project?: ProjectRunRecoveryAuthority;
+    runId: string;
+    userId: string;
+  }>
+): Promise<Readonly<{
+  authorized: boolean;
+  failure: "authorization_changed" | null;
+  scope: FocusedKnowledgeRecoveryScope | null;
+}>> {
+  const loadScope = deps.repository.loadFocusedKnowledgeRecoveryScope;
+  const authorizeSnapshot = deps.knowledgeAdmission?.authorizeSnapshot;
+  if (!loadScope || !authorizeSnapshot) {
+    return {
+      authorized: process.env.NODE_ENV !== "production",
+      failure: process.env.NODE_ENV !== "production" ? null : "authorization_changed",
+      scope: null
+    };
+  }
+  try {
+    const scope = await loadScope({ runId: input.runId, userId: input.userId });
+    if (!scope) {
+      return { authorized: false, failure: "authorization_changed", scope: null };
+    }
+    const authorized = await authorizeSnapshot({
+      ...(input.project ? { executionScope: "project" as const } : {}),
+      ...(input.project ? { projectId: input.project.projectId } : {}),
+      snapshot: scope,
+      userId: input.userId
+    });
+    return {
+      authorized,
+      failure: authorized ? null : "authorization_changed",
+      scope
+    };
+  } catch {
+    return { authorized: false, failure: "authorization_changed", scope: null };
+  }
+}
+
 async function currentDirectSearchDispatchAllowed(
   deps: RunRecoveryDeps,
   request: ProviderRunRequest,
@@ -743,44 +827,6 @@ async function currentRecoverySearchDispatchAllowed(
       provider: context.run.provider,
       searchStrategy: optionId
     }).ok);
-}
-
-async function currentRecoveryKnowledgeDispatchAllowed(
-  context: RecoveryToolContext
-): Promise<boolean> {
-  if (context.run.project && !(await currentProjectRecoveryAuthorityAllowed(
-    context.deps,
-    context.run.project,
-    context.run.userId
-  ))) return false;
-  if (!context.deps.knowledgeAdmission) return process.env.NODE_ENV !== "production";
-  if (!context.run.knowledgeScope) return false;
-  try {
-    const expected = context.run.normalizedRequest.knowledgePlan;
-    const current = await context.deps.knowledgeAdmission.load({
-      ...(context.run.project ? { executionScope: "project" as const } : {}),
-      knowledgePlan: expected,
-      ...(context.run.project ? { projectId: context.run.project.projectId } : {}),
-      userId: context.run.userId
-    });
-    return knowledgeRunAdmissionHasReadySources(current) &&
-      recoveryKnowledgeScopeHasReadySources(context.run.knowledgeScope) &&
-      knowledgeRunAdmissionStillAuthorizes(
-      current,
-      context.run.knowledgeScope
-    );
-  } catch {
-    return false;
-  }
-}
-
-function recoveryKnowledgeScopeHasReadySources(
-  scope: CheckpointedToolLoopRun["knowledgeScope"]
-): boolean {
-  if (!scope) return false;
-  return scope.resolvedSourceCount === undefined
-    ? scope.bindings.length > 0
-    : scope.resolvedSourceCount > 0;
 }
 
 async function currentRecoveryMcpDispatchAllowed(
@@ -1037,17 +1083,6 @@ async function executePersistedToolCall(
         ),
         result
       });
-    } else if (isRecoveredKnowledgeCall(context, call.name)) {
-      const evidence = knowledgeEvidenceFromToolResult(result);
-      if (result.status === "complete" && !evidence) {
-        throw new ToolLoopRecoveryError(
-          "tool_call_result_invalid",
-          "Persisted Knowledge result evidence is invalid and cannot be replayed safely."
-        );
-      }
-      if (evidence && settledSearchUsageNeedsRecovery(claim.call, context.persistedUsageRecordedAt)) {
-        context.usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
-      }
     }
     return {
       call,
@@ -1064,22 +1099,7 @@ async function executePersistedToolCall(
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
     }
-    const knowledgeExecutionContext = isRecoveredKnowledgeCall(context, call.name)
-      ? {
-          persistedToolCallId: claim.call.id,
-          request: context.providerRequest,
-          runId: context.run.id,
-          userId: context.run.userId
-        }
-      : null;
-    const knowledgeAdmission = knowledgeExecutionContext
-      ? await context.knowledgeExecutor?.preflight?.(call, knowledgeExecutionContext)
-      : undefined;
-    const rejectedKnowledgeResult = knowledgeAdmission && knowledgeAdmission.kind !== "admitted"
-      ? knowledgeAdmission.result
-      : null;
-    const externalCall = !rejectedKnowledgeResult &&
-      !isRecoveredMcpDiscoveryCall(context, call.name) &&
+    const externalCall = !isRecoveredMcpDiscoveryCall(context, call.name) &&
       !isRecoveredMemoryCall(context, call.name) &&
       !isRecoveredMemoryHistoryCall(context, call.name);
     if (externalCall) {
@@ -1087,16 +1107,7 @@ async function executePersistedToolCall(
         throw new Error("memory_egress_receipt_unavailable");
       }
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
-      const destinationSnapshot = isRecoveredKnowledgeCall(context, call.name)
-          ? {
-            baseIds: context.run.normalizedRequest.knowledgePlan.baseIds,
-            kind: "knowledge",
-            mode: context.run.normalizedRequest.knowledgePlan.mode,
-            sourceIds: context.run.normalizedRequest.knowledgePlan.sourceIds,
-            toolName: call.name,
-            version: 1
-          }
-        : isRecoveredSearchCall(context, call.name)
+      const destinationSnapshot = isRecoveredSearchCall(context, call.name)
           ? {
               kind: "search",
               optionIds: context.run.normalizedRequest.searchPlan.options.map((option) => option.optionId),
@@ -1111,9 +1122,7 @@ async function executePersistedToolCall(
               version: 1
             };
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
-      const allowed = isRecoveredKnowledgeCall(context, call.name)
-        ? await currentRecoveryKnowledgeDispatchAllowed(context)
-        : isRecoveredSearchCall(context, call.name)
+      const allowed = isRecoveredSearchCall(context, call.name)
           ? await currentRecoverySearchDispatchAllowed(context)
           : generationId
             ? await currentRecoveryMcpDispatchAllowed(context, call.name, generationId)
@@ -1151,26 +1160,8 @@ async function executePersistedToolCall(
           })
         : null;
     }
-    if (rejectedKnowledgeResult) {
-      result = rejectedKnowledgeResult;
-    } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
+    if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
-    } else if (isRecoveredKnowledgeCall(context, call.name)) {
-      result = await context.knowledgeExecutor!.execute(
-        call,
-        knowledgeExecutionContext!,
-        { signal }
-      );
-      const evidence = knowledgeEvidenceFromToolResult(result);
-      if (result.status === "complete" && !evidence) {
-        throw new ToolLoopRecoveryError(
-          "tool_call_result_invalid",
-          "Knowledge result evidence is invalid and cannot be persisted safely."
-        );
-      }
-      if (evidence) {
-        context.usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
-      }
     } else if (isRecoveredMemoryCall(context, call.name)) {
       result = await context.memoryActionExecutor!.execute(
         call,
@@ -1236,9 +1227,7 @@ async function executePersistedToolCall(
       result = toolExecutionErrorResult(
         call,
         error,
-        isRecoveredKnowledgeCall(context, call.name)
-          ? "Knowledge"
-          : context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
+        context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
       );
     }
   }
@@ -1352,6 +1341,29 @@ async function recoverCheckpointedToolLoop(
         "Grounded live-only output cannot resume after process recovery."
       );
     }
+    const savedKnowledgeRuntime = run.normalizedRequest as unknown as Readonly<{
+      knowledgeFocusedRequest?: unknown;
+      knowledgePlanner?: unknown;
+    }>;
+    if (savedKnowledgeRuntime.knowledgeFocusedRequest !== undefined) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_focused_request_unavailable",
+        "Focused Knowledge recovery must use its durable one-shot request."
+      );
+    }
+    if (savedKnowledgeRuntime.knowledgePlanner !== undefined) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_legacy_runtime_retired",
+        "The retired Knowledge planning runtime cannot be replayed."
+      );
+    }
+    if (run.knowledgeScope || run.normalizedRequest.knowledgePlan.mode !== "none" ||
+      run.calls.some(isFocusedKnowledgeCall)) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_legacy_runtime_retired",
+        "Checkpointed Knowledge tool loops are retired; only focused one-shot recovery is valid."
+      );
+    }
     const providerRuntime = await resolveAnswerRuntime(deps, run.id, run.provider);
     const adapter = providerRuntime?.adapter;
     const bridge = providerRuntime?.toolBridge ??
@@ -1414,355 +1426,6 @@ async function recoverCheckpointedToolLoop(
       ...run.normalizedRequest,
       attachments
     };
-    const expectsKnowledgeScope = run.normalizedRequest.knowledgePlan.mode !== "none";
-    if (expectsKnowledgeScope !== Boolean(run.knowledgeScope) ||
-      run.knowledgeScope && JSON.stringify(run.knowledgeScope.knowledgePlan) !==
-        JSON.stringify(run.normalizedRequest.knowledgePlan)) {
-      throw new ToolLoopRecoveryError(
-        "knowledge_run_scope_invalid",
-        "The saved Knowledge scope does not match the run request."
-      );
-    }
-    let automaticKnowledgeContextTruncation: ContextTruncationSummary | null = null;
-    let automaticKnowledgeBranchesForDispatch: readonly AutomaticKnowledgeBranchResult[] | null = null;
-    let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null = null;
-    let knowledgePlannerForDispatch: KnowledgePlannerPlan | null = null;
-    let replayDispatchOrdinal: number | null = null;
-    let knowledgeEvidenceInjected = false;
-    const persistedDispatch = await deps.knowledgeProviderDispatch?.inspect({
-      modelRunId: run.id,
-      ordinal: Math.max(1, run.checkpoint.roundIndex)
-    });
-    if (persistedDispatch) {
-      knowledgeDispatchDraft = persistedDispatch.draft;
-      replayDispatchOrdinal = Math.max(1, run.checkpoint.roundIndex);
-    }
-    let groundedKnowledgeAnswer = false;
-    if (run.normalizedRequest.knowledgePlanner !== undefined) {
-      const decodedPlanner = decodeKnowledgePlannerPlan(run.normalizedRequest.knowledgePlanner);
-      if (!decodedPlanner.ok) {
-        throw new ToolLoopRecoveryError(
-          "knowledge_planner_invalid",
-          "The saved Knowledge planner decision is invalid."
-        );
-      }
-      groundedKnowledgeAnswer = decodedPlanner.plan.intent !== "no_knowledge_needed" &&
-        Boolean(run.knowledgeScope);
-      if (decodedPlanner.plan.automaticRetrieval) {
-        if (!run.knowledgeScope || !recoveryKnowledgeScopeHasReadySources(run.knowledgeScope) ||
-          decodedPlanner.plan.subqueries.length < 1 ||
-          decodedPlanner.plan.subqueries.length >
-            run.knowledgeScope.budgetPolicy.maxSubqueriesPerPhase) {
-          throw new ToolLoopRecoveryError(
-            "knowledge_planner_budget_invalid",
-            "The saved Knowledge planner decision exceeds the admitted run budget."
-          );
-        }
-        const automaticCalls = run.calls.filter(isAutomaticKnowledgeCall)
-          .sort((left, right) => left.ordinal - right.ordinal);
-        const settledAutomaticResultValid = (call: PersistedToolLoopCall): boolean => {
-          if (call.state !== "complete" && call.state !== "error") return true;
-          const result = parsePersistedToolExecutionResult(modelToolCall(call), call.result);
-          return Boolean(result && (result.status !== "complete" ||
-            knowledgeEvidenceFromToolResult(result)));
-        };
-        if (automaticCalls.length !== decodedPlanner.plan.subqueries.length ||
-          automaticCalls.some((call, index) => {
-            const subquery = decodedPlanner.plan.subqueries[index];
-            return !subquery || call.ordinal !== index ||
-              call.providerCallId !== automaticKnowledgeProviderCallId(index) ||
-              !automaticKnowledgeCallArgumentsMatch(
-                decodedPlanner.plan,
-                subquery,
-                call.arguments
-              ) || !settledAutomaticResultValid(call);
-          })) {
-          throw new ToolLoopRecoveryError(
-            "knowledge_automatic_checkpoint_invalid",
-            "Saved automatic Knowledge evidence is incomplete or invalid."
-          );
-        }
-        const strategyPlan = decodedPlanner.plan.version === 2
-          ? decodedPlanner.plan as KnowledgePlannerPlanV2
-          : null;
-        const measuredStrategy = strategyPlan
-          ? knowledgeMeasuredStrategyForPlannerStrategy(strategyPlan.strategy)
-          : null;
-        if (measuredStrategy && (!deps.knowledgeExecutor?.prepareStrategy ||
-          !deps.knowledgeExecutor.drainStrategy ||
-          !deps.knowledgeExecutor.finalizeStrategyCoverage)) {
-          throw new ToolLoopRecoveryError(
-            "knowledge_policy_not_available",
-            "Measured Knowledge strategy recovery is not available."
-          );
-        }
-        const preparedStrategy = strategyPlan && deps.knowledgeExecutor?.prepareStrategy
-          ? await deps.knowledgeExecutor.prepareStrategy({
-              calls: automaticCalls.map(({ id, ordinal }) => ({
-                id,
-                ordinal
-              })),
-              plan: strategyPlan,
-              runId: run.id,
-              userId: run.userId
-            })
-          : null;
-        const drainStrategy = deps.knowledgeExecutor?.drainStrategy;
-        if (measuredStrategy && (!preparedStrategy ||
-          preparedStrategy.strategy !== measuredStrategy)) {
-          throw new ToolLoopRecoveryError(
-            "knowledge_automatic_checkpoint_invalid",
-            "The recovered Knowledge strategy does not match the saved plan."
-          );
-        }
-        const unsettledCalls = automaticCalls.filter((call) =>
-          call.state !== "complete" && call.state !== "error");
-        if (unsettledCalls.length > 0 && (!deps.knowledgeExecutor ||
-          !deps.repository.claimAutomaticKnowledgeCall)) {
-          throw new ToolLoopRecoveryError(
-            "knowledge_policy_not_available",
-            "Pending automatic Knowledge recovery is not available."
-          );
-        }
-        const recoveredAutomaticCalls: PersistedToolLoopCall[] = [];
-        const recoveredAutomaticCallIds = new Set<string>();
-        const automaticContext: RecoveryToolContext = {
-          activeMcpDiscovery: undefined,
-          activeMcpSnapshot: undefined,
-          deps,
-          mcpDiscoveryBatches: new Map(),
-          mcpDiscoveryQueue: Promise.resolve(),
-          persistedUsageRecordedAt,
-          providerRequest,
-          run,
-          knowledgeExecutor: deps.knowledgeExecutor ?? null,
-          memoryActionExecutor: null,
-          memoryHistoryToolExecutor: null,
-          runtime() {
-            throw new ToolLoopRecoveryError(
-              "mcp_runtime_not_ready",
-              "MCP is not part of automatic Knowledge recovery."
-            );
-          },
-          searchExecutor: null,
-          tools: deps.knowledgeExecutor
-            ? [...(deps.knowledgeExecutor.tools ?? [deps.knowledgeExecutor.tool])]
-            : [],
-          usageAttributions
-        };
-        for (const call of automaticCalls) {
-          if (preparedStrategy && strategyPlan?.strategy === "multi_pass" &&
-            call.ordinal > 0) {
-            if (!drainStrategy) {
-              throw new ToolLoopRecoveryError(
-                "knowledge_policy_not_available",
-                "Measured Knowledge strategy recovery is not available."
-              );
-            }
-            await drainStrategy({
-              executionId: preparedStrategy.executionId,
-              runId: run.id,
-              userId: run.userId
-            });
-          }
-          if (call.state === "complete" || call.state === "error") {
-            recoveredAutomaticCalls.push(call);
-            continue;
-          }
-          const settled = await executePersistedToolCall(
-            call,
-            automaticContext,
-            signal,
-            deps.repository.claimAutomaticKnowledgeCall!
-          );
-          if (settled.result.status !== "complete") {
-            throw new ToolLoopRecoveryError(
-              "knowledge_automatic_checkpoint_invalid",
-              "Recovered automatic Knowledge did not produce a durable result."
-            );
-          }
-          const storedResult = snapshotToolExecutionResult(
-            settled.result.value,
-            toolLoopPersistenceLimits.resultBytes
-          );
-          if (!storedResult) {
-            throw new ToolLoopRecoveryError(
-              "tool_call_result_invalid",
-              "Recovered automatic Knowledge result is invalid."
-            );
-          }
-          recoveredAutomaticCallIds.add(call.id);
-          recoveredAutomaticCalls.push({
-            ...call,
-            completedAt: call.completedAt ?? new Date().toISOString(),
-            result: storedResult,
-            state: settled.result.value.status
-          });
-        }
-        if (preparedStrategy && strategyPlan?.strategy !== "multi_pass") {
-          if (!drainStrategy) {
-            throw new ToolLoopRecoveryError(
-              "knowledge_policy_not_available",
-              "Measured Knowledge strategy recovery is not available."
-            );
-          }
-          await drainStrategy({
-            executionId: preparedStrategy.executionId,
-            runId: run.id,
-            userId: run.userId
-          });
-        }
-        const branches = automaticKnowledgeBranchesFromPersistedCalls({
-          calls: recoveredAutomaticCalls,
-          plan: decodedPlanner.plan
-        });
-        if (!branches) {
-          throw new ToolLoopRecoveryError(
-            "knowledge_automatic_checkpoint_invalid",
-            "Recovered automatic Knowledge evidence is incomplete or invalid."
-          );
-        }
-        automaticKnowledgeBranchesForDispatch = branches;
-        knowledgePlannerForDispatch = decodedPlanner.plan;
-        for (const call of recoveredAutomaticCalls) {
-          if (recoveredAutomaticCallIds.has(call.id) ||
-            !settledSearchUsageNeedsRecovery(call, persistedUsageRecordedAt)) continue;
-          const result = parsePersistedToolExecutionResult(modelToolCall(call), call.result);
-          if (result) usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
-        }
-        const automaticEvidence = {
-          branches,
-          exclusions: run.knowledgeScope?.exclusions ?? [],
-          plan: decodedPlanner.plan,
-          request: providerRequest
-        } as const;
-        if (preparedStrategy && deps.knowledgeExecutor?.finalizeStrategyCoverage) {
-          const candidate = prepareAutomaticKnowledgeEvidenceVerifiedDispatchDraft(
-            automaticEvidence
-          );
-          const unverifiedDraft = () => automaticKnowledgeEvidenceDispatchDraft(
-            automaticEvidence
-          );
-          const persistedDraft = persistedDispatch?.draft ?? null;
-          let coverageDraft: KnowledgeEvidenceDispatchManifestDraft;
-          let requireVerified: boolean;
-          let verifiedCandidateAccepted: boolean;
-          if (persistedDraft) {
-            if (candidate && exactKnowledgeEvidenceDispatchDraft(persistedDraft, candidate)) {
-              coverageDraft = persistedDraft;
-              requireVerified = true;
-              verifiedCandidateAccepted = true;
-            } else {
-              const fallback = unverifiedDraft();
-              if (!exactKnowledgeEvidenceDispatchDraft(persistedDraft, fallback)) {
-                throw new ToolLoopRecoveryError(
-                  "knowledge_strategy_manifest_mismatch",
-                  "The persisted Knowledge manifest does not match the recovered strategy."
-                );
-              }
-              coverageDraft = persistedDraft;
-              requireVerified = false;
-              verifiedCandidateAccepted = false;
-            }
-          } else {
-            coverageDraft = candidate ?? unverifiedDraft();
-            requireVerified = candidate !== null;
-            verifiedCandidateAccepted = candidate !== null;
-          }
-          let finalized = await deps.knowledgeExecutor.finalizeStrategyCoverage({
-            draft: coverageDraft,
-            executionId: preparedStrategy.executionId,
-            requireVerified
-          });
-          if (finalized.kind === "requires_unverified") {
-            if (persistedDraft) {
-              throw new ToolLoopRecoveryError(
-                "knowledge_strategy_manifest_mismatch",
-                "The persisted Knowledge manifest cannot be downgraded during recovery."
-              );
-            }
-            coverageDraft = unverifiedDraft();
-            finalized = await deps.knowledgeExecutor.finalizeStrategyCoverage({
-              draft: coverageDraft,
-              executionId: preparedStrategy.executionId,
-              requireVerified: false
-            });
-            verifiedCandidateAccepted = false;
-          }
-          if (finalized.kind !== "finalized") {
-            throw new ToolLoopRecoveryError(
-              "knowledge_strategy_coverage_invalid",
-              "Measured Knowledge coverage could not be recovered."
-            );
-          }
-          let finalDraft = coverageDraft;
-          if (verifiedCandidateAccepted) {
-            if (!candidate || finalized.coverage.status !== "verified") {
-              throw new ToolLoopRecoveryError(
-                "knowledge_strategy_coverage_invalid",
-                "Recovered Knowledge coverage cannot truthfully claim verification."
-              );
-            }
-            finalDraft = finalizeAutomaticKnowledgeEvidenceVerifiedDispatchDraft({
-              candidate: coverageDraft,
-              evidence: automaticEvidence,
-              strategyCoverage: finalized.coverage,
-              strategyExecution: finalized.execution
-            });
-          }
-          if (persistedDraft &&
-            !exactKnowledgeEvidenceDispatchDraft(persistedDraft, finalDraft)) {
-            throw new ToolLoopRecoveryError(
-              "knowledge_strategy_manifest_mismatch",
-              "The finalized Knowledge manifest differs from the persisted replay."
-            );
-          }
-          knowledgeDispatchDraft = persistedDraft ?? finalDraft;
-        } else {
-          knowledgeDispatchDraft = knowledgeDispatchDraft ??
-            automaticKnowledgeEvidenceDispatchDraft(automaticEvidence);
-        }
-        const message = knowledgeEvidenceMessageFromDispatchDraft(knowledgeDispatchDraft);
-        const budgeted = applyProviderRequestContextBudget({
-          bridge,
-          request: withAutomaticKnowledgeEvidence(providerRequest, message)
-        });
-        if (!budgeted.ok) {
-          throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
-        }
-        providerRequest = budgeted.request;
-        automaticKnowledgeContextTruncation = budgeted.contextTruncation;
-        knowledgeEvidenceInjected = true;
-      } else if (decodedPlanner.plan.intent !== "no_knowledge_needed" &&
-        !recoveryKnowledgeScopeHasReadySources(run.knowledgeScope)) {
-        const message = unavailableKnowledgeEvidenceMessage({
-          exclusions: run.knowledgeScope?.exclusions ?? []
-        });
-        const budgeted = applyProviderRequestContextBudget({
-          bridge,
-          request: withAutomaticKnowledgeEvidence(providerRequest, message)
-        });
-        if (!budgeted.ok) {
-          throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
-        }
-        providerRequest = budgeted.request;
-        automaticKnowledgeContextTruncation = budgeted.contextTruncation;
-      }
-    }
-    if (knowledgeDispatchDraft && !knowledgeEvidenceInjected) {
-      const budgeted = applyProviderRequestContextBudget({
-        bridge,
-        request: withAutomaticKnowledgeEvidence(
-          providerRequest,
-          knowledgeEvidenceMessageFromDispatchDraft(knowledgeDispatchDraft)
-        )
-      });
-      if (!budgeted.ok) {
-        throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
-      }
-      providerRequest = budgeted.request;
-      automaticKnowledgeContextTruncation = budgeted.contextTruncation;
-    }
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
     const memoryActionsRequested =
       run.normalizedRequest.memoryActionTools?.version === "model-driven-v2";
@@ -1818,16 +1481,6 @@ async function recoverCheckpointedToolLoop(
           tools: planSearchRouter.tools
         }
       : null;
-    const knowledgeEnabled = clientToolsEnabled &&
-      run.normalizedRequest.modelCapabilities.toolCalling === true &&
-      recoveryKnowledgeScopeHasReadySources(run.knowledgeScope);
-    if (knowledgeEnabled && !deps.knowledgeExecutor) {
-      throw new ToolLoopRecoveryError(
-        "knowledge_policy_not_available",
-        "The saved Knowledge retrieval policy is no longer available."
-      );
-    }
-    const knowledgeExecutor = knowledgeEnabled ? deps.knowledgeExecutor ?? null : null;
     const memoryActionEnabled = memoryActionsRequested &&
       clientToolsEnabled &&
       run.normalizedRequest.modelCapabilities.toolCalling === true;
@@ -1861,7 +1514,6 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const tools: RunTool[] = [
-      ...(knowledgeExecutor ? knowledgeExecutor.tools ?? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
       ...(memoryActionExecutor ? memoryActionTools : []),
       ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
@@ -1897,7 +1549,6 @@ async function recoverCheckpointedToolLoop(
       persistedUsageRecordedAt,
       providerRequest,
       run,
-      knowledgeExecutor,
       memoryActionExecutor,
       memoryHistoryToolExecutor,
       runtime() {
@@ -1915,57 +1566,11 @@ async function recoverCheckpointedToolLoop(
       repository: deps.repository,
       runId: run.id
     });
-    if (groundedKnowledgeAnswer) await tokenBuffer.disablePersistence();
-    if (automaticKnowledgeContextTruncation) {
-      await appendEvent({
-        data: {
-          artifactType: "context_truncated",
-          payload: automaticKnowledgeContextTruncation
-        },
-        type: "artifact"
-      });
-    }
-    const knowledgeToolResults = new Map<string, ToolExecutionResult>();
-    for (const call of run.calls) {
-      if (isAutomaticKnowledgeCall(call) ||
-        call.state !== "complete" && call.state !== "error") continue;
-      const result = parsePersistedToolExecutionResult(modelToolCall(call), call.result);
-      if (result && knowledgeEvidenceFromToolResult(result)) {
-        knowledgeToolResults.set(result.callId, result);
-      }
-    }
-    function projectToolResultForProvider(result: ToolExecutionResult): ToolExecutionResult {
-      if (!knowledgeEvidenceFromToolResult(result)) return result;
-      return {
-        callId: result.callId,
-        content: [{
-          type: "json",
-          value: {
-            aiqsaType: "knowledge_tool_result_processed",
-            evidenceSource: "private_context_manifest",
-            version: 1
-          }
-        }],
-        name: result.name,
-        status: result.status
-      };
-    }
-    const roundDispatchDrafts = new WeakMap<
-      ProviderRunRequest,
-      KnowledgeEvidenceDispatchManifestDraft
-    >();
-    const roundDispatches = new WeakMap<
-      ProviderRunRequest,
-      PreparedKnowledgeProviderDispatch
-    >();
 
     async function* streamRecoveredProviderRequest(
       request: ProviderRunRequest,
-      dispatchSignal: AbortSignal,
-      preparedDispatch: PreparedKnowledgeProviderDispatch | null = null
+      dispatchSignal: AbortSignal
     ): ReturnType<ProviderAdapter["stream"]> {
-      let providerDispatched = false;
-      let durableProviderResponseId: string | null = null;
       let receipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
       let preview: Record<string, unknown> | null = null;
       const requestPreview = () => {
@@ -2027,36 +1632,17 @@ async function recoverCheckpointedToolLoop(
               userId: run.userId
             })
           : null;
-        if (preparedDispatch) {
-          await deps.knowledgeProviderDispatch!.dispatch(preparedDispatch);
-          providerDispatched = true;
-        }
         const stream = adapter!.stream(request, { signal: dispatchSignal });
         let next = await stream.next();
         while (!next.done) {
-          const eventResponseId = providerResponseIdFromEvent(next.value);
-          if (preparedDispatch && eventResponseId) {
-            await publishProviderResponseId(eventResponseId);
-            durableProviderResponseId = eventResponseId;
-          }
           yield next.value;
           next = await stream.next();
-        }
-        if (preparedDispatch && next.value.providerResponseId) {
-          await publishProviderResponseId(next.value.providerResponseId);
-          durableProviderResponseId = next.value.providerResponseId;
         }
         if (receipt && !(await deps.memoryEgress!.completeDispatch(receipt.id))) {
           throw new ToolLoopRecoveryError(
             "memory_egress_receipt_conflict",
             "Provider dispatch evidence could not be completed."
           );
-        }
-        if (preparedDispatch) {
-          await deps.knowledgeProviderDispatch!.settle(preparedDispatch, {
-            providerResponseId: next.value.providerResponseId ?? null,
-            usage: next.value.usage
-          });
         }
         return next.value;
       } catch (error) {
@@ -2067,23 +1653,6 @@ async function recoverCheckpointedToolLoop(
               ? error.code
               : "provider_dispatch_failed"
           ).catch(() => undefined);
-        }
-        if (preparedDispatch) {
-          if (providerDispatched) {
-            if (!durableProviderResponseId) {
-              await deps.knowledgeProviderDispatch!.markAmbiguous(preparedDispatch, {
-                reason: "provider_dispatch_failed"
-              }).catch(() => undefined);
-            }
-          } else {
-            await deps.knowledgeProviderDispatch!.release(
-              preparedDispatch,
-              "provider_dispatch_not_started"
-            ).catch(() => undefined);
-          }
-        }
-        if (preparedDispatch && providerDispatched && durableProviderResponseId) {
-          throw new ToolLoopRecoveryStopped();
         }
         throw error;
       }
@@ -2096,8 +1665,7 @@ async function recoverCheckpointedToolLoop(
       stream(request, options) {
         return streamRecoveredProviderRequest(
           request,
-          options?.signal ?? signal,
-          roundDispatches.get(request) ?? null
+          options?.signal ?? signal
         );
       }
     };
@@ -2208,9 +1776,6 @@ async function recoverCheckpointedToolLoop(
         const result = settled.result.status === "complete"
           ? settled.result.value
           : toolExecutionErrorResult(call, settled.result.error.message);
-        if (knowledgeEvidenceFromToolResult(result)) {
-          knowledgeToolResults.set(result.callId, result);
-        }
         for (const artifact of result.artifacts ?? []) await appendEvent(artifact);
       }
     }
@@ -2219,36 +1784,10 @@ async function recoverCheckpointedToolLoop(
       roundRequest: ProviderRunRequest,
       round: number
     ): Promise<ProviderRunRequest> {
-      const settledKnowledgeResults = [...knowledgeToolResults.values()];
-      const roundDispatchDraft = replayDispatchOrdinal === round
-        ? knowledgeDispatchDraft
-        : round === 1
-          ? knowledgeDispatchDraft
-          : settledKnowledgeResults.length > 0 &&
-              automaticKnowledgeBranchesForDispatch && knowledgePlannerForDispatch
-            ? automaticKnowledgeEvidenceDispatchDraft({
-                branches: automaticKnowledgeBranchesForDispatch,
-                exclusions: run.knowledgeScope?.exclusions ?? [],
-                plan: knowledgePlannerForDispatch,
-                request: roundRequest,
-                toolResults: settledKnowledgeResults
-              })
-            : settledKnowledgeResults.length > 0
-              ? knowledgeToolEvidenceDispatchDraft({
-                  request: roundRequest,
-                  results: settledKnowledgeResults
-                })
-              : knowledgeDispatchDraft;
-      const evidenceRequest = roundDispatchDraft
-        ? withAutomaticKnowledgeEvidence(
-            roundRequest,
-            knowledgeEvidenceMessageFromDispatchDraft(roundDispatchDraft)
-          )
-        : roundRequest;
       const budgeted = applyProviderRequestContextBudget({
         bridge,
         request: {
-          ...evidenceRequest,
+          ...roundRequest,
           ...(context.activeMcpDiscovery && round === 1
             ? { parallelToolCalls: false }
             : {}),
@@ -2270,54 +1809,11 @@ async function recoverCheckpointedToolLoop(
           type: "artifact"
         });
       }
-      if (roundDispatchDraft) roundDispatchDrafts.set(budgeted.request, roundDispatchDraft);
       return budgeted.request;
     }
 
-    async function prepareKnowledgeDispatchForRound(
-      request: ProviderRunRequest,
-      round: number
-    ): Promise<PreparedKnowledgeProviderDispatch | null> {
-      const dispatchDraft = roundDispatchDrafts.get(request) ?? knowledgeDispatchDraft;
-      if (!dispatchDraft) return null;
-      if (!deps.knowledgeProviderDispatch) {
-        if (process.env.NODE_ENV === "production") {
-          throw new ToolLoopRecoveryError(
-            "knowledge_evidence_dispatch_unavailable",
-            "Knowledge evidence dispatch persistence is unavailable."
-          );
-        }
-        return null;
-      }
-      const existing = await deps.knowledgeProviderDispatch.inspect({
-        modelRunId: run.id,
-        ordinal: round
-      });
-      if (!existing) {
-        return deps.knowledgeProviderDispatch.prepare({
-          draft: dispatchDraft,
-          modelRunId: run.id,
-          ordinal: round,
-          purpose: round === 1 ? "answer" : "tool_follow_up",
-          requestPreview: adapter!.buildRequestPreview(request),
-          roundIndex: round - 1
-        });
-      }
-      if (existing.attempt.state !== "reserved") {
-        throw new ToolLoopRecoveryStopped();
-      }
-      const recovery = await deps.knowledgeProviderDispatch.recover({
-        modelRunId: run.id,
-        ordinal: round,
-        requestPreview: adapter!.buildRequestPreview(request)
-      });
-      if (recovery.kind === "dispatch") return recovery.prepared;
-      throw new ToolLoopRecoveryStopped();
-    }
-
     const persistedCalls = new Map<string, PersistedToolLoopCall>(
-      run.calls.filter((call) => !isAutomaticKnowledgeCall(call))
-        .map((call) => [call.providerCallId, call])
+      run.calls.map((call) => [call.providerCallId, call])
     );
 
     async function persistToolBatch(
@@ -2329,7 +1825,6 @@ async function recoverCheckpointedToolLoop(
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
-            knowledgeExecutor?.accepts(call.name) !== true &&
             memoryActionExecutor?.accepts(call.name) !== true &&
             memoryHistoryToolExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name)) {
@@ -2375,8 +1870,7 @@ async function recoverCheckpointedToolLoop(
       savedContinuation: ProviderToolLoopContinuation,
       round: number
     ): Promise<ProviderRunRequest> {
-      const priorCalls = run.calls.filter((call) =>
-        !isAutomaticKnowledgeCall(call) && call.roundIndex === round - 1);
+      const priorCalls = run.calls.filter((call) => call.roundIndex === round - 1);
       const priorResults = priorCalls.length > 0
         ? await executePersistedToolBatch(priorCalls, context, signal)
         : [];
@@ -2393,11 +1887,11 @@ async function recoverCheckpointedToolLoop(
                 },
                 settled.result.error.message
               );
-          return bridge.appendToolResult(undefined, projectToolResultForProvider(result));
+          return bridge.appendToolResult(undefined, result);
         })
       ];
       const completedToolRounds = Math.max(0, round - 1);
-      const priorToolCalls = run.calls.filter((call) => !isAutomaticKnowledgeCall(call)).length;
+      const priorToolCalls = run.calls.length;
       return prepareRecoveredProviderRequest({
         ...providerRequest,
         parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
@@ -2416,99 +1910,25 @@ async function recoverCheckpointedToolLoop(
     if (run.checkpoint.phase === "provider_running") {
       const round = run.checkpoint.roundIndex;
       const roundRequest = await providerRunningRequest(continuation, round);
-      let recoveredPrepared: PreparedKnowledgeProviderDispatch | null = null;
-      let usedProviderRefresh = true;
       let refreshed: ProviderRunRefreshResult;
-
-      if (knowledgeDispatchDraft && deps.knowledgeProviderDispatch) {
-        const roundDispatchDraft = roundDispatchDrafts.get(roundRequest) ?? knowledgeDispatchDraft;
-        const recovery = await deps.knowledgeProviderDispatch.recover({
-          modelRunId: run.id,
-          ordinal: round,
-          providerResponseId: currentProviderResponseId,
-          requestPreview: adapter.buildRequestPreview(roundRequest)
-        });
-        if (recovery.kind === "busy" || recovery.kind === "request_required") return;
-        if (recovery.kind === "ambiguous" || recovery.kind === "released") {
-          throw new ToolLoopRecoveryError(
-            "tool_loop_provider_round_outcome_unknown",
-            "The saved model round has no safely replayable provider outcome."
-          );
-        }
-        if (recovery.kind === "not_found" || recovery.kind === "dispatch") {
-          const prepared = recovery.kind === "dispatch"
-            ? recovery.prepared
-            : await deps.knowledgeProviderDispatch.prepare({
-                draft: roundDispatchDraft,
-                modelRunId: run.id,
-                ordinal: round,
-                purpose: round === 1 ? "answer" : "tool_follow_up",
-                requestPreview: adapter.buildRequestPreview(roundRequest),
-                roundIndex: round - 1
-              });
-          const events: ModelRunSseEvent[] = [];
-          const stream = streamRecoveredProviderRequest(roundRequest, signal, prepared);
-          let next = await stream.next();
-          while (!next.done) {
-            if (next.value.type === "token") await appendEvent(next.value);
-            else events.push(next.value);
-            next = await stream.next();
-          }
-          usedProviderRefresh = false;
-          refreshed = {
-            events,
-            providerResponseId: next.value.providerResponseId,
-            result: next.value,
-            status: "completed",
-            terminal: true
-          };
-        } else {
-          if (recovery.kind !== "resume" && recovery.kind !== "settled") {
-            throw new ToolLoopRecoveryStopped();
-          }
-          currentProviderResponseId = recovery.providerResponseId ?? currentProviderResponseId;
-          recoveredPrepared = recovery.kind === "resume" ? recovery.prepared : null;
-          if (!currentProviderResponseId) {
-            throw new ToolLoopRecoveryError(
-              "tool_loop_provider_round_outcome_unknown",
-              "The saved model round has no durable provider response handle."
-            );
-          }
-          if (!adapter.refresh) {
-            throw new ToolLoopRecoveryError(
-              "provider_resume_not_supported",
-              "The provider cannot resume the saved model round."
-            );
-          }
-          await publishProviderResponseId(currentProviderResponseId);
-          refreshed = await adapter.refresh(currentProviderResponseId)
-            .catch((error: unknown) => {
-              throw new ToolLoopRecoveryError(
-                "provider_refresh_failed",
-                error instanceof Error ? error.message : "Provider refresh failed"
-              );
-            });
-        }
-      } else {
-        if (!currentProviderResponseId) {
-          throw new ToolLoopRecoveryError(
-            "tool_loop_provider_round_outcome_unknown",
-            "The model round stopped before a durable provider response ID was saved and was not repeated."
-          );
-        }
-        if (!adapter.refresh) {
-          throw new ToolLoopRecoveryError(
-            "provider_resume_not_supported",
-            "The provider cannot resume the saved model round."
-          );
-        }
-        refreshed = await adapter.refresh(currentProviderResponseId).catch((error: unknown) => {
-          throw new ToolLoopRecoveryError(
-            "provider_refresh_failed",
-            error instanceof Error ? error.message : "Provider refresh failed"
-          );
-        });
+      if (!currentProviderResponseId) {
+        throw new ToolLoopRecoveryError(
+          "tool_loop_provider_round_outcome_unknown",
+          "The model round stopped before a durable provider response ID was saved and was not repeated."
+        );
       }
+      if (!adapter.refresh) {
+        throw new ToolLoopRecoveryError(
+          "provider_resume_not_supported",
+          "The provider cannot resume the saved model round."
+        );
+      }
+      refreshed = await adapter.refresh(currentProviderResponseId).catch((error: unknown) => {
+        throw new ToolLoopRecoveryError(
+          "provider_refresh_failed",
+          error instanceof Error ? error.message : "Provider refresh failed"
+        );
+      });
       await publishProviderResponseId(
         refreshed.result?.providerResponseId ?? refreshed.providerResponseId
       );
@@ -2517,21 +1937,7 @@ async function recoverCheckpointedToolLoop(
         await tokenBuffer.flush();
         return;
       }
-      if (recoveredPrepared) {
-        if (refreshed.result) {
-          await deps.knowledgeProviderDispatch!.settle(recoveredPrepared, {
-            providerResponseId: refreshed.result.providerResponseId ??
-              refreshed.providerResponseId ?? currentProviderResponseId,
-            usage: refreshed.result.usage
-          });
-        } else {
-          await deps.knowledgeProviderDispatch!.markAmbiguous(recoveredPrepared, {
-            providerResponseId: refreshed.providerResponseId ?? currentProviderResponseId,
-            reason: "provider_terminal_failed"
-          });
-        }
-      }
-      if (usedProviderRefresh && egressReceiptRequired && deps.memoryEgress &&
+      if (egressReceiptRequired && deps.memoryEgress &&
         !(await deps.memoryEgress.settleRecoveredProviderDispatch({
           ...(refreshed.result
             ? {}
@@ -2686,10 +2092,6 @@ async function recoverCheckpointedToolLoop(
         }
         currentProviderResponseId = null;
       },
-      beforeProviderRound: async ({ request, round }) => {
-        const preparedDispatch = await prepareKnowledgeDispatchForRound(request, round);
-        if (preparedDispatch) roundDispatches.set(request, preparedDispatch);
-      },
       bridge,
       budgets: {
         maxConcurrency: 4,
@@ -2771,7 +2173,7 @@ async function recoverCheckpointedToolLoop(
         );
       },
       parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
-      projectToolResultForProvider: (result) => projectToolResultForProvider(result),
+      projectToolResultForProvider: (result) => result,
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
         await persistToolBatch(calls, nextContinuation, round);
       },
@@ -2783,7 +2185,7 @@ async function recoverCheckpointedToolLoop(
         previousToolResults,
         progress: {
           providerRounds: run.checkpoint.roundIndex,
-          toolCalls: run.calls.filter((call) => !isAutomaticKnowledgeCall(call)).length +
+          toolCalls: run.calls.length +
             (run.checkpoint.phase === "provider_running" ? currentCalls.length : 0),
           toolRounds: run.checkpoint.roundIndex
         },
@@ -2919,6 +2321,7 @@ export async function sweepBootOrphanedRunsOnce(
 }
 
 function requiresCheckpointedProviderLoop(request: ProviderRunRequest): boolean {
+  if (request.toolChoice === "none") return false;
   if (request.mcpDiscovery !== undefined) return true;
   if (request.toolMode === "none") return false;
   return request.searchPlan.options.some((option) =>
@@ -3005,7 +2408,12 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
     );
   }
   const requestWithEvidence = withAutomaticKnowledgeEvidence(
-    { ...normalizedRequest, attachments },
+    {
+      ...normalizedRequest,
+      attachments,
+      toolChoice: "none",
+      tools: undefined
+    },
     knowledgeEvidenceMessageFromDispatchDraft(input.dispatch.draft)
   );
   if (requiresCheckpointedProviderLoop(requestWithEvidence)) {
@@ -3020,6 +2428,15 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
   });
   if (!budgeted.ok) {
     throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
+  }
+  const retainedEvidence = budgeted.request.context?.messages.find((message) =>
+    message.id === KNOWLEDGE_EVIDENCE_MESSAGE_ID && message.purpose === "knowledge_evidence");
+  if (!retainedEvidence ||
+    textFromContentBlocks(retainedEvidence.content) !== input.dispatch.draft.message) {
+    throw new ToolLoopRecoveryError(
+      "context_too_large",
+      "The exact Knowledge evidence manifest did not survive request reconstruction."
+    );
   }
   assertPersonalContextEgressSafe(budgeted.request);
   return { adapter: runtime.adapter, request: budgeted.request };
@@ -3074,6 +2491,17 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
   };
 
   try {
+    const knowledgeAuthorization = await currentFocusedKnowledgeRecoveryAuthorization(input.deps, {
+      ...(input.control.project ? { project: input.control.project } : {}),
+      runId: input.runId,
+      userId: input.userId
+    });
+    if (!knowledgeAuthorization.authorized) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_answer_failed",
+        "The accepted Knowledge authority is no longer current."
+      );
+    }
     if (!(await currentDirectAnswerDispatchAllowed(input.deps, input.control, input.userId))) {
       throw new ToolLoopRecoveryError(
         input.control.project ? "provider_admission_changed" : "model_not_available",
@@ -3129,7 +2557,9 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
       : null;
     await input.deps.knowledgeProviderDispatch!.dispatch(input.prepared);
     providerDispatched = true;
-    const stream = input.adapter.stream(input.request, { signal: input.signal });
+    const stream = input.adapter.stream(input.request, {
+      signal: AbortSignal.any([input.signal, AbortSignal.timeout(120_000)])
+    });
     let next = await stream.next();
     while (!next.done) {
       events.push(next.value);
@@ -3205,10 +2635,255 @@ async function refreshProviderRunOnceRegistered(
     return;
   }
 
-  const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId });
-  if (checkpointed) {
-    await recoverCheckpointedToolLoop(deps, checkpointed, signal);
+  const acceptedRequest = deps.repository.loadProviderDispatchRecoveryRequest
+    ? await deps.repository.loadProviderDispatchRecoveryRequest({ runId, userId })
+    : null;
+  const focusedRequest = acceptedRequest?.knowledgeFocusedRequest
+    ? decodeKnowledgeFocusedRequest(acceptedRequest.knowledgeFocusedRequest)
+    : null;
+  if (acceptedRequest?.knowledgeFocusedRequest !== undefined && !focusedRequest) {
+    if (control.assistantMessageId) {
+      await deps.repository.failRun(
+        runId,
+        control.assistantMessageId,
+        focusedKnowledgeFailure("knowledge_retrieval_failed"),
+        { recoveryTerminal: true }
+      );
+    }
     return;
+  }
+  if (!focusedRequest) {
+    const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId });
+    if (checkpointed) {
+      await recoverCheckpointedToolLoop(deps, checkpointed, signal);
+      return;
+    }
+  }
+  if (focusedRequest && (!acceptedRequest || !deps.knowledgeProviderDispatch)) {
+    if (control.assistantMessageId) {
+      await deps.repository.failRun(
+        runId,
+        control.assistantMessageId,
+        focusedKnowledgeFailure("knowledge_retrieval_failed"),
+        { recoveryTerminal: true }
+      );
+    }
+    return;
+  }
+  if (focusedRequest && acceptedRequest && deps.knowledgeProviderDispatch) {
+    let existingAttempt: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>>;
+    try {
+      existingAttempt = await deps.knowledgeProviderDispatch.inspect({
+        modelRunId: runId,
+        ordinal: 1
+      });
+    } catch (error) {
+      if (control.assistantMessageId) {
+        await deps.repository.failRun(
+          runId,
+          control.assistantMessageId,
+          focusedRetrievalFailure(error),
+          { recoveryTerminal: true }
+        );
+      }
+      return;
+    }
+    if (!existingAttempt) {
+      try {
+        const loadCall = deps.repository.loadFocusedKnowledgeCall;
+        const loadExclusions = deps.repository.loadFocusedKnowledgeScopeExclusions;
+        const claimCall = deps.repository.claimAutomaticKnowledgeCall;
+        if (!loadCall || !loadExclusions || !claimCall || !deps.knowledgeExecutor) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_retrieval_failed",
+            "Focused Knowledge recovery is unavailable."
+          );
+        }
+        const authorization = await currentFocusedKnowledgeRecoveryAuthorization(deps, {
+          ...(control.project ? { project: control.project } : {}),
+          runId,
+          userId
+        });
+        if (!authorization.authorized) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_retrieval_failed",
+            "The accepted Knowledge authority is no longer current."
+          );
+        }
+        const persistedExclusions = authorization.scope?.exclusions ??
+          await loadExclusions({ runId, userId });
+        if (!persistedExclusions) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_retrieval_failed",
+            "The persisted focused Knowledge scope is unavailable."
+          );
+        }
+        const persisted = await loadCall({ runId, userId });
+        if (!persisted || persisted.providerCallId !== FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID ||
+          persisted.toolName !== KNOWLEDGE_FOCUSED_OPERATION_NAME ||
+          !focusedKnowledgeCallArgumentsMatch(focusedRequest, persisted.arguments)) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_focused_checkpoint_conflict",
+            "The focused Knowledge checkpoint does not match the accepted request."
+          );
+        }
+        const attachmentLimits = deps.getAttachmentLimits?.() ?? getRunAttachmentLimits();
+        const attachmentIds = validatePersistedAttachmentReferences(
+          acceptedRequest.content.blocks,
+          acceptedRequest.attachmentIds,
+          attachmentLimits
+        );
+        const attachments = await loadProviderAttachments(deps, userId, attachmentIds, {
+          capabilities: acceptedRequest.modelCapabilities,
+          limits: attachmentLimits,
+          ...(control.project ? { projectId: control.project.projectId } : {}),
+          signal
+        });
+        if (attachments.length !== attachmentIds.length) {
+          throw new ToolLoopRecoveryError(
+            "attachment_not_available",
+            "A run attachment is no longer available."
+          );
+        }
+        const providerRequest: ProviderRunRequest = {
+          ...acceptedRequest,
+          attachments,
+          toolChoice: "none",
+          tools: undefined
+        };
+        const call = modelToolCall(persisted);
+        const claim = await claimCall({ callId: persisted.id, runId, userId });
+        if (claim.kind === "ambiguous") {
+          throw new ToolLoopRecoveryError(
+            "knowledge_retrieval_outcome_unknown",
+            "Focused Knowledge retrieval may have completed and was not repeated."
+          );
+        }
+        if (claim.kind === "not_found" || claim.kind === "cancelled") {
+          throw new ToolLoopRecoveryError(
+            "knowledge_focused_checkpoint_conflict",
+            "The focused Knowledge checkpoint is unavailable."
+          );
+        }
+        let result: ToolExecutionResult;
+        if (claim.kind === "settled") {
+          const stored = parsePersistedToolExecutionResult(call, claim.call.result);
+          if (!stored) {
+            throw new ToolLoopRecoveryError(
+              "knowledge_retrieval_failed",
+              "Persisted focused Knowledge evidence is invalid."
+            );
+          }
+          result = stored;
+        } else {
+          const executionContext = {
+            persistedToolCallId: claim.call.id,
+            request: providerRequest,
+            runId,
+            userId
+          };
+          const preflight = await deps.knowledgeExecutor.preflight?.(call, executionContext);
+          result = preflight && preflight.kind !== "admitted"
+            ? preflight.result
+            : await deps.knowledgeExecutor.execute(call, executionContext, {
+                signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+              }).catch((error) => toolExecutionErrorResult(call, error, "Knowledge"));
+          const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+          if (!stored) {
+            throw new ToolLoopRecoveryError(
+              "knowledge_retrieval_failed",
+              "Recovered focused Knowledge evidence is too large."
+            );
+          }
+          const settled = await deps.repository.settleToolLoopCall({
+            callId: claim.call.id,
+            result: stored,
+            runId,
+            state: result.status,
+            userId
+          });
+          if (settled !== "settled" && settled !== "reused") {
+            throw new ToolLoopRecoveryError(
+              "knowledge_focused_checkpoint_conflict",
+              "Recovered focused Knowledge evidence could not be settled."
+            );
+          }
+        }
+        const evidence = knowledgeEvidenceFromToolResult(result);
+        if (result.status !== "complete" || !evidence) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_retrieval_failed",
+            "Focused Knowledge retrieval failed."
+          );
+        }
+        if (evidence.results.length < 1) {
+          throw new ToolLoopRecoveryError(
+            "no_retrieval_candidates",
+            "No Knowledge retrieval candidates were found."
+          );
+        }
+        const retrievalAttributions = knowledgeUsageAttributionsFromToolResult(result);
+        if (retrievalAttributions.length > 0) {
+          await deps.repository.recordRunUsageEvents({
+            chatId: control.chatId,
+            runId,
+            usageAttributions: await usageAttributionsWithEstimatedCost(
+              deps.repository,
+              retrievalAttributions
+            ),
+            userId
+          });
+        }
+        const draft = focusedKnowledgeEvidenceDispatchDraft({
+          exclusions: persistedExclusions,
+          request: providerRequest,
+          result
+        });
+        const runtime = await resolveAnswerRuntime(deps, runId, control.provider);
+        if (!runtime?.adapter) {
+          throw new ToolLoopRecoveryError(
+            "provider_not_available",
+            "The saved answer provider is unavailable."
+          );
+        }
+        const evidenceMessage = knowledgeEvidenceMessageFromDispatchDraft(draft);
+        const budgeted = applyProviderRequestContextBudget({
+          ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {}),
+          request: withAutomaticKnowledgeEvidence(providerRequest, evidenceMessage)
+        });
+        const retainedEvidence = budgeted.ok
+          ? budgeted.request.context?.messages.find((message) =>
+              message.id === evidenceMessage.id && message.purpose === "knowledge_evidence")
+          : null;
+        if (!budgeted.ok || !retainedEvidence ||
+          textFromContentBlocks(retainedEvidence.content) !==
+            textFromContentBlocks(evidenceMessage.content)) {
+          throw new ToolLoopRecoveryError(
+            "context_too_large",
+            "The exact Knowledge evidence manifest does not fit the answer context."
+          );
+        }
+        await deps.knowledgeProviderDispatch.prepare({
+          draft,
+          modelRunId: runId,
+          ordinal: 1,
+          purpose: "answer",
+          requestPreview: runtime.adapter.buildRequestPreview(budgeted.request),
+          roundIndex: 0
+        });
+      } catch (error) {
+        if (signal.aborted) return;
+        if (control.assistantMessageId) {
+          await deps.repository.failRun(
+            runId,
+            control.assistantMessageId,
+            focusedRetrievalFailure(error),
+            { recoveryTerminal: true }
+          );
+        }
+        return;
+      }
+    }
   }
 
   let providerResponseId = control.providerResponseId;
@@ -3217,10 +2892,24 @@ async function refreshProviderRunOnceRegistered(
   let directlyRefreshed: ProviderRunRefreshResult | null = null;
   let storedKnowledgeAttemptFound = false;
   if (deps.knowledgeProviderDispatch) {
-    const storedAttempt = await deps.knowledgeProviderDispatch.inspect({
-      modelRunId: runId,
-      ordinal: 1
-    });
+    let storedAttempt: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>>;
+    try {
+      storedAttempt = await deps.knowledgeProviderDispatch.inspect({
+        modelRunId: runId,
+        ordinal: 1
+      });
+    } catch (error) {
+      if (!focusedRequest) throw error;
+      if (control.assistantMessageId) {
+        await deps.repository.failRun(
+          runId,
+          control.assistantMessageId,
+          focusedAnswerFailure(error),
+          { recoveryTerminal: true }
+        );
+      }
+      return;
+    }
     if (storedAttempt) {
       storedKnowledgeAttemptFound = true;
       try {
@@ -3255,10 +2944,17 @@ async function refreshProviderRunOnceRegistered(
         }
         if (recovery.kind === "ambiguous" || recovery.kind === "released") {
           if (control.assistantMessageId) {
-            await deps.repository.failRun(runId, control.assistantMessageId, {
-              code: "provider_round_outcome_unknown",
-              message: "The saved provider round could not be resumed safely. Retry the run."
-            }, { recoveryTerminal: true });
+            await deps.repository.failRun(
+              runId,
+              control.assistantMessageId,
+              focusedRequest
+                ? focusedKnowledgeFailure("knowledge_answer_failed")
+                : {
+                    code: "provider_round_outcome_unknown",
+                    message: "The saved provider round could not be resumed safely. Retry the run."
+                  },
+              { recoveryTerminal: true }
+            );
           }
           return;
         }
@@ -3292,18 +2988,22 @@ async function refreshProviderRunOnceRegistered(
         if (signal.aborted || error instanceof ToolLoopRecoveryStopped) return;
         const latest = await deps.repository.getRunControlForUser(runId, userId);
         if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
-        const failure = error instanceof ToolLoopRecoveryError
-          ? error
-          : isAttachmentMaterializationError(error)
-            ? new ToolLoopRecoveryError(error.code, error.message)
-            : new ToolLoopRecoveryError(
-                "provider_dispatch_request_mismatch",
-                "The accepted provider request no longer matches its durable dispatch attempt."
-              );
-        await deps.repository.failRun(runId, latest.assistantMessageId, {
-          code: failure.code,
-          message: failure.message
-        }, { recoveryTerminal: true });
+        const failure = focusedRequest
+          ? focusedAnswerFailure(error)
+          : error instanceof ToolLoopRecoveryError
+            ? error
+            : isAttachmentMaterializationError(error)
+              ? new ToolLoopRecoveryError(error.code, error.message)
+              : new ToolLoopRecoveryError(
+                  "provider_dispatch_request_mismatch",
+                  "The accepted provider request no longer matches its durable dispatch attempt."
+                );
+        await deps.repository.failRun(
+          runId,
+          latest.assistantMessageId,
+          { code: failure.code, message: failure.message },
+          { recoveryTerminal: true }
+        );
         return;
       }
     }
@@ -3311,10 +3011,17 @@ async function refreshProviderRunOnceRegistered(
 
   if (!directlyRefreshed && !providerResponseId) {
     if (storedKnowledgeAttemptFound && control.assistantMessageId) {
-      await deps.repository.failRun(runId, control.assistantMessageId, {
-        code: "provider_response_handle_missing",
-        message: "The completed provider round has no durable response handle for recovery."
-      }, { recoveryTerminal: true });
+      await deps.repository.failRun(
+        runId,
+        control.assistantMessageId,
+        focusedRequest
+          ? focusedKnowledgeFailure("knowledge_answer_failed")
+          : {
+              code: "provider_response_handle_missing",
+              message: "The completed provider round has no durable response handle for recovery."
+            },
+        { recoveryTerminal: true }
+      );
     }
     return;
   }
@@ -3325,10 +3032,17 @@ async function refreshProviderRunOnceRegistered(
     userId
   ))) {
     if (control.assistantMessageId) {
-      await deps.repository.failRun(runId, control.assistantMessageId, {
-        code: "provider_admission_changed",
-        message: "Project provider authority is no longer current."
-      });
+      await deps.repository.failRun(
+        runId,
+        control.assistantMessageId,
+        focusedRequest
+          ? focusedKnowledgeFailure("knowledge_answer_failed")
+          : {
+              code: "provider_admission_changed",
+              message: "Project provider authority is no longer current."
+            },
+        focusedRequest ? { recoveryTerminal: true } : undefined
+      );
     }
     return;
   }
@@ -3337,10 +3051,17 @@ async function refreshProviderRunOnceRegistered(
     (await resolveAnswerRuntime(deps, runId, control.provider))?.adapter ?? null;
   if (!directlyRefreshed && !adapter?.refresh) {
     if (storedKnowledgeAttemptFound && control.assistantMessageId) {
-      await deps.repository.failRun(runId, control.assistantMessageId, {
-        code: "provider_refresh_unavailable",
-        message: "The saved provider response cannot be refreshed safely."
-      }, { recoveryTerminal: true });
+      await deps.repository.failRun(
+        runId,
+        control.assistantMessageId,
+        focusedRequest
+          ? focusedKnowledgeFailure("knowledge_answer_failed")
+          : {
+              code: "provider_refresh_unavailable",
+              message: "The saved provider response cannot be refreshed safely."
+            },
+        { recoveryTerminal: true }
+      );
     }
     return;
   }
@@ -3352,11 +3073,18 @@ async function refreshProviderRunOnceRegistered(
         return null;
       }
 
-      const payload = {
-        code: "provider_refresh_failed",
-        message: error instanceof Error ? error.message : "Provider refresh failed"
-      };
-      await deps.repository.failRun(runId, latest.assistantMessageId, payload);
+      const payload = focusedRequest
+        ? focusedKnowledgeFailure("knowledge_answer_failed")
+        : {
+            code: "provider_refresh_failed",
+            message: error instanceof Error ? error.message : "Provider refresh failed"
+          };
+      await deps.repository.failRun(
+        runId,
+        latest.assistantMessageId,
+        payload,
+        focusedRequest ? { recoveryTerminal: true } : undefined
+      );
 
       return null;
     });
@@ -3375,10 +3103,17 @@ async function refreshProviderRunOnceRegistered(
     userId
   ))) {
     if (latestBeforeAppend.assistantMessageId) {
-      await deps.repository.failRun(runId, latestBeforeAppend.assistantMessageId, {
-        code: "provider_admission_changed",
-        message: "Project provider authority changed during recovery."
-      });
+      await deps.repository.failRun(
+        runId,
+        latestBeforeAppend.assistantMessageId,
+        focusedRequest
+          ? focusedKnowledgeFailure("knowledge_answer_failed")
+          : {
+              code: "provider_admission_changed",
+              message: "Project provider authority changed during recovery."
+            },
+        focusedRequest ? { recoveryTerminal: true } : undefined
+      );
     }
     return;
   }
@@ -3424,10 +3159,12 @@ async function refreshProviderRunOnceRegistered(
   }
 
   if ((refreshed.result?.toolCalls?.length ?? 0) > 0) {
-    const payload = {
-      code: "tool_loop_recovery_required",
-      message: "The provider response contains outstanding tool calls and cannot be finalized as an answer. Retry the run."
-    };
+    const payload = focusedRequest
+      ? focusedKnowledgeFailure("knowledge_answer_failed")
+      : {
+          code: "tool_loop_recovery_required",
+          message: "The provider response contains outstanding tool calls and cannot be finalized as an answer. Retry the run."
+        };
     const usageAttributions = await recoveredUsageAttributions(
       deps,
       latestBeforeFinalize,
@@ -3447,22 +3184,44 @@ async function refreshProviderRunOnceRegistered(
   }
 
   if (refreshed.result && latestBeforeFinalize.assistantMessageId) {
-    const completion = await finalizeRunCompletion({
-      outputEvents: runOutputArtifactEvents(refreshed.events),
-      repository: deps.repository,
-      result: {
-        ...refreshed.result,
-        providerResponseId: refreshedProviderResponseId ?? undefined
-      },
-      run: {
-        assistantMessageId: latestBeforeFinalize.assistantMessageId,
-        chatId: latestBeforeFinalize.chatId,
-        modelId: latestBeforeFinalize.modelId,
-        provider: latestBeforeFinalize.provider,
+    const usageAttributions = await recoveredUsageAttributions(
+      deps,
+      latestBeforeFinalize,
+      reportedUsage(refreshed)
+    );
+    let completion: Awaited<ReturnType<typeof finalizeRunCompletion>>;
+    try {
+      completion = await finalizeRunCompletion({
+        outputEvents: runOutputArtifactEvents(refreshed.events),
+        repository: deps.repository,
+        result: {
+          ...refreshed.result,
+          providerResponseId: refreshedProviderResponseId ?? undefined,
+          usageAttributions
+        },
+        run: {
+          assistantMessageId: latestBeforeFinalize.assistantMessageId,
+          chatId: latestBeforeFinalize.chatId,
+          modelId: latestBeforeFinalize.modelId,
+          provider: latestBeforeFinalize.provider,
+          runId,
+          userId
+        }
+      });
+    } catch (error) {
+      if (!focusedRequest) throw error;
+      await deps.repository.settleRecoveredRunError({
+        error: focusedAnswerFailure(error),
+        outputEvents: runOutputArtifactEvents(refreshed.events),
+        ...(refreshedProviderResponseId
+          ? { providerResponseId: refreshedProviderResponseId }
+          : {}),
         runId,
+        usageAttributions,
         userId
-      }
-    });
+      });
+      return;
+    }
     if (completion.status === "not_completed") {
       return;
     }
@@ -3470,10 +3229,12 @@ async function refreshProviderRunOnceRegistered(
     return;
   }
 
-  const payload = refreshed.error ?? {
-    code: "provider_terminal_response_invalid",
-    message: "The provider returned a terminal response without a final result."
-  };
+  const payload = focusedRequest
+    ? focusedKnowledgeFailure("knowledge_answer_failed")
+    : refreshed.error ?? {
+        code: "provider_terminal_response_invalid",
+        message: "The provider returned a terminal response without a final result."
+      };
   const usageAttributions = await recoveredUsageAttributions(
     deps,
     latestBeforeFinalize,

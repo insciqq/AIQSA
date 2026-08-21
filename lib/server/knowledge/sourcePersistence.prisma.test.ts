@@ -48,6 +48,10 @@ function scopedSnapshotBackfillClient(fixture: Fixture): typeof prisma {
 async function cleanupFixture(fixture: Fixture): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+    await tx.knowledgeBase.updateMany({
+      data: { activeIndexGenerationId: null },
+      where: { id: fixture.baseId }
+    });
     const [documentStorage, sourceStorage, artifactStorage] = await Promise.all([
       tx.knowledgeDocumentVersion.findMany({
         select: { normalizedTextStorageKey: true, originalStorageKey: true },
@@ -113,10 +117,6 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
     await tx.knowledgeDocument.deleteMany({
       where: { knowledgeBaseId: fixture.baseId }
     });
-    await tx.knowledgeBase.updateMany({
-      data: { activeIndexGenerationId: null },
-      where: { id: fixture.baseId }
-    });
     await tx.knowledgeIndexGeneration.deleteMany({
       where: { knowledgeBaseId: fixture.baseId }
     });
@@ -163,8 +163,19 @@ async function claimOwnedKnowledgeDeletionJob(jobId: string) {
 
 async function drainOwnedKnowledgeDeletionJob(jobId: string): Promise<string[]> {
   const processor = createPrismaKnowledgeDeletionProcessor(prisma);
-  const firstClaim = await claimOwnedKnowledgeDeletionJob(jobId);
-  await expect(processor.process(firstClaim)).resolves.toBe("waiting_for_objects");
+  let firstResult: Awaited<ReturnType<typeof processor.process>> | null = null;
+  for (let attempt = 0; attempt < 5 && firstResult === null; attempt += 1) {
+    const claim = await claimOwnedKnowledgeDeletionJob(jobId);
+    try {
+      firstResult = await processor.process(claim);
+    } catch (error) {
+      if (!(
+        typeof error === "object" && error !== null &&
+        "code" in error && error.code === "P2034"
+      ) || attempt === 4) throw error;
+    }
+  }
+  expect(firstResult).toBe("waiting_for_objects");
   const pendingObjects = await prisma.knowledgeDeletionObject.findMany({
     orderBy: { storageKey: "asc" },
     select: { storageKey: true },

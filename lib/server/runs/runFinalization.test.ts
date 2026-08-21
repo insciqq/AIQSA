@@ -151,34 +151,18 @@ describe("run finalization", () => {
     expect(completeRun).toHaveBeenCalledOnce();
   });
 
-  it("persists only the deterministic grounded repair for a Knowledge answer", async () => {
+  it("persists only the structural Knowledge answer settlement", async () => {
     const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
     const grounding = {
-      diagnostics: {
-        citationCoverage: 0,
-        citationPrecision: 0,
-        citedClaimCount: 1,
-        issueCodes: ["invalid_handle" as const],
-        sourceClaimCount: 1,
-        unsupportedClaimCount: 1
-      },
       finalAnswerHash: "b".repeat(64),
       finalText: "I couldn't find enough support in the selected sources to answer reliably.",
       originalAnswerHash: "a".repeat(64),
-      outcome: "no_answer" as const,
+      outcome: "insufficient_evidence" as const,
       receiptHash: "c".repeat(64),
-      repairCount: 1 as const,
       sessionId: "evidence-session-1",
-      version: 1 as const
+      version: 5 as const
     };
-    const groundKnowledgeAnswer = vi.fn(async () => ({
-      grounding,
-      semanticShadow: {
-        contentFreeMetrics: {} as never,
-        diagnostic: {} as never,
-        profileRevisionIds: ["profile-revision-1"]
-      }
-    }));
+    const groundKnowledgeAnswer = vi.fn(async () => ({ grounding }));
     const repository = {
       completeRun,
       groundKnowledgeAnswer,

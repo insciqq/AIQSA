@@ -139,11 +139,11 @@ describe("provider structured output", () => {
     "openai_responses_native",
     "openai_responses_compatible"
   ] as const)("maps strict JSON Schema to %s", (adapterKind) => {
-    expect(buildOpenAIResponsesStructuredOutputRequest(
+    const body = buildOpenAIResponsesStructuredOutputRequest(
       responsesModel(adapterKind),
       request
-    )).toMatchObject({
-      background: false,
+    );
+    expect(body).toMatchObject({
       input: [{ content: [{ text: "Set ok to true.", type: "input_text" }], role: "user" }],
       instructions: "Return a strict result.",
       max_output_tokens: 64,
@@ -159,6 +159,11 @@ describe("provider structured output", () => {
         }
       }
     });
+    if (adapterKind === "openai_responses_native") {
+      expect(body).toHaveProperty("background", false);
+    } else {
+      expect(body).not.toHaveProperty("background");
+    }
   });
 
   it("preserves OpenRouter routing while forcing parameter support", () => {

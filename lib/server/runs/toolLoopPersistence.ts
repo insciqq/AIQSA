@@ -16,7 +16,7 @@ export type ToolLoopJsonValue =
 
 export type ToolLoopCheckpointPhase = "provider_running" | "tools_pending" | "tools_running";
 
-export const AUTOMATIC_KNOWLEDGE_CALL_PREFIX = "knowledge-planner-v1-";
+export const AUTOMATIC_KNOWLEDGE_CALL_PREFIX = "knowledge-focused-v1-";
 
 export type PersistedAnswerRoundUsage = Readonly<{
   completeness: "partial" | "terminal";

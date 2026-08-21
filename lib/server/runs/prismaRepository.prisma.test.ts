@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import {
@@ -18,6 +19,12 @@ import { createPrismaSettingsRepository } from "../settings/prismaRepository";
 import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
+import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import {
+  FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID,
+  focusedKnowledgeCallArguments
+} from "../knowledge/automaticEvidence";
+import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
   ActiveLeafConflictError,
@@ -818,26 +825,34 @@ describe("Prisma-backed run repository", () => {
       const prepare = repository.prepareAutomaticKnowledgeCallBatch;
       const claim = repository.claimAutomaticKnowledgeCall;
       if (!prepare || !claim) throw new Error("automatic Knowledge persistence unavailable");
-      const semanticArguments: Record<string, ToolLoopJsonValue> = {
-        coverage: { expectedPassageCount: null, mode: "partial" },
-        exactTerms: ["AX-2026-0842"],
-        lanes: ["exact"],
-        operation: "automatic_search",
-        phaseOrdinal: 0,
-        plannerVersion: 2,
-        purpose: "answer",
-        query: "accepted automatic query AX-2026-0842",
-        strategy: "focused",
-        subqueryOrdinal: 0,
-        targetNames: [],
-        targetResolution: null,
-        targetSourceIds: []
-      };
+      const focusedRequest = createKnowledgeFocusedRequest({
+        currentUserMessage: "accepted automatic query AX-2026-0842"
+      })!;
+      const semanticArguments = focusedKnowledgeCallArguments(focusedRequest);
+      await prisma.modelRun.update({
+        data: {
+          normalizedRequest: {
+            ...(await prisma.modelRun.findUniqueOrThrow({
+              select: { normalizedRequest: true },
+              where: { id: created.runId }
+            })).normalizedRequest as Record<string, Prisma.JsonValue>,
+            knowledgeFocusedRequest: focusedRequest,
+            knowledgePlan: {
+              baseIds: ["automatic-knowledge-base"],
+              mode: "explicit",
+              sourceIds: [],
+              version: 1
+            },
+            toolMode: "none"
+          }
+        },
+        where: { id: created.runId }
+      });
       const input = {
         calls: [{
           arguments: semanticArguments,
           ordinal: 0,
-          providerCallId: "knowledge-planner-v1-1"
+          providerCallId: FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID
         }],
         runId: created.runId,
         userId
@@ -868,8 +883,12 @@ describe("Prisma-backed run repository", () => {
         ...input,
         calls: [{
           ...input.calls[0]!,
-          arguments: { ...semanticArguments, query: "different query AX-2026-0842" }
+          arguments: { ...semanticArguments, retrievalQuery: "different query AX-2026-0842" }
         }]
+      })).resolves.toEqual({ kind: "conflict" });
+      await expect(prepare({
+        ...input,
+        calls: [...input.calls, { ...input.calls[0]!, ordinal: 1 }]
       })).resolves.toEqual({ kind: "conflict" });
 
       const claimed = await claim({
@@ -906,10 +925,10 @@ describe("Prisma-backed run repository", () => {
         select: { providerCallId: true, roundIndex: true, state: true, toolName: true },
         where: { modelRunId: created.runId }
       })).resolves.toEqual([{
-        providerCallId: "knowledge-planner-v1-1",
+        providerCallId: FOCUSED_KNOWLEDGE_PROVIDER_CALL_ID,
         roundIndex: 0,
         state: "complete",
-        toolName: "retrieve_knowledge"
+        toolName: KNOWLEDGE_FOCUSED_OPERATION_NAME
       }]);
     });
   });

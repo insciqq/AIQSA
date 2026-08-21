@@ -16,7 +16,11 @@ import type {
   McpRunPlanBinding,
   McpRunPlanSnapshot
 } from "../mcp/runPlan";
-import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
+import type {
+  KnowledgeRunAdmissionAuthorizationSnapshot,
+  KnowledgeRunAdmissionExclusion,
+  KnowledgeRunAdmissionPlan
+} from "../knowledge/runAdmission";
 import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
@@ -32,6 +36,7 @@ import type {
   CheckpointedToolLoopRun,
   ClaimToolLoopCallResult,
   PersistedAnswerRoundUsage,
+  PersistedToolLoopCall,
   PrepareAutomaticKnowledgeCallBatchInput,
   PrepareAutomaticKnowledgeCallBatchResult,
   PersistToolLoopCallBatchInput,
@@ -63,6 +68,9 @@ export type ProjectRunMemoryItem = Readonly<{
   includedText: string;
   ordinal: number;
 }>;
+
+export type FocusedKnowledgeRecoveryScope = KnowledgeRunAdmissionAuthorizationSnapshot &
+  Readonly<{ exclusions: readonly KnowledgeRunAdmissionExclusion[] }>;
 
 /** Immutable, server-loaded Project context carried into run admission. */
 export type ProjectRunAdmission = Readonly<{
@@ -571,6 +579,23 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<CheckpointedToolLoopRun | null>;
+  /** Server-only checkpoint for the one focused Knowledge operation. */
+  loadFocusedKnowledgeCall?(input: {
+    runId: string;
+    userId: string;
+  }): Promise<PersistedToolLoopCall | null>;
+  /** Immutable admission exclusions used when recovery must seal the focused
+   * manifest after retrieval but before the first answer-provider dispatch. */
+  loadFocusedKnowledgeScopeExclusions?(input: {
+    runId: string;
+    userId: string;
+  }): Promise<readonly KnowledgeRunAdmissionExclusion[] | null>;
+  /** Exact accepted Knowledge authority required before recovery retrieval and
+   * again before an evidence-bearing provider dispatch. */
+  loadFocusedKnowledgeRecoveryScope?(input: {
+    runId: string;
+    userId: string;
+  }): Promise<FocusedKnowledgeRecoveryScope | null>;
   /** Purpose-bound, server-only loader for replaying an evidence-bearing
    * provider request after a crash before the first provider dispatch. */
   loadProviderDispatchRecoveryRequest?(input: {

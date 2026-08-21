@@ -60,21 +60,12 @@ function knowledgeSettings(): AdminKnowledgeSettings {
       maxPages: 2_000
     },
     operations: adminKnowledgeOperationsFixture(),
-    policy: {
-      candidateLimit: 40,
-      resultLimit: 8,
-      scoreThreshold: 0.01,
-      updatedAt: "2026-08-18T00:00:00.000Z",
-      updatedBy: null,
-      version: 1
-    },
     profile: adminKnowledgeProfileFixture({
       availableDestinations: [adminKnowledgeDestinationFixture, alternateDestination]
     }),
-    retrievalBounds: {
-      candidateLimit: { max: 100, min: 1 },
-      resultLimit: { max: 8, min: 1 },
-      scoreThreshold: { max: 1, min: 0 }
+    retrieval: {
+      candidateLimit: 40,
+      resultLimit: 8
     }
   };
 }
@@ -119,8 +110,7 @@ test("administrator activates a content-safe Knowledge processing route", async 
         destination,
         executionAuthority: "installation" as const,
         id: "profile-revision-2",
-        revisionNumber: 2,
-        visionDestination: null
+        revisionNumber: 2
       };
       settings = {
         ...settings,
@@ -159,6 +149,10 @@ test("administrator activates a content-safe Knowledge processing route", async 
   await expect(route).toContainText("Parser & OCR");
   await expect(route).toContainText("Local embeddings / Multilingual embed");
   await expect(section).toContainText("bounded normalized document text");
+  await expect(section.getByRole("heading", { name: "Fixed retrieval" })).toBeVisible();
+  await expect(section.getByRole("button", { name: /Save retrieval policy/u })).toHaveCount(0);
+  await expect(section.getByRole("combobox", { name: /Visual-analysis destination/u }))
+    .toHaveCount(0);
   await expect(section).toContainText("never lists private bases, documents, filenames, passages, or retrieval evidence");
   await expect(section).not.toContainText("private-base-name");
 
@@ -177,8 +171,7 @@ test("administrator activates a content-safe Knowledge processing route", async 
   expect(patchBodies).toEqual([{
     action: "activate_profile",
     deploymentId: "embedding-model-2",
-    expectedVersion: 1,
-    visionDeploymentId: null
+    expectedVersion: 1
   }]);
 
   await page.setViewportSize({ height: 844, width: 390 });

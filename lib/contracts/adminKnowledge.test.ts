@@ -14,33 +14,30 @@ const response = {
       maxPages: 2_000
     },
     operations: adminKnowledgeOperationsFixture(),
-    policy: {
-      candidateLimit: 40,
-      resultLimit: 8,
-      scoreThreshold: 0.01,
-      updatedAt: "2026-08-09T00:00:00.000Z",
-      updatedBy: { displayName: "Administrator", id: "admin-1" },
-      version: 2
-    },
     profile: adminKnowledgeProfileFixture(),
-    retrievalBounds: {
-      candidateLimit: { max: 100, min: 1 },
-      resultLimit: { max: 8, min: 1 },
-      scoreThreshold: { max: 1, min: 0 }
+    retrieval: {
+      candidateLimit: 40,
+      resultLimit: 8
     }
   }
 };
 
 describe("administrator Knowledge contract", () => {
-  it("accepts bounded policy and a content-free installation profile", () => {
+  it("accepts fixed retrieval facts and a content-free installation profile", () => {
     expect(decodeAdminKnowledgeResponse(response)).toEqual(response);
   });
 
-  it("rejects malformed or internally inconsistent policy", () => {
+  it("rejects retrieval drift and malformed profile or operations state", () => {
     expect(decodeAdminKnowledgeResponse({
       knowledge: {
         ...response.knowledge,
-        policy: { ...response.knowledge.policy, candidateLimit: 2, resultLimit: 3 }
+        retrieval: { ...response.knowledge.retrieval, candidateLimit: 39 }
+      }
+    })).toBeNull();
+    expect(decodeAdminKnowledgeResponse({
+      knowledge: {
+        ...response.knowledge,
+        retrieval: { ...response.knowledge.retrieval, scoreThreshold: 0 }
       }
     })).toBeNull();
     expect(decodeAdminKnowledgeResponse({
@@ -52,19 +49,6 @@ describe("administrator Knowledge contract", () => {
         profile: {
           ...response.knowledge.profile,
           health: { checkedAt: null, code: null, state: "ready" }
-        }
-      }
-    })).toBeNull();
-    expect(decodeAdminKnowledgeResponse({
-      knowledge: {
-        ...response.knowledge,
-        profile: {
-          ...response.knowledge.profile,
-          egress: {
-            ...response.knowledge.profile.egress,
-            roles: response.knowledge.profile.egress.roles.map((role) =>
-              role.operation === "query_planning" ? { ...role, mode: "external" } : role)
-          }
         }
       }
     })).toBeNull();
