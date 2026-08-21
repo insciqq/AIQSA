@@ -64,14 +64,6 @@ import {
   type KnowledgeRunAdmissionAuthorizationSnapshot,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
-import {
-  MEMORY_LIST_TOOL_NAME,
-  memoryActionTools
-} from "../memory/actions/tools";
-import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
-import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
-import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { memorySha256 } from "../memory/persistence/lexical";
 import {
@@ -243,8 +235,6 @@ export type RunExecutionInput = Readonly<{
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
-  memoryActionExecutor?: MemoryActionExecutor;
-  memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
   memoryEgress?: MemoryToolEgressReceiptService;
   providerAdmission?: Readonly<{
     load(input: {
@@ -593,20 +583,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const runId = input.created.runId;
   const normalizedRequest = input.prepared.normalizedRequest;
   const toolBudgets = toolRunBudgetsForRequest(normalizedRequest);
-  const memoryActionsRequested =
-    normalizedRequest.memoryActionTools?.version === "model-driven-v2";
   const clientToolsEnabled = normalizedRequest.toolMode !== "none";
   const admittedKnowledgeReady = knowledgeRunAdmissionHasReadySources(
     input.prepared.knowledgeAdmissionPlan
   );
   const groundedKnowledgeAnswer = normalizedRequest.knowledgeFocusedRequest !== undefined;
-  const memoryActionEnabled = clientToolsEnabled &&
-    normalizedRequest.modelCapabilities.toolCalling === true &&
-    memoryActionsRequested;
-  const memoryHistoryEnabled = clientToolsEnabled &&
-    normalizedRequest.modelCapabilities.toolCalling === true &&
-    normalizedRequest.memoryHistoryTool?.maxCalls === 2 &&
-    normalizedRequest.memoryHistoryTool.pageSize === 20;
   const serverExternalToolMode = requestHasServerExternalTools(
     input.prepared.providerRequest
   );
@@ -1400,18 +1381,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               runtimes: input.searchRuntimes ?? {}
             })
           : null;
-        const memoryActionExecutor = memoryActionEnabled
-          ? input.memoryActionExecutor ?? defaultMemoryActionExecutor
-          : null;
-        const memoryHistoryExecutor = memoryHistoryEnabled
-          ? input.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
-          : null;
         const isSearchCall = (name: string) =>
           searchPlanRouter?.accepts(name) === true;
-        const isMemoryCall = (name: string) =>
-          memoryActionExecutor?.accepts(name) === true;
-        const isMemoryHistoryCall = (name: string) =>
-          memoryHistoryExecutor?.accepts(name) === true;
         let activeMcpSnapshot = normalizedRequest.mcp;
         let activeMcpDiscovery = normalizedRequest.mcpDiscovery;
         const materializeMcpTools = input.mcp?.materialize;
@@ -1427,8 +1398,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
         const tools: RunTool[] = [
           ...(searchPlanRouter?.tools ?? []),
-          ...(memoryActionExecutor ? memoryActionTools : []),
-          ...(memoryHistoryExecutor ? [memoryHistoryExecutor.tool] : []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
           ...(clientToolsEnabled ? mcpRunTools(activeMcpSnapshot) : [])
         ];
@@ -1444,7 +1413,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           }>[];
           execute(): Promise<ReadonlyMap<string, ToolExecutionResult>>;
         }>>();
-        let memoryMutationAttempted = false;
         let mcpDiscoveryQueue = Promise.resolve();
         const serializeMcpDiscovery = async <T>(operation: () => Promise<T>): Promise<T> => {
           const result = mcpDiscoveryQueue.then(operation, operation);
@@ -1614,10 +1582,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
                 }
-                const externalCall = !isMcpDiscoveryCall(call.name) && (
-                  isSearchCall(call.name) ||
-                  (!isMemoryCall(call.name) && !isMemoryHistoryCall(call.name))
-                );
+                const externalCall = !isMcpDiscoveryCall(call.name);
                 if (externalCall) {
                   const destinationSnapshot = isSearchCall(call.name)
                       ? {
@@ -1733,27 +1698,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     return executed.toolResult;
                     });
                   }
-                } else if (isMemoryCall(call.name)) {
-                  if (call.name !== MEMORY_LIST_TOOL_NAME && memoryMutationAttempted) {
-                    throw new Error("memory_action_already_attempted");
-                  }
-                  if (call.name !== MEMORY_LIST_TOOL_NAME) memoryMutationAttempted = true;
-                  result = await memoryActionExecutor!.execute(
-                    call,
-                    {
-                    persistedToolCallId: claim.call.id,
-                    request,
-                    runId,
-                    userId: input.userId
-                    }
-                  );
-                } else if (isMemoryHistoryCall(call.name)) {
-                  result = await memoryHistoryExecutor!.execute(call, {
-                    persistedToolCallId: claim.call.id,
-                    request,
-                    runId,
-                    userId: input.userId
-                  });
                 } else if (searchPlanRouter?.accepts(call.name)) {
                   result = await searchPlanRouter.execute(
                     call,
@@ -1876,8 +1820,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
-                if (!route && !isSearchCall(call.name) && !isMemoryCall(call.name) &&
-                  !isMemoryHistoryCall(call.name) && !isMcpDiscoveryCall(call.name)) {
+                if (!route && !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2070,6 +2013,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             "Run is not finalized for provider dispatch"
           );
         }
+        if (normalizedRequest.memoryActionTools !== undefined ||
+          normalizedRequest.memoryHistoryTool !== undefined ||
+          input.prepared.providerRequest.memoryActionTools !== undefined ||
+          input.prepared.providerRequest.memoryHistoryTool !== undefined) {
+          throw new RunPipelineError(
+            "memory_answer_model_tools_retired",
+            "This run uses a retired answer-model Memory tool contract."
+          );
+        }
         await emit(controller, encoder, input.repository, runId, {
           data: {
             modelId: normalizedRequest.modelId,
@@ -2100,8 +2052,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           option.adapterKind === "provider_model_client");
         const hasClientTools = hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
-          normalizedRequest.mcpDiscovery !== undefined ||
-          memoryActionEnabled || memoryHistoryEnabled;
+          normalizedRequest.mcpDiscovery !== undefined;
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(
           input.prepared.providerRequest
         );
@@ -2245,7 +2196,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           runId,
           input.created.assistantMessageId,
           payload,
-          safetyCode || deadlineExceeded || groundedKnowledgeAnswer
+          safetyCode || deadlineExceeded || groundedKnowledgeAnswer ||
+            failureCode === "memory_answer_model_tools_retired"
             ? { recoveryTerminal: true }
             : undefined
         );

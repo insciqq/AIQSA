@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
-import { createPermanentChatDeletionService } from "./service";
+import {
+  createPermanentChatDeletionService,
+  type PermanentChatDeletionStatus
+} from "./service";
 
 const NOW = new Date("2026-08-12T12:00:00.000Z");
 
@@ -16,6 +19,15 @@ function dependencies(enabled = true) {
     admit: vi.fn(async () => ({
       admission: { deletionId: "deletion-1", fencedAt: NOW, state: "PENDING" as const },
       kind: "ok" as const
+    })),
+    latestStatus: vi.fn(async (): Promise<PermanentChatDeletionStatus | null> => ({
+      attemptCount: 1,
+      deletionId: "deletion-1",
+      errorCode: null,
+      fencedAt: NOW,
+      lastAuditAt: NOW,
+      state: "PENDING" as const,
+      updatedAt: NOW
     })),
     readSnapshot: vi.fn(async () => ({
       activeLeafMessageId: "message-1",
@@ -57,6 +69,55 @@ const authorizationRequest = {
 } as const;
 
 describe("permanent chat deletion service", () => {
+  it("authorizes and admits a safe confirmation from an authoritative snapshot", async () => {
+    const deps = dependencies();
+    await expect(deps.service.confirm("user-1", "chat-1", {
+      alsoForgetOriginMemories: true,
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      requestId: "consumer-request-1"
+    })).resolves.toEqual({ status: "IN_PROGRESS" });
+    expect(deps.repository.readSnapshot).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      userId: "user-1"
+    });
+    expect(deps.authorizationRepository.mint).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        action: "BULK_DELETE",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+      }),
+      NOW
+    );
+    expect(deps.repository.admit).toHaveBeenCalledWith(expect.objectContaining({
+      alsoForgetOriginMemories: true,
+      chatId: "chat-1",
+      expectedActiveLeafMessageId: "message-1",
+      expectedChatRevision: 4,
+      userId: "user-1"
+    }));
+  });
+
+  it("projects worker state to a friendly chat-keyed status", async () => {
+    const deps = dependencies();
+    await expect(deps.service.consumerStatus("user-1", "chat-1"))
+      .resolves.toEqual({ status: "IN_PROGRESS" });
+    expect(deps.repository.latestStatus).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      userId: "user-1"
+    });
+    deps.repository.latestStatus.mockResolvedValueOnce({
+      attemptCount: 2,
+      deletionId: "deletion-private",
+      errorCode: "worker-private",
+      fencedAt: NOW,
+      lastAuditAt: NOW,
+      state: "BLOCKED_REQUIRES_ADMIN",
+      updatedAt: NOW
+    });
+    await expect(deps.service.consumerStatus("user-1", "chat-1"))
+      .resolves.toEqual({ status: "NEEDS_ATTENTION" });
+  });
+
   it("mints a short single-use authorization bound to chat, leaf, revision, and choice", async () => {
     const deps = dependencies();
     await expect(deps.service.mintAuthorization(

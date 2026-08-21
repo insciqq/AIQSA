@@ -1048,23 +1048,12 @@ describe("Prisma-backed message branch repository", () => {
           select: { memoryGeneration: true, memoryRevision: true },
           where: { userId }
         }),
-        prisma.memoryJob.findFirstOrThrow({
-          select: {
-            activeLeafMessageId: true,
-            branchGeneration: true,
-            kind: true,
-            sourceRevision: true
-          },
-          where: { chatId: sourceChat.id, kind: "RECONCILE_BRANCH", userId }
+        prisma.memoryJob.findMany({
+          where: { chatId: sourceChat.id, userId }
         })
       ])).resolves.toEqual([
         { memoryGeneration: 1, memoryRevision: 1 },
-        {
-          activeLeafMessageId: edited?.id,
-          branchGeneration: 1,
-          kind: "RECONCILE_BRANCH",
-          sourceRevision: 1
-        }
+        []
       ]);
       await expect(
         prisma.message.findUniqueOrThrow({

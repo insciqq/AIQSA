@@ -24,6 +24,8 @@ import {
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+  memoryFactExtractionOutputHash,
+  type MemoryExtractedCandidate,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "./contract";
@@ -196,27 +198,23 @@ async function claimFactJob(userId: string): Promise<MemoryJobClaim> {
 
 function candidatePlan(
   input: MemoryFactExtractionInput,
-  messageId: string,
+  _messageId: string,
   text: string
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
       candidates: [{
-        core_eligible: true,
-        core_salience: "HIGH",
-        directness: "DIRECT",
-        display_text: text,
-        evidence: [{ end_offset: text.length, message_id: messageId, start_offset: 0 }],
-        language: "en",
-        modality: "PREFERENCE",
-        raw_temporal_expression: null,
-        scope: { target_id: null, type: "GLOBAL_USER" },
+        category: "preferences",
+        confidence_band: "HIGH",
+        correction: false,
+        future_useful: true,
+        quote: text,
+        reason_code: "durable_preference",
+        response_preference: text,
         sensitivity: "NORMAL",
-        structured_value: JSON.stringify({ preference: text }),
-        valid_from: null,
-        valid_to: null
-      }],
-      decision: "STORE"
+        statement: text,
+        temporary: false
+      }]
     },
     id: `fact-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
@@ -277,7 +275,7 @@ describe("Prisma Memory fact extraction", () => {
     await prisma.$disconnect();
   });
 
-  it("admits direct-user language while excluding assistants and recognizable secrets", async () => {
+  it("admits only the settled assistant leaf's direct user parent", async () => {
     const userId = await createOwner("projection");
     try {
       const chat = await prisma.chat.create({
@@ -318,18 +316,161 @@ describe("Prisma Memory fact extraction", () => {
 
       const claim = await claimFactJob(userId);
       const input = await prepareFactJob(claim);
-      expect(input.messages.map(({ id }) => id)).toEqual([
-        safe.userMessage.id,
-        sensitive.userMessage.id
-      ]);
+      expect(input.messages.map(({ id }) => id)).toEqual([sensitive.userMessage.id]);
       expect(input.messages[0]).toMatchObject({
         languageCode: "und",
-        text: "I prefer tea."
+        text: "My salary is 100000."
       });
       const serialized = JSON.stringify(input);
       expect(serialized).not.toContain("ABCDEFGHIJKLMNOP1234567890");
       expect(serialized).toContain("salary");
+      expect(serialized).not.toContain("I prefer tea");
       expect(serialized).not.toContain("Tea noted");
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("persists no candidate or evidence when model output contains a structural secret", async () => {
+    const userId = await createOwner("output-secret");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Secret output defense", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Tea noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-11T08:30:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I prefer tea."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId);
+      const input = await prepareFactJob(claim);
+      const plan = decodeMemoryFactExtraction([{
+        arguments: {
+          candidates: [{
+            category: "preferences",
+            confidence_band: "HIGH",
+            correction: false,
+            future_useful: true,
+            quote: "I prefer tea.",
+            reason_code: "durable_preference",
+            response_preference: "tea",
+            sensitivity: "NORMAL",
+            statement: "API key: sk-abcdefghijklmnopqrstuvwxyz123456",
+            temporary: false
+          }]
+        },
+        id: `fact-call-${randomUUID()}`,
+        name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+      }], input);
+      expect(plan.candidates).toEqual([]);
+      expect(plan.rejections).toEqual([{
+        candidateOrdinal: 0,
+        reasonCode: "REJECT_SECRET"
+      }]);
+      const bindingId = await createSucceededBinding(
+        userId,
+        claim,
+        input.inputHash,
+        plan.outputHash
+      );
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        userId,
+        (tx, settings) => repository().apply(
+          tx,
+          settings,
+          claim,
+          plan,
+          bindingId,
+          new Date()
+        )
+      )).resolves.toBe("APPLIED");
+      await expect(prisma.memoryCandidate.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.memoryCandidateMessage.count({ where: { userId } }))
+        .resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.each(["statement", "quote", "responsePreference", "proposedValue"] as const)(
+    "repository independently fences a forged secret in %s",
+    async (secretField) => {
+    const userId = await createOwner(`forged-${secretField}`);
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Forged secret defense", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Tea noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-11T08:40:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I prefer tea."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId);
+      const input = await prepareFactJob(claim);
+      const safePlan = candidatePlan(input, turn.userMessage.id, "I prefer tea.");
+      const base = safePlan.candidates[0]!;
+      const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+      let forged: MemoryExtractedCandidate;
+      if (secretField === "statement") {
+        forged = { ...base, displayText: secret, statement: secret };
+      } else if (secretField === "quote") {
+        forged = {
+          ...base,
+          evidence: base.evidence.map((evidence) => ({ ...evidence, quote: secret })),
+          quote: secret
+        };
+      } else if (secretField === "responsePreference") {
+        forged = {
+          ...base,
+          proposedValue: { responsePreference: secret, statement: base.statement },
+          responsePreference: secret
+        };
+      } else {
+        forged = {
+          ...base,
+          proposedValue: {
+            responsePreference: secret,
+            statement: base.statement
+          }
+        };
+      }
+      const plan: MemoryFactExtractionPlan = {
+        ...safePlan,
+        candidates: [forged],
+        outputHash: memoryFactExtractionOutputHash(input, [forged])
+      };
+      const bindingId = await createSucceededBinding(
+        userId,
+        claim,
+        input.inputHash,
+        plan.outputHash
+      );
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        userId,
+        (tx, settings) => repository().apply(
+          tx,
+          settings,
+          claim,
+          plan,
+          bindingId,
+          new Date()
+        )
+      )).resolves.toBe("APPLIED");
+      await expect(prisma.memoryCandidate.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.memoryCandidateMessage.count({ where: { userId } }))
+        .resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);
     }

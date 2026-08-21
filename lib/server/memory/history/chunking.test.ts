@@ -96,6 +96,8 @@ describe("Memory history recall chunking", () => {
     const groupIds = snapshot.recallChunkProjection.turnGroups.map((group) => group.id);
 
     expect(first).toEqual(second);
+    expect(first[0]?.safeProjectedText).toMatch(/^User: .*\n\nAssistant: /su);
+    expect(first[0]?.providerSafeText).toBe(first[0]?.safeProjectedText);
     expect(first.map((chunk) => chunk.turnGroupIds)).toEqual([
       [groupIds[0], groupIds[1]],
       [groupIds[1], groupIds[2]],
@@ -232,6 +234,32 @@ describe("Memory history recall chunking", () => {
     expect(chunks[0]?.turnGroupIds).toEqual([groups[1]!.id]);
     expect(chunks[0]?.safeProjectedText).not.toContain("Поворот 0");
     expect(chunks[0]?.safeProjectedText).not.toContain("Поворот 2");
+  });
+
+  it("keeps A-before and C-after in separate chunks across an excluded B turn", () => {
+    const snapshot = multiTurnSnapshot(3);
+    const groups = snapshot.recallChunkProjection.turnGroups;
+    const chunks = chunkMemoryRecallProjection(snapshot, {
+      maxApproxTokens: 512,
+      maxCharacters: 1_000,
+      maxMessagesPerChunk: 6,
+      maxTurnGroupsPerChunk: 3,
+      overlapTurnGroups: 1
+    }, {
+      excludedMessageIds: groups[1]!.messages.map(({ id }) => id),
+      sourceCreatedAtCutoff: null
+    });
+
+    expect(chunks.map((chunk) => chunk.turnGroupIds)).toEqual([
+      [groups[0]!.id],
+      [groups[2]!.id]
+    ]);
+    expect(chunks.map((chunk) => chunk.overlapFromPreviousTurnGroupIds))
+      .toEqual([[], []]);
+    expect(chunks[0]?.safeProjectedText).toContain("Поворот 0");
+    expect(chunks[1]?.safeProjectedText).toContain("Поворот 2");
+    expect(chunks.map((chunk) => chunk.safeProjectedText).join("\n"))
+      .not.toContain("Поворот 1");
   });
 
   it("never overlaps chunks across owned Assistant source identities", () => {

@@ -152,11 +152,41 @@ describe("Memory settings service", () => {
 
     expect(response.capabilities).toEqual(DEFAULT_MEMORY_SETTINGS_CAPABILITIES);
     expect(response.capabilities).toEqual({
+      administratorSetupRequired: false,
       automaticLearning: true,
+      automaticLearningAvailable: true,
       explicitMemory: true,
       historyRecall: true,
+      managementAvailable: true,
+      naturalLanguageActionsAvailable: true,
+      pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
+      retrievalAvailable: true,
       temporaryChats: true
+    });
+  });
+
+  it("reports history indexing disabled while the Memory master switch is off", async () => {
+    const service = createMemorySettingsService({
+      repository: repository({
+        get: vi.fn(async () => settings({
+          referenceChatHistory: true,
+          useMemoryFacts: false
+        }))
+      }),
+      resolveCurrentUtilityPolicy: async () => policy()
+    });
+
+    await expect(service.get("user-1")).resolves.toMatchObject({
+      historyIndexing: {
+        completedChats: 0,
+        state: "DISABLED",
+        totalChats: 0
+      },
+      settings: {
+        referenceChatHistory: true,
+        useMemoryFacts: false
+      }
     });
   });
 
@@ -168,6 +198,7 @@ describe("Memory settings service", () => {
       automaticLearning: true
     }));
     const service = createMemorySettingsService({
+      egressConsentMode: "ADMIN",
       repository: repository({ get: vi.fn(async () => currentSettings) }),
       resolveCapabilities,
       resolveCurrentUtilityPolicy: async () => currentPolicy
@@ -176,17 +207,21 @@ describe("Memory settings service", () => {
     await expect(service.get("user-1")).resolves.toMatchObject({
       capabilities: { automaticLearning: true, historyRecall: true }
     });
-    expect(resolveCapabilities).toHaveBeenCalledWith(currentSettings, currentPolicy);
+    expect(resolveCapabilities).toHaveBeenCalledWith(
+      currentSettings,
+      currentPolicy,
+      "ADMIN"
+    );
   });
 
   it("projects bounded safe destinations and exact current/accepted policy evidence", async () => {
     const service = createMemorySettingsService({
       capabilities: {
+        ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
         automaticLearning: false,
-        explicitMemory: true,
+        automaticLearningAvailable: false,
         historyRecall: false,
-        permanentChatDeletion: false,
-        temporaryChats: true
+        pastChatIndexingAvailable: false
       },
       egressConsentMode: "PER_USER",
       repository: repository(),
@@ -195,11 +230,11 @@ describe("Memory settings service", () => {
 
     await expect(service.get("user-1")).resolves.toEqual({
       capabilities: {
+        ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
         automaticLearning: false,
-        explicitMemory: true,
+        automaticLearningAvailable: false,
         historyRecall: false,
-        permanentChatDeletion: false,
-        temporaryChats: true
+        pastChatIndexingAvailable: false
       },
       egress: {
         acceptedAt: NOW.toISOString(),
@@ -240,11 +275,11 @@ describe("Memory settings service", () => {
   it("reports drift and remains usable when every utility destination is unavailable", async () => {
     const service = createMemorySettingsService({
       capabilities: {
+        ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
         automaticLearning: false,
-        explicitMemory: true,
+        automaticLearningAvailable: false,
         historyRecall: false,
-        permanentChatDeletion: false,
-        temporaryChats: true
+        pastChatIndexingAvailable: false
       },
       egressConsentMode: "PER_USER",
       repository: repository(),
@@ -324,6 +359,29 @@ describe("Memory settings service", () => {
 
     expect(readHistoryIndexing).toHaveBeenCalledTimes(2);
     expect(kick).toHaveBeenCalledOnce();
+  });
+
+  it("does not backfill when a patch resumes the master and history together", async () => {
+    const kick = vi.fn();
+    const patch = vi.fn(async () => settings({
+      referenceChatHistory: true,
+      useMemoryFacts: true
+    }));
+    const service = createMemorySettingsService({
+      kick,
+      repository: repository({ patch }),
+      resolveCurrentUtilityPolicy: async () => policy()
+    });
+
+    await service.patch("user-1", {
+      expectedMemoryRevision: 3,
+      expectedSettingsRevision: 4,
+      referenceChatHistory: true,
+      useMemoryFacts: true
+    });
+
+    expect(patch).toHaveBeenCalledOnce();
+    expect(kick).not.toHaveBeenCalled();
   });
 
   it("maps only stable persistence failures and forwards exact consent", async () => {

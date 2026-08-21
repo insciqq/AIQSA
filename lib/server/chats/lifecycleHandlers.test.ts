@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
@@ -249,14 +249,21 @@ describe("chat lifecycle handlers", () => {
         sourceRevision: 5
       }
     }));
+    const getChatMemoryState = vi.fn<ChatLifecycleRepository["getChatMemoryState"]>(async () => ({
+      archived: false,
+      chatId: "chat-1",
+      mode: "NORMAL",
+      sourceRevision: 5,
+      temporaryRetentionDeadline: null,
+      temporaryRetentionPolicyVersion: null,
+      updatedAt
+    }));
     const handler = createPatchChatMemoryModeHandler({
-      repository: repository({ setMemoryMode }),
+      repository: repository({ getChatMemoryState, setMemoryMode }),
       resolveAuth: auth.resolveAuth
     });
     const undisclosed = await handler(request("/api/me/chats/chat-1/memory-mode", {
       body: JSON.stringify({
-        expectedChatRevision: 4,
-        expectedMemoryRevision: 11,
         mode: "NORMAL"
       }),
       method: "PATCH"
@@ -266,8 +273,6 @@ describe("chat lifecycle handlers", () => {
 
     const resumed = await handler(request("/api/me/chats/chat-1/memory-mode", {
       body: JSON.stringify({
-        expectedChatRevision: 4,
-        expectedMemoryRevision: 11,
         mode: "NORMAL",
         resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
       }),
@@ -275,11 +280,16 @@ describe("chat lifecycle handlers", () => {
     }), { params: { chatId: "chat-1" } });
     expect(resumed.status).toBe(200);
     await expect(resumed.json()).resolves.toEqual({
-      chatId: "chat-1",
-      memoryGeneration: 8,
-      memoryRevision: 12,
+      allowedActions: ["EXCLUDE"],
+      archived: false,
       mode: "NORMAL",
-      sourceRevision: 5
+      temporaryRetentionDeadline: null
+    });
+    expect(setMemoryMode).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      mode: "NORMAL",
+      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      userId: config.bootstrapUserId
     });
     expectPrivate(resumed);
 
@@ -288,8 +298,6 @@ describe("chat lifecycle handlers", () => {
       resolveAuth: auth.resolveAuth
     })(request("/api/me/chats/chat-1/memory-mode", {
       body: JSON.stringify({
-        expectedChatRevision: 4,
-        expectedMemoryRevision: 11,
         mode: "NORMAL",
         resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
       }),
@@ -318,15 +326,10 @@ describe("chat lifecycle handlers", () => {
     });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      chat: {
-        archived: false,
-        chatId: "chat-temp",
-        mode: "TEMPORARY",
-        sourceRevision: 1,
-        temporaryRetentionDeadline: "2026-08-11T08:00:00.000Z",
-        temporaryRetentionPolicyVersion: "temporary-24h-v1",
-        updatedAt
-      }
+      allowedActions: [],
+      archived: false,
+      mode: "TEMPORARY",
+      temporaryRetentionDeadline: "2026-08-11T08:00:00.000Z"
     });
     expect(getChatMemoryState).toHaveBeenCalledWith({
       chatId: "chat-temp",

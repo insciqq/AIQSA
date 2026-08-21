@@ -1,86 +1,79 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeAdminMemoryEgressAcknowledgeInput,
-  decodeAdminMemoryEgressResponse
+  decodeAdminMemoryAdmissionTimeoutInput,
+  decodeAdminMemoryRebuildInput,
+  decodeAdminMemoryStatusResponse
 } from "./adminMemory";
 
 function response() {
   return {
-    memoryEgress: {
-      acceptedAt: "2026-08-11T10:00:00.000Z",
-      acceptedBy: { displayName: "Administrator", id: "admin-1" },
-      acceptedFingerprint: "a".repeat(64),
-      acceptedPolicyVersion: "memory-utility-egress-v1",
-      consentMode: "ADMIN",
-      currentFingerprint: "a".repeat(64),
-      currentPolicyVersion: "memory-utility-egress-v1",
-      destinations: [
-        { destinations: ["Selected per run"], id: "answer_provider", reviewRequired: false, state: "BOUND_PER_RUN" },
-        { destinations: ["System / Model"], id: "system_model", reviewRequired: false, state: "AVAILABLE" },
-        { destinations: [], id: "embedding", reviewRequired: false, state: "UNAVAILABLE" },
-        { destinations: [], id: "remote_reranker", reviewRequired: false, state: "UNAVAILABLE" }
+    memory: {
+      admissionTimeout: { seconds: 15, version: 4 },
+      activeIssueCode: null,
+      configuredTargets: [
+        { model: "Utility model", provider: "Primary provider" },
+        { model: "Embedding model", provider: "Vector provider" }
       ],
-      reviewRequired: false,
-      version: 2,
-      waitingJobCount: 0
-    },
-    memoryHealth: {
-      deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
-      observedAt: "2026-08-12T10:00:00.000Z",
-      overall: "HEALTHY",
-      provider: {
-        failedRecent: "NONE",
-        outcomeUnknown: "NONE",
-        state: "IDLE",
-        usageIncomplete: "NONE"
-      },
-      queue: {
-        active: "NONE",
-        failed: "NONE",
-        oldestLag: "NONE",
-        state: "CLEAR",
-        waitingForReview: "NONE"
-      },
-      temporary: { overdue: "NONE", state: "CLEAR" }
+      index: { generation: 3, readiness: "READY" },
+      queue: { length: 0, oldestAgeSeconds: null },
+      rebuild: { state: "NOT_REQUIRED" },
+      worker: { state: "RUNNING" }
     }
   };
 }
 
-describe("administrator Memory contracts", () => {
-  it("decodes the exact bounded four-row projection", () => {
-    expect(decodeAdminMemoryEgressResponse(response())).toEqual(response());
+describe("administrator Memory status contract", () => {
+  it("accepts only the minimal operational projection", () => {
+    expect(decodeAdminMemoryStatusResponse(response())).toEqual(response());
+    expect(decodeAdminMemoryStatusResponse({
+      ...response(),
+      memoryEgress: { currentFingerprint: "a".repeat(64) }
+    })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({
+      memory: { ...response().memory, destinationMatrix: [] }
+    })).toBeNull();
   });
 
-  it("rejects extra data, malformed fingerprints, and coercible versions", () => {
-    expect(decodeAdminMemoryEgressResponse({
-      ...response(),
-      privateMemoryText: "must not cross the boundary"
-    })).toBeNull();
-    expect(decodeAdminMemoryEgressResponse({
-      ...response(),
-      memoryEgress: {
-        ...response().memoryEgress,
-        currentFingerprint: "not-a-hash"
+  it("keeps queue age and rebuild readiness internally consistent", () => {
+    expect(decodeAdminMemoryStatusResponse({
+      memory: {
+        ...response().memory,
+        queue: { length: 0, oldestAgeSeconds: 4 }
       }
     })).toBeNull();
-    expect(decodeAdminMemoryEgressResponse({
-      ...response(),
-      memoryEgress: {
-        ...response().memoryEgress,
-        destinations: response().memoryEgress.destinations.map((row, index) =>
-          index === 3 ? { ...row, id: "embedding" } : row)
+    expect(decodeAdminMemoryStatusResponse({
+      memory: {
+        ...response().memory,
+        index: { generation: "MIXED", readiness: "REBUILDING" },
+        rebuild: { state: "IN_PROGRESS" }
+      }
+    })).not.toBeNull();
+  });
+
+  it("accepts one bounded rebuild command", () => {
+    expect(decodeAdminMemoryRebuildInput({ action: "REBUILD_REQUIRED" }))
+      .toEqual({ action: "REBUILD_REQUIRED" });
+    expect(decodeAdminMemoryRebuildInput({ action: "REEMBED", userId: "private" }))
+      .toBeNull();
+  });
+
+  it("accepts a bounded optimistic timeout update", () => {
+    expect(decodeAdminMemoryAdmissionTimeoutInput({
+      expectedVersion: 4,
+      timeoutSeconds: 30
+    })).toEqual({ expectedVersion: 4, timeoutSeconds: 30 });
+    expect(decodeAdminMemoryAdmissionTimeoutInput({
+      expectedVersion: 4,
+      timeoutSeconds: 121
+    })).toBeNull();
+  });
+
+  it("does not present a historical issue as active when the queue is empty", () => {
+    expect(decodeAdminMemoryStatusResponse({
+      memory: {
+        ...response().memory,
+        activeIssueCode: "memory_job_handler_unavailable"
       }
     })).toBeNull();
-    expect(decodeAdminMemoryEgressAcknowledgeInput({
-      currentFingerprint: "a".repeat(64),
-      expectedVersion: "2"
-    })).toBeNull();
-    expect(decodeAdminMemoryEgressAcknowledgeInput({
-      currentFingerprint: "a".repeat(64),
-      expectedVersion: 2
-    })).toEqual({
-      currentFingerprint: "a".repeat(64),
-      expectedVersion: 2
-    });
   });
 });

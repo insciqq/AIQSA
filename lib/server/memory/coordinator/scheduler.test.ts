@@ -7,14 +7,18 @@ function scheduler(): MemoryScheduler {
 }
 
 describe("Memory scheduler", () => {
-  it("gives safety work a bounded weighted turn", () => {
+  it("does not prioritize retired source reconciliation work", () => {
     const service = scheduler();
-    const kinds = ["RECONCILE_BRANCH", "INDEX_HISTORY"] as const;
+    const kinds = ["REBUILD_INDEX", "INDEX_HISTORY"] as const;
 
-    expect(service.claimWaves(kinds)[0]).toEqual(["RECONCILE_BRANCH"]);
-    expect(service.claimWaves(kinds)[0]).toEqual(["RECONCILE_BRANCH"]);
-    expect(service.claimWaves(kinds)[0]).toEqual(["INDEX_HISTORY"]);
-    expect(service.claimWaves(kinds)[0]).toEqual(["RECONCILE_BRANCH"]);
+    expect(service.claimWaves(kinds)[0]).toEqual([
+      "REBUILD_INDEX",
+      "INDEX_HISTORY"
+    ]);
+    expect(service.claimWaves(kinds)[0]).toEqual([
+      "REBUILD_INDEX",
+      "INDEX_HISTORY"
+    ]);
   });
 
   it("serializes one owner's work while allowing another owner to proceed", async () => {

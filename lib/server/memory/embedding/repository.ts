@@ -15,7 +15,13 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
+import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
   memoryItemEmbeddingGenerationMatchesPin,
   type MemoryItemEmbeddingPin,
@@ -195,9 +201,12 @@ async function loadFactTarget(
       AND version."id" = ${row.factVersionId}
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
       AND version."systemTo" IS NULL
+      AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND ${memoryPersonalFactEvidencePredicate(row.userId)}
     LIMIT 1
   `);
   const current = rows[0];
@@ -242,25 +251,27 @@ async function loadRecallChunkTarget(
     INNER JOIN "Chat" AS chat
       ON chat."userId" = chunk."userId"
       AND chat."id" = chunk."chatId"
+      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND chat."memoryBranchGeneration" = chunk."branchGeneration"
-      AND chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId"
       AND checkpoint."chatId" = chunk."chatId"
       AND checkpoint."branchGeneration" = chunk."branchGeneration"
       AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
-      AND checkpoint."activeLeafMessageId" = chat."activeLeafMessageId"
-      AND checkpoint."lastIndexedMessageId" = chat."activeLeafMessageId"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
     WHERE chunk."userId" = ${row.userId}
       AND chunk."id" = ${row.recallChunkId}
       AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND chunk."safetyClass" IN (
         'NORMAL'::"MemoryDerivedSafetyClass",
         'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND ${memoryHistoryChunkSourceAuthorityPredicate()}
       AND NOT EXISTS (
         SELECT 1 FROM "MemorySuppression" AS suppression
         LEFT JOIN "MemoryRecallChunkMessage" AS source_message

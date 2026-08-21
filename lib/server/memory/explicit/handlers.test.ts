@@ -257,6 +257,25 @@ describe("explicit Memory handlers", () => {
     expect(explicitService.evidence).toHaveBeenCalledWith("user-1", "fact-1", null);
   });
 
+  it("returns a consumer-safe temporary-unavailable result for classifier outage", async () => {
+    const explicitService = service({
+      create: vi.fn(async () => {
+        throw new ExplicitMemoryServiceError("memory_unavailable");
+      })
+    });
+    const response = await createCreateMemoryHandler(deps(explicitService))(jsonRequest(
+      "http://localhost/api/me/memories",
+      {
+        mutationAuthorizationId: "authorization-1",
+        scope: { type: "GLOBAL_USER" },
+        statement: "Remember this preference"
+      }
+    ));
+    expect(response.status).toBe(503);
+    expectPrivate(response);
+    await expect(response.json()).resolves.toEqual({ error: "memory_unavailable" });
+  });
+
   it("routes a strict owner-scoped Forget Undo without accepting target overrides", async () => {
     const explicitService = service();
     const handler = createUndoForgetMemoryHandler(deps(explicitService));

@@ -51,11 +51,11 @@ describe("relative-rank Memory fusion", () => {
 
   it("runs for every non-empty query and only skips the empty query", () => {
     expect(fuseMemoryRetrievalCandidates(plan, [{
-      lane: "FACT_RECENT", candidates: [candidate("recent", "FACT_RECENT", 1)]
+      lane: "FACT_VECTOR", candidates: [candidate("vector", "FACT_VECTOR", 0.8)]
     }], now)).toHaveLength(1);
     const empty = planMemoryRetrieval({ currentUserText: " ", now });
     expect(fuseMemoryRetrievalCandidates(empty, [{
-      lane: "FACT_RECENT", candidates: [candidate("recent", "FACT_RECENT", 1)]
+      lane: "FACT_VECTOR", candidates: [candidate("vector", "FACT_VECTOR", 0.8)]
     }], now)).toEqual([]);
   });
 });

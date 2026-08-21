@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
-import { createPrismaMemoryCoordinatorRepository } from "./coordinator/prismaRepository";
-import type { MemoryJobClaim } from "./coordinator/types";
 import {
   applyMemorySourceMutations,
   loadMemorySourceSnapshot,
@@ -30,58 +28,14 @@ async function mutateSource(
   });
 }
 
-async function claimOwnedJob(
-  userId: string,
-  kind: "RECONCILE_BRANCH" | "RECONCILE_SOURCE",
-  now: Date
-): Promise<MemoryJobClaim | null> {
-  const job = await prisma.memoryJob.findFirst({
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    where: { kind, state: "QUEUED", userId }
-  });
-  if (!job) return null;
-  const claimToken = `${kind.toLocaleLowerCase("en-US")}-${randomUUID()}`;
-  const leaseExpiresAt = new Date(now.getTime() + 60_000);
-  const claimed = await prisma.memoryJob.update({
-    data: {
-      attemptCount: { increment: 1 },
-      leaseExpiresAt,
-      leaseToken: claimToken,
-      state: "CLAIMED",
-      updatedAt: now
-    },
-    where: { id: job.id }
-  });
-  return {
-    activeLeafMessageId: claimed.activeLeafMessageId,
-    attemptCount: claimed.attemptCount,
-    branchGeneration: claimed.branchGeneration,
-    chatId: claimed.chatId,
-    claimToken,
-    id: claimed.id,
-    idempotencyFingerprint: claimed.idempotencyFingerprint,
-    kind: claimed.kind,
-    leaseExpiresAt,
-    memoryGenerationSnapshot: claimed.memoryGenerationSnapshot,
-    memoryRevisionSnapshot: claimed.memoryRevisionSnapshot,
-    pipelineVersion: claimed.pipelineVersion,
-    recoveredLease: false,
-    sourceHash: claimed.sourceHash,
-    sourceRevision: claimed.sourceRevision,
-    stage: claimed.stage,
-    userId: claimed.userId
-  };
-}
-
 describe("Memory source-state persistence", () => {
   afterAll(async () => {
     await prisma.$disconnect();
   });
 
-  it("applies the counter matrix and fences stale source-job commits by exact snapshot", async () => {
+  it("applies the counter matrix without enqueueing retired source jobs", async () => {
     const suffix = randomUUID();
     const userId = `memory-source-${suffix}`;
-    const now = new Date("2026-08-10T18:00:00.000Z");
     await prisma.user.create({
       data: {
         displayName: "Memory Source Test",
@@ -233,113 +187,15 @@ describe("Memory source-state persistence", () => {
       });
       expect(archived.sourceHash).toBe(moved.sourceHash);
 
-      const repository = createPrismaMemoryCoordinatorRepository(prisma);
-      const branchClaim = await claimOwnedJob(userId, "RECONCILE_BRANCH", now);
-      expect(branchClaim).toMatchObject({
-        branchGeneration: 1,
-        sourceRevision: 3
-      });
-      const staleApply = vi.fn(async () => undefined);
-      await expect(repository.commitJobSuccess({
-        acceptedResultHash: "a".repeat(64),
-        apply: staleApply,
-        claim: branchClaim!,
-        now: new Date(now.getTime() + 1_000),
-        stage: "APPLIED"
-      })).resolves.toBe(true);
-      expect(staleApply).not.toHaveBeenCalled();
-      await expect(prisma.memoryJob.findUniqueOrThrow({
-        where: { id: branchClaim!.id }
-      })).resolves.toMatchObject({
-        acceptedResultHash: null,
-        errorCode: "memory_source_stale",
-        state: "STALE"
-      });
-
-      const sourceClaim = await claimOwnedJob(userId, "RECONCILE_SOURCE", now);
-      expect(sourceClaim).toMatchObject({
-        branchGeneration: 1,
-        sourceRevision: 4,
-        sourceHash: moved.sourceHash
-      });
-      await expect(repository.commitJobSuccess({
-        acceptedResultHash: "b".repeat(64),
-        apply: async () => undefined,
-        claim: sourceClaim!,
-        now: new Date(now.getTime() + 2_000),
-        stage: "APPLIED"
-      })).resolves.toBe(true);
-      await expect(prisma.memoryJob.findUniqueOrThrow({
-        where: { id: sourceClaim!.id }
-      })).resolves.toMatchObject({
-        acceptedResultHash: "b".repeat(64),
-        state: "SUCCEEDED"
-      });
-
-      const refreshed = await mutateSource(userId, chat.id, {
-        mutations: ["FOLDER_MOVE"],
-        patch: { folderId: folderA.id }
-      });
-      const racedClaim = await claimOwnedJob(
-        userId,
-        "RECONCILE_SOURCE",
-        new Date(now.getTime() + 3_000)
-      );
-      expect(racedClaim).toMatchObject({
-        sourceHash: refreshed.sourceHash,
-        sourceRevision: 5
-      });
-
-      let releaseMutation: () => void = () => {};
-      const mutationGate = new Promise<void>((resolve) => {
-        releaseMutation = resolve;
-      });
-      let reportChatLock: () => void = () => {};
-      const chatLocked = new Promise<void>((resolve) => {
-        reportChatLock = resolve;
-      });
-      const concurrentMutation = prisma.$transaction(async (tx) => {
-        const locked = await lockMemorySourceChat(tx, {
-          chatId: chat.id,
-          lock: "UPDATE",
+      // Source/generation fences remain synchronous.  The retired async
+      // reconciliation kinds must never be produced by a source mutation.
+      await expect(prisma.memoryJob.findMany({
+        select: { kind: true },
+        where: {
+          kind: { in: ["RECONCILE_BRANCH", "RECONCILE_SOURCE"] },
           userId
-        });
-        if (!locked) throw new Error("source_test_chat_missing");
-        reportChatLock();
-        await mutationGate;
-        return applyMemorySourceMutations(tx, {
-          chat: locked,
-          mutations: ["FOLDER_MOVE"],
-          patch: { folderId: folderB.id }
-        });
-      });
-      await chatLocked;
-      const racedApply = vi.fn(async () => undefined);
-      const concurrentCommit = repository.commitJobSuccess({
-        acceptedResultHash: "c".repeat(64),
-        apply: racedApply,
-        claim: racedClaim!,
-        now: new Date(now.getTime() + 4_000),
-        stage: "APPLIED"
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      releaseMutation();
-      const [mutationResult, commitResult] = await Promise.all([
-        concurrentMutation,
-        concurrentCommit
-      ]);
-      expect(mutationResult).toMatchObject({
-        folderId: folderB.id,
-        memorySourceRevision: 6
-      });
-      expect(commitResult).toBe(true);
-      expect(racedApply).not.toHaveBeenCalled();
-      await expect(prisma.memoryJob.findUniqueOrThrow({
-        where: { id: racedClaim!.id }
-      })).resolves.toMatchObject({
-        errorCode: "memory_source_stale",
-        state: "STALE"
-      });
+        }
+      })).resolves.toEqual([]);
       await expect(prisma.$transaction((tx) => loadMemorySourceSnapshot(tx, {
         chatId: chat.id,
         userId
@@ -352,7 +208,7 @@ describe("Memory source-state persistence", () => {
       expect(excluded).toMatchObject({
         memoryBranchGeneration: 1,
         memoryMode: "EXCLUDED",
-        memorySourceRevision: 7
+        memorySourceRevision: 5
       });
       const resumed = await mutateSource(userId, chat.id, {
         mutations: ["SOURCE_RESUME"],
@@ -361,13 +217,13 @@ describe("Memory source-state persistence", () => {
       expect(resumed).toMatchObject({
         memoryBranchGeneration: 1,
         memoryMode: "NORMAL",
-        memorySourceRevision: 8
+        memorySourceRevision: 6
       });
       expect(resumed.sourceHash).toBe(moved.sourceHash);
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         select: { memoryGeneration: true, memoryRevision: true },
         where: { userId }
-      })).resolves.toEqual({ memoryGeneration: 2, memoryRevision: 6 });
+      })).resolves.toEqual({ memoryGeneration: 2, memoryRevision: 4 });
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });
     }

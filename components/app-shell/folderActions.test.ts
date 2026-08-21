@@ -39,12 +39,10 @@ function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string
 
 function createFolderActionsHarness({
   activeBlankFolder = false,
-  projectKnowledgeBaseIds = [],
-  projectMemoryDraft = ""
+  projectKnowledgeBaseIds = []
 }: {
   activeBlankFolder?: boolean;
   projectKnowledgeBaseIds?: string[];
-  projectMemoryDraft?: string;
 } = {}) {
   const researchFolder = folder({ id: "folder-research", name: "Research" });
   const chats = [
@@ -81,8 +79,7 @@ function createFolderActionsHarness({
     editingName: "",
     endAction: vi.fn(),
     endCreate: vi.fn(),
-    projectKnowledgeBaseIds,
-    projectMemoryDraft
+    projectKnowledgeBaseIds
   };
 
   const actions = createFolderActions({
@@ -221,10 +218,9 @@ describe("folder actions", () => {
     });
   });
 
-  it("saves project memory and the exact ordered Knowledge default together", async () => {
+  it("saves the exact ordered Knowledge default without writing legacy Project Memory", async () => {
     const state = createFolderActionsHarness({
-      projectKnowledgeBaseIds: ["base-policies", "base-release"],
-      projectMemoryDraft: "Prefer the current release policy."
+      projectKnowledgeBaseIds: ["base-policies", "base-release"]
     });
     const updated = folder({
       defaultKnowledgePlan: {
@@ -251,8 +247,7 @@ describe("folder actions", () => {
       "/api/folders/folder-research",
       expect.objectContaining({
         body: JSON.stringify({
-          defaultKnowledgePlan: { baseIds: ["base-policies", "base-release"] },
-          projectMemory: "Prefer the current release policy."
+          defaultKnowledgePlan: { baseIds: ["base-policies", "base-release"] }
         }),
         method: "PATCH"
       })

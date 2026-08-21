@@ -17,6 +17,7 @@ import {
   memoryVectorSpaceFingerprint,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
+import { memoryExecutionSha256 } from "../execution/canonical";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
 import { createPrismaMemoryMutationAuthorizationRepository } from
@@ -31,6 +32,11 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
+import {
+  memoryStatementClassificationDecision,
+  memoryStatementClassificationInputHash,
+  type MemoryStatementClassifier
+} from "../explicit/statementClassifier";
 import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS } from "../purge/contract";
 import { registerMemoryDeletionContributors } from "../purge/leaves";
 import { MemoryDeletionContributorRegistry } from "../purge/registry";
@@ -72,6 +78,24 @@ const embeddingConfiguration = {
   upstreamModelId: "memory-explicit-embedding-v1"
 } as const;
 
+const statementClassifierConfiguration = {
+  adapterKind: "openai_responses_compatible",
+  answerSelectable: true,
+  capabilities: {
+    nativePdfInput: false,
+    nativeSearch: false,
+    pdf: false,
+    reasoning: false,
+    streaming: false,
+    structuredOutput: true,
+    toolCalling: false,
+    vision: false
+  },
+  defaultParams: {},
+  modelClass: "answer",
+  upstreamModelId: "memory-statement-classifier-v1"
+} as const;
+
 function purgeRegistry(): MemoryDeletionContributorRegistry {
   const registry = new MemoryDeletionContributorRegistry({
     operation: "FORGET_PURGE",
@@ -81,7 +105,117 @@ function purgeRegistry(): MemoryDeletionContributorRegistry {
   return registry;
 }
 
-function memoryServices() {
+function createFixtureStatementClassifier(authority: Readonly<{
+  connectionId: string;
+  credentialId: string;
+  modelId: string;
+}>): MemoryStatementClassifier {
+  return Object.freeze({
+    async classify(statement, options) {
+      const execution = options?.execution;
+      if (!execution) throw new Error("memory_embedding_classifier_execution_missing");
+      const executionId = randomUUID();
+      const inputHash = memoryStatementClassificationInputHash(statement);
+      const decision = {
+        category: "preferences" as const,
+        normalizedStatement: statement,
+        reasonCode: "response_preference" as const,
+        responsePreference: true,
+        sensitivity: "NORMAL" as const,
+        storageDecision: "ALLOW" as const
+      };
+      const acceptedOutputHash = memoryExecutionSha256({
+        inputHash,
+        output: memoryStatementClassificationDecision(decision),
+        role: "MEMORY_STATEMENT_CLASSIFY",
+        version: 1
+      });
+      const startedAt = new Date();
+      const completedAt = new Date(startedAt.getTime() + 1);
+      const credential = await prisma.providerCredential.findUniqueOrThrow({
+        select: { activeVersionId: true },
+        where: { id: authority.credentialId }
+      });
+      if (!credential.activeVersionId) {
+        throw new Error("memory_embedding_classifier_credential_missing");
+      }
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryExecutionBinding.create({
+          data: {
+            acceptedOutputHash,
+            cachedInputTokens: 0,
+            completedAt,
+            createdAt: startedAt,
+            destinationFingerprint: memorySha256({
+              modelId: authority.modelId,
+              role: "MEMORY_STATEMENT_CLASSIFY"
+            }),
+            id: executionId,
+            inputHash,
+            inputTokens: 0,
+            logicalRole: "MEMORY_STATEMENT_CLASSIFY",
+            mutationAuthorizationId: execution.mutationAuthorizationId,
+            ordinal: 0,
+            outputTokens: 0,
+            ownerType: "MUTATION_AUTHORIZATION",
+            pipelineVersion: "memory-statement-classification-v1",
+            policyVersion: "memory-statement-safety-policy-v1",
+            promptVersion: "memory-statement-safety-prompt-v1",
+            providerId: "openai_compatible",
+            providerModelId: authority.modelId,
+            providerResponseId: `memory-embedding-classifier-${randomUUID()}`,
+            reasoningTokens: 0,
+            recoverableUntil: new Date(completedAt.getTime() + 86_400_000),
+            connectionId: authority.connectionId,
+            credentialId: authority.credentialId,
+            credentialVersionId: credential.activeVersionId,
+            schemaVersion: "memory-statement-safety-schema-v1",
+            secretFreeExecutionSnapshot: {
+              providerExecutionSnapshot: {
+                providerFamily: "openai_compatible",
+                providerModelId: authority.modelId
+              },
+              version: 1
+            },
+            startedAt,
+            state: "SUCCEEDED",
+            totalTokens: 0,
+            usageCompleteness: "COMPLETE",
+            userId: execution.userId
+          }
+        });
+        await tx.usageEvent.create({
+          data: {
+            cachedInputTokens: 0,
+            inputTokens: 0,
+            memoryExecutionBindingId: executionId,
+            modelId: authority.modelId,
+            outputTokens: 0,
+            provider: "openai_compatible",
+            providerModelId: authority.modelId,
+            reasoningTokens: 0,
+            totalTokens: 0,
+            userId: execution.userId
+          }
+        });
+      });
+      return {
+        acceptedOutputHash,
+        classifiedAt: completedAt,
+        ...decision,
+        executionId,
+        inputHash,
+        modelId: authority.modelId,
+        policyVersion: "memory-statement-safety-policy-v1",
+        providerId: "openai_compatible"
+      };
+    }
+  });
+}
+
+function memoryServices(classifierAuthority: Parameters<
+  typeof createFixtureStatementClassifier
+>[0]) {
   const authorizationRepository =
     createPrismaMemoryMutationAuthorizationRepository(prisma);
   const readRepository = createPrismaExplicitMemoryRepository(prisma);
@@ -89,7 +223,8 @@ function memoryServices() {
     authorizationRepository,
     factRepository: createPrismaMemoryFactRepository(keyring, prisma),
     readRepository,
-    scopeRepository: createPrismaMemoryScopeRepository(prisma)
+    scopeRepository: createPrismaMemoryScopeRepository(prisma),
+    statementClassifier: createFixtureStatementClassifier(classifierAuthority)
   });
   const lifecycle = createMemoryLifecycleService({
     authorizationRepository,
@@ -122,6 +257,82 @@ async function saveExplicit(
   });
 }
 
+async function saveLegacyExplicit(
+  userId: string,
+  scopeId: string,
+  statement: string,
+  nonce: string,
+  classifierAuthority: Parameters<typeof createFixtureStatementClassifier>[0]
+) {
+  const authorizationId = `legacy-authorization-${nonce}`;
+  const classification = await createFixtureStatementClassifier(
+    classifierAuthority
+  ).classify(statement, {
+    execution: { mutationAuthorizationId: authorizationId, userId }
+  });
+  if (!classification.acceptedOutputHash || !classification.executionId ||
+    !classification.inputHash || !classification.classifiedAt) {
+    throw new Error("memory_embedding_legacy_classifier_provenance_missing");
+  }
+  const saved = await createPrismaMemoryFactRepository(keyring, prisma, {
+    consumeExplicitAuthorization: async () => undefined
+  }).save(userId, {
+    authorization: {
+      action: "SAVE",
+      authorizationId,
+      authorizedPayloadHash: memorySha256({ nonce, statement })
+    },
+    evidence: {
+      kind: "EXPLICIT_ACTION",
+      observedAt: new Date("2026-08-21T08:00:00.000Z"),
+      safeExcerpt: statement,
+      safeSourceHash: memorySha256(statement),
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: "memory-embedding-legacy-test-v1"
+    },
+    explicitSuppressionOverride: false,
+    idempotencyFingerprint: `legacy-save-${nonce}`,
+    requestId: `legacy-request-${nonce}`,
+    scopeId,
+    value: {
+      canonicalKey: `legacy.embedding.${nonce}`,
+      category: "preferences",
+      confidence: 1,
+      directness: "DIRECT",
+      displayText: statement,
+      importance: 0.8,
+      languageCode: "en",
+      modality: "PREFERENCE",
+      pipelineVersion: "memory-embedding-legacy-test-v1",
+      safetyClassification: {
+        acceptedOutputHash: classification.acceptedOutputHash,
+        decision: memoryStatementClassificationDecision(classification),
+        executionId: classification.executionId,
+        inputHash: classification.inputHash,
+        inputStatement: statement,
+        kind: "STATEMENT"
+      },
+      secretTaintedSourceWindow: false,
+      sensitivityClass: "NORMAL",
+      sourceMode: "EXPLICIT",
+      structuredValue: { statement }
+    }
+  });
+  await prisma.memoryExecutionBinding.update({
+    data: {
+      connectionId: null,
+      credentialId: null,
+      credentialVersionId: null,
+      providerModelId: null,
+      providerResponseId: null,
+      recoverableUntil: classification.classifiedAt,
+      relationsDetachedAt: classification.classifiedAt
+    },
+    where: { id: classification.executionId }
+  });
+  return saved;
+}
+
 async function createFixture() {
   const suffix = randomUUID();
   const userId = `memory-explicit-embedding-user-${suffix}`;
@@ -129,6 +340,7 @@ async function createFixture() {
   const credentialId = `memory-explicit-embedding-credential-${suffix}`;
   const credentialVersionId = `memory-explicit-embedding-version-${suffix}`;
   const modelId = `memory-explicit-embedding-model-${suffix}`;
+  const classifierModelId = `memory-explicit-classifier-model-${suffix}`;
   const connectionConfiguration = {
     allowPrivateNetwork: false,
     apiRoot: "https://memory-provider.example.test/v1",
@@ -206,6 +418,24 @@ async function createFixture() {
       provider: "openai_compatible"
     }
   });
+  await prisma.providerModel.create({
+    data: {
+      activeConfig: statementClassifierConfiguration,
+      activeVersion: 1,
+      activatedAt: INITIAL_NOW,
+      capabilities: statementClassifierConfiguration.capabilities,
+      connectionId,
+      defaultParams: {},
+      displayName: "Memory explicit statement classifier",
+      draftConfig: statementClassifierConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      id: classifierModelId,
+      modelClass: "answer",
+      modelId: statementClassifierConfiguration.upstreamModelId,
+      provider: "openai_compatible"
+    }
+  });
   await prisma.providerModelCredentialCheck.create({
     data: {
       checkedAt: INITIAL_NOW,
@@ -219,8 +449,24 @@ async function createFixture() {
       status: "available"
     }
   });
+  await prisma.providerModelCredentialCheck.create({
+    data: {
+      checkedAt: INITIAL_NOW,
+      connectionId,
+      connectionVersion: 1,
+      credentialId,
+      credentialVersionId,
+      evidence: { detail: "ok" },
+      modelVersion: 1,
+      providerModelId: classifierModelId,
+      status: "available"
+    }
+  });
   await prisma.accessGrant.create({
     data: { enabled: true, providerModelId: modelId, userId }
+  });
+  await prisma.accessGrant.create({
+    data: { enabled: true, providerModelId: classifierModelId, userId }
   });
   await prisma.userMemorySettings.update({
     data: { embeddingProviderModelId: modelId, useMemoryFacts: true },
@@ -271,6 +517,11 @@ async function createFixture() {
     });
   });
   return {
+    classifierAuthority: {
+      connectionId,
+      credentialId,
+      modelId: classifierModelId
+    },
     connectionId,
     credentialId,
     credentialVersionId,
@@ -280,8 +531,6 @@ async function createFixture() {
     userId,
     async cleanup() {
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
-      await prisma.usageEvent.deleteMany({ where: { userId } });
-      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
       await prisma.user.deleteMany({ where: { id: userId } });
       await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
       await prisma.providerConnection.updateMany({
@@ -292,7 +541,9 @@ async function createFixture() {
         data: { activeVersionId: null },
         where: { id: credentialId }
       });
-      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerModel.deleteMany({
+        where: { id: { in: [classifierModelId, modelId] } }
+      });
       await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
       await prisma.providerCredential.deleteMany({ where: { id: credentialId } });
       await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
@@ -315,9 +566,55 @@ describe("Prisma explicit Memory vector enrichment", () => {
     await prisma.$disconnect();
   });
 
+  it("keeps a legacy-scoped fact dormant at the embedding target rejoin", async () => {
+    const fixture = await createFixture();
+    try {
+      const folder = await prisma.folder.create({
+        data: { name: "Legacy embedding scope", userId: fixture.userId }
+      });
+      const statement = "I prefer a legacy scoped embedding target.";
+      const legacyScope = await createPrismaMemoryScopeRepository(prisma).ensure(
+        fixture.userId,
+        { targetId: folder.id, type: "FOLDER" }
+      );
+      const saved = await saveLegacyExplicit(
+        fixture.userId,
+        legacyScope.id,
+        statement,
+        `embedding-legacy-scope-${randomUUID()}`,
+        fixture.classifierAuthority
+      );
+      const classified = await prisma.memoryFactVersion.findUniqueOrThrow({
+        select: {
+          safetyClassificationState: true,
+          safetyClassifierExecutionId: true
+        },
+        where: { id: saved.versionId }
+      });
+      expect(classified.safetyClassificationState).toBe("CLASSIFIED");
+      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({
+        select: { relationsDetachedAt: true, state: true },
+        where: { id: classified.safetyClassifierExecutionId! }
+      })).resolves.toMatchObject({
+        relationsDetachedAt: expect.any(Date),
+        state: "SUCCEEDED"
+      });
+      const entry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: saved.versionId }
+      });
+
+      await expect(createPrismaMemoryItemEmbeddingRepository(prisma)
+        .loadTarget(fixture.userId, entry.id)).resolves.toBeNull();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("keeps lexical recall available across consent, outage, rotation, and Forget races", async () => {
     const fixture = await createFixture();
-    const { explicit, lifecycle, readRepository } = memoryServices();
+    const { explicit, lifecycle, readRepository } = memoryServices(
+      fixture.classifierAuthority
+    );
     let clock = new Date(INITIAL_NOW);
     let behavior: "DEFER" | "HTTP_FAILURE" | "SUCCESS" = "SUCCESS";
     let releaseDeferred: () => void = () => {
@@ -420,7 +717,8 @@ describe("Prisma explicit Memory vector enrichment", () => {
       expect(firstSettled.state).toBe("SUCCEEDED");
       expect(firstBindings).toHaveLength(1);
       expect(firstBindings[0]).toMatchObject({ state: "SUCCEEDED" });
-      expect(firstUsage).toHaveLength(1);
+      expect(firstUsage.filter(({ memoryExecutionBindingId }) =>
+        firstBindings.some(({ id }) => id === memoryExecutionBindingId))).toHaveLength(1);
       expect(afterFirst.memoryRevision).toBe(2);
 
       behavior = "HTTP_FAILURE";
@@ -672,7 +970,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             branchGeneration: 0,
             chatId: chat.id,
             chunkOrdinal: 0,
-            chunkingVersion: "memory-history-chunking-v1",
+            chunkingVersion: "memory-history-chunking-v2",
             contentHash: memorySha256(chunkText),
             id: chunkId,
             languageCode: "en",
@@ -682,7 +980,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             redactionState: "NOT_NEEDED",
             safeProjectedText: chunkText,
             safetyClass: "NORMAL",
-            sourceProjectionVersion: "memory-history-source-projection-v1",
+            sourceProjectionVersion: "memory-history-source-projection-v2",
             sourceRevisionAtCreation: 1,
             userId: fixture.userId
           }
@@ -692,7 +990,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             branchGeneration: 0,
             chatId: chat.id,
             chunkOrdinal: 1,
-            chunkingVersion: "memory-history-chunking-v1",
+            chunkingVersion: "memory-history-chunking-v2",
             contentHash: memorySha256(failingChunkText),
             id: failingChunkId,
             languageCode: "en",
@@ -702,7 +1000,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             redactionState: "NOT_NEEDED",
             safeProjectedText: failingChunkText,
             safetyClass: "NORMAL",
-            sourceProjectionVersion: "memory-history-source-projection-v1",
+            sourceProjectionVersion: "memory-history-source-projection-v2",
             sourceRevisionAtCreation: 1,
             userId: fixture.userId
           }

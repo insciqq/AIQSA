@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_ERROR_CODES, MEMORY_PAGE_SIZE_MAX, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION, decodeMemoryBulkDeleteInput, decodeMemoryChatModePatch, decodeMemoryChatModeResponse, decodeMemoryCreateInput, decodeMemoryDeletionStatus, decodeMemoryEvidenceResponse, decodeMemoryDetailResponse, decodeMemoryFeedbackInput, decodeMemoryFeedbackMutationResponse, decodeMemoryConflictResolutionInput, decodeMemoryErrorResponse, decodeMemoryHistorySearchInput, decodeMemoryHistorySearchResponse, decodeMemoryInitialChatMode, decodeMemoryListInput, decodeMemoryListResponse, decodeMemoryListSearchInput, decodeMemoryMutationResponse, decodeMemoryActionFeedback, decodeMemoryRebuildInput, decodeMemoryRebuildStatus, decodeMemoryScopeSelection, decodeMemorySettingsResponse, decodeMemoryUpdateInput } from "./memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_ERROR_CODES, MEMORY_PAGE_SIZE_MAX, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION, decodeMemoryBulkDeleteInput, decodeMemoryChatModePatch, decodeMemoryChatModeResponse, decodeMemoryCreateInput, decodeMemoryDeletionStatus, decodeMemoryEvidenceResponse, decodeMemoryDetailResponse, decodeMemoryFeedbackInput, decodeMemoryFeedbackMutationResponse, decodeMemoryConflictResolutionInput, decodeMemoryErrorResponse, decodeMemoryInitialChatMode, decodeMemoryListInput, decodeMemoryListResponse, decodeMemoryListSearchInput, decodeMemoryMutationResponse, decodeMemoryActionFeedback, decodeMemoryRebuildInput, decodeMemoryRebuildStatus, decodeMemoryScopeSelection, decodeMemorySettingsResponse, decodeMemoryUpdateInput } from "./memory";
 
 const now = "2026-08-09T12:00:00.000Z";
 
@@ -30,10 +30,16 @@ function memorySummary() {
 function settingsResponse() {
   return {
     capabilities: {
+      administratorSetupRequired: false,
       automaticLearning: true,
+      automaticLearningAvailable: true,
       explicitMemory: true,
       historyRecall: true,
+      managementAvailable: true,
+      naturalLanguageActionsAvailable: true,
+      pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
+      retrievalAvailable: true,
       temporaryChats: true
     },
     egress: {
@@ -166,27 +172,6 @@ describe("Memory request contracts", () => {
     })).toMatchObject({ ok: false });
   });
 
-  it("bounds private history search and rejects target or time ambiguity", () => {
-    expect(decodeMemoryHistorySearchInput({
-      chatIds: ["chat-1", "chat-2"],
-      cursor: null,
-      folderId: null,
-      from: null,
-      pageSize: 20,
-      query: "где обсуждали pgvector",
-      to: null
-    })).toMatchObject({ ok: true });
-    expect(decodeMemoryHistorySearchInput({
-      chatIds: ["chat-1", "chat-1"],
-      cursor: null,
-      folderId: null,
-      from: null,
-      pageSize: 20,
-      query: "query",
-      to: null
-    })).toMatchObject({ ok: false });
-  });
-
   it("requires explicit, operation-specific rebuild evidence", () => {
     expect(decodeMemoryRebuildInput({
       embeddingDeploymentId: "embedding-1",
@@ -284,6 +269,30 @@ describe("Memory response contracts", () => {
         completedChats: 0,
         state: "DISABLED",
         totalChats: 9
+      }
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      historyIndexing: {
+        completedChats: 4,
+        state: "DISABLED",
+        totalChats: 9
+      },
+      settings: {
+        ...settingsResponse().settings,
+        useMemoryFacts: false
+      }
+    })).toMatchObject({ ok: true });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      historyIndexing: {
+        completedChats: 4,
+        state: "INDEXING",
+        totalChats: 9
+      },
+      settings: {
+        ...settingsResponse().settings,
+        useMemoryFacts: false
       }
     })).toMatchObject({ ok: false });
   });
@@ -479,17 +488,17 @@ describe("Memory response contracts", () => {
     })).toMatchObject({ ok: false });
   });
 
-  it("accepts only committed bounded action feedback", () => {
-    expect(decodeMemoryActionFeedback({ operation: "SAVE", status: "COMMITTED" }))
+  it("accepts only client-safe bounded action feedback", () => {
+    expect(decodeMemoryActionFeedback({
+      memoryRef: "opaque-save-ref",
+      operation: "SAVE",
+      statement: "I prefer quiet hotels.",
+      status: "COMMITTED"
+    }))
       .toMatchObject({ ok: true });
     expect(decodeMemoryActionFeedback({
-      deletionId: "deletion-1",
-      expiresAt: "2026-08-11T12:01:00.000Z",
-      factId: "fact-1",
       operation: "FORGET",
-      statement: "I prefer quiet hotels.",
-      status: "COMMITTED",
-      versionId: "version-1"
+      status: "COMMITTED"
     })).toMatchObject({ ok: true });
     expect(decodeMemoryActionFeedback({ operation: "EDIT", status: "COMMITTED" }))
       .toMatchObject({ ok: false });
@@ -505,56 +514,7 @@ describe("Memory response contracts", () => {
     })).toMatchObject({ ok: false });
   });
 
-  it("decodes bounded history, rebuild, chat-mode, and stable error responses", () => {
-    expect(decodeMemoryHistorySearchResponse({
-      indexing: {
-        degradationCode: null,
-        lexicalState: "READY",
-        vectorState: "NOT_CONFIGURED"
-      },
-      nextCursor: null,
-      results: [{
-        indexingState: "LEXICAL_READY",
-        itemType: "RECALL_CHUNK",
-        occurredAt: now,
-        sourceChatId: "chat-1",
-        sourceChatTitle: "Database notes",
-        sourceFolderId: null,
-        sourceFolderName: null,
-        sourceMessageIds: ["message-1"],
-        sourceState: "ARCHIVED",
-        snippet: "We discussed pgvector."
-      }]
-    })).toMatchObject({ ok: true });
-    expect(decodeMemoryHistorySearchResponse({
-      indexing: {
-        degradationCode: "memory_index_unavailable",
-        lexicalState: "UNAVAILABLE",
-        vectorState: "DISABLED"
-      },
-      nextCursor: "scope-expanding-cursor",
-      results: []
-    })).toMatchObject({ ok: false });
-    expect(decodeMemoryHistorySearchResponse({
-      indexing: {
-        degradationCode: null,
-        lexicalState: "READY",
-        vectorState: "NOT_CONFIGURED"
-      },
-      nextCursor: null,
-      results: [{
-        indexingState: "LEXICAL_READY",
-        itemType: "RECALL_CHUNK",
-        occurredAt: now,
-        sourceChatId: "chat-1",
-        sourceChatTitle: "Database notes",
-        sourceFolderId: "foreign-folder",
-        sourceFolderName: null,
-        sourceMessageIds: ["message-1"],
-        sourceState: "AVAILABLE",
-        snippet: "We discussed pgvector."
-      }]
-    })).toMatchObject({ ok: false });
+  it("decodes rebuild, chat-mode, and stable error responses", () => {
     expect(decodeMemoryRebuildStatus({
       completedUnits: 2,
       createdAt: now,

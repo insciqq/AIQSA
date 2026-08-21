@@ -12,7 +12,10 @@ import {
 } from "./sourceProjection";
 import { projectMemoryHistorySafeText } from "./safety";
 
-export const MEMORY_HISTORY_CHUNKING_VERSION = "memory-history-chunking-v1";
+// v2 introduces explicit speaker labels in the provider-safe projection.  The
+// version is part of chunk identity, so old role-less chunks cannot be mixed
+// with the new representation in one active generation.
+export const MEMORY_HISTORY_CHUNKING_VERSION = "memory-history-chunking-v2";
 
 export type MemoryHistoryChunkingOptions = Readonly<{
   maxApproxTokens: number;
@@ -148,13 +151,13 @@ function uniqueSorted(values: readonly string[]): string[] {
 }
 
 function pieceSeparator(previous: Piece | undefined, current: Piece): string {
-  return previous &&
+  const label = current.message.role === "user" ? "User: " : "Assistant: ";
+  if (!previous) return label;
+  if (
     previous.message.id === current.message.id &&
     previous.endOffset === current.startOffset
-    ? ""
-    : previous
-      ? "\n\n"
-      : "";
+  ) return "";
+  return `\n\n${label}`;
 }
 
 function renderPieces(pieces: readonly Piece[]): RenderedPieces {
@@ -196,9 +199,7 @@ function renderPieces(pieces: readonly Piece[]): RenderedPieces {
       fail("memory_history_chunk_empty"),
     redactionReasonCodes: reasonCodes,
     redactionState: reasonCodes.length > 0 ? "REDACTED" : "NOT_NEEDED",
-    safetyClass: groups.some((group) => group.safetyClass === "SENSITIVE")
-      ? "SENSITIVE"
-      : "NORMAL",
+    safetyClass: "NORMAL",
     sourceAssistantId: groups[0]?.sourceAssistantId ?? null,
     text,
     turnGroupIds: groups.map((group) => group.id)
@@ -278,11 +279,22 @@ function splitGroup(
   group: MemoryHistoryRecallTurnGroup,
   options: MemoryHistoryChunkingOptions
 ): PlannedChunk[] {
+  // A split piece receives a role label when it starts a chunk (or follows a
+  // non-contiguous piece). Reserve the largest label budget while choosing
+  // source offsets so the rendered canonical text remains within the public
+  // chunk bounds. The source offsets themselves continue to refer only to the
+  // original message text.
+  const labelBudget = "Assistant: ";
+  const splitOptions: MemoryHistoryChunkingOptions = {
+    ...options,
+    maxApproxTokens: Math.max(1, options.maxApproxTokens - estimateApproxTokens(labelBudget)),
+    maxCharacters: Math.max(1, options.maxCharacters - labelBudget.length)
+  };
   const pieces: Piece[] = [];
   for (const message of group.messages) {
     let start = 0;
     while (start < message.safeText.length) {
-      const end = boundedPrefixEnd(message.safeText, start, options);
+      const end = boundedPrefixEnd(message.safeText, start, splitOptions);
       pieces.push({
         endOffset: end,
         group,
@@ -358,11 +370,11 @@ function validateSnapshot(snapshot: MemorySafeSourceSnapshot): void {
   }
 }
 
-function admittedGroups(
+function admittedGroupSegments(
   groups: readonly MemoryHistoryRecallTurnGroup[],
   admission: MemoryHistoryChunkAdmission | undefined
-): readonly MemoryHistoryRecallTurnGroup[] {
-  if (!admission) return groups;
+): readonly (readonly MemoryHistoryRecallTurnGroup[])[] {
+  if (!admission) return groups.length === 0 ? [] : [groups];
   const excluded = new Set(admission.excludedMessageIds ?? []);
   const cutoff = admission.sourceCreatedAtCutoff === null ||
       admission.sourceCreatedAtCutoff === undefined
@@ -371,10 +383,21 @@ function admittedGroups(
   if (cutoff && !Number.isFinite(cutoff.getTime())) {
     fail("memory_history_chunk_admission_invalid");
   }
-  return groups.filter((group) =>
-    group.messages.every((message) =>
+  const segments: MemoryHistoryRecallTurnGroup[][] = [];
+  let current: MemoryHistoryRecallTurnGroup[] = [];
+  for (const group of groups) {
+    const admitted = group.messages.every((message) =>
       !excluded.has(message.id) &&
-      (cutoff === null || new Date(message.createdAt) > cutoff)));
+      (cutoff === null || new Date(message.createdAt) > cutoff));
+    if (admitted) {
+      current.push(group);
+      continue;
+    }
+    if (current.length > 0) segments.push(current);
+    current = [];
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
 }
 
 function planChunks(
@@ -438,11 +461,13 @@ export function chunkMemoryRecallProjection(
   validateSnapshot(snapshot);
   if (snapshot.mode !== "NORMAL") return [];
   const resolvedOptions = optionsWithDefaults(options);
-  const safeGroups = admittedGroups(
+  const safeGroupSegments = admittedGroupSegments(
     snapshot.recallChunkProjection.turnGroups.filter(groupIsSafe),
     admission
   );
-  const planned = planChunks(safeGroups, resolvedOptions).filter((chunk) => {
+  const planned = safeGroupSegments.flatMap((groups) =>
+    planChunks(groups, resolvedOptions)
+  ).filter((chunk) => {
     const rendered = renderPieces(chunk.pieces);
     return chunkTextPassesSafety(rendered.text);
   });

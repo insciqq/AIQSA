@@ -45,6 +45,7 @@ export const memoryExecutionBindingSelect = {
   memoryJobId: true,
   modelRunId: true,
   modelRunToolCallId: true,
+  mutationAuthorizationId: true,
   ordinal: true,
   outputTokens: true,
   ownerType: true,
@@ -91,6 +92,10 @@ export type StartedMemoryExecution = Readonly<{
   startedAt: Date;
 }>;
 
+export type MemoryExecutionBindingLink = Readonly<{
+  sourceBindingId: string;
+}>;
+
 export type BindMemoryExecutionInput = Readonly<{
   inputHash: string;
   ordinal: number;
@@ -103,22 +108,32 @@ function validOrdinal(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 }
 
-async function assertRetrievalAttemptExecutionOwner(
+async function assertActiveExecutionOwner(
   tx: MemoryTransaction,
   userId: string,
   owner: MemoryExecutionOwner,
   now: Date
 ): Promise<void> {
-  if (owner.type !== "RETRIEVAL_ATTEMPT") return;
-  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT "id"
-    FROM "MemoryRetrievalAttempt"
-    WHERE "id" = ${owner.retrievalAttemptId}
-      AND "userId" = ${userId}
-      AND "state" = 'EXECUTING'::"MemoryRetrievalAttemptState"
-      AND "expiresAt" > ${now}
-    FOR SHARE
-  `);
+  if (owner.type === "JOB" || owner.type === "MODEL_RUN_TOOL_CALL") return;
+  const rows = owner.type === "RETRIEVAL_ATTEMPT"
+    ? await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id"
+        FROM "MemoryRetrievalAttempt"
+        WHERE "id" = ${owner.retrievalAttemptId}
+          AND "userId" = ${userId}
+          AND "state" = 'EXECUTING'::"MemoryRetrievalAttemptState"
+          AND "expiresAt" > ${now}
+        FOR SHARE
+      `)
+    : await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id"
+        FROM "MemoryMutationAuthorization"
+        WHERE "id" = ${owner.mutationAuthorizationId}
+          AND "userId" = ${userId}
+          AND "consumedAt" IS NULL
+          AND "expiresAt" > ${now}
+        FOR SHARE
+      `);
   if (!rows[0]) return memoryExecutionFailure("memory_execution_state_conflict");
 }
 
@@ -161,6 +176,37 @@ export function assertMemoryExecutionBindingLineage(
     binding.relationsDetachedAt !== null
   ) {
     return memoryExecutionFailure("memory_execution_snapshot_invalid");
+  }
+}
+
+export function assertMemoryExecutionBindingLink(
+  binding: MemoryExecutionBindingRecord,
+  snapshot: MemorySecretFreeExecutionSnapshot,
+  source: MemoryExecutionBindingRecord,
+  sourceSnapshot: MemorySecretFreeExecutionSnapshot
+): void {
+  if (
+    binding.id === source.id ||
+    binding.userId !== source.userId ||
+    binding.logicalRole !== source.logicalRole ||
+    binding.ordinal <= source.ordinal ||
+    source.state !== "SUCCEEDED" ||
+    source.acceptedOutputHash === null ||
+    source.relationsDetachedAt !== null ||
+    canonicalMemoryExecutionJson(storedMemoryExecutionOwner(binding)) !==
+      canonicalMemoryExecutionJson(storedMemoryExecutionOwner(source))
+  ) {
+    return memoryExecutionFailure("memory_execution_state_conflict");
+  }
+  if (
+    binding.destinationFingerprint !== source.destinationFingerprint ||
+    snapshot.acceptedUtilityEgressFingerprint !==
+      sourceSnapshot.acceptedUtilityEgressFingerprint ||
+    snapshot.destinationFingerprint !== sourceSnapshot.destinationFingerprint ||
+    snapshot.executionTargetFingerprint !== sourceSnapshot.executionTargetFingerprint ||
+    snapshot.utilityPolicyVersion !== sourceSnapshot.utilityPolicyVersion
+  ) {
+    return memoryExecutionFailure("memory_execution_policy_drift");
   }
 }
 
@@ -213,7 +259,7 @@ export function createPrismaMemoryExecutionAdmission(
       const ownerData = memoryExecutionOwnerData(input.owner);
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
         const now = memoryExecutionNow(dependencies);
-        await assertRetrievalAttemptExecutionOwner(tx, userId, input.owner, now);
+        await assertActiveExecutionOwner(tx, userId, input.owner, now);
         const authority = await resolveCurrentMemoryExecutionAuthority(tx, settings, {
           dependencies,
           now,
@@ -276,10 +322,15 @@ export function createPrismaMemoryExecutionAdmission(
       });
     },
 
-    async start(userId: string, bindingId: string): Promise<StartedMemoryExecution> {
+    async start(
+      userId: string,
+      bindingId: string,
+      link?: MemoryExecutionBindingLink
+    ): Promise<StartedMemoryExecution> {
       if (
         !isValidMemoryExecutionIdentifier(userId) ||
-        !isValidMemoryExecutionIdentifier(bindingId)
+        !isValidMemoryExecutionIdentifier(bindingId) ||
+        (link !== undefined && !isValidMemoryExecutionIdentifier(link.sourceBindingId))
       ) {
         return memoryExecutionFailure("memory_execution_input_invalid");
       }
@@ -289,7 +340,7 @@ export function createPrismaMemoryExecutionAdmission(
         if (binding.state !== "PENDING") {
           return memoryExecutionFailure("memory_execution_state_conflict");
         }
-        await assertRetrievalAttemptExecutionOwner(
+        await assertActiveExecutionOwner(
           tx,
           userId,
           storedMemoryExecutionOwner(binding),
@@ -303,6 +354,24 @@ export function createPrismaMemoryExecutionAdmission(
           snapshot,
           userId
         });
+        if (link) {
+          const source = await loadMemoryExecutionBinding(
+            tx,
+            userId,
+            link.sourceBindingId
+          );
+          const sourceSnapshot = parseMemoryExecutionSnapshot(
+            source.secretFreeExecutionSnapshot
+          );
+          assertMemoryExecutionBindingLineage(source, sourceSnapshot);
+          await reauthorizeStoredMemoryExecution(tx, settings, {
+            dependencies,
+            now,
+            snapshot: sourceSnapshot,
+            userId
+          });
+          assertMemoryExecutionBindingLink(binding, snapshot, source, sourceSnapshot);
+        }
         const started = await tx.memoryExecutionBinding.updateMany({
           data: { startedAt: now, state: "RUNNING" },
           where: {

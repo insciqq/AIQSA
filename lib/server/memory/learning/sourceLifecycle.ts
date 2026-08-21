@@ -21,12 +21,20 @@ function invalidatesCandidates(event: MemoryRetainedSourceMutationEvent): boolea
     event.mutations.includes("SOURCE_EXCLUDE");
 }
 
+function isProjectSource(event: MemoryRetainedSourceMutationEvent): boolean {
+  return (event.snapshot.projectId !== null && event.snapshot.projectId !== undefined) ||
+    (event.previous.projectId !== null && event.previous.projectId !== undefined);
+}
+
 function shouldExtract(event: MemoryRetainedSourceMutationEvent): boolean {
   if (
+    isProjectSource(event) ||
     event.snapshot.memoryMode !== "NORMAL" ||
     event.snapshot.activeLeafMessageId === null
   ) return false;
-  if (event.mutations.includes("SOURCE_RESUME")) return true;
+  // Resume is a forward-only boundary. Automatic extraction starts with the
+  // next settled user turn; it must never replay the retained pre-exclusion
+  // path implicitly.
   return event.mutations.includes("TERMINAL_SETTLEMENT") &&
     event.settlement?.status === "complete" &&
     event.settlement.assistantMessageId === event.snapshot.activeLeafMessageId;
@@ -61,6 +69,10 @@ export async function applyMemoryLearningSourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
+  // Project chats never enter the personal automatic-facts lifecycle.
+  if (isProjectSource(event)) {
+    return;
+  }
   const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null =
     await normalizeMemoryFactsForSourceMutation(tx, event);
@@ -107,7 +119,10 @@ export async function applyMemoryLearningSourceMutation(
 
   if (!shouldExtract(event)) return;
   settings ??= await lockMemorySettings(tx, event.snapshot.userId, false);
-  if (!settings.learnAutomatically) return;
+  // Master Memory is the outer gate.  Source cleanup and stale-candidate
+  // fencing above still run while paused, but no new automatic-learning job
+  // may be admitted until the user explicitly resumes Memory.
+  if (!settings.useMemoryFacts || !settings.learnAutomatically) return;
   await enqueueMemoryJob(tx, settings, {
     idempotencyFingerprint: memoryFactExtractionJobFingerprint({
       activeLeafMessageId: event.snapshot.activeLeafMessageId!,

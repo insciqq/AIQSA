@@ -16,7 +16,12 @@ import {
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
 } from "../../history/sourceProjection";
+import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import { memorySha256 } from "../../persistence/lexical";
+import {
+  memoryDestructiveSourceCutoff,
+  memorySourceIsInsidePause
+} from "../../persistence/pauseIntervals";
 import { findMatchingMemorySuppressions } from "../../persistence/suppressions";
 import type {
   LockedMemorySettings,
@@ -66,6 +71,39 @@ const disabledDecision = Object.freeze({
   errorCode: "memory_automatic_learning_disabled",
   status: "CANCELLED" as const
 });
+
+function modelValueContainsSecret(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet()
+): boolean {
+  if (typeof value === "string") {
+    return memoryExplicitStatementContainsSecret(value);
+  }
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((entry) => modelValueContainsSecret(entry, seen));
+  }
+  return Object.entries(value).some(([key, entry]) =>
+    memoryExplicitStatementContainsSecret(key) || modelValueContainsSecret(entry, seen));
+}
+
+/** Final local defense before model-authored candidate text crosses storage. */
+export function memoryAutomaticCandidateContainsSecret(
+  candidate: MemoryExtractedCandidate
+): boolean {
+  const values = [
+    candidate.displayText,
+    candidate.statement,
+    candidate.quote,
+    candidate.rawTemporalExpression,
+    candidate.responsePreference,
+    ...candidate.evidence.map((evidence) => evidence.quote)
+  ];
+  return values.some((value) => modelValueContainsSecret(value)) ||
+    modelValueContainsSecret(candidate.proposedValue) ||
+    modelValueContainsSecret(candidate.temporalResolutionEvidence);
+}
 
 function sourceMatchesJob(
   source: MemorySourceSnapshot | null,
@@ -128,17 +166,22 @@ async function probeWith(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: job.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
   if (!sourceMatchesJob(source, job)) return staleDecision;
   const settings = await tx.userMemorySettings.findUnique({
-    select: { learnAutomatically: true, memoryGeneration: true },
+    select: {
+      learnAutomatically: true,
+      memoryGeneration: true,
+      useMemoryFacts: true
+    },
     where: { userId: job.userId }
   });
   if (!settings || settings.memoryGeneration !== job.memoryGenerationSnapshot) {
     return staleDecision;
   }
-  if (!settings.learnAutomatically) return disabledDecision;
+  if (!settings.useMemoryFacts || !settings.learnAutomatically) return disabledDecision;
   return { status: "READY" };
 }
 
@@ -152,7 +195,7 @@ async function loadAdmission(
   suppressionIdentitySnapshot: string;
 }>> {
   const pathMessageIds = source.messages.map((message) => message.id);
-  const [barriers, suppressions] = await Promise.all([
+  const [barriers, pauseIntervals, suppressions, checkpoint] = await Promise.all([
     tx.memorySourceBarrier.findMany({
       orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
       select: {
@@ -162,7 +205,22 @@ async function loadAdmission(
         sourceCreatedAtCutoff: true
       },
       where: {
+        explicitOverrideAllowed: false,
         kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] },
+        userId: source.userId
+      }
+    }),
+    tx.memoryPauseInterval.findMany({
+      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memoryGeneration: true,
+        pausedAt: true,
+        resumedAt: true,
+        scope: true
+      },
+      where: {
+        scope: { in: ["MASTER", "AUTOMATIC_LEARNING"] },
         userId: source.userId
       }
     }),
@@ -196,7 +254,11 @@ async function loadAdmission(
             ],
             userId: source.userId
           }
-        })
+        }),
+    tx.chatMemoryCheckpoint.findUnique({
+      select: { resumeCreatedAtCutoff: true },
+      where: { userId_chatId: { chatId: source.id, userId: source.userId } }
+    })
   ]);
   const excludesAll = suppressions.some((suppression) => suppression.scope === "ALL");
   const excludedMessageIds = new Set(excludesAll
@@ -205,11 +267,28 @@ async function loadAdmission(
         suppression.scope === "SOURCE_MESSAGE" && suppression.sourceMessageId
           ? [suppression.sourceMessageId]
           : []));
+  for (const message of source.messages) {
+    if (memorySourceIsInsidePause(message.createdAt, pauseIntervals)) {
+      excludedMessageIds.add(message.id);
+    }
+  }
+  const globalCutoff = memoryDestructiveSourceCutoff(
+    barriers.map((barrier) => ({
+      explicitOverrideAllowed: false,
+      sourceCreatedAtCutoff: barrier.sourceCreatedAtCutoff
+    }))
+  );
+  const resumeCutoff = checkpoint?.resumeCreatedAtCutoff ?? null;
+  const sourceCreatedAtCutoff = globalCutoff && resumeCutoff
+    ? (globalCutoff > resumeCutoff ? globalCutoff : resumeCutoff)
+    : globalCutoff ?? resumeCutoff;
   return {
     excludedMessageIds,
-    sourceCreatedAtCutoff: barriers.at(-1)?.sourceCreatedAtCutoff ?? null,
+    sourceCreatedAtCutoff,
     suppressionIdentitySnapshot: memorySha256({
       barriers,
+      checkpointResumeCutoff: resumeCutoff,
+      pauseIntervals,
       suppressions
     })
   };
@@ -229,6 +308,28 @@ function boundedRecentMessages<T extends Readonly<{ text: string }>>(
   return selected.reverse();
 }
 
+/** Returns the sole direct-user message belonging to a settled assistant
+ * leaf.  Keeping this pure makes the no-history-widening rule auditable and
+ * prevents callers from accidentally selecting an older path message. */
+export function currentDirectUserMessageId(
+  messages: readonly Readonly<{
+    id: string;
+    parentMessageId: string | null;
+    role: string;
+    status: string;
+  }>[],
+  activeLeafMessageId: string | null
+): string | null {
+  if (activeLeafMessageId === null) return null;
+  const activeLeaf = messages.find((message) => message.id === activeLeafMessageId);
+  if (activeLeaf?.role !== "assistant" || activeLeaf.status !== "complete" ||
+    activeLeaf.parentMessageId === null) return null;
+  const parent = messages.find((message) => message.id === activeLeaf.parentMessageId);
+  return parent?.role === "user" && parent.status === "complete"
+    ? parent.id
+    : null;
+}
+
 async function prepareWith(
   tx: MemoryTransaction,
   job: MemoryJobDescriptor,
@@ -244,6 +345,7 @@ async function prepareWith(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: job.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
   if (!sourceMatchesJob(source, job)) return { decision: staleDecision };
@@ -309,8 +411,18 @@ async function prepareWith(
     userId: source.userId
   });
   const admission = await loadAdmission(tx, source, now);
+  // A settled assistant leaf identifies exactly one turn.  Automatic Memory
+  // may inspect only its direct user parent; older user turns and every
+  // assistant/tool/provider projection are intentionally out of scope.
+  const currentUserMessageId = currentDirectUserMessageId(
+    rows,
+    source.activeLeafMessageId
+  );
   const admitted = safeSnapshot.factEvidenceProjection.messages.flatMap((message) => {
     if (
+      currentUserMessageId === null ||
+      message.id !== currentUserMessageId ||
+      message.role !== "user" ||
       admission.excludedMessageIds.has(message.id) ||
       (admission.sourceCreatedAtCutoff !== null &&
         new Date(message.createdAt) <= admission.sourceCreatedAtCutoff)
@@ -408,19 +520,26 @@ async function applyPlan(
     FOR UPDATE
   `);
   if (!liveLease[0]) return "STALE";
-  if (!settings.learnAutomatically ||
+  if (!settings.useMemoryFacts || !settings.learnAutomatically ||
     settings.memoryGeneration !== claim.memoryGenerationSnapshot) return "STALE";
   const current = await prepareWith(tx, claim, now);
   if ("decision" in current || current.input.inputHash !== plan.input.inputHash) {
     return "STALE";
   }
+  // Suppression is an independent candidate outcome.  A suppressed sibling
+  // must not discard otherwise valid candidates from the same strict packet.
+  const admittedCandidates: MemoryExtractedCandidate[] = [];
   for (const candidate of plan.candidates) {
-    if (await candidateIsSuppressed(tx, keyring, plan.input, candidate)) {
-      return "STALE";
+    if (
+      candidate.scope.type === "GLOBAL_USER" && candidate.scope.targetId === null &&
+      !memoryAutomaticCandidateContainsSecret(candidate) &&
+      !await candidateIsSuppressed(tx, keyring, plan.input, candidate)
+    ) {
+      admittedCandidates.push(candidate);
     }
   }
 
-  for (const candidate of plan.candidates) {
+  for (const candidate of admittedCandidates) {
     const [existing] = await tx.$queryRaw<Array<{
       contentPurgedAt: Date | null;
       id: string;

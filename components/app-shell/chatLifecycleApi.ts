@@ -3,22 +3,19 @@ import {
   decodeArchivedChatDetailResponse,
   decodeArchivedChatsResponse,
   decodeChatLifecycleResponse,
-  decodeChatMemoryStateResponse,
   decodeChatMessagesPageResponse,
   decodeChatSourceResolutionResponse,
   type ArchivedChatDetailResponseWire,
   type ArchivedChatsResponseWire,
   type ChatLifecycleResponseWire,
-  type ChatMemoryStateResponseWire,
   type ChatMessagesPageWire,
   type ChatSourceResolutionResponseWire
 } from "@/lib/contracts/chats";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
-  decodeMemoryChatModeResponse,
-  type MemoryChatModeResponse,
-  type MemorySettingsResponse
-} from "@/lib/contracts/memory";
+  decodeMemoryConsumerChatModeResponse,
+  type MemoryConsumerChatModeResponse
+} from "@/lib/contracts/memoryClient";
 
 export class ChatLifecycleApiError extends Error {
   readonly code: string;
@@ -117,11 +114,14 @@ export function resolveChatSource(
 export function loadChatMemoryState(
   chatId: string,
   signal?: AbortSignal
-): Promise<ChatMemoryStateResponseWire> {
+): Promise<MemoryConsumerChatModeResponse> {
   return request(
     `/api/me/chats/${encodeURIComponent(chatId)}/memory-mode`,
     { method: "GET", signal },
-    decodeChatMemoryStateResponse
+    (value) => {
+      const decoded = decodeMemoryConsumerChatModeResponse(value);
+      return decoded.ok ? decoded.value : null;
+    }
   );
 }
 
@@ -147,25 +147,25 @@ export function restoreChat(chatId: string, expectedChatRevision: number) {
 
 export function patchChatMemoryMode(input: Readonly<{
   chatId: string;
-  expectedChatRevision: number;
-  mode: "NORMAL" | "EXCLUDED";
-  settings: MemorySettingsResponse;
-}>): Promise<MemoryChatModeResponse> {
+  mode: "EXCLUDED";
+}> | Readonly<{
+  chatId: string;
+  mode: "NORMAL";
+  resumeDisclosureCopyVersion: typeof MEMORY_CONFIRMATION_COPY_VERSION;
+}>): Promise<MemoryConsumerChatModeResponse> {
   return request(
     `/api/me/chats/${encodeURIComponent(input.chatId)}/memory-mode`,
     {
       body: JSON.stringify({
-        expectedChatRevision: input.expectedChatRevision,
-        expectedMemoryRevision: input.settings.settings.memoryRevision,
         mode: input.mode,
         ...(input.mode === "NORMAL"
-          ? { resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION }
+          ? { resumeDisclosureCopyVersion: input.resumeDisclosureCopyVersion }
           : {})
       }),
       method: "PATCH"
     },
     (value) => {
-      const decoded = decodeMemoryChatModeResponse(value);
+      const decoded = decodeMemoryConsumerChatModeResponse(value);
       return decoded.ok ? decoded.value : null;
     }
   );

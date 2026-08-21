@@ -9,6 +9,13 @@ import {
   memoryStableJson,
   normalizeMemorySearchText
 } from "../../persistence/lexical";
+import { memorySourceIsInsidePause } from "../../persistence/pauseIntervals";
+import {
+  memoryPersonalEvidenceCount,
+  memoryPersonalEvidenceLatestAt,
+  memoryPersonalFactEvidencePredicate
+} from "../../persistence/eligibility";
+import { memoryCanonicalGlobalScopePredicate } from "../../persistence/scopes";
 import { findMatchingMemorySuppressions } from "../../persistence/suppressions";
 import type {
   LockedMemorySettings,
@@ -16,7 +23,10 @@ import type {
 } from "../../persistence/transaction";
 import { loadMemorySourceSnapshot } from "../../sourceState";
 import type { MemorySuppressionKeyring } from "../../suppressionKeyring";
-import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION } from "../extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_V1_CATEGORY_ALLOWLIST
+} from "../extraction/contract";
 import {
   MEMORY_FACT_MAX_RELATED_FACTS,
   MEMORY_FACT_MAX_RELATED_VERSIONS,
@@ -57,6 +67,10 @@ const invalidDecision = Object.freeze({
 });
 
 const categoryPattern = /^[a-z][a-z0-9_-]{0,63}$/u;
+const legacyCategoryAllowlist = new Set([
+  "constraint", "goal", "interest", "language", "preference", "professional_role",
+  "routine", "tool", "work"
+]);
 const canonicalKeyPattern = /^[a-z0-9][a-z0-9._:-]{0,255}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const modalities = new Set([
@@ -76,6 +90,7 @@ type CandidateRecord = Readonly<{
   chatId: string;
   confidence: number | null;
   contentPurgedAt: Date | null;
+  createdByExecutionId: string;
   proposedCoreEligible: boolean | null;
   proposedCoreSalience: string | null;
   id: string;
@@ -161,11 +176,6 @@ function exactScope(value: Prisma.JsonValue | null): MemoryFactCandidateScope | 
   if (type === "GLOBAL_USER" && targetId === null) {
     return { targetId: null, type };
   }
-  if (
-    (type === "ASSISTANT" || type === "CHAT" || type === "FOLDER") &&
-    typeof targetId === "string" && targetId.length > 0 && targetId.length <= 256 &&
-    !/\s/u.test(targetId)
-  ) return { targetId, type };
   return null;
 }
 
@@ -191,6 +201,16 @@ function extractDirectText(content: Prisma.JsonValue): string | null {
 
 function temporalEvidence(value: Prisma.JsonValue | null): Readonly<Record<string, unknown>> | null {
   return isRecord(value) ? value : null;
+}
+
+function candidateSemanticFlags(value: Prisma.JsonValue | null): Readonly<{
+  correction: boolean;
+  futureUseful: boolean;
+}> {
+  return {
+    correction: isRecord(value) && value.correction === true,
+    futureUseful: !(isRecord(value) && value.futureUseful === false)
+  };
 }
 
 function validLanguageCode(value: string): boolean {
@@ -248,6 +268,7 @@ async function sourceAndSettingsAreCurrent(
   row: CandidateRecord
 ): Promise<boolean> {
   if (
+    !settings.useMemoryFacts ||
     !settings.learnAutomatically ||
     settings.memoryGeneration !== job.memoryGenerationSnapshot ||
     row.userId !== job.userId || row.chatId !== job.chatId ||
@@ -257,6 +278,7 @@ async function sourceAndSettingsAreCurrent(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: row.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: row.userId
   });
   return Boolean(
@@ -269,36 +291,6 @@ async function sourceAndSettingsAreCurrent(
   );
 }
 
-async function scopeIsAvailable(
-  tx: MemoryTransaction,
-  row: CandidateRecord,
-  scope: MemoryFactCandidateScope
-): Promise<boolean> {
-  if (scope.type === "GLOBAL_USER") return true;
-  if (scope.type === "CHAT") {
-    const chat = await tx.chat.findFirst({
-      select: { id: true, memoryMode: true },
-      where: { id: scope.targetId, userId: row.userId }
-    });
-    return chat?.memoryMode === "NORMAL" && scope.targetId === row.chatId;
-  }
-  if (scope.type === "FOLDER") {
-    const [chat, folder] = await Promise.all([
-      tx.chat.findFirst({
-        select: { folderId: true },
-        where: { id: row.chatId, userId: row.userId }
-      }),
-      tx.folder.findFirst({ select: { id: true }, where: { id: scope.targetId, userId: row.userId } })
-    ]);
-    return chat?.folderId === scope.targetId && folder?.id === scope.targetId;
-  }
-  const assistant = await tx.assistantDefinition.findFirst({
-    select: { id: true },
-    where: { archivedAt: null, id: scope.targetId, ownerUserId: row.userId }
-  });
-  return assistant?.id === scope.targetId;
-}
-
 async function evidenceIsAdmitted(
   tx: MemoryTransaction,
   keyring: MemorySuppressionKeyring,
@@ -307,16 +299,34 @@ async function evidenceIsAdmitted(
   evidence: readonly EvidenceRecord[],
   now: Date
 ): Promise<boolean> {
-  const cutoff = await tx.memorySourceBarrier.findFirst({
-    orderBy: [{ sourceCreatedAtCutoff: "desc" }, { id: "desc" }],
-    select: { sourceCreatedAtCutoff: true },
-    where: {
-      kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] },
-      userId: row.userId
-    }
-  });
+  const [cutoff, pauseIntervals] = await Promise.all([
+    tx.memorySourceBarrier.findFirst({
+      orderBy: [{ sourceCreatedAtCutoff: "desc" }, { id: "desc" }],
+      select: { sourceCreatedAtCutoff: true },
+      where: {
+        explicitOverrideAllowed: false,
+        kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] },
+        userId: row.userId
+      }
+    }),
+    tx.memoryPauseInterval.findMany({
+      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memoryGeneration: true,
+        pausedAt: true,
+        resumedAt: true,
+        scope: true
+      },
+      where: {
+        scope: { in: ["MASTER", "AUTOMATIC_LEARNING"] },
+        userId: row.userId
+      }
+    })
+  ]);
   for (const item of evidence) {
     if (cutoff && item.createdAt <= cutoff.sourceCreatedAtCutoff) return false;
+    if (memorySourceIsInsidePause(item.createdAt, pauseIntervals)) return false;
     const matches = await findMatchingMemorySuppressions(
       tx,
       keyring,
@@ -353,6 +363,7 @@ async function loadCandidate(
       chatId: true,
       confidence: true,
       contentPurgedAt: true,
+      createdByExecutionId: true,
       id: true,
       importance: true,
       jobId: true,
@@ -385,10 +396,13 @@ async function loadCandidate(
   }) as CandidateRecord | null;
   if (
     !row || row.state !== "PENDING" || row.contentPurgedAt !== null ||
+    !row.createdByExecutionId || row.createdByExecutionId.length > 256 ||
     row.pipelineVersion !== MEMORY_FACT_EXTRACTION_PIPELINE_VERSION ||
     !sha256Pattern.test(row.id) || !sha256Pattern.test(row.sourceHash) ||
     !row.proposedCanonicalKey || !canonicalKeyPattern.test(row.proposedCanonicalKey) ||
     !row.proposedCategory || !categoryPattern.test(row.proposedCategory) ||
+    (!(MEMORY_V1_CATEGORY_ALLOWLIST as readonly string[]).includes(row.proposedCategory) &&
+      !legacyCategoryAllowlist.has(row.proposedCategory)) ||
     (row.proposedDirectness !== "DIRECT" &&
       row.proposedDirectness !== "PARAPHRASED") ||
     row.proposedSensitivity !== "NORMAL" ||
@@ -406,7 +420,7 @@ async function loadCandidate(
     !(await sourceAndSettingsAreCurrent(tx, settings, job, row))
   ) return null;
   const scope = exactScope(row.proposedScope);
-  if (!scope || !(await scopeIsAvailable(tx, row, scope))) return null;
+  if (!scope) return null;
   const evidenceRows = await tx.$queryRaw<EvidenceRecord[]>(Prisma.sql`
     SELECT
       source."messageId", source."ordinal", source."startOffset",
@@ -421,8 +435,39 @@ async function loadCandidate(
     ORDER BY source."ordinal", source."messageId"
   `);
   if (evidenceRows.length < 1 || evidenceRows.length > 6) return null;
+  const v1Candidate = isRecord(row.proposedValue) &&
+    typeof row.proposedValue.statement === "string";
+  let currentDirectUserMessageId: string | null = null;
+  if (v1Candidate) {
+    // Re-check the turn boundary at consolidation time.  A forged or stale
+    // candidate must not smuggle an older user message into a new fact even
+    // when its chat/source revision metadata otherwise matches.
+    const activeLeafMessageId = job.activeLeafMessageId;
+    if (activeLeafMessageId === null) return null;
+    const leaf = await tx.message.findFirst({
+      select: { parentMessageId: true, role: true, status: true },
+      where: { chatId: row.chatId, id: activeLeafMessageId }
+    });
+    if (
+      !leaf || leaf.role !== "assistant" || leaf.status !== "complete" ||
+      leaf.parentMessageId === null
+    ) return null;
+    const parent = await tx.message.findFirst({
+      select: { id: true, role: true, status: true },
+      where: { chatId: row.chatId, id: leaf.parentMessageId }
+    });
+    if (!parent || parent.role !== "user" || parent.status !== "complete") return null;
+    currentDirectUserMessageId = parent.id;
+  }
+  if (
+    v1Candidate &&
+    (row.confidence !== 1 || evidenceRows.length !== 1 ||
+      row.proposedSensitivity !== "NORMAL" ||
+      !(MEMORY_V1_CATEGORY_ALLOWLIST as readonly string[]).includes(row.proposedCategory))
+  ) return null;
   const evidence: MemoryFactCandidateEvidenceSnapshot[] = [];
   for (const item of evidenceRows) {
+    if (v1Candidate && item.messageId !== currentDirectUserMessageId) return null;
     const text = extractDirectText(item.content);
     if (item.role !== "user" || item.status !== "complete" || text === null) return null;
     const projected = projectMemoryHistorySafeText(text);
@@ -456,11 +501,14 @@ async function loadCandidate(
     category: row.proposedCategory,
     chatId: row.chatId,
     confidence: row.confidence,
+    confidenceBand: row.confidence >= 1 ? "HIGH" : row.confidence >= 0.5 ? "MEDIUM" : "LOW",
+    ...candidateSemanticFlags(row.proposedValue),
     coreEligible: row.proposedCoreEligible,
     coreSalience: row.proposedCoreSalience as MemoryFactCandidateSnapshot["coreSalience"],
     directness: row.proposedDirectness as MemoryFactCandidateSnapshot["directness"],
     displayText: row.proposedDisplayText,
     evidence,
+    extractionExecutionId: row.createdByExecutionId,
     importance: row.importance,
     languageCode: row.languageCode,
     modality: row.proposedModality as MemoryFactCandidateSnapshot["modality"],
@@ -483,14 +531,6 @@ async function loadCandidate(
   return await evidenceIsAdmitted(tx, keyring, row, candidate, evidenceRows, now)
     ? candidate
     : null;
-}
-
-function scopeSql(scope: MemoryFactCandidateScope): Prisma.Sql {
-  return scope.type === "GLOBAL_USER"
-    ? Prisma.sql`scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-        AND scope."targetIdSnapshot" IS NULL`
-    : Prisma.sql`scope."scopeType"::text = ${scope.type}
-        AND scope."targetIdSnapshot" = ${scope.targetId}`;
 }
 
 async function loadRelatedFacts(
@@ -527,10 +567,16 @@ async function loadRelatedFacts(
       AND fact."state" <> 'FORGOTTEN'::"MemoryFactState"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
       AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND fact."category" = ${candidate.category}
       AND current_version."state" = 'ACTIVE'::"MemoryFactVersionState"
       AND current_version."systemTo" IS NULL
+      AND current_version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND current_version."contentPurgedAt" IS NULL
-      AND ${scopeSql(candidate.scope)}
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND ${memoryPersonalFactEvidencePredicate(userId, {
+        factVersionId: Prisma.sql`current_version."id"`,
+        sourceMode: Prisma.sql`current_version."sourceMode"`
+      })}
       AND (${neighborhood})
     ORDER BY
       (current_version."normalizedSearchText" = ${normalizedQuery}) DESC,
@@ -551,34 +597,16 @@ async function loadRelatedFacts(
         version."state"::text AS "state", version."validFrom", version."validTo",
         version."systemFrom", version."systemTo", version."confidence",
         version."importance", version."directness"::text AS "directness",
-        count(evidence."id") FILTER (
-          WHERE evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-            AND (
-              (
-                version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-                AND evidence."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
-                AND evidence."sourceRole" = 'user'
-              ) OR (
-                version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-                AND evidence."sourceType" =
-                  'EXPLICIT_ACTION'::"MemoryEvidenceSourceType"
-              )
-            )
-        ) AS "supportCount",
-        max(evidence."observedAt") FILTER (
-          WHERE evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-            AND (
-              (
-                version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-                AND evidence."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
-                AND evidence."sourceRole" = 'user'
-              ) OR (
-                version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-                AND evidence."sourceType" =
-                  'EXPLICIT_ACTION'::"MemoryEvidenceSourceType"
-              )
-            )
-        ) AS "latestEvidenceAt",
+        CASE
+          WHEN version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+            THEN (${memoryPersonalEvidenceCount(userId)})::bigint
+          ELSE count(evidence."id")
+        END AS "supportCount",
+        CASE
+          WHEN version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+            THEN ${memoryPersonalEvidenceLatestAt(userId)}
+          ELSE max(evidence."observedAt")
+        END AS "latestEvidenceAt",
         row_number() OVER (
           PARTITION BY version."factId"
           ORDER BY
@@ -592,10 +620,14 @@ async function loadRelatedFacts(
       LEFT JOIN "MemoryEvidence" AS evidence
         ON evidence."userId" = version."userId"
         AND evidence."factVersionId" = version."id"
+        AND evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
+        AND evidence."sourceType" = 'EXPLICIT_ACTION'::"MemoryEvidenceSourceType"
       WHERE version."userId" = ${userId}
         AND version."factId" IN (${Prisma.join(factIds)})
         AND version."state" <> 'FORGOTTEN'::"MemoryFactVersionState"
+        AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
         AND version."contentPurgedAt" IS NULL
+        AND ${memoryPersonalFactEvidencePredicate(userId)}
       GROUP BY version."id", fact."currentVersionId"
     )
     SELECT * FROM ranked
@@ -655,7 +687,7 @@ export async function probeMemoryFactConsolidation(
 ): Promise<MemoryJobGateDecision> {
   const identity = parseMemoryFactConsolidationJob(job);
   if (!identity) return invalidDecision;
-  if (!settings.learnAutomatically) return disabledDecision;
+  if (!settings.useMemoryFacts || !settings.learnAutomatically) return disabledDecision;
   if (settings.memoryGeneration !== job.memoryGenerationSnapshot) return staleDecision;
   const candidate = await tx.memoryCandidate.findFirst({
     select: {
@@ -683,6 +715,7 @@ export async function probeMemoryFactConsolidation(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: candidate.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
   return source && source.memoryMode === "NORMAL" &&
@@ -736,7 +769,7 @@ export async function probeMemoryFactVerification(
 ): Promise<MemoryJobGateDecision> {
   const identity = parseMemoryFactVerificationJob(job);
   if (!identity) return invalidDecision;
-  if (!settings.learnAutomatically) return disabledDecision;
+  if (!settings.useMemoryFacts || !settings.learnAutomatically) return disabledDecision;
   if (settings.memoryGeneration !== job.memoryGenerationSnapshot) return staleDecision;
   const decision = await tx.memoryCandidateDecision.findFirst({
     select: {
@@ -770,6 +803,7 @@ export async function probeMemoryFactVerification(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: candidate.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
   return source && source.memoryMode === "NORMAL" &&

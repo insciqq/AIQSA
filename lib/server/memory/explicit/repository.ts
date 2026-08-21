@@ -10,11 +10,16 @@ import type {
   MemorySummary
 } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
+import {
+  memoryPersonalEvidenceCount,
+  memoryPersonalFactEvidencePredicate
+} from "../persistence/eligibility";
 import { memoryPersistenceFailure } from "../persistence/errors";
 import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryPurgeTargetType } from "../purge/contract";
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -307,7 +312,7 @@ async function summariesByIds(
       version."validFrom",
       version."validTo",
       version."state"::text AS "versionState",
-      COALESCE(evidence."sourceCount", 0)::integer AS "sourceCount",
+      ${memoryPersonalEvidenceCount(userId)} AS "sourceCount",
       generation."indexMode",
       search."id" AS "searchEntryId",
       search."embeddingState"
@@ -322,6 +327,8 @@ async function summariesByIds(
       FROM "MemoryFactVersion" AS candidate
       WHERE candidate."userId" = fact."userId"
         AND candidate."factId" = fact."id"
+        AND candidate."safetyClassificationState" =
+          'CLASSIFIED'::"MemorySafetyClassificationState"
         AND (
           (fact."currentVersionId" IS NOT NULL AND candidate."id" = fact."currentVersionId")
           OR (
@@ -338,12 +345,6 @@ async function summariesByIds(
       ORDER BY candidate."systemFrom" DESC, candidate."id" DESC
       LIMIT 1
     ) AS version ON true
-    LEFT JOIN LATERAL (
-      SELECT COUNT(*)::integer AS "sourceCount"
-      FROM "MemoryEvidence" AS item
-      WHERE item."userId" = fact."userId"
-        AND item."factVersionId" = version."id"
-    ) AS evidence ON true
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::integer AS "candidateCount"
       FROM "MemoryCandidate" AS candidate
@@ -366,6 +367,9 @@ async function summariesByIds(
       AND search."factVersionId" = version."id"
     WHERE fact."userId" = ${userId}
       AND fact."id" IN (${Prisma.join(ids)})
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND version."id" IS NOT NULL
+      AND ${memoryPersonalFactEvidencePredicate(userId)}
   `);
   return new Map(rows.map((row) => [row.id, summaryFromRow(row)]));
 }
@@ -374,10 +378,9 @@ function orderedSummaries(
   ids: readonly string[],
   byId: ReadonlyMap<string, MemorySummary>
 ): MemorySummary[] {
-  return ids.map((id) => {
+  return ids.flatMap((id) => {
     const summary = byId.get(id);
-    if (!summary) return memoryPersistenceFailure("memory_counter_contract_invalid");
-    return summary;
+    return summary ? [summary] : [];
   });
 }
 
@@ -545,7 +548,11 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             validTo: true
           },
           take: 50,
-          where: { factId, userId }
+          where: {
+            factId,
+            safetyClassificationState: "CLASSIFIED",
+            userId
+          }
         }),
         client.memoryEvent.findMany({
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -725,6 +732,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             factId,
             id: fact.currentVersionId,
             state: "ACTIVE",
+            safetyClassificationState: "CLASSIFIED",
             userId
           }
         })
@@ -744,6 +752,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             factId,
             sourceMode: "EXPLICIT",
             state: fact.state === "ORPHANED" ? "ORPHANED" : "RETRACTED",
+            safetyClassificationState: "CLASSIFIED",
             userId
           }
         });
@@ -816,6 +825,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           where: {
             contentPurgedAt: null,
             factId,
+            safetyClassificationState: "CLASSIFIED",
             state: "CONFLICTING",
             userId
           }
@@ -847,6 +857,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
     async list(userId: string, input: MemoryListInput): Promise<MemoryListResponse> {
       const pageSize = input.pageSize ?? DEFAULT_PAGE_SIZE;
       const filterHash = memorySha256({
+        category: input.category ?? null,
         scope: input.scope ?? null,
         sourceMode: input.sourceMode ?? null,
         state: input.state ?? null,
@@ -854,9 +865,15 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       });
       const cursor = input.cursor ? decodeListCursor(input.cursor, filterHash) : null;
       const conditions = [
-        Prisma.sql`fact."userId" = ${userId}`
+        Prisma.sql`fact."userId" = ${userId}`,
+        memoryCanonicalGlobalScopePredicate(),
+        Prisma.sql`version."id" IS NOT NULL`,
+        memoryPersonalFactEvidencePredicate(userId)
       ];
       if (input.scope) conditions.push(scopeFilter(input.scope));
+      if (input.category) {
+        conditions.push(Prisma.sql`fact."category" = ${input.category}`);
+      }
       if (input.state) conditions.push(Prisma.sql`fact."state" = ${input.state}::"MemoryFactState"`);
       if (input.sourceMode) {
         conditions.push(
@@ -878,10 +895,12 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         INNER JOIN "MemoryScope" AS scope
           ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
         LEFT JOIN LATERAL (
-          SELECT candidate."sourceMode"
+          SELECT candidate."id", candidate."sourceMode"
           FROM "MemoryFactVersion" AS candidate
           WHERE candidate."userId" = fact."userId"
             AND candidate."factId" = fact."id"
+            AND candidate."safetyClassificationState" =
+              'CLASSIFIED'::"MemorySafetyClassificationState"
             AND (fact."currentVersionId" IS NULL OR candidate."id" = fact."currentVersionId")
           ORDER BY candidate."systemFrom" DESC, candidate."id" DESC
           LIMIT 1
@@ -916,6 +935,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         return memoryPersistenceFailure("memory_input_invalid");
       }
       const filterHash = memorySha256({
+        category: input.category ?? null,
         query: normalizedQuery,
         scope: input.scope ?? null,
         sourceMode: input.sourceMode ?? null,
@@ -931,9 +951,13 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           : requestedState;
         const inactiveConditions = [
           Prisma.sql`fact."userId" = ${userId}`,
+          memoryCanonicalGlobalScopePredicate(),
           Prisma.sql`fact."state" = ${requestedState}::"MemoryFactState"`,
           Prisma.sql`version."state" = ${versionState}::"MemoryFactVersionState"`,
           Prisma.sql`version."contentPurgedAt" IS NULL`,
+          Prisma.sql`version."safetyClassificationState" =
+            'CLASSIFIED'::"MemorySafetyClassificationState"`,
+          memoryPersonalFactEvidencePredicate(userId),
           Prisma.sql`(
             version."normalizedSearchText" = ${normalizedQuery}
             OR strpos(version."normalizedSearchText", ${normalizedQuery}) > 0
@@ -945,6 +969,9 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           );
         }
         if (input.scope) inactiveConditions.push(scopeFilter(input.scope));
+        if (input.category) {
+          inactiveConditions.push(Prisma.sql`fact."category" = ${input.category}`);
+        }
         if (input.sourceMode) {
           inactiveConditions.push(
             Prisma.sql`version."sourceMode" = ${input.sourceMode}::"MemoryFactSourceMode"`
@@ -983,36 +1010,10 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         Prisma.sql`fact."userId" = ${userId}`,
         Prisma.sql`scope."state" = 'ACTIVE'`,
         Prisma.sql`fact."state" = 'ACTIVE'`,
-        Prisma.sql`(
-          scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-          OR (
-            scope."scopeType" = 'FOLDER'::"MemoryScopeType"
-            AND EXISTS (
-              SELECT 1 FROM "Folder" AS target
-              WHERE target."userId" = fact."userId"
-                AND target."id" = scope."folderId"
-            )
-          )
-          OR (
-            scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
-            AND EXISTS (
-              SELECT 1 FROM "AssistantDefinition" AS target
-              WHERE target."ownerUserId" = fact."userId"
-                AND target."id" = scope."assistantId"
-                AND target."archivedAt" IS NULL
-            )
-          )
-          OR (
-            scope."scopeType" = 'CHAT'::"MemoryScopeType"
-            AND EXISTS (
-              SELECT 1 FROM "Chat" AS target
-              WHERE target."userId" = fact."userId"
-                AND target."id" = scope."chatId"
-                AND target."projectId" IS NULL
-                AND target."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
-            )
-          )
-        )`,
+        Prisma.sql`version."safetyClassificationState" =
+          'CLASSIFIED'::"MemorySafetyClassificationState"`,
+        memoryCanonicalGlobalScopePredicate(),
+        memoryPersonalFactEvidencePredicate(userId),
         Prisma.sql`(
           search."normalizedSearchText" = ${normalizedQuery}
           OR strpos(search."normalizedSearchText", ${normalizedQuery}) > 0
@@ -1020,6 +1021,9 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         )`
       ];
       if (input.scope) conditions.push(scopeFilter(input.scope));
+      if (input.category) {
+        conditions.push(Prisma.sql`fact."category" = ${input.category}`);
+      }
       if (input.state) conditions.push(Prisma.sql`fact."state" = ${input.state}::"MemoryFactState"`);
       if (input.sourceMode) {
         conditions.push(
@@ -1036,6 +1040,8 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         INNER JOIN "MemoryFactVersion" AS version
           ON version."userId" = fact."userId"
           AND version."factId" = fact."id"
+          AND version."safetyClassificationState" =
+            'CLASSIFIED'::"MemorySafetyClassificationState"
           AND version."id" = fact."currentVersionId"
           AND version."state" = 'ACTIVE'
         INNER JOIN "UserMemorySettings" AS settings

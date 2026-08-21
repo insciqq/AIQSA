@@ -208,7 +208,10 @@ describe("provider structured output", () => {
     });
 
     const onUsage = vi.fn();
-    await expect(adapter.execute(request, { onUsage })).resolves.toEqual({ ok: true });
+    const onProviderResponseId = vi.fn();
+    await expect(adapter.execute(request, { onProviderResponseId, onUsage }))
+      .resolves.toEqual({ ok: true });
+    expect(onProviderResponseId).toHaveBeenCalledWith("private-provider-id");
     expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({
       inputTokens: 11,
       outputTokens: 2,
@@ -220,6 +223,7 @@ describe("provider structured output", () => {
   it("parses one OpenRouter object and rejects free-form output", async () => {
     const createChatCompletion = vi.fn(async () => ({
       choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ ok: true }) } }],
+      id: "openrouter-response-1",
       usage: { completion_tokens: 3, prompt_tokens: 9, total_tokens: 12 }
     }));
     const adapter = createOpenRouterStructuredOutputAdapter({
@@ -227,7 +231,10 @@ describe("provider structured output", () => {
       model: openRouterModel
     });
     const onUsage = vi.fn();
-    await expect(adapter.execute(request, { onUsage })).resolves.toEqual({ ok: true });
+    const onProviderResponseId = vi.fn();
+    await expect(adapter.execute(request, { onProviderResponseId, onUsage }))
+      .resolves.toEqual({ ok: true });
+    expect(onProviderResponseId).toHaveBeenCalledWith("openrouter-response-1");
     expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({
       inputTokens: 9,
       outputTokens: 3,
@@ -236,8 +243,32 @@ describe("provider structured output", () => {
 
     createChatCompletion.mockResolvedValueOnce({
       choices: [{ finish_reason: "stop", message: { content: "not json" } }],
+      id: "openrouter-response-invalid",
       usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 }
     });
     await expect(adapter.execute(request)).rejects.toThrow("structured_output_invalid");
+  });
+
+  it("reports absent usage honestly instead of manufacturing zero tokens", async () => {
+    const adapter = createOpenAIResponsesStructuredOutputAdapter({
+      client: {
+        async cancel() { return {}; },
+        async create() {
+          return {
+            id: "response-without-usage",
+            output_text: JSON.stringify({ ok: true }),
+            status: "completed"
+          };
+        },
+        async retrieve() { return {}; }
+      },
+      model: responsesModel("openai_responses_native")
+    });
+    const onProviderResponseId = vi.fn();
+    const onUsage = vi.fn();
+    await expect(adapter.execute(request, { onProviderResponseId, onUsage }))
+      .resolves.toEqual({ ok: true });
+    expect(onProviderResponseId).toHaveBeenCalledWith("response-without-usage");
+    expect(onUsage).not.toHaveBeenCalled();
   });
 });

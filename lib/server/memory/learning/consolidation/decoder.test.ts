@@ -43,6 +43,7 @@ function candidate(
       sourceTextHash: "c".repeat(64),
       startOffset: 0
     }],
+    extractionExecutionId: "extraction-binding-1",
     id: candidateId,
     importance: 0.55,
     languageCode: "ru",
@@ -112,18 +113,36 @@ function consolidationInput(
 }
 
 function consolidationCall(
-  operation: string,
+  comparison: string,
   overrides: Record<string, unknown> = {}
 ): ModelToolCall[] {
-  const target = ["REINFORCE", "SUPERSEDE", "CONFLICT", "EXPIRE"]
+  const target = comparison === "SAME" || comparison === "REPLACES";
+  return [{
+    arguments: {
+      candidate_id: candidateId,
+      comparison,
+      evidence_ids: ["message-1"],
+      target_fact_id: target ? "fact-1" : null,
+      target_version_id: target ? "version-1" : null,
+      ...overrides
+    },
+    id: "call-1",
+    name: MEMORY_FACT_CONSOLIDATION_TOOL_NAME
+  }];
+}
+
+function operationCall(operation: string): ModelToolCall[] {
+  const target = ["REINFORCE", "SUPERSEDE", "CONFLICT", "EXPIRE", "REPLACE"]
     .includes(operation);
   const reasons: Record<string, string> = {
-    ADD: "new_supported_fact",
+    ADD: "new_fact",
     CONFLICT: "simultaneous_contradiction",
     DEFER: "insufficient_support",
     EXPIRE: "direct_end_evidence",
-    NOOP: "duplicate_or_explicit",
+    NOOP: "same_current_value",
     REINFORCE: "same_current_value",
+    REJECT: "unsafe_or_ambiguous",
+    REPLACE: "current_value_replaced",
     SUPERSEDE: "direct_newer_evidence"
   };
   return [{
@@ -134,8 +153,7 @@ function consolidationCall(
       operation,
       reason_code: reasons[operation],
       target_fact_id: target ? "fact-1" : null,
-      target_version_id: target ? "version-1" : null,
-      ...overrides
+      target_version_id: target ? "version-1" : null
     },
     id: "call-1",
     name: MEMORY_FACT_CONSOLIDATION_TOOL_NAME
@@ -143,16 +161,27 @@ function consolidationCall(
 }
 
 describe("Memory fact consolidation decoder", () => {
-  it("accepts one exact grounded ADD and binds its output hash to the input", () => {
-    const input = consolidationInput();
-    const plan = decodeMemoryFactConsolidation(consolidationCall("ADD"), input);
+  it.each([
+    ["SAME", "NOOP", "same_current_value", true],
+    ["REPLACES", "REPLACE", "current_value_replaced", true],
+    ["DIFFERENT", "ADD", "new_fact", false],
+    ["AMBIGUOUS", "REJECT", "unsafe_or_ambiguous", false]
+  ] as const)("maps %s to the server-owned %s operation", (
+    comparison,
+    operation,
+    reasonCode,
+    targeted
+  ) => {
+    const input = consolidationInput(candidate(), targeted ? [relatedFact()] : []);
+    const plan = decodeMemoryFactConsolidation(consolidationCall(comparison), input);
     expect(plan).toMatchObject({
       candidateId,
+      effectiveFrom: null,
       evidenceIds: ["message-1"],
-      operation: "ADD",
-      reasonCode: "new_supported_fact",
-      targetFactId: null,
-      targetVersionId: null
+      operation,
+      reasonCode,
+      targetFactId: targeted ? "fact-1" : null,
+      targetVersionId: targeted ? "version-1" : null
     });
     expect(plan.outputHash).toMatch(/^[a-f0-9]{64}$/u);
   });
@@ -160,40 +189,47 @@ describe("Memory fact consolidation decoder", () => {
   it("requires the exact active same-scope target and ordered evidence set", () => {
     const input = consolidationInput(candidate(), [relatedFact()]);
     expect(() => decodeMemoryFactConsolidation(
-      consolidationCall("REINFORCE", { evidence_ids: ["other-message"] }),
+      consolidationCall("SAME", { evidence_ids: ["other-message"] }),
       input
     )).toThrowError(expect.objectContaining<Partial<MemoryFactConsolidationDecodeError>>({
       code: "memory_fact_consolidation_evidence_invalid"
     }));
     expect(() => decodeMemoryFactConsolidation(
-      consolidationCall("REINFORCE", { target_version_id: "historical-version" }),
+      consolidationCall("REPLACES", { target_version_id: "historical-version" }),
       input
     )).toThrowError(expect.objectContaining<Partial<MemoryFactConsolidationDecodeError>>({
       code: "memory_fact_consolidation_target_invalid"
     }));
   });
 
-  it("accepts SUPERSEDE only with the candidate's canonical effective time", () => {
-    const validFrom = "2026-08-11T06:00:00.000Z";
-    const input = consolidationInput(candidate({ validFrom }), [relatedFact()]);
-    expect(decodeMemoryFactConsolidation(consolidationCall("SUPERSEDE", {
-      effective_from: "2026-08-11T06:00:00.000Z"
-    }), input).effectiveFrom).toBe(validFrom);
-    expect(() => decodeMemoryFactConsolidation(consolidationCall("SUPERSEDE", {
-      effective_from: "2026-08-12T06:00:00.000Z"
-    }), input)).toThrowError(expect.objectContaining<Partial<MemoryFactConsolidationDecodeError>>({
-      code: "memory_fact_consolidation_temporal_invalid"
-    }));
-  });
-
-  it("rejects extra fields and model-selected reason semantics", () => {
+  it("requires exactly one correctly named strict comparison call", () => {
     const input = consolidationInput();
-    expect(() => decodeMemoryFactConsolidation(consolidationCall("ADD", {
+    expect(() => decodeMemoryFactConsolidation(consolidationCall("DIFFERENT", {
       explanation: "hidden reasoning"
     }), input)).toThrowError("memory_fact_consolidation_output_invalid");
-    expect(() => decodeMemoryFactConsolidation(consolidationCall("ADD", {
-      reason_code: "direct_newer_evidence"
-    }), input)).toThrowError("memory_fact_consolidation_output_invalid");
+    expect(() => decodeMemoryFactConsolidation([
+      ...consolidationCall("DIFFERENT"),
+      ...consolidationCall("AMBIGUOUS")
+    ], input)).toThrowError("memory_fact_consolidation_output_invalid");
+    expect(() => decodeMemoryFactConsolidation([{
+      ...consolidationCall("DIFFERENT")[0]!,
+      name: "legacy_memory_fact_consolidation"
+    }], input)).toThrowError("memory_fact_consolidation_output_invalid");
+  });
+
+  it.each([
+    "ADD",
+    "REINFORCE",
+    "SUPERSEDE",
+    "CONFLICT",
+    "EXPIRE",
+    "NOOP",
+    "REPLACE",
+    "REJECT"
+  ])("rejects the old %s operation packet", (operation) => {
+    const input = consolidationInput(candidate(), [relatedFact()]);
+    expect(() => decodeMemoryFactConsolidation(operationCall(operation), input))
+      .toThrowError("memory_fact_consolidation_output_invalid");
   });
 });
 

@@ -9,11 +9,16 @@ import type {
 } from "./contracts";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
-const plan = planMemoryRetrieval({ currentUserText: "query", now });
+const plan = planMemoryRetrieval({
+  applyResponsePreferences: true,
+  currentUserText: "query",
+  now
+});
 
 function metadata(id: string, history = false): MemoryCandidateMetadata {
   return {
-    canonicalKey: null, category: "memory", confidence: 0, conflict: false,
+    canonicalKey: null, category: history ? null : "preferences", confidence: 0,
+    conflict: false,
     coreEligible: !history, coreSalience: history ? "NONE" : "HIGH", current: true,
     dedupeKey: id, directness: history ? null : "DIRECT", factId: history ? null : id,
     historical: false, historySafetyClass: history ? "NORMAL" : null, importance: 0,
@@ -21,7 +26,7 @@ function metadata(id: string, history = false): MemoryCandidateMetadata {
     occurredTo: null, pinned: false, scopeAffinity: 0, scopeType: history ? null : "GLOBAL_USER",
     sensitivityClass: history ? null : "NORMAL", sourceAssistantId: null,
     sourceChatId: history ? "chat-source" : null, sourceFolderId: null,
-    sourceMode: history ? null : "AUTOMATIC", systemFrom: now,
+    sourceMode: history ? null : "EXPLICIT", systemFrom: now,
     temperatureClass: null, validFrom: null, validTo: null
   };
 }
@@ -52,8 +57,8 @@ function core(id: string, text?: string): MemoryCoreCandidate {
   return { candidate: ranked(id, false, "CORE"), expansion: expansion(id, false, text) };
 }
 
-describe("single-tiered Memory context pack", () => {
-  it("packs Core first and relevant dynamic facts/history afterwards", () => {
+describe("Personal Memory context pack", () => {
+  it("packs bounded response preferences before relevant facts/history", () => {
     const dynamic = [ranked("fact"), ranked("history", true)];
     const pack = packMemoryPersonalContext({
       core: [core("core", "User prefers concise answers")],
@@ -62,8 +67,81 @@ describe("single-tiered Memory context pack", () => {
       ranked: dynamic
     });
     expect(pack.items.map(({ tier }) => tier)).toEqual(["CORE", "DYNAMIC", "DYNAMIC"]);
-    expect(pack.text).toContain("Core memory");
+    expect(pack.text).toContain("Response preferences");
     expect(pack.text).toContain("Relevant prior conversations");
+  });
+
+  it("accepts a reranked response preference while preserving its Core contract", () => {
+    const rerankedCore = core("core", "User prefers concise answers");
+    const pack = packMemoryPersonalContext({
+      core: [{
+        ...rerankedCore,
+        candidate: {
+          ...rerankedCore.candidate,
+          finalScore: 0.9,
+          selectionReason: "core.high+direct_relevance"
+        }
+      }],
+      expanded: [],
+      plan,
+      ranked: []
+    });
+    expect(pack.items).toHaveLength(1);
+    expect(pack.items[0]).toMatchObject({ section: "CORE", tier: "CORE" });
+  });
+
+  it("packs legacy sensitive Core preferences like normal while excluding secrets", () => {
+    const legacySensitive = core("legacy-sensitive", "User prefers short answers");
+    const secret = core("secret", "User secret");
+    const pack = packMemoryPersonalContext({
+      core: [{
+        ...legacySensitive,
+        candidate: {
+          ...legacySensitive.candidate,
+          metadata: { ...legacySensitive.candidate.metadata, sensitivityClass: "SENSITIVE" }
+        }
+      }, {
+        ...secret,
+        candidate: {
+          ...secret.candidate,
+          metadata: { ...secret.candidate.metadata, sensitivityClass: "SECRET" }
+        }
+      }],
+      expanded: [],
+      plan,
+      ranked: []
+    });
+    expect(pack.items).toMatchObject([{ itemId: "legacy-sensitive", section: "CORE" }]);
+    expect(pack.omissionCounts.core_contract_invalid).toBe(1);
+  });
+
+  it("rejects arbitrary facts and Core without explicit response-preference admission", () => {
+    const eligible = core("eligible", "User prefers concise answers");
+    const arbitrary = core("arbitrary", "User works at Example Corp");
+    const wrongCategory = {
+      ...arbitrary,
+      candidate: {
+        ...arbitrary.candidate,
+        metadata: { ...arbitrary.candidate.metadata, category: "identity" }
+      }
+    };
+    const notAdmittedPlan = planMemoryRetrieval({ currentUserText: "query", now });
+    const notAdmitted = packMemoryPersonalContext({
+      core: [eligible],
+      expanded: [],
+      plan: notAdmittedPlan,
+      ranked: []
+    });
+    const arbitraryFact = packMemoryPersonalContext({
+      core: [wrongCategory],
+      expanded: [],
+      plan,
+      ranked: []
+    });
+    expect(notAdmitted.items).toEqual([]);
+    expect(notAdmitted.omissionCounts.core_contract_invalid).toBe(1);
+    expect(arbitraryFact.items).toEqual([]);
+    expect(arbitraryFact.omissionCounts.core_contract_invalid).toBe(1);
   });
 
   it("deduplicates only by identity/logical key, never fuzzy text", () => {
@@ -85,7 +163,7 @@ describe("single-tiered Memory context pack", () => {
       plan,
       ranked: []
     });
-    expect(pack.coreTokens).toBeLessThanOrEqual(512);
+    expect(pack.coreTokens).toBeLessThanOrEqual(128);
     expect(pack.items.length).toBeLessThan(20);
   });
 
@@ -97,7 +175,10 @@ describe("single-tiered Memory context pack", () => {
       plan,
       ranked: dynamic
     });
-    expect(pack.items).toHaveLength(12);
-    expect(pack.omissionCounts.item_limit).toBe(12);
+    expect(pack.items).toHaveLength(10);
+    expect(pack.items.filter(({ tier }) => tier === "CORE")).toHaveLength(4);
+    expect(pack.items.filter(({ section }) => section === "FACT")).toHaveLength(6);
+    expect(pack.omissionCounts.core_item_limit).toBe(8);
+    expect(pack.omissionCounts.fact_limit).toBe(6);
   });
 });

@@ -41,6 +41,81 @@ function request(chatId: string, text: string): NormalizedRunRequest {
   };
 }
 
+async function temporaryPersonalMemoryArtifacts(
+  userId: string,
+  chatId: string,
+  modelRunId: string
+) {
+  const [
+    attemptCount,
+    attemptItemCount,
+    runBindingCount,
+    runItemCount,
+    executionCount,
+    historyCount,
+    egressReceiptCount,
+    authorizationCount,
+    operationReceiptCount,
+    jobCount,
+    checkpointCount,
+    chunkCount,
+    candidateCount,
+    eventCount,
+    feedbackCount
+  ] = await Promise.all([
+    prisma.memoryRetrievalAttempt.count({ where: { modelRunId, userId } }),
+    prisma.memoryRetrievalAttemptItem.count({ where: { userId } }),
+    prisma.modelRunMemoryBinding.count({ where: { modelRunId, userId } }),
+    prisma.modelRunMemoryItem.count({ where: { userId } }),
+    prisma.memoryExecutionBinding.count({ where: { userId } }),
+    prisma.memoryHistoryRun.count({ where: { modelRunId, userId } }),
+    prisma.memoryToolEgressReceipt.count({ where: { modelRunId, userId } }),
+    prisma.memoryMutationAuthorization.count({ where: { modelRunId, userId } }),
+    prisma.memoryOperationReceipt.count({ where: { modelRunId, userId } }),
+    prisma.memoryJob.count({ where: { chatId, userId } }),
+    prisma.chatMemoryCheckpoint.count({ where: { chatId, userId } }),
+    prisma.memoryRecallChunk.count({ where: { chatId, userId } }),
+    prisma.memoryCandidate.count({ where: { chatId, userId } }),
+    prisma.memoryEvent.count({ where: { sourceChatId: chatId, userId } }),
+    prisma.memoryFeedback.count({ where: { sourceChatIdSnapshot: chatId, userId } })
+  ]);
+  return {
+    attemptCount,
+    attemptItemCount,
+    authorizationCount,
+    candidateCount,
+    checkpointCount,
+    chunkCount,
+    egressReceiptCount,
+    eventCount,
+    executionCount,
+    feedbackCount,
+    historyCount,
+    jobCount,
+    operationReceiptCount,
+    runBindingCount,
+    runItemCount
+  };
+}
+
+const NO_TEMPORARY_PERSONAL_MEMORY_ARTIFACTS = Object.freeze({
+  attemptCount: 0,
+  attemptItemCount: 0,
+  authorizationCount: 0,
+  candidateCount: 0,
+  checkpointCount: 0,
+  chunkCount: 0,
+  egressReceiptCount: 0,
+  eventCount: 0,
+  executionCount: 0,
+  feedbackCount: 0,
+  historyCount: 0,
+  jobCount: 0,
+  operationReceiptCount: 0,
+  runBindingCount: 0,
+  runItemCount: 0
+});
+
 describe("Temporary chat retention", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -120,38 +195,46 @@ describe("Temporary chat retention", () => {
         temporaryRetentionPolicyVersion: "temporary-24h-v1"
       });
       expect(firstDeadline).not.toBeNull();
-      await expect(prisma.memoryDeletionOutbox.count({
+      const deletionObligations = await prisma.memoryDeletionOutbox.findMany({
+        select: {
+          admittedActiveLeafMessageId: true,
+          admittedChatSourceRevision: true,
+          alsoForgetOriginMemories: true,
+          errorCode: true,
+          memoryGeneration: true,
+          operation: true,
+          targetId: true,
+          targetType: true
+        },
         where: {
           operation: "TEMPORARY_DELETE",
           targetId: chat.id,
           targetType: "TEMPORARY_CHAT@temporary-24h-v1",
           userId
         }
-      })).resolves.toBe(1);
-      await expect(prisma.memoryRetrievalAttempt.findFirstOrThrow({
-        where: { modelRunId: first.runId, userId }
-      })).resolves.toMatchObject({
-        chatMemoryModeSnapshot: "TEMPORARY",
-        outcome: "DISABLED",
-        state: "CONSUMED"
       });
-      await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({
-        where: { modelRunId: first.runId }
-      })).resolves.toMatchObject({
-        contextTokenCount: 0,
-        finalizedRevisionSnapshot: 0,
-        indexGenerationId: null,
-        memoryGenerationSnapshot: 0,
-        outcome: "DISABLED",
-        retrievalRevisionSnapshot: 0,
+      expect(deletionObligations).toEqual([{
+        admittedActiveLeafMessageId: null,
+        admittedChatSourceRevision: null,
+        alsoForgetOriginMemories: null,
+        errorCode: null,
+        memoryGeneration: 0,
+        operation: "TEMPORARY_DELETE",
+        targetId: chat.id,
+        targetType: "TEMPORARY_CHAT@temporary-24h-v1"
+      }]);
+      expect(JSON.stringify(deletionObligations)).not.toContain("First temporary question");
+      await expect(temporaryPersonalMemoryArtifacts(userId, chat.id, first.runId))
+        .resolves.toEqual(NO_TEMPORARY_PERSONAL_MEMORY_ARTIFACTS);
+      await expect(prisma.modelRun.findUniqueOrThrow({
+        select: { normalizedRequest: true, status: true },
+        where: { id: first.runId }
+      })).resolves.toEqual({ normalizedRequest: firstRequest, status: "streaming" });
+      await expect(runs.recoverPreparingRun({
+        now: new Date(),
+        runId: first.runId,
         userId
-      });
-      await expect(prisma.modelRunMemoryItem.count({
-        where: { userId }
-      })).resolves.toBe(0);
-      await expect(prisma.memoryJob.count({
-        where: { chatId: chat.id, userId }
-      })).resolves.toBe(0);
+      })).resolves.toBe("not_preparing");
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         select: {
           activeIndexGenerationId: true,
@@ -240,6 +323,31 @@ describe("Temporary chat retention", () => {
         providerRequestPreview: {},
         userId
       });
+      expect(second.attemptId).toBe("");
+      await expect(prisma.modelRun.findUniqueOrThrow({
+        select: { normalizedRequest: true, status: true },
+        where: { id: second.runId }
+      })).resolves.toEqual({ normalizedRequest: secondRequest, status: "streaming" });
+      await expect(runs.recoverPreparingRun({
+        now: new Date(),
+        runId: second.runId,
+        userId
+      })).resolves.toBe("not_preparing");
+      await expect(temporaryPersonalMemoryArtifacts(userId, chat.id, second.runId))
+        .resolves.toEqual(NO_TEMPORARY_PERSONAL_MEMORY_ARTIFACTS);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        select: {
+          activeIndexGenerationId: true,
+          learnAutomatically: true,
+          memoryConsentRevision: true,
+          memoryGeneration: true,
+          memoryRevision: true,
+          referenceChatHistory: true,
+          settingsRevision: true,
+          useMemoryFacts: true
+        },
+        where: { userId }
+      })).resolves.toEqual(initialMemorySettings);
       await expect(prisma.chat.findUniqueOrThrow({
         select: { memoryBranchGeneration: true, memorySourceRevision: true },
         where: { id: chat.id }
@@ -420,12 +528,9 @@ describe("Temporary chat retention", () => {
       })).resolves.toMatchObject({
         status: "error"
       });
-      await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
-        where: { id: second.attemptId }
-      })).resolves.toMatchObject({
-        errorCode: "memory_temporary_retention_expired",
-        state: "CANCELLED"
-      });
+      await expect(prisma.memoryRetrievalAttempt.count({
+        where: { chatId: chat.id, userId }
+      })).resolves.toBe(0);
       await expect(prisma.modelRunToolCall.findFirstOrThrow({
         where: { modelRunId: second.runId }
       })).resolves.toMatchObject({ state: "error" });

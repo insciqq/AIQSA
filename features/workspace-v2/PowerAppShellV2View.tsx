@@ -4,6 +4,7 @@ import { ArchivedChatsDialog } from "@/components/app-shell/ArchivedChatsDialog"
 import {
   ChatDeleteConfirmationDialog,
   FolderDeleteConfirmationDialog,
+  MemoryResumeConfirmationDialog,
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
@@ -208,7 +209,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
   );
   const composerDockRef = useRef<HTMLDivElement>(null);
-  const libraryOpen = Boolean(settings.library || settings.knowledge || settings.memory.open);
+  const personalMemoryOpen = settings.memory.open;
+  const closePersonalMemory = settings.closeMemory;
+  const libraryOpen = Boolean(settings.library || settings.knowledge || personalMemoryOpen);
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
   const selectedProjectContext = Boolean(
     workspace.projects.detail &&
@@ -294,12 +297,19 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     return () => observer.disconnect();
   }, [libraryOpen, session.activeChatId, session.activeChatTitle]);
   useEffect(() => {
-    if (!settings.memory.open) return;
+    // A personal Memory overlay must not survive navigation into a shared
+    // Project. Apart from hiding the surface, this prevents a stale overlay
+    // from triggering a personal Memory read in Project context.
+    if (projectContext) {
+      if (personalMemoryOpen) closePersonalMemory();
+      return;
+    }
+    if (!personalMemoryOpen) return;
     void Promise.all([
       refreshMemorySettings().catch(() => null),
       refreshMemoryList().catch(() => undefined)
     ]);
-  }, [settings.memory.open]);
+  }, [closePersonalMemory, personalMemoryOpen, projectContext]);
 
   const config = useMemo<ComposerConfig | null>(() => composer.catalog ? ({
     assistants: composer.assistant.pickerItems,
@@ -550,25 +560,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           afterContent={(
             <>
               <SentAttachmentsV2 blocks={sentAttachments} />
-              {activeProject?.memoryEnabled && activeProject.capabilities.mutateChats && messageText(source).trim() ? (
-                <button
-                  className="v2-project-memory-share v2-focusable"
-                  disabled={workspace.projects.busy}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void workspace.projects.actions.saveMemory(
-                      messageText(source).trim(),
-                      activeProject.capabilities.manageMemory,
-                      source.id
-                    );
-                  }}
-                >
-                  {activeProject.capabilities.manageMemory
-                    ? "Add message to Project Memory"
-                    : "Propose for Project Memory"}
-                </button>
-              ) : null}
               {pagerSlot}
             </>
           )}
@@ -628,6 +619,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 <span data-testid={identity.testId}>{identity.label}</span>
               ) : null}
               knowledgeReference={knowledgeReference}
+              onOpenMemorySettings={settings.openMemory}
               showReasoning={composer.showReasoningBlocks}
             />
             {pagerSlot}
@@ -672,7 +664,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   };
   const setNavigationMemoryMode = (chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL") => {
     const full = currentWorkspaceChat(chat.id);
-    if (full && full.memoryMode !== mode) void workspace.pane.actions.toggleChatMemorySource(full);
+    if (full && full.memoryMode !== mode) {
+      void workspace.pane.actions.toggleChatMemorySource(full, mode);
+    }
   };
   const createNavigationChat = (mode: NewChatMode) => {
     workspace.projects.actions.leave();
@@ -716,7 +710,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   return (
     <main className="v2-live-root" data-testid="app-shell">
       <UiV2IconSprite />
-      {libraryOpen ? (
+      {libraryOpen && !projectContext ? (
         <LibrarySurfaceV2 composer={composer} props={props} onOpenMemoryOwner={() => setMemoryOwnerOpen(true)} />
       ) : (
         <ReadingRoomShellV2
@@ -763,7 +757,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) workspace.pane.actions.openProjectSettings(full);
           }}
           onLibrary={settings.openLibrary}
-          onMemoryMode={setNavigationMemoryMode}
+          onMemoryMode={projectContext ? undefined : setNavigationMemoryMode}
           onMove={(chat, folderId) => {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.moveChat(full.id, folderId);
@@ -794,7 +788,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.shareChat(full);
           }}
-          onSettings={settings.open}
+          onSettings={projectContext
+            ? () => workspace.projects.actions.openSettings("general")
+            : settings.open}
           projectContextActive={Boolean(workspace.projects.selectedProjectId)}
           projectsSlot={(onNavigate) => (
             <ProjectNavigationV2
@@ -850,12 +846,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
               onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full))}
               renameDisabled={!canRenameActiveProjectChat || Boolean(projectMutationReason)}
-              onSettings={settings.open}
+              onSettings={projectContext
+                ? () => workspace.projects.actions.openSettings("general")
+                : settings.open}
               onShare={() => void session.shareActiveBranch()}
               shareDisabled={temporarySession || Boolean(projectMutationReason) || Boolean(projectContext && (
                 !activeProject || !activeProject.publicSharingEnabled || !activeProject.capabilities.archiveChats
               ))}
-              temporaryMemory={temporarySession ? composer.memory : null}
+              temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
             <ProjectContextRailV2
@@ -991,13 +989,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onThemeChange={settings.updateTheme}
         />
       ) : null}
-      {memoryOwnerOpen ? (
+      {memoryOwnerOpen && personalMemoryOpen && !projectContext ? (
         <MemoryWorkspace
           accountId={session.accountId}
           notice={settings.notice}
           onClose={() => setMemoryOwnerOpen(false)}
           onDismissNotice={settings.dismissNotice}
-          onOpenMemorySource={settings.openMemorySourceChat}
         />
       ) : null}
       {overlays.share.target ? (
@@ -1010,11 +1007,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           knowledgeBases={workspace.projectSettings.knowledgeBases}
           knowledgeDataError={workspace.projectSettings.knowledgeDataError}
           knowledgeDataState={workspace.projectSettings.knowledgeDataState}
-          memoryDraft={workspace.projectSettings.draft}
           saving={workspace.pane.state.folderActionId === workspace.projectSettings.folder.id}
           onCancel={workspace.projectSettings.close}
           onKnowledgeBaseIdsChange={workspace.projectSettings.changeKnowledgeBaseIds}
-          onMemoryDraftChange={workspace.projectSettings.changeDraft}
           onRetryKnowledge={workspace.projectSettings.retryKnowledge}
           onSave={() => {
             const folder = workspace.projectSettings.folder;
@@ -1037,6 +1032,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           folderName={overlays.confirmations.folder.name}
           onCancel={overlays.confirmations.cancelFolder}
           onConfirm={overlays.confirmations.confirmFolder}
+        />
+      ) : null}
+      {overlays.confirmations.memoryResume ? (
+        <MemoryResumeConfirmationDialog
+          chatTitle={overlays.confirmations.memoryResume.title}
+          onCancel={overlays.confirmations.cancelMemoryResume}
+          onConfirm={overlays.confirmations.confirmMemoryResume}
         />
       ) : null}
       {overlays.confirmations.message ? (

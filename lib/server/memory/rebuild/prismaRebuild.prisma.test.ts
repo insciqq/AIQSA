@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
@@ -20,12 +20,24 @@ import {
   memoryVectorSpaceFingerprint,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
+import { memoryExecutionSha256 } from "../execution/canonical";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
 import { createExplicitMemoryService } from "../explicit/service";
+import {
+  MEMORY_STATEMENT_CLASSIFICATION_PIPELINE_VERSION,
+  MEMORY_STATEMENT_CLASSIFICATION_POLICY_VERSION,
+  MEMORY_STATEMENT_CLASSIFICATION_PROMPT_VERSION,
+  MEMORY_STATEMENT_CLASSIFICATION_SCHEMA_VERSION,
+  memoryStatementClassificationInputHash,
+  type MemoryStatementClassification,
+  type MemoryStatementClassifier
+} from "../explicit/statementClassifier";
 import {
   memoryHistoryClearDeletionHandler,
   memoryHistorySourceDeletionHandler
 } from "../history/purge";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import { applyMemoryHistorySourceMutation } from "../history/sourceLifecycle";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
@@ -34,7 +46,6 @@ import {
 } from "../persistence/authorizations";
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import {
-  MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   memorySha256,
   normalizeMemorySearchText
@@ -61,6 +72,28 @@ const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 11
 const keyring = MemorySuppressionKeyring.parse(
   `current=rebuild-v1,rebuild-v1=${keyBytes.toString("base64")}`
 );
+const classifierProvider = {
+  connectionId: `memory-rebuild-classifier-connection-${randomUUID()}`,
+  credentialId: `memory-rebuild-classifier-credential-${randomUUID()}`,
+  credentialVersionId: `memory-rebuild-classifier-version-${randomUUID()}`,
+  modelId: `memory-rebuild-classifier-model-${randomUUID()}`
+};
+const classifierModelConfiguration = {
+  adapterKind: "openai_responses_native",
+  answerSelectable: true,
+  capabilities: {
+    nativePdfInput: false,
+    nativeSearch: false,
+    pdf: false,
+    reasoning: false,
+    streaming: true,
+    structuredOutput: true,
+    vision: false
+  },
+  defaultParams: {},
+  modelClass: "answer",
+  upstreamModelId: "memory-rebuild-classifier-test-model"
+} as const;
 const EMBEDDING_DIMENSION = 1_024;
 const embeddingConfiguration = {
   adapterKind: "openai_embeddings_compatible",
@@ -83,6 +116,211 @@ const embeddingConfiguration = {
   modelClass: "embedding",
   upstreamModelId: "memory-rebuild-embedding-v1"
 } as const;
+
+async function createClassifierProvider(): Promise<void> {
+  const now = new Date();
+  const connectionConfiguration = {
+    allowPrivateNetwork: false,
+    apiRoot: "https://memory-rebuild-classifier.example.test/v1",
+    authenticationMode: "bearer",
+    responseTimeoutMs: 30_000
+  };
+  await prisma.providerConnection.create({
+    data: {
+      activeConfig: connectionConfiguration,
+      activeVersion: 1,
+      activatedAt: now,
+      displayName: "Memory rebuild classifier test provider",
+      draftConfig: connectionConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      family: "openai",
+      id: classifierProvider.connectionId,
+      unassignedPolicy: "use_default"
+    }
+  });
+  await prisma.providerCredential.create({
+    data: {
+      activatedAt: now,
+      connectionId: classifierProvider.connectionId,
+      draftVersion: 1,
+      enabled: true,
+      id: classifierProvider.credentialId,
+      label: "Memory rebuild classifier credential",
+      testedAt: now
+    }
+  });
+  await prisma.providerCredentialVersion.create({
+    data: {
+      activatedAt: now,
+      credentialId: classifierProvider.credentialId,
+      id: classifierProvider.credentialVersionId,
+      secretEnvelope: "memory-rebuild-classifier-test-only-envelope",
+      testedAt: now,
+      testEvidence: { authenticationMode: "bearer" },
+      version: 1
+    }
+  });
+  await prisma.providerCredential.update({
+    data: { activeVersionId: classifierProvider.credentialVersionId },
+    where: { id: classifierProvider.credentialId }
+  });
+  await prisma.providerConnection.update({
+    data: { defaultCredentialId: classifierProvider.credentialId },
+    where: { id: classifierProvider.connectionId }
+  });
+  await prisma.providerModel.create({
+    data: {
+      activeConfig: classifierModelConfiguration,
+      activeVersion: 1,
+      activatedAt: now,
+      capabilities: classifierModelConfiguration.capabilities,
+      connectionId: classifierProvider.connectionId,
+      defaultParams: {},
+      displayName: "Memory rebuild classifier test model",
+      draftConfig: classifierModelConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      id: classifierProvider.modelId,
+      modelClass: "answer",
+      modelId: classifierModelConfiguration.upstreamModelId,
+      provider: "openai"
+    }
+  });
+}
+
+async function cleanupClassifierProvider(): Promise<void> {
+  await prisma.providerConnection.updateMany({
+    data: { defaultCredentialId: null },
+    where: { id: classifierProvider.connectionId }
+  });
+  await prisma.providerCredential.updateMany({
+    data: { activeVersionId: null },
+    where: { id: classifierProvider.credentialId }
+  });
+  await prisma.providerModel.deleteMany({
+    where: { id: classifierProvider.modelId }
+  });
+  await prisma.providerCredentialVersion.deleteMany({
+    where: { id: classifierProvider.credentialVersionId }
+  });
+  await prisma.providerCredential.deleteMany({
+    where: { id: classifierProvider.credentialId }
+  });
+  await prisma.providerConnection.deleteMany({
+    where: { id: classifierProvider.connectionId }
+  });
+}
+
+type GovernedStatementClassification = MemoryStatementClassification & Readonly<{
+  acceptedOutputHash: string;
+  classifiedAt: Date;
+  executionId: string;
+  inputHash: string;
+  modelId: string;
+  policyVersion: string;
+  providerId: string;
+}>;
+
+async function createStatementClassificationReceipt(
+  statement: string,
+  execution: Readonly<{
+    mutationAuthorizationId: string;
+    userId: string;
+  }>
+): Promise<GovernedStatementClassification> {
+  const executionId = randomUUID();
+  const inputHash = memoryStatementClassificationInputHash(statement);
+  const decision = {
+    category: "preferences" as const,
+    normalizedStatement: statement,
+    reasonCode: "response_preference" as const,
+    responsePreference: true,
+    sensitivity: "NORMAL" as const,
+    storageDecision: "ALLOW" as const
+  };
+  const acceptedOutputHash = memoryExecutionSha256({
+    inputHash,
+    output: decision,
+    role: "MEMORY_STATEMENT_CLASSIFY",
+    version: 1
+  });
+  const startedAt = new Date();
+  const completedAt = new Date(startedAt.getTime() + 1);
+  await prisma.memoryExecutionBinding.create({
+    data: {
+      acceptedOutputHash,
+      cachedInputTokens: 0,
+      completedAt,
+      connectionId: classifierProvider.connectionId,
+      createdAt: startedAt,
+      credentialId: classifierProvider.credentialId,
+      credentialVersionId: classifierProvider.credentialVersionId,
+      destinationFingerprint: "c".repeat(64),
+      id: executionId,
+      inputHash,
+      inputTokens: 5,
+      logicalRole: "MEMORY_STATEMENT_CLASSIFY",
+      mutationAuthorizationId: execution.mutationAuthorizationId,
+      ordinal: 0,
+      outputTokens: 2,
+      ownerType: "MUTATION_AUTHORIZATION",
+      pipelineVersion: MEMORY_STATEMENT_CLASSIFICATION_PIPELINE_VERSION,
+      policyVersion: MEMORY_STATEMENT_CLASSIFICATION_POLICY_VERSION,
+      promptVersion: MEMORY_STATEMENT_CLASSIFICATION_PROMPT_VERSION,
+      providerId: "openai",
+      providerModelId: classifierProvider.modelId,
+      providerResponseId: `memory-rebuild-classifier-response-${randomUUID()}`,
+      reasoningTokens: 0,
+      recoverableUntil: new Date(completedAt.getTime() + 24 * 60 * 60 * 1_000),
+      schemaVersion: MEMORY_STATEMENT_CLASSIFICATION_SCHEMA_VERSION,
+      secretFreeExecutionSnapshot: {
+        providerExecutionSnapshot: {
+          providerFamily: "openai",
+          providerModelId: classifierProvider.modelId
+        },
+        version: 1
+      },
+      startedAt,
+      state: "SUCCEEDED",
+      totalTokens: 7,
+      usageCompleteness: "COMPLETE",
+      userId: execution.userId
+    }
+  });
+  await prisma.usageEvent.create({
+    data: {
+      cachedInputTokens: 0,
+      inputTokens: 5,
+      memoryExecutionBindingId: executionId,
+      modelId: classifierProvider.modelId,
+      outputTokens: 2,
+      provider: "openai",
+      providerModelId: classifierProvider.modelId,
+      reasoningTokens: 0,
+      totalTokens: 7,
+      userId: execution.userId
+    }
+  });
+  return {
+    acceptedOutputHash,
+    classifiedAt: completedAt,
+    ...decision,
+    executionId,
+    inputHash,
+    modelId: classifierProvider.modelId,
+    policyVersion: MEMORY_STATEMENT_CLASSIFICATION_POLICY_VERSION,
+    providerId: "openai"
+  };
+}
+
+const statementClassifier: MemoryStatementClassifier = Object.freeze({
+  async classify(statement, options) {
+    const execution = options?.execution;
+    if (!execution) throw new Error("memory_rebuild_classifier_execution_missing");
+    return createStatementClassificationReceipt(statement, execution);
+  }
+});
 
 function deletionRegistry(): MemoryDeletionContributorRegistry {
   const registry = new MemoryDeletionContributorRegistry({
@@ -303,7 +541,8 @@ function services() {
     authorizationRepository,
     factRepository: createPrismaMemoryFactRepository(keyring, prisma),
     readRepository,
-    scopeRepository: createPrismaMemoryScopeRepository(prisma)
+    scopeRepository: createPrismaMemoryScopeRepository(prisma),
+    statementClassifier
   });
   const lifecycle = createMemoryLifecycleService({
     authorizationRepository,
@@ -333,6 +572,50 @@ async function saveExplicit(
     mutationAuthorizationId: authorization.mutationAuthorizationId,
     scope: { type: "GLOBAL_USER" },
     statement
+  });
+}
+
+async function saveLegacyExplicit(
+  userId: string,
+  scopeId: string,
+  statement: string,
+  nonce: string
+) {
+  return createPrismaMemoryFactRepository(keyring, prisma, {
+    consumeExplicitAuthorization: async () => undefined
+  }).save(userId, {
+    authorization: {
+      action: "SAVE",
+      authorizationId: `legacy-authorization-${nonce}`,
+      authorizedPayloadHash: memorySha256({ nonce, statement })
+    },
+    evidence: {
+      kind: "EXPLICIT_ACTION",
+      observedAt: new Date("2026-08-21T08:00:00.000Z"),
+      safeExcerpt: statement,
+      safeSourceHash: memorySha256(statement),
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: "memory-rebuild-legacy-test-v1"
+    },
+    explicitSuppressionOverride: false,
+    idempotencyFingerprint: `legacy-save-${nonce}`,
+    requestId: `legacy-request-${nonce}`,
+    scopeId,
+    value: {
+      canonicalKey: `legacy.rebuild.${nonce}`,
+      category: "preferences",
+      confidence: 1,
+      directness: "DIRECT",
+      displayText: statement,
+      importance: 0.8,
+      languageCode: "en",
+      modality: "PREFERENCE",
+      pipelineVersion: "memory-rebuild-legacy-test-v1",
+      secretTaintedSourceWindow: false,
+      sensitivityClass: "NORMAL",
+      sourceMode: "EXPLICIT",
+      structuredValue: { statement }
+    }
   });
 }
 
@@ -578,7 +861,7 @@ async function createHistoryDerivative(input: Readonly<{
       branchGeneration: 0,
       chatId: chat.id,
       chunkOrdinal: 0,
-      chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
       contentHash,
       createdAt: assistantAt,
       id: chunkId,
@@ -590,7 +873,7 @@ async function createHistoryDerivative(input: Readonly<{
       redactionState: "NOT_NEEDED",
       safeProjectedText: text,
       safetyClass: "NORMAL",
-      sourceProjectionVersion: "memory-clear-fixture-v1",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
       sourceRevisionAtCreation: input.sourceRevision,
       userId: input.userId
     }
@@ -946,7 +1229,12 @@ async function expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(
 }
 
 describe("Prisma Memory shadow rebuild and history clear", () => {
+  beforeAll(async () => {
+    await createClassifierProvider();
+  });
+
   afterAll(async () => {
+    await cleanupClassifierProvider();
     await prisma.$disconnect();
   });
 
@@ -1050,6 +1338,58 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(evidence.rebuildLatencyMs).toBeLessThan(evidence.maximumRebuildLatencyMs);
       expect(JSON.stringify(evidence)).not.toContain(userId);
       console.info("memory_rebuild_latency", evidence);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("keeps a legacy-scoped fact out of a rebuilt search generation", async () => {
+    const userId = await createOwner("legacy-scope");
+    const { explicit } = services();
+    const repository = createPrismaMemoryRebuildRepository(prisma);
+    try {
+      const retained = await saveExplicit(
+        explicit,
+        userId,
+        "I prefer canonical global rebuild facts.",
+        "legacy-rebuild-global"
+      );
+      const folder = await prisma.folder.create({
+        data: { name: "Legacy rebuild scope", userId }
+      });
+      const legacyStatement = "I prefer a legacy folder scoped rebuild fact.";
+      const legacyScope = await createPrismaMemoryScopeRepository(prisma).ensure(userId, {
+        targetId: folder.id,
+        type: "FOLDER"
+      });
+      const legacy = await saveLegacyExplicit(
+        userId,
+        legacyScope.id,
+        legacyStatement,
+        `legacy-rebuild-folder-${randomUUID()}`
+      );
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await repository.admit(userId, {
+        expectedMemoryRevision: settings.memoryRevision,
+        expectedSettingsRevision: settings.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: "legacy-scope-rebuild" }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      const identity = parseMemoryRebuildJobFingerprint((await prisma.memoryJob
+        .findUniqueOrThrow({ where: { id: admitted.jobId } })).idempotencyFingerprint);
+      if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+
+      await processRebuildJob(admitted.jobId, repository);
+      const factVersionIds = (await prisma.memorySearchEntry.findMany({
+        select: { factVersionId: true },
+        where: { indexGenerationId: identity.generationId, userId }
+      })).flatMap(({ factVersionId }) => factVersionId ? [factVersionId] : []);
+
+      expect(factVersionIds).toContain(retained.memory.currentVersionId);
+      expect(factVersionIds).not.toContain(legacy.versionId);
     } finally {
       await cleanupOwner(userId);
     }

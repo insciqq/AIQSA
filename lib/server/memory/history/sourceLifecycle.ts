@@ -30,17 +30,43 @@ function parentMutationAdvancedMemoryRevision(
     memoryCounterEffectFor(mutation).memoryRevision);
 }
 
+function isProjectSource(event: MemoryRetainedSourceMutationEvent): boolean {
+  return (event.snapshot.projectId !== null && event.snapshot.projectId !== undefined) ||
+    (event.previous.projectId !== null && event.previous.projectId !== undefined);
+}
+
 function shouldIndex(event: MemoryRetainedSourceMutationEvent): boolean {
   if (
+    isProjectSource(event) ||
     event.snapshot.memoryMode !== "NORMAL" ||
     event.snapshot.activeLeafMessageId === null
   ) {
     return false;
   }
-  if (event.mutations.includes("SOURCE_RESUME")) return true;
+  // Resume only opens the source for future turns.  Reindexing the retained
+  // pre-exclusion path would violate the per-chat pause boundary; the next
+  // settled assistant turn creates a fresh source snapshot and is handled by
+  // the terminal-settlement branch below.
   return event.mutations.includes("TERMINAL_SETTLEMENT") &&
     event.settlement?.status === "complete" &&
     event.settlement.assistantMessageId === event.snapshot.activeLeafMessageId;
+}
+
+function retainsVisibleHistoryWhilePaused(
+  settings: LockedMemorySettings,
+  event: MemoryRetainedSourceMutationEvent
+): boolean {
+  return (
+    (!settings.useMemoryFacts || !settings.referenceChatHistory) &&
+    event.previous.memoryMode === "NORMAL" &&
+    event.snapshot.memoryMode === "NORMAL" &&
+    event.previous.folderId === event.snapshot.folderId &&
+    event.previous.memoryBranchGeneration === event.snapshot.memoryBranchGeneration &&
+    event.mutations.some((mutation) =>
+      mutation === "NORMAL_APPEND" || mutation === "TERMINAL_SETTLEMENT") &&
+    !event.mutations.some((mutation) =>
+      mutation === "SOURCE_EXCLUDE" || mutation === "SOURCE_HARD_DELETE")
+  );
 }
 
 async function invalidateVisibleHistory(
@@ -109,6 +135,42 @@ async function updateExistingCheckpoint(
     });
     return;
   }
+  const resumedWithoutBackfill = event.mutations.includes("SOURCE_RESUME");
+  if (resumedWithoutBackfill) {
+    const resumeCreatedAtCutoff = new Date();
+    await tx.chatMemoryCheckpoint.upsert({
+      create: {
+        activeLeafMessageId: event.snapshot.activeLeafMessageId,
+        branchGeneration: event.snapshot.memoryBranchGeneration,
+        chatId: event.snapshot.id,
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        resumeCreatedAtCutoff,
+        sourceContentHash: event.snapshot.sourceHash,
+        sourceRevision: event.snapshot.memorySourceRevision,
+        status: "STALE",
+        userId: event.snapshot.userId
+      },
+      update: {
+        activeLeafMessageId: event.snapshot.activeLeafMessageId,
+        branchGeneration: event.snapshot.memoryBranchGeneration,
+        lastErrorCode: null,
+        lastIndexedMessageId: null,
+        lastSucceededAt: null,
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        resumeCreatedAtCutoff,
+        sourceContentHash: event.snapshot.sourceHash,
+        sourceRevision: event.snapshot.memorySourceRevision,
+        status: "STALE"
+      },
+      where: {
+        userId_chatId: {
+          chatId: event.snapshot.id,
+          userId: event.snapshot.userId
+        }
+      }
+    });
+    return;
+  }
   await tx.chatMemoryCheckpoint.updateMany({
     data: {
       activeLeafMessageId: event.snapshot.activeLeafMessageId,
@@ -118,6 +180,7 @@ async function updateExistingCheckpoint(
         : "memory_source_ineligible",
       lastIndexedMessageId: null,
       lastSucceededAt: null,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
       status: event.snapshot.memoryMode === "NORMAL" ? "PENDING" : "STALE"
@@ -137,6 +200,7 @@ async function ensurePendingCheckpoint(
       activeLeafMessageId,
       branchGeneration: event.snapshot.memoryBranchGeneration,
       chatId: event.snapshot.id,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
       status: "PENDING",
@@ -148,6 +212,7 @@ async function ensurePendingCheckpoint(
       lastErrorCode: null,
       lastIndexedMessageId: null,
       lastSucceededAt: null,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
       status: "PENDING"
@@ -165,43 +230,58 @@ export async function applyMemoryHistorySourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
+  // Project chats are a separate shared-memory boundary.  Do not invalidate,
+  // checkpoint, purge, or enqueue personal history artifacts for them.
+  if (isProjectSource(event)) {
+    return;
+  }
   const changed = sourceIdentityChanged(event);
   const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null = null;
   if (changed) {
-    const now = new Date();
-    const invalidated = await invalidateVisibleHistory(tx, event, now);
-    if (invalidated > 0) {
-      settings = await lockMemorySettings(tx, event.snapshot.userId, false);
-      await settleVisibleMutationCounter(tx, settings, event);
-      if (!permanentDelete) {
-        const deletion = await enqueueMemoryDeletion(tx, settings, {
-          operation: "SOURCE_PURGE",
-          targetId: event.snapshot.id,
-          targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
-        });
-        if (!deletion.created) {
-          await tx.memoryDeletionOutbox.update({
-            data: {
-              completedAt: null,
-              errorCode: null,
-              lastAuditAt: null,
-              leaseExpiresAt: null,
-              leaseToken: null,
-              nextAttemptAt: null,
-              state: "PENDING"
-            },
-            where: { id: deletion.id }
+    settings = await lockMemorySettings(tx, event.snapshot.userId, false);
+    // A Normal append while master/Search is paused is not a destructive
+    // source mutation. Keep the last READY derivative and checkpoint intact;
+    // retrieval may reuse it after resume only when the current leaf is
+    // proven to belong to the closed pause interval. The first post-resume
+    // append follows the ordinary invalidation/reindex path below.
+    if (!retainsVisibleHistoryWhilePaused(settings, event)) {
+      const now = new Date();
+      const invalidated = await invalidateVisibleHistory(tx, event, now);
+      if (invalidated > 0) {
+        await settleVisibleMutationCounter(tx, settings, event);
+        if (!permanentDelete) {
+          const deletion = await enqueueMemoryDeletion(tx, settings, {
+            operation: "SOURCE_PURGE",
+            targetId: event.snapshot.id,
+            targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
           });
+          if (!deletion.created) {
+            await tx.memoryDeletionOutbox.update({
+              data: {
+                completedAt: null,
+                errorCode: null,
+                lastAuditAt: null,
+                leaseExpiresAt: null,
+                leaseToken: null,
+                nextAttemptAt: null,
+                state: "PENDING"
+              },
+              where: { id: deletion.id }
+            });
+          }
         }
       }
+      await updateExistingCheckpoint(tx, event);
     }
-    await updateExistingCheckpoint(tx, event);
   }
 
   if (!shouldIndex(event)) return;
   settings ??= await lockMemorySettings(tx, event.snapshot.userId, false);
-  if (!settings.referenceChatHistory) return;
+  // The master switch is authoritative over every personal source.  Keep
+  // deletion/invalidation work above this point alive while paused, but do
+  // not create a history checkpoint/job until Memory is explicitly resumed.
+  if (!settings.useMemoryFacts || !settings.referenceChatHistory) return;
   await ensurePendingCheckpoint(tx, event);
   await enqueueMemoryJob(tx, settings, {
     idempotencyFingerprint: memoryHistoryIndexJobFingerprint(event.snapshot),

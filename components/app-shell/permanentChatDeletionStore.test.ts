@@ -1,74 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
+import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
+import {
+  resetMemorySettingsStoreForTest,
+  resetPermanentChatDeletionStoreForTest
+} from "@/tests/support/appShellStores";
 import { useMemorySettingsStore } from "./memorySettingsStore";
-import { activatePermanentChatDeletionAccount, confirmPermanentChatDeletion, deactivatePermanentChatDeletionAccount, openPermanentChatDeletion, setPermanentChatDeletionOriginForget, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
-import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
-
-const now = "2026-08-12T10:00:00.000Z";
-
-function message() {
-  return {
-    artifactSummary: null,
-    content: { blocks: [{ text: "Private text", type: "text" }] },
-    createdAt: now,
-    errorMessage: null,
-    id: "message-1",
-    modelId: null,
-    modelRunId: null,
-    parentMessageId: null,
-    provider: null,
-    role: "user",
-    status: "complete"
-  };
-}
-
-function detail() {
-  return {
-    chat: {
-      activeLeafMessageId: "message-1",
-      contextStats: { approximateActiveBranchInputTokens: 2 },
-      createdAt: now,
-      defaultKnowledgePlan: null,
-      defaultModelId: null,
-      defaultProvider: null,
-      folderId: null,
-      id: "chat-1",
-      messageCount: 1,
-      messages: [message()],
-      pageInfo: {
-        activeLeafMessageId: "message-1",
-        beforeCursor: null,
-        hasOlder: false,
-        snapshotUpdatedAt: now
-      },
-      pinned: false,
-      title: "Private chat",
-      updatedAt: now,
-      usageStats: null
-    }
-  };
-}
-
-function lifecycle(sourceRevision = 4) {
-  return {
-    chat: {
-      archived: false,
-      chatId: "chat-1",
-      mode: "NORMAL",
-      sourceRevision,
-      temporaryRetentionDeadline: null,
-      temporaryRetentionPolicyVersion: null,
-      updatedAt: now
-    }
-  };
-}
+import {
+  activatePermanentChatDeletionAccount,
+  confirmPermanentChatDeletion,
+  deactivatePermanentChatDeletionAccount,
+  openPermanentChatDeletion,
+  setPermanentChatDeletionOriginForget,
+  usePermanentChatDeletionStore
+} from "./permanentChatDeletionStore";
 
 beforeEach(() => {
   resetPermanentChatDeletionStoreForTest();
   resetMemorySettingsStoreForTest();
   window.sessionStorage.clear();
   useMemorySettingsStore.setState({
-    data: memorySettingsFixture({
+    data: memoryConsumerSettingsFixture({
       capabilities: { permanentChatDeletion: true }
     }),
     error: null,
@@ -85,123 +37,128 @@ afterEach(() => {
 });
 
 describe("permanent chat deletion store", () => {
-  it("binds the fresh snapshot and explicit origin-memory choice, then restores opaque status", async () => {
+  it("sends one safe confirmation and persists only a chat-keyed reference", async () => {
     const reconciled = vi.fn();
-    const bodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path.endsWith("/memory-mode")) return Response.json(lifecycle());
-      if (path === "/api/chats/chat-1") return Response.json(detail());
-      if (path.endsWith("/authorization")) {
-        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        return Response.json({
-          expiresAt: "2026-08-12T10:05:00.000Z",
-          mutationAuthorizationId: "authorization-1"
-        });
-      }
-      if (path.endsWith("/delete-permanently")) {
-        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        return Response.json({ deletionId: "deletion-1", fencedAt: now, state: "PENDING" });
-      }
-      if (path.includes("/status?")) {
-        return Response.json({
-          attemptCount: 1,
-          cleanupComplete: false,
-          deletionId: "deletion-1",
-          errorCode: null,
-          fencedAt: now,
-          lastAuditAt: null,
-          state: "RUNNING",
-          updatedAt: now
-        });
-      }
-      return Response.json({ error: "unexpected_request" }, { status: 500 });
+      if (path.endsWith("/status")) return Response.json({ status: "IN_PROGRESS" });
+      expect(path).toBe("/api/chats/chat-1/delete-permanently");
+      expect(init?.method).toBe("POST");
+      return Response.json({ status: "IN_PROGRESS" });
     });
     vi.stubGlobal("fetch", fetchMock);
 
+    window.sessionStorage.setItem(
+      "aiqsa:chat-permanent-deletion:v1:account-a",
+      JSON.stringify({ chatId: "chat-1", deletionId: "legacy-private", version: 1 })
+    );
     await activatePermanentChatDeletionAccount("account-a", reconciled);
+    expect(window.sessionStorage.getItem(
+      "aiqsa:chat-permanent-deletion:v1:account-a"
+    )).toBeNull();
     openPermanentChatDeletion({
       chatId: "chat-1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
       location: "WORKSPACE",
       title: "Private chat"
     });
     setPermanentChatDeletionOriginForget(true);
     await confirmPermanentChatDeletion();
 
-    expect(bodies).toHaveLength(2);
-    expect(bodies[0]).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const confirmation = JSON.parse(
+      String(fetchMock.mock.calls[0]?.[1]?.body)
+    ) as Record<string, unknown>;
+    expect(confirmation).toEqual({
       alsoForgetOriginMemories: true,
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      requestId: expect.any(String)
     });
-    expect(bodies[1]).toEqual({
-      alsoForgetOriginMemories: true,
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
-      mutationAuthorizationId: "authorization-1"
-    });
+    expect(Object.keys(confirmation).sort()).toEqual([
+      "alsoForgetOriginMemories",
+      "confirmationCopyVersion",
+      "requestId"
+    ]);
     expect(reconciled).toHaveBeenCalledWith("chat-1");
     expect(usePermanentChatDeletionStore.getState()).toMatchObject({
-      reference: { chatId: "chat-1", deletionId: "deletion-1" },
-      status: { state: "RUNNING" },
+      reference: { chatId: "chat-1" },
+      status: { status: "IN_PROGRESS" },
       statusOpen: true,
       target: null
     });
     expect(window.sessionStorage.getItem(
-      "aiqsa:chat-permanent-deletion:v1:account-a"
-    )).toBe(JSON.stringify({ chatId: "chat-1", deletionId: "deletion-1", version: 1 }));
+      "aiqsa:chat-permanent-deletion:v2:account-a"
+    )).toBe(JSON.stringify({ chatId: "chat-1", version: 2 }));
 
     deactivatePermanentChatDeletionAccount("account-a");
     await activatePermanentChatDeletionAccount("account-a");
-    expect(usePermanentChatDeletionStore.getState().status).toMatchObject({ state: "RUNNING" });
-    await activatePermanentChatDeletionAccount("account-b");
-    expect(usePermanentChatDeletionStore.getState()).toMatchObject({
-      accountId: "account-b",
-      reference: null,
-      status: null
-    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "/api/chats/chat-1/delete-permanently/status"
+    );
+    expect(usePermanentChatDeletionStore.getState().status)
+      .toEqual({ status: "IN_PROGRESS" });
   });
 
-  it("requires a second confirmation after a fresh snapshot differs and never authorizes stale state", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const path = String(input);
-      if (path.endsWith("/memory-mode")) return Response.json(lifecycle(5));
-      if (path === "/api/chats/chat-1") return Response.json(detail());
-      return Response.json({ error: "unexpected_authorization" }, { status: 500 });
-    });
+  it("leaves snapshot authority on the server and surfaces only a friendly error", async () => {
+    const fetchMock = vi.fn(async () => Response.json(
+      { error: "CHANGED" },
+      { status: 409 }
+    ));
     vi.stubGlobal("fetch", fetchMock);
     await activatePermanentChatDeletionAccount("account-a");
     openPermanentChatDeletion({
       chatId: "chat-1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
       location: "WORKSPACE",
       title: "Private chat"
     });
 
-    await confirmPermanentChatDeletion();
+    await expect(confirmPermanentChatDeletion()).rejects.toMatchObject({
+      reason: "CHANGED"
+    });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledOnce();
     expect(usePermanentChatDeletionStore.getState()).toMatchObject({
       busy: false,
-      confirmationError: "chat_permanent_delete_stale_review_required",
-      target: { expectedChatRevision: 5 }
+      confirmationError: "CHANGED",
+      target: { chatId: "chat-1" }
+    });
+  });
+
+  it("recovers a lost confirmation response from chat-keyed status", async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error("network response lost"))
+      .mockResolvedValueOnce(Response.json({ status: "IN_PROGRESS" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await activatePermanentChatDeletionAccount("account-a");
+    openPermanentChatDeletion({
+      chatId: "chat-1",
+      location: "WORKSPACE",
+      title: "Private chat"
+    });
+
+    await expect(confirmPermanentChatDeletion()).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0]))
+      .toBe("/api/chats/chat-1/delete-permanently/status");
+    expect(usePermanentChatDeletionStore.getState()).toMatchObject({
+      confirmationError: null,
+      reference: { chatId: "chat-1" },
+      status: { status: "IN_PROGRESS" },
+      statusOpen: true,
+      target: null
     });
   });
 
   it("keeps the workflow unavailable when the server capability is dark", async () => {
     useMemorySettingsStore.setState({
-      data: memorySettingsFixture({
+      data: memoryConsumerSettingsFixture({
         capabilities: { permanentChatDeletion: false }
       })
     });
     await activatePermanentChatDeletionAccount("account-a");
     openPermanentChatDeletion({
       chatId: "chat-1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
       location: "WORKSPACE",
       title: "Private chat"
     });

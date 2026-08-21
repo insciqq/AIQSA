@@ -1,7 +1,6 @@
 import {
-  decodeChatPermanentDeleteAuthorizationRequest,
-  decodeChatPermanentDeleteRequest
-} from "../../../contracts/chats";
+  decodeMemoryConsumerPermanentChatDeleteInput
+} from "../../../contracts/memoryClient";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import type { LoginRateLimiter } from "../../auth/rateLimit";
 import {
@@ -52,11 +51,23 @@ function jsonContentType(request: Request): boolean {
 
 async function body(request: Request): Promise<unknown | Response> {
   if (!jsonContentType(request)) {
-    return json({ error: "chat_permanent_delete_invalid" }, 400);
+    return json({ error: "INVALID" }, 400);
   }
   const value = await readJsonBodyOrNull(request, "json");
   const error = requestBodyErrorResponse(value);
-  return error ? json({ error: "chat_permanent_delete_invalid" }, 400) : value;
+  return error ? json({ error: "INVALID" }, 400) : value;
+}
+
+function publicFailure(code: PermanentChatDeletionErrorCode): string {
+  switch (code) {
+    case "active_run_in_progress": return "BUSY";
+    case "chat_permanent_delete_stale": return "CHANGED";
+    case "chat_permanent_delete_temporary_forbidden":
+    case "chat_permanent_delete_unavailable":
+      return "UNAVAILABLE";
+    default:
+      return "FAILED";
+  }
 }
 
 function statusFor(code: PermanentChatDeletionErrorCode): number {
@@ -77,8 +88,8 @@ function statusFor(code: PermanentChatDeletionErrorCode): number {
 
 function serviceError(error: unknown): Response {
   return error instanceof PermanentChatDeletionError
-    ? json({ error: error.code }, statusFor(error.code))
-    : json({ error: "chat_permanent_delete_failed" }, 500);
+    ? json({ error: publicFailure(error.code) }, statusFor(error.code))
+    : json({ error: "FAILED" }, 500);
 }
 
 async function authAndChat(
@@ -95,7 +106,7 @@ async function authAndChat(
   if (requireAdmission && !deps.capability.enabled) {
     return {
       ok: false,
-      response: json({ error: "chat_permanent_delete_unavailable" }, 503)
+      response: json({ error: "UNAVAILABLE" }, 503)
     };
   }
   const chatId = routeId((await context.params).chatId);
@@ -103,7 +114,7 @@ async function authAndChat(
     ? { chatId, ok: true, userId: session.userId }
     : {
         ok: false,
-        response: json({ error: "chat_permanent_delete_invalid" }, 400)
+        response: json({ error: "INVALID" }, 400)
       };
 }
 
@@ -115,12 +126,12 @@ async function mutationAllowed(
     `chat-permanent-delete:user:${userId}`
   );
   if (decision.allowed) return null;
-  const response = json({ error: "chat_permanent_delete_failed" }, 429);
+  const response = json({ error: "BUSY" }, 429);
   response.headers.set("retry-after", String(decision.retryAfterSeconds));
   return response;
 }
 
-export function createPermanentChatDeleteAuthorizationHandler(
+export function createPermanentChatDeleteConsumerHandler(
   deps: PermanentChatDeletionHandlerDeps
 ) {
   return async function POST(
@@ -130,49 +141,19 @@ export function createPermanentChatDeleteAuthorizationHandler(
     const resolved = await authAndChat(request, context, deps, true);
     if (!resolved.ok) return resolved.response;
     if (!noSearchParams(request)) {
-      return json({ error: "chat_permanent_delete_invalid" }, 400);
+      return json({ error: "INVALID" }, 400);
     }
     const limited = await mutationAllowed(deps, resolved.userId);
     if (limited) return limited;
     const value = await body(request);
     if (value instanceof Response) return value;
-    const decoded = decodeChatPermanentDeleteAuthorizationRequest(value);
-    if (!decoded) return json({ error: "chat_permanent_delete_invalid" }, 400);
+    const decoded = decodeMemoryConsumerPermanentChatDeleteInput(value);
+    if (!decoded.ok) return json({ error: "INVALID" }, 400);
     try {
-      return json(await deps.service.mintAuthorization(
+      return json(await deps.service.confirm(
         resolved.userId,
         resolved.chatId,
-        decoded
-      ), 201);
-    } catch (error) {
-      return serviceError(error);
-    }
-  };
-}
-
-export function createPermanentChatDeleteAdmissionHandler(
-  deps: PermanentChatDeletionHandlerDeps
-) {
-  return async function POST(
-    request: Request,
-    context: ChatRouteContext
-  ): Promise<Response> {
-    const resolved = await authAndChat(request, context, deps, true);
-    if (!resolved.ok) return resolved.response;
-    if (!noSearchParams(request)) {
-      return json({ error: "chat_permanent_delete_invalid" }, 400);
-    }
-    const limited = await mutationAllowed(deps, resolved.userId);
-    if (limited) return limited;
-    const value = await body(request);
-    if (value instanceof Response) return value;
-    const decoded = decodeChatPermanentDeleteRequest(value);
-    if (!decoded) return json({ error: "chat_permanent_delete_invalid" }, 400);
-    try {
-      return json(await deps.service.admit(
-        resolved.userId,
-        resolved.chatId,
-        decoded
+        decoded.value
       ), 202);
     } catch (error) {
       return serviceError(error);
@@ -189,22 +170,13 @@ export function createPermanentChatDeleteStatusHandler(
   ): Promise<Response> {
     const resolved = await authAndChat(request, context, deps, false);
     if (!resolved.ok) return resolved.response;
-    const search = new URL(request.url).searchParams;
-    const deletionIds = search.getAll("deletionId");
-    const deletionId = deletionIds.length === 1
-      ? routeId(deletionIds[0])
-      : null;
-    if (
-      !deletionId ||
-      [...search.keys()].some((key) => key !== "deletionId")
-    ) {
-      return json({ error: "chat_permanent_delete_invalid" }, 400);
+    if (!noSearchParams(request)) {
+      return json({ error: "INVALID" }, 400);
     }
     try {
-      return json(await deps.service.status(
+      return json(await deps.service.consumerStatus(
         resolved.userId,
-        resolved.chatId,
-        deletionId
+        resolved.chatId
       ));
     } catch (error) {
       return serviceError(error);

@@ -1,10 +1,9 @@
-import { Prisma, type MemoryChatMode, type MemoryJobKind } from "@prisma/client";
+import { Prisma, type MemoryChatMode } from "@prisma/client";
 import {
   memoryCounterEffectFor,
   type MemoryCounterAdvance,
   type MemoryCounterMutation
 } from "../../domain/memory/counters";
-import { enqueueMemoryJob } from "./persistence/jobs";
 import { memorySha256 } from "./persistence/lexical";
 import {
   lockMemorySettings,
@@ -12,8 +11,6 @@ import {
 } from "./persistence/transaction";
 
 export const MEMORY_SOURCE_PROJECTION_VERSION = "memory-source-v1";
-export const MEMORY_SOURCE_RECONCILIATION_PIPELINE_VERSION =
-  "memory-source-reconciliation-v1";
 
 const MAX_COUNTER = 2_147_483_647;
 
@@ -41,6 +38,8 @@ export type LockedMemorySourceChat = Readonly<{
   memoryBranchGeneration: number;
   memoryMode: MemoryChatMode;
   memorySourceRevision: number;
+  /** Populated by the canonical source loader; legacy raw callers may omit it. */
+  projectId?: string | null;
   temporaryRetentionDeadline: Date | null;
   temporaryRetentionPolicyVersion: string | null;
   userId: string;
@@ -178,26 +177,14 @@ function checkedCounter(current: number, increment: number): number {
   return next;
 }
 
-function sourceJobKinds(
-  mutations: readonly MemorySourceMutation[],
-  branchGenerationAdvanced: boolean
-): readonly MemoryJobKind[] {
-  const kinds = new Set<MemoryJobKind>();
-  if (branchGenerationAdvanced) kinds.add("RECONCILE_BRANCH");
-  if (mutations.some((mutation) =>
-    mutation === "FOLDER_MOVE" ||
-    mutation === "SOURCE_EXCLUDE" ||
-    mutation === "SOURCE_RESUME" ||
-    mutation === "SCOPE_TARGET_DELETE" ||
-    mutation === "ASSISTANT_ACCESS_CHANGE")) {
-    kinds.add("RECONCILE_SOURCE");
-  }
-  return [...kinds];
-}
-
 export async function lockMemorySourceChat(
   tx: MemoryTransaction,
-  input: Readonly<{ chatId: string; lock: "SHARE" | "UPDATE"; userId: string }>
+  input: Readonly<{
+    chatId: string;
+    lock: "SHARE" | "UPDATE";
+    personalOnly?: boolean;
+    userId: string;
+  }>
 ): Promise<LockedMemorySourceChat | null> {
   return readMemorySourceChat(tx, input);
 }
@@ -207,6 +194,7 @@ async function readMemorySourceChat(
   input: Readonly<{
     chatId: string;
     lock: "NONE" | "SHARE" | "UPDATE";
+    personalOnly?: boolean;
     userId: string;
   }>
 ): Promise<LockedMemorySourceChat | null> {
@@ -217,13 +205,14 @@ async function readMemorySourceChat(
       : Prisma.empty;
   const rows = await tx.$queryRaw<LockedMemorySourceChat[]>(Prisma.sql`
     SELECT
-      "id", "userId", "activeLeafMessageId", "folderId", "archived",
+      "id", "userId", "projectId", "activeLeafMessageId", "folderId", "archived",
       "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
       "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
     FROM "Chat"
     WHERE "id" = ${input.chatId}
       AND "userId" = ${input.userId}
       AND "permanentDeletionAt" IS NULL
+      ${input.personalOnly ? Prisma.sql`AND "projectId" IS NULL` : Prisma.empty}
     ${lock}
   `);
   return rows[0] ?? null;
@@ -313,12 +302,14 @@ export async function loadMemorySourceSnapshot(
   input: Readonly<{
     chatId: string;
     lock?: "NONE" | "SHARE" | "UPDATE";
+    personalOnly?: boolean;
     userId: string;
   }>
 ): Promise<MemorySourceSnapshot | null> {
   const chat = await readMemorySourceChat(tx, {
     chatId: input.chatId,
     lock: input.lock ?? "SHARE",
+    personalOnly: input.personalOnly,
     userId: input.userId
   });
   if (!chat) return null;
@@ -392,11 +383,8 @@ export async function applyMemorySourceMutations(
     input.chat.memorySourceRevision,
     sourceIncrement
   );
-  const jobKinds = nextMemoryMode === "TEMPORARY"
-    ? []
-    : sourceJobKinds(input.mutations, branchIncrement > 0);
   const needsSettings = memoryGenerationIncrement > 0 ||
-    memoryRevisionIncrement > 0 || jobKinds.length > 0;
+    memoryRevisionIncrement > 0;
   const settings = needsSettings
     ? await lockMemorySettings(tx, input.chat.userId, false)
     : null;
@@ -492,31 +480,6 @@ export async function applyMemorySourceMutations(
     throw new MemorySourceStateConflictError();
   }
 
-  if (settings && snapshot.activeLeafMessageId) {
-    for (const kind of jobKinds) {
-      const identityHash = memorySha256({
-        branchGeneration: snapshot.memoryBranchGeneration,
-        chatId: snapshot.id,
-        kind,
-        pipelineVersion: MEMORY_SOURCE_RECONCILIATION_PIPELINE_VERSION,
-        sourceHash: snapshot.sourceHash,
-        sourceRevision: snapshot.memorySourceRevision
-      });
-      await enqueueMemoryJob(tx, settings, {
-        idempotencyFingerprint: `${kind.toLocaleLowerCase("en-US")}:${identityHash}`,
-        kind,
-        pipelineVersion: MEMORY_SOURCE_RECONCILIATION_PIPELINE_VERSION,
-        source: {
-          activeLeafMessageId: snapshot.activeLeafMessageId,
-          branchGeneration: snapshot.memoryBranchGeneration,
-          chatId: snapshot.id,
-          sourceHash: snapshot.sourceHash,
-          sourceRevision: snapshot.memorySourceRevision
-        }
-      });
-    }
-  }
-
   const hooks = input.hooks ?? NOOP_MEMORY_SOURCE_MUTATION_HOOKS;
   if (snapshot.memoryMode !== "TEMPORARY") {
     await hooks.onRetainedSourceMutated?.(tx, {
@@ -571,14 +534,42 @@ export async function memorySourceJobSnapshotMatches(
     sourceHash: string | null;
     sourceRevision: number | null;
     userId: string;
-  }>
+  }>,
+  options: Readonly<{
+    memoryRevisionSnapshot?: number;
+  }> = {}
 ): Promise<boolean> {
   if (job.chatId === null) {
-    return job.activeLeafMessageId === null &&
+    const sourceIsGlobal = job.activeLeafMessageId === null &&
       job.branchGeneration === null &&
       job.sourceRevision === null &&
       job.sourceHash === null;
+    if (!sourceIsGlobal || options.memoryRevisionSnapshot === undefined) {
+      return sourceIsGlobal;
+    }
+    // Reclassification is the only global job whose model result is bound to
+    // an exact fact-set revision. Shadow rebuilds deliberately re-read the
+    // complete current set under the settings lock so Save/Forget races are
+    // caught up without resurrecting suppressed rows.
+    const settings = await tx.$queryRaw<Array<{
+      memoryGeneration: number;
+      memoryRevision: number;
+    }>>(Prisma.sql`
+      SELECT "memoryGeneration", "memoryRevision"
+      FROM "UserMemorySettings"
+      WHERE "userId" = ${job.userId}
+      FOR SHARE
+    `);
+    return settings[0]?.memoryGeneration === job.memoryGenerationSnapshot &&
+      settings[0].memoryRevision === options.memoryRevisionSnapshot;
   }
+  const settings = await tx.$queryRaw<Array<{ memoryGeneration: number }>>(Prisma.sql`
+    SELECT "memoryGeneration"
+    FROM "UserMemorySettings"
+    WHERE "userId" = ${job.userId}
+    FOR SHARE
+  `);
+  if (settings[0]?.memoryGeneration !== job.memoryGenerationSnapshot) return false;
   if (
     job.activeLeafMessageId === null ||
     job.branchGeneration === null ||
@@ -588,15 +579,9 @@ export async function memorySourceJobSnapshotMatches(
   const snapshot = await loadMemorySourceSnapshot(tx, {
     chatId: job.chatId,
     lock: "SHARE",
+    personalOnly: true,
     userId: job.userId
   });
-  const settings = await tx.$queryRaw<Array<{ memoryGeneration: number }>>(Prisma.sql`
-    SELECT "memoryGeneration"
-    FROM "UserMemorySettings"
-    WHERE "userId" = ${job.userId}
-    FOR SHARE
-  `);
-  if (settings[0]?.memoryGeneration !== job.memoryGenerationSnapshot) return false;
   return Boolean(
     snapshot &&
     snapshot.activeLeafMessageId === job.activeLeafMessageId &&

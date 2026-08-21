@@ -7,7 +7,8 @@ import {
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
 import {
   createProviderRuntimeBinding,
-  normalizeProviderExecutionSnapshot
+  normalizeProviderExecutionSnapshot,
+  type ProviderExecutionSnapshot
 } from "../providers/runtimeFactory";
 import type {
   ProviderStructuredOutputOptions,
@@ -27,6 +28,11 @@ type LockedCredentialVersion = Readonly<{
 
 type RuntimeClient = Pick<PrismaClient, "$transaction">;
 
+type AcceptedStructuredOutputExecutorOptions = Readonly<{
+  createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
+  encryptionKey?: () => Buffer;
+}>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -35,37 +41,27 @@ function noAuthEvidence(value: unknown): boolean {
   return isRecord(value) && value.authenticationMode === "none";
 }
 
-/** Executes one bounded strict-schema request against an already admitted
- * exact provider/model/credential tuple. The credential is re-checked at the
- * network boundary and no raw provider response leaves the adapter. */
-export function createAcceptedStructuredOutputExecutor(
+/** Executes one bounded strict-schema request from an immutable execution
+ * snapshot already accepted by the owning authority. This form is used by
+ * durable Memory bindings so no synthetic mutable-version authority is
+ * manufactured after admission. */
+export function createAcceptedStructuredOutputSnapshotExecutor(
   client: RuntimeClient,
-  options: Readonly<{
-    createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
-    encryptionKey?: () => Buffer;
-  }> = {}
+  options: AcceptedStructuredOutputExecutorOptions = {}
 ) {
   const encryptionKey = options.encryptionKey ?? getSecretEncryptionKey;
   return async (
-    role: ProviderAdmissionRole,
+    executionSnapshot: ProviderExecutionSnapshot,
     request: ProviderStructuredOutputRequest,
     executionOptions: ProviderStructuredOutputOptions = {}
   ): Promise<Record<string, unknown>> => {
-    const snapshot = normalizeProviderExecutionSnapshot(role.snapshot);
-    const authority = role.authority;
+    const snapshot = normalizeProviderExecutionSnapshot(executionSnapshot);
     if (
-      role.modelConfiguration.capabilities.structuredOutput !== true ||
-      !supportsStructuredOutputAdapter(role.modelConfiguration.adapterKind) ||
       snapshot.model.adapterKind === "fake" ||
+      !supportsStructuredOutputAdapter(snapshot.model.adapterKind) ||
       snapshot.model.modelClass !== "answer" ||
-      snapshot.model.adapterKind !== role.modelConfiguration.adapterKind ||
-      !authority ||
       !snapshot.credentialId ||
-      !snapshot.credentialVersionId ||
-      authority.connectionId !== snapshot.connectionId ||
-      authority.providerModelId !== snapshot.providerModelId ||
-      authority.credentialId !== snapshot.credentialId ||
-      authority.credentialVersionId !== snapshot.credentialVersionId
+      !snapshot.credentialVersionId
     ) {
       throw new Error("structured_output_not_supported");
     }
@@ -121,5 +117,39 @@ export function createAcceptedStructuredOutputExecutor(
       throw new Error("structured_output_not_supported");
     }
     return runtime.structuredOutputAdapter.execute(request, executionOptions);
+  };
+}
+
+/** Executes one bounded strict-schema request against an already admitted
+ * exact provider/model/credential tuple. The credential is re-checked at the
+ * network boundary and no raw provider response leaves the adapter. */
+export function createAcceptedStructuredOutputExecutor(
+  client: RuntimeClient,
+  options: AcceptedStructuredOutputExecutorOptions = {}
+) {
+  const executeSnapshot = createAcceptedStructuredOutputSnapshotExecutor(
+    client,
+    options
+  );
+  return async (
+    role: ProviderAdmissionRole,
+    request: ProviderStructuredOutputRequest,
+    executionOptions: ProviderStructuredOutputOptions = {}
+  ): Promise<Record<string, unknown>> => {
+    const snapshot = normalizeProviderExecutionSnapshot(role.snapshot);
+    const authority = role.authority;
+    if (
+      role.modelConfiguration.capabilities.structuredOutput !== true ||
+      !supportsStructuredOutputAdapter(role.modelConfiguration.adapterKind) ||
+      snapshot.model.adapterKind !== role.modelConfiguration.adapterKind ||
+      !authority ||
+      authority.connectionId !== snapshot.connectionId ||
+      authority.providerModelId !== snapshot.providerModelId ||
+      authority.credentialId !== snapshot.credentialId ||
+      authority.credentialVersionId !== snapshot.credentialVersionId
+    ) {
+      throw new Error("structured_output_not_supported");
+    }
+    return executeSnapshot(snapshot, request, executionOptions);
   };
 }

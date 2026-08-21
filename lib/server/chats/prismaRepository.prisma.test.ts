@@ -1186,41 +1186,12 @@ describe("Prisma-backed chat repository", () => {
         }
       });
       expect(preflight).toHaveBeenCalledWith(expect.anything(), userId);
+      // Exclude and Resume are synchronous visibility boundaries. Resume is
+      // forward-only: retained messages are not reconciled, re-indexed, or
+      // re-extracted until a new assistant turn settles in this chat.
       await expect(prisma.memoryJob.findMany({
-        orderBy: { createdAt: "asc" },
-        select: {
-          kind: true,
-          memoryGenerationSnapshot: true,
-          memoryRevisionSnapshot: true,
-          sourceRevision: true
-        },
         where: { chatId: chat.id, userId }
-      })).resolves.toEqual([
-        {
-          kind: "RECONCILE_SOURCE",
-          memoryGenerationSnapshot: 1,
-          memoryRevisionSnapshot: 1,
-          sourceRevision: 1
-        },
-        {
-          kind: "RECONCILE_SOURCE",
-          memoryGenerationSnapshot: 1,
-          memoryRevisionSnapshot: 2,
-          sourceRevision: 2
-        },
-        {
-          kind: "INDEX_HISTORY",
-          memoryGenerationSnapshot: 1,
-          memoryRevisionSnapshot: 2,
-          sourceRevision: 2
-        },
-        {
-          kind: "EXTRACT_FACTS",
-          memoryGenerationSnapshot: 1,
-          memoryRevisionSnapshot: 2,
-          sourceRevision: 2
-        }
-      ]);
+      })).resolves.toEqual([]);
       await expect(prisma.memorySourceBarrier.findUnique({
         where: { userId_id: { id: barrier.id, userId } }
       })).resolves.toMatchObject({

@@ -12,11 +12,6 @@ import {
   decodeChatMemoryStateResponse,
   decodeChatNavigationPage,
   decodeChatMessagesPageResponse,
-  decodeChatPermanentDeleteAdmissionResponse,
-  decodeChatPermanentDeleteAuthorizationRequest,
-  decodeChatPermanentDeleteAuthorizationResponse,
-  decodeChatPermanentDeleteRequest,
-  decodeChatPermanentDeleteStatusResponse,
   decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
@@ -514,7 +509,12 @@ describe("chat wire contracts", () => {
   it("keeps committed Memory action feedback and strips retrieval receipts", () => {
     const artifactSummary = {
       citations: [],
-      memoryAction: { operation: "UPDATE", status: "COMMITTED" },
+      memoryAction: {
+        memoryRef: "opaque-memory-ref",
+        operation: "UPDATE",
+        statement: "I prefer concise answers.",
+        status: "COMMITTED"
+      },
       memoryReceipt: {
         itemCount: 1,
         items: [{ includedText: "private retrieved content" }],
@@ -532,10 +532,32 @@ describe("chat wire contracts", () => {
 
     expect(decode(artifactSummary)?.messages[0]?.artifactSummary).toEqual({
       citations: [],
-      memoryAction: { operation: "UPDATE", status: "COMMITTED" },
+      memoryAction: {
+        memoryRef: "opaque-memory-ref",
+        operation: "UPDATE",
+        statement: "I prefer concise answers.",
+        status: "COMMITTED"
+      },
       reasoningText: [],
       sources: []
     });
+    expect(decode({
+      citations: [],
+      memoryStatus: "UNAVAILABLE",
+      reasoningText: [],
+      sources: []
+    })?.messages[0]?.artifactSummary).toEqual({
+      citations: [],
+      memoryStatus: "UNAVAILABLE",
+      reasoningText: [],
+      sources: []
+    });
+    expect(decode({
+      citations: [],
+      memoryStatus: "FAILED_SAFE",
+      reasoningText: [],
+      sources: []
+    })).toBeNull();
     expect(decode({
       ...artifactSummary,
       memoryAction: { ...artifactSummary.memoryAction, targetId: "private" }
@@ -622,64 +644,4 @@ describe("chat wire contracts", () => {
     })).toBeNull();
   });
 
-  it("keeps permanent deletion strict, explicit, and status content-free", () => {
-    const authorizationRequest = {
-      alsoForgetOriginMemories: false,
-      confirmationCopyVersion: "memory-confirmation-v1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 7,
-      requestNonce: "nonce-1"
-    };
-    expect(decodeChatPermanentDeleteAuthorizationRequest(authorizationRequest))
-      .toEqual(authorizationRequest);
-    expect(decodeChatPermanentDeleteAuthorizationRequest({
-      ...authorizationRequest,
-      alsoForgetOriginMemories: undefined
-    })).toBeNull();
-    expect(decodeChatPermanentDeleteAuthorizationRequest({
-      ...authorizationRequest,
-      eraseBackups: true
-    })).toBeNull();
-
-    const admissionRequest = {
-      alsoForgetOriginMemories: true,
-      expectedActiveLeafMessageId: null,
-      expectedChatRevision: 0,
-      mutationAuthorizationId: "authorization-1"
-    };
-    expect(decodeChatPermanentDeleteRequest(admissionRequest)).toEqual(admissionRequest);
-    expect(decodeChatPermanentDeleteRequest({
-      ...admissionRequest,
-      expectedChatRevision: -1
-    })).toBeNull();
-
-    expect(decodeChatPermanentDeleteAuthorizationResponse({
-      expiresAt: "2026-08-12T12:05:00.000Z",
-      mutationAuthorizationId: "authorization-1"
-    })).not.toBeNull();
-    expect(decodeChatPermanentDeleteAdmissionResponse({
-      deletionId: "deletion-1",
-      fencedAt: "2026-08-12T12:00:00.000Z",
-      state: "PENDING"
-    })).not.toBeNull();
-    const status = {
-      attemptCount: 2,
-      cleanupComplete: true,
-      deletionId: "deletion-1",
-      errorCode: null,
-      fencedAt: "2026-08-12T12:00:00.000Z",
-      lastAuditAt: "2026-08-12T12:01:00.000Z",
-      state: "SUCCEEDED",
-      updatedAt: "2026-08-12T12:01:00.000Z"
-    };
-    expect(decodeChatPermanentDeleteStatusResponse(status)).toEqual(status);
-    expect(decodeChatPermanentDeleteStatusResponse({
-      ...status,
-      cleanupComplete: false
-    })).toBeNull();
-    expect(decodeChatPermanentDeleteStatusResponse({
-      ...status,
-      privateText: "must never be returned"
-    })).toBeNull();
-  });
 });

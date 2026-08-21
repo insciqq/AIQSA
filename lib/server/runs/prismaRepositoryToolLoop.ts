@@ -28,6 +28,7 @@ import type {
 } from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
+import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
@@ -654,10 +655,12 @@ function decodeProviderDispatchRecoveryRequest(
     !validContext(value.context) || !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
-      "baseline", "developer", "knowledgeAnswerContract", "system"
+      "baseline", "developer", "knowledgeAnswerContract", "memoryActionAnswerResult", "system"
     ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
     value.prompt.knowledgeAnswerContract !== undefined &&
       value.prompt.knowledgeAnswerContract !== 1 ||
+    value.prompt.memoryActionAnswerResult !== undefined &&
+      decodeMemoryActionAnswerResult(value.prompt.memoryActionAnswerResult) === null ||
     !validSearchPlan(value.searchPlan) || !validMcpSnapshot(value.mcp) ||
     (value.toolMode !== "auto" && value.toolMode !== "none")) return null;
   if (value.prompt.baseline !== undefined && (!isRecord(value.prompt.baseline) ||

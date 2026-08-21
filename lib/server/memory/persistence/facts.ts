@@ -5,6 +5,10 @@ import type {
   MemorySensitivityClass,
   MemorySourceMode
 } from "../../../contracts/memory";
+import {
+  decodeMemoryActionIntent,
+  type MemoryActionIntent
+} from "../../../contracts/memoryActionIntent";
 import { memoryDerivativePlaintextAllowed } from "../../../domain/memory/safety";
 import { prisma } from "../../prisma";
 import {
@@ -12,6 +16,15 @@ import {
   memoryItemEmbeddingJobFingerprint
 } from "../embedding/contract";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
+import {
+  memoryControlAcceptedOutputHash,
+  memoryControlIntentHash
+} from "../actions/controlRuntime";
+import { memoryExecutionSha256 } from "../execution/canonical";
+import {
+  memoryStatementClassificationInputHash,
+  type MemoryStatementClassificationDecision
+} from "../explicit/statementClassifier";
 import {
   consumeMemoryMutationAuthorization,
   type MemoryMutationAuthorizationUse
@@ -23,6 +36,7 @@ import {
   memoryStableJson,
   normalizeMemorySearchText
 } from "./lexical";
+import { memorySourceIsInsidePause } from "./pauseIntervals";
 import { requireActiveOwnedMemoryScope } from "./scopes";
 import { assertMemoryWriteNotSuppressed } from "./suppressions";
 import { memoryPurgeTargetType } from "../purge/contract";
@@ -37,6 +51,21 @@ import {
 
 export type MemoryDirectnessInput = "DIRECT" | "INFERRED" | "PARAPHRASED";
 
+export type MemoryFactSafetyClassificationInput =
+  | Readonly<{
+      executionId: string;
+      intent: MemoryActionIntent;
+      kind: "CONTROL";
+    }>
+  | Readonly<{
+      acceptedOutputHash: string;
+      decision: MemoryStatementClassificationDecision;
+      executionId: string;
+      inputHash: string;
+      inputStatement: string;
+      kind: "STATEMENT";
+    }>;
+
 export type MemoryFactValueInput = Readonly<{
   canonicalKey: string;
   category: string;
@@ -47,6 +76,7 @@ export type MemoryFactValueInput = Readonly<{
   languageCode: string;
   modality: MemoryModality;
   pipelineVersion: string;
+  safetyClassification?: MemoryFactSafetyClassificationInput;
   secretTaintedSourceWindow: boolean;
   sensitivityClass: MemorySensitivityClass;
   sourceMode: MemorySourceMode;
@@ -136,6 +166,8 @@ const canonicalKeyPattern = /^[a-z][a-z0-9_.:-]{0,255}$/u;
 const categoryPattern = /^[a-z][a-z0-9_-]{0,63}$/u;
 const languageCodePattern = /^(AUTO|[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*)$/u;
 const sourceRoles = new Set(["assistant", "system", "tool", "user"]);
+const safetyReasonCodePattern = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,63}$/u;
+const sha256Pattern = /^[a-f0-9]{64}$/u;
 
 function validBounded(value: string, maxLength: number): boolean {
   return value.trim() === value && value.length > 0 && value.length <= maxLength;
@@ -148,6 +180,54 @@ function validPlaintext(value: string, maxLength: number): boolean {
 
 function validUnitInterval(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function canonicalStorableCategory(
+  category: string,
+  responsePreference = false
+): string {
+  if (responsePreference) return "preferences";
+  return category === "sensitive" ? "about_you" : category;
+}
+
+function storableSensitivityCompatible(
+  sensitivity: "NORMAL" | "SENSITIVE" | "SECRET" | "UNCERTAIN",
+  stored: MemorySensitivityClass
+): boolean {
+  if (sensitivity === "SECRET" || sensitivity === "UNCERTAIN") return false;
+  const canonical = sensitivity === "SENSITIVE" ? "NORMAL" : sensitivity;
+  return canonical === "NORMAL" &&
+    (stored === "NORMAL" || stored === "HIGHLY_SENSITIVE");
+}
+
+function validSafetyClassification(
+  value: MemoryFactSafetyClassificationInput
+): boolean {
+  if (!validBounded(value.executionId, 256)) return false;
+  if (value.kind === "CONTROL") {
+    const decoded = decodeMemoryActionIntent(value.intent);
+    return decoded.ok &&
+      (decoded.value.action === "SAVE" || decoded.value.action === "UPDATE") &&
+      decoded.value.confidenceBand === "HIGH" && !decoded.value.thisChatOnly &&
+      decoded.value.sensitivity !== "SECRET" &&
+      decoded.value.sensitivity !== "UNCERTAIN";
+  }
+  const decision = value.decision;
+  const canonicalCategory = canonicalStorableCategory(
+    decision.category,
+    decision.responsePreference
+  );
+  return sha256Pattern.test(value.acceptedOutputHash) &&
+    sha256Pattern.test(value.inputHash) &&
+    validPlaintext(value.inputStatement, 2_000) &&
+    categoryPattern.test(canonicalCategory) &&
+    validPlaintext(decision.normalizedStatement, 2_000) &&
+    safetyReasonCodePattern.test(decision.reasonCode) &&
+    (decision.sensitivity === "NORMAL" || decision.sensitivity === "SENSITIVE") &&
+    decision.storageDecision === "ALLOW" &&
+    (!decision.responsePreference || (
+      canonicalCategory === "preferences"
+    ));
 }
 
 function validateEvidence(
@@ -208,6 +288,8 @@ function validateValue(value: MemoryFactValueInput): void {
     normalizedSearchText.length > 4_000 ||
     !languageCodePattern.test(value.languageCode) ||
     !validBounded(value.pipelineVersion, 64) ||
+    (value.safetyClassification !== undefined &&
+      !validSafetyClassification(value.safetyClassification)) ||
     !validUnitInterval(value.confidence) ||
     !validUnitInterval(value.importance) ||
     value.structuredValue === null ||
@@ -219,6 +301,13 @@ function validateValue(value: MemoryFactValueInput): void {
   ) {
     return memoryPersistenceFailure("memory_input_invalid");
   }
+}
+
+function explicitResponsePreference(value: MemoryFactValueInput): boolean {
+  return value.sourceMode === "EXPLICIT" &&
+    value.sensitivityClass === "NORMAL" &&
+    value.modality === "PREFERENCE" &&
+    value.category === "preferences";
 }
 
 function validateMutationIdentity(input: MemoryReceiptIdentity): void {
@@ -614,7 +703,7 @@ async function requireAutomaticEvidenceAfterSourceCutoff(
   if (input.value.sourceMode !== "AUTOMATIC" || input.evidence.kind !== "MESSAGE") {
     return;
   }
-  const [message, barrier] = await Promise.all([
+  const [message, barrier, pauseIntervals] = await Promise.all([
     tx.message.findFirst({
       select: { createdAt: true },
       where: {
@@ -626,11 +715,29 @@ async function requireAutomaticEvidenceAfterSourceCutoff(
     tx.memorySourceBarrier.findFirst({
       orderBy: [{ sourceCreatedAtCutoff: "desc" }, { id: "desc" }],
       select: { sourceCreatedAtCutoff: true },
-      where: { kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] }, userId }
+      where: {
+        explicitOverrideAllowed: false,
+        kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] },
+        userId
+      }
+    }),
+    tx.memoryPauseInterval.findMany({
+      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memoryGeneration: true,
+        pausedAt: true,
+        resumedAt: true,
+        scope: true
+      },
+      where: { scope: { in: ["MASTER", "AUTOMATIC_LEARNING"] }, userId }
     })
   ]);
   if (!message) return memoryPersistenceFailure("memory_input_invalid");
-  if (barrier && message.createdAt <= barrier.sourceCreatedAtCutoff) {
+  if (
+    (barrier && message.createdAt <= barrier.sourceCreatedAtCutoff) ||
+    memorySourceIsInsidePause(message.createdAt, pauseIntervals)
+  ) {
     return memoryPersistenceFailure("memory_fact_suppressed");
   }
 }
@@ -673,6 +780,13 @@ const currentVersionSelect = {
   languageCode: true,
   modality: true,
   pipelineVersion: true,
+  safetyClassificationReasonCode: true,
+  safetyClassificationState: true,
+  safetyClassifiedAt: true,
+  safetyClassifierExecutionId: true,
+  safetyClassifierModelId: true,
+  safetyClassifierPolicyVersion: true,
+  safetyClassifierProviderId: true,
   sensitivityClass: true,
   sourceMode: true,
   state: true,
@@ -682,6 +796,197 @@ const currentVersionSelect = {
   validFrom: true,
   validTo: true
 } satisfies Prisma.MemoryFactVersionSelect;
+
+type MemoryFactSafetyData = Readonly<{
+  safetyClassificationReasonCode: string | null;
+  safetyClassificationState:
+    | "CLASSIFIED"
+    | "PENDING"
+    | "REJECTED_FENCED"
+    | "SECRET_FENCED"
+    | "UNCERTAIN";
+  safetyClassifiedAt: Date | null;
+  safetyClassifierExecutionId: string | null;
+  safetyClassifierModelId: string | null;
+  safetyClassifierPolicyVersion: string | null;
+  safetyClassifierProviderId: string | null;
+}>;
+
+const pendingFactSafety: MemoryFactSafetyData = Object.freeze({
+  safetyClassificationReasonCode: null,
+  safetyClassificationState: "PENDING",
+  safetyClassifiedAt: null,
+  safetyClassifierExecutionId: null,
+  safetyClassifierModelId: null,
+  safetyClassifierPolicyVersion: null,
+  safetyClassifierProviderId: null
+});
+
+function inheritedFactSafety(
+  version: Pick<
+    Prisma.MemoryFactVersionGetPayload<{ select: typeof currentVersionSelect }>,
+    | "safetyClassificationReasonCode"
+    | "safetyClassificationState"
+    | "safetyClassifiedAt"
+    | "safetyClassifierExecutionId"
+    | "safetyClassifierModelId"
+    | "safetyClassifierPolicyVersion"
+    | "safetyClassifierProviderId"
+  >
+): MemoryFactSafetyData {
+  if (version.safetyClassificationState === "PENDING") return pendingFactSafety;
+  if (
+    !version.safetyClassificationReasonCode ||
+    !version.safetyClassifiedAt ||
+    !version.safetyClassifierModelId ||
+    !version.safetyClassifierPolicyVersion ||
+    !version.safetyClassifierProviderId
+  ) {
+    return memoryPersistenceFailure("memory_fact_version_stale");
+  }
+  return {
+    safetyClassificationReasonCode: version.safetyClassificationReasonCode,
+    safetyClassificationState: version.safetyClassificationState,
+    safetyClassifiedAt: version.safetyClassifiedAt,
+    safetyClassifierExecutionId: version.safetyClassifierExecutionId,
+    safetyClassifierModelId: version.safetyClassifierModelId,
+    safetyClassifierPolicyVersion: version.safetyClassifierPolicyVersion,
+    safetyClassifierProviderId: version.safetyClassifierProviderId
+  };
+}
+
+async function governedFactSafety(
+  tx: MemoryTransaction,
+  userId: string,
+  input: MemoryFactMutationCommonInput
+): Promise<MemoryFactSafetyData> {
+  const requested = input.value.safetyClassification;
+  if (!requested) return pendingFactSafety;
+  if (input.value.sourceMode !== "EXPLICIT") {
+    return memoryPersistenceFailure("memory_input_invalid");
+  }
+  const expectedRole = requested.kind === "CONTROL"
+    ? "MEMORY_CONTROL"
+    : "MEMORY_STATEMENT_CLASSIFY";
+  const binding = await tx.memoryExecutionBinding.findFirst({
+    select: {
+      acceptedOutputHash: true,
+      completedAt: true,
+      inputHash: true,
+      logicalRole: true,
+      mutationAuthorizationId: true,
+      ordinal: true,
+      ownerType: true,
+      policyVersion: true,
+      providerId: true,
+      providerModelId: true,
+      relationsDetachedAt: true,
+      retrievalAttemptId: true,
+      state: true
+    },
+    where: {
+      id: requested.executionId,
+      logicalRole: expectedRole,
+      relationsDetachedAt: null,
+      state: "SUCCEEDED",
+      userId
+    }
+  });
+  if (
+    !binding?.acceptedOutputHash || !binding.completedAt ||
+    !binding.providerId || !binding.providerModelId || !binding.policyVersion
+  ) {
+    return memoryPersistenceFailure("memory_input_invalid");
+  }
+  let reasonCode: string;
+  if (requested.kind === "STATEMENT") {
+    const decision = requested.decision;
+    const inputHash = memoryStatementClassificationInputHash(requested.inputStatement);
+    const acceptedOutputHash = memoryExecutionSha256({
+      inputHash,
+      output: decision,
+      role: "MEMORY_STATEMENT_CLASSIFY",
+      version: 1
+    });
+    const expectedCategory = canonicalStorableCategory(
+      decision.category,
+      decision.responsePreference
+    );
+    const sensitivityCompatible = storableSensitivityCompatible(
+      decision.sensitivity,
+      input.value.sensitivityClass
+    );
+    if (
+      binding.ownerType !== "MUTATION_AUTHORIZATION" ||
+      binding.mutationAuthorizationId !== input.authorization?.authorizationId ||
+      binding.inputHash !== requested.inputHash || requested.inputHash !== inputHash ||
+      binding.acceptedOutputHash !== requested.acceptedOutputHash ||
+      requested.acceptedOutputHash !== acceptedOutputHash ||
+      decision.normalizedStatement !== input.value.displayText ||
+      expectedCategory !== input.value.category ||
+      !sensitivityCompatible ||
+      (decision.responsePreference
+        ? input.value.modality !== "PREFERENCE"
+        : input.value.modality === "PREFERENCE")
+    ) {
+      return memoryPersistenceFailure("memory_input_invalid");
+    }
+    reasonCode = decision.reasonCode;
+  } else {
+    const decoded = decodeMemoryActionIntent(requested.intent);
+    const intent = decoded.ok ? decoded.value : null;
+    const statement = intent?.action === "SAVE"
+      ? intent.statement
+      : intent?.action === "UPDATE"
+        ? intent.replacementStatement
+        : null;
+    const expectedCategory = intent?.category ?? "other";
+    const sensitivityCompatible = intent
+      ? storableSensitivityCompatible(intent.sensitivity, input.value.sensitivityClass)
+      : false;
+    if (
+      !intent || !statement ||
+      binding.ownerType !== "RETRIEVAL_ATTEMPT" || !binding.retrievalAttemptId ||
+      binding.ordinal !== 0 || !input.modelRunId || !input.authorization ||
+      input.authorization.action !== (intent.action === "SAVE" ? "SAVE" : "EDIT") ||
+      binding.acceptedOutputHash !== memoryControlAcceptedOutputHash(
+        binding.inputHash,
+        memoryControlIntentHash(intent)
+      ) ||
+      statement !== input.value.displayText || expectedCategory !== input.value.category ||
+      !sensitivityCompatible ||
+      (intent.responsePreference
+        ? input.value.modality !== "PREFERENCE"
+        : input.value.modality === "PREFERENCE")
+    ) {
+      return memoryPersistenceFailure("memory_input_invalid");
+    }
+    const attempt = await tx.memoryRetrievalAttempt.findFirst({
+      select: { id: true },
+      where: {
+        id: binding.retrievalAttemptId,
+        modelRunId: input.modelRunId,
+        userId
+      }
+    });
+    if (!attempt) return memoryPersistenceFailure("memory_input_invalid");
+    reasonCode = intent.reasonCode;
+  }
+  const usage = await tx.usageEvent.findUnique({
+    select: { id: true },
+    where: { memoryExecutionBindingId: requested.executionId }
+  });
+  if (!usage) return memoryPersistenceFailure("memory_input_invalid");
+  return {
+    safetyClassificationReasonCode: reasonCode,
+    safetyClassificationState: "CLASSIFIED",
+    safetyClassifiedAt: binding.completedAt,
+    safetyClassifierExecutionId: requested.executionId,
+    safetyClassifierModelId: binding.providerModelId,
+    safetyClassifierPolicyVersion: binding.policyVersion,
+    safetyClassifierProviderId: binding.providerId
+  };
+}
 
 async function cancelPendingForgetPurge(
   tx: MemoryTransaction,
@@ -819,6 +1124,9 @@ export function createPrismaMemoryFactRepository(
           }
         });
         if (!currentVersion) return memoryPersistenceFailure("memory_fact_version_stale");
+        const safety = input.value.safetyClassification
+          ? await governedFactSafety(tx, userId, input)
+          : inheritedFactSafety(currentVersion);
 
         await requireEvidenceOwner(tx, userId, input.evidence);
         await assertMemoryWriteNotSuppressed(
@@ -862,6 +1170,8 @@ export function createPrismaMemoryFactRepository(
           data: {
             category: input.value.category,
             confidence: input.value.confidence,
+            coreEligible: safety.safetyClassificationState === "CLASSIFIED" &&
+              explicitResponsePreference(input.value),
             createdByEventId: eventId,
             directness: input.value.directness,
             displayText: input.value.displayText,
@@ -872,6 +1182,7 @@ export function createPrismaMemoryFactRepository(
             modality: input.value.modality,
             normalizedSearchText: normalizeMemorySearchText(input.value.displayText),
             pipelineVersion: input.value.pipelineVersion,
+            ...safety,
             sensitivityClass: input.value.sensitivityClass,
             sourceMode: input.value.sourceMode,
             state: "ACTIVE",
@@ -926,7 +1237,7 @@ export function createPrismaMemoryFactRepository(
         };
         await persistReceipt(tx, userId, "EDIT", input, inputPayloadHash, result);
         return { ...result, replayed: false };
-      });
+      }, { deadlineAtMs: input.authorization?.admissionDeadlineAtMs });
     },
 
     async move(userId: string, input: MemoryFactMoveInput): Promise<MemoryFactMutationResult> {
@@ -1019,6 +1330,7 @@ export function createPrismaMemoryFactRepository(
         if (!sourceVersion.displayText || sourceVersion.structuredValue === null) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
+        const safety = inheritedFactSafety(sourceVersion);
         const movedValue: MemoryFactValueInput = {
           canonicalKey: sourceFact.canonicalKey,
           category: sourceVersion.category,
@@ -1158,6 +1470,8 @@ export function createPrismaMemoryFactRepository(
           data: {
             category: movedValue.category,
             confidence: movedValue.confidence,
+            coreEligible: safety.safetyClassificationState === "CLASSIFIED" &&
+              explicitResponsePreference(movedValue),
             createdByEventId: eventId,
             directness: movedValue.directness,
             displayText: movedValue.displayText,
@@ -1169,6 +1483,7 @@ export function createPrismaMemoryFactRepository(
             movedFromVersionId: sourceVersion.id,
             normalizedSearchText: normalizeMemorySearchText(movedValue.displayText),
             pipelineVersion: movedValue.pipelineVersion,
+            ...safety,
             sensitivityClass: movedValue.sensitivityClass,
             sourceMode: "EXPLICIT",
             state: "ACTIVE",
@@ -1317,6 +1632,21 @@ export function createPrismaMemoryFactRepository(
         ) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
+        const selectedVersion = await tx.memoryFactVersion.findFirst({
+          select: currentVersionSelect,
+          where: {
+            factId: fact.id,
+            id: input.selectedVersionId,
+            state: "CONFLICTING",
+            userId
+          }
+        });
+        if (!selectedVersion) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        const safety = input.value.safetyClassification
+          ? await governedFactSafety(tx, userId, input)
+          : inheritedFactSafety(selectedVersion);
 
         await requireEvidenceOwner(tx, userId, input.evidence);
         await assertMemoryWriteNotSuppressed(
@@ -1362,6 +1692,8 @@ export function createPrismaMemoryFactRepository(
           data: {
             category: input.value.category,
             confidence: input.value.confidence,
+            coreEligible: safety.safetyClassificationState === "CLASSIFIED" &&
+              explicitResponsePreference(input.value),
             createdByEventId: eventId,
             directness: input.value.directness,
             displayText: input.value.displayText,
@@ -1372,6 +1704,7 @@ export function createPrismaMemoryFactRepository(
             modality: input.value.modality,
             normalizedSearchText: normalizeMemorySearchText(input.value.displayText),
             pipelineVersion: input.value.pipelineVersion,
+            ...safety,
             sensitivityClass: input.value.sensitivityClass,
             sourceMode: "EXPLICIT",
             state: "ACTIVE",
@@ -1471,6 +1804,7 @@ export function createPrismaMemoryFactRepository(
           select: typeof currentVersionSelect;
         }>>> = null;
         let revivalVersionId: string | null = null;
+        let revivalSafety: MemoryFactSafetyData | null = null;
         if (existing?.state === "ACTIVE" && existing.currentVersionId) {
           currentVersion = await tx.memoryFactVersion.findFirst({
             select: currentVersionSelect,
@@ -1499,11 +1833,12 @@ export function createPrismaMemoryFactRepository(
           }
           const prior = await tx.memoryFactVersion.findFirst({
             orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
-            select: { id: true },
+            select: currentVersionSelect,
             where: { factId: existing.id, state: "FORGOTTEN", userId }
           });
           if (!prior) return memoryPersistenceFailure("memory_fact_version_stale");
           revivalVersionId = prior.id;
+          revivalSafety = inheritedFactSafety(prior);
         }
 
         if (input.undoForget) {
@@ -1564,6 +1899,9 @@ export function createPrismaMemoryFactRepository(
         const eventId = randomUUID();
         const factId = existing?.id ?? randomUUID();
         const versionId = randomUUID();
+        const safety = input.value.safetyClassification
+          ? await governedFactSafety(tx, userId, input)
+          : revivalSafety ?? pendingFactSafety;
         if (existing) {
           const revived = await tx.memoryFact.updateMany({
             data: {
@@ -1606,6 +1944,8 @@ export function createPrismaMemoryFactRepository(
           data: {
             category: input.value.category,
             confidence: input.value.confidence,
+            coreEligible: safety.safetyClassificationState === "CLASSIFIED" &&
+              explicitResponsePreference(input.value),
             createdByEventId: eventId,
             directness: input.value.directness,
             displayText: input.value.displayText,
@@ -1616,6 +1956,7 @@ export function createPrismaMemoryFactRepository(
             modality: input.value.modality,
             normalizedSearchText: normalizeMemorySearchText(input.value.displayText),
             pipelineVersion: input.value.pipelineVersion,
+            ...safety,
             sensitivityClass: input.value.sensitivityClass,
             sourceMode: input.value.sourceMode,
             state: "ACTIVE",
@@ -1646,7 +1987,7 @@ export function createPrismaMemoryFactRepository(
         };
         await persistReceipt(tx, userId, "SAVE", input, inputPayloadHash, result);
         return { ...result, replayed: false };
-      });
+      }, { deadlineAtMs: input.authorization?.admissionDeadlineAtMs });
     }
   });
 }

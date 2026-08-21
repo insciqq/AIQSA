@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { memorySha256 } from "../../persistence/lexical";
+import { MemoryCoordinatorError } from "../../coordinator/errors";
 import type { MemoryJobClaim } from "../../coordinator/types";
 import { MemoryExecutionError } from "../../execution";
 import {
@@ -16,6 +17,7 @@ import {
   type MemoryFactExtractionHandlerDependencies
 } from "./handler";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
+import { MemoryFactProviderCallError } from "./runtime";
 
 const source: MemoryFactSourceIdentity = {
   activeLeafMessageId: "assistant-1",
@@ -71,31 +73,23 @@ function claim(): MemoryJobClaim {
 
 function providerOutput(
   displayText = "The user prefers tea.",
-  evidenceEnd = "I prefer tea.".length
+  quote = "I prefer tea."
 ) {
   return {
     providerResponseId: "response-1",
     toolCalls: [{
       arguments: {
-        decision: "STORE",
         candidates: [{
-          core_eligible: true,
-          core_salience: "MEDIUM",
-          directness: "DIRECT",
-          display_text: displayText,
-          evidence: [{
-            end_offset: evidenceEnd,
-            message_id: "message-1",
-            start_offset: 0
-          }],
-          language: "en",
-          modality: "PREFERENCE",
-          raw_temporal_expression: null,
-          scope: { target_id: null, type: "GLOBAL_USER" },
+          category: "preferences",
+          confidence_band: "HIGH",
+          correction: false,
+          future_useful: true,
+          quote,
+          reason_code: "durable_preference",
+          response_preference: "tea",
           sensitivity: "NORMAL",
-          structured_value: JSON.stringify({ drink: "tea" }),
-          valid_from: null,
-          valid_to: null
+          statement: displayText,
+          temporary: false
         }]
       },
       id: "call-1",
@@ -174,6 +168,16 @@ function context() {
   };
 }
 
+function providerFailure(
+  classification: "UNKNOWN" | "REPLAY_SAFE_TRANSIENT" | "PERMANENT"
+): MemoryFactProviderCallError {
+  return new MemoryFactProviderCallError({
+    cause: new Error("provider_fixture_failure"),
+    classification,
+    usage: null
+  });
+}
+
 describe("Memory fact extraction handler", () => {
   it("parks missing consent or runtime capability before provider I/O", async () => {
     for (const code of [
@@ -216,19 +220,24 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.apply).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects invalid evidence bounds after accounting usage and writes no candidate", async () => {
+  it("isolates invalid evidence after accounting usage and writes no candidate", async () => {
     const fixture = dependencies({
-      provider: { run: vi.fn(async () => providerOutput("A grounded paraphrase.", 500)) }
+      provider: {
+        run: vi.fn(async () => providerOutput(
+          "A grounded paraphrase.",
+          "This quote is not present."
+        ))
+      }
     });
     const result = await createMemoryFactExtractionHandler(fixture.base)
       .execute(claim(), context());
-    expect(result.stage).toBe("fact_output_rejected");
+    expect(result.stage).toBe("fact_candidates_empty");
     expect(fixture.settle).toHaveBeenCalledWith(
       source.userId,
       "binding-1",
-      expect.objectContaining({ state: "FAILED" })
+      expect.objectContaining({ state: "SUCCEEDED" })
     );
-    expect(fixture.apply).not.toHaveBeenCalled();
+    expect(fixture.apply).toHaveBeenCalledOnce();
   });
 
   it("never replays a recovered RUNNING provider call", async () => {
@@ -257,4 +266,108 @@ describe("Memory fact extraction handler", () => {
     );
     expect(fixture.run).not.toHaveBeenCalled();
   });
+
+  it("settles a replay-safe transient attempt before a new binding succeeds", async () => {
+    const fixture = dependencies();
+    const bindings: Array<{
+      acceptedOutputHash: string | null;
+      id: string;
+      inputHash: string;
+      ordinal: number;
+      secretFreeExecutionSnapshot: Record<string, never>;
+      state: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "OUTCOME_UNKNOWN";
+    }> = [];
+    const bind = vi.fn(async (_userId: string, request: {
+      inputHash: string;
+      ordinal: number;
+    }) => {
+      const id = `binding-${request.ordinal + 1}`;
+      bindings.push({
+        acceptedOutputHash: null,
+        id,
+        inputHash: request.inputHash,
+        ordinal: request.ordinal,
+        secretFreeExecutionSnapshot: {},
+        state: "PENDING"
+      });
+      return { id };
+    });
+    const start = vi.fn(async (_userId: string, bindingId: string) => {
+      const binding = bindings.find((candidate) => candidate.id === bindingId)!;
+      binding.state = "RUNNING";
+      return {
+        bindingId,
+        snapshot: {
+          logicalRole: "MEMORY_FACT_EXTRACT",
+          providerExecutionSnapshot: {
+            connectionId: "connection-1",
+            credentialId: "credential-1",
+            credentialVersionId: "credential-version-1",
+            providerModelId: "model-1"
+          },
+          requiresStrictStructuredOutput: true
+        }
+      };
+    });
+    const settle = vi.fn(async (_userId: string, bindingId: string, result: {
+      acceptedOutputHash: string | null;
+      state: "SUCCEEDED" | "FAILED" | "OUTCOME_UNKNOWN";
+    }) => {
+      const binding = bindings.find((candidate) => candidate.id === bindingId)!;
+      binding.acceptedOutputHash = result.acceptedOutputHash;
+      binding.state = result.state;
+      return { state: result.state };
+    });
+    const run = vi.fn()
+      .mockRejectedValueOnce(providerFailure("REPLAY_SAFE_TRANSIENT"))
+      .mockResolvedValueOnce(providerOutput());
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      execution: {
+        ...fixture.base.execution,
+        admission: { ...fixture.base.execution.admission, bind, start },
+        lifecycle: { ...fixture.base.execution.lifecycle, settle }
+      },
+      provider: { run },
+      repository: {
+        ...fixture.base.repository,
+        bindings: vi.fn(async () => bindings)
+      }
+    } as unknown as MemoryFactExtractionHandlerDependencies);
+    const firstClaim = claim();
+
+    await expect(handler.execute(firstClaim, context())).rejects.toMatchObject({
+      code: "memory_fact_provider_transient",
+      retryable: true
+    } satisfies Partial<MemoryCoordinatorError>);
+    expect(bindings).toMatchObject([{ id: "binding-1", ordinal: 0, state: "FAILED" }]);
+
+    const result = await handler.execute({ ...firstClaim, attemptCount: 2 }, context());
+    expect(result.stage).toBe("fact_candidates_ready");
+    expect(bindings).toMatchObject([
+      { id: "binding-1", ordinal: 0, state: "FAILED" },
+      { id: "binding-2", ordinal: 1, state: "SUCCEEDED" }
+    ]);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["UNKNOWN", "OUTCOME_UNKNOWN", "fact_outcome_unknown"],
+    ["PERMANENT", "FAILED", "fact_provider_unavailable"]
+  ] as const)(
+    "terminalizes a %s provider failure without requesting a retry",
+    async (classification, state, stage) => {
+      const fixture = dependencies({
+        provider: { run: vi.fn(async () => { throw providerFailure(classification); }) }
+      });
+
+      await expect(createMemoryFactExtractionHandler(fixture.base)
+        .execute(claim(), context())).resolves.toMatchObject({ stage });
+      expect(fixture.settle).toHaveBeenCalledWith(
+        source.userId,
+        "binding-1",
+        expect.objectContaining({ state })
+      );
+    }
+  );
 });

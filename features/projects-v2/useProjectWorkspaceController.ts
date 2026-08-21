@@ -12,7 +12,6 @@ import {
   loadProject,
   loadProjectActivity,
   leaveProject,
-  loadProjectMemory,
   loadProjects,
   moveProjectChat,
   loadProjectWorkspace,
@@ -424,21 +423,19 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     do {
       settingsRefreshQueuedRef.current = false;
       const request = (async () => {
-        const [memoryResult, activityResult] = await Promise.allSettled([
-          loadProjectMemory(projectId),
-          loadProjectActivity(projectId)
-        ]);
+        // Project Memory remains available only for retained compatibility
+        // routes. Settings must not turn that dormant data into a hidden read.
+        const activityResult = await Promise.allSettled([loadProjectActivity(projectId)]).then(
+          ([result]) => result
+        );
         if (selectedRef.current !== projectId) return;
-        if (memoryResult.status === "fulfilled") setMemory(memoryResult.value);
         if (activityResult.status === "fulfilled") {
           setActivity(activityResult.value);
           setActivityError(null);
         } else {
           setActivityError(projectError(activityResult.reason));
         }
-        const failure = memoryResult.status === "rejected"
-          ? memoryResult.reason
-          : activityResult.status === "rejected" ? activityResult.reason : null;
+        const failure = activityResult.status === "rejected" ? activityResult.reason : null;
         if (failure) throw failure;
       })();
       settingsRefreshPromiseRef.current = { projectId, promise: request };

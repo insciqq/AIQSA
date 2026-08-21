@@ -30,6 +30,7 @@ function candidate(
       sourceTextHash: "1".repeat(64),
       startOffset: 0
     }],
+    extractionExecutionId: "extraction-binding-1",
     id: "2".repeat(64),
     importance: 0.5,
     languageCode: "en",

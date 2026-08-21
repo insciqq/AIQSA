@@ -4,12 +4,16 @@ import {
   type MemoryDeletionState
 } from "../../../contracts/memory";
 import type {
-  ChatPermanentDeleteAdmissionResponseWire,
-  ChatPermanentDeleteAuthorizationRequestWire,
-  ChatPermanentDeleteAuthorizationResponseWire,
-  ChatPermanentDeleteRequestWire,
-  ChatPermanentDeleteStatusResponseWire
-} from "../../../contracts/chats";
+  MemoryConsumerPermanentChatDeleteInput,
+  MemoryConsumerPermanentChatDeleteResponse
+} from "../../../contracts/memoryClient";
+import type {
+  ChatPermanentDeleteAdmissionResponse,
+  ChatPermanentDeleteAuthorizationRequest,
+  ChatPermanentDeleteAuthorizationResponse,
+  ChatPermanentDeleteRequest,
+  ChatPermanentDeleteStatusResponse
+} from "./internalContract";
 import type {
   MemoryMutationAuthorizationMint,
   MemoryMutationAuthorizationUse
@@ -63,6 +67,10 @@ export type PermanentChatDeletionRepository = Readonly<{
     chatId: string;
     userId: string;
   }>): Promise<PermanentChatDeletionSnapshot | null>;
+  latestStatus(input: Readonly<{
+    chatId: string;
+    userId: string;
+  }>): Promise<PermanentChatDeletionStatus | null>;
   status(input: Readonly<{
     chatId: string;
     deletionId: string;
@@ -138,12 +146,22 @@ function assertCurrentSnapshot(
 
 function serializeAdmission(
   admission: PermanentChatDeletionAdmission
-): ChatPermanentDeleteAdmissionResponseWire {
+): ChatPermanentDeleteAdmissionResponse {
   return {
     deletionId: admission.deletionId,
     fencedAt: admission.fencedAt.toISOString(),
     state: admission.state
   };
+}
+
+function consumerStatus(
+  state: MemoryDeletionState
+): MemoryConsumerPermanentChatDeleteResponse["status"] {
+  if (state === "SUCCEEDED") return "COMPLETE";
+  if (state === "BLOCKED_REQUIRES_ADMIN" || state === "CANCELLED") {
+    return "NEEDS_ATTENTION";
+  }
+  return "IN_PROGRESS";
 }
 
 export function createPermanentChatDeletionService(input: Readonly<{
@@ -154,12 +172,99 @@ export function createPermanentChatDeletionService(input: Readonly<{
   repository: PermanentChatDeletionRepository;
 }>) {
   const now = input.now ?? (() => new Date());
+  async function admitInternal(
+    userId: string,
+    chatId: string,
+    request: ChatPermanentDeleteRequest
+  ): Promise<ChatPermanentDeleteAdmissionResponse> {
+    assertCapability(input.capability);
+    const authorization: MemoryMutationAuthorizationUse = {
+      action: "BULK_DELETE",
+      authorizationId: request.mutationAuthorizationId,
+      authorizedPayloadHash: permanentChatDeletionPayloadHash({ chatId, ...request })
+    };
+    let resolved: Readonly<{ requestId: string }>;
+    try {
+      resolved = await input.authorizationRepository.resolveForUse(userId, authorization);
+    } catch (error) {
+      return mapPersistenceError(error);
+    }
+    let result: Awaited<ReturnType<PermanentChatDeletionRepository["admit"]>>;
+    try {
+      result = await input.repository.admit({
+        alsoForgetOriginMemories: request.alsoForgetOriginMemories,
+        authorization: { ...authorization, requestId: resolved.requestId },
+        chatId,
+        expectedActiveLeafMessageId: request.expectedActiveLeafMessageId,
+        expectedChatRevision: request.expectedChatRevision,
+        now: now(),
+        userId
+      });
+    } catch (error) {
+      return mapPersistenceError(error);
+    }
+    if (result.kind !== "ok") {
+      switch (result.kind) {
+        case "not_found": fail("chat_not_found");
+        case "stale": fail("chat_permanent_delete_stale");
+        case "temporary": fail("chat_permanent_delete_temporary_forbidden");
+        case "active_run": fail("active_run_in_progress");
+      }
+    }
+    input.kick();
+    return serializeAdmission(result.admission);
+  }
   return Object.freeze({
+    async confirm(
+      userId: string,
+      chatId: string,
+      request: MemoryConsumerPermanentChatDeleteInput
+    ): Promise<MemoryConsumerPermanentChatDeleteResponse> {
+      assertCapability(input.capability);
+      const snapshot = await input.repository.readSnapshot({ chatId, userId });
+      if (!snapshot) fail("chat_not_found");
+      if (snapshot.memoryMode === "TEMPORARY") {
+        fail("chat_permanent_delete_temporary_forbidden");
+      }
+      if (snapshot.activeRunCount > 0) fail("active_run_in_progress");
+      const issuedAt = now();
+      const authorizationRequest: ChatPermanentDeleteAuthorizationRequest = {
+        alsoForgetOriginMemories: request.alsoForgetOriginMemories,
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedActiveLeafMessageId: snapshot.activeLeafMessageId,
+        expectedChatRevision: snapshot.sourceRevision,
+        requestNonce: request.requestId
+      };
+      let authorization: Readonly<{ expiresAt: Date; id: string }>;
+      try {
+        authorization = await input.authorizationRepository.mint(userId, {
+          action: "BULK_DELETE",
+          authorizedPayloadHash: permanentChatDeletionPayloadHash({
+            chatId,
+            ...authorizationRequest
+          }),
+          confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+          expiresAt: new Date(issuedAt.getTime() + MEMORY_MUTATION_AUTHORIZATION_TTL_MS),
+          nonceHash: memoryMutationNonceHash(userId, request.requestId),
+          requestId: randomUUID()
+        }, issuedAt);
+      } catch (error) {
+        return mapPersistenceError(error);
+      }
+      const admission = await admitInternal(userId, chatId, {
+        alsoForgetOriginMemories: request.alsoForgetOriginMemories,
+        expectedActiveLeafMessageId: snapshot.activeLeafMessageId,
+        expectedChatRevision: snapshot.sourceRevision,
+        mutationAuthorizationId: authorization.id
+      });
+      return { status: consumerStatus(admission.state) };
+    },
+
     async mintAuthorization(
       userId: string,
       chatId: string,
-      request: ChatPermanentDeleteAuthorizationRequestWire
-    ): Promise<ChatPermanentDeleteAuthorizationResponseWire> {
+      request: ChatPermanentDeleteAuthorizationRequest
+    ): Promise<ChatPermanentDeleteAuthorizationResponse> {
       assertCapability(input.capability);
       const snapshot = await input.repository.readSnapshot({ chatId, userId });
       assertCurrentSnapshot(snapshot, request);
@@ -185,51 +290,16 @@ export function createPermanentChatDeletionService(input: Readonly<{
     async admit(
       userId: string,
       chatId: string,
-      request: ChatPermanentDeleteRequestWire
-    ): Promise<ChatPermanentDeleteAdmissionResponseWire> {
-      assertCapability(input.capability);
-      const authorization: MemoryMutationAuthorizationUse = {
-        action: "BULK_DELETE",
-        authorizationId: request.mutationAuthorizationId,
-        authorizedPayloadHash: permanentChatDeletionPayloadHash({ chatId, ...request })
-      };
-      let resolved: Readonly<{ requestId: string }>;
-      try {
-        resolved = await input.authorizationRepository.resolveForUse(userId, authorization);
-      } catch (error) {
-        return mapPersistenceError(error);
-      }
-      let result: Awaited<ReturnType<PermanentChatDeletionRepository["admit"]>>;
-      try {
-        result = await input.repository.admit({
-          alsoForgetOriginMemories: request.alsoForgetOriginMemories,
-          authorization: { ...authorization, requestId: resolved.requestId },
-          chatId,
-          expectedActiveLeafMessageId: request.expectedActiveLeafMessageId,
-          expectedChatRevision: request.expectedChatRevision,
-          now: now(),
-          userId
-        });
-      } catch (error) {
-        return mapPersistenceError(error);
-      }
-      if (result.kind !== "ok") {
-        switch (result.kind) {
-          case "not_found": fail("chat_not_found");
-          case "stale": fail("chat_permanent_delete_stale");
-          case "temporary": fail("chat_permanent_delete_temporary_forbidden");
-          case "active_run": fail("active_run_in_progress");
-        }
-      }
-      input.kick();
-      return serializeAdmission(result.admission);
+      request: ChatPermanentDeleteRequest
+    ): Promise<ChatPermanentDeleteAdmissionResponse> {
+      return admitInternal(userId, chatId, request);
     },
 
     async status(
       userId: string,
       chatId: string,
       deletionId: string
-    ): Promise<ChatPermanentDeleteStatusResponseWire> {
+    ): Promise<ChatPermanentDeleteStatusResponse> {
       const status = await input.repository.status({ chatId, deletionId, userId });
       if (!status) fail("chat_not_found");
       return {
@@ -242,6 +312,15 @@ export function createPermanentChatDeletionService(input: Readonly<{
         state: status.state,
         updatedAt: status.updatedAt.toISOString()
       };
+    },
+
+    async consumerStatus(
+      userId: string,
+      chatId: string
+    ): Promise<MemoryConsumerPermanentChatDeleteResponse> {
+      const status = await input.repository.latestStatus({ chatId, userId });
+      if (!status) fail("chat_not_found");
+      return { status: consumerStatus(status.state) };
     }
   });
 }

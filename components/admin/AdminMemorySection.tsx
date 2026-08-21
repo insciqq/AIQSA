@@ -1,103 +1,45 @@
 "use client";
 
 import {
-  acknowledgeAdminMemoryEgress,
   adminMemoryErrorMessage,
-  getAdminMemoryEgress
+  getAdminMemoryStatus,
+  startAdminMemoryRebuild,
+  updateAdminMemoryAdmissionTimeout
 } from "@/components/admin/adminMemoryApi";
-import { primaryButton, quietButton } from "@/components/admin/adminPrimitives";
+import {
+  inputClass,
+  primaryButton,
+  quietButton
+} from "@/components/admin/adminPrimitives";
 import {
   adminMemoryCopy,
-  adminMemoryCountCopy,
-  adminMemoryDestinationCopy,
-  adminMemoryDestinationStateCopy,
-  adminMemoryLagCopy,
-  adminMemoryOverallCopy,
-  adminMemoryStateCopy,
-  type AdminMemoryLocale
+  adminMemoryIndexCopy,
+  adminMemoryQueueCopy,
+  adminMemoryWorkerCopy
 } from "@/components/admin/adminMemoryUiCopy";
-import type {
-  AdminMemoryDestinationRow,
-  AdminMemoryEgressResponse
-} from "@/lib/contracts/adminMemory";
 import {
-  Check,
-  CheckCircle2,
-  CircleAlert,
-  Clock3,
-  Fingerprint,
-  RefreshCw,
-  ShieldCheck
-} from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-
-const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
-
-function formatDate(locale: AdminMemoryLocale, value: string | null): string {
-  if (!value) return adminMemoryCopy(locale).fingerprintNever;
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
-}
-
-function DestinationStatus({
-  locale,
-  row
-}: Readonly<{ locale: AdminMemoryLocale; row: AdminMemoryDestinationRow }>) {
-  const state = row.reviewRequired
-    ? "REVIEW_REQUIRED" as const
-    : row.state;
-  return (
-    <span className={`shrink-0 rounded-pill px-2 py-1 text-metadata font-semibold ${
-      row.reviewRequired
-        ? "bg-caution/10 text-caution"
-        : row.state === "UNAVAILABLE"
-          ? "bg-control-surface text-ink-muted"
-          : "bg-positive/10 text-positive"
-    }`}>
-      {adminMemoryDestinationStateCopy(locale, state)}
-    </span>
-  );
-}
-
-function DestinationRow({
-  locale,
-  row
-}: Readonly<{ locale: AdminMemoryLocale; row: AdminMemoryDestinationRow }>) {
-  const copy = adminMemoryCopy(locale);
-  const rowCopy = adminMemoryDestinationCopy(locale, row.id);
-  return (
-    <li className="grid gap-3 py-4 sm:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto] sm:items-start">
-      <div>
-        <p className="text-sm font-semibold text-ink">{rowCopy.label}</p>
-        <p className="mt-1 text-xs leading-5 text-ink-muted">{rowCopy.description}</p>
-      </div>
-      <div className="min-w-0">
-        {row.destinations.length > 0 ? (
-          <ul className="grid gap-1.5 text-sm text-ink-secondary">
-            {row.destinations.map((destination) => (
-              <li className="break-words" key={destination}>{destination}</li>
-            ))}
-          </ul>
-        ) : <p className="text-sm text-ink-muted">{copy.destinationMissing}</p>}
-      </div>
-      <DestinationStatus locale={locale} row={row} />
-    </li>
-  );
-}
+  ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS,
+  type AdminMemoryStatus
+} from "@/lib/contracts/adminMemory";
+import { CircleAlert, RefreshCw, RotateCw } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode
+} from "react";
 
 function StatusLine({
+  children,
   label,
-  state,
   tone = "normal"
 }: Readonly<{
+  children: ReactNode;
   label: string;
-  state: string;
   tone?: "critical" | "normal" | "positive" | "warning";
 }>) {
-  const stateClass = tone === "critical"
+  const toneClass = tone === "critical"
     ? "text-critical"
     : tone === "warning"
       ? "text-caution"
@@ -105,44 +47,64 @@ function StatusLine({
         ? "text-positive"
         : "text-ink-secondary";
   return (
-    <div className="flex min-h-control items-center justify-between gap-4 py-2.5">
-      <dt className="text-sm text-ink-secondary">{label}</dt>
-      <dd className={`text-right text-xs font-semibold ${stateClass}`}>{state}</dd>
+    <div className="grid gap-1 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-5">
+      <dt className="text-sm text-ink-muted">{label}</dt>
+      <dd className={`min-w-0 text-sm font-medium ${toneClass}`}>{children}</dd>
     </div>
   );
 }
 
+function ConfiguredTargets({ targets }: Readonly<{
+  targets: AdminMemoryStatus["configuredTargets"];
+}>) {
+  const copy = adminMemoryCopy("EN");
+  if (targets.length === 0) return <span>{copy.configuredEmpty}</span>;
+  return (
+    <ul className="grid gap-1" aria-label={copy.configured}>
+      {targets.map((target) => (
+        <li className="break-words" key={`${target.provider}\u0000${target.model}`}>
+          {target.model} <span className="font-normal text-ink-muted">· {target.provider}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
-  const [payload, setPayload] = useState<AdminMemoryEgressResponse | null>(null);
+  const [status, setStatus] = useState<AdminMemoryStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [timeoutDraft, setTimeoutDraft] = useState("");
+  const [timeoutDirty, setTimeoutDirty] = useState(false);
   const autoLoadAttemptedRef = useRef(false);
-  const locale = "EN" as const;
-  const copy = adminMemoryCopy(locale);
+  const copy = adminMemoryCopy("EN");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const result = await getAdminMemoryEgress();
+    const result = await getAdminMemoryStatus();
     setLoading(false);
     if (result.ok) {
-      setPayload(result.data);
+      setStatus(result.data.memory);
+      if (!timeoutDirty) {
+        setTimeoutDraft(String(result.data.memory.admissionTimeout.seconds));
+      }
       return;
     }
-    setError(adminMemoryErrorMessage(result.error, locale));
-  }, [locale]);
+    setError(adminMemoryErrorMessage(result.error));
+  }, [timeoutDirty]);
 
   useEffect(() => {
     if (!active) {
       autoLoadAttemptedRef.current = false;
       return;
     }
-    if (payload || loading || autoLoadAttemptedRef.current) return;
+    if (status || loading || autoLoadAttemptedRef.current) return;
     autoLoadAttemptedRef.current = true;
     void refresh();
-  }, [active, loading, payload, refresh]);
+  }, [active, loading, refresh, status]);
 
   useEffect(() => {
     if (!active) return;
@@ -152,43 +114,54 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
     return () => clearInterval(timer);
   }, [active, busy, loading, refresh]);
 
-  const acknowledge = async () => {
-    const settings = payload?.memoryEgress;
-    if (!settings || busy || settings.consentMode !== "ADMIN") return;
+  const rebuild = async () => {
+    if (busy || status?.rebuild.state !== "AVAILABLE") return;
     setBusy(true);
     setError(null);
     setNotice(null);
-    const result = await acknowledgeAdminMemoryEgress({
-      currentFingerprint: settings.currentFingerprint,
-      expectedVersion: settings.version
-    });
+    const result = await startAdminMemoryRebuild();
     setBusy(false);
     if (!result.ok) {
-      setError(adminMemoryErrorMessage(result.error, locale));
+      setError(adminMemoryErrorMessage(result.error));
       return;
     }
-    setPayload(result.data);
-    setNotice(adminMemoryCopy("EN").notice);
+    setStatus(result.data.memory);
+    setNotice(copy.notice);
   };
 
-  const health = payload?.memoryHealth ?? null;
-  const settings = payload?.memoryEgress ?? null;
-  const overallCopy = health ? adminMemoryOverallCopy(locale, health.overall) : null;
-  const overallTone = health?.overall === "ACTION_REQUIRED" || health?.overall === "UNAVAILABLE"
-    ? "border-critical"
-    : health?.overall === "DEGRADED" ? "border-caution" : "border-positive";
-  const OverallIcon = health?.overall === "ACTION_REQUIRED" || health?.overall === "UNAVAILABLE"
-    ? CircleAlert
-    : health?.overall === "DEGRADED" ? Clock3 : CheckCircle2;
+  const parsedTimeout = /^\d+$/u.test(timeoutDraft)
+    ? Number(timeoutDraft)
+    : null;
+  const timeoutValid = parsedTimeout !== null && Number.isSafeInteger(parsedTimeout) &&
+    parsedTimeout >= ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds &&
+    parsedTimeout <= ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds;
+  const saveTimeout = async () => {
+    if (busy || !status || !timeoutDirty || !timeoutValid || parsedTimeout === null) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await updateAdminMemoryAdmissionTimeout(
+      status.admissionTimeout.version,
+      parsedTimeout
+    );
+    setBusy(false);
+    if (!result.ok) {
+      setError(adminMemoryErrorMessage(result.error));
+      return;
+    }
+    setStatus(result.data.memory);
+    setTimeoutDraft(String(result.data.memory.admissionTimeout.seconds));
+    setTimeoutDirty(false);
+    setNotice(copy.timeoutNotice);
+  };
 
   return (
     <section aria-labelledby="admin-memory-heading" className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-      <div className="max-w-5xl">
+      <div className="max-w-4xl">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-trace-subtle pb-4">
           <div>
-            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">{copy.installationPolicy}</p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="admin-memory-heading">{copy.heading}</h2>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">{copy.intro}</p>
+            <h2 className="text-lg font-semibold tracking-tight text-ink" id="admin-memory-heading">{copy.heading}</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">{copy.intro}</p>
           </div>
           <button className={quietButton} disabled={loading || busy} onClick={() => void refresh()} type="button">
             <RefreshCw aria-hidden="true" className={`size-3.5 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
@@ -199,105 +172,106 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
         {error ? <p className="mt-4 bg-critical/10 px-3 py-2 text-xs text-critical" role="alert">{error}</p> : null}
         {notice ? <p className="mt-4 bg-positive/10 px-3 py-2 text-xs text-positive" role="status">{notice}</p> : null}
 
-        {health && settings && overallCopy ? (
+        {status ? (
           <>
-            <section className={`mt-5 border-l-2 ${overallTone} bg-control-surface/60 px-3 py-3`} aria-labelledby="admin-memory-overall-heading" aria-live="polite">
-              <div className="flex items-start gap-3">
-                <OverallIcon aria-hidden="true" className={`mt-0.5 size-4 shrink-0 ${health.overall === "ACTION_REQUIRED" || health.overall === "UNAVAILABLE" ? "text-critical" : health.overall === "DEGRADED" ? "text-caution" : "text-positive"}`} />
-                <div>
-                  <h3 className="text-sm font-semibold text-ink" id="admin-memory-overall-heading">{overallCopy.title}</h3>
-                  <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-secondary">{overallCopy.description}</p>
-                </div>
-              </div>
-            </section>
-
-            {health.deletion.state === "ATTENTION_REQUIRED" ? (
-              <div className="mt-4 flex gap-2 border-l-2 border-critical bg-critical/10 px-3 py-3 text-sm leading-5 text-ink-secondary" role="alert">
-                <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-critical" />
-                <p>{copy.safetyBlocked}</p>
-              </div>
-            ) : null}
-            {health.temporary.state === "OVERDUE" ? (
-              <div className="mt-4 flex gap-2 border-l-2 border-critical bg-critical/10 px-3 py-3 text-sm leading-5 text-ink-secondary" role="alert">
-                <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-critical" />
-                <p>{copy.safetyTemporary}</p>
-              </div>
-            ) : null}
-
-            {settings.consentMode === "PER_USER" ? (
-              <div className="mt-4 flex gap-3 border-l-2 border-trace-strong bg-control-surface px-3 py-3 text-sm leading-5 text-ink-secondary">
-                <Fingerprint aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-ink-muted" />
-                <p>{copy.perUser}</p>
-              </div>
-            ) : settings.reviewRequired ? (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-l-2 border-caution bg-caution/10 px-3 py-3">
-                <div className="flex min-w-0 gap-2 text-sm leading-5 text-ink-secondary">
-                  <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-caution" />
-                  <p><span className="font-semibold text-ink">{copy.reviewTitle}.</span> {copy.reviewDescription}</p>
-                </div>
-                <button className={`${primaryButton} min-h-touch`} disabled={busy} onClick={() => void acknowledge()} type="button">
-                  <Check aria-hidden="true" className="size-3.5" />
-                  {busy ? copy.acknowledging : copy.acknowledge}
-                </button>
-              </div>
-            ) : null}
-
-            <dl className="mt-5 divide-y divide-trace-subtle border-y border-trace-subtle">
+            <dl className="mt-5 divide-y divide-trace-subtle border-y border-trace-subtle" aria-live="polite">
+              <StatusLine label={copy.configured}>
+                <ConfiguredTargets targets={status.configuredTargets} />
+              </StatusLine>
+              <StatusLine
+                label={copy.worker}
+                tone={status.worker.state === "RUNNING" ? "positive" : "critical"}
+              >
+                {adminMemoryWorkerCopy("EN", status.worker.state)}
+              </StatusLine>
               <StatusLine
                 label={copy.queue}
-                state={adminMemoryStateCopy(locale, "queue", health.queue.state)}
-                tone={health.queue.state === "BLOCKED" ? "critical" : health.queue.state === "DELAYED" ? "warning" : health.queue.state === "CLEAR" ? "positive" : "normal"}
-              />
+                tone={status.queue.length === 0 ? "positive" : "normal"}
+              >
+                {adminMemoryQueueCopy("EN", status.queue)}
+              </StatusLine>
               <StatusLine
-                label={copy.provider}
-                state={adminMemoryStateCopy(locale, "provider", health.provider.state)}
-                tone={health.provider.state === "DEGRADED" ? "warning" : health.provider.state === "READY" ? "positive" : "normal"}
-              />
-              <StatusLine
-                label={copy.deletion}
-                state={adminMemoryStateCopy(locale, "deletion", health.deletion.state)}
-                tone={health.deletion.state === "ATTENTION_REQUIRED" ? "critical" : health.deletion.state === "CLEAR" ? "positive" : "normal"}
-              />
+                label={copy.index}
+                tone={status.index.readiness === "READY"
+                  ? "positive"
+                  : status.index.readiness === "REBUILD_REQUIRED"
+                    ? "warning"
+                    : status.index.readiness === "NOT_CONFIGURED"
+                      ? "critical"
+                      : "normal"}
+              >
+                {adminMemoryIndexCopy("EN", status.index)}
+              </StatusLine>
+              <StatusLine label={copy.activeIssue} tone={status.activeIssueCode ? "warning" : "normal"}>
+                <span className={status.activeIssueCode ? "font-mono text-xs" : ""}>
+                  {status.activeIssueCode ?? copy.noError}
+                </span>
+              </StatusLine>
             </dl>
 
-            <details className="mt-5 border-y border-trace-subtle py-2">
-              <summary className={`min-h-touch cursor-pointer select-none py-2 text-sm font-semibold text-ink-secondary hover:text-ink ${focusRing}`}>
-                {copy.advanced}
-              </summary>
-              <p className="pb-3 text-xs leading-5 text-ink-muted">{copy.advancedDescription}</p>
-
-              <section className="border-t border-trace-subtle pt-4" aria-labelledby="admin-memory-evidence-heading">
-                <h3 className="text-sm font-semibold text-ink" id="admin-memory-evidence-heading">{copy.operationalEvidence}</h3>
-                <dl className="mt-3 grid gap-x-8 gap-y-3 text-xs sm:grid-cols-2">
-                  <div><dt className="text-ink-muted">{copy.queue} · {copy.active}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.queue.active)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.queue} · {copy.oldest}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryLagCopy(locale, health.queue.oldestLag)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.queue} · {copy.destinationReview}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.queue.waitingForReview)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.queue} · {copy.recentFailures}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.queue.failed)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.provider} · {copy.failed}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.provider.failedRecent)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.provider} · {copy.outcomeUnknown}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.provider.outcomeUnknown)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.provider} · {copy.usageIncomplete}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.provider.usageIncomplete)}</dd></div>
-                  <div><dt className="text-ink-muted">{copy.deletion} · {copy.blocked}</dt><dd className="mt-1 font-medium text-ink-secondary">{adminMemoryCountCopy(locale, health.deletion.blocked)}</dd></div>
-                </dl>
-              </section>
-
-              <div className="mt-5 flex gap-3 border-l-2 border-proof/60 bg-proof/[0.04] px-3 py-3 text-xs leading-5 text-ink-secondary">
-                <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-proof" />
-                <p>{copy.trustDescription}</p>
+            <div className="mt-5 border-y border-trace-subtle py-4">
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto] sm:items-end">
+                <div>
+                  <label
+                    className="text-xs font-medium text-ink-secondary"
+                    htmlFor="memory-admission-timeout-seconds"
+                  >
+                    {copy.timeoutLabel}
+                  </label>
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted" id="memory-admission-timeout-description">
+                    {copy.timeoutDescription}
+                  </p>
+                </div>
+                <input
+                  aria-describedby="memory-admission-timeout-description"
+                  aria-invalid={timeoutDraft.length > 0 && !timeoutValid}
+                  className={inputClass}
+                  disabled={busy || loading}
+                  id="memory-admission-timeout-seconds"
+                  inputMode="numeric"
+                  max={ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds}
+                  min={ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds}
+                  onChange={(event) => {
+                    setTimeoutDraft(event.currentTarget.value);
+                    setTimeoutDirty(true);
+                    setNotice(null);
+                  }}
+                  step={1}
+                  type="number"
+                  value={timeoutDraft}
+                />
+                <button
+                  className={primaryButton}
+                  disabled={busy || !timeoutDirty || !timeoutValid ||
+                    parsedTimeout === status.admissionTimeout.seconds}
+                  onClick={() => void saveTimeout()}
+                  type="button"
+                >
+                  {copy.saveTimeout}
+                </button>
               </div>
+            </div>
 
-              <ul className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle" aria-label={copy.destinationMatrix}>
-                {settings.destinations.map((row) => <DestinationRow key={row.id} locale={locale} row={row} />)}
-              </ul>
-
-              <dl className="mt-5 grid gap-x-8 gap-y-4 border-t border-trace-subtle pt-5 text-xs sm:grid-cols-2">
-                <div className="min-w-0"><dt className="text-ink-muted">{copy.currentFingerprint}</dt><dd className="mt-1 break-all font-mono text-ink-secondary">{settings.currentFingerprint}</dd></div>
-                <div className="min-w-0"><dt className="text-ink-muted">{copy.acknowledgedFingerprint}</dt><dd className="mt-1 break-all font-mono text-ink-secondary">{settings.acceptedFingerprint ?? copy.fingerprintNever}</dd></div>
-                <div><dt className="text-ink-muted">{copy.currentPolicy}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.currentPolicyVersion} · {settings.consentMode}</dd></div>
-                <div><dt className="text-ink-muted">{copy.lastAcknowledgment}</dt><dd className="mt-1 font-medium text-ink-secondary">{formatDate(locale, settings.acceptedAt)}{settings.acceptedBy ? ` · ${settings.acceptedBy.displayName}` : ""}</dd></div>
-                <div><dt className="text-ink-muted">{copy.waitingJobs}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.waitingJobCount.toLocaleString("en-US")}</dd></div>
-                <div><dt className="text-ink-muted">{copy.policyRevision}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.version}</dd></div>
-              </dl>
-            </details>
+            {status.rebuild.state === "AVAILABLE" ? (
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-l-2 border-caution bg-caution/10 px-3 py-3">
+                <div className="flex min-w-0 gap-2">
+                  <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-caution" />
+                  <p className="max-w-2xl text-sm leading-5 text-ink-secondary">{copy.rebuildDescription}</p>
+                </div>
+                <button className={`${primaryButton} min-h-touch`} disabled={busy} onClick={() => void rebuild()} type="button">
+                  <RotateCw aria-hidden="true" className={`size-3.5 ${busy ? "animate-spin motion-reduce:animate-none" : ""}`} />
+                  {copy.rebuild}
+                </button>
+              </div>
+            ) : status.rebuild.state === "IN_PROGRESS" ? (
+              <p className="mt-5 border-l-2 border-proof bg-proof/[0.06] px-3 py-3 text-sm text-ink-secondary" role="status">
+                {copy.rebuildInProgress}
+              </p>
+            ) : status.rebuild.state === "UNAVAILABLE" ? (
+              <p className="mt-5 border-l-2 border-caution bg-caution/10 px-3 py-3 text-sm text-ink-secondary" role="status">
+                {copy.rebuildUnavailable}
+              </p>
+            ) : null}
           </>
         ) : loading ? <p className="mt-5 text-sm text-ink-muted" role="status">{copy.loading}</p> : null}
       </div>

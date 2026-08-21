@@ -39,7 +39,9 @@ export const MEMORY_COUNTER_MUTATIONS = [
   "FOLDER_MOVE",
   "ASSISTANT_ACCESS_CHANGE",
   "SCOPE_TARGET_DELETE",
+  "FACT_SAFETY_RECLASSIFICATION",
   "MEMORY_VISIBLE_SETTING_CHANGE",
+  "MEMORY_MASTER_PAUSE",
   "MEMORY_UI_LOCALE_CHANGE",
   "SHADOW_OR_PURGE_PROGRESS",
   "INDEX_GENERATION_ACTIVATION"
@@ -120,6 +122,13 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       memoryRevision: true,
       sourceRevision: false
     }),
+    FACT_SAFETY_RECLASSIFICATION: Object.freeze({
+      branchGeneration: false,
+      check: "VERSION_CURRENT_POINTER",
+      memoryGeneration: false,
+      memoryRevision: true,
+      sourceRevision: false
+    }),
     FOLDER_MOVE: Object.freeze({
       branchGeneration: false,
       check: "SOURCE_TARGET_ACCESS",
@@ -159,6 +168,16 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       branchGeneration: false,
       check: "SETTINGS_FINGERPRINT_ITEMS",
       memoryGeneration: false,
+      memoryRevision: true,
+      sourceRevision: false
+    }),
+    // The master switch is a durable execution fence.  A pause must make
+    // every queued source/job snapshot stale while retaining the subordinate
+    // preferences and reusable rows for a later explicit resume.
+    MEMORY_MASTER_PAUSE: Object.freeze({
+      branchGeneration: false,
+      check: "JOB_OUTBOX_FENCE",
+      memoryGeneration: true,
       memoryRevision: true,
       sourceRevision: false
     }),

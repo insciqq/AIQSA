@@ -1,24 +1,27 @@
-import { AlertTriangle, Archive, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, RotateCcw, Trash2, X } from "lucide-react";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useDialogFocus } from "./useDialogFocus";
 
 type ConfirmationTone = "destructive" | "warning";
 
 type ConfirmationDialogProps = {
+  busy?: boolean;
   cancelLabel?: string;
   children: string;
   confirmAriaLabel?: string;
   confirmLabel: string;
   dialogLabel: string;
-  icon?: "archive" | "trash" | "x";
+  icon?: "archive" | "resume" | "trash" | "x";
   onCancel(): void;
   onConfirm(): void;
+  restoreFocus?(): HTMLElement | null;
   testId: string;
   title: string;
   tone?: ConfirmationTone;
 };
 
 export function ConfirmationDialog({
+  busy = false,
   cancelLabel = "Cancel",
   children,
   confirmAriaLabel,
@@ -27,11 +30,18 @@ export function ConfirmationDialog({
   icon = "trash",
   onCancel,
   onConfirm,
+  restoreFocus,
   testId,
   title,
   tone = "destructive"
 }: ConfirmationDialogProps) {
-  const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: onCancel });
+  const close = () => {
+    if (!busy) onCancel();
+  };
+  const dialogRef = useDialogFocus<HTMLDivElement>({
+    onClose: close,
+    restoreFocus
+  });
   const toneClasses =
     tone === "warning"
       ? {
@@ -42,14 +52,20 @@ export function ConfirmationDialog({
           button: "bg-critical text-proof-contrast hover:opacity-90",
           icon: "border-critical/35 bg-critical/10 text-critical"
         };
-  const ConfirmIcon = icon === "x" ? X : icon === "archive" ? Archive : Trash2;
+  const ConfirmIcon = icon === "x"
+    ? X
+    : icon === "archive"
+      ? Archive
+      : icon === "resume"
+        ? RotateCcw
+        : Trash2;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/70 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
       data-testid={testId}
       role="presentation"
-      onMouseDown={onCancel}
+      onMouseDown={close}
     >
       <div
         ref={dialogRef}
@@ -71,8 +87,9 @@ export function ConfirmationDialog({
         <div className="mt-4 flex justify-end gap-2">
           <button
             className="flex h-touch items-center justify-center gap-1.5 rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            disabled={busy}
             type="button"
-            onClick={onCancel}
+            onClick={close}
           >
             {cancelLabel}
           </button>
@@ -81,6 +98,7 @@ export function ConfirmationDialog({
               "flex h-touch items-center justify-center gap-1.5 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
               toneClasses.button
             ].join(" ")}
+            disabled={busy}
             type="button"
             aria-label={confirmAriaLabel ?? `Confirm ${confirmLabel.toLowerCase()}`}
             onClick={onConfirm}
@@ -91,6 +109,33 @@ export function ConfirmationDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+export function MemoryResumeConfirmationDialog({
+  chatTitle,
+  onCancel,
+  onConfirm
+}: {
+  chatTitle: string;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  return (
+    <ConfirmationDialog
+      cancelLabel="Keep excluded"
+      confirmAriaLabel={resolveMemoryCopy("resume.action")}
+      confirmLabel={resolveMemoryCopy("resume.action")}
+      dialogLabel={`Resume Memory for ${chatTitle}`}
+      icon="resume"
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+      testId="resume-memory-confirmation"
+      title="Resume Memory for this chat?"
+      tone="warning"
+    >
+      {resolveMemoryCopy("resume.explanation")}
+    </ConfirmationDialog>
   );
 }
 

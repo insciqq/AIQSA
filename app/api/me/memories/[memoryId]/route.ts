@@ -1,12 +1,8 @@
-import { defaultExplicitMemoryHandlerDeps } from "@/lib/server/memory/explicit/defaultExplicit";
-import {
-  createGetMemoryHandler,
-  createUpdateMemoryHandler
-} from "@/lib/server/memory/explicit/handlers";
+import { defaultMemoryConsumerHandlerDeps } from "@/lib/server/memory/consumer/defaultConsumer";
+import { createEditMemoryConsumerItemHandler } from "@/lib/server/memory/consumer/handlers";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
-export const GET = createGetMemoryHandler(defaultExplicitMemoryHandlerDeps);
-export const PATCH = createUpdateMemoryHandler(defaultExplicitMemoryHandlerDeps);
+export const PATCH = createEditMemoryConsumerItemHandler(defaultMemoryConsumerHandlerDeps);

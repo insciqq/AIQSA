@@ -1,12 +1,12 @@
-import { defaultMemorySettingsHandlerDeps } from "@/lib/server/memory/settings/defaultSettings";
+import { defaultMemoryConsumerHandlerDeps } from "@/lib/server/memory/consumer/defaultConsumer";
 import {
-  createGetMemorySettingsHandler,
-  createPatchMemorySettingsHandler
-} from "@/lib/server/memory/settings/handlers";
+  createGetMemoryConsumerSettingsHandler,
+  createPatchMemoryConsumerSettingsHandler
+} from "@/lib/server/memory/consumer/handlers";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
-export const GET = createGetMemorySettingsHandler(defaultMemorySettingsHandlerDeps);
-export const PATCH = createPatchMemorySettingsHandler(defaultMemorySettingsHandlerDeps);
+export const GET = createGetMemoryConsumerSettingsHandler(defaultMemoryConsumerHandlerDeps);
+export const PATCH = createPatchMemoryConsumerSettingsHandler(defaultMemoryConsumerHandlerDeps);

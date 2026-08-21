@@ -27,6 +27,9 @@ import {
   withLockedMemoryTransaction
 } from "../persistence/transaction";
 import { enqueueMemoryJob } from "../persistence/jobs";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
@@ -35,6 +38,12 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import {
+  loadPersonalMemoryEvidenceSnapshots,
+  memoryPersonalFactEvidencePredicate
+} from "../persistence/eligibility";
+import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import {
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "../retrieval/vector";
@@ -192,7 +201,7 @@ async function currentSuppressionIdentity(
   userId: string,
   now: Date
 ): Promise<string> {
-  const [barriers, suppressions] = await Promise.all([
+  const [barriers, pauseIntervals, suppressions] = await Promise.all([
     tx.memorySourceBarrier.findMany({
       orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
       select: {
@@ -200,6 +209,17 @@ async function currentSuppressionIdentity(
         kind: true,
         memoryGeneration: true,
         sourceCreatedAtCutoff: true
+      },
+      where: { explicitOverrideAllowed: false, userId }
+    }),
+    tx.memoryPauseInterval.findMany({
+      orderBy: [{ pausedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memoryGeneration: true,
+        pausedAt: true,
+        resumedAt: true,
+        scope: true
       },
       where: { userId }
     }),
@@ -224,7 +244,7 @@ async function currentSuppressionIdentity(
       }
     })
   ]);
-  return memorySha256({ barriers, suppressions });
+  return memorySha256({ barriers, pauseIntervals, suppressions });
 }
 
 async function eligibleFacts(
@@ -250,15 +270,31 @@ async function eligibleFacts(
       AND version."id" = fact."currentVersionId"
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
       AND version."systemTo" IS NULL
+      AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
     WHERE fact."userId" = ${settings.userId}
       AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND ${memoryPersonalFactEvidencePredicate(settings.userId)}
     ORDER BY version."id"
   `);
   if (rows.length === 0) return [];
-  const evidence = await tx.memoryEvidence.findMany({
+  const automaticIds = rows
+    .filter(({ sourceMode }) => sourceMode === "AUTOMATIC")
+    .map(({ versionId }) => versionId);
+  const explicitIds = rows
+    .filter(({ sourceMode }) => sourceMode === "EXPLICIT")
+    .map(({ versionId }) => versionId);
+  const personalEvidence = await loadPersonalMemoryEvidenceSnapshots(
+    tx,
+    settings.userId,
+    automaticIds
+  );
+  const explicitEvidence = explicitIds.length === 0
+    ? []
+    : await tx.memoryEvidence.findMany({
     orderBy: [{ factVersionId: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     select: {
       branchGeneration: true,
@@ -267,8 +303,22 @@ async function eligibleFacts(
       sourceProjectionVersion: true,
       sourceType: true
     },
-    where: { factVersionId: { in: rows.map(({ versionId }) => versionId) }, userId: settings.userId }
+    where: {
+      factVersionId: { in: explicitIds },
+      sourceType: "EXPLICIT_ACTION",
+      userId: settings.userId
+    }
   }) as readonly FactEvidenceRow[];
+  const evidence: readonly FactEvidenceRow[] = [
+    ...explicitEvidence,
+    ...personalEvidence.map((item) => ({
+      branchGeneration: item.branchGeneration,
+      factVersionId: item.factVersionId,
+      safeSourceHash: item.safeSourceHash,
+      sourceProjectionVersion: item.sourceProjectionVersion,
+      sourceType: "MESSAGE"
+    }))
+  ];
   return rows.flatMap((row) => {
     const normalizedSearchText = normalizeMemorySearchText(row.displayText);
     if (!normalizedSearchText) return [];
@@ -324,22 +374,24 @@ async function eligibleChunks(
     FROM "MemoryRecallChunk" AS chunk
     INNER JOIN "Chat" AS chat
       ON chat."userId" = chunk."userId" AND chat."id" = chunk."chatId"
+      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND chat."memoryBranchGeneration" = chunk."branchGeneration"
-      AND chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId" AND checkpoint."chatId" = chunk."chatId"
       AND checkpoint."branchGeneration" = chunk."branchGeneration"
       AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
-      AND checkpoint."activeLeafMessageId" = chat."activeLeafMessageId"
-      AND checkpoint."lastIndexedMessageId" = chat."activeLeafMessageId"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
     WHERE chunk."userId" = ${settings.userId}
       AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND chunk."safetyClass" IN (
         'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND ${memoryHistoryChunkSourceAuthorityPredicate()}
       AND NOT EXISTS (
         SELECT 1 FROM "MemorySuppression" AS suppression
         LEFT JOIN "MemoryRecallChunkMessage" AS source_message

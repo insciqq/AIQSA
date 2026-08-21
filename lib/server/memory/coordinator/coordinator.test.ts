@@ -74,6 +74,7 @@ function repository(
     heartbeatDeletion: vi.fn(async () => true),
     heartbeatJob: vi.fn(async () => true),
     listWaitingJobs: vi.fn(async () => []),
+    preflight: vi.fn(async () => undefined),
     requeueDueJobs: vi.fn(async () => 0),
     resolveWaitingJob: vi.fn(async () => false),
     retryDeletion: vi.fn(async () => true),
@@ -81,6 +82,7 @@ function repository(
     setJobStage: vi.fn(async () => true),
     settleJobGate: vi.fn(async () => true),
     terminalJob: vi.fn(async () => true),
+    terminalUnavailableJobs: vi.fn(async () => 0),
     ...overrides
   };
 }
@@ -104,6 +106,36 @@ function coordinator(
 }
 
 describe("Memory coordinator", () => {
+  it("records content-free worker liveness once at the start of an idle drain", async () => {
+    const onDrain = vi.fn(async () => undefined);
+    const claimDeletion = vi.fn(async () => null);
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerDeletion({
+      execute: vi.fn(),
+      operation: "TEMPORARY_DELETE"
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      onDrain,
+      policy: {
+        heartbeatMs: 10,
+        intervalMs: 10_000,
+        leaseMs: 100,
+        maxDeletionParallel: 1,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: repository({ claimDeletion })
+    });
+
+    await service.reconcileNow();
+    service.stop();
+
+    expect(onDrain).toHaveBeenCalledOnce();
+    expect(onDrain.mock.invocationCallOrder[0])
+      .toBeLessThan(claimDeletion.mock.invocationCallOrder[0]!);
+  });
+
   it("does not turn timer ticks during a slow pass into a continuous catch-up loop", async () => {
     vi.useFakeTimers();
     let releasePass!: () => void;
@@ -193,6 +225,40 @@ describe("Memory coordinator", () => {
 
     expect(reconcileWork).toHaveBeenCalledOnce();
     expect(callOrder).toEqual(["claim", "delete", "reconcile"]);
+  });
+
+  it("terminalises queued kinds that have no registered handler", async () => {
+    const terminalUnavailableJobs = vi.fn()
+      .mockResolvedValueOnce(1)
+      .mockResolvedValue(0);
+    const claimJob = vi.fn(async () => null);
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute: vi.fn(),
+      kind: "EMBED_ITEMS",
+      preflight: async () => ({ status: "READY" })
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: {
+        heartbeatMs: 10,
+        intervalMs: 10_000,
+        leaseMs: 100,
+        maxDeletionParallel: 1,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: repository({ claimJob, terminalUnavailableJobs })
+    });
+
+    await service.reconcileNow();
+    service.stop();
+
+    expect(terminalUnavailableJobs).toHaveBeenCalledWith({
+      now: NOW,
+      supportedKinds: ["EMBED_ITEMS"]
+    });
+    expect(claimJob).toHaveBeenCalled();
   });
 
   it("preflights before and after work, persists stages, and commits through the lease fence", async () => {
@@ -349,6 +415,50 @@ describe("Memory coordinator", () => {
       nextAttemptAt: new Date(NOW.getTime() + 15 * 60_000)
     }));
   });
+
+  it.each([
+    ["EXTRACT_FACTS", 1, "retry"],
+    ["EXTRACT_FACTS", 2, "terminal"],
+    ["CONSOLIDATE_CANDIDATE", 1, "retry"],
+    ["CONSOLIDATE_CANDIDATE", 2, "terminal"]
+  ] as const)(
+    "uses the two-attempt provider-learning ceiling for %s attempt %s",
+    async (kind, attemptCount, expected) => {
+      const claim = jobClaim({ attemptCount, kind });
+      const claimJob = vi.fn()
+        .mockResolvedValueOnce(claim)
+        .mockResolvedValue(null);
+      const retryJob = vi.fn(async () => true);
+      const terminalJob = vi.fn(async () => true);
+      const coordinatorRepository = repository({ claimJob, retryJob, terminalJob });
+      const registry = new MemoryCoordinatorRegistry();
+      registry.registerJob({
+        execute: async () => {
+          throw new MemoryCoordinatorError("memory_learning_provider_transient", true);
+        },
+        kind,
+        preflight: async () => ({ status: "READY" })
+      });
+      const service = coordinator(registry, coordinatorRepository);
+
+      await service.reconcileNow();
+      service.stop();
+
+      if (expected === "retry") {
+        expect(retryJob).toHaveBeenCalledWith(expect.objectContaining({
+          claim,
+          errorCode: "memory_learning_provider_transient"
+        }));
+        expect(terminalJob).not.toHaveBeenCalled();
+      } else {
+        expect(terminalJob).toHaveBeenCalledWith(expect.objectContaining({
+          claim,
+          errorCode: "memory_learning_provider_transient"
+        }));
+        expect(retryJob).not.toHaveBeenCalled();
+      }
+    }
+  );
 
   it("bounds claims per worker pass even while the queue stays non-empty", async () => {
     const claim = jobClaim({ kind: "INDEX_HISTORY" });

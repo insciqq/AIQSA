@@ -94,17 +94,23 @@ function apiChatSummary(summary: WorkspaceChatSummary) {
 
 function apiChatMemoryState(
   summary: WorkspaceChatSummary,
-  mode: "NORMAL" | "EXCLUDED" | "TEMPORARY" = "NORMAL",
-  sourceRevision = 0
+  mode: "NORMAL" | "EXCLUDED" | "TEMPORARY" = "NORMAL"
 ) {
   return {
-    chat: {
-      archived: false,
+    allowedActions: mode === "NORMAL" ? ["EXCLUDE"] : mode === "EXCLUDED" ? ["RESUME"] : [],
+    archived: false,
+    mode,
+    temporaryRetentionDeadline: mode === "TEMPORARY" ? "2026-06-11T00:00:00.000Z" : null
+  };
+}
+
+function apiChatSource(summary: WorkspaceChatSummary, sourceRevision = 0) {
+  return {
+    source: {
       chatId: summary.id,
-      mode,
+      location: "ACTIVE_CHAT",
+      memoryMode: summary.memoryMode ?? "NORMAL",
       sourceRevision,
-      temporaryRetentionDeadline: mode === "TEMPORARY" ? "2026-06-11T00:00:00.000Z" : null,
-      temporaryRetentionPolicyVersion: mode === "TEMPORARY" ? "temporary-24h-v1" : null,
       updatedAt: summary.updatedAt
     }
   };
@@ -431,11 +437,12 @@ describe("workspace actions", () => {
       data: { runId: "run-b" },
       type: "run_start"
     });
-    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string | URL | Request) =>
-      String(url).endsWith("/memory-mode")
-        ? Response.json(apiChatMemoryState(state.chatA))
-        : Response.json(apiArchivedChat(state.chatA))
-    ));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string | URL | Request) => {
+      const path = String(url);
+      if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
+      if (path.endsWith("/source")) return Response.json(apiChatSource(state.chatA));
+      return Response.json(apiArchivedChat(state.chatA));
+    }));
 
     await state.actions.deleteChat(state.chatA);
 
@@ -481,6 +488,9 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn((url: string | URL | Request) => {
       if (String(url).endsWith("/memory-mode")) {
         return Promise.resolve(Response.json(apiChatMemoryState(state.chatA)));
+      }
+      if (String(url).endsWith("/source")) {
+        return Promise.resolve(Response.json(apiChatSource(state.chatA)));
       }
       if (String(url) === "/api/chats/chat-a/archive") {
         return Promise.resolve(Response.json(apiArchivedChat(state.chatA)));
@@ -568,6 +578,7 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string | URL | Request) => {
       const path = String(url);
       if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
+      if (path.endsWith("/source")) return Response.json(apiChatSource(state.chatA));
       if (path.endsWith("/archive")) return Response.json(apiArchivedChat(state.chatA));
       if (path.endsWith("/restore")) {
         return Response.json({
@@ -624,6 +635,7 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string | URL | Request) => {
       const path = String(url);
       if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
+      if (path.endsWith("/source")) return Response.json(apiChatSource(state.chatA));
       if (path.endsWith("/archive")) return Response.json(apiArchivedChat(state.chatA));
       if (path.endsWith("/restore")) {
         return Response.json({
@@ -1183,6 +1195,54 @@ describe("workspace actions", () => {
       activeChatId: "chat-a"
     });
     expect(state.setNotice).not.toHaveBeenCalled();
+  });
+
+  it("authoritatively loads an unlisted Personal deep-link chat and rejects Project detail", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const personal = chat({
+      activeLeafMessageId: "linked-message",
+      id: "linked-personal-chat",
+      messageCount: 1,
+      title: "Linked personal chat"
+    });
+    const project = chat({
+      activeLeafMessageId: "project-message",
+      id: "linked-project-chat",
+      messageCount: 1,
+      projectId: "project-1",
+      title: "Linked Project chat"
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/chats/linked-personal-chat") {
+        return Response.json({
+          chat: apiChatDetail(personal, [message({ id: "linked-message" })])
+        });
+      }
+      if (path === "/api/chats/linked-project-chat") {
+        return Response.json({
+          chat: {
+            ...apiChatDetail(project, [message({ id: "project-message" })]),
+            projectId: "project-1"
+          }
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(state.actions.activatePersonalChatById(personal.id)).resolves.toMatchObject({
+      id: personal.id
+    });
+    expect(useWorkspaceStore.getState().activeChatId).toBe(personal.id);
+    expect(state.chats()).toContainEqual(expect.objectContaining({ id: personal.id }));
+    expect(useThreadStore.getState().threadsByChatId[personal.id]?.messages)
+      .toContainEqual(expect.objectContaining({ id: "linked-message" }));
+
+    state.actions.activateBlankWorkspace();
+    await expect(state.actions.activatePersonalChatById(project.id)).resolves.toBeNull();
+    expect(state.chats()).not.toContainEqual(expect.objectContaining({ id: project.id }));
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
   });
 
   it("rejects a detail response whose chat id does not match the requested chat", async () => {
@@ -2059,7 +2119,7 @@ describe("workspace actions", () => {
         });
       }
       if (path === `/api/me/chats/${temporary.id}/memory-mode`) {
-        return Response.json(apiChatMemoryState(temporary, "TEMPORARY", 2));
+        return Response.json(apiChatMemoryState(temporary, "TEMPORARY"));
       }
       if (path === `/api/chats/${temporary.id}`) {
         return Response.json({ chat: apiChatDetail(temporary, []) });

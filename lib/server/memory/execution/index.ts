@@ -39,3 +39,4 @@ export * from "./owner";
 export * from "./policy";
 export * from "./roles";
 export * from "./snapshot";
+export * from "./structuredClassifier";

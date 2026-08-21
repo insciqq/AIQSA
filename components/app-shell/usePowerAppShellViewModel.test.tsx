@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
-import type { Catalog, WorkspaceChatSummary } from "./types";
+import type { Catalog, FolderSummary, WorkspaceChatSummary } from "./types";
 
 function chat(id: string): WorkspaceChatSummary {
   return {
@@ -153,6 +153,24 @@ describe("usePowerAppShellViewModel", () => {
 
     expect(result.current.composerContextStats.approximateInputTokens).toBe(
       estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE) + 12_345
+    );
+  });
+
+  it("does not include a legacy folder Project Memory value in the client estimate", () => {
+    const folder: FolderSummary = {
+      id: "folder-1",
+      name: "Research",
+      parentId: null,
+      projectMemory: "Legacy text must stay dormant",
+      sortOrder: 0
+    };
+    const { result } = renderViewModel({
+      chats: [{ ...chat("chat-a"), folderId: folder.id }],
+      folders: [folder]
+    });
+
+    expect(result.current.composerContextStats.approximateInputTokens).toBe(
+      estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE)
     );
   });
 });

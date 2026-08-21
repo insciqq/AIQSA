@@ -33,24 +33,11 @@ function t(key: PermanentChatDeletionUiCopyKey): string {
   return permanentChatDeletionUiCopy(key);
 }
 
-function formattedDate(value: string | null): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "—"
-    : new Intl.DateTimeFormat("en-US", {
-        dateStyle: "medium",
-        timeStyle: "short"
-      }).format(date);
-}
-
-function errorText(code: string | null): string {
-  switch (code) {
-    case "chat_permanent_delete_stale":
-    case "chat_permanent_delete_stale_review_required":
-    case "active_run_in_progress":
-      return t("stale");
-    case "chat_permanent_delete_unavailable":
+function errorText(reason: string | null): string {
+  switch (reason) {
+    case "BUSY": return t("busy");
+    case "CHANGED": return t("stale");
+    case "UNAVAILABLE":
       return t("unavailable");
     default:
       return t("unknownError");
@@ -60,13 +47,10 @@ function errorText(code: string | null): string {
 function statusText(
   state: ReturnType<typeof usePermanentChatDeletionStore.getState>["status"]
 ): string {
-  switch (state?.state) {
-    case "PENDING": return t("statePending");
-    case "RUNNING": return t("stateRunning");
-    case "RETRY_WAIT": return t("retryWait");
-    case "BLOCKED_REQUIRES_ADMIN": return t("blocked");
-    case "SUCCEEDED": return t("stateSucceeded");
-    case "CANCELLED": return t("blocked");
+  switch (state?.status) {
+    case "IN_PROGRESS": return t("stateRunning");
+    case "NEEDS_ATTENTION": return t("blocked");
+    case "COMPLETE": return t("stateSucceeded");
     default: return t("statusBody");
   }
 }
@@ -202,9 +186,8 @@ function StatusDialog() {
   const status = usePermanentChatDeletionStore((state) => state.status);
   const open = usePermanentChatDeletionStore((state) => state.statusOpen);
   if (!open || !reference) return null;
-  const completed = status?.state === "SUCCEEDED";
-  const blocked = status?.state === "BLOCKED_REQUIRES_ADMIN" ||
-    status?.state === "CANCELLED";
+  const completed = status?.status === "COMPLETE";
+  const blocked = status?.status === "NEEDS_ATTENTION";
   return (
     <ModalFrame labelledBy="permanent-chat-deletion-status-heading">
       <div className="flex items-start gap-3">
@@ -248,27 +231,6 @@ function StatusDialog() {
         </p>
       ) : null}
 
-      <details className="mt-4 border-y border-trace-subtle py-1">
-        <summary className={`min-h-touch cursor-pointer py-3 text-sm font-semibold text-ink-secondary ${focusRing}`}>
-          {t("advanced")}
-        </summary>
-        <dl className="divide-y divide-trace-subtle pb-2 text-xs">
-          {[
-            [t("advancedReference"), reference.deletionId],
-            [t("advancedAttempts"), String(status?.attemptCount ?? 0)],
-            [t("advancedFenced"), formattedDate(status?.fencedAt ?? null)],
-            [t("advancedUpdated"), formattedDate(status?.updatedAt ?? null)],
-            [t("advancedLastAudit"), formattedDate(status?.lastAuditAt ?? null)],
-            [t("advancedError"), status?.errorCode ?? "—"]
-          ].map(([label, value]) => (
-            <div className="grid gap-1 py-2 sm:grid-cols-[9rem_minmax(0,1fr)]" key={label}>
-              <dt className="font-medium text-ink-muted">{label}</dt>
-              <dd className="break-all font-mono text-ink-secondary">{value}</dd>
-            </div>
-          ))}
-        </dl>
-      </details>
-
       <div className="mt-4 flex flex-wrap justify-end gap-2">
         {!completed ? (
           <button
@@ -302,9 +264,8 @@ function ProgressNotice() {
   const statusOpen = usePermanentChatDeletionStore((state) => state.statusOpen);
   const target = usePermanentChatDeletionStore((state) => state.target);
   if (!reference || statusOpen || target) return null;
-  const blocked = status?.state === "BLOCKED_REQUIRES_ADMIN" ||
-    status?.state === "CANCELLED";
-  const completed = status?.state === "SUCCEEDED";
+  const blocked = status?.status === "NEEDS_ATTENTION";
+  const completed = status?.status === "COMPLETE";
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-[max(.75rem,env(safe-area-inset-bottom))] z-[85] flex justify-center px-3">
       <div
@@ -335,15 +296,15 @@ function ProgressNotice() {
 
 export function PermanentChatDeletionSurface() {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
-  const state = usePermanentChatDeletionStore((current) => current.status?.state ?? null);
+  const status = usePermanentChatDeletionStore((current) => current.status?.status ?? null);
 
   useEffect(() => {
-    if (!reference || !state || ["CANCELLED", "SUCCEEDED"].includes(state)) return;
+    if (!reference || !status || status === "COMPLETE") return;
     const timer = window.setTimeout(() => {
       void refreshPermanentChatDeletionStatus(reference).catch(() => undefined);
-    }, state === "BLOCKED_REQUIRES_ADMIN" ? 10_000 : 3_000);
+    }, status === "NEEDS_ATTENTION" ? 10_000 : 3_000);
     return () => window.clearTimeout(timer);
-  }, [reference, state]);
+  }, [reference, status]);
 
   return (
     <>

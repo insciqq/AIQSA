@@ -1,6 +1,6 @@
 import { expect, test, type Route } from "@playwright/test";
-import { memorySettingsFixture } from "../support/memoryFixtures";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../lib/contracts/memory";
+import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../lib/contracts/memoryClient";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { signInWithLocalToken } from "./support/localAuth";
 
@@ -40,6 +40,7 @@ function chatSummary(id: string, title: string, messageCount = 0) {
     id,
     messageCount,
     pinned: false,
+    projectId: null,
     title,
     updatedAt: timestamp
   };
@@ -48,6 +49,48 @@ function chatSummary(id: string, title: string, messageCount = 0) {
 function sse(type: string, data: unknown): string {
   return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 }
+
+test("opens an authorized Personal Memory source at its exact message", async ({ page }) => {
+  const linkedMessages = [
+    message("linked-user", "user", "Linked source question", null),
+    message("linked-assistant", "assistant", "Linked source answer", "linked-user", "run-linked")
+  ];
+  const linked = {
+    ...chatSummary("linked-personal-chat", "Linked Personal source", linkedMessages.length),
+    activeLeafMessageId: "linked-assistant",
+    contextStats: { approximateActiveBranchInputTokens: 12 },
+    messages: linkedMessages,
+    pageInfo: {
+      activeLeafMessageId: "linked-assistant",
+      beforeCursor: null,
+      hasOlder: false,
+      snapshotUpdatedAt: timestamp
+    },
+    projectId: null,
+    usageStats: null
+  };
+  await installMatrixCatalogFixture(page, { chats: [], folders: [] });
+  await page.route("**/api/chats/linked-personal-chat", async (route: Route) => {
+    await route.fulfill({ contentType: "application/json", json: { chat: linked } });
+  });
+  await page.route("**/api/me/memory/settings", async (route: Route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: memoryConsumerSettingsFixture()
+    });
+  });
+
+  await signInWithLocalToken(page);
+  await page.goto("/?chat=linked-personal-chat&message=linked-user");
+  await expect(page.getByRole("heading", { name: "Linked Personal source" })).toBeVisible();
+  await expect(page.locator('[data-message-id="linked-user"]')).toBeVisible();
+  await expect(page).toHaveURL(/chat=linked-personal-chat.*message=linked-user/u);
+
+  await page.goto("/?memorySource=unavailable&keep=yes");
+  await expect(page.getByTestId("shell-notice"))
+    .toContainText("This Memory source is unavailable.");
+  await expect(page).toHaveURL(/\?keep=yes$/u);
+});
 
 test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinct", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
@@ -70,7 +113,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const temporary = chatSummary("chat-temporary", "Temporary lifecycle");
   let archived = false;
   let memoryMode: "EXCLUDED" | "NORMAL" = "NORMAL";
-  let memoryRevision = 8;
   let sourceRevision = 1;
   const modePatches: Record<string, unknown>[] = [];
   const temporaryAdmissions: Record<string, unknown>[] = [];
@@ -82,7 +124,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({
       contentType: "application/json",
-      json: memorySettingsFixture({ settings: { memoryRevision } })
+      json: memoryConsumerSettingsFixture()
     });
   });
   await page.route("**/api/me/chats/*/memory-mode", async (route: Route) => {
@@ -91,47 +133,52 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     if (request.method() === "GET") {
       await route.fulfill({
         contentType: "application/json",
-        json: {
-          chat: chatId === temporary.id
-            ? {
-                archived: false,
-                chatId,
-                mode: "TEMPORARY",
-                sourceRevision: 1,
-                temporaryRetentionDeadline: deadline,
-                temporaryRetentionPolicyVersion: "temporary-24h-v1",
-                updatedAt: timestamp
-              }
-            : {
-                archived,
-                chatId,
-                mode: memoryMode,
-                sourceRevision,
-                temporaryRetentionDeadline: null,
-                temporaryRetentionPolicyVersion: null,
-                updatedAt: timestamp
-              }
-        }
+        json: chatId === temporary.id
+          ? {
+              allowedActions: [],
+              archived: false,
+              mode: "TEMPORARY",
+              temporaryRetentionDeadline: deadline
+            }
+          : {
+              allowedActions: memoryMode === "NORMAL" ? ["EXCLUDE"] : ["RESUME"],
+              archived,
+              mode: memoryMode,
+              temporaryRetentionDeadline: null
+            }
       });
       return;
     }
     const body = request.postDataJSON() as Record<string, unknown>;
     modePatches.push(body);
-    expect(body).toMatchObject({
-      expectedChatRevision: sourceRevision,
-      expectedMemoryRevision: memoryRevision
-    });
+    expect(Object.keys(body).sort()).toEqual(
+      body.mode === "NORMAL"
+        ? ["mode", "resumeDisclosureCopyVersion"]
+        : ["mode"]
+    );
     memoryMode = body.mode as typeof memoryMode;
     sourceRevision += 1;
-    memoryRevision += 1;
     await route.fulfill({
       contentType: "application/json",
       json: {
-        chatId,
-        memoryGeneration: 3,
-        memoryRevision,
+        allowedActions: memoryMode === "NORMAL" ? ["EXCLUDE"] : ["RESUME"],
+        archived,
         mode: memoryMode,
-        sourceRevision
+        temporaryRetentionDeadline: null
+      }
+    });
+  });
+  await page.route("**/api/chats/chat-normal/source", async (route: Route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        source: {
+          chatId: normal.id,
+          location: archived ? "ARCHIVED_PREVIEW" : "ACTIVE_CHAT",
+          memoryMode,
+          sourceRevision,
+          updatedAt: timestamp
+        }
       }
     });
   });
@@ -247,17 +294,31 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const workspace = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
-  // One stateful toggle item: it starts checked (NORMAL) and each click flips
-  // the retained Memory mode.
+  // The menu names the consequence of each state-specific action.
   await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
   await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
-    .getByRole("menuitem", { name: "Use memory" }).click();
+    .getByRole("menuitem", { name: "Exclude from Memory" }).click();
   await expect.poll(() => modePatches.length).toBe(1);
   expect(modePatches.at(-1)).toMatchObject({ mode: "EXCLUDED" });
 
   await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
   await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
-    .getByRole("menuitem", { name: "Use memory" }).click();
+    .getByRole("menuitem", { name: "Resume Memory for this chat" }).click();
+  const resumeDialog = page.getByRole("dialog", {
+    name: "Resume Memory for Retained lifecycle"
+  });
+  await expect(resumeDialog).toContainText("Only new messages sent after you resume");
+  await expect(resumeDialog).toContainText("Earlier excluded messages are not added back");
+  expect(modePatches).toHaveLength(1);
+  await page.keyboard.press("Escape");
+  await expect(resumeDialog).toHaveCount(0);
+  await expect(workspace.getByRole("button", { name: "Actions: Retained lifecycle" })).toBeFocused();
+
+  await workspace.getByRole("button", { name: "Actions: Retained lifecycle" }).click();
+  await page.getByRole("menu", { name: "Chat actions: Retained lifecycle" })
+    .getByRole("menuitem", { name: "Resume Memory for this chat" }).click();
+  await page.getByRole("dialog", { name: "Resume Memory for Retained lifecycle" })
+    .getByRole("button", { name: "Resume Memory for this chat" }).click();
   await expect.poll(() => modePatches.length).toBe(2);
   expect(modePatches.at(-1)).toMatchObject({
     mode: "NORMAL",

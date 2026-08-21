@@ -1,15 +1,10 @@
 import {
+  MEMORY_UI_LOCALE,
   MEMORY_UI_COPY_KEYS,
-  memoryFactStateLabel,
-  memoryModalityLabel,
-  memorySensitivityLabel,
+  formatMemoryUiCopy,
+  memoryCategoryLabel,
   memoryUiCopy
 } from "./memoryUiCopy";
-import {
-  MEMORY_FACT_STATES,
-  MEMORY_MODALITIES,
-  MEMORY_SENSITIVITY_CLASSES
-} from "@/lib/contracts/memory";
 import { describe, expect, it } from "vitest";
 
 describe("Memory UI copy", () => {
@@ -19,11 +14,15 @@ describe("Memory UI copy", () => {
     }
   });
 
-  it("labels every visible fact enum", () => {
-    for (const state of MEMORY_FACT_STATES) expect(memoryFactStateLabel(state)).toBeTruthy();
-    for (const modality of MEMORY_MODALITIES) expect(memoryModalityLabel(modality)).toBeTruthy();
-    for (const sensitivity of MEMORY_SENSITIVITY_CLASSES) {
-      expect(memorySensitivityLabel(sensitivity)).toBeTruthy();
-    }
+  it("formats Memory-only labels through the same copy catalog", () => {
+    expect(MEMORY_UI_LOCALE).toBe("en-US");
+    expect(formatMemoryUiCopy("source.heading", { count: 2 })).toBe("Memory · 2");
+    expect(formatMemoryUiCopy("action.matchIndex", { index: 3 })).toBe("Match 3");
+    expect(memoryCategoryLabel("about_you")).toBe("About you");
+    expect(memoryCategoryLabel("constraints_and_routines")).toBe("Constraints and routines");
+    expect(memoryCategoryLabel("sensitive_information")).toBe("Other");
+    expect(memoryCategoryLabel("unknown-category")).toBe("Other");
+    expect(memoryUiCopy("manager.statementHelp")).not.toContain("exactly as entered");
+    expect(memoryUiCopy("manager.unavailable")).toContain("temporarily unavailable");
   });
 });

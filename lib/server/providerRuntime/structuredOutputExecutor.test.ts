@@ -2,7 +2,10 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import type { ProviderAdmissionRole } from "./admission";
-import { createAcceptedStructuredOutputExecutor } from "./structuredOutputExecutor";
+import {
+  createAcceptedStructuredOutputExecutor,
+  createAcceptedStructuredOutputSnapshotExecutor
+} from "./structuredOutputExecutor";
 
 const KEY = Buffer.alloc(32, 19);
 
@@ -112,10 +115,20 @@ describe("accepted structured-output executor", () => {
     expect(queryRaw).toHaveBeenCalledOnce();
     expect(fetchFn).toHaveBeenCalledOnce();
 
+    const executeSnapshot = createAcceptedStructuredOutputSnapshotExecutor(client, {
+      createFetch: () => fetchFn,
+      encryptionKey: () => KEY
+    });
+    await expect(executeSnapshot(role().snapshot, request)).resolves.toEqual({
+      serverIds: ["mcp-a"]
+    });
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+
     revoked = true;
     await expect(execute(role(), request)).rejects.toThrow("credential_revoked");
-    expect(queryRaw).toHaveBeenCalledTimes(2);
-    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("fails before credential or network work without verified capability", async () => {

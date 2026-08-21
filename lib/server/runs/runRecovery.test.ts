@@ -69,12 +69,7 @@ import type {
   KnowledgeProviderDispatchRecovery,
   PreparedKnowledgeProviderDispatch
 } from "../knowledge/providerDispatchLifecycle";
-import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
-import {
-  MEMORY_HISTORY_SEARCH_TOOL_NAME,
-  memoryHistorySearchTool
-} from "../memory/history/search/tool";
 import {
   activeRunStaleMs,
   reconcileInstallationRuns,
@@ -214,8 +209,6 @@ function createHarness(options: Readonly<{
   focusedKnowledgeRecoveryScope?: FocusedKnowledgeRecoveryScope | null;
   focusedKnowledgeScopeExclusions?: readonly KnowledgeRunAdmissionExclusion[] | null;
   memoryEgress?: MemoryToolEgressReceiptService;
-  memoryActionExecutor?: MemoryActionExecutor;
-  memoryHistoryToolExecutor?: RunRecoveryDeps["memoryHistoryToolExecutor"];
   mcp?: RunRecoveryDeps["mcp"];
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
   projectAccessCurrent?: boolean;
@@ -428,10 +421,6 @@ function createHarness(options: Readonly<{
       ? { knowledgeProviderDispatch: options.knowledgeProviderDispatch }
       : {}),
     ...(options.memoryEgress ? { memoryEgress: options.memoryEgress } : {}),
-    ...(options.memoryActionExecutor ? { memoryActionExecutor: options.memoryActionExecutor } : {}),
-    ...(options.memoryHistoryToolExecutor
-      ? { memoryHistoryToolExecutor: options.memoryHistoryToolExecutor }
-      : {}),
     ...(options.mcp ? { mcp: options.mcp } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     ...(options.providerAdmission ? { providerAdmission: options.providerAdmission } : {}),
@@ -1003,8 +992,8 @@ function normalizedMemoryHistoryRequest(): NormalizedRunRequest {
   };
 }
 
-function normalizedHostedMemoryHistoryRequest(): NormalizedRunRequest {
-  const request = normalizedMemoryHistoryRequest();
+function normalizedHostedSearchRequest(): NormalizedRunRequest {
+  const request = normalizedToolRequest();
   const option = normalizedClientSearchRequest().searchPlan.options[0]!;
   return {
     ...request,
@@ -3835,47 +3824,34 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("executes a pending first-party Memory action once from its durable recovery call", async () => {
-    const requests: ProviderRunRequest[] = [];
-    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (call, context) => {
-      expect(context).toMatchObject({
-        persistedToolCallId: "stored-call-1",
-        runId,
-        userId
-      });
+  it.each([
+    ["action", normalizedMemoryActionRequest, "save_memory"],
+    ["history", normalizedMemoryHistoryRequest, "search_private_history"]
+  ] as const)("terminalizes a checkpointed answer-model Memory %s contract", async (
+    _kind,
+    requestFactory,
+    toolName
+  ) => {
+    const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
       return {
-        callId: call.id,
-        content: [{ type: "json", value: { operation: "SAVE", result: "applied" } }],
-        name: call.name,
-        rawPreview: { operation: "SAVE", result: "applied" },
-        status: "complete"
+        finalProviderResponsePreview: {},
+        finalText: "must not dispatch",
+        usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
       };
     });
-    const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (name) => name === "save_memory",
-      execute
-    };
     const harness = createHarness({
-      memoryActionExecutor,
       providers: {
         openai: {
           buildRequestPreview: () => ({}),
-          async *stream(request) {
-            requests.push(request);
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "Recovered after saving Memory",
-              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
-            };
-          }
+          stream
         }
       }
     });
     const memoryCall: PersistedToolLoopCall = {
       ...persistedRecoveryCall(),
-      arguments: { statement: "I like tea" },
+      arguments: {},
       mcpBinding: null,
-      toolName: "save_memory"
+      toolName
     };
     const installed = installCheckpointState(harness, {
       ...checkpointedRun({
@@ -3888,116 +3864,64 @@ describe("run recovery", () => {
           type: "function_call"
         }]
       }),
-      normalizedRequest: normalizedMemoryActionRequest()
+      normalizedRequest: requestFactory()
     });
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(execute).toHaveBeenCalledOnce();
+    expect(stream).not.toHaveBeenCalled();
     expect(installed.calls()).toEqual([
-      expect.objectContaining({ state: "complete", toolName: "save_memory" })
+      expect.objectContaining({ state: "pending", toolName })
     ]);
-    expect(JSON.stringify(requests)).toContain("SAVE");
-    expect(harness.state.completed).toMatchObject({
-      finalText: "Recovered after saving Memory"
-    });
-    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: {
+          code: "memory_answer_model_tools_retired",
+          message: "Checkpointed answer-model Memory tools cannot be replayed."
+        },
+        runId
+      })
+    ]);
   });
 
-  it("recovers a pending bounded history call through its persisted tool-call identity", async () => {
-    const requests: ProviderRunRequest[] = [];
-    const execute = vi.fn<NonNullable<RunRecoveryDeps["memoryHistoryToolExecutor"]>["execute"]>(
-      async (call, context) => {
-        expect(context).toMatchObject({
-          persistedToolCallId: "stored-call-1",
-          runId,
-          userId
-        });
-        return {
-          callId: call.id,
-          content: [{
-            type: "json",
-            value: {
-              indexing: {
-                degradationCode: null,
-                lexicalState: "READY",
-                vectorState: "READY"
-              },
-              nextCursor: null,
-              results: [],
-              untrusted: true
-            }
-          }],
-          name: call.name,
-          rawPreview: {
-            degradationCode: null,
-            hasNextPage: false,
-            resultCount: 0,
-            resultType: "private_history"
-          },
-          status: "complete"
-        };
-      }
-    );
+  it.each([
+    ["action", normalizedMemoryActionRequest],
+    ["history", normalizedMemoryHistoryRequest]
+  ] as const)("terminalizes an accepted legacy Memory %s request without a checkpoint", async (
+    _kind,
+    requestFactory
+  ) => {
+    const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
+      return {
+        finalProviderResponsePreview: {},
+        finalText: "must not dispatch",
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+      };
+    });
     const harness = createHarness({
-      memoryHistoryToolExecutor: {
-        accepts: (name) => name === MEMORY_HISTORY_SEARCH_TOOL_NAME,
-        execute,
-        tool: memoryHistorySearchTool
-      },
+      providerDispatchRecoveryRequest: requestFactory(),
       providers: {
         openai: {
           buildRequestPreview: () => ({}),
-          async *stream(request) {
-            requests.push(request);
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "Recovered after bounded private-history search",
-              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
-            };
-          }
+          stream
         }
       }
-    });
-    const historyCall: PersistedToolLoopCall = {
-      ...persistedRecoveryCall(),
-      arguments: { query: "bounded recovery topic" },
-      mcpBinding: null,
-      toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
-    };
-    const installed = installCheckpointState(harness, {
-      ...checkpointedRun({
-        calls: [historyCall],
-        phase: "tools_pending",
-        providerToolMessages: [{
-          arguments: JSON.stringify(historyCall.arguments),
-          call_id: historyCall.providerCallId,
-          name: historyCall.toolName,
-          type: "function_call"
-        }]
-      }),
-      normalizedRequest: normalizedMemoryHistoryRequest()
     });
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(execute).toHaveBeenCalledOnce();
-    expect(installed.calls()).toEqual([
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([
       expect.objectContaining({
-        result: expect.any(Object),
-        state: "complete",
-        toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+        error: {
+          code: "memory_answer_model_tools_retired",
+          message: "This saved run uses a retired answer-model Memory tool contract."
+        },
+        runId
       })
     ]);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual([
-      MEMORY_HISTORY_SEARCH_TOOL_NAME
-    ]);
-    expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("untrusted");
-    expect(harness.state.completed).toMatchObject({
-      finalText: "Recovered after bounded private-history search"
-    });
-    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
   });
 
   it("blocks a recovered hosted-Search dispatch when current access was revoked", async () => {
@@ -4009,33 +3933,8 @@ describe("run recovery", () => {
       };
     });
     const egress = createRecoveryMemoryEgressRecorder();
-    const execute = vi.fn<NonNullable<RunRecoveryDeps["memoryHistoryToolExecutor"]>["execute"]>(
-      async (call) => ({
-        callId: call.id,
-        content: [{
-          type: "json",
-          value: {
-            indexing: {
-              degradationCode: null,
-              lexicalState: "READY",
-              vectorState: "NOT_CONFIGURED"
-            },
-            nextCursor: null,
-            results: [],
-            untrusted: true
-          }
-        }],
-        name: call.name,
-        status: "complete"
-      })
-    );
     const harness = createHarness({
       memoryEgress: egress.service,
-      memoryHistoryToolExecutor: {
-        accepts: (name) => name === MEMORY_HISTORY_SEARCH_TOOL_NAME,
-        execute,
-        tool: memoryHistorySearchTool
-      },
       providers: {
         openai: {
           buildRequestPreview: () => ({}),
@@ -4044,29 +3943,27 @@ describe("run recovery", () => {
       },
       searchStrategyEnabled: false
     });
-    const historyCall: PersistedToolLoopCall = {
-      ...persistedRecoveryCall(),
-      arguments: { query: "revoked hosted search" },
-      mcpBinding: null,
-      toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+    const settledResult = snapshotToolExecutionResult({
+      callId: "provider-call-1",
+      content: [{ text: "completed", type: "text" }],
+      name: recoveryToolName,
+      status: "complete"
+    }, 32_000);
+    if (!settledResult) throw new Error("invalid_settled_mcp_fixture");
+    const settledCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("complete"),
+      result: settledResult
     };
     installCheckpointState(harness, {
       ...checkpointedRun({
-        calls: [historyCall],
-        phase: "tools_pending",
-        providerToolMessages: [{
-          arguments: JSON.stringify(historyCall.arguments),
-          call_id: historyCall.providerCallId,
-          name: historyCall.toolName,
-          type: "function_call"
-        }]
+        calls: [settledCall],
+        phase: "tools_pending"
       }),
-      normalizedRequest: normalizedHostedMemoryHistoryRequest()
+      normalizedRequest: normalizedHostedSearchRequest()
     });
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(execute).toHaveBeenCalledOnce();
     expect(stream).not.toHaveBeenCalled();
     expect(egress.blocked).toEqual([
       expect.objectContaining({

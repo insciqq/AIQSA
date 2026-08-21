@@ -10,7 +10,11 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../../persistence/lexical";
-import { ensureActiveMemoryScope } from "../../persistence/scopes";
+import { memoryPersonalFactEvidencePredicate } from "../../persistence/eligibility";
+import {
+  ensureGlobalMemoryScope,
+  memoryCanonicalGlobalScopePredicate
+} from "../../persistence/scopes";
 import {
   advanceMemoryMutation,
   lockMemorySettings,
@@ -20,12 +24,15 @@ import {
   type MemoryTransaction
 } from "../../persistence/transaction";
 import type { MemorySuppressionKeyring } from "../../suppressionKeyring";
+import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION as MEMORY_FACT_EXTRACTION_V1 } from "../extraction/contract";
 import {
   memoryFactDecisionId,
+  MEMORY_FACT_CONSOLIDATION_V1_OPERATIONS,
   MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
   type MemoryFactCandidateEvidenceSnapshot,
   type MemoryFactCandidateSnapshot,
   type MemoryFactConsolidationInput,
+  type MemoryFactConsolidationPlanOperation,
   type MemoryFactConsolidationPlan,
   type MemoryFactVerificationInput,
   type MemoryFactVerificationPlan
@@ -72,6 +79,33 @@ type SemanticApplyResult = Readonly<{
   versionId: string;
 }>;
 
+function isV1Operation(
+  operation: MemoryFactConsolidationPlanOperation
+): boolean {
+  return (MEMORY_FACT_CONSOLIDATION_V1_OPERATIONS as readonly string[])
+    .includes(operation);
+}
+
+function isV1Candidate(candidate: MemoryFactCandidateSnapshot): boolean {
+  return candidate.confidenceBand === "HIGH" &&
+    typeof candidate.proposedValue === "object" &&
+    candidate.proposedValue !== null &&
+    !Array.isArray(candidate.proposedValue) &&
+    typeof (candidate.proposedValue as { statement?: unknown }).statement === "string";
+}
+
+/** The durable enum retains retired names for old rows. New v1 decisions are
+ * projected without reviving those workflows: REPLACE is the immutable
+ * version transition historically named SUPERSEDE, and REJECT is a terminal
+ * candidate outcome represented by the legacy DEFER enum value. */
+function persistedOperation(
+  operation: MemoryFactConsolidationPlanOperation
+): "ADD" | "REINFORCE" | "SUPERSEDE" | "CONFLICT" | "EXPIRE" | "NOOP" | "DEFER" {
+  if (operation === "REPLACE") return "SUPERSEDE";
+  if (operation === "REJECT") return "DEFER";
+  return operation as ReturnType<typeof persistedOperation>;
+}
+
 function transitionAt(now: Date, ...prior: Array<Date | null | undefined>): Date {
   return new Date(Math.max(
     now.getTime(),
@@ -79,12 +113,16 @@ function transitionAt(now: Date, ...prior: Array<Date | null | undefined>): Date
   ));
 }
 
+function candidateCategory(candidate: MemoryFactCandidateSnapshot): string {
+  return candidate.category === "sensitive" ? "about_you" : candidate.category;
+}
+
 function candidateValue(candidate: MemoryFactCandidateSnapshot) {
   return {
-    category: candidate.category,
+    category: candidateCategory(candidate),
     confidence: candidate.confidence,
-    coreEligible: candidate.coreEligible ?? false,
-    coreSalience: candidate.coreSalience ?? "NONE",
+    coreEligible: false,
+    coreSalience: "NONE" as const,
     directness: candidate.directness,
     displayText: candidate.displayText,
     importance: candidate.importance,
@@ -93,7 +131,7 @@ function candidateValue(candidate: MemoryFactCandidateSnapshot) {
     normalizedSearchText: normalizeMemorySearchText(candidate.displayText),
     pipelineVersion: MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
     rawTemporalExpression: candidate.rawTemporalExpression,
-    sensitivityClass: candidate.sensitivity,
+    sensitivityClass: "NORMAL" as const,
     sourceTimezone: candidate.sourceTimezone,
     sourceMode: "AUTOMATIC" as const,
     structuredValue: candidate.proposedValue === null
@@ -105,6 +143,56 @@ function candidateValue(candidate: MemoryFactCandidateSnapshot) {
     temporalResolverVersion: candidate.temporalResolverVersion,
     validFrom: candidate.validFrom ? new Date(candidate.validFrom) : null,
     validTo: candidate.validTo ? new Date(candidate.validTo) : null
+  };
+}
+
+async function extractionSafetyData(
+  tx: MemoryTransaction,
+  userId: string,
+  candidate: MemoryFactCandidateSnapshot
+) {
+  const binding = await tx.memoryExecutionBinding.findFirst({
+    select: {
+      acceptedOutputHash: true,
+      completedAt: true,
+      policyVersion: true,
+      providerId: true,
+      providerModelId: true
+    },
+    where: {
+      id: candidate.extractionExecutionId,
+      logicalRole: "MEMORY_FACT_EXTRACT",
+      ownerType: "JOB",
+      state: "SUCCEEDED",
+      userId
+    }
+  });
+  if (
+    !binding?.acceptedOutputHash || !binding.completedAt ||
+    !binding.providerId || !binding.policyVersion
+  ) {
+    throw new Error("memory_fact_extraction_provenance_invalid");
+  }
+  const usage = await tx.usageEvent.findUnique({
+    select: { id: true, provider: true, providerModelId: true },
+    where: { memoryExecutionBindingId: candidate.extractionExecutionId }
+  });
+  const providerModelId = binding.providerModelId ?? usage?.providerModelId;
+  if (
+    !usage || usage.provider !== binding.providerId || !providerModelId ||
+    (binding.providerModelId !== null &&
+      usage.providerModelId !== binding.providerModelId)
+  ) {
+    throw new Error("memory_fact_extraction_provenance_invalid");
+  }
+  return {
+    safetyClassificationReasonCode: "automatic_extraction",
+    safetyClassificationState: "CLASSIFIED" as const,
+    safetyClassifiedAt: binding.completedAt,
+    safetyClassifierExecutionId: candidate.extractionExecutionId,
+    safetyClassifierModelId: providerModelId,
+    safetyClassifierPolicyVersion: binding.policyVersion,
+    safetyClassifierProviderId: binding.providerId
   };
 }
 
@@ -232,7 +320,7 @@ async function createSearchEntry(
       }),
       normalizedSearchText,
       safetyIdentitySnapshot: memorySha256({
-        safetyClass: candidate.sensitivity,
+        safetyClass: "NORMAL",
         secretTaintedSourceWindow: false
       }),
       sourceIdentitySnapshot: memorySha256({
@@ -247,7 +335,7 @@ async function createSearchEntry(
       }),
       suppressionIdentitySnapshot: memorySha256({
         canonicalKey: candidate.canonicalKey,
-        category: candidate.category,
+        category: candidateCategory(candidate),
         normalizedValue: normalizedSearchText
       }),
       userId
@@ -286,11 +374,25 @@ async function lockTargetFact(
 ): Promise<Readonly<{ fact: CurrentFactRow; version: CurrentVersionRow }> | null> {
   const rows = await tx.$queryRaw<CurrentFactRow[]>(Prisma.sql`
     SELECT
-      "id", "scopeId", "canonicalKey", "category", "state"::text AS "state",
-      "currentVersionId", "lastConfirmedAt", "movedToFactId"
-    FROM "MemoryFact"
-    WHERE "userId" = ${userId} AND "id" = ${factId}
-    FOR UPDATE
+      fact."id", fact."scopeId", fact."canonicalKey", fact."category",
+      fact."state"::text AS "state", fact."currentVersionId",
+      fact."lastConfirmedAt", fact."movedToFactId"
+    FROM "MemoryFact" AS fact
+    INNER JOIN "MemoryScope" AS scope
+      ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    INNER JOIN "MemoryFactVersion" AS version
+      ON version."userId" = fact."userId"
+      AND version."factId" = fact."id"
+      AND version."id" = ${versionId}
+    WHERE fact."userId" = ${userId} AND fact."id" = ${factId}
+      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND version."safetyClassificationState" =
+        'CLASSIFIED'::"MemorySafetyClassificationState"
+      AND version."contentPurgedAt" IS NULL
+      AND ${memoryPersonalFactEvidencePredicate(userId)}
+    FOR UPDATE OF fact, scope, version
   `);
   const fact = rows[0];
   if (
@@ -329,7 +431,7 @@ async function applyAdd(
   executionId: string,
   now: Date
 ): Promise<SemanticApplyResult | null> {
-  const scope = await ensureActiveMemoryScope(tx, settings, candidate.scope);
+  const scope = await ensureGlobalMemoryScope(tx, settings);
   const facts = await tx.$queryRaw<CurrentFactRow[]>(Prisma.sql`
     SELECT
       "id", "scopeId", "canonicalKey", "category", "state"::text AS "state",
@@ -368,7 +470,7 @@ async function applyAdd(
   if (existing) {
     const updated = await tx.memoryFact.updateMany({
       data: {
-        category: candidate.category,
+        category: candidateCategory(candidate),
         currentVersionId: versionId,
         lastConfirmedAt: new Date(Math.max(...candidate.evidence.map((item) =>
           new Date(item.observedAt).getTime()))),
@@ -386,7 +488,7 @@ async function applyAdd(
     await tx.memoryFact.create({
       data: {
         canonicalKey: candidate.canonicalKey,
-        category: candidate.category,
+        category: candidateCategory(candidate),
         currentVersionId: versionId,
         id: factId,
         lastConfirmedAt: new Date(Math.max(...candidate.evidence.map((item) =>
@@ -406,9 +508,11 @@ async function applyAdd(
     userId: settings.userId,
     versionId
   });
+  const safety = await extractionSafetyData(tx, settings.userId, candidate);
   await tx.memoryFactVersion.create({
     data: {
       ...candidateValue(candidate),
+      ...safety,
       createdByEventId: eventId,
       factId,
       id: versionId,
@@ -595,7 +699,9 @@ async function applyVersionTransition(
   }
 
   const newVersionId = randomUUID();
-  const eventOperation = plan.operation === "SUPERSEDE" ? "SUPERSEDE" : "CONFLICT";
+  const eventOperation = plan.operation === "SUPERSEDE" || plan.operation === "REPLACE"
+    ? "SUPERSEDE"
+    : "CONFLICT";
   const eventId = await createEvent(tx, {
     candidate: factCandidate,
     decisionId,
@@ -605,15 +711,16 @@ async function applyVersionTransition(
     userId: settings.userId,
     versionId: newVersionId
   });
-  const nextState = plan.operation === "SUPERSEDE" ? "SUPERSEDED" : "CONFLICTING";
-  const priorValidTo = plan.operation === "SUPERSEDE" && plan.effectiveFrom &&
+  const replacing = plan.operation === "SUPERSEDE" || plan.operation === "REPLACE";
+  const nextState = replacing ? "SUPERSEDED" : "CONFLICTING";
+  const priorValidTo = replacing && plan.effectiveFrom &&
       (!target.version.validFrom || new Date(plan.effectiveFrom) > target.version.validFrom)
     ? new Date(plan.effectiveFrom)
     : target.version.validTo;
   const transitioned = await tx.memoryFactVersion.updateMany({
     data: {
       state: nextState,
-      ...(plan.operation === "SUPERSEDE" ? { systemTo: at, validTo: priorValidTo } : {})
+      ...(replacing ? { systemTo: at, validTo: priorValidTo } : {})
     },
     where: {
       factId: target.fact.id,
@@ -626,22 +733,24 @@ async function applyVersionTransition(
   if (transitioned.count !== 1) {
     throw new Error("memory_fact_transition_stale");
   }
+  const safety = await extractionSafetyData(tx, settings.userId, factCandidate);
   await tx.memoryFactVersion.create({
     data: {
       ...candidateValue(factCandidate),
+      ...safety,
       createdByEventId: eventId,
       factId: target.fact.id,
       id: newVersionId,
-      state: plan.operation === "SUPERSEDE" ? "ACTIVE" : "CONFLICTING",
-      supersedesVersionId: plan.operation === "SUPERSEDE" ? target.version.id : null,
+      state: replacing ? "ACTIVE" : "CONFLICTING",
+      supersedesVersionId: replacing ? target.version.id : null,
       systemFrom: at,
       userId: settings.userId
     }
   });
   const updatedFact = await tx.memoryFact.updateMany({
-    data: plan.operation === "SUPERSEDE"
+    data: replacing
       ? {
-          category: candidate.category,
+          category: candidateCategory(candidate),
           currentVersionId: newVersionId,
           lastConfirmedAt: new Date(Math.max(...candidate.evidence.map((item) =>
             new Date(item.observedAt).getTime()))),
@@ -659,7 +768,7 @@ async function applyVersionTransition(
     throw new Error("memory_fact_transition_stale");
   }
   await createEvidence(tx, settings.userId, newVersionId, candidate, "SUPPORTS");
-  if (plan.operation === "SUPERSEDE") {
+  if (replacing) {
     await tx.memorySearchEntry.deleteMany({
       where: {
         factVersionId: target.version.id,
@@ -674,7 +783,7 @@ async function applyVersionTransition(
     settings.userId,
     newVersionId,
     factCandidate,
-    plan.operation === "SUPERSEDE"
+    replacing
   );
   await enqueueDerivedWork(
     tx,
@@ -696,6 +805,8 @@ async function applySemanticTransition(
   executionId: string,
   now: Date
 ): Promise<SemanticApplyResult | null> {
+  if (input.candidate.scope.type !== "GLOBAL_USER" ||
+    input.candidate.scope.targetId !== null) return null;
   if (plan.operation === "ADD") {
     return applyAdd(tx, settings, input.candidate, decisionId, executionId, now);
   }
@@ -710,7 +821,7 @@ async function applySemanticTransition(
       plan.targetVersionId
     );
   }
-  if (["CONFLICT", "EXPIRE", "SUPERSEDE"].includes(plan.operation)) {
+  if (["CONFLICT", "EXPIRE", "SUPERSEDE", "REPLACE"].includes(plan.operation)) {
     return applyVersionTransition(
       tx,
       settings,
@@ -736,6 +847,23 @@ async function markCandidateDeferred(
   });
 }
 
+async function markCandidateRejected(
+  tx: MemoryTransaction,
+  userId: string,
+  candidateId: string,
+  reasonCode: string,
+  now: Date
+): Promise<void> {
+  await tx.memoryCandidate.updateMany({
+    data: {
+      reasonCode: reasonCode.slice(0, 64),
+      resolvedAt: now,
+      state: "REJECTED"
+    },
+    where: { id: candidateId, state: "PENDING", userId }
+  });
+}
+
 async function createAppliedDecision(
   tx: MemoryTransaction,
   claim: MemoryJobClaim,
@@ -754,7 +882,7 @@ async function createAppliedDecision(
       consolidationOutputHash: plan.outputHash,
       effectiveFrom: plan.effectiveFrom ? new Date(plan.effectiveFrom) : null,
       id: decisionId,
-      operation: plan.operation,
+      operation: persistedOperation(plan.operation),
       reasonCode: plan.reasonCode,
       relatedSnapshotHash: input.relatedSnapshotHash,
       requiresVerification: false,
@@ -787,12 +915,22 @@ export async function applyMemoryFactConsolidation(
       fact.currentVersionId ? [fact.currentVersionId] : [])
   );
   if ("decision" in prepared || prepared.input.inputHash !== expectedInput.inputHash) {
-    await markCandidateDeferred(
-      tx,
-      claim.userId,
-      expectedInput.candidate.id,
-      "consolidation_precondition_stale"
-    );
+    if (isV1Candidate(expectedInput.candidate)) {
+      await markCandidateRejected(
+        tx,
+        claim.userId,
+        expectedInput.candidate.id,
+        "consolidation_precondition_stale",
+        now
+      );
+    } else {
+      await markCandidateDeferred(
+        tx,
+        claim.userId,
+        expectedInput.candidate.id,
+        "consolidation_precondition_stale"
+      );
+    }
     return;
   }
   await requireSucceededBinding(tx, {
@@ -805,19 +943,26 @@ export async function applyMemoryFactConsolidation(
   });
   const policy = evaluateMemoryFactConsolidationPlan(prepared.input, plan);
   if (policy.status === "DEFER") {
-    await markCandidateDeferred(
-      tx,
-      claim.userId,
-      expectedInput.candidate.id,
-      policy.reasonCode
-    );
+    if (isV1Operation(plan.operation) || isV1Candidate(expectedInput.candidate)) {
+      await markCandidateRejected(
+        tx,
+        claim.userId,
+        expectedInput.candidate.id,
+        policy.reasonCode,
+        now
+      );
+    } else {
+      await markCandidateDeferred(tx, claim.userId, expectedInput.candidate.id, policy.reasonCode);
+    }
     return;
   }
   const decisionId = memoryFactDecisionId(expectedInput, plan);
-  if (plan.operation === "NOOP") {
+  if (plan.operation === "NOOP" || plan.operation === "REJECT") {
     const updated = await tx.memoryCandidate.updateMany({
       data: {
-        reasonCode: "consolidation_noop",
+        reasonCode: plan.operation === "REJECT"
+          ? plan.reasonCode.slice(0, 64)
+          : "consolidation_noop",
         resolvedAt: now,
         state: "REJECTED"
       },
@@ -845,12 +990,22 @@ export async function applyMemoryFactConsolidation(
     now
   );
   if (!result) {
-    await markCandidateDeferred(
-      tx,
-      claim.userId,
-      expectedInput.candidate.id,
-      "transition_precondition_stale"
-    );
+    if (isV1Candidate(expectedInput.candidate)) {
+      await markCandidateRejected(
+        tx,
+        claim.userId,
+        expectedInput.candidate.id,
+        "transition_precondition_stale",
+        now
+      );
+    } else {
+      await markCandidateDeferred(
+        tx,
+        claim.userId,
+        expectedInput.candidate.id,
+        "transition_precondition_stale"
+      );
+    }
     return;
   }
   const promoted = await tx.memoryCandidate.updateMany({
@@ -880,6 +1035,17 @@ export async function deferMemoryFactConsolidationResult(
   candidateId: string,
   reasonCode: string
 ): Promise<void> {
+  const candidate = await tx.memoryCandidate.findFirst({
+    select: { pipelineVersion: true },
+    where: { id: candidateId, userId: claim.userId }
+  });
+  if (candidate?.pipelineVersion === MEMORY_FACT_EXTRACTION_V1) {
+    await tx.memoryCandidate.updateMany({
+      data: { reasonCode: reasonCode.slice(0, 64), resolvedAt: new Date(), state: "REJECTED" },
+      where: { id: candidateId, state: "PENDING", userId: claim.userId }
+    });
+    return;
+  }
   await markCandidateDeferred(tx, claim.userId, candidateId, reasonCode);
 }
 

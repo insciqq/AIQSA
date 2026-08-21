@@ -17,14 +17,13 @@ import {
   type KnowledgePlan
 } from "./knowledge";
 import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
-  MEMORY_DELETION_STATES,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
   decodeMemoryActionFeedback,
+  decodeMemoryAnswerSource,
   type MemoryActionFeedback,
-  type MemoryChatMode,
-  type MemoryDeletionState
-} from "./memory";
+  type MemoryAnswerSource,
+  type MemoryChatMode
+} from "./memoryClient";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -84,6 +83,8 @@ export type ThreadArtifactSummary = {
   knowledgeState?: ThreadKnowledgeAnswerState;
   knowledgeCitations?: ThreadKnowledgeCitation[];
   memoryAction?: MemoryActionFeedback;
+  memoryStatus?: "UNAVAILABLE";
+  memorySources?: MemoryAnswerSource[];
   reasoningText: string[];
   sources: ThreadSearchSource[];
 };
@@ -272,43 +273,6 @@ export type RetainedChatMemoryMode = Exclude<MemoryChatMode, "TEMPORARY">;
 
 export type ChatLifecycleRequestWire = {
   expectedChatRevision: number;
-};
-
-export type ChatPermanentDeleteAuthorizationRequestWire = {
-  alsoForgetOriginMemories: boolean;
-  confirmationCopyVersion: typeof MEMORY_CONFIRMATION_COPY_VERSION;
-  expectedActiveLeafMessageId: string | null;
-  expectedChatRevision: number;
-  requestNonce: string;
-};
-
-export type ChatPermanentDeleteAuthorizationResponseWire = {
-  expiresAt: string;
-  mutationAuthorizationId: string;
-};
-
-export type ChatPermanentDeleteRequestWire = {
-  alsoForgetOriginMemories: boolean;
-  expectedActiveLeafMessageId: string | null;
-  expectedChatRevision: number;
-  mutationAuthorizationId: string;
-};
-
-export type ChatPermanentDeleteAdmissionResponseWire = {
-  deletionId: string;
-  fencedAt: string;
-  state: MemoryDeletionState;
-};
-
-export type ChatPermanentDeleteStatusResponseWire = {
-  attemptCount: number;
-  cleanupComplete: boolean;
-  deletionId: string;
-  errorCode: string | null;
-  fencedAt: string;
-  lastAuditAt: string | null;
-  state: MemoryDeletionState;
-  updatedAt: string;
 };
 
 export type ChatLifecycleStateWire = {
@@ -744,6 +708,20 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     memoryAction = decoded.value;
   }
 
+  let memorySources: MemoryAnswerSource[] | undefined;
+  if (value.memorySources !== undefined) {
+    if (!Array.isArray(value.memorySources) || value.memorySources.length > 13) return null;
+    const decoded = value.memorySources.map((source) => decodeMemoryAnswerSource(source));
+    if (decoded.some((source) => !source.ok)) return null;
+    memorySources = decoded.flatMap((source) => source.ok ? [source.value] : []);
+  }
+
+  let memoryStatus: "UNAVAILABLE" | undefined;
+  if (value.memoryStatus !== undefined) {
+    if (value.memoryStatus !== "UNAVAILABLE") return null;
+    memoryStatus = value.memoryStatus;
+  }
+
   return {
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
@@ -752,6 +730,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(knowledgeState ? { knowledgeState } : {}),
     ...(knowledgeCitations !== undefined ? { knowledgeCitations } : {}),
     ...(memoryAction ? { memoryAction } : {}),
+    ...(memoryStatus ? { memoryStatus } : {}),
+    ...(memorySources !== undefined ? { memorySources } : {}),
     reasoningText: value.reasoningText as string[],
     sources: sources.filter(
       (source): source is ThreadSearchSource => source !== null
@@ -1220,157 +1200,6 @@ export function decodeChatLifecycleRequest(value: unknown): ChatLifecycleRequest
   return expectedChatRevision === null || !Number.isSafeInteger(expectedChatRevision)
     ? null
     : { expectedChatRevision };
-}
-
-function permanentDeleteLeaf(value: unknown): string | null | undefined {
-  return value === null ? null : boundedRequiredString(value, 256) ?? undefined;
-}
-
-export function decodeChatPermanentDeleteAuthorizationRequest(
-  value: unknown
-): ChatPermanentDeleteAuthorizationRequestWire | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    "alsoForgetOriginMemories",
-    "confirmationCopyVersion",
-    "expectedActiveLeafMessageId",
-    "expectedChatRevision",
-    "requestNonce"
-  ])) return null;
-  const expectedChatRevision = nonNegativeInteger(value.expectedChatRevision);
-  const expectedActiveLeafMessageId = permanentDeleteLeaf(
-    value.expectedActiveLeafMessageId
-  );
-  const requestNonce = boundedRequiredString(value.requestNonce, 256);
-  if (
-    typeof value.alsoForgetOriginMemories !== "boolean" ||
-    value.confirmationCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION ||
-    expectedActiveLeafMessageId === undefined ||
-    expectedChatRevision === null ||
-    !Number.isSafeInteger(expectedChatRevision) ||
-    !requestNonce
-  ) return null;
-  return {
-    alsoForgetOriginMemories: value.alsoForgetOriginMemories,
-    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-    expectedActiveLeafMessageId,
-    expectedChatRevision,
-    requestNonce
-  };
-}
-
-export function decodeChatPermanentDeleteRequest(
-  value: unknown
-): ChatPermanentDeleteRequestWire | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    "alsoForgetOriginMemories",
-    "expectedActiveLeafMessageId",
-    "expectedChatRevision",
-    "mutationAuthorizationId"
-  ])) return null;
-  const expectedChatRevision = nonNegativeInteger(value.expectedChatRevision);
-  const expectedActiveLeafMessageId = permanentDeleteLeaf(
-    value.expectedActiveLeafMessageId
-  );
-  const mutationAuthorizationId = boundedRequiredString(
-    value.mutationAuthorizationId,
-    256
-  );
-  if (
-    typeof value.alsoForgetOriginMemories !== "boolean" ||
-    expectedActiveLeafMessageId === undefined ||
-    expectedChatRevision === null ||
-    !Number.isSafeInteger(expectedChatRevision) ||
-    !mutationAuthorizationId
-  ) return null;
-  return {
-    alsoForgetOriginMemories: value.alsoForgetOriginMemories,
-    expectedActiveLeafMessageId,
-    expectedChatRevision,
-    mutationAuthorizationId
-  };
-}
-
-export function decodeChatPermanentDeleteAuthorizationResponse(
-  value: unknown
-): ChatPermanentDeleteAuthorizationResponseWire | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["expiresAt", "mutationAuthorizationId"])) {
-    return null;
-  }
-  const expiresAt = isoTimestamp(value.expiresAt);
-  const mutationAuthorizationId = boundedRequiredString(
-    value.mutationAuthorizationId,
-    256
-  );
-  return expiresAt && mutationAuthorizationId
-    ? { expiresAt, mutationAuthorizationId }
-    : null;
-}
-
-function permanentDeleteState(value: unknown): MemoryDeletionState | null {
-  return typeof value === "string" &&
-    (MEMORY_DELETION_STATES as readonly string[]).includes(value)
-    ? value as MemoryDeletionState
-    : null;
-}
-
-export function decodeChatPermanentDeleteAdmissionResponse(
-  value: unknown
-): ChatPermanentDeleteAdmissionResponseWire | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["deletionId", "fencedAt", "state"])) {
-    return null;
-  }
-  const deletionId = boundedRequiredString(value.deletionId, 256);
-  const fencedAt = isoTimestamp(value.fencedAt);
-  const state = permanentDeleteState(value.state);
-  return deletionId && fencedAt && state ? { deletionId, fencedAt, state } : null;
-}
-
-export function decodeChatPermanentDeleteStatusResponse(
-  value: unknown
-): ChatPermanentDeleteStatusResponseWire | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    "attemptCount",
-    "cleanupComplete",
-    "deletionId",
-    "errorCode",
-    "fencedAt",
-    "lastAuditAt",
-    "state",
-    "updatedAt"
-  ])) return null;
-  const attemptCount = nonNegativeInteger(value.attemptCount);
-  const deletionId = boundedRequiredString(value.deletionId, 256);
-  const errorCode = value.errorCode === null
-    ? null
-    : boundedRequiredString(value.errorCode, 64) ?? undefined;
-  const fencedAt = isoTimestamp(value.fencedAt);
-  const lastAuditAt = value.lastAuditAt === null
-    ? null
-    : isoTimestamp(value.lastAuditAt) ?? undefined;
-  const state = permanentDeleteState(value.state);
-  const updatedAt = isoTimestamp(value.updatedAt);
-  if (
-    attemptCount === null ||
-    !Number.isSafeInteger(attemptCount) ||
-    !deletionId ||
-    errorCode === undefined ||
-    !fencedAt ||
-    lastAuditAt === undefined ||
-    !state ||
-    !updatedAt ||
-    typeof value.cleanupComplete !== "boolean" ||
-    value.cleanupComplete !== (state === "SUCCEEDED")
-  ) return null;
-  return {
-    attemptCount,
-    cleanupComplete: value.cleanupComplete,
-    deletionId,
-    errorCode,
-    fencedAt,
-    lastAuditAt,
-    state,
-    updatedAt
-  };
 }
 
 function retainedMemoryMode(value: unknown): RetainedChatMemoryMode | null {

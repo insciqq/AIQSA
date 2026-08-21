@@ -1,14 +1,17 @@
 import type { ModelToolCall } from "../../../tools/types";
 import {
+  MEMORY_FACT_CONSOLIDATION_COMPARISONS,
   MEMORY_FACT_CONSOLIDATION_MODEL_OPERATIONS,
   MEMORY_FACT_CONSOLIDATION_REASON_CODES,
   MEMORY_FACT_VERIFICATION_REASON_CODES,
   memoryFactConsolidationOutputHash,
   memoryFactVerificationOutputHash,
   type MemoryFactConsolidationInput,
+  type MemoryFactConsolidationComparison,
   type MemoryFactConsolidationOperation,
   type MemoryFactConsolidationPlan,
   type MemoryFactConsolidationReasonCode,
+  type MemoryFactConsolidationV1Operation,
   type MemoryFactVerificationInput,
   type MemoryFactVerificationPlan,
   type MemoryFactVerificationReasonCode
@@ -44,7 +47,6 @@ const targetOperations = new Set<MemoryFactConsolidationOperation>([
   "CONFLICT",
   "EXPIRE"
 ]);
-
 export const MEMORY_FACT_VERIFICATION_OUTPUT_ISSUES = [
   "tool_call_missing",
   "tool_call_count_invalid",
@@ -170,7 +172,8 @@ function exactTarget(
     version.id === versionId && version.state === "ACTIVE");
 }
 
-export function decodeMemoryFactConsolidation(
+/** Explicit legacy-only helper; current coordinator jobs never call this decoder. */
+export function decodeLegacyMemoryFactConsolidation(
   calls: readonly ModelToolCall[] | undefined,
   input: MemoryFactConsolidationInput
 ): MemoryFactConsolidationPlan {
@@ -218,6 +221,72 @@ export function decodeMemoryFactConsolidation(
     ...withoutHash,
     outputHash: memoryFactConsolidationOutputHash(input, withoutHash)
   };
+}
+
+/** Accept the PRD comparison vocabulary as a wire-compatible strict result;
+ * the server owns the operation mapping and never lets the model mint a
+ * conflict/reinforcement/expiry transition. */
+function decodeV1Comparison(
+  calls: readonly ModelToolCall[] | undefined,
+  input: MemoryFactConsolidationInput
+): MemoryFactConsolidationPlan {
+  if (
+    !calls || calls.length !== 1 ||
+    calls[0]?.name !== MEMORY_FACT_CONSOLIDATION_TOOL_NAME
+  ) fail();
+  const args = calls[0]?.arguments;
+  if (!isRecord(args)) fail();
+  const comparisonKeys = [
+    "candidate_id", "comparison", "evidence_ids", "target_fact_id", "target_version_id"
+  ].sort();
+  if (!hasExactKeys(args, comparisonKeys) || args.candidate_id !== input.candidate.id) fail();
+  if (typeof args.comparison !== "string" ||
+    !(MEMORY_FACT_CONSOLIDATION_COMPARISONS as readonly string[]).includes(args.comparison)) {
+    fail("memory_fact_consolidation_comparison_invalid");
+  }
+  const comparison = args.comparison as MemoryFactConsolidationComparison;
+  const targetFactId = nullableId(args.target_fact_id);
+  const targetVersionId = nullableId(args.target_version_id);
+  const needsTarget = comparison === "SAME" || comparison === "REPLACES";
+  if (needsTarget) {
+    if (!targetFactId || !targetVersionId ||
+      !exactTarget(input, targetFactId, targetVersionId)) {
+      fail("memory_fact_consolidation_target_invalid");
+    }
+  } else if (targetFactId !== null || targetVersionId !== null) {
+    fail("memory_fact_consolidation_target_invalid");
+  }
+  const operation: MemoryFactConsolidationV1Operation = comparison === "SAME"
+    ? "NOOP"
+    : comparison === "REPLACES"
+      ? "REPLACE"
+      : comparison === "DIFFERENT" ? "ADD" : "REJECT";
+  const reasonCode = operation === "ADD"
+    ? "new_fact"
+    : operation === "REPLACE"
+      ? "current_value_replaced"
+      : operation === "NOOP" ? "same_current_value" : "unsafe_or_ambiguous";
+  const withoutHash: Omit<MemoryFactConsolidationPlan, "outputHash"> = {
+    candidateId: input.candidate.id,
+    effectiveFrom: null,
+    evidenceIds: exactEvidenceIds(args.evidence_ids, input),
+    operation,
+    reasonCode: reasonCode as MemoryFactConsolidationReasonCode,
+    targetFactId,
+    targetVersionId
+  };
+  return {
+    ...withoutHash,
+    outputHash: memoryFactConsolidationOutputHash(input, withoutHash)
+  };
+}
+
+/** Current v1 jobs accept only the comparison schema emitted by the v1 tool. */
+export function decodeMemoryFactConsolidation(
+  calls: readonly ModelToolCall[] | undefined,
+  input: MemoryFactConsolidationInput
+): MemoryFactConsolidationPlan {
+  return decodeV1Comparison(calls, input);
 }
 
 export function decodeMemoryFactVerification(

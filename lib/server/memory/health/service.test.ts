@@ -17,11 +17,17 @@ function settings(
   const referenceChatHistory = input.historyState !== undefined &&
     input.historyState !== "DISABLED";
   return {
-    capabilities: {
+  capabilities: {
+    administratorSetupRequired: false,
       automaticLearning: input.automaticLearning ?? true,
+      automaticLearningAvailable: input.automaticLearning ?? true,
       explicitMemory: true,
       historyRecall: true,
+      managementAvailable: true,
+      naturalLanguageActionsAvailable: true,
+      pastChatIndexingAvailable: true,
       permanentChatDeletion: true,
+      retrievalAvailable: true,
       temporaryChats: true
     },
     egress: {

@@ -49,6 +49,7 @@ function mockClient(
   const client = {
     $transaction: vi.fn(async () => { throw new Error("vector unavailable"); }),
     $queryRaw,
+    memoryPauseInterval: { findMany: vi.fn(async () => []) },
     memorySourceBarrier: { findMany: vi.fn(async () => []) },
     memorySuppression: { findMany: vi.fn(async () => []) }
   } as unknown as PrismaClient;
@@ -78,7 +79,26 @@ describe("local Memory retrieval repository", () => {
     expect(result.vectorState).toBe("NOT_CONFIGURED");
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('entry."userId" =');
+    expect(sql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
+    expect(sql).toContain('scope."targetIdSnapshot" IS NULL');
+    expect(sql).toContain('scope."targetDisplaySnapshot" IS NULL');
+    expect(sql).toContain('scope."folderId" IS NULL');
+    expect(sql).toContain('scope."assistantId" IS NULL');
+    expect(sql).toContain('scope."chatId" IS NULL');
+    expect(sql).not.toMatch(/scope\."scopeType" = '(?:FOLDER|ASSISTANT|CHAT)'/u);
+    expect(sql).toContain('version."sensitivityClass" IN (');
+    expect(sql).not.toContain('version."sensitivityClass" <> \'SENSITIVE\'');
+    expect(sql).not.toContain("'HIGHLY_SENSITIVE'::\"MemorySensitivityClass\"");
+    expect(sql).not.toContain("'SECRET'::\"MemorySensitivityClass\"");
+    expect(sql).toContain('version."sourceMode" = \'EXPLICIT\'');
     expect(sql).toContain('source_chat."memoryBranchGeneration" = chunk."branchGeneration"');
+    expect(sql).toContain('source_chat."projectId" IS NULL');
+    expect(sql).toContain('chunk."chunkingVersion" =');
+    expect(sql).toContain('chunk."sourceProjectionVersion" =');
+    expect(sql).toContain("'SENSITIVE'::\"MemoryDerivedSafetyClass\"");
+    expect(sql).toContain('negative_feedback."feedbackType" = \'NOT_USEFUL\'');
+    expect(sql).toContain('negative_run."chatId" =');
+    expect(sql).toContain('feedback_retraction."retractsFeedbackId" = negative_feedback."id"');
     expect(result.snapshot.historySuppressionIdentitySnapshot).toMatch(/^[a-f0-9]{64}$/u);
     expect(sql).toContain('"MemorySourceBarrier"');
     expect(sql).toContain("plainto_tsquery('simple'");
@@ -104,10 +124,86 @@ describe("local Memory retrieval repository", () => {
         userId: "user-1"
       });
       expect(result.laneResults.map(({ lane }) => lane)).toEqual([
-        "FACT_EXACT", "FACT_FTS_SIMPLE", "FACT_RECENT"
+        "FACT_EXACT", "FACT_FTS_SIMPLE"
       ]);
       expect(mocked.laneSql.length).toBeGreaterThan(0);
     }
+  });
+
+  it("loads query-independent response preferences only when the plan admits them", async () => {
+    for (const applyResponsePreferences of [false, true]) {
+      const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+      const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+      await repository.retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({
+          applyResponsePreferences,
+          currentUserText: "How should this answer be formatted?",
+          ...(applyResponsePreferences ? { filters: { sourceKinds: [] } } : {}),
+          now
+        }),
+        userId: "user-1"
+      });
+      const coreReads = mocked.laneSql.filter((sql) =>
+        sql.includes('version."coreEligible" = TRUE'));
+      expect(coreReads).toHaveLength(applyResponsePreferences ? 1 : 0);
+      if (applyResponsePreferences) {
+        expect(coreReads[0]).toContain("'SENSITIVE'::\"MemorySensitivityClass\"");
+        expect(coreReads[0]).not.toContain("'SECRET'::\"MemorySensitivityClass\"");
+        expect(mocked.laneSql).toHaveLength(1);
+      }
+    }
+  });
+
+  it("rejects an empty dynamic-lane plan without response-preference admission", async () => {
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const ordinary = planMemoryRetrieval({ currentUserText: "answer", now });
+    await expect(repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: {
+        ...ordinary,
+        filters: { ...ordinary.filters, sourceKinds: [] }
+      },
+      userId: "user-1"
+    })).rejects.toThrow("memory_retrieval_plan_invalid");
+    expect(mocked.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("adds a bounded recent lane only for an explicit System-plan recency request", async () => {
+    const withoutRecency = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const ordinary = await createPrismaLocalMemoryRetrievalRepository(withoutRecency.client)
+      .retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "project update", now }),
+        userId: "user-1"
+      });
+    expect(ordinary.laneResults.map(({ lane }) => lane)).not.toContain("FACT_RECENT");
+    expect(withoutRecency.laneSql.join("\n")).not.toContain(
+      'version."systemFrom" DESC'
+    );
+
+    const withRecency = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const recent = await createPrismaLocalMemoryRetrievalRepository(withRecency.client)
+      .retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({
+          currentUserText: "project update",
+          now,
+          recencyRequested: true
+        }),
+        userId: "user-1"
+      });
+    expect(recent.laneResults.map(({ lane }) => lane)).toContain("FACT_RECENT");
+    expect(withRecency.laneSql.join("\n")).toContain("EXTRACT(EPOCH FROM");
   });
 
   it("disables every read for Temporary chats before querying lanes", async () => {
@@ -145,6 +241,7 @@ describe("local Memory retrieval repository", () => {
           connectionId: "connection-1",
           dimension: 1_024,
           generationId: "generation-1",
+          minimumSimilarity: 0.55,
           providerModelId: "model-1",
           retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
           vectorSpaceFingerprint: "d".repeat(64)

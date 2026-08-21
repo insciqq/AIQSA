@@ -117,6 +117,34 @@ describe("PublicShareView", () => {
     expect(container.querySelector("[data-message-id]")).not.toBeInTheDocument();
   });
 
+  it("does not project private Memory sources or opaque refs into a public share", () => {
+    const share = snapshot([message("assistant", "A public answer")]);
+    const withMemorySources = {
+      ...share,
+      memorySources: [{
+        actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+        date: "2026-08-21T05:00:00.000Z",
+        memoryRef: "opaque-private-memory-ref",
+        origin: "Private chat title",
+        sourceAvailable: true,
+        sourceType: "SAVED_MEMORY",
+        text: "Private remembered detail"
+      }],
+      messages: share.messages.map((item) => ({
+        ...item,
+        artifactSummary: {
+          memorySources: [{ memoryRef: "opaque-private-memory-ref", text: "Private remembered detail" }]
+        }
+      }))
+    } as unknown as PublicShareSnapshot;
+    const { container } = render(<PublicShareView snapshot={withMemorySources} title="Safe snapshot" />);
+
+    expect(container).not.toHaveTextContent("Memory · 1");
+    expect(container).not.toHaveTextContent("opaque-private-memory-ref");
+    expect(container).not.toHaveTextContent("Private remembered detail");
+    expect(container).not.toHaveTextContent("Private chat title");
+  });
+
   it("keeps safe links interactive and unsafe markdown inert", () => {
     render(
       <PublicShareView

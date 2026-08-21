@@ -1,230 +1,357 @@
 "use client";
 
 import {
-  authorizeMemoryMutation,
-  forgetMemory,
-  memoryStatementHash,
-  undoForgetMemory,
-  updateMemory
-} from "@/components/app-shell/memoryApi";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
-import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
-import type { MemoryActionFeedback } from "@/lib/contracts/memory";
-import { useEffect, useState } from "react";
+  MEMORY_UI_LOCALE,
+  formatMemoryUiCopy,
+  memoryCategoryLabel,
+  memoryUiCopy
+} from "@/components/app-shell/memoryUiCopy";
+import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
+import {
+  MEMORY_STATEMENT_MAX_LENGTH,
+  type MemoryActionFeedback
+} from "@/lib/contracts/memoryClient";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 
-type MutationState = "CHANGED" | "ERROR" | "IDLE" | "PENDING" | "REMOVED" | "RESTORED";
+type MemoryActionResultItem = NonNullable<MemoryActionFeedback["items"]>[number];
 
-export function MemoryActionConfirmationV2({
-  action
-}: Readonly<{ action: MemoryActionFeedback }>) {
-  const [state, setState] = useState<MutationState>("IDLE");
-  const [editing, setEditing] = useState(false);
-  const [target, setTarget] = useState(() => action.factId && action.versionId && action.statement
-    ? { factId: action.factId, statement: action.statement, versionId: action.versionId }
-    : null);
-  const [draft, setDraft] = useState(action.statement ?? "");
-  const [forgetUndo, setForgetUndo] = useState(() =>
-    action.operation === "FORGET" && action.deletionId && action.expiresAt
-      ? { deletionId: action.deletionId, expiresAt: action.expiresAt }
-      : null);
-  const [expiredForgetDeletionId, setExpiredForgetDeletionId] = useState<string | null>(null);
+function t(key: Parameters<typeof memoryUiCopy>[0]): string {
+  return memoryUiCopy(key);
+}
 
-  useEffect(() => {
-    if (!forgetUndo) return;
-    const remaining = Date.parse(forgetUndo.expiresAt) - Date.now();
-    const delay = Number.isFinite(remaining)
-      ? Math.min(Math.max(remaining, 0), 2_147_483_647)
-      : 0;
-    const deletionId = forgetUndo.deletionId;
-    const timer = window.setTimeout(() => setExpiredForgetDeletionId(deletionId), delay);
-    return () => window.clearTimeout(timer);
-  }, [forgetUndo]);
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return t("manager.notSet");
+  return new Intl.DateTimeFormat(MEMORY_UI_LOCALE, { dateStyle: "medium" }).format(date);
+}
 
-  const copyKey = action.operation === "SAVE"
-    ? "action.saved"
-    : action.operation === "UPDATE"
-      ? "action.updated"
-      : action.operation === "MARK_INCORRECT"
-        ? "action.markedIncorrect"
-        : "action.forgotten";
-  const pending = state === "PENDING";
-  const undoOpen = Boolean(forgetUndo && expiredForgetDeletionId !== forgetUndo.deletionId);
-  const canEdit = Boolean(
-    target &&
-    (action.operation === "SAVE" || action.operation === "UPDATE") &&
-    state !== "REMOVED"
+function provenanceLabel(item: MemoryActionResultItem): string {
+  return item.provenance === "SAVED"
+    ? t("manager.savedByYou")
+    : t("manager.learnedFromChat");
+}
+
+function statusLabel(action: MemoryActionFeedback): string {
+  switch (action.status) {
+    case "COMMITTED": return t("action.statusDone");
+    case "COMPLETE": return t("action.statusReady");
+    case "AMBIGUOUS": return t("action.statusNeedsChoice");
+    case "CONFIRMATION_REQUIRED": return t("action.statusConfirmation");
+    case "REJECTED": return t("action.statusNotApplied");
+    case "THIS_CHAT_ONLY": return t("action.statusThisChat");
+  }
+}
+
+function statusTone(action: MemoryActionFeedback): "danger" | "neutral" | "ok" | "warn" {
+  switch (action.status) {
+    case "COMMITTED":
+    case "COMPLETE":
+      return "ok";
+    case "THIS_CHAT_ONLY":
+      return "neutral";
+    case "REJECTED":
+      return "danger";
+    case "AMBIGUOUS":
+    case "CONFIRMATION_REQUIRED":
+      return "warn";
+  }
+}
+
+function statusMessage(action: MemoryActionFeedback): string {
+  switch (action.status) {
+    case "COMMITTED":
+      return action.operation === "SAVE"
+        ? t("action.saved")
+        : action.operation === "UPDATE"
+          ? t("action.updated")
+          : t("action.forgotten");
+    case "COMPLETE":
+      return action.operation === "LIST"
+        ? t("action.listComplete")
+        : t("action.searchComplete");
+    case "AMBIGUOUS":
+      return t("action.ambiguousGuidance");
+    case "CONFIRMATION_REQUIRED":
+      return t("action.resetConfirmation");
+    case "REJECTED":
+      return t("action.rejected");
+    case "THIS_CHAT_ONLY":
+      return t("action.thisChatOnly");
+  }
+}
+
+function Statement({ statement }: Readonly<{ statement?: string }>) {
+  if (!statement) return null;
+  return (
+    <blockquote data-testid="memory-action-statement">“{statement}”</blockquote>
   );
-  const canUndoSave = Boolean(target && action.operation === "SAVE" && state !== "REMOVED");
+}
 
-  const restoreForgotten = async () => {
-    if (!target || !forgetUndo || !undoOpen) return;
-    setState("PENDING");
+function MemoryResultItem({
+  action,
+  candidate,
+  index,
+  item
+}: Readonly<{
+  candidate?: boolean;
+  action?: ReactNode;
+  index: number;
+  item: MemoryActionResultItem;
+}>) {
+  return (
+    <li className="v2-memory-action-result" data-testid={candidate ? "memory-action-candidate" : "memory-action-item"}>
+      <p>{item.statement}</p>
+      <div className="v2-memory-action-result-meta">
+        <span>{provenanceLabel(item)}</span>
+        <span aria-hidden="true">·</span>
+        <span>{memoryCategoryLabel(item.category)}</span>
+        <span aria-hidden="true">·</span>
+        <span>{formatDate(item.createdAt)}</span>
+      </div>
+      <span className="sr-only">
+        {formatMemoryUiCopy(candidate ? "action.matchIndex" : "action.memoryIndex", {
+          index: index + 1
+        })}
+      </span>
+      {action}
+    </li>
+  );
+}
+
+function ResultItems({
+  items,
+  operation
+}: Readonly<{
+  items: readonly MemoryActionResultItem[];
+  operation: "LIST" | "SEARCH";
+}>) {
+  if (items.length === 0) {
+    return <p>{operation === "LIST" ? t("manager.empty") : t("manager.noResults")}</p>;
+  }
+  return (
+    <ul aria-label={operation === "LIST" ? t("action.listComplete") : t("action.searchComplete")} className="v2-memory-action-results">
+      {items.map((item, index) => (
+        <MemoryResultItem index={index} item={item} key={`${item.createdAt}:${index}`} />
+      ))}
+    </ul>
+  );
+}
+
+function CandidateItems({
+  action,
+  candidates,
+  completedRef,
+  onChoose,
+  pendingRef
+}: Readonly<{
+  action: "FORGET" | "UPDATE";
+  candidates: readonly MemoryActionResultItem[];
+  completedRef: string | null;
+  onChoose(item: MemoryActionResultItem): void;
+  pendingRef: string | null;
+}>) {
+  return (
+    <>
+      <p className="v2-memory-action-guidance">{t("action.ambiguousNoAction")}</p>
+      <ul aria-label={t("action.matchesHeading")} className="v2-memory-action-results">
+        {candidates.map((item, index) => (
+          <MemoryResultItem
+            action={(
+              <UiV2Button
+                busy={pendingRef === item.memoryRef}
+                disabled={pendingRef !== null || completedRef !== null}
+                onClick={() => onChoose(item)}
+                tone={action === "FORGET" ? "destructive" : "primary"}
+                type="button"
+              >
+                {t(action === "FORGET" ? "action.forgetCandidate" : "action.updateCandidate")}
+              </UiV2Button>
+            )}
+            candidate
+            index={index}
+            item={item}
+            key={item.memoryRef}
+          />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function actionIdentity(action: MemoryActionFeedback): string {
+  return JSON.stringify(action);
+}
+
+function MemoryActionConfirmationContent({
+  action,
+  onOpenMemorySettings
+}: Readonly<{
+  action: MemoryActionFeedback;
+  onOpenMemorySettings?(): void;
+}>) {
+  const headingId = useId();
+  const [editing, setEditing] = useState(false);
+  const [statement, setStatement] = useState(action.statement ?? "");
+  const [pendingRef, setPendingRef] = useState<string | null>(null);
+  const [completedRef, setCompletedRef] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function mutate(
+    memoryRef: string,
+    operation: "FORGET" | "UPDATE",
+    replacement?: string
+  ): Promise<void> {
+    setPendingRef(memoryRef);
+    setError(null);
+    setNotice(null);
     try {
-      const authorization = await authorizeMemoryMutation({
-        action: "SAVE",
-        exactStatementHash: await memoryStatementHash(target.statement)
-      });
-      const response = await undoForgetMemory(target.factId, {
-        deletionId: forgetUndo.deletionId,
-        mutationAuthorizationId: authorization.mutationAuthorizationId
-      });
-      if (!response.memory.currentVersionId || !response.memory.displayText) {
-        throw new Error("memory_response_invalid");
-      }
-      setTarget({
-        factId: response.memory.id,
-        statement: response.memory.displayText,
-        versionId: response.memory.currentVersionId
-      });
-      setDraft(response.memory.displayText);
-      setForgetUndo(null);
-      setState("RESTORED");
-    } catch {
-      setState("ERROR");
-    }
-  };
-
-  const undoSaved = async () => {
-    if (!target) return;
-    setState("PENDING");
-    try {
-      const authorization = await authorizeMemoryMutation({
-        action: "FORGET",
-        expectedTargetVersionId: target.versionId,
-        targetFactId: target.factId
-      });
-      const response = await forgetMemory(target.factId, {
-        expectedVersionId: target.versionId,
-        mutationAuthorizationId: authorization.mutationAuthorizationId
-      });
-      setForgetUndo({
-        deletionId: response.undo.deletionId,
-        expiresAt: response.undo.expiresAt
-      });
-      setState("REMOVED");
-    } catch {
-      setState("ERROR");
-    }
-  };
-
-  const saveEdit = async () => {
-    if (!target) return;
-    const statement = draft.trim();
-    if (!statement || statement === target.statement) {
-      setDraft(target.statement);
+      const response = await submitMemorySourceAction(
+        operation === "UPDATE" ? "CORRECT" : "FORGET",
+        memoryRef,
+        replacement
+      );
+      if (response.status !== "COMMITTED") throw new Error("memory_response_invalid");
+      setCompletedRef(memoryRef);
       setEditing(false);
+      setNotice(t(operation === "UPDATE" ? "action.updated" : "action.forgotten"));
+    } catch {
+      setError(t("action.mutationError"));
+    } finally {
+      setPendingRef(null);
+    }
+  }
+
+  function submitEdit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const replacement = statement.trim();
+    if (!action.memoryRef || !replacement ||
+      replacement.length > MEMORY_STATEMENT_MAX_LENGTH) {
+      setError(formatMemoryUiCopy("action.correctionLength", {
+        count: MEMORY_STATEMENT_MAX_LENGTH.toLocaleString(MEMORY_UI_LOCALE)
+      }));
       return;
     }
-    setState("PENDING");
-    try {
-      const authorization = await authorizeMemoryMutation({
-        action: "EDIT",
-        expectedTargetVersionId: target.versionId,
-        targetFactId: target.factId
-      });
-      const response = await updateMemory(target.factId, {
-        expectedVersionId: target.versionId,
-        mutationAuthorizationId: authorization.mutationAuthorizationId,
-        statement
-      });
-      if (!response.memory.currentVersionId || !response.memory.displayText) {
-        throw new Error("memory_response_invalid");
-      }
-      setTarget({
-        factId: response.memory.id,
-        statement: response.memory.displayText,
-        versionId: response.memory.currentVersionId
-      });
-      setDraft(response.memory.displayText);
-      setEditing(false);
-      setState("CHANGED");
-    } catch {
-      setState("ERROR");
-    }
-  };
+    void mutate(action.memoryRef, "UPDATE", replacement);
+  }
 
-  const statusText = state === "PENDING"
-    ? memoryUiCopy("action.working")
-    : state === "REMOVED"
-      ? memoryUiCopy("action.removed")
-      : state === "RESTORED"
-        ? memoryUiCopy("action.restored")
-        : state === "CHANGED"
-          ? memoryUiCopy("action.changed")
-          : state === "ERROR"
-            ? memoryUiCopy("action.changeFailed")
-            : memoryUiCopy(copyKey);
-
+  const committedEditable = action.status === "COMMITTED" &&
+    (action.operation === "SAVE" || action.operation === "UPDATE") &&
+    Boolean(action.memoryRef && action.statement);
   return (
     <section
-      aria-live="polite"
+      aria-labelledby={headingId}
       className="v2-memory-action-confirmation"
-      data-memory-action={action.operation.toLowerCase()}
       data-testid="memory-action-confirmation"
-      role="status"
+      role="region"
     >
       <UiV2Icon name="check" />
       <div>
-        <p className={state === "ERROR" ? "v2-memory-action-error" : undefined}>
-          {statusText}
-        </p>
-        {target && action.operation !== "FORGET" && state !== "REMOVED" ? (
-          <blockquote data-testid="memory-action-statement">“{target.statement}”</blockquote>
+        <div className="v2-memory-action-heading">
+          <p
+            aria-live="polite"
+            className={action.status === "REJECTED" ? "v2-memory-action-error" : undefined}
+            id={headingId}
+            role="status"
+          >
+            {statusMessage(action)}
+          </p>
+          <UiV2Chip tone={statusTone(action)}>{statusLabel(action)}</UiV2Chip>
+        </div>
+        {action.status === "COMPLETE" && (action.operation === "LIST" || action.operation === "SEARCH") ? (
+          <ResultItems items={action.items ?? []} operation={action.operation} />
+        ) : action.status === "AMBIGUOUS" ? (
+          <CandidateItems
+            action={action.operation === "FORGET" ? "FORGET" : "UPDATE"}
+            candidates={action.candidates ?? []}
+            completedRef={completedRef}
+            onChoose={(item) => void mutate(
+              item.memoryRef,
+              action.operation === "FORGET" ? "FORGET" : "UPDATE",
+              action.operation === "UPDATE" ? action.statement : undefined
+            )}
+            pendingRef={pendingRef}
+          />
+        ) : (
+          <Statement statement={action.status === "REJECTED" ? undefined : action.statement} />
+        )}
+        {committedEditable && !editing && completedRef === null ? (
+          <div className="v2-memory-action-buttons">
+            <UiV2Button
+              disabled={pendingRef !== null}
+              onClick={() => {
+                setStatement(action.statement ?? "");
+                setError(null);
+                setEditing(true);
+              }}
+              type="button"
+            >
+              {t("manager.edit")}
+            </UiV2Button>
+            <UiV2Button
+              busy={pendingRef === action.memoryRef}
+              disabled={pendingRef !== null}
+              onClick={() => void mutate(action.memoryRef!, "FORGET")}
+              tone="destructive"
+              type="button"
+            >
+              {t("manager.forget")}
+            </UiV2Button>
+          </div>
         ) : null}
-        {editing && target ? (
-          <form onSubmit={(event) => {
-            event.preventDefault();
-            void saveEdit();
-          }}>
-            <label htmlFor={`v2-memory-action-edit-${target.factId}`}>
-              {memoryUiCopy("action.edit")}
-            </label>
+        {committedEditable && editing ? (
+          <form className="v2-memory-source-correction" onSubmit={submitEdit}>
+            <label htmlFor={`${headingId}-statement`}>{t("action.correctMemory")}</label>
             <textarea
-              autoFocus
-              disabled={pending}
-              id={`v2-memory-action-edit-${target.factId}`}
-              maxLength={2_000}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              id={`${headingId}-statement`}
+              maxLength={MEMORY_STATEMENT_MAX_LENGTH}
+              onChange={(event) => setStatement(event.target.value)}
+              rows={3}
+              value={statement}
             />
             <div className="v2-memory-action-buttons">
-              <UiV2Button busy={pending} disabled={!draft.trim()} tone="primary" type="submit">
-                {memoryUiCopy("action.saveEdit")}
+              <UiV2Button
+                busy={pendingRef === action.memoryRef}
+                disabled={pendingRef !== null}
+                tone="primary"
+                type="submit"
+              >
+                {t("action.saveCorrection")}
               </UiV2Button>
-              <UiV2Button disabled={pending} type="button" onClick={() => {
-                setDraft(target.statement);
-                setEditing(false);
-              }}>
-                {memoryUiCopy("action.cancelEdit")}
+              <UiV2Button
+                disabled={pendingRef !== null}
+                onClick={() => setEditing(false)}
+                type="button"
+              >
+                {t("manager.cancel")}
               </UiV2Button>
             </div>
           </form>
         ) : null}
-        {!editing && (canEdit || canUndoSave || undoOpen || state === "REMOVED") ? (
-          <div className="v2-memory-action-buttons">
-            {canEdit ? (
-              <UiV2Button icon="edit" disabled={pending} onClick={() => {
-                setDraft(target!.statement);
-                setEditing(true);
-              }}>
-                {memoryUiCopy("action.edit")}
+        {action.status === "CONFIRMATION_REQUIRED" && action.operation === "RESET" &&
+          onOpenMemorySettings ? (
+            <div className="v2-memory-action-buttons">
+              <UiV2Button onClick={onOpenMemorySettings} tone="primary" type="button">
+                {t("action.reviewReset")}
               </UiV2Button>
-            ) : null}
-            {canUndoSave ? (
-              <UiV2Button disabled={pending} onClick={() => void undoSaved()}>
-                {memoryUiCopy("action.undo")}
-              </UiV2Button>
-            ) : null}
-            {undoOpen && (action.operation === "FORGET" || state === "REMOVED") ? (
-              <UiV2Button disabled={pending} onClick={() => void restoreForgotten()}>
-                {state === "REMOVED"
-                  ? memoryUiCopy("action.restore")
-                  : memoryUiCopy("action.undo")}
-              </UiV2Button>
-            ) : null}
-          </div>
-        ) : null}
+            </div>
+          ) : null}
+        {notice ? <p aria-live="polite" role="status">{notice}</p> : null}
+        {error ? <p aria-live="assertive" role="alert">{error}</p> : null}
       </div>
     </section>
+  );
+}
+
+export function MemoryActionConfirmationV2(props: Readonly<{
+  action: MemoryActionFeedback;
+  onOpenMemorySettings?(): void;
+}>) {
+  return (
+    <MemoryActionConfirmationContent
+      {...props}
+      key={actionIdentity(props.action)}
+    />
   );
 }

@@ -10,7 +10,10 @@ import {
   type MemoryCoordinatorPolicy
 } from "./policy";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
-import type { MemoryCoordinatorRegistry } from "./registry";
+import {
+  memoryCoordinatorJobMaxAttempts,
+  type MemoryCoordinatorRegistry
+} from "./registry";
 import { MemoryScheduler } from "./scheduler";
 import type {
   MemoryDeletionClaim,
@@ -46,6 +49,7 @@ function validJobResult(value: MemoryJobExecutionResult): boolean {
 export class MemoryCoordinator {
   readonly #activeControllers = new Set<AbortController>();
   readonly #now: () => Date;
+  readonly #onDrain: (() => Promise<void>) | null;
   readonly #policy: MemoryCoordinatorPolicy;
   readonly #registry: MemoryCoordinatorRegistry;
   readonly #repository: MemoryCoordinatorRepository;
@@ -59,6 +63,7 @@ export class MemoryCoordinator {
 
   constructor(input: Readonly<{
     now?: () => Date;
+    onDrain?: () => Promise<void>;
     policy?: Partial<MemoryCoordinatorPolicy>;
     reconcileWork?: () => Promise<void>;
     registry: MemoryCoordinatorRegistry;
@@ -66,6 +71,7 @@ export class MemoryCoordinator {
     scheduler?: MemoryScheduler;
   }>) {
     this.#now = input.now ?? (() => new Date());
+    this.#onDrain = input.onDrain ?? null;
     this.#policy = resolveMemoryCoordinatorPolicy(input.policy);
     this.#reconcileWork = input.reconcileWork ?? null;
     this.#registry = input.registry;
@@ -138,6 +144,13 @@ export class MemoryCoordinator {
   async #drain(): Promise<void> {
     do {
       this.#rerun = false;
+      try {
+        await this.#onDrain?.();
+      } catch {
+        // Liveness evidence is observability, never work ownership. The next
+        // idle drain retries it while durable job/deletion leases remain the
+        // execution authority.
+      }
       await this.#reconcileJobs();
       await Promise.all([
         ...Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker()),
@@ -158,9 +171,18 @@ export class MemoryCoordinator {
 
   async #reconcileJobs(): Promise<void> {
     const kinds = this.#registry.jobKinds();
-    if (kinds.length === 0) return;
     const now = this.#clock();
     try {
+      // Rows written by an older build (or by a producer that forgot to
+      // register a handler) must become an explicit terminal failure.  They
+      // are intentionally not included in claim waves, so this is the only
+      // safe cleanup path and prevents silent queue starvation.
+      const unavailable = await this.#repository.terminalUnavailableJobs({
+        now,
+        supportedKinds: kinds
+      });
+      if (unavailable && unavailable > 0) this.#rerun = true;
+      if (kinds.length === 0) return;
       const [cancelled, requeued] = await Promise.all([
         this.#repository.cancelUnavailableJobOwners({ kinds, now }),
         this.#repository.requeueDueJobs({ kinds, now })
@@ -172,7 +194,16 @@ export class MemoryCoordinator {
       });
       for (const job of waiting) {
         const handler = this.#registry.jobHandler(job.kind);
-        if (!handler) continue;
+        if (!handler) {
+          // A repository implementation must not be able to hide a kind that
+          // fell outside the active manifest.  Mark it through the same
+          // durable terminal path used by normal reconciliation.
+          await this.#repository.terminalUnavailableJobs({
+            now: this.#clock(),
+            supportedKinds: kinds
+          });
+          continue;
+        }
         let decision: MemoryJobGateDecision;
         try {
           decision = await handler.preflight(job);
@@ -298,7 +329,12 @@ export class MemoryCoordinator {
         controller.signal
       );
       const handler = this.#registry.jobHandler(claim.kind);
-      if (!handler) throw new MemoryCoordinatorError("memory_job_handler_unavailable", true);
+      if (!handler) {
+        // This should only be reachable during a rolling deployment race;
+        // terminalise immediately rather than retrying a permanently
+        // unsupported kind.
+        throw new MemoryCoordinatorError("memory_job_handler_unavailable", false);
+      }
       const decision = await handler.preflight(claim);
       if (!validGateDecision(decision)) {
         throw new MemoryCoordinatorError("memory_job_gate_invalid", false);
@@ -362,7 +398,11 @@ export class MemoryCoordinator {
         ? error
         : new MemoryCoordinatorError("memory_job_failed", true);
       const now = this.#clock();
-      if (failure.retryable && claim.attemptCount < this.#policy.maxJobAttempts) {
+      const maxAttempts = memoryCoordinatorJobMaxAttempts(
+        claim.kind,
+        this.#policy.maxJobAttempts
+      );
+      if (failure.retryable && claim.attemptCount < maxAttempts) {
         await this.#repository.retryJob({
           claim,
           errorCode: failure.code,

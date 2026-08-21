@@ -1,31 +1,30 @@
 import {
-  acceptMemoryDestinations,
   loadMemorySettings,
   MemoryApiError,
   patchMemorySettings
 } from "@/components/app-shell/memoryApi";
 import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
-  type MemorySettingsPatch,
-  type MemorySettingsResponse
-} from "@/lib/contracts/memory";
+  type MemoryConsumerSettingsPatch,
+  type MemoryConsumerSettingsResponse
+} from "@/lib/contracts/memoryConsumer";
 import { create } from "zustand";
 
 export type MemorySettingsLoadState = "error" | "idle" | "loading" | "ready";
 export type MemorySettingsMutation =
-  | "consent"
   | "learnAutomatically"
   | "referenceChatHistory"
   | "useMemoryFacts";
 
 type MemorySettingsStore = {
+  accountId: string | null;
   busy: MemorySettingsMutation | null;
-  data: MemorySettingsResponse | null;
+  data: MemoryConsumerSettingsResponse | null;
   error: string | null;
   loadState: MemorySettingsLoadState;
 };
 
 const initialState: MemorySettingsStore = {
+  accountId: null,
   busy: null,
   data: null,
   error: null,
@@ -34,7 +33,12 @@ const initialState: MemorySettingsStore = {
 
 export const useMemorySettingsStore = create<MemorySettingsStore>(() => initialState);
 
-let loadPromise: Promise<MemorySettingsResponse> | null = null;
+let requestGeneration = 0;
+let loadRequest: Readonly<{
+  controller: AbortController;
+  generation: number;
+  promise: Promise<MemoryConsumerSettingsResponse>;
+}> | null = null;
 
 function errorName(error: unknown): string {
   return error instanceof MemoryApiError || error instanceof Error
@@ -42,21 +46,31 @@ function errorName(error: unknown): string {
     : "memory_action_failed";
 }
 
-export async function refreshMemorySettings(force = false): Promise<MemorySettingsResponse> {
+export async function refreshMemorySettings(
+  force = false
+): Promise<MemoryConsumerSettingsResponse> {
   const current = useMemorySettingsStore.getState();
   if (!force && current.loadState === "ready" && current.data) return current.data;
-  if (loadPromise) return loadPromise;
+  if (loadRequest?.generation === requestGeneration) return loadRequest.promise;
+
+  const accountId = current.accountId;
+  const generation = requestGeneration;
+  const controller = new AbortController();
 
   useMemorySettingsStore.setState({
     error: null,
     loadState: current.data ? current.loadState : "loading"
   });
-  loadPromise = loadMemorySettings().then(
+  const promise = loadMemorySettings(controller.signal).then(
     (data) => {
+      const latest = useMemorySettingsStore.getState();
+      if (generation !== requestGeneration || latest.accountId !== accountId) return data;
       useMemorySettingsStore.setState({ data, error: null, loadState: "ready" });
       return data;
     },
     (error: unknown) => {
+      const latest = useMemorySettingsStore.getState();
+      if (generation !== requestGeneration || latest.accountId !== accountId) throw error;
       useMemorySettingsStore.setState({
         error: errorName(error),
         loadState: current.data ? current.loadState : "error"
@@ -64,24 +78,33 @@ export async function refreshMemorySettings(force = false): Promise<MemorySettin
       throw error;
     }
   ).finally(() => {
-    loadPromise = null;
+    if (loadRequest?.generation === generation) loadRequest = null;
   });
-  return loadPromise;
+  loadRequest = { controller, generation, promise };
+  return promise;
 }
 
 async function mutation(
   kind: MemorySettingsMutation,
-  run: (current: MemorySettingsResponse) => Promise<MemorySettingsResponse>
-): Promise<MemorySettingsResponse> {
+  run: (
+    current: MemoryConsumerSettingsResponse
+  ) => Promise<MemoryConsumerSettingsResponse>
+): Promise<MemoryConsumerSettingsResponse> {
   const current = useMemorySettingsStore.getState().data ?? await refreshMemorySettings(true);
+  const accountId = useMemorySettingsStore.getState().accountId;
+  const generation = requestGeneration;
   useMemorySettingsStore.setState({ busy: kind, error: null });
   try {
     const data = await run(current);
+    const latest = useMemorySettingsStore.getState();
+    if (generation !== requestGeneration || latest.accountId !== accountId) return data;
     useMemorySettingsStore.setState({ busy: null, data, error: null, loadState: "ready" });
     return data;
   } catch (error) {
+    const latest = useMemorySettingsStore.getState();
+    if (generation !== requestGeneration || latest.accountId !== accountId) throw error;
     useMemorySettingsStore.setState({ busy: null, error: errorName(error) });
-    if (error instanceof MemoryApiError && error.code === "memory_version_stale") {
+    if (error instanceof MemoryApiError && error.code === "memory_changed") {
       try {
         await refreshMemorySettings(true);
       } catch {
@@ -92,32 +115,29 @@ async function mutation(
   }
 }
 
+export function activateMemorySettings(accountId: string): void {
+  const current = useMemorySettingsStore.getState();
+  if (current.accountId === accountId) return;
+  requestGeneration += 1;
+  loadRequest?.controller.abort(new Error("memory_settings_account_changed"));
+  loadRequest = null;
+  useMemorySettingsStore.setState({ ...initialState, accountId }, true);
+}
+
 export async function updateMemoryGate(
   key: "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts",
   value: boolean
-): Promise<MemorySettingsResponse> {
-  return mutation(key, (current) => {
-    const body = {
-      expectedMemoryRevision: current.settings.memoryRevision,
-      expectedSettingsRevision: current.settings.settingsRevision,
-      [key]: value
-    } satisfies MemorySettingsPatch;
+): Promise<MemoryConsumerSettingsResponse> {
+  return mutation(key, () => {
+    const body = { [key]: value } satisfies MemoryConsumerSettingsPatch;
     return patchMemorySettings(body);
   });
 }
 
-export async function acceptCurrentMemoryDestinations(): Promise<MemorySettingsResponse> {
-  return mutation("consent", (current) => acceptMemoryDestinations({
-    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-    currentUtilityEgressFingerprint: current.egress.currentUtilityEgressFingerprint,
-    currentUtilityPolicyVersion: current.egress.currentUtilityPolicyVersion,
-    expectedMemoryConsentRevision: current.settings.memoryConsentRevision,
-    expectedMemoryRevision: current.settings.memoryRevision,
-    expectedSettingsRevision: current.settings.settingsRevision
-  }));
-}
-
-export function deactivateMemorySettings(): void {
-  loadPromise = null;
+export function deactivateMemorySettings(accountId?: string): void {
+  if (accountId && useMemorySettingsStore.getState().accountId !== accountId) return;
+  requestGeneration += 1;
+  loadRequest?.controller.abort(new Error("memory_settings_deactivated"));
+  loadRequest = null;
   useMemorySettingsStore.setState(initialState, true);
 }

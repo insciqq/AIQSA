@@ -1,45 +1,30 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
-  decodeMemoryDetailResponse,
-  decodeMemoryDeletionStatus,
-  decodeMemoryForgetResponse,
-  decodeMemoryMutationResponse,
-  type MemoryConflictResolutionInput,
-  decodeMemoryErrorResponse,
-  decodeMemoryEvidenceResponse,
-  decodeMemoryFeedbackMutationResponse,
-  decodeMemoryListResponse,
-  decodeMemoryMutationAuthorizationResponse,
-  decodeMemoryRebuildStatus,
-  decodeMemorySettingsResponse,
-  type MemoryBulkDeleteInput,
-  type MemoryConsentInput,
-  type MemoryCreateInput,
-  type MemoryDeletionStatus,
-  type MemoryDetailResponse,
-  type MemoryEvidenceResponse,
-  type MemoryFeedbackInput,
-  type MemoryFeedbackMutationResponse,
-  type MemoryForgetInput,
-  type MemoryForgetResponse,
-  type MemoryListResponse,
-  type MemoryFactState,
-  type MemoryScopeSelection,
-  type MemoryMutationAuthorizationInput,
-  type MemoryMutationAuthorizationResponse,
-  type MemoryMutationResponse,
-  type MemoryRebuildInput,
-  type MemoryRebuildStatus,
-  type MemorySettingsPatch,
-  type MemorySettingsResponse,
-  type MemoryUndoForgetInput,
-  type MemoryUpdateInput
-} from "@/lib/contracts/memory";
+  decodeMemorySourceActionResponse,
+  isSafeMemorySourceActionHref,
+  type MemoryClientDecodeResult,
+  type MemorySourceActionInput,
+  type MemorySourceActionResponse
+} from "@/lib/contracts/memoryClient";
 import {
-  decodeMemoryHealthResponse,
-  type MemoryHealthResponse
-} from "@/lib/contracts/memoryHealth";
+  MEMORY_CONSUMER_CONFIRMATION_COPY_VERSION,
+  MEMORY_CONSUMER_STATEMENT_MAX_LENGTH,
+  decodeMemoryConsumerErrorResponse,
+  decodeMemoryConsumerForgetResponse,
+  decodeMemoryConsumerListResponse,
+  decodeMemoryConsumerMutationResponse,
+  decodeMemoryConsumerResetResponse,
+  decodeMemoryConsumerSettingsResponse,
+  type MemoryConsumerForgetResponse,
+  type MemoryConsumerListInput,
+  type MemoryConsumerListResponse,
+  type MemoryConsumerMutationResponse,
+  type MemoryConsumerResetResponse,
+  type MemoryConsumerSearchInput,
+  type MemoryConsumerSettingsPatch,
+  type MemoryConsumerSettingsResponse,
+  type MemoryConsumerStatementMutation
+} from "@/lib/contracts/memoryConsumer";
 
 export class MemoryApiError extends Error {
   readonly code: string;
@@ -53,13 +38,6 @@ export class MemoryApiError extends Error {
   }
 }
 
-type MemoryMutationAuthorizationIntent =
-  MemoryMutationAuthorizationInput extends infer T
-    ? T extends MemoryMutationAuthorizationInput
-      ? Omit<T, "confirmationCopyVersion" | "requestNonce">
-      : never
-    : never;
-
 async function responseJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -68,17 +46,14 @@ async function responseJson(response: Response): Promise<unknown> {
   }
 }
 
-function errorCode(value: unknown): string {
-  const decoded = decodeMemoryErrorResponse(value);
+function consumerFailure(value: unknown): string {
+  const decoded = decodeMemoryConsumerErrorResponse(value);
   if (decoded) return decoded.error;
-  if (
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    "error" in value &&
-    (value as { error?: unknown }).error === "unauthorized"
-  ) {
-    return "unauthorized";
+  if (value && typeof value === "object" && !Array.isArray(value) && "error" in value) {
+    const error = (value as { error?: unknown }).error;
+    if (error === "unauthorized") return "unauthorized";
+    if (error === "memory_not_found") return "memory_not_found";
+    if (error === "memory_secret_rejected") return "memory_secret_rejected";
   }
   return "memory_action_failed";
 }
@@ -99,7 +74,7 @@ async function memoryRequest<T>(
     }
   });
   const body = await responseJson(response);
-  if (!response.ok) throw new MemoryApiError(errorCode(body), response.status);
+  if (!response.ok) throw new MemoryApiError(consumerFailure(body), response.status);
   const decoded = decode(body);
   if (!decoded.ok) throw new MemoryApiError("memory_response_invalid", 502);
   return decoded.value;
@@ -117,268 +92,178 @@ export function memoryRequestId(): string {
   return nonce();
 }
 
-export async function memoryStatementHash(statement: string): Promise<string> {
-  if (!globalThis.crypto?.subtle) {
-    throw new MemoryApiError("memory_client_crypto_unavailable", 500);
+function decodeSourceActionResponse(
+  value: unknown,
+  action: MemorySourceActionInput["action"]
+): MemoryClientDecodeResult<MemorySourceActionResponse> {
+  const decoded = decodeMemorySourceActionResponse(value);
+  if (!decoded.ok) return decoded;
+  if (action === "OPEN_SOURCE") {
+    return decoded.value.status === "READY" && isSafeMemorySourceActionHref(decoded.value.href)
+      ? decoded
+      : { code: "memory_contract_invalid", ok: false };
   }
-  const digest = await globalThis.crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(statement)
-  );
-  return Array.from(new Uint8Array(digest), (value) =>
-    value.toString(16).padStart(2, "0")
-  ).join("");
+  return decoded.value.status === "COMMITTED"
+    ? decoded
+    : { code: "memory_contract_invalid", ok: false };
 }
 
-export async function loadMemorySettings(signal?: AbortSignal): Promise<MemorySettingsResponse> {
-  return memoryRequest(
-    "/api/me/memory/settings",
-    { method: "GET", signal },
-    decodeMemorySettingsResponse
-  );
-}
-
-export async function loadMemoryHealth(signal?: AbortSignal): Promise<MemoryHealthResponse> {
-  return memoryRequest(
-    "/api/me/memory/health",
-    { method: "GET", signal },
-    (value): Readonly<{ ok: true; value: MemoryHealthResponse }> | Readonly<{ ok: false }> => {
-      const decoded = decodeMemoryHealthResponse(value);
-      if (!decoded) return { ok: false };
-      return { ok: true, value: decoded };
+export async function submitMemorySourceAction(
+  action: MemorySourceActionInput["action"],
+  memoryRef: string,
+  statement?: string
+): Promise<MemorySourceActionResponse> {
+  const trimmedRef = memoryRef.trim();
+  if (!trimmedRef || trimmedRef.length > 2_048) {
+    throw new MemoryApiError("memory_not_found", 400);
+  }
+  if (action === "CORRECT") {
+    const trimmedStatement = statement?.trim() ?? "";
+    if (!trimmedStatement ||
+      trimmedStatement.length > MEMORY_CONSUMER_STATEMENT_MAX_LENGTH) {
+      throw new MemoryApiError("memory_contract_invalid", 400);
     }
-  );
-}
-
-export async function patchMemorySettings(
-  body: MemorySettingsPatch
-): Promise<MemorySettingsResponse> {
-  return memoryRequest(
-    "/api/me/memory/settings",
-    { body: JSON.stringify(body), method: "PATCH" },
-    decodeMemorySettingsResponse
-  );
-}
-
-export async function acceptMemoryDestinations(
-  body: MemoryConsentInput
-): Promise<MemorySettingsResponse> {
-  return memoryRequest(
-    "/api/me/memory/settings",
-    { body: JSON.stringify(body), method: "PATCH" },
-    decodeMemorySettingsResponse
-  );
-}
-
-export async function listMemories(
-  cursor: string | null = null,
-  filters: Readonly<{
-    scope?: MemoryScopeSelection;
-    state?: MemoryFactState;
-  }> = {},
-  signal?: AbortSignal
-): Promise<MemoryListResponse> {
-  const query = new URLSearchParams({ pageSize: "20", state: filters.state ?? "ACTIVE" });
-  if (filters.scope) {
-    query.set("scope", filters.scope.type);
-    if (filters.scope.type !== "GLOBAL_USER") query.set("targetId", filters.scope.targetId);
+    return memoryRequest(
+      "/api/me/memory/source-actions",
+      {
+        body: JSON.stringify({
+          action,
+          memoryRef: trimmedRef,
+          requestNonce: memoryRequestId(),
+          statement: trimmedStatement
+        }),
+        method: "POST"
+      },
+      (value) => decodeSourceActionResponse(value, action)
+    );
   }
+  return memoryRequest(
+    "/api/me/memory/source-actions",
+    {
+      body: JSON.stringify({
+        action,
+        memoryRef: trimmedRef,
+        requestNonce: memoryRequestId()
+      }),
+      method: "POST"
+    },
+    (value) => decodeSourceActionResponse(value, action)
+  );
+}
+
+export const applyMemorySourceAction = submitMemorySourceAction;
+
+export function loadMemorySettings(
+  signal?: AbortSignal
+): Promise<MemoryConsumerSettingsResponse> {
+  return memoryRequest(
+    "/api/me/memory/settings",
+    { method: "GET", signal },
+    decodeMemoryConsumerSettingsResponse
+  );
+}
+
+export function patchMemorySettings(
+  body: MemoryConsumerSettingsPatch
+): Promise<MemoryConsumerSettingsResponse> {
+  return memoryRequest(
+    "/api/me/memory/settings",
+    { body: JSON.stringify(body), method: "PATCH" },
+    decodeMemoryConsumerSettingsResponse
+  );
+}
+
+export function listMemories(
+  cursor: string | null = null,
+  signal?: AbortSignal,
+  filters: Pick<MemoryConsumerListInput, "category" | "provenance"> = {}
+): Promise<MemoryConsumerListResponse> {
+  const query = new URLSearchParams({ pageSize: "20" });
+  if (filters.category) query.set("category", filters.category);
   if (cursor) query.set("cursor", cursor);
+  if (filters.provenance) query.set("provenance", filters.provenance);
   return memoryRequest(
     `/api/me/memories?${query.toString()}`,
     { method: "GET", signal },
-    decodeMemoryListResponse
+    decodeMemoryConsumerListResponse
   );
 }
 
-export async function searchMemories(
+export function searchMemories(
   query: string,
   cursor: string | null = null,
-  filters: Readonly<{
-    scope?: MemoryScopeSelection;
-    state?: MemoryFactState;
-  }> = {},
-  signal?: AbortSignal
-): Promise<MemoryListResponse> {
+  signal?: AbortSignal,
+  filters: Pick<MemoryConsumerSearchInput, "category" | "provenance"> = {}
+): Promise<MemoryConsumerListResponse> {
   return memoryRequest(
     "/api/me/memories/search",
     {
       body: JSON.stringify({
+        ...(filters.category ? { category: filters.category } : {}),
         ...(cursor ? { cursor } : {}),
         pageSize: 20,
-        query,
-        ...(filters.scope ? { scope: filters.scope } : {}),
-        state: filters.state ?? "ACTIVE"
+        ...(filters.provenance ? { provenance: filters.provenance } : {}),
+        query
       }),
       method: "POST",
       signal
     },
-    decodeMemoryListResponse
+    decodeMemoryConsumerListResponse
   );
 }
 
-export async function loadMemory(
-  memoryId: string,
-  signal?: AbortSignal
-): Promise<MemoryDetailResponse> {
-  return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}`,
-    { method: "GET", signal },
-    decodeMemoryDetailResponse
-  );
-}
-
-export async function loadMemoryEvidence(
-  memoryId: string,
-  cursor: string | null = null,
-  signal?: AbortSignal
-): Promise<MemoryEvidenceResponse> {
-  const query = new URLSearchParams();
-  if (cursor) query.set("cursor", cursor);
-  const suffix = query.size > 0 ? `?${query.toString()}` : "";
-  return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}/evidence${suffix}`,
-    { method: "GET", signal },
-    decodeMemoryEvidenceResponse
-  );
-}
-
-export async function recordMemoryFeedback(
-  memoryId: string,
-  body: MemoryFeedbackInput
-): Promise<MemoryFeedbackMutationResponse> {
-  return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}/feedback`,
-    { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryFeedbackMutationResponse
-  );
-}
-
-export async function resolveMemoryConflict(
-  memoryId: string,
-  body: MemoryConflictResolutionInput
-): Promise<MemoryMutationResponse> {
-  return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}/resolve`,
-    { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryMutationResponse
-  );
-}
-
-export async function authorizeMemoryMutation(
-  body: MemoryMutationAuthorizationIntent
-): Promise<MemoryMutationAuthorizationResponse> {
-  return memoryRequest(
-    "/api/me/memory/mutation-authorizations",
-    {
-      body: JSON.stringify({
-        ...body,
-        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-        requestNonce: nonce()
-      }),
-      method: "POST"
-    },
-    decodeMemoryMutationAuthorizationResponse
-  );
-}
-
-export async function createMemory(
-  body: MemoryCreateInput
-): Promise<MemoryMutationResponse> {
+export function createMemory(
+  statement: string
+): Promise<MemoryConsumerMutationResponse> {
+  const body: MemoryConsumerStatementMutation = {
+    requestId: memoryRequestId(),
+    statement
+  };
   return memoryRequest(
     "/api/me/memories",
     { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryMutationResponse
+    decodeMemoryConsumerMutationResponse
   );
 }
 
-export async function updateMemory(
-  memoryId: string,
-  body: MemoryUpdateInput
-): Promise<MemoryMutationResponse> {
+export function updateMemory(
+  memoryRef: string,
+  statement: string
+): Promise<MemoryConsumerMutationResponse> {
+  const body: MemoryConsumerStatementMutation = {
+    requestId: memoryRequestId(),
+    statement
+  };
   return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}`,
+    `/api/me/memories/${encodeURIComponent(memoryRef)}`,
     { body: JSON.stringify(body), method: "PATCH" },
-    decodeMemoryMutationResponse
+    decodeMemoryConsumerMutationResponse
   );
 }
 
-export async function forgetMemory(
-  memoryId: string,
-  body: MemoryForgetInput
-): Promise<MemoryForgetResponse> {
+export function forgetMemory(
+  memoryRef: string
+): Promise<MemoryConsumerForgetResponse> {
   return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}/forget`,
-    { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryForgetResponse
+    `/api/me/memories/${encodeURIComponent(memoryRef)}/forget`,
+    {
+      body: JSON.stringify({ requestId: memoryRequestId() }),
+      method: "POST"
+    },
+    decodeMemoryConsumerForgetResponse
   );
 }
 
-export async function undoForgetMemory(
-  memoryId: string,
-  body: MemoryUndoForgetInput
-): Promise<MemoryMutationResponse> {
+export function resetPersonalMemory(): Promise<MemoryConsumerResetResponse> {
   return memoryRequest(
-    `/api/me/memories/${encodeURIComponent(memoryId)}/undo-forget`,
-    { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryMutationResponse
-  );
-}
-
-export async function startExplicitMemoryDeletion(
-  body: MemoryBulkDeleteInput
-): Promise<MemoryDeletionStatus> {
-  return startMemoryBulkDeletion(body);
-}
-
-export async function startMemoryBulkDeletion(
-  body: MemoryBulkDeleteInput
-): Promise<MemoryDeletionStatus> {
-  return memoryRequest(
-    "/api/me/memory/bulk-delete",
-    { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryDeletionStatus
-  );
-}
-
-export async function loadMemoryDeletionStatus(
-  deletionId: string,
-  signal?: AbortSignal
-): Promise<MemoryDeletionStatus> {
-  return memoryRequest(
-    `/api/me/memory/deletions/${encodeURIComponent(deletionId)}`,
-    { method: "GET", signal },
-    decodeMemoryDeletionStatus
-  );
-}
-
-export async function startMemoryRebuild(
-  body: MemoryRebuildInput
-): Promise<MemoryRebuildStatus> {
-  return memoryRequest(
-    "/api/me/memory/rebuild",
-    { body: JSON.stringify(body), method: "POST" },
-    decodeMemoryRebuildStatus
-  );
-}
-
-export async function loadMemoryRebuildStatus(
-  jobId: string,
-  signal?: AbortSignal
-): Promise<MemoryRebuildStatus> {
-  return memoryRequest(
-    `/api/me/memory/rebuild/${encodeURIComponent(jobId)}`,
-    { method: "GET", signal },
-    decodeMemoryRebuildStatus
-  );
-}
-
-export async function cancelMemoryRebuild(
-  jobId: string
-): Promise<MemoryRebuildStatus> {
-  return memoryRequest(
-    `/api/me/memory/rebuild/${encodeURIComponent(jobId)}/cancel`,
-    { method: "POST" },
-    decodeMemoryRebuildStatus
+    "/api/me/memory/reset",
+    {
+      body: JSON.stringify({
+        confirmationCopyVersion: MEMORY_CONSUMER_CONFIRMATION_COPY_VERSION,
+        requestId: memoryRequestId()
+      }),
+      method: "POST"
+    },
+    decodeMemoryConsumerResetResponse
   );
 }

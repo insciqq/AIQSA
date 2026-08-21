@@ -177,6 +177,8 @@ async function populateReusableMemory(
   const versionId = randomUUID();
   const jobId = randomUUID();
   const bindingId = randomUUID();
+  const mutationAuthorizationId = randomUUID();
+  const manualClassifierBindingId = randomUUID();
   const executionInputHash = "1".repeat(64);
   const executionOutputHash = "2".repeat(64);
   const statement = "Пользователь предпочитает краткие технические ответы.";
@@ -314,6 +316,15 @@ async function populateReusableMemory(
         userId
       }
     });
+    await tx.memoryPauseInterval.create({
+      data: {
+        memoryGeneration: 0,
+        pausedAt: startedAt,
+        resumedAt: input.now,
+        scope: "SEARCH_HISTORY",
+        userId
+      }
+    });
     await tx.memorySourceBarrier.create({
       data: {
         kind: "ALL_REUSABLE",
@@ -366,10 +377,79 @@ async function populateReusableMemory(
         userId
       }
     });
+    await tx.memoryMutationAuthorization.create({
+      data: {
+        action: "SAVE",
+        authorizedPayloadHash: memorySha256(statement),
+        confirmationCopyVersion: "account-memory-test-v1",
+        consumedAt: input.now,
+        createdAt: startedAt,
+        expiresAt: new Date(input.now.getTime() + 5 * 60_000),
+        id: mutationAuthorizationId,
+        nonceHash: memorySha256({ mutationAuthorizationId, userId }),
+        requestId: `account-memory-manual-classifier-${randomUUID()}`,
+        userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: "4".repeat(64),
+        completedAt: input.now,
+        connectionId: provider.connectionId,
+        createdAt: startedAt,
+        credentialId: provider.credentialId,
+        credentialVersionId: provider.credentialVersionId,
+        destinationFingerprint: "5".repeat(64),
+        id: manualClassifierBindingId,
+        inputHash: "6".repeat(64),
+        logicalRole: "MEMORY_STATEMENT_CLASSIFY",
+        mutationAuthorizationId,
+        ordinal: 0,
+        ownerType: "MUTATION_AUTHORIZATION",
+        pipelineVersion: "account-memory-test-v1",
+        policyVersion: "account-memory-test-v1",
+        promptVersion: "account-memory-test-v1",
+        providerId: "openai_compatible",
+        providerModelId: provider.modelId,
+        providerResponseId: `account-memory-classifier-response-${randomUUID()}`,
+        recoverableUntil: new Date(input.now.getTime() - 1),
+        schemaVersion: "account-memory-test-v1",
+        secretFreeExecutionSnapshot: {
+          providerExecutionSnapshot: { providerModelId: provider.modelId },
+          schemaVersion: "account-memory-test-v1"
+        },
+        startedAt,
+        state: "SUCCEEDED",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.update({
+      data: {
+        coreEligible: true,
+        coreSalience: "HIGH",
+        safetyClassificationReasonCode: "response_preference",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifiedAt: input.now,
+        safetyClassifierExecutionId: manualClassifierBindingId,
+        safetyClassifierModelId: provider.modelId,
+        safetyClassifierPolicyVersion: "account-memory-test-v1",
+        safetyClassifierProviderId: "openai_compatible"
+      },
+      where: { id: versionId }
+    });
     await tx.usageEvent.create({
       data: {
         memoryExecutionBindingId: bindingId,
         modelId: embeddingConfiguration.upstreamModelId,
+        provider: "openai_compatible",
+        providerModelId: provider.modelId,
+        userId
+      }
+    });
+    await tx.usageEvent.create({
+      data: {
+        memoryExecutionBindingId: manualClassifierBindingId,
+        modelId: provider.modelId,
         provider: "openai_compatible",
         providerModelId: provider.modelId,
         userId
@@ -390,7 +470,7 @@ async function populateReusableMemory(
     requestId: randomUUID(),
     retractsFeedbackId: original.feedbackId
   });
-  return { bindingId, factId, jobId, versionId };
+  return { bindingId, factId, jobId, manualClassifierBindingId, versionId };
 }
 
 function coordinatorFor(
@@ -442,6 +522,24 @@ async function claimFor(deletionId: string): Promise<MemoryDeletionClaim> {
 describe("Prisma account Memory deletion", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("counts pause intervals as Memory-owned account data", async () => {
+    const userId = await createOwner("disabled");
+    try {
+      await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(0);
+      await prisma.memoryPauseInterval.create({
+        data: {
+          memoryGeneration: 0,
+          pausedAt: new Date(),
+          scope: "MASTER",
+          userId
+        }
+      });
+      await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
   });
 
   it("keeps the stale-user path zero-mutation before composition", async () => {
@@ -633,12 +731,24 @@ describe("Prisma account Memory deletion", () => {
       expect(await prisma.memoryFact.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryFeedback.count({ where: { userId } })).toBe(0);
       expect(await prisma.memorySearchEntry.count({ where: { userId } })).toBe(0);
+      expect(await prisma.memoryPauseInterval.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
         where: { id: fixture.bindingId }
       })).toMatchObject({
         connectionId: null,
         credentialId: null,
         credentialVersionId: null,
+        providerModelId: null,
+        providerResponseId: null,
+        relationsDetachedAt: clock
+      });
+      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
+        where: { id: fixture.manualClassifierBindingId }
+      })).toMatchObject({
+        connectionId: null,
+        credentialId: null,
+        credentialVersionId: null,
+        ownerType: "MUTATION_AUTHORIZATION",
         providerModelId: null,
         providerResponseId: null,
         relationsDetachedAt: clock

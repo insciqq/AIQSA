@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryJobClaim } from "../coordinator/types";
+import type { MemoryHistorySafetyClassifier } from "./classifier";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint,
@@ -8,7 +10,11 @@ import {
   type MemoryHistoryIndexPlan,
   type MemoryHistoryIndexSourceIdentity
 } from "./contract";
-import { createMemoryHistoryIndexHandler } from "./handler";
+import {
+  applyMemoryHistoryClassifications,
+  createMemoryHistoryIndexHandler
+} from "./handler";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import type { MemoryHistoryIndexRepository } from "./repository";
 
 const source: MemoryHistoryIndexSourceIdentity = Object.freeze({
@@ -44,17 +50,60 @@ function claim(): MemoryJobClaim {
   };
 }
 
-function plan(): MemoryHistoryIndexPlan {
-  const suppressionIdentitySnapshot = "b".repeat(64);
+function chunk(id: string, ordinal: number): MemoryHistoryIndexPlan["chunks"][number] {
+  const text = `User: history ${ordinal}\n\nAssistant: acknowledged`;
   return {
-    chunks: [],
-    resultHash: memoryHistoryIndexResultHash(
-      source,
-      [],
-      suppressionIdentitySnapshot
-    ),
+    approxTokens: 8,
+    branchGeneration: source.branchGeneration,
+    chatId: source.chatId,
+    chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+    contentHash: String(ordinal + 1).repeat(64),
+    folderId: null,
+    id,
+    languageCode: "en",
+    messageJoins: [],
+    normalizedSafeSearchText: text.toLocaleLowerCase("und"),
+    occurredFrom: "2026-08-10T10:00:00.000Z",
+    occurredTo: "2026-08-10T10:01:00.000Z",
+    ordinal,
+    overlapFromPreviousTurnGroupIds: [],
+    providerSafeText: text,
+    redactionReasonCodes: [],
+    redactionState: "NOT_NEEDED",
+    safeProjectedText: text,
+    safetyClass: "NORMAL",
+    sourceAssistantId: null,
+    sourceContentHash: source.sourceHash,
+    sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+    sourceRevision: source.sourceRevision,
+    turnGroupIds: [`turn-${ordinal}`],
+    userId: source.userId
+  };
+}
+
+function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndexPlan {
+  const suppressionIdentitySnapshot = "b".repeat(64);
+  const resultHash = memoryHistoryIndexResultHash(
+    source,
+    chunks,
+    suppressionIdentitySnapshot
+  );
+  return {
+    classificationPolicyVersion: null,
+    chunks,
+    preparedResultHash: resultHash,
+    resultHash,
     source,
     suppressionIdentitySnapshot
+  };
+}
+
+function classifier(): MemoryHistorySafetyClassifier {
+  return {
+    classify: vi.fn(async () => ({
+      decisions: [],
+      policyVersion: "memory-history-safety-policy-test"
+    }))
   };
 }
 
@@ -67,13 +116,31 @@ function context() {
 }
 
 describe("Memory INDEX_HISTORY handler", () => {
+  it("drops secret or uncertain chunks and canonicalizes legacy sensitive output", () => {
+    const current = plan([chunk("chunk-sensitive", 0), chunk("chunk-secret", 1)]);
+    const classified = applyMemoryHistoryClassifications(current, {
+      decisions: [
+        { chunkId: "chunk-sensitive", sensitivity: "SENSITIVE" },
+        { chunkId: "chunk-secret", sensitivity: "SECRET" }
+      ],
+      policyVersion: "memory-history-safety-policy-test"
+    });
+
+    expect(classified.chunks).toMatchObject([{
+      id: "chunk-sensitive",
+      safetyClass: "NORMAL"
+    }]);
+    expect(classified.preparedResultHash).toBe(current.resultHash);
+    expect(classified.resultHash).not.toBe(current.resultHash);
+  });
+
   it("rejects malformed jobs before repository access", async () => {
     const repository = {
       apply: vi.fn(),
       preflight: vi.fn(),
       prepare: vi.fn()
     } as unknown as MemoryHistoryIndexRepository;
-    const handler = createMemoryHistoryIndexHandler({ repository });
+    const handler = createMemoryHistoryIndexHandler({ classifier: classifier(), repository });
 
     await expect(handler.preflight({
       ...claim(),
@@ -93,7 +160,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       preflight,
       prepare: vi.fn()
     } as unknown as MemoryHistoryIndexRepository;
-    const handler = createMemoryHistoryIndexHandler({ repository });
+    const handler = createMemoryHistoryIndexHandler({ classifier: classifier(), repository });
 
     await expect(handler.preflight(current)).resolves.toEqual({ status: "READY" });
     expect(preflight).toHaveBeenCalledWith(current);
@@ -103,30 +170,60 @@ describe("Memory INDEX_HISTORY handler", () => {
     const currentClaim = claim();
     const currentPlan = plan();
     const apply = vi.fn(async () => undefined);
+    const authorizeResults = vi.fn(async () => undefined);
+    const executionResults = [{
+      acceptedOutputHash: "c".repeat(64),
+      bindingId: "history-classifier-binding-1"
+    }];
     const repository = {
       apply,
       preflight: vi.fn(async () => ({ status: "READY" as const })),
       prepare: vi.fn(async () => ({ plan: currentPlan }))
     } as unknown as MemoryHistoryIndexRepository;
-    const handler = createMemoryHistoryIndexHandler({ repository });
+    const handler = createMemoryHistoryIndexHandler({
+      authorizeResults,
+      classifier: {
+        classify: vi.fn(async () => ({
+          decisions: [],
+          executions: executionResults,
+          policyVersion: "memory-history-safety-policy-test"
+        }))
+      },
+      repository
+    });
     const executionContext = context();
 
     const result = await handler.execute(currentClaim, executionContext);
 
     expect(result).toMatchObject({
-      acceptedResultHash: currentPlan.resultHash,
       stage: "lexical_ready"
     });
+    expect(result.acceptedResultHash).not.toBe(currentPlan.resultHash);
     expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
       "source_snapshot",
+      "safety_classification",
       "lexical_apply"
     ]);
     expect(result.apply).toBeTypeOf("function");
-    await result.apply?.({} as never, currentClaim);
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
+    };
+    await result.apply?.(tx as never, currentClaim);
+    expect(authorizeResults).toHaveBeenCalledWith(
+      tx,
+      { userId: source.userId },
+      source.userId,
+      currentClaim.id,
+      executionResults
+    );
     expect(apply).toHaveBeenCalledWith(
-      expect.anything(),
+      tx,
       currentClaim,
-      currentPlan,
+      expect.objectContaining({
+        classificationPolicyVersion: "memory-history-safety-policy-test",
+        preparedResultHash: currentPlan.resultHash,
+        resultHash: result.acceptedResultHash
+      }),
       new Date("2026-08-10T12:00:00.000Z")
     );
   });

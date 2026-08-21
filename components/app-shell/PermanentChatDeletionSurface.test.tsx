@@ -1,19 +1,17 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { useMemorySettingsStore } from "./memorySettingsStore";
 import { PermanentChatDeletionSurface } from "./PermanentChatDeletionSurface";
 import { activatePermanentChatDeletionAccount, openPermanentChatDeletion, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
 import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
-
-const now = "2026-08-12T10:00:00.000Z";
 
 beforeEach(async () => {
   resetPermanentChatDeletionStoreForTest();
   resetMemorySettingsStoreForTest();
   window.sessionStorage.clear();
   useMemorySettingsStore.setState({
-    data: memorySettingsFixture({ capabilities: { permanentChatDeletion: true } }),
+    data: memoryConsumerSettingsFixture({ capabilities: { permanentChatDeletion: true } }),
     error: null,
     loadState: "ready"
   });
@@ -33,8 +31,6 @@ describe("PermanentChatDeletionSurface", () => {
   it("keeps the ordinary confirmation concise and puts technical retention detail in Advanced", async () => {
     openPermanentChatDeletion({
       chatId: "chat-1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
       location: "WORKSPACE",
       title: "Research notes"
     });
@@ -58,19 +54,10 @@ describe("PermanentChatDeletionSurface", () => {
     ).toHaveFocus());
   });
 
-  it("shows private-safe blocked progress, with identifiers only in Advanced", () => {
+  it("shows private-safe blocked progress without technical identifiers", () => {
     usePermanentChatDeletionStore.setState({
-      reference: { chatId: "chat-1", deletionId: "deletion-secret-1" },
-      status: {
-        attemptCount: 7,
-        cleanupComplete: false,
-        deletionId: "deletion-secret-1",
-        errorCode: "memory_cleanup_residual",
-        fencedAt: now,
-        lastAuditAt: now,
-        state: "BLOCKED_REQUIRES_ADMIN",
-        updatedAt: now
-      },
+      reference: { chatId: "chat-1" },
+      status: { status: "NEEDS_ATTENTION" },
       statusLoadState: "ready",
       statusOpen: true
     });
@@ -79,25 +66,15 @@ describe("PermanentChatDeletionSurface", () => {
     const dialog = screen.getByRole("dialog", { name: "Permanent deletion" });
     expect(within(dialog).getByText(/administrator attention/i)).toBeVisible();
     expect(within(dialog).queryByText("Research notes")).not.toBeInTheDocument();
-    expect(within(dialog).getByText("deletion-secret-1")).not.toBeVisible();
-    fireEvent.click(within(dialog).getByText("Advanced details"));
-    expect(within(dialog).getByText("deletion-secret-1")).toBeVisible();
-    expect(within(dialog).getByText("memory_cleanup_residual")).toBeVisible();
+    expect(within(dialog).queryByText("Advanced details")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("deletion-secret-1")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("memory_cleanup_residual")).not.toBeInTheDocument();
   });
 
   it("collapses background progress to a durable actionable notice", () => {
     usePermanentChatDeletionStore.setState({
-      reference: { chatId: "chat-1", deletionId: "deletion-1" },
-      status: {
-        attemptCount: 0,
-        cleanupComplete: false,
-        deletionId: "deletion-1",
-        errorCode: null,
-        fencedAt: now,
-        lastAuditAt: null,
-        state: "RUNNING",
-        updatedAt: now
-      },
+      reference: { chatId: "chat-1" },
+      status: { status: "IN_PROGRESS" },
       statusLoadState: "ready",
       statusOpen: false
     });

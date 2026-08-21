@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryWorkspace } from "./MemoryWorkspace";
-import { memoryHealthFixture, memorySettingsFixture } from "@/tests/support/memoryFixtures";
-import { resetMemoryHealthStoreForTest, resetMemoryManagerStoreForTest, resetMemoryOperationsStoreForTest, resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
+import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
+import { resetMemoryManagerStoreForTest, resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
 
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -13,21 +13,14 @@ function json(value: unknown): Response {
 
 describe("MemoryWorkspace", () => {
   beforeEach(() => {
-    resetMemoryHealthStoreForTest();
     resetMemoryManagerStoreForTest();
-    resetMemoryOperationsStoreForTest();
     resetMemorySettingsStoreForTest();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
-      String(input) === "/api/me/memory/health"
-        ? json({ health: memoryHealthFixture() })
-        : json(memorySettingsFixture())));
+    vi.stubGlobal("fetch", vi.fn(async () => json(memoryConsumerSettingsFixture())));
   });
 
   afterEach(() => {
     cleanup();
-    resetMemoryHealthStoreForTest();
     resetMemoryManagerStoreForTest();
-    resetMemoryOperationsStoreForTest();
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -39,7 +32,6 @@ describe("MemoryWorkspace", () => {
       <MemoryWorkspace
         accountId="account-test"
         onClose={onClose}
-        onOpenMemorySource={vi.fn()}
       />
     );
 
@@ -64,7 +56,6 @@ describe("MemoryWorkspace", () => {
         notice={{ kind: "error", text: "The Memory source is unavailable." }}
         onClose={vi.fn()}
         onDismissNotice={onDismissNotice}
-        onOpenMemorySource={vi.fn()}
       />
     );
 

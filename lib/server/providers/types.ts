@@ -13,6 +13,7 @@ import type {
 } from "../../domain/search";
 import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { KnowledgeFocusedRequestV1 } from "../knowledge/focusedRequest";
+import type { MemoryActionAnswerResult } from "./memoryActionAnswer";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -89,11 +90,11 @@ export type NormalizedRunRequest = {
    * retrieval operation. It is never exposed as an answer-model tool. */
   knowledgeFocusedRequest?: KnowledgeFocusedRequestV1;
   knowledgePlan: KnowledgePlan;
-  /** Model-driven tools. Mutation authority is minted at execution from the
-   * exact accepted USER message and exact owned target/version. */
+  /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
+   * admission rejects it and execution/recovery terminalize it. */
   memoryActionTools?: Readonly<{ version: "model-driven-v2" }>;
-  /** Bounded first-party private-history tool. Its results remain untrusted
-   * data and may coexist with admin-connected Search and tool capabilities. */
+  /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
+   * admission rejects it and execution/recovery terminalize it. */
   memoryHistoryTool?: Readonly<{
     maxCalls: 2;
     pageSize: 20;
@@ -132,6 +133,9 @@ export type NormalizedRunRequest = {
     /** Server-minted fixed contract serialized after every other instruction
      * and untrusted personal-context block for one-shot Knowledge answers. */
     knowledgeAnswerContract?: 1;
+    /** Server-owned, content-free result of the bounded Memory control/action
+     * stage. Provider adapters render the corresponding fixed answer contract. */
+    memoryActionAnswerResult?: MemoryActionAnswerResult;
     system: string | null;
   };
   provider: string;

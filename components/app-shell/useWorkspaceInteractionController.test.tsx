@@ -56,7 +56,7 @@ describe("useWorkspaceInteractionController", () => {
     });
   });
 
-  it("keeps create concurrency and project-settings draft lifetimes explicit", () => {
+  it("keeps create concurrency and Project Knowledge settings lifetimes explicit", () => {
     const { result } = renderHook(() => useWorkspaceInteractionController());
 
     act(() => result.current.folderMutation.beginCreate());
@@ -66,16 +66,14 @@ describe("useWorkspaceInteractionController", () => {
 
     act(() => {
       result.current.projectSettings.open(folder);
-      result.current.projectSettings.changeDraft("Changed memory");
     });
     expect(result.current.projectSettings).toMatchObject({
-      draft: "Changed memory",
       folderId: folder.id,
       knowledgeBaseIds: ["kb-1"]
     });
+    expect("draft" in result.current.projectSettings).toBe(false);
     act(() => result.current.folderMutation.completeProjectSave());
     expect(result.current.projectSettings).toMatchObject({
-      draft: "",
       folderId: null,
       knowledgeBaseIds: []
     });

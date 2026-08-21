@@ -3,28 +3,72 @@ import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTextLanguage } from "../../history/language";
 
-export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION = "memory-fact-extraction-v2";
+export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION = "memory-fact-extraction-v1";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-source-grounding-policy-v7";
+  "memory-fact-personal-v2-policy";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-source-grounding-prompt-v9";
+  "memory-fact-personal-v2-prompt";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-source-grounding-schema-v3";
+  "memory-fact-personal-v1-schema";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   "memory-fact-temporal-conservative-v1";
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
   "memory-fact-source-projection-v1";
 export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:";
 
-export const MEMORY_FACT_MAX_INPUT_MESSAGES = 24;
+// Automatic learning is intentionally scoped to the one direct-user message
+// that caused the settled turn.  Keeping this bound in the contract prevents
+// a worker from silently widening the evidence window later.
+export const MEMORY_FACT_MAX_INPUT_MESSAGES = 1;
 export const MEMORY_FACT_MAX_INPUT_CHARACTERS = 16_000;
-export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = 12;
-export const MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE = 6;
+/** Public output cap: no more than four candidates can be accepted per turn. */
+export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = 4;
+/** The model packet is bounded separately so invalid siblings do not consume
+ * an accepted slot. */
+export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 8;
+export const MEMORY_FACT_MAX_ACCEPTED_CANDIDATES = MEMORY_FACT_MAX_OUTPUT_CANDIDATES;
+export const MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE = 1;
+
+/** The one v1 category vocabulary shared by UI, explicit actions, and
+ * automatic learning. Values are storage slugs; labels belong to the UI. */
+export const MEMORY_V1_CATEGORY_ALLOWLIST = Object.freeze([
+  "about_you",
+  "preferences",
+  "work",
+  "goals",
+  "constraints_routines",
+  "other",
+  "sensitive"
+] as const);
+export type MemoryV1Category = (typeof MEMORY_V1_CATEGORY_ALLOWLIST)[number];
+
+/** New facts use ordinary semantic categories; `sensitive` is legacy-only. */
+export const MEMORY_FACT_DURABLE_CATEGORIES = Object.freeze(
+  MEMORY_V1_CATEGORY_ALLOWLIST.filter((category) => category !== "sensitive")
+);
+export type MemoryFactDurableCategory =
+  (typeof MEMORY_FACT_DURABLE_CATEGORIES)[number];
+export type MemoryFactConfidenceBand = "HIGH" | "MEDIUM" | "LOW";
+export type MemoryFactCandidateSensitivity =
+  "NORMAL" | "SENSITIVE" | "SECRET" | "UNCERTAIN";
+
+export type MemoryFactCandidateRejection = Readonly<{
+  candidateOrdinal: number;
+  reasonCode:
+    | "REJECT_AMBIGUOUS"
+    | "REJECT_DUPLICATE"
+    | "REJECT_LOW_CONFIDENCE"
+    | "REJECT_SECRET"
+    | "REJECT_STALE_SOURCE"
+    | "REJECT_TEMPORARY"
+    | "REJECT_UNSUPPORTED";
+}>;
 
 export const MEMORY_FACT_EXTRACTION_RETRIEVAL_CONFIG_FINGERPRINT =
   memorySha256({
     evidenceMode: "exact-direct-user-spans",
-    maxCandidates: MEMORY_FACT_MAX_OUTPUT_CANDIDATES,
+    maxAcceptedCandidates: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+    maxCandidates: MEMORY_FACT_MAX_PACKET_CANDIDATES,
     maxEvidencePerCandidate: MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE,
     maxInputCharacters: MEMORY_FACT_MAX_INPUT_CHARACTERS,
     maxInputMessages: MEMORY_FACT_MAX_INPUT_MESSAGES,
@@ -78,11 +122,24 @@ export type MemoryFactCandidateScope = Readonly<
 export type MemoryFactCandidateEvidence = Readonly<{
   endOffset: number;
   messageId: string;
+  /** The quote is server-derived from the submitted offsets. */
+  quote?: string;
   sourceTextHash: string;
   startOffset: number;
 }>;
 
 export type MemoryExtractedCandidate = Readonly<{
+  /** v1 semantic fields returned by the strict System Model. */
+  category: string;
+  confidenceBand?: MemoryFactConfidenceBand;
+  correction?: boolean;
+  futureUseful?: boolean;
+  quote?: string;
+  responsePreference?: string | null;
+  statement?: string;
+  temporary?: boolean;
+
+  /** Existing persistence projection (server-owned, never model supplied). */
   canonicalKey: string;
   coreEligible: boolean;
   coreSalience: "HIGH" | "LOW" | "MEDIUM" | "NONE";
@@ -113,13 +170,13 @@ export type MemoryExtractedCandidate = Readonly<{
   temporalResolutionEvidence: Readonly<Record<string, unknown>> | null;
   validFrom: string | null;
   validTo: string | null;
-  category: string;
 }>;
 
 export type MemoryFactExtractionPlan = Readonly<{
   candidates: readonly MemoryExtractedCandidate[];
   input: MemoryFactExtractionInput;
   outputHash: string;
+  rejections?: readonly MemoryFactCandidateRejection[];
 }>;
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
@@ -190,7 +247,21 @@ export function memoryFactCandidateId(
   input: MemoryFactExtractionInput,
   candidate: Omit<MemoryExtractedCandidate, "id">
 ): string {
-  const { canonicalKey: _serverOwnedOpaqueKey, ...identity } = candidate;
+  // Semantic v1 annotations are intentionally excluded from the storage
+  // identity.  They are model metadata and may be reclassified without
+  // changing the source-grounded candidate's id; evidence/content remain in
+  // the identity below.
+  const {
+    canonicalKey: _serverOwnedOpaqueKey,
+    confidenceBand: _confidenceBand,
+    correction: _correction,
+    futureUseful: _futureUseful,
+    quote: _quote,
+    responsePreference: _responsePreference,
+    statement: _statement,
+    temporary: _temporary,
+    ...identity
+  } = candidate;
   return memorySha256({
     candidate: {
       ...identity,

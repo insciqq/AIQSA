@@ -19,7 +19,7 @@ import { useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, CatalogModel, ChatDetail, WorkspaceChatSummary } from "./types";
 import type { SavedControlDraft } from "./powerAppShellData";
-import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { useMemorySettingsStore } from "./memorySettingsStore";
 
 const hostedSearchOptionId = "hosted-openai-search";
@@ -387,7 +387,7 @@ describe("message run actions", () => {
       openMemorySettings
     });
     useMemorySettingsStore.setState({
-      data: memorySettingsFixture(),
+      data: memoryConsumerSettingsFixture(),
       error: null,
       loadState: "ready"
     });

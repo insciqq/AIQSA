@@ -6,11 +6,21 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
   "memory-vector-retrieval-v1";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2";
+  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v5-unified-storable-safety";
+export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
+  1024: 0.55,
+  1536: 0.55
+} as const);
 export const MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS = 5_000;
 export const MEMORY_HNSW_EF_SEARCH = 100;
 export const MEMORY_HNSW_MAX_SCAN_TUPLES = 20_000;
@@ -30,6 +40,7 @@ export type MemoryVectorProfile = Readonly<{
   connectionId: string;
   dimension: MemoryVectorDimension;
   generationId: string;
+  minimumSimilarity: number;
   providerModelId: string;
   retrievalConfigFingerprint: string;
   vectorSpaceFingerprint: string;
@@ -51,8 +62,14 @@ export type MemoryVectorDegradationReason = Extract<
 >["reason"];
 
 export type MemoryVectorEligibility = Readonly<{
-  allowedFactSensitivity: readonly MemorySensitivityClass[];
-  allowedHistorySafety: readonly MemoryDerivedSafetyClass[];
+  allowedFactSensitivity: readonly Extract<
+    MemorySensitivityClass,
+    "NORMAL" | "SENSITIVE"
+  >[];
+  allowedHistorySafety: readonly Extract<
+    MemoryDerivedSafetyClass,
+    "NORMAL" | "SENSITIVE"
+  >[];
   assistantId: string | null;
   chatId: string | null;
   folderId: string | null;
@@ -137,6 +154,7 @@ type ProfileRow = Readonly<{
   generationState: string | null;
   indexMode: string | null;
   ownerStatus: string;
+  useMemoryFacts: boolean | null;
   retrievalPipelineVersion: string | null;
   selectedEmbeddingProviderModelId: string | null;
   vectorSpaceFingerprint: string | null;
@@ -188,6 +206,7 @@ function sameProfile(left: MemoryVectorProfile, right: MemoryVectorProfile): boo
     left.connectionId === right.connectionId &&
     left.dimension === right.dimension &&
     left.generationId === right.generationId &&
+    left.minimumSimilarity === right.minimumSimilarity &&
     left.providerModelId === right.providerModelId &&
     left.retrievalConfigFingerprint === right.retrievalConfigFingerprint &&
     left.vectorSpaceFingerprint === right.vectorSpaceFingerprint;
@@ -210,13 +229,8 @@ function uniqueClosedValues<T extends string>(
 }
 
 function validateSearchInput(input: MemoryVectorSearchInput): void {
-  const factSafety = new Set(["NORMAL", "SENSITIVE", "HIGHLY_SENSITIVE", "SECRET"]);
-  const historySafety = new Set([
-    "NORMAL",
-    "SENSITIVE",
-    "HIGHLY_SENSITIVE",
-    "SECRET_TAINTED"
-  ]);
+  const factSafety = new Set(["NORMAL", "SENSITIVE"]);
+  const historySafety = new Set(["NORMAL", "SENSITIVE"]);
   const itemTypes = new Set<CurrentMemorySearchItemType>([
     "FACT_VERSION",
     "RECALL_CHUNK"
@@ -232,6 +246,8 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
     !validFingerprint(input.profile.vectorSpaceFingerprint) ||
     input.profile.retrievalConfigFingerprint !==
       MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT ||
+    !Number.isFinite(input.profile.minimumSimilarity) ||
+    input.profile.minimumSimilarity <= 0 || input.profile.minimumSimilarity > 1 ||
     !supportedDimension(input.profile.dimension) ||
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 || input.limit > MEMORY_VECTOR_MAX_RESULT_LIMIT ||
@@ -315,7 +331,9 @@ function commonPredicates(input: MemoryVectorSearchInput): Prisma.Sql[] {
       FROM "Chat" AS current_chat
       WHERE current_chat."userId" = ${input.userId}
         AND current_chat."id" = ${input.eligibility.chatId}
-        AND current_chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+        AND current_chat."projectId" IS NULL
+        AND current_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+        AND current_chat."permanentDeletionAt" IS NULL
     )`);
   }
   return predicates;
@@ -357,6 +375,54 @@ function optionalHistoryPredicates(input: MemoryVectorSearchInput): Prisma.Sql[]
   return predicates;
 }
 
+function factConversationFeedbackPredicate(input: MemoryVectorSearchInput): Prisma.Sql {
+  if (!input.eligibility.chatId) return Prisma.sql`TRUE`;
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1
+    FROM "MemoryFeedback" AS negative_feedback
+    INNER JOIN "ModelRun" AS negative_run
+      ON negative_run."userId" = negative_feedback."userId"
+      AND negative_run."id" = negative_feedback."modelRunId"
+    WHERE negative_feedback."userId" = entry."userId"
+      AND negative_feedback."feedbackType" = 'NOT_USEFUL'::"MemoryFeedbackType"
+      AND negative_feedback."memoryFactVersionId" = version."id"
+      AND negative_feedback."contentPurgedAt" IS NULL
+      AND negative_run."chatId" = ${input.eligibility.chatId}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryFeedback" AS feedback_retraction
+        WHERE feedback_retraction."userId" = negative_feedback."userId"
+          AND feedback_retraction."feedbackType" = 'RETRACT'::"MemoryFeedbackType"
+          AND feedback_retraction."retractsFeedbackId" = negative_feedback."id"
+          AND feedback_retraction."contentPurgedAt" IS NULL
+      )
+  )`;
+}
+
+function chunkConversationFeedbackPredicate(input: MemoryVectorSearchInput): Prisma.Sql {
+  if (!input.eligibility.chatId) return Prisma.sql`TRUE`;
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1
+    FROM "MemoryFeedback" AS negative_feedback
+    INNER JOIN "ModelRun" AS negative_run
+      ON negative_run."userId" = negative_feedback."userId"
+      AND negative_run."id" = negative_feedback."modelRunId"
+    WHERE negative_feedback."userId" = entry."userId"
+      AND negative_feedback."feedbackType" = 'NOT_USEFUL'::"MemoryFeedbackType"
+      AND negative_feedback."recallChunkId" = chunk."id"
+      AND negative_feedback."contentPurgedAt" IS NULL
+      AND negative_run."chatId" = ${input.eligibility.chatId}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryFeedback" AS feedback_retraction
+        WHERE feedback_retraction."userId" = negative_feedback."userId"
+          AND feedback_retraction."feedbackType" = 'RETRACT'::"MemoryFeedbackType"
+          AND feedback_retraction."retractsFeedbackId" = negative_feedback."id"
+          AND feedback_retraction."contentPurgedAt" IS NULL
+      )
+  )`;
+}
+
 function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   const allowed = valuesSql(input.eligibility.allowedFactSensitivity);
   return {
@@ -381,11 +447,13 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           AND fact_settings."useMemoryFacts" = TRUE
           AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
           AND version."systemTo" IS NULL
+          AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
           AND version."contentPurgedAt" IS NULL
           AND version."sensitivityClass"::text IN (${allowed})
           AND fact."state" = 'ACTIVE'::"MemoryFactState"
           AND fact."currentVersionId" = version."id"
           AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+          AND ${factConversationFeedbackPredicate(input)}
           AND NOT EXISTS (
             SELECT 1
             FROM "MemorySuppression" AS fact_suppression
@@ -396,103 +464,10 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
                 OR fact_suppression."expiresAt" > CURRENT_TIMESTAMP
               )
           )
-          AND (
-            version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-            OR EXISTS (
-              SELECT 1
-              FROM "MemoryEvidence" AS support
-              INNER JOIN "Chat" AS evidence_chat
-                ON evidence_chat."userId" = support."userId"
-                AND evidence_chat."id" = support."chatId"
-                AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-                AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
-              INNER JOIN "Message" AS evidence_message
-                ON evidence_message."chatId" = support."chatId"
-                AND evidence_message."id" = support."messageId"
-                AND evidence_message."role" = 'user'
-              WHERE support."userId" = version."userId"
-                AND support."factVersionId" = version."id"
-                AND support."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-                AND support."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
-                AND support."sourceRole" = 'user'
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM "MemorySuppression" AS source_suppression
-                  WHERE source_suppression."userId" = support."userId"
-                    AND source_suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-                    AND source_suppression."sourceChatId" = support."chatId"
-                    AND source_suppression."sourceMessageId" = support."messageId"
-                    AND (
-                      source_suppression."sourceBranchGeneration" IS NULL
-                      OR source_suppression."sourceBranchGeneration" = support."branchGeneration"
-                    )
-                    AND (
-                      source_suppression."expiresAt" IS NULL
-                      OR source_suppression."expiresAt" > CURRENT_TIMESTAMP
-                    )
-                )
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM "MemorySourceBarrier" AS source_barrier
-                  WHERE source_barrier."userId" = support."userId"
-                    AND source_barrier."kind" IN (
-                      'AUTOMATIC_FACTS'::"MemorySourceBarrierKind",
-                      'ALL_REUSABLE'::"MemorySourceBarrierKind"
-                    )
-                    AND evidence_message."createdAt" <= source_barrier."sourceCreatedAtCutoff"
-                )
-            )
-          )
-          AND (
-            (
-              scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-              AND scope."targetIdSnapshot" IS NULL
-              AND scope."folderId" IS NULL
-              AND scope."assistantId" IS NULL
-              AND scope."chatId" IS NULL
-            )
-            OR (
-              scope."scopeType" = 'FOLDER'::"MemoryScopeType"
-              AND scope."folderId" = ${input.eligibility.folderId}
-              AND scope."targetIdSnapshot" = scope."folderId"
-              AND scope."assistantId" IS NULL
-              AND scope."chatId" IS NULL
-              AND EXISTS (
-                SELECT 1
-                FROM "Folder" AS scope_folder
-                WHERE scope_folder."userId" = fact."userId"
-                  AND scope_folder."id" = scope."folderId"
-              )
-            )
-            OR (
-              scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
-              AND scope."assistantId" = ${input.eligibility.assistantId}
-              AND scope."targetIdSnapshot" = scope."assistantId"
-              AND scope."folderId" IS NULL
-              AND scope."chatId" IS NULL
-              AND EXISTS (
-                SELECT 1
-                FROM "AssistantDefinition" AS scope_assistant
-                WHERE scope_assistant."ownerUserId" = fact."userId"
-                  AND scope_assistant."id" = scope."assistantId"
-                  AND scope_assistant."archivedAt" IS NULL
-              )
-            )
-            OR (
-              scope."scopeType" = 'CHAT'::"MemoryScopeType"
-              AND scope."chatId" = ${input.eligibility.chatId}
-              AND scope."targetIdSnapshot" = scope."chatId"
-              AND scope."folderId" IS NULL
-              AND scope."assistantId" IS NULL
-              AND EXISTS (
-                SELECT 1
-                FROM "Chat" AS scope_chat
-                WHERE scope_chat."userId" = fact."userId"
-                  AND scope_chat."id" = scope."chatId"
-                  AND scope_chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
-              )
-            )
-          )
+          AND ${memoryPersonalFactEvidencePredicate(
+            Prisma.sql`entry."userId"`
+          )}
+          AND ${memoryCanonicalGlobalScopePredicate()}
       )`
     ]
   };
@@ -504,18 +479,22 @@ function chunkEligibilityPredicates(
   const allowed = valuesSql(input.eligibility.allowedHistorySafety);
   const historyPredicates = optionalHistoryPredicates(input);
   return [
+    Prisma.sql`history_settings."useMemoryFacts" = TRUE`,
     Prisma.sql`history_settings."referenceChatHistory" = TRUE`,
     Prisma.sql`chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"`,
+    Prisma.sql`chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}`,
+    Prisma.sql`chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}`,
     Prisma.sql`chunk."safetyClass"::text IN (${allowed})`,
     Prisma.sql`chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"`,
     Prisma.sql`source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"`,
+    Prisma.sql`source_chat."projectId" IS NULL`,
     Prisma.sql`source_chat."memoryBranchGeneration" = chunk."branchGeneration"`,
-    Prisma.sql`source_chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"`,
     Prisma.sql`checkpoint."branchGeneration" = chunk."branchGeneration"`,
     Prisma.sql`checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"`,
-    Prisma.sql`checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"`,
-    Prisma.sql`checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"`,
     Prisma.sql`checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"`,
+    Prisma.sql`checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}`,
+    memoryHistoryChunkSourceAuthorityPredicate(),
+    chunkConversationFeedbackPredicate(input),
     Prisma.sql`NOT EXISTS (
       SELECT 1 FROM "MemorySuppression" AS suppression
       LEFT JOIN "MemoryRecallChunkMessage" AS chunk_message
@@ -548,6 +527,7 @@ function chunkEligibilityPredicates(
           'HISTORY_INDEX'::"MemorySourceBarrierKind",
           'ALL_REUSABLE'::"MemorySourceBarrierKind"
         )
+        AND barrier."explicitOverrideAllowed" = FALSE
         AND (
           chunk."createdAt" <= barrier."createdAt"
           OR EXISTS (
@@ -739,6 +719,7 @@ async function resolveActiveProfileWith(
   const rows = await store.$queryRaw<ProfileRow[]>(Prisma.sql`
     SELECT
       owner."status"::text AS "ownerStatus",
+      settings."useMemoryFacts",
       settings."activeIndexGenerationId",
       settings."embeddingProviderModelId" AS "selectedEmbeddingProviderModelId",
       generation."id" AS "generationId",
@@ -759,7 +740,12 @@ async function resolveActiveProfileWith(
     LIMIT 1
   `);
   const row = rows[0];
-  if (!row || row.ownerStatus !== "active" || !row.activeIndexGenerationId) {
+  if (
+    !row ||
+    row.ownerStatus !== "active" ||
+    row.useMemoryFacts !== true ||
+    !row.activeIndexGenerationId
+  ) {
     return { reason: "memory_vector_unavailable", status: "DEGRADED" };
   }
   if (row.indexMode === "LEXICAL_ONLY") {
@@ -786,6 +772,7 @@ async function resolveActiveProfileWith(
       connectionId: row.embeddingConnectionId,
       dimension: row.embeddingDimension,
       generationId: row.generationId,
+      minimumSimilarity: MEMORY_VECTOR_MINIMUM_SIMILARITY[row.embeddingDimension],
       providerModelId: row.embeddingProviderModelId,
       retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
       vectorSpaceFingerprint: row.vectorSpaceFingerprint

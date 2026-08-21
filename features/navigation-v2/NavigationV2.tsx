@@ -20,6 +20,7 @@ import type {
   ChatNavigationFolderWire,
   ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
+import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import {
   useEffect,
   useLayoutEffect,
@@ -290,15 +291,17 @@ function ChatRow({
           >
             Favorite
           </UiV2MenuItem>
-          <UiV2MenuItem
-            selected={memoryUsed}
-            onClick={() => {
-              closeMenu();
-              onMemoryMode?.(chat, memoryUsed ? "EXCLUDED" : "NORMAL");
-            }}
-          >
-            Use memory
-          </UiV2MenuItem>
+          {onMemoryMode ? (
+            <UiV2MenuItem
+              onClick={() => {
+                closeMenu();
+                triggerRef.current?.focus();
+                onMemoryMode(chat, memoryUsed ? "EXCLUDED" : "NORMAL");
+              }}
+            >
+              {resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action")}
+            </UiV2MenuItem>
+          ) : null}
           <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Share</UiV2MenuItem>
           <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Export</UiV2MenuItem>
           <UiV2MenuItem
@@ -551,17 +554,19 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             <UiV2Icon name="plus" />
             New chat
           </button>
-          <button
-            className="v2-new-chat-menu-trigger v2-focusable"
-            type="button"
-            aria-expanded={newChatMenuOpen}
-            aria-label="New chat mode"
-            ref={newChatTriggerRef}
-            onClick={() => setNewChatMenuOpen((open) => !open)}
-          >
-            <UiV2Icon name="chevron-down" />
-          </button>
-          {newChatMenuOpen ? (
+          {!props.projectContextActive ? (
+            <button
+              className="v2-new-chat-menu-trigger v2-focusable"
+              type="button"
+              aria-expanded={newChatMenuOpen}
+              aria-label="New chat mode"
+              ref={newChatTriggerRef}
+              onClick={() => setNewChatMenuOpen((open) => !open)}
+            >
+              <UiV2Icon name="chevron-down" />
+            </button>
+          ) : null}
+          {!props.projectContextActive && newChatMenuOpen ? (
             <UiV2MenuSurface
               className="v2-new-chat-menu"
               label="New chat mode"

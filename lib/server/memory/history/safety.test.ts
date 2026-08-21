@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  MEMORY_HISTORY_REDACTION_MARKER,
-  projectMemoryHistorySafeText
-} from "./safety";
+import { projectMemoryHistorySafeText } from "./safety";
 
 describe("Memory history safety projection", () => {
   it("excludes recognizable credential formats without echoing them", () => {
@@ -38,24 +35,21 @@ describe("Memory history safety projection", () => {
     }
   });
 
-  it("redacts contact details while preserving Russian negation and dates", () => {
+  it("leaves semantic contact classification to the System Model", () => {
+    const text =
+      "Я не согласен 10.08.2026. Пишите me@example.com или +7 (999) 123-45-67.";
     const projection = projectMemoryHistorySafeText(
-      "Я не согласен 10.08.2026. Пишите me@example.com или +7 (999) 123-45-67."
+      text
     );
 
     expect(projection).toMatchObject({
       eligible: true,
-      redactionReasonCodes: ["CONTACT_EMAIL_REDACTED", "CONTACT_PHONE_REDACTED"],
-      redactionState: "REDACTED",
-      safetyClass: "SENSITIVE"
+      providerSafeText: text,
+      redactionReasonCodes: [],
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      safeText: text
     });
-    if (!projection.eligible) throw new Error("expected eligible redacted projection");
-    expect(projection.safeText).toContain("Я не согласен 10.08.2026.");
-    expect(projection.safeText.match(new RegExp(MEMORY_HISTORY_REDACTION_MARKER, "gu")))
-      .toHaveLength(2);
-    expect(projection.safeText).not.toContain("me@example.com");
-    expect(projection.safeText).not.toContain("123-45-67");
-    expect(projection.providerSafeText).toBe(projection.safeText);
   });
 
   it("normalizes line endings deterministically and rejects unsafe controls", () => {

@@ -18,10 +18,16 @@ export type MemorySettingsCapabilities = MemorySettingsResponse["capabilities"];
 
 export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
   Object.freeze({
+    administratorSetupRequired: false,
     automaticLearning: true,
+    automaticLearningAvailable: true,
     explicitMemory: true,
     historyRecall: true,
+    managementAvailable: true,
+    naturalLanguageActionsAvailable: true,
+    pastChatIndexingAvailable: true,
     permanentChatDeletion: false,
+    retrievalAvailable: true,
     temporaryChats: true
   });
 
@@ -193,8 +199,9 @@ export function createMemorySettingsService(input: Readonly<{
   repository: MemorySettingsRepository;
   resolveCapabilities?: (
     settings: MemorySettingsPersistenceSnapshot,
-    policy: ResolvedMemoryUtilityPolicy
-  ) => MemorySettingsCapabilities;
+    policy: ResolvedMemoryUtilityPolicy,
+    consentMode: MemoryEgressConsentMode
+  ) => MemorySettingsCapabilities | Promise<MemorySettingsCapabilities>;
   resolveCurrentUtilityPolicy(
     userId: string,
     settings: MemorySettingsPersistenceSnapshot
@@ -206,7 +213,9 @@ export function createMemorySettingsService(input: Readonly<{
   const egressConsentMode = input.egressConsentMode ?? resolveMemoryEgressConsentMode();
   const readHistoryIndexing = input.readHistoryIndexing ?? (async (_userId, settings) => ({
     completedChats: 0,
-    state: settings.referenceChatHistory ? "READY" as const : "DISABLED" as const,
+    state: settings.useMemoryFacts && settings.referenceChatHistory
+      ? "READY" as const
+      : "DISABLED" as const,
     totalChats: 0
   }));
 
@@ -227,7 +236,7 @@ export function createMemorySettingsService(input: Readonly<{
       readHistoryIndexing(userId, settings)
     ]);
     const capabilities = input.resolveCapabilities
-      ? input.resolveCapabilities(settings, policy)
+      ? await input.resolveCapabilities(settings, policy, egressConsentMode)
       : staticCapabilities;
     return responseProjection(
       settings,
@@ -254,7 +263,14 @@ export function createMemorySettingsService(input: Readonly<{
 
     async patch(userId, patch) {
       const settings = await persist(() => input.repository.patch(userId, patch));
-      if (patch.referenceChatHistory === true) kick();
+      // Enabling the subordinate history toggle is allowed to wake ordinary
+      // forward work only while the master is already on.  A combined master
+      // resume patch must not trigger a retroactive backfill.
+      if (
+        patch.referenceChatHistory === true &&
+        patch.useMemoryFacts !== true &&
+        settings.useMemoryFacts
+      ) kick();
       return project(userId, settings);
     }
   });

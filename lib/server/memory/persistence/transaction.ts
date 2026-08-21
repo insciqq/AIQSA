@@ -50,8 +50,37 @@ export type MemoryActiveIndex = Readonly<{
 }>;
 
 export type MemoryTransactionOptions = Readonly<{
+  clock?: () => number;
+  deadlineAtMs?: number;
   requireActiveOwner?: boolean;
 }>;
+
+function remainingTransactionDeadlineMs(
+  options: MemoryTransactionOptions
+): number | null {
+  if (options.deadlineAtMs === undefined) return null;
+  if (!Number.isFinite(options.deadlineAtMs)) {
+    return memoryPersistenceFailure("memory_admission_deadline_exceeded");
+  }
+  const remaining = Math.floor(options.deadlineAtMs - (options.clock ?? Date.now)());
+  if (remaining <= 0) {
+    return memoryPersistenceFailure("memory_admission_deadline_exceeded");
+  }
+  return remaining;
+}
+
+async function applyTransactionDeadline(
+  tx: MemoryTransaction,
+  remainingMs: number | null
+): Promise<void> {
+  if (remainingMs === null) return;
+  const timeout = `${Math.max(1, remainingMs)}ms`;
+  await tx.$queryRaw(Prisma.sql`
+    SELECT
+      set_config('lock_timeout', ${timeout}, true),
+      set_config('statement_timeout', ${timeout}, true)
+  `);
+}
 
 function serializationConflict(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
@@ -61,6 +90,16 @@ function serializationConflict(error: unknown): boolean {
     error.meta !== null &&
     "code" in error.meta &&
     error.meta.code === "40001";
+}
+
+function transactionDeadlineExceeded(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code === "P2028") return true;
+  return error.code === "P2010" &&
+    typeof error.meta === "object" &&
+    error.meta !== null &&
+    "code" in error.meta &&
+    (error.meta.code === "57014" || error.meta.code === "55P03");
 }
 
 export async function lockMemorySettings(
@@ -105,16 +144,30 @@ export async function withLockedMemoryTransaction<T>(
   options: MemoryTransactionOptions = {}
 ): Promise<T> {
   for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
+    const remainingMs = remainingTransactionDeadlineMs(options);
     try {
       return await client.$transaction(async (tx) => {
+        await applyTransactionDeadline(tx, remainingMs);
         const settings = await lockMemorySettings(
           tx,
           userId,
           options.requireActiveOwner ?? true
         );
         return operation(tx, settings);
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        ...(remainingMs === null ? {} : {
+          maxWait: remainingMs,
+          timeout: remainingMs
+        })
+      });
     } catch (error) {
+      if (options.deadlineAtMs !== undefined && (
+        transactionDeadlineExceeded(error) ||
+        (options.clock ?? Date.now)() >= options.deadlineAtMs
+      )) {
+        return memoryPersistenceFailure("memory_admission_deadline_exceeded");
+      }
       if (attempt < SERIALIZABLE_ATTEMPTS - 1 && serializationConflict(error)) continue;
       throw error;
     }

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
-import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import {
   ChatLifecycleApiError,
   loadChatMemoryState,
@@ -14,31 +13,42 @@ afterEach(() => {
 });
 
 describe("chat lifecycle client", () => {
-  it("sends Resume disclosure and both exact stale-write fences", async () => {
+  it("forwards caller-confirmed Resume disclosure without inventing an attestation", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({
-      chatId: "chat-1",
-      memoryGeneration: 9,
-      memoryRevision: 13,
+      allowedActions: ["EXCLUDE"],
+      archived: false,
       mode: "NORMAL",
-      sourceRevision: 5
+      temporaryRetentionDeadline: null
     }));
     vi.stubGlobal("fetch", fetchMock);
 
     await patchChatMemoryMode({
       chatId: "chat-1",
-      expectedChatRevision: 4,
       mode: "NORMAL",
-      settings: memorySettingsFixture({ settings: { memoryRevision: 12 } })
+      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
     });
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("/api/me/chats/chat-1/memory-mode");
     expect(JSON.parse(String(init?.body))).toEqual({
-      expectedChatRevision: 4,
-      expectedMemoryRevision: 12,
       mode: "NORMAL",
       resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
     });
+  });
+
+  it("keeps Exclude free of Resume disclosure fields", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({
+      allowedActions: ["RESUME"],
+      archived: false,
+      mode: "EXCLUDED",
+      temporaryRetentionDeadline: null
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await patchChatMemoryMode({ chatId: "chat-1", mode: "EXCLUDED" });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toEqual({ mode: "EXCLUDED" });
   });
 
   it("fails closed on malformed Temporary state and resolves archived sources explicitly", async () => {
@@ -46,15 +56,10 @@ describe("chat lifecycle client", () => {
       const path = String(input);
       if (path.endsWith("/memory-mode")) {
         return Response.json({
-          chat: {
-            archived: false,
-            chatId: "chat-temp",
-            mode: "TEMPORARY",
-            sourceRevision: 1,
-            temporaryRetentionDeadline: null,
-            temporaryRetentionPolicyVersion: "temporary-24h-v1",
-            updatedAt: "2026-08-10T08:00:00.000Z"
-          }
+          allowedActions: [],
+          archived: false,
+          mode: "TEMPORARY",
+          temporaryRetentionDeadline: null
         });
       }
       return Response.json({
@@ -78,5 +83,22 @@ describe("chat lifecycle client", () => {
     await expect(resolveChatSource("chat-archived")).resolves.toMatchObject({
       source: { location: "ARCHIVED_PREVIEW", memoryMode: "EXCLUDED" }
     });
+  });
+
+  it("rejects Memory-mode responses enriched with server revisions", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      allowedActions: ["EXCLUDE"],
+      archived: false,
+      mode: "NORMAL",
+      sourceRevision: 4,
+      temporaryRetentionDeadline: null
+    })));
+
+    await expect(loadChatMemoryState("chat-1")).rejects.toEqual(
+      expect.objectContaining<Partial<ChatLifecycleApiError>>({
+        code: "chat_lifecycle_response_invalid",
+        status: 502
+      })
+    );
   });
 });

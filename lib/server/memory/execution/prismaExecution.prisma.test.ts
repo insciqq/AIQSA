@@ -408,16 +408,30 @@ describe("Prisma Memory execution", () => {
           }
         }
       });
+      const firstBinding = await prisma.memoryExecutionBinding.findUniqueOrThrow({
+        where: { id: first.id }
+      });
       expect(events).toHaveLength(4);
       expect(events.find(({ memoryExecutionBindingId }) =>
         memoryExecutionBindingId === first.id)).toMatchObject({
         cachedInputTokens: null,
+        createdAt: expect.any(Date),
         estimatedCostMicros: null,
         inputTokens: fakeResult.usage.inputTokens,
+        memoryExecutionBindingId: first.id,
+        modelId: embeddingConfiguration.upstreamModelId,
         modelRunId: null,
         outputTokens: null,
+        provider: "openai_compatible",
+        providerModelId: fixture.modelId,
         reasoningTokens: null,
         totalTokens: fakeResult.usage.totalTokens
+      });
+      expect(firstBinding).toMatchObject({
+        completedAt: INITIAL_NOW,
+        logicalRole: "MEMORY_DOCUMENT_EMBED",
+        startedAt: INITIAL_NOW,
+        userId: fixture.userId
       });
       expect(events.find(({ memoryExecutionBindingId }) =>
         memoryExecutionBindingId === unknown.id)).toMatchObject({
@@ -443,6 +457,158 @@ describe("Prisma Memory execution", () => {
       )).toBe(true);
       expect(JSON.stringify(detached)).not.toContain("test-only-envelope");
       expect(JSON.stringify(detached)).not.toContain(privateInputCanary);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("rejects linked result use and rebound dispatch after target drift", async () => {
+    const fixture = await createEmbeddingFixture();
+    try {
+      const initialPolicy = await prisma.$transaction(async (tx) => {
+        const settings = await tx.userMemorySettings.findUniqueOrThrow({
+          where: { userId: fixture.userId }
+        });
+        return resolveCurrentMemoryUtilityPolicy(tx, fixture.userId, settings);
+      });
+      const initialTarget = initialPolicy.targets.get("MEMORY_DOCUMENT_EMBED");
+      expect(initialTarget).toBeDefined();
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: INITIAL_NOW,
+          acceptedUtilityEgressFingerprint: initialPolicy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      const service = createPrismaMemoryExecutionService({
+        egressConsentMode: "PER_USER",
+        now: () => INITIAL_NOW
+      }, prisma);
+      const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
+        idempotencyFingerprint: `memory-linked-execution-job-${randomUUID()}`,
+        kind: "EMBED_ITEMS",
+        pipelineVersion: VERSIONS.pipelineVersion
+      });
+      const source = await service.admission.bind(fixture.userId, {
+        inputHash: "a".repeat(64),
+        ordinal: 0,
+        owner: { memoryJobId: job.id, type: "JOB" },
+        role: "MEMORY_DOCUMENT_EMBED",
+        versions: VERSIONS
+      });
+      await service.admission.start(fixture.userId, source.id);
+      await service.lifecycle.settle(fixture.userId, source.id, {
+        acceptedOutputHash: "b".repeat(64),
+        errorCode: null,
+        providerResponseId: "memory-linked-source-response",
+        state: "SUCCEEDED",
+        usage: completeUsage(3)
+      });
+
+      const selectedJob = await createPrismaMemoryJobRepository(prisma).enqueue(
+        fixture.userId,
+        {
+          idempotencyFingerprint: `memory-linked-result-job-${randomUUID()}`,
+          kind: "EMBED_ITEMS",
+          pipelineVersion: VERSIONS.pipelineVersion
+        }
+      );
+      const selectedSource = await service.admission.bind(fixture.userId, {
+        inputHash: "d".repeat(64),
+        ordinal: 0,
+        owner: { memoryJobId: selectedJob.id, type: "JOB" },
+        role: "MEMORY_DOCUMENT_EMBED",
+        versions: VERSIONS
+      });
+      await service.admission.start(fixture.userId, selectedSource.id);
+      await service.lifecycle.settle(fixture.userId, selectedSource.id, {
+        acceptedOutputHash: "e".repeat(64),
+        errorCode: null,
+        providerResponseId: "memory-linked-control-response",
+        state: "SUCCEEDED",
+        usage: completeUsage(4)
+      });
+      const selected = await service.admission.bind(fixture.userId, {
+        inputHash: "f".repeat(64),
+        ordinal: 1,
+        owner: { memoryJobId: selectedJob.id, type: "JOB" },
+        role: "MEMORY_DOCUMENT_EMBED",
+        versions: VERSIONS
+      });
+      await service.admission.start(fixture.userId, selected.id, {
+        sourceBindingId: selectedSource.id
+      });
+      await service.lifecycle.settle(fixture.userId, selected.id, {
+        acceptedOutputHash: "0".repeat(64),
+        errorCode: null,
+        providerResponseId: "memory-linked-selector-response",
+        state: "SUCCEEDED",
+        usage: completeUsage(5)
+      });
+
+      const replacementVersionId = `memory-linked-version-2-${randomUUID()}`;
+      await prisma.providerCredentialVersion.create({
+        data: {
+          activatedAt: INITIAL_NOW,
+          credentialId: fixture.credentialId,
+          id: replacementVersionId,
+          secretEnvelope: "test-only-linked-replacement-envelope",
+          testedAt: INITIAL_NOW,
+          testEvidence: { authenticationMode: "bearer" },
+          version: 2
+        }
+      });
+      await prisma.providerCredential.update({
+        data: { activeVersionId: replacementVersionId },
+        where: { id: fixture.credentialId }
+      });
+      await prisma.providerModelCredentialCheck.create({
+        data: {
+          checkedAt: INITIAL_NOW,
+          connectionId: fixture.connectionId,
+          connectionVersion: 1,
+          credentialId: fixture.credentialId,
+          credentialVersionId: replacementVersionId,
+          evidence: { detail: "ok" },
+          modelVersion: 1,
+          providerModelId: fixture.modelId,
+          status: "available"
+        }
+      });
+      const changedPolicy = await prisma.$transaction(async (tx) => {
+        const settings = await tx.userMemorySettings.findUniqueOrThrow({
+          where: { userId: fixture.userId }
+        });
+        return resolveCurrentMemoryUtilityPolicy(tx, fixture.userId, settings);
+      });
+      const changedTarget = changedPolicy.targets.get("MEMORY_DOCUMENT_EMBED");
+      expect(changedTarget?.executionTargetFingerprint)
+        .not.toBe(initialTarget?.executionTargetFingerprint);
+
+      await expect(service.lifecycle.assertResultAuthorized(fixture.userId, {
+        bindingId: source.id
+      })).rejects.toMatchObject({ code: "memory_execution_policy_drift" });
+      await expect(service.lifecycle.assertLinkedResultAuthorized(fixture.userId, {
+        acceptedOutputHash: "0".repeat(64),
+        bindingId: selected.id,
+        sourceBindingId: selectedSource.id
+      })).rejects.toMatchObject({ code: "memory_execution_policy_drift" });
+
+      const rebound = await service.admission.bind(fixture.userId, {
+        inputHash: "c".repeat(64),
+        ordinal: 1,
+        owner: { memoryJobId: job.id, type: "JOB" },
+        role: "MEMORY_DOCUMENT_EMBED",
+        versions: VERSIONS
+      });
+      await expect(service.admission.start(fixture.userId, rebound.id, {
+        sourceBindingId: source.id
+      })).rejects.toMatchObject({ code: "memory_execution_policy_drift" });
+      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({
+        select: { startedAt: true, state: true },
+        where: { id: rebound.id }
+      })).resolves.toEqual({ startedAt: null, state: "PENDING" });
     } finally {
       await fixture.cleanup();
     }

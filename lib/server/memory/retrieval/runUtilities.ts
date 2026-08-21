@@ -32,17 +32,15 @@ import {
   createAcceptedMemoryRunUtilityProvider,
   memoryRunUtilityProviderEvidence,
   MemoryRunUtilityProviderCallError,
-  MEMORY_QUERY_EXPANSION_TOOL_NAME,
   MEMORY_RERANK_TOOL_NAME,
   type MemoryRunUtilityProvider
 } from "./runUtilityRuntime";
 
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
-export const MEMORY_QUERY_EXPANSION_PIPELINE_VERSION =
-  "memory-query-expansion-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v2";
+  "memory-multilingual-relevance-v7";
+export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
@@ -52,30 +50,20 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
   schemaVersion: "memory-query-embedding-result-v1"
 });
 
-const queryExpansionVersions: MemoryExecutionVersions = Object.freeze({
-  pipelineVersion: MEMORY_QUERY_EXPANSION_PIPELINE_VERSION,
-  policyVersion: "memory-query-expansion-policy-v1",
-  promptVersion: "memory-query-expansion-prompt-v1",
-  retrievalConfigFingerprint: memoryExecutionSha256({
-    maxTerms: 8,
-    termMaxCharacters: 80,
-    version: 1
-  }),
-  schemaVersion: "memory-query-expansion-result-v1"
-});
-
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v2",
-  promptVersion: "memory-relevance-prompt-v2",
+  policyVersion: "memory-relevance-policy-v7",
+  promptVersion: "memory-relevance-prompt-v5",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
-    maxCandidates: 25,
+    maxCandidates: 30,
+    maxAttempts: MEMORY_RERANK_MAX_ATTEMPTS,
+    maxOutputTokens: 4_096,
     maxTotalCharacters: 32_000,
-    orderedRelevantSubset: true,
-    version: 2
+    completePerCandidateDecisions: true,
+    version: 7
   }),
-  schemaVersion: "memory-relevance-result-v2"
+  schemaVersion: "memory-relevance-result-v4"
 });
 
 export type MemoryRunUtilityUnavailable = Readonly<{
@@ -93,21 +81,26 @@ export type MemoryRunQueryEmbeddingResult =
       vector: readonly number[];
     }>;
 
-export type MemoryRunQueryExpansionResult =
-  | MemoryRunUtilityUnavailable
-  | Readonly<{
-      bindingId: string;
-      status: "READY";
-      terms: readonly string[];
-    }>;
-
 export type MemoryRunRerankResult =
   | MemoryRunUtilityUnavailable
   | Readonly<{
       bindingId: string;
-      relevantHandles: readonly string[];
+      decisions: readonly MemoryRunRerankDecision[];
       status: "READY";
     }>;
+
+export type MemoryRunRerankDecision = Readonly<{
+  applicable: boolean;
+  current: boolean;
+  handle: string;
+  reasonCode:
+    | "DIRECT_RELEVANCE"
+    | "SUPPORTING_CONTEXT"
+    | "RESPONSE_PREFERENCE"
+    | "OUTDATED"
+    | "NOT_RELEVANT";
+  relevanceScore: number;
+}>;
 
 type UtilityBaseInput = Readonly<{
   signal: AbortSignal;
@@ -117,21 +110,41 @@ type UtilityBaseInput = Readonly<{
   | Readonly<{ attemptId?: never; owner: MemoryExecutionOwner }>
 );
 
+type QueryEmbeddingBaseInput = Readonly<{
+  signal: AbortSignal;
+  userId: string;
+}> & (
+  | Readonly<{
+      attemptId: string;
+      jobAttemptCount?: never;
+      owner?: never;
+    }>
+  | Readonly<{
+      attemptId?: never;
+      jobAttemptCount: 1 | 2;
+      owner: Extract<MemoryExecutionOwner, { type: "JOB" }>;
+    }>
+  | Readonly<{
+      attemptId?: never;
+      jobAttemptCount?: never;
+      owner: Exclude<MemoryExecutionOwner, { type: "JOB" }>;
+    }>
+);
+
 export type MemoryRunUtilityService = Readonly<{
-  embedQuery(input: UtilityBaseInput & Readonly<{
+  embedQuery(input: QueryEmbeddingBaseInput & Readonly<{
     profile: MemoryVectorProfile;
+    purpose?: "ACTION_TARGET" | "RETRIEVAL";
     query: string;
   }>): Promise<MemoryRunQueryEmbeddingResult>;
-  expandQuery(input: UtilityBaseInput & Readonly<{
-    intent: string;
-    language: string;
-    query: string;
-  }>): Promise<MemoryRunQueryExpansionResult>;
   rerank(input: UtilityBaseInput & Readonly<{
     candidates: readonly Readonly<{
+      authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
+      current: boolean;
       handle: string;
       occurredFrom: string | null;
       occurredTo: string | null;
+      sensitivityClass: "NORMAL";
       sourceKind: "EVENT" | "FACT" | "HISTORY";
       text: string;
     }>[];
@@ -290,50 +303,51 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
     actual.every((key, index) => key === expected[index]);
 }
 
-function decodeExpansion(
-  calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"]
-): readonly string[] | null {
-  const call = calls?.[0];
-  if (
-    calls?.length !== 1 ||
-    call?.name !== MEMORY_QUERY_EXPANSION_TOOL_NAME ||
-    !isRecord(call.arguments) ||
-    !exactKeys(call.arguments, ["terms"]) ||
-    !Array.isArray(call.arguments.terms) ||
-    call.arguments.terms.length > 8
-  ) return null;
-  const terms = call.arguments.terms;
-  if (terms.some((term) =>
-    typeof term !== "string" || term.trim() !== term || !term || term.length > 80 ||
-    /[\u0000-\u001f\u007f]/u.test(term)
-  )) return null;
-  const values = terms as string[];
-  return new Set(values).size === values.length ? values : null;
-}
-
 function decodeRerank(
   calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"],
   expectedHandles: readonly string[]
-): readonly string[] | null {
+): readonly MemoryRunRerankDecision[] | null {
   const call = calls?.[0];
   if (
     calls?.length !== 1 ||
     call?.name !== MEMORY_RERANK_TOOL_NAME ||
     !isRecord(call.arguments) ||
-    !exactKeys(call.arguments, ["relevant_handles"]) ||
-    !Array.isArray(call.arguments.relevant_handles)
+    !exactKeys(call.arguments, ["decisions"]) ||
+    !Array.isArray(call.arguments.decisions)
   ) return null;
-  const ordered = call.arguments.relevant_handles;
-  if (
-    ordered.length > expectedHandles.length ||
-    ordered.some((handle) => typeof handle !== "string")
-  ) return null;
-  const values = ordered as string[];
-  const expected = new Set(expectedHandles);
-  return new Set(values).size === values.length &&
-    values.every((handle) => expected.has(handle))
-    ? values
-    : null;
+  if (call.arguments.decisions.length !== expectedHandles.length) return null;
+  const reasonCodes = new Set([
+    "DIRECT_RELEVANCE", "SUPPORTING_CONTEXT", "RESPONSE_PREFERENCE",
+    "OUTDATED", "NOT_RELEVANT"
+  ]);
+  const decisions: MemoryRunRerankDecision[] = [];
+  for (let index = 0; index < call.arguments.decisions.length; index += 1) {
+    const value = call.arguments.decisions[index];
+    if (!isRecord(value) || !exactKeys(value, [
+      "applicable", "current", "handle", "reason_code", "relevance_score"
+    ]) || value.handle !== expectedHandles[index] ||
+      typeof value.applicable !== "boolean" || typeof value.current !== "boolean" ||
+      typeof value.relevance_score !== "number" ||
+      !Number.isFinite(value.relevance_score) || value.relevance_score < 0 ||
+      value.relevance_score > 1 || typeof value.reason_code !== "string" ||
+      !reasonCodes.has(value.reason_code)) return null;
+    const positive = value.reason_code === "DIRECT_RELEVANCE" ||
+      value.reason_code === "SUPPORTING_CONTEXT" ||
+      value.reason_code === "RESPONSE_PREFERENCE";
+    if (
+      (positive && (!value.applicable || !value.current)) ||
+      (value.reason_code === "OUTDATED" && (value.applicable || value.current)) ||
+      (value.reason_code === "NOT_RELEVANT" && value.applicable)
+    ) return null;
+    decisions.push({
+      applicable: value.applicable,
+      current: value.current,
+      handle: value.handle,
+      reasonCode: value.reason_code as MemoryRunRerankDecision["reasonCode"],
+      relevanceScore: value.relevance_score
+    });
+  }
+  return decisions;
 }
 
 async function bindAndStart(
@@ -390,20 +404,26 @@ async function bindAndStart(
   }
 }
 
-async function runTextUtility(
+async function runTextUtility<T>(
   deps: MemoryRunUtilityDependencies,
   input: UtilityBaseInput,
   request: Parameters<MemoryRunUtilityProvider["run"]>[1],
-  role: "MEMORY_QUERY_EXPAND" | "MEMORY_RERANK",
+  role: "MEMORY_RERANK",
   ordinal: number,
   versions: MemoryExecutionVersions,
   inputHash: string,
+  expectedSnapshotHash: string | null,
   decode: (
     calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"]
-  ) => readonly string[] | null
+  ) => T | null
 ): Promise<
-  | MemoryRunUtilityUnavailable
-  | Readonly<{ bindingId: string; output: readonly string[]; status: "READY" }>
+  | Readonly<MemoryRunUtilityUnavailable & { snapshotHash?: string }>
+  | Readonly<{
+      bindingId: string;
+      output: T;
+      snapshotHash: string;
+      status: "READY";
+    }>
 > {
   const started = await bindAndStart(
     deps,
@@ -414,15 +434,25 @@ async function runTextUtility(
     inputHash
   );
   if (started.status !== "STARTED") return started;
-  if (started.snapshot.logicalRole !== role) {
+  const snapshotHash = memoryExecutionSha256(started.snapshot);
+  const snapshotChanged = expectedSnapshotHash !== null &&
+    snapshotHash !== expectedSnapshotHash;
+  if (
+    started.snapshot.logicalRole !== role ||
+    !started.snapshot.requiresStrictStructuredOutput ||
+    snapshotChanged
+  ) {
+    const reason = snapshotChanged
+      ? "memory_run_utility_binding_changed"
+      : "memory_run_utility_binding_invalid";
     await settleQuietly(deps, input.userId, started.bindingId, {
       acceptedOutputHash: null,
-      errorCode: "memory_run_utility_binding_invalid",
+      errorCode: reason,
       providerResponseId: null,
       state: "FAILED",
       usage: unavailableUsage
     });
-    return unavailable("memory_run_utility_binding_invalid", started.bindingId);
+    return { ...unavailable(reason, started.bindingId), snapshotHash };
   }
   let result: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>;
   try {
@@ -448,14 +478,24 @@ async function runTextUtility(
   }
   const output = decode(result.toolCalls);
   if (!output) {
-    await settleQuietly(deps, input.userId, started.bindingId, {
-      acceptedOutputHash: null,
-      errorCode: "memory_run_utility_output_invalid",
-      providerResponseId: result.providerResponseId,
-      state: "FAILED",
-      usage: providerUsage(result.usage)
-    });
-    return unavailable("memory_run_utility_output_invalid", started.bindingId);
+    try {
+      await deps.execution.lifecycle.settle(input.userId, started.bindingId, {
+        acceptedOutputHash: null,
+        errorCode: "memory_run_utility_output_invalid",
+        providerResponseId: result.providerResponseId,
+        state: "FAILED",
+        usage: providerUsage(result.usage)
+      });
+    } catch {
+      return {
+        ...unavailable("memory_run_utility_settle_failed", started.bindingId),
+        snapshotHash
+      };
+    }
+    return {
+      ...unavailable("memory_run_utility_output_invalid", started.bindingId),
+      snapshotHash
+    };
   }
   const outputHash = memoryExecutionSha256({ inputHash, output, role, version: 1 });
   await deps.execution.lifecycle.settle(input.userId, started.bindingId, {
@@ -470,13 +510,30 @@ async function runTextUtility(
     input.userId,
     started.bindingId,
     outputHash
-  )) return unavailable("memory_execution_policy_drift", started.bindingId);
-  return { bindingId: started.bindingId, output, status: "READY" };
+  )) return {
+    ...unavailable("memory_execution_policy_drift", started.bindingId),
+    snapshotHash
+  };
+  return { bindingId: started.bindingId, output, snapshotHash, status: "READY" };
 }
 
 function validSafeQuery(query: string): boolean {
   return query.length > 0 && query.length <= 2_000 && !query.includes("\u0000") &&
     !memoryExplicitStatementContainsSecret(query);
+}
+
+function queryEmbeddingOrdinal(
+  input: QueryEmbeddingBaseInput,
+  purpose: "ACTION_TARGET" | "RETRIEVAL"
+): number | null {
+  if (input.owner?.type === "JOB") {
+    return purpose === "RETRIEVAL" &&
+      (input.jobAttemptCount === 1 || input.jobAttemptCount === 2)
+      ? input.jobAttemptCount
+      : null;
+  }
+  if ("jobAttemptCount" in input && input.jobAttemptCount !== undefined) return null;
+  return purpose === "ACTION_TARGET" ? 3 : 1;
 }
 
 export function createMemoryRunUtilityService(
@@ -485,17 +542,21 @@ export function createMemoryRunUtilityService(
   return Object.freeze({
     async embedQuery(input) {
       if (!validSafeQuery(input.query)) return unavailable("memory_utility_input_blocked");
+      const purpose = input.purpose ?? "RETRIEVAL";
+      const ordinal = queryEmbeddingOrdinal(input, purpose);
+      if (ordinal === null) return unavailable("memory_utility_input_blocked");
       const inputHash = memoryExecutionSha256({
         domain: "aiqsa.memory.query-embedding-input",
         profile: input.profile,
+        ...(purpose === "ACTION_TARGET" ? { purpose } : {}),
         queryHash: memorySha256(input.query),
-        version: 1
+        version: purpose === "ACTION_TARGET" ? 2 : 1
       });
       const started = await bindAndStart(
         deps,
         input,
         "MEMORY_QUERY_EMBED",
-        1,
+        ordinal,
         MEMORY_QUERY_EMBEDDING_VERSIONS,
         inputHash
       );
@@ -587,35 +648,6 @@ export function createMemoryRunUtilityService(
       };
     },
 
-    async expandQuery(input) {
-      if (!validSafeQuery(input.query)) return unavailable("memory_utility_input_blocked");
-      const inputHash = memoryExecutionSha256({
-        domain: "aiqsa.memory.query-expansion-input",
-        intent: input.intent,
-        language: input.language,
-        queryHash: memorySha256(input.query),
-        version: 1
-      });
-      const result = await runTextUtility(
-        deps,
-        input,
-        {
-          intent: input.intent,
-          language: input.language,
-          query: input.query,
-          role: "MEMORY_QUERY_EXPAND"
-        },
-        "MEMORY_QUERY_EXPAND",
-        0,
-        queryExpansionVersions,
-        inputHash,
-        decodeExpansion
-      );
-      return result.status === "READY"
-        ? { bindingId: result.bindingId, status: "READY", terms: result.output }
-        : result;
-    },
-
     async rerank(input) {
       const totalCharacters = input.candidates.reduce(
         (total, candidate) => total + candidate.text.length,
@@ -625,7 +657,7 @@ export function createMemoryRunUtilityService(
       if (
         !validSafeQuery(input.query) ||
         input.candidates.length < 1 ||
-        input.candidates.length > 25 ||
+        input.candidates.length > 30 ||
         totalCharacters > 32_000 ||
         new Set(handles).size !== handles.length ||
         input.candidates.some((candidate, index) =>
@@ -638,17 +670,20 @@ export function createMemoryRunUtilityService(
       ) return unavailable("memory_utility_input_blocked");
       const inputHash = memoryExecutionSha256({
         candidates: input.candidates.map((candidate) => ({
+          authorityLevel: candidate.authorityLevel,
+          current: candidate.current,
           handle: candidate.handle,
           occurredFrom: candidate.occurredFrom,
           occurredTo: candidate.occurredTo,
+          sensitivityClass: candidate.sensitivityClass,
           sourceKind: candidate.sourceKind,
           textHash: memorySha256(candidate.text)
         })),
         domain: "aiqsa.memory.relevance-input",
         queryHash: memorySha256(input.query),
-        version: 2
+        version: 4
       });
-      const result = await runTextUtility(
+      let result = await runTextUtility(
         deps,
         input,
         {
@@ -660,15 +695,42 @@ export function createMemoryRunUtilityService(
         2,
         rerankVersions,
         inputHash,
+        null,
         (calls) => decodeRerank(calls, handles)
       );
+      // A structurally invalid settled response is safe to retry once: the
+      // reranker has no side effects, and each attempt receives its own
+      // durable execution binding/usage record.  Provider uncertainty,
+      // transport failure, cancellation, or policy drift is never replayed.
+      if (
+        result.status !== "READY" &&
+        result.reason === "memory_run_utility_output_invalid" &&
+        result.snapshotHash !== undefined &&
+        !input.signal.aborted
+      ) {
+        result = await runTextUtility(
+          deps,
+          input,
+          {
+            candidates: input.candidates,
+            query: input.query,
+            role: "MEMORY_RERANK"
+          },
+          "MEMORY_RERANK",
+          3,
+          rerankVersions,
+          inputHash,
+          result.snapshotHash,
+          (calls) => decodeRerank(calls, handles)
+        );
+      }
       return result.status === "READY"
         ? {
             bindingId: result.bindingId,
-            relevantHandles: result.output,
+            decisions: result.output,
             status: "READY"
           }
-        : result;
+        : unavailable(result.reason, result.bindingId);
     }
   });
 }

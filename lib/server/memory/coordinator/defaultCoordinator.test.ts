@@ -1,8 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { reconcileDefaultMemoryWork } from "./defaultCoordinator";
+import {
+  kickDefaultMemoryCoordinator,
+  reconcileDefaultMemoryWork
+} from "./defaultCoordinator";
 
 describe("default Memory coordinator composition", () => {
-  it("serializes owner-locking discovery work", async () => {
+  it("keeps request-side queue wakes from starting a second claimant", () => {
+    const scope = globalThis as typeof globalThis & {
+      __aiqsaMemoryCoordinator?: unknown;
+    };
+    const previous = scope.__aiqsaMemoryCoordinator;
+    delete scope.__aiqsaMemoryCoordinator;
+    try {
+      kickDefaultMemoryCoordinator();
+      expect(scope.__aiqsaMemoryCoordinator).toBeUndefined();
+    } finally {
+      if (previous !== undefined) scope.__aiqsaMemoryCoordinator = previous;
+    }
+  });
+
+  it("runs only candidate reconciliation in the periodic pass", async () => {
     const order: string[] = [];
     let active = 0;
     let maximumActive = 0;
@@ -16,14 +33,11 @@ describe("default Memory coordinator composition", () => {
     };
 
     await reconcileDefaultMemoryWork({
-      candidates: step("candidates"),
-      history: step("history")
+      candidates: step("candidates")
     });
 
     expect(maximumActive).toBe(1);
     expect(order).toEqual([
-      "history:start",
-      "history:end",
       "candidates:start",
       "candidates:end"
     ]);

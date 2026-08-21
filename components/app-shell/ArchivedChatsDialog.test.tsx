@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArchivedChatsDialog } from "./ArchivedChatsDialog";
 import { useArchivedChatsStore } from "./archivedChatsStore";
-import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { useMemorySettingsStore } from "./memorySettingsStore";
 import { activatePermanentChatDeletionAccount, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
 import { resetArchivedChatsStoreForTest, resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
@@ -102,7 +102,7 @@ describe("ArchivedChatsDialog", () => {
 
   it("adds a distinct capability-gated permanent action to the owner preview", async () => {
     useMemorySettingsStore.setState({
-      data: memorySettingsFixture({ capabilities: { permanentChatDeletion: true } }),
+      data: memoryConsumerSettingsFixture({ capabilities: { permanentChatDeletion: true } }),
       error: null,
       loadState: "ready"
     });
@@ -142,8 +142,6 @@ describe("ArchivedChatsDialog", () => {
 
     expect(usePermanentChatDeletionStore.getState().target).toEqual({
       chatId: "chat-1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
       location: "ARCHIVED",
       title: "Archived source"
     });
@@ -154,7 +152,7 @@ describe("ArchivedChatsDialog", () => {
 
   it("restores and deletes directly from list rows with capability-gated delete", async () => {
     useMemorySettingsStore.setState({
-      data: memorySettingsFixture({ capabilities: { permanentChatDeletion: true } }),
+      data: memoryConsumerSettingsFixture({ capabilities: { permanentChatDeletion: true } }),
       error: null,
       loadState: "ready"
     });
@@ -199,8 +197,6 @@ describe("ArchivedChatsDialog", () => {
     );
     expect(usePermanentChatDeletionStore.getState().target).toEqual({
       chatId: "chat-2",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
       location: "ARCHIVED",
       title: "Second archived"
     });

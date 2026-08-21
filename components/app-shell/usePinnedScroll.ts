@@ -39,12 +39,14 @@ export function hasUnseenLatestMessageContent(
 export function usePinnedScroll<T extends HTMLElement>({
   followKey,
   hasContent = true,
+  onReadingAnchorApplied,
   readingAnchorKey = null,
   resetKey,
   thresholdPx = defaultPinnedThresholdPx
 }: {
   followKey: unknown;
   hasContent?: boolean;
+  onReadingAnchorApplied?(anchorKey: string): void;
   readingAnchorKey?: string | null;
   resetKey: unknown;
   thresholdPx?: number;
@@ -56,6 +58,7 @@ export function usePinnedScroll<T extends HTMLElement>({
   const readingAnchorPendingRef = useRef(false);
   const readingAnchorActiveRef = useRef(false);
   const readingAnchorPresentRef = useRef(false);
+  const onReadingAnchorAppliedRef = useRef(onReadingAnchorApplied);
   const resetStateRef = useRef<{ initialized: boolean; value: unknown }>({
     initialized: false,
     value: undefined
@@ -65,6 +68,10 @@ export function usePinnedScroll<T extends HTMLElement>({
   const visibilityRafRef = useRef<number | null>(null);
   const viewportRestoreRafRef = useRef<number | null>(null);
   const viewportRestoreResolveRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    onReadingAnchorAppliedRef.current = onReadingAnchorApplied;
+  }, [onReadingAnchorApplied]);
 
   const setJumpToLatestState = useCallback((visible: boolean) => {
     showJumpToLatestRef.current = visible;
@@ -169,6 +176,7 @@ export function usePinnedScroll<T extends HTMLElement>({
       readingAnchorPendingRef.current = false;
       setPinnedState(false);
       setJumpToLatestState(false);
+      onReadingAnchorAppliedRef.current?.(anchorKey);
     });
   }, [scheduleFrame, setJumpToLatestState, setPinnedState, updateReadingSpacer]);
 

@@ -163,8 +163,6 @@ export function ArchivedChatsDialog({
                   type="button"
                   onClick={() => openPermanentChatDeletion({
                     chatId: detail.id,
-                    expectedActiveLeafMessageId: detail.activeLeafMessageId,
-                    expectedChatRevision: detail.sourceRevision,
                     location: "ARCHIVED",
                     title: detail.title
                   })}
@@ -284,8 +282,6 @@ export function ArchivedChatsDialog({
                         type="button"
                         onClick={() => openPermanentChatDeletion({
                           chatId: chat.id,
-                          expectedActiveLeafMessageId: chat.activeLeafMessageId,
-                          expectedChatRevision: chat.sourceRevision,
                           location: "ARCHIVED",
                           title: chat.title
                         })}

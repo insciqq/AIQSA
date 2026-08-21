@@ -152,13 +152,9 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                   automaticLearning: memoryGates.automatic,
                   disabledReason: disabled ? "New answers do not use saved context; an administrator can change this policy." : undefined,
                   explicitCrudAvailable: true,
-                  facts: [
-                    { id: "fact-1", pinned: true, scope: "Global", statement: "Пользователь предпочитает краткие технические ответы." },
-                    { id: "fact-2", scope: "Folder · Research", statement: "Для исследовательских отчётов нужен список первичных источников." }
-                  ],
-                  healthDetail: disabled ? "Automatic recall is stopped. Saved facts can still be reviewed and deleted." : "Facts and history are ready; background jobs are complete.",
-                  healthLabel: disabled ? "Memory is not used in answers" : "Memory ready",
+                  loadState: "ready",
                   referenceChatHistory: memoryGates.history,
+                  status: disabled ? "NEEDS_ADMIN_SETUP" : "ON",
                   useMemoryFacts: memoryGates.facts
                 }}
                 onChangeAutomaticLearning={(automatic) => setMemoryGates((value) => ({ ...value, automatic }))}

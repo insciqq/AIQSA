@@ -4,7 +4,7 @@ import type {
   AdminMemoryDestinationRow,
   AdminMemoryEgressAcknowledgeInput,
   AdminMemoryEgressSettings
-} from "../../../contracts/adminMemory";
+} from "./egressContract";
 import {
   canonicalMemoryAdminDestinations,
   currentMemoryAdminDestinations,
@@ -54,10 +54,12 @@ type CurrentSnapshot = Readonly<{
 }>;
 
 const SYSTEM_ROLES = new Set<MemoryExecutionRole>([
+  "MEMORY_CONTROL",
   "MEMORY_CONSOLIDATE",
   "MEMORY_FACT_EXTRACT",
-  "MEMORY_QUERY_EXPAND",
-  "MEMORY_VERIFY"
+  "MEMORY_HISTORY_CLASSIFY",
+  "MEMORY_RECLASSIFY",
+  "MEMORY_STATEMENT_CLASSIFY"
 ]);
 
 function boundedLabel(value: string): string {

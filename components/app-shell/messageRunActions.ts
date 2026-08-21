@@ -44,7 +44,7 @@ import type {
   ComposerKnowledgePlanSource,
   ComposerMcpSelection
 } from "@/components/app-shell/composerControlStore";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
 type MutableRef<T> = { current: T };
@@ -265,12 +265,11 @@ export function useMessageRunActions({
         chat.id === chatId
           ? {
               ...chat,
-              memoryMode: response.chat.mode,
-              memorySourceRevision: response.chat.sourceRevision,
-              pendingInitialMemoryMode: response.chat.mode === "TEMPORARY"
+              memoryMode: response.mode,
+              pendingInitialMemoryMode: response.mode === "TEMPORARY"
                 ? undefined
                 : chat.pendingInitialMemoryMode,
-              temporaryRetentionDeadline: response.chat.temporaryRetentionDeadline
+              temporaryRetentionDeadline: response.temporaryRetentionDeadline
             }
           : chat
       ));

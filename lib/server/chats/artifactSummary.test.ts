@@ -5,6 +5,26 @@ import {
 } from "./prismaRepository";
 
 describe("summarizeMessageRunArtifacts", () => {
+  it("projects only the friendly Memory availability state", () => {
+    const summary = summarizeMessageRunArtifacts(
+      { events: [], searchRuns: [] },
+      undefined,
+      null,
+      [],
+      "UNAVAILABLE"
+    );
+
+    expect(summary).toEqual({
+      citations: [],
+      knowledgeCitations: [],
+      memoryStatus: "UNAVAILABLE",
+      reasoningText: [],
+      sources: []
+    });
+    expect(summary).not.toHaveProperty("degradationCode");
+    expect(summary).not.toHaveProperty("outcome");
+  });
+
   it("projects only direct citations, Sources, and Reasoning", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [

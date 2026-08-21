@@ -5,15 +5,17 @@ import {
   type ArchivedChatSummaryWire,
   type ArchivedChatsResponseWire,
   type ChatLifecycleResponseWire,
-  type ChatMemoryStateResponseWire,
   type ChatSourceResolutionResponseWire,
   type RetainedChatMemoryMode
 } from "../../contracts/chats";
 import {
-  decodeMemoryChatModePatch,
   type MemoryChatModePatch,
   type MemoryChatModeResponse
 } from "../../contracts/memory";
+import {
+  decodeMemoryConsumerChatModePatch,
+  type MemoryConsumerChatModeResponse
+} from "../../contracts/memoryClient";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -94,6 +96,13 @@ export type ChatMemoryModeMutationResult =
     }>
   | Readonly<{ kind: "ok"; response: MemoryChatModeResponse }>;
 
+type ChatMemoryModeMutationInput = Readonly<{
+  expectedChatRevision?: number;
+  expectedMemoryRevision?: number;
+  mode: MemoryChatModePatch["mode"];
+  resumeDisclosureCopyVersion?: MemoryChatModePatch["resumeDisclosureCopyVersion"];
+}>;
+
 export type ChatLifecycleRepository = Readonly<{
   getArchivedChat(input: { chatId: string; userId: string }): Promise<ArchivedChatDetailRecord | null>;
   getChatMemoryState(input: { chatId: string; userId: string }): Promise<ChatMemoryStateRecord | null>;
@@ -113,7 +122,7 @@ export type ChatLifecycleRepository = Readonly<{
     expectedChatRevision: number;
     userId: string;
   }): Promise<ChatLifecycleMutationResult>;
-  setMemoryMode(input: MemoryChatModePatch & {
+  setMemoryMode(input: ChatMemoryModeMutationInput & {
     chatId: string;
     userId: string;
   }): Promise<ChatMemoryModeMutationResult>;
@@ -191,19 +200,18 @@ function serializeLifecycleState(chat: ChatLifecycleStateRecord): ChatLifecycleR
   };
 }
 
-function serializeMemoryState(chat: ChatMemoryStateRecord): ChatMemoryStateResponseWire {
+function serializeMemoryState(chat: ChatMemoryStateRecord): MemoryConsumerChatModeResponse {
   return {
-    chat: {
-      archived: chat.archived,
-      chatId: chat.chatId,
-      mode: chat.mode,
-      sourceRevision: chat.sourceRevision,
-      temporaryRetentionDeadline: chat.temporaryRetentionDeadline === null
-        ? null
-        : iso(chat.temporaryRetentionDeadline),
-      temporaryRetentionPolicyVersion: chat.temporaryRetentionPolicyVersion,
-      updatedAt: iso(chat.updatedAt)
-    }
+    allowedActions: chat.mode === "NORMAL"
+      ? ["EXCLUDE"]
+      : chat.mode === "EXCLUDED"
+        ? ["RESUME"]
+        : [],
+    archived: chat.archived,
+    mode: chat.mode,
+    temporaryRetentionDeadline: chat.temporaryRetentionDeadline === null
+      ? null
+      : iso(chat.temporaryRetentionDeadline)
   };
 }
 
@@ -371,7 +379,7 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
     if (!chatId) return json({ error: "memory_contract_invalid" }, 400);
     const body = await memoryJsonBody(request);
     if (body instanceof Response) return body;
-    const decoded = decodeMemoryChatModePatch(body);
+    const decoded = decodeMemoryConsumerChatModePatch(body);
     if (!decoded.ok) return json({ error: decoded.code }, 400);
     const result = await deps.repository.setMemoryMode({
       ...decoded.value,
@@ -380,7 +388,15 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
     });
     switch (result.kind) {
       case "ok":
-        return json(result.response);
+        {
+          const updated = await deps.repository.getChatMemoryState({
+            chatId,
+            userId: resolved.userId
+          });
+          return updated
+            ? json(serializeMemoryState(updated))
+            : json({ error: "memory_not_found" }, 404);
+        }
       case "not_found":
         return json({ error: "memory_not_found" }, 404);
       case "contract_invalid":
@@ -388,9 +404,9 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
       case "temporary":
         return json({ error: "memory_temporary_chat_forbidden" }, 409);
       case "memory_stale":
-        return json({ error: "memory_version_stale" }, 409);
+        return json({ error: "memory_changed" }, 409);
       case "source_stale":
-        return json({ error: "memory_source_stale" }, 409);
+        return json({ error: "memory_changed" }, 409);
       case "resume_blocked":
         return json({ error: "memory_action_failed" }, 503);
     }

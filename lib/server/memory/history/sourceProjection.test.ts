@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import {
   buildMemorySafeSourceSnapshot,
-  memoryBindingCarriesProviderPayload,
-  memoryRuntimeInfluenceTaintSources,
   MemoryHistorySourceProjectionError,
   type MemoryHistorySourceMessageInput,
   type MemoryHistorySourceOrigin,
@@ -87,25 +85,6 @@ function snapshotInput(
 }
 
 describe("Memory safe source snapshot", () => {
-  it("taints only a Memory binding that contributed provider-visible context", () => {
-    expect(memoryBindingCarriesProviderPayload(0)).toBe(false);
-    expect(memoryBindingCarriesProviderPayload(1)).toBe(true);
-    expect(memoryRuntimeInfluenceTaintSources({
-      attachment: false,
-      knowledgeRunCount: 0,
-      memoryContextTokenCount: 0,
-      searchRunCount: 0,
-      toolCallCount: 0
-    })).toEqual([]);
-    expect(memoryRuntimeInfluenceTaintSources({
-      attachment: true,
-      knowledgeRunCount: 1,
-      memoryContextTokenCount: 1,
-      searchRunCount: 1,
-      toolCallCount: 1
-    })).toEqual(["ATTACHMENT", "KNOWLEDGE", "PROVIDER_PAYLOAD", "SEARCH", "TOOL"]);
-  });
-
   it("projects only the deterministic active branch into complete recall turns", () => {
     const user = userMessage({
       id: "user-active",
@@ -207,7 +186,7 @@ describe("Memory safe source snapshot", () => {
     expect(serialized).toContain("supplied credential");
   });
 
-  it("keeps direct user text separate when an assistant is attachment-tainted", () => {
+  it("omits attachment blocks while retaining visible assistant recall and user-only facts", () => {
     const user = userMessage({
       content: {
         blocks: [
@@ -221,25 +200,33 @@ describe("Memory safe source snapshot", () => {
     const assistant = assistantMessage({
       id: "assistant-attachment",
       parentMessageId: user.id,
-      taintSources: ["ATTACHMENT"],
       text: "This answer used attachment content."
     });
 
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
 
-    expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
+    expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(1);
+    expect(snapshot.recallChunkProjection.turnGroups[0]?.messages.map((message) => ({
+      role: message.role,
+      text: message.safeText
+    }))).toEqual([
+      { role: "user", text: "Мой прямой комментарий безопасен." },
+      { role: "assistant", text: "This answer used attachment content." }
+    ]);
     expect(snapshot.factEvidenceProjection.messages.map((message) => message.safeText))
       .toEqual(["Мой прямой комментарий безопасен."]);
     expect(snapshot.provenanceGraph[0]?.reasonCodes).toContain("ATTACHMENT_BLOCK_OMITTED");
     expect(snapshot.provenanceGraph[1]).toMatchObject({
-      directTaintSources: ["ATTACHMENT"],
-      transitiveTaint: true
+      directTaintSources: [],
+      eligibleForFactEvidence: false,
+      eligibleForRecall: true,
+      transitiveTaint: false
     });
     expect(JSON.stringify(snapshot)).not.toContain("private-file-identity");
-    expect(JSON.stringify(snapshot)).not.toContain("used attachment content");
+    expect(JSON.stringify(snapshot)).toContain("used attachment content");
   });
 
-  it("excludes Search, Knowledge, tool, and raw-provider influence before recall", () => {
+  it("still excludes assistant messages explicitly marked with non-visible-source taint", () => {
     const taintSources = [
       "KNOWLEDGE",
       "PROVIDER_PAYLOAD",
@@ -317,7 +304,7 @@ describe("Memory safe source snapshot", () => {
     }
   });
 
-  it("allows redacted recall but never promotes redacted or assistant text as fact evidence", () => {
+  it("defers semantic contact classification to downstream System Model stages", () => {
     const user = userMessage({
       id: "user-contact",
       parentMessageId: null,
@@ -333,12 +320,15 @@ describe("Memory safe source snapshot", () => {
 
     expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(1);
     expect(snapshot.recallChunkProjection.turnGroups[0]).toMatchObject({
-      redactionReasonCodes: ["CONTACT_EMAIL_REDACTED"],
-      redactionState: "REDACTED",
-      safetyClass: "SENSITIVE"
+      redactionReasonCodes: [],
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL"
     });
-    expect(snapshot.factEvidenceProjection.messages).toEqual([]);
-    expect(JSON.stringify(snapshot)).not.toContain("me@example.com");
+    expect(snapshot.factEvidenceProjection.messages).toMatchObject([{
+      id: user.id,
+      safetyClass: "NORMAL"
+    }]);
+    expect(JSON.stringify(snapshot)).toContain("me@example.com");
   });
 
   it("does not infer a cross-turn secret assignment from English words", () => {

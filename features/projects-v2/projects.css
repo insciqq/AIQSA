@@ -161,24 +161,6 @@
   text-transform: uppercase;
 }
 
-.v2-project-memory-share {
-  margin-block-start: 0.45rem;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--v2-color-text3);
-  cursor: pointer;
-  font-size: 0.6875rem;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  text-underline-offset: 0.18em;
-}
-
-.v2-project-memory-share:hover {
-  color: var(--v2-color-text2);
-  text-decoration-color: currentColor;
-}
-
 .v2-project-create-actions {
   display: grid;
   gap: 0.35rem;
@@ -486,8 +468,7 @@
 }
 
 .v2-project-create-dialog label,
-.v2-project-settings-section > label,
-.v2-project-memory-form {
+.v2-project-settings-section > label {
   display: grid;
   gap: 0.375rem;
   color: var(--v2-color-text2);
@@ -705,7 +686,6 @@
 }
 
 .v2-project-list-table,
-.v2-project-memory-list,
 .v2-project-activity {
   display: grid;
   border-block: 1px solid var(--v2-color-border);
@@ -725,22 +705,19 @@
   border-bottom: 0;
 }
 
-.v2-project-list-row > span,
-.v2-project-memory-list > div {
+.v2-project-list-row > span {
   display: grid;
   min-width: 0;
   gap: 0.1875rem;
 }
 
-.v2-project-list-row strong,
-.v2-project-memory-list span {
+.v2-project-list-row strong {
   color: var(--v2-color-text);
   font-size: 0.8125rem;
   font-weight: 550;
 }
 
-.v2-project-list-row small,
-.v2-project-memory-list small {
+.v2-project-list-row small {
   color: var(--v2-color-text3);
   font-size: 0.6875rem;
 }
@@ -762,53 +739,10 @@
   align-items: end;
 }
 
-.v2-project-memory-list > div {
-  position: relative;
-  padding: 0.75rem 8rem 0.75rem 0.5rem;
-  border-bottom: 1px solid var(--v2-color-border);
-}
-
-.v2-project-memory-list > div:last-child {
-  border-bottom: 0;
-}
-
-.v2-project-memory-actions {
-  position: absolute;
-  top: 0.625rem;
-  right: 0.5rem;
-  display: flex !important;
-  gap: 0.5rem !important;
-}
-
-.v2-project-memory-actions button {
-  padding: 0;
-  border: 0;
-  color: var(--v2-color-accent);
-  background: transparent;
-  font: inherit;
-  font-size: 0.6875rem;
-  cursor: pointer;
-}
-
 .v2-project-settings-section h3 {
   margin: 0.75rem 0 0;
   color: var(--v2-color-text2);
   font-size: 0.75rem;
-}
-
-.v2-project-memory-form {
-  grid-template-columns: minmax(0, 1fr) minmax(11rem, auto) auto;
-  align-items: end;
-}
-
-.v2-project-memory-form > label {
-  display: grid;
-  gap: 0.375rem;
-}
-
-.v2-project-memory-form > label span {
-  color: var(--v2-color-text3);
-  font-weight: 400;
 }
 
 .v2-project-activity > div {
@@ -869,10 +803,6 @@
   }
 
   .v2-project-inline-form {
-    grid-template-columns: 1fr;
-  }
-
-  .v2-project-memory-form {
     grid-template-columns: 1fr;
   }
 
