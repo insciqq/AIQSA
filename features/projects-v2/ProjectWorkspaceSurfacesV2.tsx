@@ -1,6 +1,7 @@
 "use client";
 
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { loadProjectCandidates } from "@/components/app-shell/projectWorkspaceApi";
@@ -89,6 +90,13 @@ function candidateDisabledLabel(reason: string | null): string | null {
   }[reason] ?? "Unavailable for this Project";
 }
 
+/**
+ * Shared-Project context lives in the header's title island as one compact
+ * chip — mark, name, and a sync dot only while sync is not idle — instead of
+ * a second bar across the reading column. The details (sharing boundary,
+ * role, defaults, sync state, Project settings) open as a popover from the
+ * chip; the element stays the "Shared project context" landmark.
+ */
 export function ProjectContextRailV2({
   activeChatProjectId,
   controller
@@ -96,6 +104,11 @@ export function ProjectContextRailV2({
   activeChatProjectId: string | null;
   controller: ProjectWorkspaceController;
 }>) {
+  const [open, setOpen] = useState(false);
+  const { menuRef, triggerRef } = useMenuDismissalV2<HTMLButtonElement, HTMLElement>({
+    onClose: () => setOpen(false),
+    open
+  });
   const project = controller.detail;
   if (!project || activeChatProjectId !== project.id) return null;
   const defaultModel = project.resources.find((resource) =>
@@ -104,22 +117,57 @@ export function ProjectContextRailV2({
   const searchCount = project.defaults.searchPlan.optionIds.length;
   const knowledgeCount = project.defaults.knowledgePlan.baseIds.length +
     project.defaults.knowledgePlan.sourceIds.length;
+  const syncLabel = controller.syncState === "syncing"
+    ? "Syncing"
+    : controller.syncState === "error" ? "Sync paused" : "Shared desk live";
   return (
     <aside className="v2-project-context" aria-label="Shared project context">
-      <span className="v2-project-context-mark" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
-      <span className="v2-project-context-primary">
-        <strong>{project.name}</strong>
-        <span>Shared with all project members · Personal Memory is off</span>
-      </span>
-      <span className="v2-project-context-facts">
-        <span>{project.effectiveRole.toLowerCase()}</span>
-        <span>{defaultModel?.label ?? "No default model"}</span>
-        <span>Search {searchCount > 0 ? searchCount : "off"} · Knowledge {knowledgeCount}</span>
-        <span data-sync={controller.syncState}>
-          {controller.syncState === "syncing" ? "Syncing" : controller.syncState === "error" ? "Sync paused" : "Shared desk live"}
-        </span>
-      </span>
-      <UiV2IconButton icon="settings" label={`Open ${project.name} details`} onClick={() => controller.actions.openSettings()} />
+      <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className="v2-project-context-trigger v2-focusable"
+        data-testid="project-context-trigger"
+        title={`Shared project: ${project.name}`}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="v2-project-context-mark" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
+        <span className="v2-project-context-name">{project.name}</span>
+        {controller.syncState !== "idle" ? (
+          <>
+            <span className="v2-project-context-sync" data-sync={controller.syncState} aria-hidden="true" />
+            <span className="v2-sr-only">{syncLabel}</span>
+          </>
+        ) : null}
+      </button>
+      {open ? (
+        <section
+          ref={menuRef}
+          aria-label={`${project.name} project context`}
+          className="v2-project-context-popover"
+          role="dialog"
+        >
+          <p className="v2-project-context-boundary">
+            Shared with all project members · Personal Memory is off
+          </p>
+          <dl className="v2-project-context-facts">
+            <div><dt>Your role</dt><dd>{project.effectiveRole.toLowerCase()}</dd></div>
+            <div><dt>Default model</dt><dd>{defaultModel?.label ?? "No default model"}</dd></div>
+            <div><dt>Defaults</dt><dd>Search {searchCount > 0 ? searchCount : "off"} · Knowledge {knowledgeCount}</dd></div>
+            <div><dt>Sync</dt><dd data-sync={controller.syncState}>{syncLabel}</dd></div>
+          </dl>
+          <UiV2Button
+            icon="settings"
+            onClick={() => {
+              setOpen(false);
+              controller.actions.openSettings();
+            }}
+          >
+            Project details
+          </UiV2Button>
+        </section>
+      ) : null}
     </aside>
   );
 }

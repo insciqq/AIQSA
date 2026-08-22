@@ -456,8 +456,10 @@ export function ConversationV2({
   const internalScrollRef = useRef<HTMLDivElement>(null);
   const scrollRef = externalScrollRef ?? internalScrollRef;
   const anchorRef = useRef<ScrollAnchor | null>(null);
+  const olderSentinelRef = useRef<HTMLButtonElement>(null);
   const messageKey = useMemo(() => messages.map((message) => message.id).join("\0"), [messages]);
   const showOrientation = !loading && !unavailable && !error && messages.length === 0;
+  const olderAutoLoadBlocked = !hasOlder || loadingEarlier || Boolean(olderError) || !onLoadEarlier;
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
@@ -483,6 +485,27 @@ export function ConversationV2({
       anchorRef.current = null;
     }
   }
+
+  // Scrolling up to the start of the loaded history fetches the earlier page
+  // by itself; the button stays as the visible keyboard route and as the
+  // manual Retry after a failed page (a failure never auto-retries).
+  useEffect(() => {
+    const sentinel = olderSentinelRef.current;
+    const container = scrollRef.current;
+    if (
+      !sentinel || !container || olderAutoLoadBlocked ||
+      typeof IntersectionObserver === "undefined"
+    ) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting) || !onLoadEarlier) return;
+      anchorRef.current = firstVisibleAnchor(container);
+      void Promise.resolve(onLoadEarlier()).catch(() => {
+        anchorRef.current = null;
+      });
+    }, { root: container, rootMargin: "160px 0px 0px 0px" });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [messageKey, olderAutoLoadBlocked, onLoadEarlier, scrollRef]);
 
   return (
     <section
@@ -542,6 +565,7 @@ export function ConversationV2({
                   </div>
                 ) : (
                   <button
+                    ref={olderSentinelRef}
                     type="button"
                     disabled={loadingEarlier}
                     aria-busy={loadingEarlier || undefined}

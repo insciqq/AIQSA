@@ -82,8 +82,7 @@
 }
 
 .v2-project-row-copy,
-.v2-project-chat-copy,
-.v2-project-context-primary {
+.v2-project-chat-copy {
   display: grid;
   min-width: 0;
 }
@@ -284,81 +283,139 @@
   color: var(--v2-color-danger);
 }
 
+/* Header-island chip: the Project name with its mark, no second bar. */
 .v2-project-context {
   --project-desk-signal: var(--v2-color-accent);
   --project-desk-wash: var(--v2-color-accent-dim);
-  position: absolute;
-  z-index: 19;
-  top: calc(max(0.75rem, env(safe-area-inset-top)) + 3.25rem);
-  right: max(1rem, env(safe-area-inset-right));
-  left: max(1rem, env(safe-area-inset-left));
-  display: flex;
-  min-height: 2.625rem;
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
   align-items: center;
-  gap: 0.625rem;
-  max-width: var(--v2-wide-measure);
-  margin: 0 auto;
-  padding: 0.375rem 0.5rem 0.375rem 0.625rem;
-  border-block: 1px solid var(--v2-color-border);
-  color: var(--v2-color-text2);
-  background: color-mix(in srgb, var(--v2-color-canvas) 94%, transparent);
-  backdrop-filter: blur(10px);
 }
 
-.v2-live-workspace[data-project-context="true"] .v2-conversation-document {
-  padding-top: clamp(8.5rem, 15vh, 10rem);
+.v2-project-context-trigger {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(24vw, 16rem);
+  min-height: 2.125rem;
+  align-items: center;
+  gap: 0.4375rem;
+  padding: 0.1875rem 0.4375rem 0.1875rem 0.25rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  cursor: pointer;
 }
 
-.v2-live-workspace[data-project-context="true"] .v2-conversation-orientation {
-  padding-top: max(9rem, env(safe-area-inset-top));
+.v2-project-context-trigger:hover,
+.v2-project-context-trigger[aria-expanded="true"] {
+  background: var(--v2-color-hover);
 }
 
 .v2-project-context-mark {
-  width: 1.625rem;
-  height: 1.625rem;
-  font-size: 0.6875rem;
+  width: 1.375rem;
+  height: 1.375rem;
+  font-size: 0.625rem;
 }
 
-.v2-project-context-primary {
-  flex: 1 1 auto;
-}
-
-.v2-project-context-primary strong {
+.v2-project-context-name {
+  min-width: 0;
   overflow: hidden;
-  color: var(--v2-color-text);
-  font-size: 0.75rem;
-  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.v2-project-context-primary span,
-.v2-project-context-facts span {
-  font-size: 0.6875rem;
-  line-height: 1.35;
+/* A dot appears only while sync is not simply live. */
+.v2-project-context-sync {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--v2-color-text3);
+}
+
+.v2-project-context-sync[data-sync="error"] {
+  background: var(--v2-color-warn);
+}
+
+/* Divider between the Project chip and the chat title in the same island. */
+.v2-live-title > .v2-project-context:not(:last-child)::after {
+  content: "";
+  width: 1px;
+  height: 1rem;
+  flex: 0 0 auto;
+  margin: 0 0.375rem 0 0.25rem;
+  background: var(--v2-color-border2);
+}
+
+.v2-project-context-popover {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  display: grid;
+  width: min(19rem, calc(100vw - 2rem));
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-overlay);
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
+}
+
+.v2-project-context-boundary {
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .v2-project-context-facts {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 0.25rem;
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
 }
 
-.v2-project-context-facts span {
-  padding: 0.1875rem 0.4375rem;
-  border: 1px solid var(--v2-color-border);
-  border-radius: 999px;
+.v2-project-context-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-project-context-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--v2-color-text);
+  text-align: right;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.v2-project-context-facts span[data-sync="idle"] {
-  border-color: color-mix(in srgb, var(--v2-color-ok) 45%, var(--v2-color-border));
+.v2-project-context-facts dd[data-sync="idle"] {
   color: var(--v2-color-ok);
 }
 
-.v2-project-context-facts span[data-sync="error"] {
+.v2-project-context-facts dd[data-sync="error"] {
   color: var(--v2-color-warn);
+}
+
+.v2-project-context-popover .v2-button {
+  justify-self: start;
+}
+
+@media (max-width: 560px) {
+  .v2-project-context-trigger {
+    max-width: 8rem;
+  }
 }
 
 .v2-project-blank {
@@ -809,16 +866,6 @@
 }
 
 @media (max-width: 899px) {
-  .v2-project-context {
-    right: 0.75rem;
-    left: 0.75rem;
-  }
-
-  .v2-project-context-primary span,
-  .v2-project-context-facts span:not(:last-child) {
-    display: none;
-  }
-
   .v2-project-settings-scroll {
     padding: 1rem;
   }

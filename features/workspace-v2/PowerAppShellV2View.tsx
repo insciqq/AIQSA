@@ -95,11 +95,7 @@ import type {
 } from "@/lib/contracts/chats";
 import { RunSetupV2 } from "./RunSetupV2";
 import { WorkspaceHeaderV2 } from "./WorkspaceHeaderV2";
-import {
-  LibrarySurfaceV2,
-  WelcomeOrientationV2,
-  blankWelcomeStartersVisibleV2
-} from "./WorkspaceWelcomeV2";
+import { LibrarySurfaceV2 } from "./WorkspaceWelcomeV2";
 import {
   useEffect,
   useMemo,
@@ -118,11 +114,6 @@ export {
   type TemporaryChatHeaderMemoryV2,
   type WorkspaceHeaderFolderV2
 } from "./WorkspaceHeaderV2";
-export {
-  WELCOME_STARTER_PROMPTS,
-  WelcomeOrientationV2,
-  blankWelcomeStartersVisibleV2
-} from "./WorkspaceWelcomeV2";
 
 function messageText(message: ThreadMessage): string {
   return textFromThreadContent(message.content);
@@ -181,15 +172,20 @@ export function applyLoadAllAfterMcpDiscoveryFailureV2(regenerate: () => void): 
   regenerate();
 }
 
+/**
+ * The blank canvas shows a selected Assistant's own intro when there is one;
+ * a Project shows its shared orientation; the personal blank chat returns
+ * `undefined` so the conversation renders only its quiet greeting above the
+ * composer — no generic starter prompts.
+ */
 export function blankConversationOrientationV2(input: Readonly<{
   assistantOrientation?: ReactNode;
   projectOrientation?: ReactNode;
   projectSelected: boolean;
-  welcomeOrientation?: ReactNode;
 }>): ReactNode {
   return input.projectSelected
     ? input.assistantOrientation ?? input.projectOrientation
-    : input.assistantOrientation ?? input.welcomeOrientation;
+    : input.assistantOrientation;
 }
 
 export function SkillLibraryOverlayV2({
@@ -497,18 +493,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         ) : null}
       </div>
     ) : undefined;
-  const welcomeOrientation = blankWelcomeStartersVisibleV2({
-    assistantSelected: Boolean(composer.assistant.selected),
-    attachmentCount: composer.attachments.length,
-    draft: composer.draft,
-    uploading: composer.uploading
-  }) ? (
-    <WelcomeOrientationV2
-      showAssistantEntry={composer.assistant.pickerItems.length > 0}
-      onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
-      onPickPrompt={(prompt) => composer.composerActions.changeDraft(prompt)}
-    />
-  ) : undefined;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
   const liveTail = thread.visibleMessages.at(-1);
   const readingAnchorMessageId = liveTail?.role === "assistant"
@@ -840,6 +824,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   : null
               }
               folders={navigationFolders}
+              leadingSlot={(
+                <ProjectContextRailV2
+                  activeChatProjectId={activeProject?.id ?? activeChatSummary?.projectId ?? null}
+                  controller={workspace.projects}
+                />
+              )}
               moveDisabled={projectContext}
               onArchive={withActiveChat((full) => {
                 if (projectContext) {
@@ -878,10 +868,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
-            <ProjectContextRailV2
-              activeChatProjectId={activeProject?.id ?? activeChatSummary?.projectId ?? null}
-              controller={workspace.projects}
-            />
             {session.notice ? (
               <div className="v2-live-notice">
                 <ShellNotice notice={session.notice} onDismiss={session.dismissNotice} />
@@ -908,8 +894,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                     controller={workspace.projects}
                   />
                 ),
-                projectSelected: Boolean(workspace.projects.selectedProjectId),
-                welcomeOrientation
+                projectSelected: Boolean(workspace.projects.selectedProjectId)
               })}
               renderMessage={renderMessage}
               scrollRef={thread.threadScrollRef}

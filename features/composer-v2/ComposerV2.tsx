@@ -462,8 +462,16 @@ export function ComposerV2({
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.max(36, Math.min(textarea.scrollHeight, 200))}px`;
+    // Grow with the draft; the stylesheet's `max-height` and `min-height`
+    // (which differ per surface and viewport) bound the box, so the measure
+    // repeats when the viewport changes.
+    const fit = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.max(36, textarea.scrollHeight)}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
   }, [draft]);
 
   useEffect(() => {
@@ -646,13 +654,16 @@ export function ComposerV2({
     if (!attachmentSelectionDisabled && files.length > 0) submitFiles(files);
   }
 
+  // Search, Knowledge, Skills, and MCP rows are selection toggles: the menu
+  // stays open so several can be combined in one visit. Only rows that hand
+  // off to another surface (Assistant picker, file dialog, Skill Library,
+  // MCP settings, Model parameters) close it.
   function toggleSearch(option: CatalogSearchStrategy) {
     if (!onSelectSearchOptionIds) return;
     const next = selectedSearchSet.has(option.strategyId)
       ? selectedSearchOptionIds.filter((id) => id !== option.strategyId)
       : [...selectedSearchOptionIds, option.strategyId];
     onSelectSearchOptionIds(next);
-    closeLayer();
   }
 
   function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
@@ -664,7 +675,6 @@ export function ComposerV2({
       baseIds: next,
       sourceIds: knowledgeSelection.sourceIds
     }));
-    closeLayer();
   }
 
   function selectKnowledge(selection: KnowledgeSelection) {
@@ -681,7 +691,6 @@ export function ComposerV2({
       baseIds: knowledgeSelection.baseIds,
       sourceIds: next
     }));
-    closeLayer();
   }
 
   function selectMcpMode(mode: McpRunSelection["mode"]) {
@@ -897,10 +906,14 @@ export function ComposerV2({
               <button
                 className="v2-composer-indicator v2-focusable"
                 type="button"
+                data-quiet={mcpSelection.mode === "load_all" ? undefined : ""}
                 disabled={activeRun || controlsLocked}
                 aria-label="Change MCP tool mode"
                 onClick={(event) => openLayer("capabilities", event.currentTarget)}
               >
+                {/* The accent dot marks a loaded capability; Auto (discover
+                    on demand) and Off stay quiet so the dot never reads as
+                    "tools are on" by default. */}
                 <span aria-hidden="true" />Tools: {mcpSelection.mode === "load_all"
                   ? "Load all"
                   : mcpSelection.mode === "off" ? "Off" : "Auto"}
@@ -1053,7 +1066,6 @@ export function ComposerV2({
                         selectKnowledge(knowledgeSelection.mode === "all_my_knowledge"
                           ? EMPTY_KNOWLEDGE_SELECTION
                           : allMyKnowledgeSelection());
-                        closeLayer();
                       }}
                     >
                       All my knowledge
@@ -1123,7 +1135,6 @@ export function ComposerV2({
                             baseIds: knowledgeSelection.baseIds.filter((candidate) => candidate !== id),
                             sourceIds: knowledgeSelection.sourceIds
                           }));
-                          closeLayer();
                         }}
                       >
                         Unavailable knowledge base
@@ -1143,7 +1154,6 @@ export function ComposerV2({
                             baseIds: knowledgeSelection.baseIds,
                             sourceIds: knowledgeSelection.sourceIds.filter((candidate) => candidate !== id)
                           }));
-                          closeLayer();
                         }}
                       >
                         Unavailable Knowledge source

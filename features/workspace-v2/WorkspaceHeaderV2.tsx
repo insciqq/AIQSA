@@ -10,7 +10,7 @@ import {
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { flattenFolderTree } from "@/features/navigation-v2/NavigationV2";
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 
 export type TemporaryChatHeaderMemoryV2 = Readonly<{
   explanation: string;
@@ -199,6 +199,7 @@ export function WorkspaceHeaderV2({
   deleteDisabled = false,
   editingTitle = null,
   folders = [],
+  leadingSlot = null,
   moveDisabled = false,
   onArchive,
   onBranches,
@@ -227,6 +228,12 @@ export function WorkspaceHeaderV2({
   /** Non-null while the header title is being renamed inline. */
   editingTitle?: string | null;
   folders?: readonly WorkspaceHeaderFolderV2[];
+  /**
+   * Context rendered before the title inside the same island (the shared
+   * Project chip). The island also shows while no chat is active when this
+   * slot renders something.
+   */
+  leadingSlot?: ReactNode;
   moveDisabled?: boolean;
   onArchive(): void;
   onBranches(): void;
@@ -300,6 +307,7 @@ export function WorkspaceHeaderV2({
   return (
     <header className="v2-live-header">
       <div className="v2-live-title">
+        {leadingSlot}
         {/* The welcome screen keeps a quiet empty header: actions only. */}
         {active ? (
           editingTitle !== null ? (
@@ -336,7 +344,10 @@ export function WorkspaceHeaderV2({
                 type="button"
                 onClick={onRenameStart}
               >
-                {title}
+                <span className="v2-live-title-text">{title}</span>
+                {/* The pencil states what a click does; it shows on
+                    hover/focus and always on coarse pointers. */}
+                {renameDisabled ? null : <UiV2Icon name="edit" />}
               </button>
             </h1>
           )

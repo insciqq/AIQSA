@@ -198,11 +198,18 @@ describe("Project workspace surfaces", () => {
 
     const rail = screen.getByRole("complementary", { name: "Shared project context" });
     expect(within(rail).getByText("Launch room")).toBeVisible();
-    expect(within(rail).getByText("Shared with all project members · Personal Memory is off")).toBeVisible();
-    expect(within(rail).getByText("owner")).toBeVisible();
-    expect(within(rail).queryByText(/Project Memory/i)).toBeNull();
-    expect(within(rail).getByText("Search 1 · Knowledge 2")).toBeVisible();
-    expect(within(rail).getByText("Shared desk live")).toBeVisible();
+    // The chip is the whole resting surface; details open from it.
+    expect(within(rail).queryByText("Shared with all project members · Personal Memory is off")).toBeNull();
+    fireEvent.click(within(rail).getByTestId("project-context-trigger"));
+    const details = within(rail).getByRole("dialog", { name: "Launch room project context" });
+    expect(within(details).getByText("Shared with all project members · Personal Memory is off")).toBeVisible();
+    expect(within(details).getByText("owner")).toBeVisible();
+    expect(within(details).queryByText(/Project Memory/i)).toBeNull();
+    expect(within(details).getByText("Search 1 · Knowledge 2")).toBeVisible();
+    expect(within(details).getByText("Shared desk live")).toBeVisible();
+    fireEvent.click(within(details).getByRole("button", { name: "Project details" }));
+    expect(projectController.actions.openSettings).toHaveBeenCalled();
+    expect(within(rail).queryByRole("dialog")).toBeNull();
   });
 
   it("keeps the retired Project Memory tab and controls unreachable", async () => {

@@ -152,6 +152,7 @@
 .v2-navigation-load-more {
   justify-self: center;
   min-height: 2.125rem;
+  padding: 0.25rem 0.625rem;
   border: 0;
   border-radius: var(--v2-radius-s);
   color: var(--v2-color-accent);
@@ -164,6 +165,27 @@
 .v2-navigation-retry:hover,
 .v2-navigation-load-more:hover:not(:disabled) {
   background: var(--v2-color-hover);
+}
+
+.v2-navigation-load-more:disabled {
+  color: var(--v2-color-text3);
+  cursor: wait;
+}
+
+/* End-of-list row: the earlier-page control plus its failure line. */
+.v2-navigation-load-more-row {
+  display: grid;
+  justify-items: center;
+  gap: 0.125rem;
+  margin-top: 0.5rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.v2-navigation-load-more-row[data-error] {
+  color: var(--v2-color-danger);
 }
 
 .v2-navigation-skeletons {

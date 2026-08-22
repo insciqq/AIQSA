@@ -304,14 +304,9 @@
   transform: translateY(0);
 }
 
-/* The newest settled answer keeps its dock always visible so copying the
-   last answer stays one click; earlier turns reveal on hover/focus/tap. */
-.v2-conversation-thread > li:last-child .v2-conversation-turn[data-role="assistant"] .v2-message-actions {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-}
-
+/* Every turn — the newest answer included — reveals its dock only on
+   hover, keyboard focus, or an explicit tap, so the reading flow stays quiet
+   and the answer's last line is never followed by a permanent toolbar. */
 @media (hover: hover) and (pointer: fine) {
   .v2-conversation-turn:hover .v2-message-actions {
     opacity: 1;
@@ -325,13 +320,18 @@
   box-shadow: 0 0 0 2px var(--v2-color-accent);
 }
 
+/* One full-measure column: `justify-items` centres each block while the
+   track itself stays as wide as the measure, so the blank-chat composer can
+   fill it instead of shrink-wrapping to its placeholder text. */
 .v2-conversation-orientation {
   display: grid;
   width: min(var(--v2-measure), calc(100% - 2rem));
   min-height: 100%;
   margin: 0 auto;
-  place-content: center;
-  gap: 2.25rem;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  justify-items: center;
+  gap: 1.75rem;
   padding: max(5rem, env(safe-area-inset-top)) 0 max(5rem, env(safe-area-inset-bottom));
 }
 
@@ -372,7 +372,7 @@
 }
 
 .v2-conversation-empty-composer {
-  width: min(42rem, 100%);
+  width: 100%;
   margin: 0 auto;
 }
 

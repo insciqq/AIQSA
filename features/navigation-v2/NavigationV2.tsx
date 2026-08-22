@@ -241,7 +241,11 @@ function ChatRow({
     );
   }
   return (
-    <div className="v2-chat-row-wrap" style={{ paddingLeft: `${Math.min(depth, 3) * 0.75}rem` }}>
+    <div
+      className="v2-chat-row-wrap"
+      data-navigation-chat-id={chat.id}
+      style={{ paddingLeft: `${Math.min(depth, 3) * 0.75}rem` }}
+    >
       <button
         className="v2-chat-row v2-focusable"
         data-selected={active || undefined}
@@ -508,10 +512,80 @@ function FolderGroup({
   );
 }
 
+type NavigationScrollAnchor = Readonly<{ id: string; top: number }>;
+
+/**
+ * The first chat row inside the list's viewport. An earlier page may insert
+ * rows above the current position (older chats that live in folders render
+ * inside their folder group near the top), so the list re-anchors this row
+ * after the append instead of letting the viewport jump.
+ */
+function firstVisibleChatAnchor(container: HTMLElement): NavigationScrollAnchor | null {
+  const containerBounds = container.getBoundingClientRect();
+  for (const row of container.querySelectorAll<HTMLElement>("[data-navigation-chat-id]")) {
+    const bounds = row.getBoundingClientRect();
+    if (bounds.bottom > containerBounds.top && bounds.top < containerBounds.bottom) {
+      const id = row.dataset.navigationChatId;
+      if (id) return { id, top: bounds.top };
+    }
+  }
+  return null;
+}
+
+function findAnchoredChatRow(container: HTMLElement, id: string): HTMLElement | null {
+  for (const row of container.querySelectorAll<HTMLElement>("[data-navigation-chat-id]")) {
+    if (row.dataset.navigationChatId === id) return row;
+  }
+  return null;
+}
+
 export function NavigationSidebar(props: NavigationSidebarProps) {
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const loadMoreRef = useRef<HTMLButtonElement>(null);
+  const anchorRef = useRef<NavigationScrollAnchor | null>(null);
+  const chatKey = useMemo(() => props.chats.map((chat) => chat.id).join("\0"), [props.chats]);
+  const pageLoading = props.searchQuery ? props.searchLoading : props.loading;
+  const pageError = props.searchQuery ? props.searchError : props.error;
+  const { hasMore, onLoadMore } = props;
+  const loadMoreBlocked = !hasMore || pageLoading || Boolean(pageError);
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const container = scrollRef.current;
+    if (!anchor || !container) return;
+    anchorRef.current = null;
+    const row = findAnchoredChatRow(container, anchor.id);
+    if (row) container.scrollTop += row.getBoundingClientRect().top - anchor.top;
+  }, [chatKey]);
+
+  const loadEarlierChats = () => {
+    if (!hasMore || pageLoading) return;
+    const container = scrollRef.current;
+    anchorRef.current = container ? firstVisibleChatAnchor(container) : null;
+    onLoadMore();
+  };
+
+  // Reaching the end of the list loads the next page by itself; the button
+  // stays as the visible, keyboard-reachable route and as the manual Retry
+  // after a failed page (a failure never auto-retries in a loop).
+  useEffect(() => {
+    const sentinel = loadMoreRef.current;
+    const container = scrollRef.current;
+    if (
+      !sentinel || !container || loadMoreBlocked ||
+      typeof IntersectionObserver === "undefined"
+    ) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      anchorRef.current = firstVisibleChatAnchor(container);
+      onLoadMore();
+    }, { root: container, rootMargin: "0px 0px 120px 0px" });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [chatKey, loadMoreBlocked, onLoadMore]);
   const {
     menuRef: newChatMenuRef,
     triggerRef: newChatTriggerRef
@@ -634,7 +708,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         ) : null}
       </div>
 
-      <div className="v2-navigation-scroll" aria-live="polite">
+      <div className="v2-navigation-scroll" aria-live="polite" ref={scrollRef}>
         {typeof props.projectsSlot === "function"
           ? props.projectsSlot(props.onClose)
           : props.projectsSlot}
@@ -736,14 +810,19 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           </>
         )}
         {props.hasMore ? (
-          <button
-            className="v2-navigation-load-more v2-focusable"
-            disabled={props.loading || props.searchLoading}
-            type="button"
-            onClick={props.onLoadMore}
-          >
-            Show earlier
-          </button>
+          <div className="v2-navigation-load-more-row" data-error={pageError ? "" : undefined}>
+            {pageError && props.ready ? <span>Could not load earlier chats.</span> : null}
+            <button
+              ref={loadMoreRef}
+              aria-busy={pageLoading || undefined}
+              className="v2-navigation-load-more v2-focusable"
+              disabled={pageLoading}
+              type="button"
+              onClick={loadEarlierChats}
+            >
+              {pageLoading ? "Loading…" : pageError && props.ready ? "Retry" : "Show earlier"}
+            </button>
+          </div>
         ) : null}
         </> : null}
       </div>
