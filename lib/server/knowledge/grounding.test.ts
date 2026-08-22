@@ -9,6 +9,8 @@ import {
   KnowledgeAnswerContractError
 } from "./grounding";
 
+const privateSourceId = "2e3aa829-79cd-41df-b5c7-1a53f4b5cf19";
+
 function evidence(): KnowledgeEvidencePackage {
   return {
     citationContract: KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
@@ -36,7 +38,7 @@ function evidence(): KnowledgeEvidencePackage {
       provenance: [],
       sectionId: null,
       sourceArtifactId: "artifact-1",
-      sourceId: "source-1",
+      sourceId: privateSourceId,
       sourceName: "Source",
       sourceVersionId: "version-1",
       sourceVersionNumber: 1,
@@ -120,20 +122,17 @@ describe("Knowledge answer citation contract", () => {
     }).outcome).toBe("insufficient_evidence");
   });
 
-  it("rejects unknown handles and internal identities", () => {
+  it("rejects unknown handles", () => {
     expect(() => groundKnowledgeAnswer({
       answer: "AIQSA_KB_STATUS=ANSWERED\nClaim [K2].",
       evidence: evidence()
     })).toThrow("outside the final evidence manifest");
-    expect(() => groundKnowledgeAnswer({
-      answer: "AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE\nsourceArtifactId leaked",
-      evidence: evidence()
-    })).toThrow("internal identity");
   });
 
   it.each([
     "evidence-1",
     "source-1",
+    privateSourceId,
     "version-1",
     "artifact-1",
     "passage-1",
@@ -145,36 +144,12 @@ describe("Knowledge answer citation contract", () => {
     })).toThrow("internal identity");
   });
 
-  it.each([
-    "sourceId",
-    "sourceVersionId",
-    "sourceArtifactId",
-    "documentId",
-    "knowledgeBaseSnapshotId",
-    "indexGenerationId",
-    "chunkId",
-    "evidenceItemId",
-    "modelRunId",
-    "modelRunToolCallId",
-    "providerAttemptId",
-    "providerCallId",
-    "providerResponseId",
-    "profileRevisionId",
-    "receiptHash",
-    "idempotencyKey",
-    "fusedScore",
-    "vectorDistance",
-    "rawScore",
-    "vectorScore",
-    "rerankScore",
-    "confidenceScore",
-    "confidenceBucket",
-    "postRerankRank"
-  ])("rejects the internal Knowledge field %s", (field) => {
-    expect(() => groundKnowledgeAnswer({
-      answer: `AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE\n${field}: private`,
+  it("allows technical field names without exposing concrete private values", () => {
+    const body = "The sourceId, documentId, contentHash, and confidenceScore fields are documented.";
+    expect(groundKnowledgeAnswer({
+      answer: `AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE\n${body}`,
       evidence: evidence()
-    })).toThrow("internal identity");
+    }).finalText).toBe(body);
   });
 
   it("does not reject ordinary prose that describes identifiers or scoring generically", () => {
@@ -195,6 +170,46 @@ describe("Knowledge tool-loop citation contract", () => {
       answer,
       evidence: toolLoopEvidence()
     })).toMatchObject({ finalText: answer, outcome: "answered" });
+  });
+
+  it.each([
+    "[Knowledge Base](https://example.test/knowledge)",
+    "[Kubernetes docs](https://example.test/kubernetes)",
+    "[K8s docs](https://example.test/k8s)",
+    "[Key findings]"
+  ])("keeps non-citation Markdown beginning with K: %s", (answer) => {
+    expect(groundKnowledgeToolLoopAnswer({
+      answer,
+      evidence: toolLoopEvidence()
+    }).finalText).toBe(answer);
+  });
+
+  it.each([
+    "Vitamin K2 is discussed in the source.",
+    "A K1 visa is a distinct term.",
+    "Form K1 is available online.",
+    "Bare K999 is not citation syntax."
+  ])("keeps a bare K-number term as ordinary prose: %s", (answer) => {
+    expect(groundKnowledgeToolLoopAnswer({
+      answer,
+      evidence: toolLoopEvidence()
+    }).finalText).toBe(answer);
+  });
+
+  it("allows field terminology but rejects concrete private UUIDs and hashes", () => {
+    const current = toolLoopEvidence();
+    const safeAnswer = "The sourceId field contains an identifier.";
+    expect(groundKnowledgeToolLoopAnswer({
+      answer: safeAnswer,
+      evidence: current
+    }).finalText).toBe(safeAnswer);
+
+    for (const identity of [privateSourceId, "a".repeat(64)]) {
+      expect(() => groundKnowledgeToolLoopAnswer({
+        answer: `Internal record: ${identity}`,
+        evidence: current
+      })).toThrow("internal Knowledge identity");
+    }
   });
 
   it("accepts mixed Knowledge and Web citations", () => {
@@ -225,9 +240,10 @@ describe("Knowledge tool-loop citation contract", () => {
         : item)
     };
     for (const [answer, selectedEvidence] of [
-      ["Unknown [K3].", toolLoopEvidence()],
+      ["Unknown [K999].", toolLoopEvidence()],
       ["Deleted [K1].", deleted],
-      ["Malformed citation K1.", toolLoopEvidence()],
+      ["Malformed [K0].", toolLoopEvidence()],
+      ["Malformed [K01].", toolLoopEvidence()],
       ["Malformed [K1 and K2].", toolLoopEvidence()]
     ] as const) {
       expect(() => groundKnowledgeToolLoopAnswer({

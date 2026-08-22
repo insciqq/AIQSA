@@ -457,6 +457,27 @@ describe("Knowledge Evidence v2 repository projection", () => {
     })).rejects.toThrow("outside the final evidence manifest");
   });
 
+  it("accepts Search-only Markdown when a selected Knowledge session delivered no handles", async () => {
+    const checkpoint = toolLoopCheckpoint({
+      phase: "provider_running",
+      providerContinuation: null,
+      roundIndex: 1
+    });
+    if (!checkpoint) throw new Error("tool_loop_checkpoint_fixture_invalid");
+    const answer = "See [Kubernetes docs](https://example.test/kubernetes) for current details.";
+
+    await expect(groundKnowledgeRunAnswer(client(row({
+      evidenceItems: [],
+      originalIntent: { kind: "tool_loop_v1" }
+    }), {
+      toolLoopRun: { toolCalls: [], toolLoopState: checkpoint }
+    }), {
+      answer,
+      runId: "run-1",
+      userId: "user-1"
+    })).resolves.toMatchObject({ grounding: { finalText: answer, outcome: "answered" } });
+  });
+
   it("fails tool-loop grounding when the persisted result and receipt text diverge", async () => {
     const evidence = toolLoopRetrieval();
     const checkpoint = toolLoopCheckpoint({

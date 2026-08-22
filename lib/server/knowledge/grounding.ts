@@ -36,10 +36,10 @@ const statusAnswered = "AIQSA_KB_STATUS=ANSWERED";
 const statusInsufficient = "AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE";
 const groupedCitation = /[\[(【]\s*((?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?)(?:\s*(?:[,;&/+]|and|и)\s*(?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?))*)\s*[\])】]/giu;
 const citationToken = /K[1-9]\d{0,3}(?:\.[1-9]\d?)?/giu;
-const bracketedKnowledgeToken = /\[\s*(K[^\]]{0,64})\s*\]/giu;
+const bracketedKnowledgeCandidate = /\[\s*([Kk][0-9][^\]]{0,63})\s*\]/gu;
+const knowledgeCitationPrefix = /^[Kk][0-9]+(?:\.[0-9]+)?(?=$|[^\p{L}\p{M}\p{N}_])/u;
 const adjacentDuplicate = /(\[K[1-9]\d{0,3}(?:\.[1-9]\d?)?\])(?:\s*\1)+/giu;
 const commaGroupedCitation = /\[\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?(?:\s*,\s*K[1-9]\d{0,3}(?:\.[1-9]\d?)?)+)\s*\]/giu;
-const internalIdentity = /\b(?:sourceId|sourceArtifactId|sourceVersionId|documentId|documentVersionId|knowledgeBaseId|knowledgeBaseSnapshotId|indexGenerationId|chunkId|passageId|sectionId|evidenceItemId|evidencePackageId|manifestId|manifestHash|retrievalSessionId|knowledgeRunId|modelRunId|modelRunToolCallId|providerAttemptId|providerCallId|providerResponseId|profileRevisionId|embeddingProviderModelId|credentialId|receiptHash|contentHash|requestHash|checkpointHash|idempotencyKey|dispatchAttemptKey|fusedScore|vectorDistance|rawScore|(?:vector|lexical|semantic|hybrid|rrf|rerank|similarity|confidence)Score|confidenceBucket|preRerankRank|postRerankRank|knowledge_focused_v1)\b/iu;
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -95,8 +95,10 @@ function assertNoMalformedOrUnknownHandles(
   availableHandles: ReadonlySet<string>
 ): string[] {
   const seen: string[] = [];
-  for (const match of answer.matchAll(bracketedKnowledgeToken)) {
-    const raw = match[1]?.trim().toUpperCase() ?? "";
+  for (const match of answer.matchAll(bracketedKnowledgeCandidate)) {
+    const candidate = match[1]?.trim() ?? "";
+    if (!knowledgeCitationPrefix.test(candidate)) continue;
+    const raw = candidate.toUpperCase();
     const decoded = decodeKnowledgeCitationHandle(raw);
     if (!decoded || !availableHandles.has(raw)) {
       throw new KnowledgeAnswerContractError(
@@ -105,16 +107,6 @@ function assertNoMalformedOrUnknownHandles(
       );
     }
     seen.push(raw);
-  }
-  const outsideBrackets = answer.replace(
-    /\[\s*K[1-9]\d{0,3}(?:\.[1-9]\d?)?\s*\]/giu,
-    ""
-  );
-  if (/\bK[1-9]\d{0,3}(?:\.[1-9]\d?)?\b/iu.test(outsideBrackets)) {
-    throw new KnowledgeAnswerContractError(
-      "knowledge_citation_contract_failed",
-      "The Knowledge answer used a malformed citation handle"
-    );
   }
   return seen;
 }
@@ -140,8 +132,7 @@ export function groundKnowledgeAnswer(input: Readonly<{
     );
   }
   const body = newline < 0 ? "" : original.slice(newline + 1);
-  if (!body.trim() || internalIdentity.test(body) ||
-    containsEvidenceInternalIdentity(body, input.evidence)) {
+  if (!body.trim() || containsEvidenceInternalIdentity(body, input.evidence)) {
     throw new KnowledgeAnswerContractError(
       "knowledge_answer_contract_failed",
       !body.trim()
@@ -184,8 +175,7 @@ export function groundKnowledgeToolLoopAnswer(input: Readonly<{
   evidence: KnowledgeEvidencePackage;
 }>): KnowledgeGroundingResult {
   const original = input.answer.replace(/\r\n?/gu, "\n");
-  if (!original.trim() || internalIdentity.test(original) ||
-    containsEvidenceInternalIdentity(original, input.evidence)) {
+  if (!original.trim() || containsEvidenceInternalIdentity(original, input.evidence)) {
     throw new KnowledgeAnswerContractError(
       "knowledge_answer_contract_failed",
       !original.trim()
