@@ -65,6 +65,7 @@ import {
   type ThreadSnapshot
 } from "@/components/app-shell/threadStore";
 import { sortChatsByFavoriteThenUpdatedAt, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { mergeWorkspaceProjectDrafts } from "@/components/app-shell/workspaceProjectDraftMerge";
 import type { WorkspaceChatMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 
 type MutableRef<T> = {
@@ -818,9 +819,13 @@ export function useWorkspaceActions({
         const ownedChats = recoveredTemporarySummary
           ? [...nextChats, recoveredTemporarySummary]
           : nextChats;
+        const mergedChats = mergeWorkspaceProjectDrafts({
+          currentChats: useWorkspaceStore.getState().chats,
+          incomingChats: ownedChats
+        }).chats;
         useWorkspaceStore.getState().setFolders(body.folders);
-        useWorkspaceStore.getState().setChats(sortChatsByFavoriteThenUpdatedAt(ownedChats));
-        const nextChatIds = new Set(ownedChats.map((chat) => chat.id));
+        useWorkspaceStore.getState().setChats(mergedChats);
+        const nextChatIds = new Set(mergedChats.map((chat) => chat.id));
         const nextFolderIds = new Set(body.folders.map((folder) => folder.id));
         const composerSessionKeys = Object.keys(
           useComposerSessionStore.getState().sessionsByKey

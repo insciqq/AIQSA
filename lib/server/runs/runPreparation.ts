@@ -1059,6 +1059,27 @@ export async function prepareRun(
       : input.source.kind === "send"
         ? chat.defaultModelId
         : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
+  const firstProjectSend = Boolean(
+    project && input.source.kind === "send" && input.source.draftProjectChat
+  );
+  if (firstProjectSend && !project?.defaults.providerModelId) {
+    return failure(
+      "project_setup_required",
+      409,
+      "Choose a Project default model before starting a shared chat."
+    );
+  }
+  if (firstProjectSend && project && (
+    !project.modelIds.includes(project.defaults.providerModelId!) ||
+    chat.defaultModelId !== project.defaults.providerModelId ||
+    !chat.defaultProvider
+  )) {
+    return failure(
+      "project_default_model_unavailable",
+      409,
+      "The Project default model is unavailable."
+    );
+  }
   if (project && !project.modelIds.includes(selectedModelId)) {
     return failure("provider_not_available", 403);
   }
@@ -1075,7 +1096,29 @@ export async function prepareRun(
   }
   const providerAdmission = deps.providerAdmission;
   if (!providerAdmission) {
-    return failure("provider_not_available", 503);
+    return firstProjectSend
+      ? failure("project_default_model_unavailable", 409, "The Project default model is unavailable.")
+      : failure("provider_not_available", 503);
+  }
+  if (firstProjectSend && project?.defaults.providerModelId) {
+    try {
+      await providerAdmission.load({
+        executionScope: "project",
+        providerConnectionId: chat.defaultProvider,
+        providerModelId: project.defaults.providerModelId,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        userId: input.userId
+      });
+    } catch (error) {
+      if (error instanceof ProviderAdmissionError) {
+        return failure(
+          "project_default_model_unavailable",
+          409,
+          "The Project default model is unavailable."
+        );
+      }
+      throw error;
+    }
   }
   let admissionPlan: ProviderAdmissionPlan;
   let executionProvider = selectedProvider;
@@ -1179,7 +1222,6 @@ export async function prepareRun(
   )) {
     return failure("project_external_tools_disabled", 403);
   }
-  const projectMcpUnavailable = Boolean(projectMcpServerIds.length > 0 && !deps.mcp);
   const mcpPlan = project
     ? projectMcpServerIds.length > 0 && deps.mcp
       ? deps.mcp.prepareProject
@@ -1211,6 +1253,15 @@ export async function prepareRun(
   const mcpDiscoveryEnabled = !project && Boolean(mcpCatalog?.servers.length);
   if (project && mcpPlan?.ok && mcpPlan.snapshot.servers.some((server) =>
     server.credentialSources?.some((source) => source === "oauth" || source === "personal")
+  )) {
+    return failure(
+      "project_mcp_personal_credentials_forbidden",
+      403,
+      "Project chats can use only shared or no-auth MCP credentials."
+    );
+  }
+  if (project && mcpPlan && !mcpPlan.ok && mcpPlan.issues.some((issue) =>
+    issue.errorCode === "mcp_project_credentials_unavailable"
   )) {
     return failure(
       "project_mcp_personal_credentials_forbidden",
@@ -1386,9 +1437,6 @@ export async function prepareRun(
   }
   if (ordinaryLoadAllMcpUnavailable) {
     return failure("mcp_not_ready", 409, "Enabled MCP tools are unavailable.");
-  }
-  if (projectMcpUnavailable) {
-    return failure("mcp_not_ready", 409, "Project MCP tools are unavailable.");
   }
   if (mcpPlan && !mcpPlan.ok) {
     if (assistantRun) {

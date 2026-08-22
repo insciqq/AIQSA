@@ -182,16 +182,22 @@ describe("Prisma MCP run-plan loader", () => {
       })]);
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
-        oauthConnectionId: null,
-        state: "ready",
-        userServer: { personalConfigEnvelope: null }
+        state: "ready"
       })
     }));
   });
 
   it.each([
-    ["personal credential source", { credentialSources: ["personal"] }],
-    ["OAuth connection", { oauthConnectionId: "oauth-1" }],
+    [
+      "personal credential source",
+      { credentialSources: ["personal"] },
+      "mcp_project_credentials_unavailable"
+    ],
+    [
+      "OAuth connection",
+      { oauthConnectionId: "oauth-1" },
+      "mcp_project_credentials_unavailable"
+    ],
     ["personal slot envelope", {
       userServer: {
         desiredRuntimeGenerationId: "project-generation-1",
@@ -199,7 +205,7 @@ describe("Prisma MCP run-plan loader", () => {
         personalConfigEnvelope: "encrypted",
         serverId: "project-server-1"
       }
-    }],
+    }, "mcp_project_credentials_unavailable"],
     ["historical non-current generation", {
       userServer: {
         desiredRuntimeGenerationId: "project-generation-2",
@@ -207,8 +213,8 @@ describe("Prisma MCP run-plan loader", () => {
         personalConfigEnvelope: null,
         serverId: "project-server-1"
       }
-    }]
-  ])("fails Project MCP closed for %s", async (_label, override) => {
+    }, "mcp_runtime_unavailable"]
+  ])("fails Project MCP closed for %s", async (_label, override, errorCode) => {
     const [record] = await loadMcpRunPlanRecordsForProjectServers(
       ["project-server-1"],
       projectClientWith([projectGeneration(override)]).client
@@ -217,7 +223,7 @@ describe("Prisma MCP run-plan loader", () => {
     expect(record).toMatchObject({
       credentialSources: [],
       enabled: false,
-      errorCode: "mcp_project_credentials_unavailable",
+      errorCode,
       generationId: null,
       readiness: "unavailable"
     });
@@ -240,10 +246,42 @@ describe("Prisma MCP run-plan loader", () => {
     expect(record).toMatchObject({
       credentialSources: [],
       enabled: false,
-      errorCode: "mcp_project_credentials_unavailable",
+      errorCode: "mcp_runtime_unavailable",
       generationId: null,
       readiness: "unavailable"
     });
+  });
+
+  it("does not let a newer invalid member generation mask an older runnable generation", async () => {
+    const invalid = projectGeneration({
+      credentialSources: ["personal"],
+      id: "project-generation-new-invalid",
+      userServer: {
+        desiredRuntimeGenerationId: "project-generation-new-invalid",
+        enabled: true,
+        personalConfigEnvelope: null,
+        serverId: "project-server-1"
+      }
+    });
+    const runnable = projectGeneration({
+      id: "project-generation-older-runnable",
+      userServer: {
+        desiredRuntimeGenerationId: "project-generation-older-runnable",
+        enabled: true,
+        personalConfigEnvelope: null,
+        serverId: "project-server-1"
+      }
+    });
+
+    await expect(loadMcpRunPlanRecordsForProjectServers(
+      ["project-server-1"],
+      projectClientWith([invalid, runnable]).client
+    )).resolves.toEqual([expect.objectContaining({
+      enabled: true,
+      generationId: "project-generation-older-runnable",
+      readiness: "ready",
+      serverId: "project-server-1"
+    })]);
   });
 
   it("loads a current ready generation through a direct grant", async () => {

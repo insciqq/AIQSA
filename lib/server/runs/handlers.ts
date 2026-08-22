@@ -419,7 +419,12 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return Response.json({ error: projectDraft ? "project_not_found" : "chat_not_found" }, { status: 404 });
     }
     if (chat && projectDraft && !projectChat) {
-      return Response.json({ error: "project_draft_conflict" }, { status: 409 });
+      const matchesPersistedProjectChat = chat.id === params.chatId &&
+        chat.project?.projectId === projectDraft.projectId &&
+        chat.projectFolderId === projectDraft.folderId;
+      if (!matchesPersistedProjectChat) {
+        return Response.json({ error: "project_draft_conflict" }, { status: 409 });
+      }
     }
 
     const activeRunResponse = await activeRunConflictResponse(chat.id, deps.repository, auth.userId);

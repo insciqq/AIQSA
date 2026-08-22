@@ -87,6 +87,10 @@ export function ProjectNavigationV2({
   const [folderDialog, setFolderDialog] = useState<null | { mode: "create" | "rename"; folderId?: string; initial: string }>(null);
   const [folderName, setFolderName] = useState("");
   const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
+  const canStartChat = Boolean(
+    selected?.status === "ACTIVE" && selected.capabilities.mutateChats &&
+    selected.readiness !== "SETUP_REQUIRED"
+  );
   const unfiledChats = chats.filter((chat) => !chat.folderId);
   const renderChat = (chat: (typeof chats)[number]) => (
     <div className="v2-project-chat-row-wrap" key={chat.id}>
@@ -177,11 +181,20 @@ export function ProjectNavigationV2({
             ) : null}
           </div>
           {controller.actionError ? <p className="v2-project-inline-error">{controller.actionError}</p> : null}
+          {controller.syncWarning ? (
+            <p className="v2-project-sync-warning" role="status">
+              {controller.syncWarning}{" "}
+              <button type="button" onClick={() => void controller.actions.retrySync()}>
+                Retry sync
+              </button>
+            </p>
+          ) : null}
           {selected?.status === "ACTIVE" && selected.capabilities.mutateChats ? (
             <div className="v2-project-create-actions">
               <button
                 className="v2-project-new-chat v2-focusable"
-                disabled={controller.busy}
+                disabled={controller.busy || !canStartChat}
+                title={!canStartChat ? "Project setup is required before starting a shared chat." : undefined}
                 type="button"
                 onClick={() => {
                   void controller.actions.createChat();
@@ -208,7 +221,9 @@ export function ProjectNavigationV2({
             </div>
           ) : chats.length === 0 && projectFolders.length === 0 ? (
             <p className="v2-project-navigation-note">
-              {selected?.capabilities.mutateChats ? "Start the first shared chat." : "No shared chats yet."}
+              {selected?.readiness === "SETUP_REQUIRED"
+                ? "Project setup is required before the first shared chat."
+                : selected?.capabilities.mutateChats ? "Start the first shared chat." : "No shared chats yet."}
             </p>
           ) : (
             <div className="v2-project-chat-list">
@@ -220,7 +235,7 @@ export function ProjectNavigationV2({
                       <span>{folder.name}</span>
                       <ProjectFolderActions
                         busy={controller.busy}
-                        canCreateChat={selected?.status === "ACTIVE" && selected.capabilities.mutateChats}
+                        canCreateChat={canStartChat}
                         canManage={selected?.status === "ACTIVE" && selected.capabilities.manageProject}
                         folderName={folder.name}
                         onCreateChat={() => void controller.actions.createChat(folder.id)}

@@ -128,6 +128,9 @@ export type RunControlRecord = {
   id: string;
   modelId: string;
   project?: ProjectRunRecoveryAuthority;
+  /** Legacy ProjectRunBinding rows with incomplete immutable authority. Active
+   * recovery must fail these closed; terminal history remains readable. */
+  projectRecoveryInvalid?: true;
   provider: string;
   providerResponseId: string | null;
   recoverySettled?: boolean;
@@ -394,6 +397,7 @@ export type RunOwnedChatRecord = Readonly<{
   id: string;
   memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   messageCount: number;
+  projectFolderId?: string | null;
   projectMemory: string | null;
   project?: ProjectRunAdmission;
   title: string;
@@ -554,6 +558,9 @@ export type RunRepository = {
     leafMessageId: string
   ): Promise<ProviderConversationMessage[]>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
+  /** Internal recovery lookup. It deliberately does not depend on the
+   * initiating user's current chat or Project access. */
+  getRunControlForRecovery?(runId: string): Promise<RunControlRecord | null>;
   getRunOutcomeForUser(runId: string, userId: string): Promise<RunOutcomeRecord | null>;
   getChatUpdateForRun(input: {
     assistantMessageId: string;

@@ -268,6 +268,29 @@ function authMode(configuration: unknown): string | null {
   return configuration.auth.mode;
 }
 
+function projectRunGenerationHasPersonalCredentials(
+  generation: ProjectRunGenerationRecord
+): boolean {
+  return generation.oauthConnectionId !== null ||
+    generation.userServer.personalConfigEnvelope !== null ||
+    generation.credentialSources.some((source) => source !== "shared" && source !== "none");
+}
+
+function projectRunGenerationIsRunnable(
+  generation: ProjectRunGenerationRecord
+): boolean {
+  const server = generation.revision.server;
+  const sharedAuthorityActive = server.enabled && server.archivedAt === null && (
+    Boolean(server.sharedConfigEnvelope) ||
+    authMode(generation.revision.configuration) === "none"
+  );
+  return sharedAuthorityActive && !projectRunGenerationHasPersonalCredentials(generation) &&
+    generation.state === "ready" &&
+    generation.userServer.enabled &&
+    generation.userServer.desiredRuntimeGenerationId === generation.id &&
+    generation.revision.id === server.activeRevisionId;
+}
+
 /**
  * Resolve a Project MCP plan without joining through McpGrant or
  * McpUserServer personal configuration.  Runtime generations are installation
@@ -278,21 +301,11 @@ function serializeProjectRunGeneration(
   generation: ProjectRunGenerationRecord
 ): McpRunPlanRecord {
   const server = generation.revision.server;
-  const sharedSafe = server.enabled && server.archivedAt === null && (
-    Boolean(server.sharedConfigEnvelope) ||
-    authMode(generation.revision.configuration) === "none"
-  );
   const credentialSources = generation.credentialSources.filter(
     (source): source is "shared" => source === "shared"
   );
-  const credentialsSafe = generation.oauthConnectionId === null &&
-    generation.userServer.personalConfigEnvelope === null &&
-    generation.credentialSources.every((source) => source === "shared" || source === "none");
   const runtime = runtimeReadiness(generation.state, generation.errorCode);
-  const runnable = sharedSafe && credentialsSafe &&
-    generation.userServer.enabled &&
-    generation.userServer.desiredRuntimeGenerationId === generation.id &&
-    generation.revision.id === server.activeRevisionId;
+  const runnable = projectRunGenerationIsRunnable(generation);
   return {
     catalogTools: revisionCatalogTools(
       generation.revision.validationEvidence,
@@ -300,7 +313,11 @@ function serializeProjectRunGeneration(
     ),
     credentialSources: runnable ? credentialSources : [],
     enabled: runnable,
-    errorCode: runnable ? runtime.errorCode : "mcp_project_credentials_unavailable",
+    errorCode: runnable
+      ? runtime.errorCode
+      : projectRunGenerationHasPersonalCredentials(generation)
+        ? "mcp_project_credentials_unavailable"
+        : "mcp_runtime_unavailable",
     externalAccountLabel: null,
     fingerprint: runnable ? generation.fingerprint : null,
     generationId: runnable ? generation.id : null,
@@ -366,15 +383,17 @@ export async function loadMcpRunPlanRecordsForProjectServers(
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     select: projectRunGenerationSelect,
     where: {
-      oauthConnectionId: null,
       revision: { server: { id: { in: uniqueServerIds } } },
-      state: "ready",
-      userServer: { personalConfigEnvelope: null }
+      state: "ready"
     }
   });
   const selected = new Map<string, ProjectRunGenerationRecord>();
   for (const generation of generations) {
-    if (!selected.has(generation.userServer.serverId)) {
+    const current = selected.get(generation.userServer.serverId);
+    if (!current || (
+      !projectRunGenerationIsRunnable(current) &&
+      projectRunGenerationIsRunnable(generation)
+    )) {
       selected.set(generation.userServer.serverId, generation);
     }
   }

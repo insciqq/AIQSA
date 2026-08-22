@@ -1000,6 +1000,7 @@ export function PowerAppShellV2({
     persistActiveLeaf,
     primeAnswerSound,
     refreshActiveChat,
+    refreshProjectWorkspace: projectWorkspace.actions.refresh,
     resolveCatalog: () => runCatalogRef.current,
     resetThreadToLatest,
     setNotice,

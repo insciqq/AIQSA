@@ -35,6 +35,7 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   type DurableRunControlRecord,
+  type ProjectRunAdmission,
   type RunRepository
 } from "./runRepositoryContract";
 import {
@@ -58,6 +59,35 @@ const entitledFakeModel: ResolvedEntitlements = {
   providerKeys: new Set(),
   searchStrategies: new Set()
 };
+
+function projectRunAdmission(projectId: string): ProjectRunAdmission {
+  return {
+    accessRevision: 1,
+    assistantBindings: [],
+    defaults: {
+      assistantId: null,
+      controlValues: {},
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+      mcpMode: "off",
+      providerModelId: "fake-qsa",
+      searchPlan: { mode: "all_selected", optionIds: [] }
+    },
+    instructions: "Shared Project instructions",
+    instructionsRevision: 1,
+    knowledgeBaseIds: [],
+    mcpServerIds: [],
+    memoryEnabled: false,
+    memoryItems: [],
+    memoryRevision: 0,
+    modelIds: ["fake-qsa"],
+    policy: { externalToolsEnabled: true },
+    policyRevision: 1,
+    projectId,
+    executionScope: "project",
+    role: "CONTRIBUTOR",
+    searchOptionIds: []
+  };
+}
 
 const repositoryHarnesses = new WeakMap<
   RunRepository,
@@ -970,6 +1000,131 @@ describe("model run route handlers", () => {
     await expect(response.json()).resolves.toEqual({
       error: "chat_not_found"
     });
+    expect(state.created).toBeNull();
+  });
+
+  it("idempotently accepts a matching stale Project draft for an already-persisted chat", async () => {
+    const projectId = "10000000-0000-4000-8000-000000000001";
+    const folderId = "20000000-0000-4000-8000-000000000002";
+    const { repository, state } = createMemoryRepository();
+    repository.findOwnedChat = async (chatId, userId) =>
+      userId === config.bootstrapUserId
+        ? {
+            activeLeafMessageId: null,
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            id: chatId,
+            messageCount: 0,
+            project: projectRunAdmission(projectId),
+            projectFolderId: folderId,
+            projectMemory: null,
+            title: "Persisted Project chat"
+          }
+        : null;
+    const response = await createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    })(new Request("http://app.local/api/chats/chat-project/messages", {
+      body: JSON.stringify({
+        expectedActiveLeafId: null,
+        modelId: "fake-qsa",
+        projectDraft: { folderId, projectId },
+        provider: "fake",
+        text: "Retry the admitted Project send"
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-project" } });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(state.created).toMatchObject({
+      chatId: "chat-project",
+      project: { projectId }
+    });
+    expect(state.created?.projectChat).toBeUndefined();
+  });
+
+  it("rejects a stale Project draft whose persisted folder does not match", async () => {
+    const projectId = "10000000-0000-4000-8000-000000000001";
+    const folderId = "20000000-0000-4000-8000-000000000002";
+    const { repository, state } = createMemoryRepository();
+    repository.findOwnedChat = async (chatId, userId) =>
+      userId === config.bootstrapUserId
+        ? {
+            activeLeafMessageId: null,
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            id: chatId,
+            messageCount: 0,
+            project: projectRunAdmission(projectId),
+            projectFolderId: folderId,
+            projectMemory: null,
+            title: "Persisted Project chat"
+          }
+        : null;
+    const response = await createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    })(new Request("http://app.local/api/chats/chat-project/messages", {
+      body: JSON.stringify({
+        expectedActiveLeafId: null,
+        modelId: "fake-qsa",
+        projectDraft: { folderId: null, projectId },
+        provider: "fake",
+        text: "Mismatched stale draft"
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-project" } });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "project_draft_conflict" });
+    expect(state.created).toBeNull();
+  });
+
+  it("returns a typed setup error before leaf checks for a first Project send without a default", async () => {
+    const projectId = "10000000-0000-4000-8000-000000000001";
+    const chatId = "30000000-0000-4000-8000-000000000003";
+    const { repository, state } = createMemoryRepository();
+    repository.findOwnedChat = async () => null;
+    repository.loadProjectFirstSend = async () => {
+      const project = projectRunAdmission(projectId);
+      return {
+        activeLeafMessageId: null,
+        defaultModelId: "",
+        defaultProvider: "",
+        id: chatId,
+        messageCount: 0,
+        project: {
+          ...project,
+          defaults: { ...project.defaults, providerModelId: null }
+        },
+        projectFolderId: null,
+        projectMemory: null,
+        title: "New Project chat"
+      };
+    };
+    const response = await createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    })(new Request(`http://app.local/api/chats/${chatId}/messages`, {
+      body: JSON.stringify({
+        expectedActiveLeafId: null,
+        modelId: "fake-qsa",
+        projectDraft: { folderId: null, projectId },
+        provider: "fake",
+        text: "First shared question"
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId } });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: "project_setup_required" });
     expect(state.created).toBeNull();
   });
 

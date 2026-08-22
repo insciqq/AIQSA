@@ -332,6 +332,58 @@ export function createPrismaRunRepository(
     };
   }
 
+  async function loadInternalRunControl(runId: string) {
+    const run = await prismaClient.modelRun.findFirst({
+      select: {
+        assistantMessageId: true,
+        chatId: true,
+        errorPayload: true,
+        id: true,
+        modelId: true,
+        projectRunBinding: {
+          select: {
+            accessRevision: true,
+            instructionsRevision: true,
+            memoryRevision: true,
+            policyRevision: true,
+            projectId: true,
+            providerAdmissionFingerprint: true,
+            providerConnectionId: true,
+            providerModelId: true,
+            providerRequiresClientTools: true,
+            providerSearchPlan: true
+          }
+        },
+        provider: true,
+        providerResponseId: true,
+        status: true
+      },
+      where: { id: runId }
+    });
+    if (!run) return null;
+    let project;
+    let projectRecoveryInvalid = false;
+    if (run.projectRunBinding) {
+      try {
+        project = projectRunRecoveryAuthority(run.projectRunBinding);
+      } catch {
+        projectRecoveryInvalid = true;
+      }
+    }
+    return {
+      assistantMessageId: run.assistantMessageId,
+      chatId: run.chatId,
+      id: run.id,
+      modelId: run.modelId,
+      ...(project ? { project } : {}),
+      ...(projectRecoveryInvalid ? { projectRecoveryInvalid: true as const } : {}),
+      provider: run.provider,
+      providerResponseId: run.providerResponseId,
+      recoverySettled: isRecoveredRunTerminalPayload(run.errorPayload),
+      status: run.status
+    };
+  }
+
   return {
     groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input),
     admitPreparingRun: (input) =>
@@ -380,6 +432,11 @@ export function createPrismaRunRepository(
             status: {
               in: activeModelRunStatuses
             },
+            // Project-bound runs require their accepted recovery authority to
+            // be checked by the installation reconciler before they settle.
+            // The generic boot orphan sweep cannot make that authorization
+            // decision and must not mask it with run_orphaned_on_boot.
+            projectRunBinding: null,
             providerResponseId: null,
             toolLoopState: { equals: Prisma.DbNull }
           }
@@ -875,6 +932,7 @@ export function createPrismaRunRepository(
           folder: { select: { defaultKnowledgePlan: true, projectMemory: true } },
           id: true,
           memoryMode: true,
+          projectFolderId: true,
           projectId: true,
           title: true
         },
@@ -902,6 +960,7 @@ export function createPrismaRunRepository(
         id: chat.id,
         memoryMode: chat.memoryMode,
         messageCount: chat._count.messages,
+        projectFolderId: chat.projectFolderId,
         projectMemory: chat.folder?.projectMemory ?? null,
         ...(project ? { project } : {}),
         title: chat.title
@@ -937,6 +996,7 @@ export function createPrismaRunRepository(
         memoryMode: "EXCLUDED",
         messageCount: 0,
         project,
+        projectFolderId: folderId,
         projectMemory: null,
         title: "New Chat"
       };
@@ -1128,57 +1188,17 @@ export function createPrismaRunRepository(
       };
     },
     getRunControlForUser: async (runId, userId) => {
-      const run = await prismaClient.modelRun.findFirst({
-        select: {
-          assistantMessageId: true,
-          chatId: true,
-          errorPayload: true,
-          id: true,
-          modelId: true,
-          projectRunBinding: {
-            select: {
-              accessRevision: true,
-              instructionsRevision: true,
-              memoryRevision: true,
-              policyRevision: true,
-              projectId: true,
-              providerAdmissionFingerprint: true,
-              providerConnectionId: true,
-              providerModelId: true,
-              providerRequiresClientTools: true,
-              providerSearchPlan: true
-            }
-          },
-          provider: true,
-          providerResponseId: true,
-          status: true
-        },
-        where: { id: runId }
-      });
-      if (run) {
-        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: run.chatId } });
+      const control = await loadInternalRunControl(runId);
+      if (control) {
+        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: control.chatId } });
         const projectAccess = chat?.projectId
           ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId })
           : null;
         if (chat?.userId !== userId && !projectAccess) return null;
       }
-
-      return run
-        ? {
-            assistantMessageId: run.assistantMessageId,
-            chatId: run.chatId,
-            id: run.id,
-            modelId: run.modelId,
-            ...(run.projectRunBinding
-              ? { project: projectRunRecoveryAuthority(run.projectRunBinding)! }
-              : {}),
-            provider: run.provider,
-            providerResponseId: run.providerResponseId,
-            recoverySettled: isRecoveredRunTerminalPayload(run.errorPayload),
-            status: run.status
-          }
-        : null;
+      return control;
     },
+    getRunControlForRecovery: loadInternalRunControl,
     isProjectRunAccessCurrent: async ({
       accessRevision,
       instructionsRevision,

@@ -743,6 +743,18 @@ function sendInput(
   };
 }
 
+function firstProjectSendInput(
+  body: Readonly<Record<string, unknown>> | null = successBody(),
+  chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}
+): RunPreparationInput {
+  const input = sendInput(body, chatOverrides);
+  if (input.source.kind !== "send") throw new Error("invalid send fixture");
+  return {
+    ...input,
+    source: { ...input.source, draftProjectChat: true }
+  };
+}
+
 function projectAdmission(
   overrides: Partial<ProjectRunAdmission> = {}
 ): ProjectRunAdmission {
@@ -850,6 +862,49 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
+
+  it("requires a configured default model for the first Project send", async () => {
+    const result = await prepareRun(
+      createHarness().deps,
+      firstProjectSendInput(successBody(), {
+        project: projectAdmission({
+          defaults: { ...projectAdmission().defaults, providerModelId: null }
+        })
+      })
+    );
+
+    expect(result).toMatchObject({
+      code: "project_setup_required",
+      ok: false,
+      status: 409
+    });
+  });
+
+  it("does not let an explicit alternate model bypass an unavailable Project default", async () => {
+    const result = await prepareRun(
+      createHarness().deps,
+      firstProjectSendInput(successBody({
+        modelId: "fake-qsa",
+        provider: "fake"
+      }), {
+        defaultModelId: "unavailable-default",
+        defaultProvider: "unavailable-provider",
+        project: projectAdmission({
+          defaults: {
+            ...projectAdmission().defaults,
+            providerModelId: "unavailable-default"
+          },
+          modelIds: ["unavailable-default", "fake-qsa"]
+        })
+      })
+    );
+
+    expect(result).toMatchObject({
+      code: "project_default_model_unavailable",
+      ok: false,
+      status: 409
+    });
+  });
 
   it("fails closed when a Project model is not explicitly linked", async () => {
     const harness = createHarness();
@@ -1003,11 +1058,80 @@ describe("run preparation", () => {
     }]);
   });
 
+  it("uses project_mcp_not_configured only when shared Project MCP integration is absent", async () => {
+    const result = await prepareRun(
+      createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } }).deps,
+      sendInput(successBody({ tools: "auto" }), {
+        project: projectAdmission({
+          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
+          mcpServerIds: ["server-1"]
+        })
+      })
+    );
+
+    expect(result).toMatchObject({
+      code: "project_mcp_not_configured",
+      ok: false,
+      status: 503
+    });
+  });
+
+  it("reports a configured but unrunnable Project MCP generation as mcp_not_ready", async () => {
+    const mcpPlan: McpRunPlanResult = {
+      code: "mcp_not_ready",
+      issues: [{ errorCode: "runtime_unavailable", name: "Team tools", readiness: "unavailable" }],
+      ok: false
+    };
+    const result = await prepareRun(
+      createHarness({
+        capabilities: { ...baseCapabilities, toolCalling: true },
+        mcpPlan
+      }).deps,
+      sendInput(successBody({ tools: "auto" }), {
+        project: projectAdmission({
+          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
+          mcpServerIds: ["server-1"]
+        })
+      })
+    );
+
+    expect(result).toMatchObject({ code: "mcp_not_ready", ok: false, status: 409 });
+  });
+
   it("rejects personal or OAuth MCP credentials in Project chats", async () => {
     const harness = createHarness({ mcpPlan: readyMcpPlan(["oauth"]) });
     const result = await prepareRun(
       harness.deps,
       sendInput(successBody({ params: {} }), {
+        project: projectAdmission({
+          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
+          mcpServerIds: ["server-1"]
+        })
+      })
+    );
+
+    expect(result).toMatchObject({
+      code: "project_mcp_personal_credentials_forbidden",
+      ok: false,
+      status: 403
+    });
+  });
+
+  it("keeps an unavailable personal Project MCP generation distinct from readiness", async () => {
+    const result = await prepareRun(
+      createHarness({
+        capabilities: { ...baseCapabilities, toolCalling: true },
+        mcpPlan: {
+          code: "mcp_not_ready",
+          issues: [{
+            errorCode: "mcp_project_credentials_unavailable",
+            name: "Personal-only tools",
+            readiness: "unavailable"
+          }],
+          ok: false
+        }
+      }).deps,
+      sendInput(successBody({ tools: "auto" }), {
         project: projectAdmission({
           defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
           mcpServerIds: ["server-1"]

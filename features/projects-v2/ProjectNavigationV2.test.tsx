@@ -6,6 +6,7 @@ import type { ProjectWorkspaceController } from "./useProjectWorkspaceController
 function projectController(input: Readonly<{
   manageProject?: boolean;
   mutateChats?: boolean;
+  setupRequired?: boolean;
 }> = {}) {
   const createChat = vi.fn(async () => true);
   const controller = {
@@ -17,6 +18,7 @@ function projectController(input: Readonly<{
         mutateChats: input.mutateChats ?? true
       },
       name: "Test project",
+      readiness: input.setupRequired ? "SETUP_REQUIRED" : "READY",
       status: "ACTIVE"
     },
     listError: null,
@@ -30,6 +32,7 @@ function projectController(input: Readonly<{
     }],
     selectedProjectId: "project-1",
     syncState: "idle",
+    syncWarning: null,
     workspace: {
       chats: [],
       folders: [{ id: "folder-1", name: "Research", parentId: null }]
@@ -42,6 +45,7 @@ function projectController(input: Readonly<{
       openSettings: vi.fn(),
       refresh: vi.fn(async () => true),
       refreshList: vi.fn(async () => true),
+      retrySync: vi.fn(async () => true),
       selectProject: vi.fn(async () => true),
       updateFolder: vi.fn(async () => true)
     }
@@ -73,5 +77,17 @@ describe("Project navigation v2", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Folder actions: Research" })).toBeNull();
+  });
+
+  it("blocks root and folder chat creation while Project setup is required", () => {
+    const { controller, createChat } = projectController({ setupRequired: true });
+    render(
+      <ProjectNavigationV2 activeChatId={null} controller={controller} onNavigate={vi.fn()} />
+    );
+
+    expect(screen.getByRole("button", { name: "New shared chat" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Folder actions: Research" }));
+    expect(screen.queryByRole("menuitem", { name: "New chat in folder" })).toBeNull();
+    expect(createChat).not.toHaveBeenCalled();
   });
 });

@@ -142,7 +142,8 @@
 }
 
 .v2-project-navigation-note,
-.v2-project-inline-error {
+.v2-project-inline-error,
+.v2-project-sync-warning {
   margin: 0;
   padding: 0.5rem;
   color: var(--v2-color-text3);
@@ -262,6 +263,15 @@
 }
 
 .v2-project-navigation-note button {
+  margin-left: 0.375rem;
+  padding: 0;
+  border: 0;
+  color: var(--v2-color-accent);
+  background: transparent;
+  cursor: pointer;
+}
+
+.v2-project-sync-warning button {
   margin-left: 0.375rem;
   padding: 0;
   border: 0;
@@ -523,6 +533,17 @@
 
 .v2-project-settings-dialog {
   grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.v2-project-settings-sync-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--v2-color-border);
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
 }
 
 .v2-project-settings-nav {

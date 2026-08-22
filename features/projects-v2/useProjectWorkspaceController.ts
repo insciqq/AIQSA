@@ -31,6 +31,7 @@ import {
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import type { Notice, WorkspaceChatSummary } from "@/components/app-shell/types";
 import { sortChatsByFavoriteThenUpdatedAt, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { mergeWorkspaceProjectDrafts } from "@/components/app-shell/workspaceProjectDraftMerge";
 import type {
   ProjectActivityResponseWire,
   ProjectChatSummaryWire,
@@ -49,6 +50,7 @@ import { useEffect, useRef, useState } from "react";
 const PROJECT_ACTIVE_FALLBACK_INTERVAL_MS = 1_500;
 const PROJECT_IDLE_FALLBACK_INTERVAL_MS = 7_500;
 const PROJECT_LIST_SYNC_INTERVAL_MS = 25_000;
+const PROJECT_SYNC_WARNING = "Change saved, but this Project view is not synchronized yet.";
 
 export type ProjectWorkspaceController = Readonly<{
   actionError: string | null;
@@ -66,6 +68,7 @@ export type ProjectWorkspaceController = Readonly<{
   settingsOpen: boolean;
   settingsInitialTab: "activity" | "general" | "members" | "memory" | "resources";
   syncState: "error" | "idle" | "syncing";
+  syncWarning: string | null;
   workspace: ProjectWorkspaceResponseWire | null;
   actions: Readonly<{
     addGrant(input: { groupId?: string; role: ProjectRole; userId?: string }): Promise<boolean>;
@@ -89,6 +92,7 @@ export type ProjectWorkspaceController = Readonly<{
     openCreate(): void;
     openSettings(tab?: "activity" | "general" | "members" | "memory" | "resources"): void;
     refresh(): Promise<boolean>;
+    retrySync(): Promise<boolean>;
     refreshList(): Promise<boolean>;
     loadMoreActivity?(): Promise<boolean>;
     previewGrantRemoval(grantId: string): Promise<ProjectGrantRemovalPreviewWire | null>;
@@ -202,6 +206,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<"error" | "idle" | "syncing">("idle");
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const selectedRef = useRef<string | null>(null);
@@ -221,25 +226,21 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     if (store.activeChatId && chatIds.includes(store.activeChatId)) input.activateBlankWorkspace();
   });
 
-  const reconcileWorkspace = useEventCallback((projectId: string, next: ProjectWorkspaceResponseWire) => {
+  const reconcileWorkspace = useEventCallback((
+    projectId: string,
+    next: ProjectWorkspaceResponseWire
+  ): ProjectWorkspaceResponseWire => {
     const summaries = next.chats.map(projectChatSummaryFromApi);
     const store = useWorkspaceStore.getState();
-    store.updateChats((current) => {
-      const currentById = new Map(current.map((chat) => [chat.id, chat]));
-      const persistedIds = new Set(summaries.map((chat) => chat.id));
-      const pending = current.filter((chat) =>
-        chat.pendingProjectDraft?.projectId === projectId && !persistedIds.has(chat.id)
-      );
-      return sortChatsByFavoriteThenUpdatedAt([
-        ...current.filter((chat) => chat.projectId !== projectId),
-        ...pending,
-        ...summaries.map((chat) => ({
-          ...currentById.get(chat.id),
-          ...chat,
-          pendingProjectDraft: undefined
-        }))
-      ]);
+    const merged = mergeWorkspaceProjectDrafts({
+      currentChats: store.chats,
+      currentProjectChats: workspace?.chats,
+      incomingChats: summaries,
+      incomingProjectChats: next.chats,
+      projectId
     });
+    store.setChats(merged.chats);
+    return { ...next, chats: merged.projectChats ?? next.chats };
   });
 
   const mergeRealtimeChat = useEventCallback((
@@ -301,6 +302,16 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         input.setNotice({ kind: "error", text: "Project access changed. The shared workspace was closed." });
       }
     }
+    setSyncWarning(null);
+  });
+
+  const confirmProjectAccessLost = useEventCallback(async (projectId: string): Promise<boolean> => {
+    try {
+      await loadProject(projectId);
+      return false;
+    } catch (error) {
+      return error instanceof ProjectApiError && error.code === "project_not_found";
+    }
   });
 
   const refreshList = useEventCallback(async (quiet = false): Promise<boolean> => {
@@ -313,12 +324,17 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       );
       const selected = selectedRef.current;
       for (const projectId of cachedProjectIds) {
-        if (!accessibleProjectIds.has(projectId) && projectId !== selected) removeProjectCache(projectId);
+        if (
+          !accessibleProjectIds.has(projectId) && projectId !== selected &&
+          await confirmProjectAccessLost(projectId)
+        ) {
+          removeProjectCache(projectId);
+        }
       }
       setProjects(next);
       setListError(null);
       if (selected && !next.some((project) => project.id === selected)) {
-        await handleLostAccess(selected);
+        if (await confirmProjectAccessLost(selected)) await handleLostAccess(selected);
       }
       return true;
     } catch (error) {
@@ -333,8 +349,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     try {
       const nextWorkspace = await loadProjectWorkspace(projectId);
       if (selectedRef.current !== projectId) return false;
-      setWorkspace(nextWorkspace);
-      reconcileWorkspace(projectId, nextWorkspace);
+      const mergedWorkspace = reconcileWorkspace(projectId, nextWorkspace);
+      setWorkspace(mergedWorkspace);
       setLastSyncedAt(Date.now());
       setSyncState("idle");
       const activeChatId = useWorkspaceStore.getState().activeChatId;
@@ -349,7 +365,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       return true;
     } catch (error) {
       if (error instanceof ProjectApiError && error.code === "project_not_found") {
-        await handleLostAccess(projectId);
+        if (await confirmProjectAccessLost(projectId)) await handleLostAccess(projectId);
+        else if (selectedRef.current === projectId) setSyncState("error");
       } else if (selectedRef.current === projectId) {
         setSyncState("error");
       }
@@ -372,14 +389,15 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         ]);
         if (selectedRef.current !== projectId) return false;
         setDetail(nextDetail);
-        setWorkspace(nextWorkspace);
+        const mergedWorkspace = reconcileWorkspace(projectId, nextWorkspace);
+        setWorkspace(mergedWorkspace);
         setProjects((current) => [
           summaryFromDetail(nextDetail),
           ...current.filter((project) => project.id !== projectId)
         ]);
-        reconcileWorkspace(projectId, nextWorkspace);
         setLastSyncedAt(Date.now());
         setSyncState("idle");
+        setSyncWarning(null);
 
         const activeChatId = useWorkspaceStore.getState().activeChatId;
         const active = nextWorkspace.chats.find((chat) => chat.id === activeChatId);
@@ -396,8 +414,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         }
         return true;
       } catch (error) {
-        if (error instanceof ProjectApiError && error.status === 404) {
-          await handleLostAccess(projectId);
+        if (error instanceof ProjectApiError && error.code === "project_not_found") {
+          if (await confirmProjectAccessLost(projectId)) await handleLostAccess(projectId);
+          else if (selectedRef.current === projectId) setSyncState("error");
         } else if (selectedRef.current === projectId) {
           setSyncState("error");
           if (!quiet) setActionError(projectError(error));
@@ -463,8 +482,19 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         settingsOpenRef.current = false;
         setSettingsOpen(false);
       }
-      if (!options.skipRefresh && !(await refresh(false))) return false;
-      if (!options.skipRefresh && (options.refreshMemory || settingsOpen)) await refreshSettingsData();
+      if (!options.skipRefresh && !(await refresh(true))) {
+        if (selectedRef.current === projectId) setSyncWarning(PROJECT_SYNC_WARNING);
+        return true;
+      }
+      if (!options.skipRefresh && (options.refreshMemory || settingsOpenRef.current)) {
+        try {
+          await refreshSettingsData();
+        } catch {
+          if (selectedRef.current === projectId) setSyncWarning(PROJECT_SYNC_WARNING);
+          return true;
+        }
+      }
+      setSyncWarning(null);
       return true;
     } catch (error) {
       // A target/resource 404 is an inline mutation error, not evidence that
@@ -501,6 +531,12 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         resource.type === "model" && resource.available &&
         resource.resourceId === detail.defaults.providerModelId
       );
+      if (detail.readiness === "SETUP_REQUIRED") {
+        setActionError(detail.setupReasons?.includes("shared_model_unavailable")
+          ? "Add an answer model with an active shared installation credential before starting a chat."
+          : "Choose one of the linked Project models as the default before starting a chat.");
+        return null;
+      }
       if (!defaultResource?.provider || !defaultResource.modelId) {
         setActionError("Add an available Project model before starting a chat.");
         return null;
@@ -527,8 +563,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         chats: [chat, ...(workspace?.chats ?? []).filter((candidate) => candidate.id !== chat.id)],
         folders: workspace?.folders ?? []
       };
-      setWorkspace(next);
-      reconcileWorkspace(projectId, next);
+      setWorkspace(reconcileWorkspace(projectId, next));
       const summary: WorkspaceChatSummary = {
         ...projectChatSummaryFromApi(chat),
         pendingProjectDraft: { folderId, projectId }
@@ -702,6 +737,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     settingsOpen,
     settingsInitialTab,
     syncState,
+    syncWarning,
     workspace,
     actions: {
       addGrant: (grant) => detail
@@ -801,7 +837,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         try {
           const result = await leaveProject(projectId, detail.accessRevision);
           if (result.accessRemaining) {
-            await refresh(false);
+            if (!(await refresh(false)) && selectedRef.current === projectId) {
+              setSyncWarning(PROJECT_SYNC_WARNING);
+            }
             input.setNotice({
               kind: "success",
               text: "Direct Project access removed. Group access remains."
@@ -830,6 +868,19 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         void refreshSettingsData().catch((error) => setActionError(projectError(error)));
       },
       refresh: () => refresh(false),
+      retrySync: async () => {
+        if (!(await refresh(false))) return false;
+        if (settingsOpenRef.current) {
+          try {
+            await refreshSettingsData();
+          } catch {
+            setSyncWarning(PROJECT_SYNC_WARNING);
+            return false;
+          }
+        }
+        setSyncWarning(null);
+        return true;
+      },
       refreshList: () => refreshList(false),
       loadMoreActivity: async () => {
         const projectId = selectedRef.current;
