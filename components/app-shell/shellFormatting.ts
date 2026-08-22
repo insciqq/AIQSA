@@ -85,6 +85,10 @@ export function humanizeErrorCode(code: string): string {
     no_retrieval_candidates:
       "No matching passages were found in the ready documents. Rephrase the question or change the selection",
     provider_not_available: "Provider is not available",
+    project_default_model_unavailable:
+      "The Project default model is unavailable. Review Project resources and choose an available default",
+    project_setup_required:
+      "Choose an available Project default model before starting a shared chat",
     run_malformed: "Run response was malformed",
     search_provider_not_available: "Search provider is not available",
     settings_malformed: "Settings response was malformed",

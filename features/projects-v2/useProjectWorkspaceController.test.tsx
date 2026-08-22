@@ -243,6 +243,34 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(input.onProjectAccessLost).not.toHaveBeenCalled();
   });
 
+  it("keeps a committed mutation successful when its canonical refresh fails", async () => {
+    apiMocks.loadProjectWorkspace
+      .mockResolvedValueOnce({ chats: [], folders: [] })
+      .mockRejectedValueOnce(new Error("workspace temporarily unavailable"))
+      .mockResolvedValueOnce({ chats: [], folders: [] });
+    apiMocks.removeProjectResource.mockResolvedValueOnce(undefined);
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.removeResource("binding-1", 1)).toBe(true);
+    });
+
+    expect(result.current.actionError).toBeNull();
+    expect(result.current.syncWarning).toBe(
+      "Change saved, but this Project view is not synchronized yet."
+    );
+
+    await act(async () => {
+      expect(await result.current.actions.retrySync()).toBe(true);
+    });
+    expect(result.current.syncWarning).toBeNull();
+  });
+
   it("leaves Project navigation without removing the member grant", async () => {
     apiMocks.loadProjectWorkspace.mockResolvedValue({
       chats: [projectChat({ id: "chat-1", title: "Plan" })],
@@ -314,6 +342,10 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     apiMocks.loadProjectWorkspace
       .mockResolvedValueOnce(firstWorkspace)
       .mockRejectedValueOnce(new ProjectApiError(404, "project_not_found"));
+    apiMocks.loadProject
+      .mockResolvedValueOnce(projectDetail)
+      .mockResolvedValueOnce(projectDetail)
+      .mockRejectedValueOnce(new ProjectApiError(404, "project_not_found"));
     const input = controllerInput();
     const { result } = renderHook(() => useProjectWorkspaceController(input));
 
@@ -336,10 +368,42 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(input.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
   });
 
+  it("keeps cached Project state when a transient workspace 404 is not confirmed", async () => {
+    const firstWorkspace = { chats: [projectChat({ id: "chat-1", title: "Plan" })], folders: [] };
+    apiMocks.loadProjectWorkspace
+      .mockResolvedValueOnce(firstWorkspace)
+      .mockRejectedValueOnce(new ProjectApiError(404, "project_not_found"));
+    apiMocks.loadProject
+      .mockResolvedValueOnce(projectDetail)
+      .mockResolvedValueOnce(projectDetail)
+      .mockResolvedValueOnce(projectDetail);
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500);
+    });
+
+    expect(result.current.selectedProjectId).toBe("project-1");
+    expect(useWorkspaceStore.getState().chats.some((chat) => chat.projectId === "project-1"))
+      .toBe(true);
+    expect(input.onProjectAccessLost).not.toHaveBeenCalled();
+  });
+
   it("purges cached chats for an unselected Project removed from the accessible list", async () => {
     apiMocks.loadProjects
       .mockResolvedValueOnce([projectSummary])
       .mockResolvedValueOnce([projectSummary]);
+    apiMocks.loadProject.mockImplementation(async (projectId: string) => {
+      if (projectId === "project-revoked") {
+        throw new ProjectApiError(404, "project_not_found");
+      }
+      return projectDetail;
+    });
     const input = controllerInput();
     const { result } = renderHook(() => useProjectWorkspaceController(input));
 

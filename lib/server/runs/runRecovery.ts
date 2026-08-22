@@ -182,6 +182,7 @@ export type RunRecoveryRepository = Pick<
   | "updateRunProviderResponseId"
 > & Partial<Pick<
   RunRepository,
+  | "getRunControlForRecovery"
   | "groundKnowledgeAnswer"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
@@ -691,6 +692,61 @@ async function currentProjectRecoveryAuthorityAllowed(
   } catch {
     return false;
   }
+}
+
+async function loadRecoveryRunControl(
+  deps: RunRecoveryDeps,
+  runId: string,
+  userId: string
+) {
+  return deps.repository.getRunControlForRecovery
+    ? deps.repository.getRunControlForRecovery(runId)
+    : deps.repository.getRunControlForUser(runId, userId);
+}
+
+async function failProjectRecoveryAuthority(
+  deps: RunRecoveryDeps,
+  control: Readonly<{ assistantMessageId: string | null }>,
+  runId: string,
+  message = "Project provider authority is no longer current."
+): Promise<void> {
+  if (!control.assistantMessageId) return;
+  await deps.repository.failRun(
+    runId,
+    control.assistantMessageId,
+    { code: "provider_admission_changed", message },
+    { recoveryTerminal: true }
+  );
+}
+
+async function projectRecoveryAuthorityAllowsProceed(
+  deps: RunRecoveryDeps,
+  control: Readonly<{
+    assistantMessageId: string | null;
+    project?: ProjectRunRecoveryAuthority;
+    projectRecoveryInvalid?: true;
+  }>,
+  runId: string,
+  userId: string
+): Promise<boolean> {
+  if (control.projectRecoveryInvalid) {
+    await failProjectRecoveryAuthority(
+      deps,
+      control,
+      runId,
+      "The saved Project run does not contain complete recovery authority."
+    );
+    return false;
+  }
+  if (control.project && !(await currentProjectRecoveryAuthorityAllowed(
+    deps,
+    control.project,
+    userId
+  ))) {
+    await failProjectRecoveryAuthority(deps, control, runId);
+    return false;
+  }
+  return true;
 }
 
 async function currentDirectAnswerDispatchAllowed(
@@ -2680,10 +2736,11 @@ async function refreshProviderRunOnceRegistered(
   signal: AbortSignal
 ): Promise<void> {
   if (signal.aborted) return;
-  const control = await deps.repository.getRunControlForUser(runId, userId);
+  const control = await loadRecoveryRunControl(deps, runId, userId);
   if (!control || !isRefreshableRun(control)) {
     return;
   }
+  if (!(await projectRecoveryAuthorityAllowsProceed(deps, control, runId, userId))) return;
 
   const acceptedRequest = deps.repository.loadProviderDispatchRecoveryRequest
     ? await deps.repository.loadProviderDispatchRecoveryRequest({ runId, userId })
@@ -3051,7 +3108,7 @@ async function refreshProviderRunOnceRegistered(
         }
       } catch (error) {
         if (signal.aborted || error instanceof ToolLoopRecoveryStopped) return;
-        const latest = await deps.repository.getRunControlForUser(runId, userId);
+        const latest = await loadRecoveryRunControl(deps, runId, userId);
         if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
         const failure = focusedRequest
           ? focusedAnswerFailure(error)
@@ -3096,19 +3153,7 @@ async function refreshProviderRunOnceRegistered(
     control.project,
     userId
   ))) {
-    if (control.assistantMessageId) {
-      await deps.repository.failRun(
-        runId,
-        control.assistantMessageId,
-        focusedRequest
-          ? focusedKnowledgeFailure("knowledge_answer_failed")
-          : {
-              code: "provider_admission_changed",
-              message: "Project provider authority is no longer current."
-            },
-        focusedRequest ? { recoveryTerminal: true } : undefined
-      );
-    }
+    await failProjectRecoveryAuthority(deps, control, runId);
     return;
   }
 
@@ -3133,7 +3178,7 @@ async function refreshProviderRunOnceRegistered(
 
   const refreshed = directlyRefreshed ??
     await adapter!.refresh!(providerResponseId!).catch(async (error) => {
-      const latest = await deps.repository.getRunControlForUser(runId, userId);
+      const latest = await loadRecoveryRunControl(deps, runId, userId);
       if (!latest || !isActiveRunStatus(latest.status) || !latest.assistantMessageId) {
         return null;
       }
@@ -3158,30 +3203,16 @@ async function refreshProviderRunOnceRegistered(
     return;
   }
 
-  const latestBeforeAppend = await deps.repository.getRunControlForUser(runId, userId);
+  const latestBeforeAppend = await loadRecoveryRunControl(deps, runId, userId);
   if (!latestBeforeAppend || !isRefreshableRun(latestBeforeAppend)) {
     return;
   }
-  if (latestBeforeAppend.project && !(await currentProjectRecoveryAuthorityAllowed(
+  if (!(await projectRecoveryAuthorityAllowsProceed(
     deps,
-    latestBeforeAppend.project,
+    latestBeforeAppend,
+    runId,
     userId
-  ))) {
-    if (latestBeforeAppend.assistantMessageId) {
-      await deps.repository.failRun(
-        runId,
-        latestBeforeAppend.assistantMessageId,
-        focusedRequest
-          ? focusedKnowledgeFailure("knowledge_answer_failed")
-          : {
-              code: "provider_admission_changed",
-              message: "Project provider authority changed during recovery."
-            },
-        focusedRequest ? { recoveryTerminal: true } : undefined
-      );
-    }
-    return;
-  }
+  ))) return;
 
   const refreshedProviderResponseId =
     refreshed.result?.providerResponseId ?? refreshed.providerResponseId ?? latestBeforeAppend.providerResponseId;
@@ -3218,10 +3249,16 @@ async function refreshProviderRunOnceRegistered(
     }
   }
 
-  const latestBeforeFinalize = await deps.repository.getRunControlForUser(runId, userId);
+  const latestBeforeFinalize = await loadRecoveryRunControl(deps, runId, userId);
   if (!latestBeforeFinalize || !isRefreshableRun(latestBeforeFinalize)) {
     return;
   }
+  if (!(await projectRecoveryAuthorityAllowsProceed(
+    deps,
+    latestBeforeFinalize,
+    runId,
+    userId
+  ))) return;
 
   if ((refreshed.result?.toolCalls?.length ?? 0) > 0) {
     const payload = focusedRequest
@@ -3371,6 +3408,13 @@ export async function reconcileInstallationRuns(
 
   await Promise.allSettled(candidates.map(async (run) => {
     if (deps.registry.has(run.id)) return;
+    const control = await loadRecoveryRunControl(deps, run.id, run.userId);
+    if (control && !(await projectRecoveryAuthorityAllowsProceed(
+      deps,
+      control,
+      run.id,
+      run.userId
+    ))) return;
     if (run.status === "preparing") {
       await deps.repository.recoverPreparingRun({
         now,
@@ -3425,6 +3469,14 @@ export async function reconcileStaleRuns(
     if (deps.registry.has(run.id)) {
       continue;
     }
+
+    const control = await loadRecoveryRunControl(deps, run.id, input.userId);
+    if (control && !(await projectRecoveryAuthorityAllowsProceed(
+      deps,
+      control,
+      run.id,
+      input.userId
+    ))) continue;
 
     if (run.status === "preparing") {
       await deps.repository.recoverPreparingRun({

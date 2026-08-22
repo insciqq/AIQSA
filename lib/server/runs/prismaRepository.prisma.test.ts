@@ -479,6 +479,7 @@ describe("Prisma-backed run repository", () => {
           userId: null
         }
       });
+      const recoveryOwnerId = `run-repository-recovery-owner-${randomUUID()}`;
 
       try {
         const input = createRunInput({
@@ -505,7 +506,8 @@ describe("Prisma-backed run repository", () => {
           question: "Keep this request outside Personal Memory",
           userId
         });
-        const created = await createPrismaRunRepository(prisma).createRun(input);
+        const repository = createPrismaRunRepository(prisma);
+        const created = await repository.createRun(input);
 
         await expect(prisma.modelRun.findUnique({
           select: { normalizedRequest: true, status: true },
@@ -525,7 +527,7 @@ describe("Prisma-backed run repository", () => {
           providerRequiresClientTools: false,
           providerSearchPlan: { mode: "all_selected", optionIds: [] }
         });
-        await expect(createPrismaRunRepository(prisma).getRunControlForUser(
+        await expect(repository.getRunControlForUser(
           created.runId,
           userId
         )).resolves.toMatchObject({
@@ -541,9 +543,129 @@ describe("Prisma-backed run repository", () => {
         await expect(prisma.modelRunMemoryBinding.findUnique({
           where: { modelRunId: created.runId }
         })).resolves.toBeNull();
+        await expect(repository.sweepBootOrphanedRuns({
+          createdBefore: new Date("2100-01-01T00:00:00.000Z"),
+          liveRunIds: []
+        })).resolves.toBe(0);
+        await expect(prisma.modelRun.findUnique({
+          select: { status: true },
+          where: { id: created.runId }
+        })).resolves.toEqual({ status: "streaming" });
+
+        await repository.appendAssistantText(
+          created.assistantMessageId,
+          "durable Project partial",
+          { runId: created.runId }
+        );
+        const eventCountBeforeFailure = await prisma.projectEvent.count({
+          where: { projectId: project.id }
+        });
+        await expect(repository.failRun(
+          created.runId,
+          created.assistantMessageId,
+          {
+            code: "provider_admission_changed",
+            message: "Project provider authority is no longer current."
+          },
+          { recoveryTerminal: true }
+        )).resolves.toBe(true);
+        await expect(prisma.message.findUnique({
+          select: { content: true },
+          where: { id: created.assistantMessageId }
+        })).resolves.toEqual({ content: textMessageContent("durable Project partial") });
+        await expect(prisma.modelRun.count({
+          where: {
+            chatId: chat.id,
+            status: { in: ["preparing", "queued", "streaming", "in_progress"] }
+          }
+        })).resolves.toBe(0);
+        await expect(prisma.projectEvent.count({
+          where: { projectId: project.id }
+        })).resolves.toBeGreaterThan(eventCountBeforeFailure);
+
+        await prisma.user.create({
+          data: {
+            displayName: "Run Recovery Project Owner",
+            id: recoveryOwnerId,
+            status: "active"
+          }
+        });
+        await prisma.projectGrant.create({
+          data: {
+            createdByUserId: userId,
+            projectId: project.id,
+            role: "OWNER",
+            userId: recoveryOwnerId
+          }
+        });
+        await prisma.projectGrant.deleteMany({ where: { projectId: project.id, userId } });
+        await expect(repository.getRunControlForUser(created.runId, userId)).resolves.toBeNull();
+        await expect(repository.getRunControlForRecovery!(created.runId)).resolves.toMatchObject({
+          project: { projectId: project.id },
+          recoverySettled: true,
+          status: "error"
+        });
+
+        const legacyRunId = randomUUID();
+        await prisma.modelRun.create({
+          data: {
+            assistantMessageId: created.assistantMessageId,
+            chatId: chat.id,
+            id: legacyRunId,
+            modelId: "fake-qsa",
+            normalizedRequest: {},
+            projectRunBinding: {
+              create: {
+                acceptedRole: "OWNER",
+                accessRevision: project.accessRevision,
+                initiatorUserId: userId,
+                instructionsRevision: project.instructionsRevision,
+                memoryRevision: project.memoryRevision,
+                personalMemoryDisabled: true,
+                policyRevision: project.policyRevision,
+                projectId: project.id
+              }
+            },
+            provider: "fake",
+            status: "streaming",
+            userId,
+            userMessageId: created.userMessageId
+          }
+        });
+        await expect(repository.getRunControlForRecovery!(legacyRunId)).resolves.toMatchObject({
+          projectRecoveryInvalid: true,
+          status: "streaming"
+        });
+        await expect(repository.getRunControlForUser(legacyRunId, userId)).resolves.toBeNull();
+        await expect(repository.failRun(
+          legacyRunId,
+          created.assistantMessageId,
+          {
+            code: "provider_admission_changed",
+            message: "Project provider authority is no longer current."
+          },
+          { recoveryTerminal: true }
+        )).resolves.toBe(true);
+        await expect(repository.getRunControlForRecovery!(legacyRunId)).resolves.toMatchObject({
+          projectRecoveryInvalid: true,
+          recoverySettled: true,
+          status: "error"
+        });
+        await expect(prisma.modelRun.count({
+          where: {
+            chatId: chat.id,
+            status: { in: ["preparing", "queued", "streaming", "in_progress"] }
+          }
+        })).resolves.toBe(0);
+        await expect(repository.getRunControlForRecovery!(created.runId)).resolves.toMatchObject({
+          project: { projectId: project.id },
+          recoverySettled: true,
+          status: "error"
+        });
       } finally {
         await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
         await prisma.project.deleteMany({ where: { id: project.id } });
+        await prisma.user.deleteMany({ where: { id: recoveryOwnerId } });
       }
     });
   });

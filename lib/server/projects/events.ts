@@ -3,9 +3,9 @@ import { Client, type Notification } from "pg";
 import type { ProjectChatSummaryWire } from "@/lib/contracts/projects";
 import { resolveProjectAccess } from "./access";
 import {
-  loadProjectChatDefaultAuthority,
-  projectChatDefaultsProjection
+  loadProjectChatDefaultAuthority
 } from "./chatDefaults";
+import { projectChatSelect, projectChatWire } from "./chatProjection";
 
 /**
  * Project events are intentionally content-free invalidations.  The database
@@ -15,23 +15,24 @@ import {
  */
 type WakeListener = () => void;
 
-const listeners = new Map<string, Set<WakeListener>>();
 const PROJECT_EVENT_CHANNEL = "aiqsa_project_events";
 
-type ProjectEventListenerState = {
+type ProjectEventHubState = {
   client: Client | null;
   connecting: Promise<void> | null;
+  listeners: Map<string, Set<WakeListener>>;
   retryTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const eventGlobal = globalThis as typeof globalThis & {
-  __aiqsaProjectEventListener?: ProjectEventListenerState;
+  __aiqsaProjectEventHub?: ProjectEventHubState;
 };
 
-function listenerState(): ProjectEventListenerState {
-  return eventGlobal.__aiqsaProjectEventListener ??= {
+function hubState(): ProjectEventHubState {
+  return eventGlobal.__aiqsaProjectEventHub ??= {
     client: null,
     connecting: null,
+    listeners: new Map<string, Set<WakeListener>>(),
     retryTimer: null
   };
 }
@@ -43,7 +44,7 @@ function validProjectNotification(notification: Notification): string | null {
   return /^[a-zA-Z0-9_-]{1,128}$/u.test(projectId) ? projectId : null;
 }
 
-function scheduleProjectEventReconnect(state: ProjectEventListenerState): void {
+function scheduleProjectEventReconnect(state: ProjectEventHubState): void {
   if (state.retryTimer || !process.env.DATABASE_URL) return;
   state.retryTimer = setTimeout(() => {
     state.retryTimer = null;
@@ -60,7 +61,7 @@ function scheduleProjectEventReconnect(state: ProjectEventListenerState): void {
 export function ensureProjectEventListener(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return Promise.resolve();
-  const state = listenerState();
+  const state = hubState();
   if (state.client) return Promise.resolve();
   if (state.connecting) return state.connecting;
 
@@ -101,7 +102,7 @@ export function ensureProjectEventListener(): Promise<void> {
 }
 
 export function notifyProjectEvent(projectId: string): void {
-  for (const listener of listeners.get(projectId) ?? []) {
+  for (const listener of hubState().listeners.get(projectId) ?? []) {
     try {
       listener();
     } catch {
@@ -111,12 +112,21 @@ export function notifyProjectEvent(projectId: string): void {
 }
 
 export function subscribeProjectEvents(projectId: string, listener: WakeListener): () => void {
+  const listeners = hubState().listeners;
   const bucket = listeners.get(projectId) ?? new Set<WakeListener>();
-  bucket.add(listener);
+  const subscription = () => listener();
+  bucket.add(subscription);
   listeners.set(projectId, bucket);
+  let active = true;
   return () => {
-    bucket.delete(listener);
-    if (bucket.size === 0) listeners.delete(projectId);
+    if (!active) return;
+    active = false;
+    const current = hubState().listeners.get(projectId);
+    if (current !== bucket) return;
+    current.delete(subscription);
+    if (current.size === 0 && hubState().listeners.get(projectId) === current) {
+      hubState().listeners.delete(projectId);
+    }
   };
 }
 
@@ -201,100 +211,86 @@ export type SafeProjectEventDelivery = Readonly<{
   revision: string;
 }>;
 
-async function projectEventChatId(
-  prisma: PrismaClient,
-  projectId: string,
-  event: ProjectEventProjectionSource
-): Promise<string | null> {
-  if (!event.entityId) return null;
-  if (event.entityType === "chat") return event.entityId;
-  if (event.entityType === "message") {
-    return (await prisma.message.findFirst({
-      select: { chatId: true },
-      where: { chat: { projectId }, id: event.entityId }
-    }))?.chatId ?? null;
-  }
-  if (event.entityType === "run") {
-    return (await prisma.modelRun.findFirst({
-      select: { chatId: true },
-      where: { chat: { projectId }, id: event.entityId }
-    }))?.chatId ?? null;
-  }
-  return null;
-}
-
-async function projectChatProjection(
-  prisma: PrismaClient,
-  projectId: string,
-  chatId: string
-): Promise<ProjectChatSummaryWire | null> {
-  const chat = await prisma.chat.findFirst({
-    select: {
-      _count: {
-        select: {
-          messages: true,
-          modelRuns: {
-            where: { status: { in: ["preparing", "queued", "streaming", "in_progress"] } }
-          }
-        }
-      },
-      activeLeafMessageId: true,
-      archived: true,
-      createdAt: true,
-      createdByDisplayName: true,
-      createdByUserId: true,
-      defaultKnowledgePlan: true,
-      defaultProviderModel: { select: { connectionId: true, id: true } },
-      id: true,
-      pinned: true,
-      projectFolderId: true,
-      projectId: true,
-      title: true,
-      updatedAt: true
-    },
-    where: { id: chatId, permanentDeletionAt: null, projectId }
-  });
-  if (!chat || !chat.projectId) return null;
-  const authority = await loadProjectChatDefaultAuthority(prisma, projectId);
-  const defaults = projectChatDefaultsProjection(authority, {
-    defaultKnowledgePlan: chat.defaultKnowledgePlan,
-    defaultModelId: chat.defaultProviderModel?.id ?? null
-  });
-  return {
-    activeRun: chat._count.modelRuns > 0,
-    activeLeafMessageId: chat.activeLeafMessageId,
-    archived: chat.archived,
-    createdAt: chat.createdAt.toISOString(),
-    createdByDisplayName: chat.createdByDisplayName,
-    createdByUserId: chat.createdByUserId,
-    defaultKnowledgePlan: defaults.defaultKnowledgePlan,
-    defaultModelId: defaults.defaultModelId,
-    defaultProvider: defaults.defaultProvider,
-    folderId: chat.projectFolderId,
-    id: chat.id,
-    messageCount: chat._count.messages,
-    pinned: chat.pinned,
-    projectId: chat.projectId,
-    title: chat.title,
-    updatedAt: chat.updatedAt.toISOString()
-  };
-}
-
 /** Reconstruct the current client-safe delta from authoritative rows. Event
  * storage remains content-free and a revoked/deleted entity produces no stale
  * label or payload. */
+export async function safeProjectEventDeliveries(
+  prisma: PrismaClient,
+  projectId: string,
+  events: readonly ProjectEventProjectionSource[]
+): Promise<SafeProjectEventDelivery[]> {
+  const bases = events.map((event) => ({
+    category: safeProjectEventCategory(event.eventType),
+    revision: projectEventId(event.sequence)
+  }));
+  const projectable = events.flatMap((event, index) =>
+    ["chat_changed", "message_changed", "run_changed"].includes(bases[index]!.category) &&
+    event.entityId
+      ? [{ entityId: event.entityId, entityType: event.entityType, index }]
+      : []
+  );
+  if (projectable.length === 0) return bases;
+
+  const messageIds = [...new Set(projectable.flatMap((item) =>
+    item.entityType === "message" ? [item.entityId] : []
+  ))];
+  const runIds = [...new Set(projectable.flatMap((item) =>
+    item.entityType === "run" ? [item.entityId] : []
+  ))];
+  const [messages, runs] = await Promise.all([
+    messageIds.length > 0
+      ? prisma.message.findMany({
+          select: { chatId: true, id: true },
+          where: { chat: { projectId }, id: { in: messageIds } }
+        })
+      : [],
+    runIds.length > 0
+      ? prisma.modelRun.findMany({
+          select: { chatId: true, id: true },
+          where: { chat: { projectId }, id: { in: runIds } }
+        })
+      : []
+  ]);
+  const messageChats = new Map(messages.map((message) => [message.id, message.chatId]));
+  const runChats = new Map(runs.map((run) => [run.id, run.chatId]));
+  const chatIdByIndex = new Map<number, string>();
+  for (const item of projectable) {
+    const chatId = item.entityType === "chat"
+      ? item.entityId
+      : item.entityType === "message"
+        ? messageChats.get(item.entityId)
+        : item.entityType === "run"
+          ? runChats.get(item.entityId)
+          : undefined;
+    if (chatId) chatIdByIndex.set(item.index, chatId);
+  }
+  const chatIds = [...new Set(chatIdByIndex.values())];
+  if (chatIds.length === 0) return bases;
+  const [chats, authority] = await Promise.all([
+    prisma.chat.findMany({
+      select: projectChatSelect,
+      where: { id: { in: chatIds }, permanentDeletionAt: null, projectId }
+    }),
+    loadProjectChatDefaultAuthority(prisma, projectId)
+  ]);
+  const projected = new Map(chats.filter((chat) => chat.projectId).map((chat) => [
+    chat.id,
+    projectChatWire(chat, authority)
+  ]));
+  return bases.map((base, index) => {
+    const chatId = chatIdByIndex.get(index);
+    if (!chatId) return base;
+    const chat = projected.get(chatId);
+    return chat ? { ...base, chat, chatId } : { ...base, chatId };
+  });
+}
+
 export async function safeProjectEventDelivery(
   prisma: PrismaClient,
   projectId: string,
   event: ProjectEventProjectionSource
 ): Promise<SafeProjectEventDelivery> {
-  const category = safeProjectEventCategory(event.eventType);
-  const base = { category, revision: projectEventId(event.sequence) };
-  if (!["chat_changed", "message_changed", "run_changed"].includes(category)) return base;
-  const chatId = await projectEventChatId(prisma, projectId, event);
-  if (!chatId) return base;
-  const chat = await projectChatProjection(prisma, projectId, chatId);
-  return chat ? { ...base, chat, chatId } : { ...base, chatId };
+  return (await safeProjectEventDeliveries(prisma, projectId, [event]))[0]!;
 }
 
 export async function readProjectEvents(

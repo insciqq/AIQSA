@@ -212,6 +212,7 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
   const projectName = `Shared desk ${id}`;
   const promptHead = `shared-desk-${id}`;
   const promptTail = `shared-desk-complete-${id}`;
+  const sameClientFollowUp = `owner-same-client-follow-up-${id}`;
   const followUp = `contributor-follow-up-${id}`;
   const privateMarker = `private-tool-argument-${id}`;
   const longPrompt = [
@@ -281,6 +282,20 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await sources.locator("summary").click();
     await expect(sources.getByRole("link", { name: "Project Search fixture" }).first()).toBeVisible();
 
+    // Continue from the exact client state that admitted the draft chat. No
+    // workspace refresh or Project re-selection is allowed between the two
+    // sends; terminal run streaming alone must clear the draft admission.
+    await ownerPage.bringToFront();
+    await ownerPage.getByRole("textbox", { name: "Message" }).fill(sameClientFollowUp);
+    await ownerPage.getByRole("textbox", { name: "Message" }).press("Enter");
+    await expect(ownerPage.locator('article[data-role="assistant"]').last())
+      .toContainText(`Fake answer: ${sameClientFollowUp}`, { timeout: 15_000 });
+    await expect(ownerPage.getByRole("button", { name: "Stop answer" }))
+      .toHaveCount(0, { timeout: 15_000 });
+
+    await contributorPage.bringToFront();
+    await expect(contributorPage.locator('article[data-role="assistant"]').last())
+      .toContainText(`Fake answer: ${sameClientFollowUp}`, { timeout: 8_000 });
     await contributorPage.getByRole("textbox", { name: "Message" }).fill(followUp);
     await contributorPage.getByRole("textbox", { name: "Message" }).press("Enter");
     await expect(ownerPage.getByRole("article", {

@@ -584,9 +584,11 @@ function ProjectSettingsDialogContentV2({
     )];
     if (options.length === 0) return;
     const current = options.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === "ArrowDown"
-      ? options[(current + 1 + options.length) % options.length]
-      : options[(current - 1 + options.length) % options.length];
+    const next = current < 0
+      ? event.key === "ArrowDown" ? options[0] : options.at(-1)
+      : event.key === "ArrowDown"
+        ? options[(current + 1) % options.length]
+        : options[(current - 1 + options.length) % options.length];
     event.preventDefault();
     next?.focus();
   };
@@ -665,6 +667,14 @@ function ProjectSettingsDialogContentV2({
           </div>
         ) : null}
         <div className="v2-project-settings-scroll">
+          {controller.syncWarning ? (
+            <div className="v2-project-settings-sync-warning" role="status">
+              <span>{controller.syncWarning}</span>
+              <UiV2Button tone="ghost" type="button" onClick={() => void controller.actions.retrySync()}>
+                Retry sync
+              </UiV2Button>
+            </div>
+          ) : null}
           {tab === "general" ? (
             <form className="v2-project-settings-section" onSubmit={(event) => {
               event.preventDefault();

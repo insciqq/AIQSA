@@ -7,7 +7,7 @@ import {
   projectEventId,
   readProjectEvents,
   safeProjectEventCategory,
-  safeProjectEventDelivery,
+  safeProjectEventDeliveries,
   subscribeProjectEvents
 } from "@/lib/server/projects/events";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
@@ -126,11 +126,17 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
               const category = safeProjectEventCategory(event.eventType);
               collapsed.set(`${category}:${event.entityType ?? "project"}:${event.entityId ?? "aggregate"}`, event);
             }
-            for (const event of [...collapsed.values()].sort((left, right) =>
+            const projectedEvents = [...collapsed.values()].sort((left, right) =>
               left.sequence < right.sequence ? -1 : left.sequence > right.sequence ? 1 : 0
-            )) {
+            );
+            const deliveries = await safeProjectEventDeliveries(
+              prisma,
+              projectId,
+              projectedEvents
+            );
+            for (const [index, event] of projectedEvents.entries()) {
               if (closed) return;
-              const delivery = await safeProjectEventDelivery(prisma, projectId, event);
+              const delivery = deliveries[index]!;
               if (!write(frame({
                 data: delivery,
                 event: "project_changed",

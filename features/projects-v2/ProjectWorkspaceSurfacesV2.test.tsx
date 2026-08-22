@@ -121,6 +121,7 @@ function controller(role: "OWNER" | "VIEWER" = "OWNER"): ProjectWorkspaceControl
     openSettings: vi.fn(),
     refresh: vi.fn().mockResolvedValue(true),
     refreshList: vi.fn().mockResolvedValue(true),
+    retrySync: vi.fn().mockResolvedValue(true),
     previewGrantRemoval: vi.fn().mockResolvedValue(null),
     removeGrant: vi.fn().mockResolvedValue(true),
     previewResourceAdd: vi.fn().mockResolvedValue(null),
@@ -153,6 +154,7 @@ function controller(role: "OWNER" | "VIEWER" = "OWNER"): ProjectWorkspaceControl
     settingsOpen: true,
     settingsInitialTab: "general",
     syncState: "idle",
+    syncWarning: null,
     workspace: { chats: [activeChat, archivedChat], folders: [] }
   };
 }
@@ -272,7 +274,14 @@ describe("Project workspace surfaces", () => {
     expect(within(dialog).queryByLabelText(/UUID|user id|group id/i)).toBeNull();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Load more" }));
-    expect(await within(dialog).findByRole("option", { name: /Later Member/ })).toBeVisible();
+    const later = await within(dialog).findByRole("option", { name: /Later Member/ });
+    expect(later).toBeVisible();
+    const listbox = within(dialog).getByRole("listbox", { name: "People" });
+    fireEvent.keyDown(listbox, { key: "ArrowUp" });
+    expect(later).toHaveFocus();
+    within(dialog).getByRole("textbox", { name: "Search people" }).focus();
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    expect(within(dialog).getByRole("option", { name: /Project Member/ })).toHaveFocus();
     expect(apiMocks.loadProjectCandidates).toHaveBeenLastCalledWith(
       "project-1", "user", "", "2"
     );
@@ -326,6 +335,22 @@ describe("Project workspace surfaces", () => {
 
     expect(name).toHaveValue("Launch room");
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows post-commit synchronization separately and retries without replaying the mutation", async () => {
+    const base = controller();
+    const retrySync = vi.fn().mockResolvedValue(true);
+    const projectController: ProjectWorkspaceController = {
+      ...base,
+      actions: { ...base.actions, retrySync },
+      syncWarning: "Change saved, but this Project view is not synchronized yet."
+    };
+    render(<ProjectSettingsDialogV2 controller={projectController} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Change saved");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry sync" }));
+    expect(retrySync).toHaveBeenCalledOnce();
   });
 
   it("formats paginated Activity without rendering private identifiers", async () => {

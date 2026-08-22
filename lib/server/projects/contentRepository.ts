@@ -1,4 +1,4 @@
-import { ModelRunStatus, Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   decodeProjectDefaults,
   type ProjectChatSummaryWire,
@@ -10,75 +10,11 @@ import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveProjectAccess } from "./access";
 import {
   loadProjectChatDefaultAuthority,
-  projectChatDefaultsProjection,
-  type ProjectChatDefaultAuthority
+  projectChatDefaultsProjection
 } from "./chatDefaults";
+import { projectChatSelect, projectChatWire } from "./chatProjection";
 import { notifyProjectEvent } from "./events";
 import type { ProjectRepositoryResult } from "./prismaRepository";
-
-const projectChatSelect = {
-  _count: {
-    select: {
-      messages: true,
-      modelRuns: {
-        where: {
-          status: {
-            in: [
-              ModelRunStatus.preparing,
-              ModelRunStatus.queued,
-              ModelRunStatus.streaming,
-              ModelRunStatus.in_progress
-            ]
-          }
-        }
-      }
-    }
-  },
-  activeLeafMessageId: true,
-  archived: true,
-  createdAt: true,
-  createdByDisplayName: true,
-  createdByUserId: true,
-  defaultKnowledgePlan: true,
-  defaultProviderModel: { select: { connectionId: true, id: true } },
-  id: true,
-  pinned: true,
-  projectFolderId: true,
-  projectId: true,
-  title: true,
-  updatedAt: true
-} satisfies Prisma.ChatSelect;
-
-type ProjectChatRow = Prisma.ChatGetPayload<{ select: typeof projectChatSelect }>;
-
-function chatWire(
-  chat: ProjectChatRow,
-  authority: ProjectChatDefaultAuthority
-): ProjectChatSummaryWire {
-  if (!chat.projectId) throw new Error("project_chat_integrity_invalid");
-  const defaults = projectChatDefaultsProjection(authority, {
-    defaultKnowledgePlan: chat.defaultKnowledgePlan,
-    defaultModelId: chat.defaultProviderModel?.id ?? null
-  });
-  return {
-    activeRun: chat._count.modelRuns > 0,
-    activeLeafMessageId: chat.activeLeafMessageId,
-    archived: chat.archived,
-    createdAt: chat.createdAt.toISOString(),
-    createdByDisplayName: chat.createdByDisplayName,
-    createdByUserId: chat.createdByUserId,
-    defaultKnowledgePlan: defaults.defaultKnowledgePlan,
-    defaultModelId: defaults.defaultModelId,
-    defaultProvider: defaults.defaultProvider,
-    folderId: chat.projectFolderId,
-    id: chat.id,
-    messageCount: chat._count.messages,
-    pinned: chat.pinned,
-    projectId: chat.projectId,
-    title: chat.title,
-    updatedAt: chat.updatedAt.toISOString()
-  };
-}
 
 function folderWire(folder: { id: string; name: string; parentId: string | null; sortOrder: number }): ProjectFolderWire {
   return folder;
@@ -141,7 +77,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
         loadProjectChatDefaultAuthority(tx, projectId)
       ]), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
       return {
-        chats: chats.map((chat) => chatWire(chat, authority)),
+        chats: chats.map((chat) => projectChatWire(chat, authority)),
         folders: folders.map(folderWire)
       };
     },
@@ -207,7 +143,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
               projectId: input.projectId
             })
           });
-          return { kind: "ok" as const, value: chatWire(chat, authority) };
+          return { kind: "ok" as const, value: projectChatWire(chat, authority) };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_chat_create_conflict" };
@@ -433,7 +369,7 @@ export function createPrismaProjectContentRepository(prisma: PrismaClient) {
             })
           });
           const authority = await loadProjectChatDefaultAuthority(tx, input.projectId);
-          return { kind: "ok" as const, value: chatWire(chat, authority) };
+          return { kind: "ok" as const, value: projectChatWire(chat, authority) };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (error instanceof ActiveRunConflictError) {

@@ -55,6 +55,11 @@ import {
   type ProjectRole
 } from "../../domain/projects";
 import { resolveProjectAccess } from "./access";
+import {
+  activeSharedProjectConnection,
+  eligibleProjectAnswerModel,
+  eligibleProjectKnowledgeBase
+} from "./chatDefaults";
 import { notifyProjectEvent } from "./events";
 
 export type ProjectRepositoryResult<Value> =
@@ -547,15 +552,7 @@ function grantWire(grant: ProjectDetailRow["grants"][number]): ProjectGrantWire 
 
 function resources(row: ProjectDetailRow): ProjectResourceWire[] {
   const modelEligible = (model: ProjectDetailRow["modelBindings"][number]["providerModel"]) =>
-    model.enabled && model.modelClass === "answer" &&
-    model.activeConfig !== null && model.activeVersion > 0 &&
-    model.connection.enabled && model.connection.activeConfig !== null &&
-    model.connection.activeVersion > 0 && (
-      model.connection.family === "fake" || Boolean(
-        model.connection.defaultCredential?.enabled &&
-        model.connection.defaultCredential.activeVersion?.revokedAt === null
-      )
-    );
+    eligibleProjectAnswerModel(model);
   const values = [
     ...row.modelBindings.map((binding) => ({
       available: modelEligible(binding.providerModel),
@@ -580,12 +577,7 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
       const eligible = binding.searchOption.enabled && binding.searchOption.archivedAt === null &&
         Boolean(connection) &&
         Boolean(catalogEntry?.routes.length) &&
-        connection!.enabled && connection!.activeConfig !== null && connection!.activeVersion > 0 && (
-          connection!.family === "fake" || Boolean(
-            connection!.defaultCredential?.enabled &&
-            connection!.defaultCredential.activeVersion?.revokedAt === null
-          )
-        );
+        activeSharedProjectConnection(connection!);
       return {
       available: eligible,
       id: `search:${binding.searchOptionId}`,
@@ -611,18 +603,7 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
       type: "mcp" as const
     }; }),
     ...row.knowledgeBaseBindings.map((binding) => {
-      const generation = binding.knowledgeBase.activeIndexGeneration;
-      const embedding = generation?.embeddingProviderModel;
-      const connection = embedding?.connection;
-      const eligible = binding.knowledgeBase.archivedAt === null && generation?.status === "active" &&
-        Boolean(embedding) && Boolean(connection) &&
-        embedding!.enabled && embedding!.modelClass === "embedding" &&
-        embedding!.activeConfig !== null && embedding!.activeVersion > 0 &&
-        connection!.family !== "fake" &&
-        connection!.enabled && connection!.activeConfig !== null && connection!.activeVersion > 0 && Boolean(
-          connection!.defaultCredential?.enabled &&
-          connection!.defaultCredential.activeVersion?.revokedAt === null
-        );
+      const eligible = eligibleProjectKnowledgeBase(binding.knowledgeBase);
       return {
       available: eligible,
       id: binding.id,
@@ -862,15 +843,7 @@ function projectComposer(
 
 function readiness(row: ProjectDetailRow): ProjectReadinessWire {
   const eligibleModelIds = new Set(row.modelBindings.filter((binding) =>
-    binding.providerModel.enabled && binding.providerModel.modelClass === "answer" &&
-    binding.providerModel.activeConfig !== null && binding.providerModel.activeVersion > 0 &&
-    binding.providerModel.connection.enabled && binding.providerModel.connection.activeConfig !== null &&
-    binding.providerModel.connection.activeVersion > 0 && (
-      binding.providerModel.connection.family === "fake" || Boolean(
-        binding.providerModel.connection.defaultCredential?.enabled &&
-        binding.providerModel.connection.defaultCredential.activeVersion?.revokedAt === null
-      )
-    )
+    eligibleProjectAnswerModel(binding.providerModel)
   ).map((binding) => binding.providerModelId));
   const defaultModelId = storedDefaults(row.defaults).providerModelId;
   return defaultModelId && eligibleModelIds.has(defaultModelId)
@@ -1439,7 +1412,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
     db: PrismaClient | Prisma.TransactionClient,
     preferredModelId?: string
   ) {
-    const models = await db.providerModel.findMany({
+    const models = (await db.providerModel.findMany({
       include: {
         connection: {
           include: {
@@ -1468,7 +1441,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           ]
         }
       }
-    });
+    })).filter(eligibleProjectAnswerModel);
     const preferred = preferredModelId ? models.find((model) => model.id === preferredModelId) : undefined;
     if (preferred) return [preferred, ...models.filter((model) => model.id !== preferred.id)];
     const policy = await db.modelPolicy.findUnique({ select: { defaultProviderModelId: true }, where: { id: "installation" } });
@@ -2046,7 +2019,25 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       } else if (input.type === "search") {
         const rows = await prisma.searchOption.findMany({
           orderBy: [{ displayName: "asc" }, { id: "asc" }],
-          select: { description: true, displayName: true, id: true },
+          select: {
+            description: true,
+            displayName: true,
+            id: true,
+            sourceConnection: {
+              select: {
+                activeConfig: true,
+                activeVersion: true,
+                defaultCredential: {
+                  select: {
+                    activeVersion: { select: { revokedAt: true } },
+                    enabled: true
+                  }
+                },
+                enabled: true,
+                family: true
+              }
+            }
+          },
           skip: offset,
           take,
           where: {
@@ -2074,7 +2065,9 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             ...(contains ? { displayName: { contains, mode: "insensitive" } } : {})
           }
         });
-        items = rows.map((row) => ({
+        items = rows.filter((row) =>
+          Boolean(row.sourceConnection) && activeSharedProjectConnection(row.sourceConnection!)
+        ).map((row) => ({
           description: row.description || null,
           disabledReason: linkedResourceIds.has(row.id) ? "already_linked_to_project" : null,
           id: row.id,
@@ -2108,18 +2101,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           }
         });
         items = rows.map((row) => {
-          const generation = row.activeIndexGeneration;
-          const connection = generation?.embeddingProviderModel.connection;
-          const embeddingEligible = generation && generation.status === "active" &&
-            generation.embeddingProviderModel.enabled &&
-            generation.embeddingProviderModel.modelClass === "embedding" &&
-            generation.embeddingProviderModel.activeConfig !== null &&
-            generation.embeddingProviderModel.activeVersion > 0 &&
-            connection?.family !== "fake" &&
-            connection?.enabled && connection.activeConfig !== null && connection.activeVersion > 0 && Boolean(
-              connection.defaultCredential?.enabled &&
-              connection.defaultCredential.activeVersion?.revokedAt === null
-            );
+          const embeddingEligible = eligibleProjectKnowledgeBase(row);
           return {
             description: row.description || null,
             disabledReason: linkedResourceIds.has(row.id)

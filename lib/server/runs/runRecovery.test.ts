@@ -221,6 +221,7 @@ function createHarness(options: Readonly<{
   } | null;
   pricingError?: Error;
   providers?: Readonly<Record<string, ProviderAdapter>>;
+  recoveryControls?: readonly (RunControlRecord | null)[];
   registry?: RunRecoveryRegistry;
   settleRecoveredRunError?: boolean;
   searchProviders?: RunRecoveryDeps["searchProviders"];
@@ -229,9 +230,12 @@ function createHarness(options: Readonly<{
   storage?: RunRecoveryDeps["storage"];
 }> = {}) {
   const controls = options.controls ?? [control()];
+  const recoveryControls = options.recoveryControls ?? [];
   const initialControl = controls.find((candidate): candidate is RunControlRecord => candidate !== null) ??
+    recoveryControls.find((candidate): candidate is RunControlRecord => candidate !== null) ??
     control();
   let controlIndex = 0;
+  let recoveryControlIndex = 0;
   let nextSequence = 0;
   const state: {
     assistantAppendOptions: Array<Readonly<{ allowErrored?: boolean; runId: string }> | undefined>;
@@ -327,6 +331,17 @@ function createHarness(options: Readonly<{
       controlIndex += 1;
       return value;
     },
+    ...(options.recoveryControls
+      ? {
+          getRunControlForRecovery: async () => {
+            const value = recoveryControls[
+              Math.min(recoveryControlIndex, recoveryControls.length - 1)
+            ] ?? null;
+            recoveryControlIndex += 1;
+            return value;
+          }
+        }
+      : {}),
     ...(options.groundKnowledgeAnswer
       ? { groundKnowledgeAnswer: options.groundKnowledgeAnswer }
       : {}),
@@ -1317,6 +1332,34 @@ describe("run recovery", () => {
     expect(harness.state.preparingRecoveries).toEqual([{ now, runId, userId }]);
     expect(refresh).not.toHaveBeenCalled();
     expect(harness.state.failed).toEqual([]);
+  });
+
+  it("fails a revoked Project candidate before installation recovery can orphan or dispatch it", async () => {
+    const project = projectRecoveryAuthority();
+    const refresh = vi.fn();
+    const harness = createHarness({
+      controls: [null],
+      projectAccessCurrent: false,
+      providerAdmission: {
+        load: vi.fn(async () => ({ fingerprint: project.providerAdmissionFingerprint }) as ProviderAdmissionPlan)
+      },
+      providers: { openai: providerWithRefresh(refresh) },
+      recoveryControls: [control({ project, providerResponseId: null })]
+    });
+    harness.repository.findInstallationRecoverableRuns = async () => [{
+      ...staleControl({ providerResponseId: null }),
+      userId
+    }];
+
+    await reconcileInstallationRuns(harness.deps, {
+      now: new Date("2026-07-12T10:00:01.000Z")
+    });
+
+    expect(harness.state.failed).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "provider_admission_changed" })
+    })]);
+    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+    expect(refresh).not.toHaveBeenCalled();
   });
 
   it("fails Project background recovery before provider I/O when accepted authority drifted", async () => {
@@ -4043,6 +4086,73 @@ describe("run recovery", () => {
         error: expect.objectContaining({ code: "search_strategy_not_available" })
       })
     ]);
+  });
+
+  it("terminally fails a Project recovery after initiator access loss without provider or tool I/O", async () => {
+    const project = projectRecoveryAuthority();
+    const refresh = vi.fn(async () => ({ terminal: false }) as ProviderRunRefreshResult);
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const providerLoad = vi.fn(async () => ({
+      fingerprint: project.providerAdmissionFingerprint
+    }) as ProviderAdmissionPlan);
+    const runtimeCall = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>();
+    const harness = createHarness({
+      controls: [null],
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      projectAccessCurrent: false,
+      providerAdmission: { load: providerLoad },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          refresh,
+          stream
+        }
+      },
+      recoveryControls: [control({ project })]
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.failed).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "provider_admission_changed" })
+    })]);
+    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+    expect(harness.deps.registry.has(runId)).toBe(false);
+    expect(providerLoad).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(harness.state.assistantTexts).toEqual([]);
+  });
+
+  it("fails an active legacy Project binding closed without poisoning terminal history", async () => {
+    const refresh = vi.fn(async () => ({ terminal: false }) as ProviderRunRefreshResult);
+    const harness = createHarness({
+      controls: [null],
+      providers: {
+        openai: providerWithRefresh(refresh)
+      },
+      recoveryControls: [control({ projectRecoveryInvalid: true })]
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.failed).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "provider_admission_changed" })
+    })]);
+    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+    expect(refresh).not.toHaveBeenCalled();
+
+    const terminal = createHarness({
+      controls: [null],
+      recoveryControls: [control({ projectRecoveryInvalid: true, status: "complete" })]
+    });
+    await refreshProviderRunIfNeeded(terminal.deps, runId, userId);
+    expect(terminal.state.failed).toEqual([]);
+    expect(terminal.state.run.status).toBe("complete");
   });
 
   it("revalidates recovered Project MCP through shared authority only", async () => {

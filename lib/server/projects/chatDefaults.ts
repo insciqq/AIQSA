@@ -108,7 +108,18 @@ type ProjectKnowledgeAuthorityRow = Prisma.ProjectKnowledgeBaseBindingGetPayload
   select: typeof projectKnowledgeAuthoritySelect;
 }>;
 
-function activeSharedConnection(connection: ProjectModelAuthorityRow["providerModel"]["connection"]): boolean {
+type SharedProjectConnection = Readonly<{
+  activeConfig: unknown | null;
+  activeVersion: number;
+  defaultCredential?: Readonly<{
+    activeVersion?: Readonly<{ revokedAt: unknown | null }> | null;
+    enabled: boolean;
+  }> | null;
+  enabled: boolean;
+  family: string;
+}>;
+
+export function activeSharedProjectConnection(connection: SharedProjectConnection): boolean {
   return connection.enabled && connection.activeVersion > 0 && connection.activeConfig !== null && (
     connection.family === "fake" || Boolean(
       connection.defaultCredential?.enabled &&
@@ -117,21 +128,46 @@ function activeSharedConnection(connection: ProjectModelAuthorityRow["providerMo
   );
 }
 
-function activeProjectModel(row: ProjectModelAuthorityRow): boolean {
-  const model = row.providerModel;
+export function eligibleProjectAnswerModel(model: Readonly<{
+  activeConfig: unknown | null;
+  activeVersion: number;
+  connection: SharedProjectConnection;
+  enabled: boolean;
+  modelClass: string;
+}>): boolean {
   return model.enabled && model.modelClass === "answer" &&
-    model.activeVersion > 0 && model.activeConfig !== null && activeSharedConnection(model.connection);
+    model.activeVersion > 0 && model.activeConfig !== null &&
+    activeSharedProjectConnection(model.connection);
 }
 
-function activeProjectKnowledge(row: ProjectKnowledgeAuthorityRow): boolean {
-  const base = row.knowledgeBase;
+function activeProjectModel(row: ProjectModelAuthorityRow): boolean {
+  return eligibleProjectAnswerModel(row.providerModel);
+}
+
+export function eligibleProjectKnowledgeBase(base: Readonly<{
+  activeIndexGeneration?: Readonly<{
+    embeddingProviderModel?: Readonly<{
+      activeConfig: unknown | null;
+      activeVersion: number;
+      connection: SharedProjectConnection;
+      enabled: boolean;
+      modelClass: string;
+    }> | null;
+    status: string;
+  }> | null;
+  archivedAt: unknown | null;
+}>): boolean {
   const generation = base.activeIndexGeneration;
   const embedding = generation?.embeddingProviderModel;
   return base.archivedAt === null && generation?.status === "active" &&
     Boolean(embedding) && embedding!.enabled &&
     embedding!.modelClass === "embedding" && embedding!.activeVersion > 0 &&
     embedding!.activeConfig !== null && embedding!.connection.family !== "fake" &&
-    activeSharedConnection(embedding!.connection);
+    activeSharedProjectConnection(embedding!.connection);
+}
+
+function activeProjectKnowledge(row: ProjectKnowledgeAuthorityRow): boolean {
+  return eligibleProjectKnowledgeBase(row.knowledgeBase);
 }
 
 export type ProjectChatDefaultAuthority = Readonly<{
