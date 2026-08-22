@@ -232,25 +232,108 @@ describe("Composer v2", () => {
     expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
     menuOpen("Knowledge");
 
-    fireEvent.click(screen.getByRole("button", { name: "Change MCP tool mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change MCP mode" }));
     menuOpen("MCP tools");
     expect(screen.queryByRole("menu", { name: "Knowledge" })).toBeNull();
+    // Disclosure of what the modes act on; enabling stays in Settings.
+    expect(screen.getByTestId("composer-v2-mcp-enabled")).toHaveTextContent("Enabled: office-compute");
+    expect(screen.queryByRole("menuitemcheckbox", { name: /office-compute/ })).toBeNull();
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^Load all/ }));
     expect(onSelectMcp).toHaveBeenCalledWith({ mode: "load_all" });
     menuOpen("MCP tools");
   });
 
+  it("offers blank-chat hint chips that open the same layers and pickers as the chips", async () => {
+    const onOpenAssistantPicker = vi.fn();
+    const onUploadFiles = vi.fn();
+    render(<ComposerV2 {...props({
+      capabilityHints: true,
+      draft: "",
+      onOpenAssistantPicker,
+      onUploadFiles
+    })} />);
+
+    const hints = within(screen.getByTestId("composer-v2-hints"));
+    expect(hints.getAllByRole("button").map((button) => button.textContent))
+      .toEqual(["Attach", "Search", "Knowledge", "Assistant"]);
+
+    // Attach reaches the hidden file input directly.
+    const fileInput = screen.getByLabelText("Attach files") as HTMLInputElement;
+    const click = vi.spyOn(fileInput, "click");
+    fireEvent.click(hints.getByRole("button", { name: "Attach" }));
+    expect(click).toHaveBeenCalledTimes(1);
+
+    // Search opens the "+" layer and lands on its Search section.
+    fireEvent.click(hints.getByRole("button", { name: "Search" }));
+    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("menuitemcheckbox", { name: /Web Search/ }));
+    });
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Capabilities" }), { key: "Escape" });
+
+    // Knowledge opens the Knowledge layer anchored to its chip (focus returns there).
+    fireEvent.click(hints.getByRole("button", { name: "Knowledge" }));
+    expect(screen.getByRole("menu", { name: "Knowledge" })).toBeVisible();
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge" }), { key: "Escape" });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Choose Knowledge" }));
+    });
+
+    fireEvent.click(hints.getByRole("button", { name: "Assistant" }));
+    expect(onOpenAssistantPicker).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits hint chips whose capability is unavailable and yields to a selected Assistant", () => {
+    const { rerender } = render(<ComposerV2 {...props({
+      capabilityHints: true,
+      config: {
+        ...composerGalleryConfig,
+        catalog: { ...composerGalleryConfig.catalog, searchStrategies: [] }
+      },
+      draft: ""
+    })} />);
+    // No file handler, no Search strategies, no Assistant picker: only Knowledge remains.
+    expect(within(screen.getByTestId("composer-v2-hints")).getAllByRole("button")
+      .map((button) => button.textContent)).toEqual(["Knowledge"]);
+
+    rerender(<ComposerV2 {...props({
+      capabilityHints: true,
+      draft: "",
+      selectedAssistant: composerGalleryConfig.assistants[0]
+    })} />);
+    expect(screen.queryByTestId("composer-v2-hints")).toBeNull();
+
+    rerender(<ComposerV2 {...props({ draft: "" })} />);
+    expect(screen.queryByTestId("composer-v2-hints")).toBeNull();
+  });
+
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
     const onSelectMcp = vi.fn();
-    render(<ComposerV2 {...props({
+    const { rerender } = render(<ComposerV2 {...props({
       config: { ...composerGalleryConfig, mcpServers: [] },
       initialLayer: "tools",
       mcpSelection: { mode: "off" },
       onSelectMcp
     })} />);
 
-    expect(screen.getByRole("button", { name: "Change MCP tool mode" }))
-      .toHaveTextContent("Tools: Off");
+    expect(screen.getByRole("button", { name: "Change MCP mode" }))
+      .toHaveTextContent("MCP: Off");
+    expect(screen.getByTestId("composer-v2-mcp-enabled")).toHaveTextContent("No servers enabled.");
+    // Enabled servers are disclosed by name; only attention/failed states are counted.
+    rerender(<ComposerV2 {...props({
+      config: {
+        ...composerGalleryConfig,
+        mcpServers: [
+          { ...composerGalleryConfig.mcpServers[0], readiness: "idle" },
+          { ...composerGalleryConfig.mcpServers[1], enabled: true, readiness: "needs_authorization" }
+        ]
+      },
+      initialLayer: "tools",
+      mcpSelection: { mode: "off" },
+      onSelectMcp
+    })} />);
+    expect(screen.getByTestId("composer-v2-mcp-enabled"))
+      .toHaveTextContent("Enabled: office-compute, jira · 1 needs attention");
     expect(screen.getByRole("menuitemradio", { name: /^Auto/ })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("menuitemradio", { name: /^Load all/ })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "true");

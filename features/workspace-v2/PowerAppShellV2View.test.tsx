@@ -318,19 +318,25 @@ describe("Workspace header v2", () => {
     const trigger = screen.getByTestId("header-more-trigger");
     fireEvent.click(trigger);
     const menu = screen.getByTestId("header-more-menu");
+    // Three groups (UX audit F17): chat · content · destructive last.
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent)
     ).toEqual([
       "Share",
       "Rename",
       "Move to…",
-      "Archive",
-      "Delete…",
+      "Branches",
       "Export",
       "Export as JSON",
       "Copy entire thread",
-      "Branches"
+      "Archive",
+      "Delete…"
     ]);
+    expect(within(menu).getAllByRole("separator")).toHaveLength(2);
+    expect(within(menu).getByRole("menuitem", { name: "Delete…" }))
+      .toHaveAttribute("data-tone", "destructive");
+    expect(within(menu).getByRole("menuitem", { name: "Archive" }))
+      .not.toHaveAttribute("data-tone");
     // Share is a mobile-only route; ≤899px CSS owns the breakpoint and
     // toggles this exact marker.
     expect(within(menu).getByRole("menuitem", { name: "Share" }))

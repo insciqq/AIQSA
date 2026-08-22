@@ -1,5 +1,7 @@
 "use client";
 
+import { mcpReadinessPresentation } from "@/components/app-shell/mcpReadiness";
+
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
@@ -101,6 +103,12 @@ export type ComposerV2Props = Readonly<{
   activeRun?: boolean;
   assistantRemovedNotice?: boolean;
   attachmentItems?: readonly ComposerAttachmentItemV2[];
+  /**
+   * Blank-chat orientation (UX audit F18): one quiet row of shortcut chips
+   * under the surface that open the same layers/pickers the "+" menu holds.
+   * The shell passes it only while the conversation has no messages.
+   */
+  capabilityHints?: boolean;
   attachmentLimitUsage?: AttachmentLimitUsage | null;
   attachmentPolicy?: ComposerAttachmentPolicy;
   config: ComposerConfig | null;
@@ -319,6 +327,7 @@ export function ComposerV2({
   activeRun = false,
   assistantRemovedNotice = false,
   attachmentItems = [],
+  capabilityHints = false,
   attachmentLimitUsage = null,
   attachmentPolicy = DEFAULT_COMPOSER_ATTACHMENT_POLICY,
   config,
@@ -382,6 +391,9 @@ export function ComposerV2({
   const dragDepthRef = useRef(0);
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const knowledgeTriggerRef = useRef<HTMLButtonElement>(null);
+  /** Set by a hint chip so the opened layer focuses its section, not its first row. */
+  const pendingLayerSectionRef = useRef<"search" | null>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -534,12 +546,18 @@ export function ComposerV2({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled || !layerRef.current) return;
+      const section = pendingLayerSectionRef.current;
+      pendingLayerSectionRef.current = null;
+      const sectionRoot = section
+        ? layerRef.current.querySelector<HTMLElement>(`[data-v2-layer-section="${section}"]`)
+        : null;
       const target = layer === "model"
         ? layerRef.current.querySelector<HTMLElement>("[data-v2-model-search]")
         : layer === "knowledge"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
             optionElements(layerRef.current)[0]
-          : optionElements(layerRef.current)[0];
+          : (sectionRoot ? optionElements(sectionRoot)[0] : undefined) ??
+            optionElements(layerRef.current)[0];
       target?.focus();
     });
     const dismiss = (event: PointerEvent) => {
@@ -761,6 +779,57 @@ export function ComposerV2({
   const knowledgeChipVisible = Boolean(config) && (
     knowledgeSelection.mode !== "none" || (knowledgeAvailable && !controlsLocked)
   );
+  const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
+  // Transitional states (activating, on-demand idle) are not problems; only
+  // the Settings-level "attention"/"failed" presentations count here.
+  const mcpServersNeedingAttention = enabledMcpServers.filter((server) => {
+    const kind = mcpReadinessPresentation(server.readiness).kind;
+    return kind === "attention" || kind === "failed";
+  }).length;
+
+  // Blank-chat shortcut chips (UX audit F18). Each chip exists only while its
+  // action is really available, and the row yields to a selected Assistant's
+  // own intro.
+  const hintChips: Array<{
+    icon: UiV2IconName;
+    label: string;
+    onClick(target: HTMLButtonElement): void;
+  }> = capabilityHints && !selectedAssistant && !activeRun && config && !configError && !noModels
+    ? [
+        ...(!attachmentSelectionDisabled
+          ? [{
+              icon: "attach" as const,
+              label: "Attach",
+              onClick: () => fileInputRef.current?.click()
+            }]
+          : []),
+        ...(concreteSearchOptions.length > 0 && onSelectSearchOptionIds
+          ? [{
+              icon: "search" as const,
+              label: "Search",
+              onClick: (target: HTMLButtonElement) => {
+                pendingLayerSectionRef.current = "search";
+                openLayer("capabilities", plusTriggerRef.current ?? target);
+              }
+            }]
+          : []),
+        ...(knowledgeChipVisible && knowledgeAvailable
+          ? [{
+              icon: "book" as const,
+              label: "Knowledge",
+              onClick: (target: HTMLButtonElement) =>
+                openLayer("knowledge", knowledgeTriggerRef.current ?? target)
+            }]
+          : []),
+        ...(onOpenAssistantPicker
+          ? [{
+              icon: "assistant" as const,
+              label: "Assistant",
+              onClick: () => onOpenAssistantPicker()
+            }]
+          : [])
+      ]
+    : [];
 
   return (
     <div className="v2-composer-wrap" data-testid="composer-v2">
@@ -943,6 +1012,7 @@ export function ComposerV2({
             {knowledgeChipVisible ? (
               <span className="v2-composer-indicator-group">
                 <button
+                  ref={knowledgeTriggerRef}
                   className="v2-composer-indicator v2-focusable"
                   type="button"
                   data-quiet={knowledgeSelection.mode === "none" ? "" : undefined}
@@ -990,13 +1060,14 @@ export function ComposerV2({
                 aria-controls={`${layerId}-tools`}
                 aria-expanded={layer === "tools"}
                 aria-haspopup="menu"
-                aria-label="Change MCP tool mode"
+                aria-label="Change MCP mode"
                 onClick={(event) => openLayer("tools", event.currentTarget)}
               >
                 {/* The accent dot marks a loaded capability; Auto (discover
                     on demand) and Off stay quiet so the dot never reads as
-                    "tools are on" by default. */}
-                <span aria-hidden="true" />Tools: {mcpSelection.mode === "load_all"
+                    "tools are on" by default. The chip names MCP, not
+                    "Tools": Search and Knowledge are tools too. */}
+                <span aria-hidden="true" />MCP: {mcpSelection.mode === "load_all"
                   ? "Load all"
                   : mcpSelection.mode === "off" ? "Off" : "Auto"}
                 <UiV2Icon name="chevron-down" />
@@ -1116,6 +1187,19 @@ export function ComposerV2({
                       </CapabilityRow>
                     </>
                   )}
+                  {!controlsLocked ? (
+                    /* What the modes act on: enabling stays a Settings action
+                       (FRONTEND.md), so this is disclosure, not selection. */
+                    <p className="v2-composer-layer-note" data-testid="composer-v2-mcp-enabled">
+                      {enabledMcpServers.length === 0
+                        ? "No servers enabled."
+                        : `Enabled: ${enabledMcpServers.map((server) => server.name).join(", ")}${
+                          mcpServersNeedingAttention > 0
+                            ? ` · ${mcpServersNeedingAttention} need${mcpServersNeedingAttention === 1 ? "s" : ""} attention`
+                            : ""
+                        }`}
+                    </p>
+                  ) : null}
                   {onOpenMcpSettings ? (
                     <button
                       className="v2-composer-text-action v2-focusable"
@@ -1292,6 +1376,7 @@ export function ComposerV2({
                   </CapabilityRow>
 
                   <div className="v2-composer-layer-divider" />
+                  <div data-v2-layer-section="search">
                   <p className="v2-composer-layer-label">Search</p>
                   {concreteSearchOptions.length === 0 ? (
                     <CapabilityRow icon="search" disabled reason="Not configured by the administrator">
@@ -1318,6 +1403,7 @@ export function ComposerV2({
                       </CapabilityRow>
                     );
                   })}
+                  </div>
 
                   <p className="v2-composer-layer-label">Skills</p>
                   {availableSkills.length === 0 ? (
@@ -1378,6 +1464,29 @@ export function ComposerV2({
           </>
         ) : null}
       </div>
+      {/* Positioned out of flow (composer.css) so the surface keeps its
+          centred blank-state geometry and an upward layer still clears the
+          header. */}
+      {hintChips.length > 0 ? (
+        <div
+          className="v2-composer-hints"
+          data-testid="composer-v2-hints"
+          role="group"
+          aria-label="Ways to start"
+        >
+          {hintChips.map((chip) => (
+            <button
+              key={chip.label}
+              className="v2-composer-hint v2-focusable"
+              type="button"
+              onClick={(event) => chip.onClick(event.currentTarget)}
+            >
+              <UiV2Icon name={chip.icon} />
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

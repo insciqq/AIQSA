@@ -143,18 +143,64 @@ describe("Navigation v2", () => {
     expect(onNewChat).toHaveBeenLastCalledWith("TEMPORARY");
   });
 
-  it("creates a root folder from the New-chat menu instead of a permanent row", () => {
+  it("creates a root folder from the Folders header, not from the New-chat mode menu", () => {
     const onCreateFolder = vi.fn(async () => undefined);
     sidebar({ onCreateFolder });
 
-    expect(screen.queryByRole("button", { name: "New folder" })).toBeNull();
+    // The mode menu carries only chat modes (UX audit F16).
     fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "New folder" }));
+    expect(screen.queryByRole("menuitem", { name: "New folder" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu", { name: "New chat mode" }), { key: "Escape" });
+
+    // Reachable in one click even before the first folder exists.
+    expect(screen.getByText("Folders")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "New folder" }));
     fireEvent.change(screen.getByRole("textbox", { name: "New folder name" }), {
       target: { value: "Исследования" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
     expect(onCreateFolder).toHaveBeenCalledWith(null, "Исследования");
+  });
+
+  it("filters chats through the server search with a debounce and clears on Escape", () => {
+    vi.useFakeTimers();
+    try {
+      const onSearch = vi.fn();
+      const { view } = sidebar({ onSearch });
+      const field = screen.getByRole("searchbox", { name: "Filter chats" });
+
+      fireEvent.change(field, { target: { value: "bri" } });
+      fireEvent.change(field, { target: { value: "brief" } });
+      expect(onSearch).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(250);
+      expect(onSearch).toHaveBeenCalledTimes(1);
+      expect(onSearch).toHaveBeenLastCalledWith("brief");
+
+      view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "brief" })} />);
+      fireEvent.keyDown(field, { key: "Escape" });
+      expect(onSearch).toHaveBeenLastCalledWith("");
+      expect(field).toHaveValue("");
+
+      // The owner resetting the query (a result was opened) empties the field.
+      fireEvent.change(field, { target: { value: "note" } });
+      vi.advanceTimersByTime(250);
+      view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "note" })} />);
+      view.rerender(<NavigationSidebar {...sidebarProps({ onSearch, searchQuery: "" })} />);
+      expect(screen.getByRole("searchbox", { name: "Filter chats" })).toHaveValue("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the filter out of a selected Project's sidebar", () => {
+    sidebar({ chats: [], projectContextActive: true, projectsSlot: <div>Project chat tree</div> });
+    expect(screen.queryByRole("searchbox", { name: "Filter chats" })).toBeNull();
+  });
+
+  it("hides the Folders header when folder creation is unavailable and no folder exists", () => {
+    sidebar({ folders: [] });
+    expect(screen.queryByText("Folders")).toBeNull();
+    expect(screen.queryByRole("button", { name: "New folder" })).toBeNull();
   });
 
   it("does not submit chat or folder rename forms when they are cancelled", () => {
@@ -190,8 +236,7 @@ describe("Navigation v2", () => {
       onCreateFolder
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "New folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "New folder" }));
     fireEvent.change(screen.getByRole("textbox", { name: "New folder name" }), {
       target: { value: "Root draft" }
     });
@@ -297,11 +342,13 @@ describe("Navigation v2", () => {
       .toEqual(["root-a", "root-b", "orphan"]);
   });
 
-  it("does not render a global search or command trigger", () => {
+  it("offers only the scoped chat filter, never a global search or command trigger", () => {
     sidebar();
 
-    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.getAllByRole("searchbox")).toHaveLength(1);
+    expect(screen.getByRole("searchbox", { name: "Filter chats" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /Search|Commands/ })).toBeNull();
+    expect(screen.queryByText(/⌘K|Ctrl\+K/)).toBeNull();
   });
 
   it("resets the search query when a result is selected", () => {

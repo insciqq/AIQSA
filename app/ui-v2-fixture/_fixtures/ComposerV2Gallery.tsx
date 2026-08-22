@@ -18,6 +18,7 @@ export type ComposerGalleryState =
   | "capabilities"
   | "default"
   | "error"
+  | "hints"
   | "model"
   | "zero";
 
@@ -380,6 +381,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
             <ComposerV2
               attachmentItems={attachmentItems}
               attachmentLimitUsage={state === "attachments" ? attachmentGalleryUsage : null}
+              capabilityHints={state === "default" || state === "hints"}
               config={state === "error" ? null : config}
               configError={state === "error"}
               draft={draft}

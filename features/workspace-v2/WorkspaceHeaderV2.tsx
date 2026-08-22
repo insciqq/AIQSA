@@ -5,6 +5,7 @@ import {
   UiV2Icon,
   UiV2IconButton,
   UiV2MenuItem,
+  UiV2MenuSeparator,
   UiV2MenuSurface
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
@@ -100,8 +101,11 @@ export type HeaderOverflowActionV2 = Readonly<{
   /** Rendered only below 900px via CSS; e.g. Share joins the menu there. */
   mobileOnly?: boolean;
   onSelect?(): void;
+  /** Starts a new visual group (UX audit F17). */
+  separatorBefore?: boolean;
   /** Inline disclosure list (folder picker); scrolls locally when long. */
   submenu?: readonly HeaderOverflowSubmenuItemV2[];
+  tone?: "destructive";
 }>;
 
 /**
@@ -145,9 +149,11 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
         >
           {actions.map((action) => (
             <Fragment key={action.label}>
+              {action.separatorBefore ? <UiV2MenuSeparator /> : null}
               <UiV2MenuItem
                 data-mobile-only={action.mobileOnly ? "" : undefined}
                 disabled={action.disabled}
+                tone={action.tone}
                 {...(action.submenu ? { "aria-expanded": openSubmenu === action.label } : {})}
                 onClick={() => {
                   if (action.submenu) {
@@ -248,7 +254,8 @@ export function WorkspaceHeaderV2({
 }>) {
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
-  // 900px, where the Share text button collapses.
+  // 900px, where the Share text button collapses. The menu reads in three
+  // groups (UX audit F17): the chat itself · its content · destructive last.
   const overflowActions: HeaderOverflowActionV2[] = [
     { disabled: shareDisabled, label: "Share", mobileOnly: true, onSelect: onShare },
     { disabled: renameDisabled, label: "Rename", onSelect: onRenameStart },
@@ -264,15 +271,15 @@ export function WorkspaceHeaderV2({
         }))
       ]
     },
-    { disabled: archiveDisabled, label: "Archive", onSelect: onArchive },
-    ...(onDelete
-      ? [{ disabled: deleteDisabled, label: "Delete…", onSelect: onDelete }]
-      : []),
+    { label: "Branches", onSelect: onBranches, separatorBefore: true },
     { label: "Export", onSelect: () => onExport("markdown") },
     { label: "Export as JSON", onSelect: () => onExport("json") },
-    ...(onCopyLink ? [{ label: "Copy link to chat", onSelect: onCopyLink }] : []),
     { label: "Copy entire thread", onSelect: onCopyThread },
-    { label: "Branches", onSelect: onBranches }
+    ...(onCopyLink ? [{ label: "Copy link to chat", onSelect: onCopyLink }] : []),
+    { disabled: archiveDisabled, label: "Archive", onSelect: onArchive, separatorBefore: true },
+    ...(onDelete
+      ? [{ disabled: deleteDisabled, label: "Delete…", onSelect: onDelete, tone: "destructive" as const }]
+      : [])
   ];
 
   return (
