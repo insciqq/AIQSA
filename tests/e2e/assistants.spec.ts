@@ -301,7 +301,8 @@ test("uses an assistant from the Library and completes an identified run", async
       .getByTestId("answer-assistant-identity");
     await expect(identity).toBeVisible();
     await expect(identity).toContainText(name);
-    await expect(identity).toContainText("revision 1");
+    // Revisions are not an ordinary UI concept: the identity shows the name only.
+    await expect(identity).not.toContainText("revision");
     await expect(page.getByRole("button", { name: /^Run details/u })).toHaveCount(0);
   } finally {
     await deleteChat(page, chatId);
@@ -386,7 +387,7 @@ test("keeps accepted answers on their historical revision after a revise", async
     const identity = answer.getByTestId("answer-assistant-identity");
     await expect(identity).toContainText(name);
     await expect(identity).not.toContainText(revisedName);
-    await expect(identity).toContainText("revision 1");
+    await expect(identity).not.toContainText("revision");
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);

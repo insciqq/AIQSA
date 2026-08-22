@@ -37,14 +37,14 @@ describe("Run lifecycle v2", () => {
       <RunAnswerV2
         content="Частичный ответ"
         presentation={presentation({
-          activity: { kind: "provider", label: "Running at the provider…" },
+          activity: { kind: "provider", label: "Thinking…" },
           kind: "activity",
           runId
         })}
       />
     );
 
-    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Running at the provider…");
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Thinking…");
     expect(screen.queryByTestId("conversation-message-actions")).toBeNull();
     expect(document.body.textContent).not.toMatch(
       /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu
@@ -101,7 +101,7 @@ describe("Run lifecycle v2", () => {
       <RunAnswerV2
         content=""
         presentation={presentation({
-          activity: { kind: "provider", label: "Running at the provider…" },
+          activity: { kind: "provider", label: "Thinking…" },
           kind: "activity"
         })}
         toolActivity={{
@@ -112,7 +112,7 @@ describe("Run lifecycle v2", () => {
 
     const status = screen.getByText("Finding relevant tools…");
     expect(status).toHaveClass("v2-run-shimmer");
-    expect(screen.queryByText("Running at the provider…")).toBeNull();
+    expect(screen.queryByText("Thinking…")).toBeNull();
   });
 
   it("keeps partial output for streaming, cancellation, and connection loss", async () => {

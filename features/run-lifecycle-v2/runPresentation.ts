@@ -165,7 +165,7 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
     case "preview":
       return "Rendering preview…";
     case "provider":
-      return "Running at the provider…";
+      return "Thinking…";
   }
 }
 
@@ -213,7 +213,7 @@ function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
     return { kind: "preparing" as const, label: "Preparing request…" };
   }
   if (status === "in_progress" || status === "streaming") {
-    return { kind: "provider" as const, label: "Running at the provider…" };
+    return { kind: "provider" as const, label: "Thinking…" };
   }
   return null;
 }

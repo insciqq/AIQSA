@@ -103,7 +103,7 @@
   gap: 0.5rem;
   padding: 0.25rem 0.5rem;
   font: inherit;
-  font-size: 0.84375rem;
+  font-size: 0.875rem;
   font-weight: 500;
   text-align: left;
 }
@@ -213,10 +213,20 @@
 .v2-folder-row {
   position: relative;
   display: flex;
-  min-height: 2.125rem;
+  min-height: 2.25rem;
   align-items: center;
   gap: 0.375rem;
   padding: 0 0.375rem;
+}
+
+/* Nested rows hang from a guide line instead of stepping an ever-wider
+   indent (UX audit F10). */
+.v2-folder-children {
+  display: grid;
+  gap: 0.125rem;
+  margin-left: 0.9375rem;
+  padding-left: 0.375rem;
+  border-left: 1px solid var(--v2-color-border);
 }
 
 .v2-folder-menu-trigger {
@@ -289,7 +299,7 @@
   color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.84375rem;
+  font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
 }
@@ -304,11 +314,11 @@
   min-width: 0;
 }
 
-/* Chat rows use S3 §3.2 type.uiSm 13.5px at the §4.2 34px row height. */
+/* Chat rows: 14px at a 36px row height (UX audit F10). */
 .v2-chat-row {
   display: grid;
   width: 100%;
-  min-height: 2.125rem;
+  min-height: 2.25rem;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.4375rem;
@@ -318,7 +328,7 @@
   color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.84375rem;
+  font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
 }
@@ -377,7 +387,7 @@
 
 .v2-navigation-destination {
   display: flex;
-  min-height: 2.125rem;
+  min-height: 2.25rem;
   align-items: center;
   gap: 0.625rem;
   padding: 0.375rem 0.5rem;
@@ -386,7 +396,7 @@
   color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.84375rem;
+  font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
 }
@@ -396,18 +406,72 @@
   background: var(--v2-color-hover);
 }
 
+/* The single account entry: avatar initial, account label, and an upward
+   menu with Settings, Control Center, and Sign out (UX audit F11). */
+.v2-navigation-account {
+  position: relative;
+  margin-top: 0.25rem;
+}
+
+.v2-navigation-account-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.375rem 0.5rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.84375rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-navigation-account-trigger:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-navigation-account-trigger > .v2-icon {
+  margin-left: auto;
+  color: var(--v2-color-text3);
+}
+
+.v2-navigation-account-avatar {
+  display: grid;
+  width: 1.625rem;
+  height: 1.625rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: 50%;
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.v2-navigation-account-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.375rem);
+  left: 0;
+  z-index: 60;
+}
+
+/* Collapsed-sidebar controls sit inside the in-flow header bar's top-left
+   corner: plain buttons on the canvas, vertically centred on the bar. */
 .v2-sidebar-floats {
   position: fixed;
-  top: max(0.75rem, env(safe-area-inset-top));
+  top: env(safe-area-inset-top);
   left: max(0.75rem, env(safe-area-inset-left));
   z-index: 25;
   display: flex;
+  height: var(--v2-header-height);
+  align-items: center;
   gap: 0.25rem;
-  padding: 0.1875rem;
-  border: 1px solid var(--v2-color-border);
-  border-radius: var(--v2-radius-m);
-  background: color-mix(in srgb, var(--v2-color-canvas) 88%, transparent);
-  backdrop-filter: blur(10px);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--v2-motion-fast);

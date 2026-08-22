@@ -34,8 +34,8 @@ describe("run lifecycle v2 presentation", () => {
   it.each([
     ["queued", "queued", "Queued"],
     ["preparing", "preparing", "Preparing request…"],
-    ["in_progress", "provider", "Running at the provider…"],
-    ["streaming", "provider", "Running at the provider…"]
+    ["in_progress", "provider", "Thinking…"],
+    ["streaming", "provider", "Thinking…"]
   ] as const)("maps explicit %s status to its truthful activity", (status, kind, label) => {
     expect(presentRunLifecycleV2(state({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
       activity: { kind, label },
@@ -47,7 +47,7 @@ describe("run lifecycle v2 presentation", () => {
     [summary({ stage: "search", status: "running" }), "search", "Searching the web…"],
     [summary({ stage: "compute", status: "running" }), "compute", "Computing…"],
     [summary({ stage: "preview", status: "running" }), "preview", "Rendering preview…"],
-    [summary({ stage: "model", status: "waiting" }), "provider", "Running at the provider…"]
+    [summary({ stage: "model", status: "waiting" }), "provider", "Thinking…"]
   ] as const)("uses normalized lifecycle artifacts", (event, kind, label) => {
     expect(presentRunLifecycleV2(state({ events: [event] }))).toMatchObject({
       activity: { kind, label },

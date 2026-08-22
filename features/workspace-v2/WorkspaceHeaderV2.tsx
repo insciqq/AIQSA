@@ -1,6 +1,5 @@
 "use client";
 
-import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import {
   UiV2Button,
   UiV2Icon,
@@ -193,8 +192,6 @@ export type WorkspaceHeaderFolderV2 = Readonly<{
 
 export function WorkspaceHeaderV2({
   active,
-  accountEmail,
-  adminEntryVisible,
   archiveDisabled = false,
   deleteDisabled = false,
   editingTitle = null,
@@ -207,22 +204,18 @@ export function WorkspaceHeaderV2({
   onCopyThread,
   onDelete = null,
   onExport,
-  onLibrary,
   onMove,
   renameDisabled = false,
   onRenameCancel,
   onRenameChange,
   onRenameSave,
   onRenameStart,
-  onSettings,
   onShare,
   shareDisabled,
   temporaryMemory,
   title
 }: Readonly<{
   active: boolean;
-  accountEmail: string | null;
-  adminEntryVisible: boolean;
   archiveDisabled?: boolean;
   deleteDisabled?: boolean;
   /** Non-null while the header title is being renamed inline. */
@@ -242,39 +235,17 @@ export function WorkspaceHeaderV2({
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
   onExport(format: "json" | "markdown"): void;
-  onLibrary(): void;
   onMove(folderId: string | null): void;
   renameDisabled?: boolean;
   onRenameCancel(): void;
   onRenameChange(value: string): void;
   onRenameSave(): void;
   onRenameStart(): void;
-  onSettings(): void;
   onShare(): void;
   shareDisabled: boolean;
   temporaryMemory: TemporaryChatHeaderMemoryV2 | null;
   title: string;
 }>) {
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState<string | null>(null);
-  const {
-    menuRef: accountMenuRef,
-    triggerRef: accountTriggerRef
-  } = useMenuDismissalV2({
-    onClose: () => setAccountOpen(false),
-    open: accountOpen
-  });
-  const signOut = async () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    setSignOutError(null);
-    const result = await signOutCurrentSession();
-    if (!result.ok) {
-      setSignOutError(result.error);
-      setSigningOut(false);
-    }
-  };
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
   // 900px, where the Share text button collapses.
@@ -355,43 +326,14 @@ export function WorkspaceHeaderV2({
       </div>
       <div className="v2-live-header-actions">
         {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
+        {/* The account menu lives in the sidebar footer (one entry, UX audit
+            F11); the header carries only the chat's own actions. */}
         {active ? (
           <>
             <UiV2Button disabled={shareDisabled} onClick={onShare}>Share</UiV2Button>
             <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions} />
           </>
         ) : null}
-        <span className="v2-live-account">
-          <button
-            aria-expanded={accountOpen}
-            aria-label="Account menu"
-            className="v2-live-account-trigger v2-focusable"
-            ref={accountTriggerRef}
-            type="button"
-            onClick={() => setAccountOpen((open) => !open)}
-          >
-            {(accountEmail?.slice(0, 1) || "A").toLocaleUpperCase()}
-          </button>
-          {accountOpen ? (
-            <UiV2MenuSurface
-              className="v2-live-account-menu"
-              label="Account"
-              ref={accountMenuRef}
-            >
-              <p className="v2-live-account-label">{accountEmail ?? "AIQSA account"}</p>
-              <UiV2MenuItem onClick={() => { setAccountOpen(false); onLibrary(); }}>Library</UiV2MenuItem>
-              {/* "Archived chats" lives only in the sidebar: one archive entry total. */}
-              <UiV2MenuItem onClick={() => { setAccountOpen(false); onSettings(); }}>Settings</UiV2MenuItem>
-              {adminEntryVisible ? (
-                <a className="v2-live-menu-link v2-focusable" href="/admin">Control Center</a>
-              ) : null}
-              <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
-                {signingOut ? "Signing out…" : "Sign out"}
-              </UiV2MenuItem>
-              {signOutError ? <p className="v2-live-menu-error" role="alert">Could not sign out.</p> : null}
-            </UiV2MenuSurface>
-          ) : null}
-        </span>
       </div>
     </header>
   );

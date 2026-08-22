@@ -1,5 +1,6 @@
 "use client";
 
+import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import {
   UiV2Icon,
   UiV2IconButton,
@@ -51,6 +52,8 @@ export type NavigationChatRowState = Readonly<{
 export type NavigationSidebarProps = Readonly<{
   accountLabel?: string | null;
   activeChatId: string | null;
+  /** Shows the Control Center link inside the account menu. */
+  adminEntryVisible?: boolean;
   /**
    * Optional current per-chat state (favourite, retained Memory mode) so the
    * row menu can show what is active; unknown chats simply render stateless.
@@ -165,7 +168,6 @@ function ChatRow({
   active,
   chat,
   chatStateFor,
-  depth = 0,
   editing,
   editingTitle,
   folders,
@@ -185,7 +187,6 @@ function ChatRow({
   active: boolean;
   chat: ChatNavigationSummaryWire;
   chatStateFor?(chat: ChatNavigationSummaryWire): NavigationChatRowState | null;
-  depth?: number;
   editing?: boolean;
   editingTitle?: string;
   folders: readonly ChatNavigationFolderWire[];
@@ -215,7 +216,6 @@ function ChatRow({
     return (
       <form
         className="v2-chat-rename"
-        style={{ marginLeft: `${Math.min(depth, 3) * 0.75}rem` }}
         onSubmit={(event) => {
           event.preventDefault();
           void onSaveRename?.(chat);
@@ -241,11 +241,7 @@ function ChatRow({
     );
   }
   return (
-    <div
-      className="v2-chat-row-wrap"
-      data-navigation-chat-id={chat.id}
-      style={{ paddingLeft: `${Math.min(depth, 3) * 0.75}rem` }}
-    >
+    <div className="v2-chat-row-wrap" data-navigation-chat-id={chat.id}>
       <button
         className="v2-chat-row v2-focusable"
         data-selected={active || undefined}
@@ -350,7 +346,9 @@ function FolderGroup({
   folders: readonly ChatNavigationFolderWire[];
   props: NavigationSidebarProps;
 }) {
-  const [open, setOpen] = useState(true);
+  // Top-level folders open; nested folders start collapsed so deep trees stay
+  // scannable (UX audit F10).
+  const [open, setOpen] = useState(depth === 0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [subfolderOpen, setSubfolderOpen] = useState(false);
@@ -365,7 +363,7 @@ function FolderGroup({
   const editing = props.editingFolderId === folder.id;
   return (
     <div className="v2-navigation-group" data-folder-id={folder.id}>
-      <div className="v2-folder-row" style={{ paddingLeft: `${Math.min(depth, 3) * 0.75}rem` }}>
+      <div className="v2-folder-row">
         {editing ? (
           <form className="v2-folder-rename" onSubmit={(event) => {
             event.preventDefault();
@@ -449,7 +447,7 @@ function FolderGroup({
         )}
       </div>
       {open ? (
-        <>
+        <div className="v2-folder-children">
           {subfolderOpen ? (
             <form className="v2-new-folder-inline" onSubmit={(event) => {
               event.preventDefault();
@@ -476,7 +474,6 @@ function FolderGroup({
               active={chat.id === activeChatId}
               chat={chat}
               chatStateFor={props.chatStateFor}
-              depth={depth + 1}
               editing={props.editingChatId === chat.id}
               editingTitle={props.editingChatTitle}
               folders={folders}
@@ -506,7 +503,7 @@ function FolderGroup({
               props={props}
             />
           ))}
-        </>
+        </div>
       ) : null}
     </div>
   );
@@ -541,6 +538,26 @@ function findAnchoredChatRow(container: HTMLElement, id: string): HTMLElement | 
 
 export function NavigationSidebar(props: NavigationSidebarProps) {
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const {
+    menuRef: accountMenuRef,
+    triggerRef: accountTriggerRef
+  } = useMenuDismissalV2({
+    onClose: () => setAccountOpen(false),
+    open: accountOpen
+  });
+  const signOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    setSignOutError(null);
+    const result = await signOutCurrentSession();
+    if (!result.ok) {
+      setSignOutError(result.error);
+      setSigningOut(false);
+    }
+  };
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -768,17 +785,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           </div>
         ) : (
           <>
-            {roots.map((folder) => (
-              <FolderGroup
-                activeChatId={props.activeChatId}
-                chats={props.chats}
-                depth={0}
-                folder={folder}
-                folders={props.folders}
-                key={folder.id}
-                props={rowProps}
-              />
-            ))}
+            {/* Recent unfiled chats first, then the folder tree (UX audit F10). */}
             {dateGroups.map((group) => (
               <div className="v2-navigation-group" key={group.id}>
                 <div className="v2-navigation-group-label">{dateLabels[group.id]}</div>
@@ -807,6 +814,24 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 ))}
               </div>
             ))}
+            {roots.length > 0 ? (
+              <div className="v2-navigation-group">
+                {dateGroups.length > 0 ? (
+                  <div className="v2-navigation-group-label">Folders</div>
+                ) : null}
+                {roots.map((folder) => (
+                  <FolderGroup
+                    activeChatId={props.activeChatId}
+                    chats={props.chats}
+                    depth={0}
+                    folder={folder}
+                    folders={props.folders}
+                    key={folder.id}
+                    props={rowProps}
+                  />
+                ))}
+              </div>
+            ) : null}
           </>
         )}
         {props.hasMore ? (
@@ -837,10 +862,47 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           <UiV2Icon name="library" />
           Library
         </button>
-        <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onSettings}>
-          <UiV2Icon name="settings" />
-          <span className="v2-chat-title">{props.accountLabel || "Settings"}</span>
-        </button>
+        {/* One account entry for the shell (UX audit F11): Settings, Control
+            Center, and Sign out live here, not in the chat header. */}
+        <div className="v2-navigation-account">
+          <button
+            className="v2-navigation-account-trigger v2-focusable"
+            type="button"
+            aria-expanded={accountOpen}
+            aria-haspopup="menu"
+            aria-label="Account menu"
+            ref={accountTriggerRef}
+            onClick={() => setAccountOpen((open) => !open)}
+          >
+            <span className="v2-navigation-account-avatar" aria-hidden="true">
+              {(props.accountLabel?.slice(0, 1) || "A").toLocaleUpperCase()}
+            </span>
+            <span className="v2-chat-title">{props.accountLabel || "Account"}</span>
+            <UiV2Icon name="chevron-down" />
+          </button>
+          {accountOpen ? (
+            <UiV2MenuSurface
+              className="v2-navigation-account-menu"
+              label="Account"
+              ref={accountMenuRef}
+            >
+              {props.onSettings ? (
+                <UiV2MenuItem onClick={() => { setAccountOpen(false); props.onSettings?.(); }}>
+                  Settings
+                </UiV2MenuItem>
+              ) : null}
+              {props.adminEntryVisible ? (
+                <a className="v2-live-menu-link v2-focusable" href="/admin">Control Center</a>
+              ) : null}
+              <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
+                {signingOut ? "Signing out…" : "Sign out"}
+              </UiV2MenuItem>
+              {signOutError ? (
+                <p className="v2-live-menu-error" role="alert">Could not sign out.</p>
+              ) : null}
+            </UiV2MenuSurface>
+          ) : null}
+        </div>
       </div>
     </aside>
   );

@@ -58,7 +58,8 @@ import {
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
 import {
-  AnswerOutputsV2
+  AnswerOutputsV2,
+  ReasoningV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import {
   ReadingRoomShellV2,
@@ -135,14 +136,15 @@ export type AnswerIdentityV2 = Readonly<{
 
 /**
  * Optional quiet accepted Assistant identity. Ordinary answers stay neutral:
- * provider, adapter, raw model, and opaque ids never become answer chrome.
+ * provider, adapter, raw model, revision numbers, and opaque ids never become
+ * answer chrome — the label is the Assistant's name alone.
  */
 export function answerIdentityV2(
   message: Pick<ThreadMessage, "assistantIdentity">
 ): AnswerIdentityV2 | null {
   if (message.assistantIdentity) {
     return {
-      label: `${message.assistantIdentity.name} · revision ${message.assistantIdentity.revisionNumber}`,
+      label: message.assistantIdentity.name,
       testId: "answer-assistant-identity"
     };
   }
@@ -610,6 +612,22 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // post-hoc execution surface.
     const settled = settledRunPresentationV2(presentation);
     const identity = answerIdentityV2(source);
+    // Answer anatomy (F6): identity and Reasoning lead the answer; Sources,
+    // Memory feedback, and the branch pager follow it.
+    const reasoningTexts = settled && composer.showReasoningBlocks
+      ? artifact?.reasoningText ?? []
+      : [];
+    const leadingSlot = identity || reasoningTexts.some((text) => text.trim()) ? (
+      <div className="v2-answer-lead">
+        {identity && source.assistantIdentity ? (
+          <span className="v2-answer-identity" data-testid={identity.testId}>
+            <AssistantAvatarV2 recipe={source.assistantIdentity.avatar} size={20} />
+            <span>{identity.label}</span>
+          </span>
+        ) : null}
+        <ReasoningV2 texts={reasoningTexts} />
+      </div>
+    ) : null;
     const knowledgeHandles = new Set(
       artifact?.knowledgeCitations?.map((citation) => citation.handle) ?? []
     );
@@ -621,18 +639,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           <>
             <AnswerOutputsV2
               artifact={artifact}
-              identitySlot={identity ? (
-                <span data-testid={identity.testId}>{identity.label}</span>
-              ) : null}
               knowledgeReference={knowledgeReference}
               onOpenMemorySettings={settings.openMemory}
-              showReasoning={composer.showReasoningBlocks}
+              showReasoning={false}
             />
             {pagerSlot}
           </>
         ) : pagerSlot}
         anchorId={source.id}
         content={messageText(source)}
+        leadingSlot={leadingSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
         onRetry={() => {
@@ -721,6 +737,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : (
         <ReadingRoomShellV2
           accountLabel={session.accountEmail}
+          adminEntryVisible={session.adminEntryVisible}
           chatStateFor={navigationChatState}
           currentNewChatMode={currentNewChatMode}
           editingChatId={workspace.pane.state.editingChatId}
@@ -809,8 +826,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
-              accountEmail={session.accountEmail}
-              adminEntryVisible={session.adminEntryVisible}
               archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
                 projectContext && (
                   !activeProject || !activeProject.capabilities.archiveChats || activeProjectChat?.archived
@@ -846,9 +861,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 const full = chatId ? currentWorkspaceChat(chatId) : null;
                 if (full) workspace.pane.actions.exportChat(full, format);
               }}
-              onLibrary={projectContext
-                ? () => workspace.projects.actions.openSettings("resources")
-                : settings.openLibrary}
               onMove={(folderId) => {
                 const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
                 if (full) void workspace.pane.actions.moveChat(full.id, folderId);
@@ -858,9 +870,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
               onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full))}
               renameDisabled={!canRenameActiveProjectChat || Boolean(projectMutationReason)}
-              onSettings={projectContext
-                ? () => workspace.projects.actions.openSettings("general")
-                : settings.open}
               onShare={() => void session.shareActiveBranch()}
               shareDisabled={temporarySession || Boolean(projectMutationReason) || Boolean(projectContext && (
                 !activeProject || !activeProject.publicSharingEnabled || !activeProject.capabilities.archiveChats

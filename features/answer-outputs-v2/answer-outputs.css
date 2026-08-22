@@ -7,10 +7,30 @@
   line-height: 1.45;
 }
 
+/* Accepted Assistant identity heads the answer (F6): avatar + name, quiet
+   secondary ink, never a revision or raw model id. */
 .v2-answer-identity {
+  display: inline-flex;
   width: fit-content;
-  padding: 0.1875rem 0;
-  color: var(--v2-color-text3);
+  min-height: 1.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.v2-answer-identity svg {
+  flex: 0 0 auto;
+  border-radius: 0.3125rem;
+}
+
+/* Leading answer block: identity, then the collapsed Reasoning disclosure. */
+.v2-answer-lead {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.625rem;
 }
 
 .v2-knowledge-answer-state,

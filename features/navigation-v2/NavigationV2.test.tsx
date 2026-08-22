@@ -372,7 +372,7 @@ describe("Navigation v2", () => {
     const close = screen.getByRole("button", { name: "Close sidebar" });
     expect(close).toHaveFocus();
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(screen.getByRole("button", { name: "Settings" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Account menu" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Tab" });
     expect(close).toHaveFocus();
     fireEvent.click(close);

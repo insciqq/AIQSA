@@ -187,7 +187,7 @@ describe("Answer identity v2", () => {
         revisionNumber: 3
       }
     })).toEqual({
-      label: "Quarterly analyst · revision 3",
+      label: "Quarterly analyst",
       testId: "answer-assistant-identity"
     });
   });
@@ -284,8 +284,6 @@ describe("Workspace header v2", () => {
   function headerProps(overrides: Partial<Parameters<typeof WorkspaceHeaderV2>[0]> = {}) {
     return {
       active: true,
-      accountEmail: "operator@example.com",
-      adminEntryVisible: false,
       editingTitle: null,
       folders,
       onArchive: vi.fn(),
@@ -293,13 +291,11 @@ describe("Workspace header v2", () => {
       onCopyThread: vi.fn(),
       onDelete: vi.fn(),
       onExport: vi.fn(),
-      onLibrary: vi.fn(),
       onMove: vi.fn(),
       onRenameCancel: vi.fn(),
       onRenameChange: vi.fn(),
       onRenameSave: vi.fn(),
       onRenameStart: vi.fn(),
-      onSettings: vi.fn(),
       onShare: vi.fn(),
       shareDisabled: false,
       temporaryMemory: null,
@@ -410,22 +406,17 @@ describe("Workspace header v2", () => {
     expect(props.onRenameCancel).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the welcome header empty and the account menu to one archive entry", () => {
+  it("keeps the welcome header empty and carries no account menu", () => {
     const props = headerProps({ active: false });
     render(<WorkspaceHeaderV2 {...props} />);
 
-    // Welcome: no title, no kicker, no chat actions — quiet actions only.
+    // Welcome: no title, no kicker, no chat actions — a quiet bar.
     expect(screen.queryByRole("heading")).toBeNull();
     expect(screen.queryByTestId("header-more-trigger")).toBeNull();
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Commands" })).toBeNull();
-
-    // The sidebar «Archived chats» row is the single archive entry.
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    const account = screen.getByRole("menu", { name: "Account" });
-    expect(within(account).queryByRole("menuitem", { name: "Archived chats" })).toBeNull();
-    expect(within(account).getByRole("menuitem", { name: "Library" })).toBeVisible();
-    expect(within(account).getByRole("menuitem", { name: "Settings" })).toBeVisible();
+    // The account menu is the sidebar footer's single entry, never a header one.
+    expect(screen.queryByRole("button", { name: "Account menu" })).toBeNull();
   });
 
   it("keeps Share governance, the Temporary indicator, and shared dismissal", () => {
