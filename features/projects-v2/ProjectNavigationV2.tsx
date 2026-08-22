@@ -143,7 +143,9 @@ export function ProjectNavigationV2({
           <button type="button" onClick={() => void controller.actions.refreshList()}>Retry</button>
         </div>
       ) : controller.projects.length === 0 ? (
-        <p className="v2-project-navigation-note">Create a project for shared chats and files.</p>
+        // No helper paragraph: the heading's "+" is the create entry, and the
+        // empty block should not cost sidebar height (UX audit F10).
+        null
       ) : (
         <div className="v2-project-list">
           {[...controller.projects.filter((project) => project.status === "ACTIVE"), ...controller.projects.filter((project) => project.status !== "ACTIVE")].map((project) => (

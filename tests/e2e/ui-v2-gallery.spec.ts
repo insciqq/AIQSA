@@ -406,7 +406,7 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=complete");
 
   const outputs = page.getByTestId("answer-outputs");
-  await expect(outputs).toContainText("Research assistant · revision 4");
+  await expect(outputs).toContainText("Research assistant");
   await outputs.getByText("Sources", { exact: true }).click();
   await expect(outputs.getByRole("link", { name: "Cross-language retrieval evaluation" }))
     .toBeVisible();

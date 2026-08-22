@@ -71,14 +71,14 @@ describe("answer outputs v2", () => {
       <KnowledgeCitationViewerProvider>
         <AnswerOutputsV2
           artifact={artifact}
-          identitySlot={<span>Quarterly analyst · revision 3</span>}
+          identitySlot={<span>Quarterly analyst</span>}
           knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
           showReasoning
         />
       </KnowledgeCitationViewerProvider>
     );
 
-    expect(screen.getByText("Quarterly analyst · revision 3")).toBeVisible();
+    expect(screen.getByText("Quarterly analyst")).toBeVisible();
     fireEvent.click(screen.getByText("Sources"));
     expect(screen.getByRole("link", { name: "Cross-language retrieval" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Knowledge source [K1.1]" }));

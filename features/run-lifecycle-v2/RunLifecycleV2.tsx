@@ -230,6 +230,8 @@ export type RunAnswerV2Props = Readonly<{
   actionsSlot?: ReactNode;
   anchorId?: string;
   content: string;
+  /** Quiet identity/reasoning block rendered above tool activity and the body. */
+  leadingSlot?: ReactNode;
   onRefresh?(): MaybePromise;
   onRegenerate?(): void;
   onRetry?(): void;
@@ -245,6 +247,7 @@ export function RunAnswerV2({
   actionsSlot,
   anchorId,
   content,
+  leadingSlot = null,
   onRefresh,
   onRegenerate,
   onRetry,
@@ -258,7 +261,7 @@ export function RunAnswerV2({
   const activeLabel = toolActivity
     ? runningToolLabel(toolActivity) ?? presentation.activity?.label ?? "Writing answer…"
     : presentation.activity?.label ?? "Writing answer…";
-  const beforeContent = toolActivity
+  const activityContent = toolActivity
     ? (
         <RunToolActivityV2
           active={runActive}
@@ -269,6 +272,14 @@ export function RunAnswerV2({
     : presentation.kind === "activity"
       ? <RunActivityLineV2 presentation={presentation} />
       : null;
+  const beforeContent = leadingSlot || activityContent
+    ? (
+        <>
+          {leadingSlot}
+          {activityContent}
+        </>
+      )
+    : null;
   const afterContent = (
     <>
       {presentation.kind === "connection_lost" ? (

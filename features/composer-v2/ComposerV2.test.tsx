@@ -165,7 +165,7 @@ describe("Composer v2", () => {
     await waitFor(() => expect(modelTrigger).toHaveFocus());
   });
 
-  it("keeps the Capabilities menu open across Search, Knowledge, Skills, and MCP toggles", () => {
+  it("keeps each picker open across Search, Knowledge, Skills, and MCP toggles", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();
     const onSelectMcp = vi.fn();
@@ -205,37 +205,46 @@ describe("Composer v2", () => {
       onSelectSkillIds: onSelectSkills,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
-    // One visit combines several selections: no toggle closes the menu, so a
-    // second Search engine or Knowledge Base never needs the "+" reopened.
-    const menuOpen = () =>
-      expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+    // One visit combines several selections: no toggle closes its picker, so a
+    // second Search engine or Knowledge Base never needs the trigger reopened.
+    const menuOpen = (name: string) =>
+      expect(screen.getByRole("menu", { name })).toBeVisible();
 
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Research Search/ }));
     expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
-    menuOpen();
-
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }));
-    expect(onKnowledge).toHaveBeenCalledWith(["missing-base"]);
-    menuOpen();
-
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Unavailable knowledge base/ }));
-    expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
-    menuOpen();
+    menuOpen("Capabilities");
 
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Careful editor/ }));
     expect(onSelectSkills).toHaveBeenCalledWith(["skill-editor"]);
-    menuOpen();
+    menuOpen("Capabilities");
+    // The "+" menu no longer carries Knowledge or MCP rows: each has its own chip.
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Финансы 2026/ })).toBeNull();
+    expect(screen.queryByRole("menuitemradio", { name: /^Load all/ })).toBeNull();
 
+    fireEvent.click(screen.getByRole("button", { name: "Choose Knowledge" }));
+    menuOpen("Knowledge");
+    expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }));
+    expect(onKnowledge).toHaveBeenCalledWith(["missing-base"]);
+    menuOpen("Knowledge");
+
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Unavailable knowledge base/ }));
+    expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
+    menuOpen("Knowledge");
+
+    fireEvent.click(screen.getByRole("button", { name: "Change MCP tool mode" }));
+    menuOpen("MCP tools");
+    expect(screen.queryByRole("menu", { name: "Knowledge" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^Load all/ }));
     expect(onSelectMcp).toHaveBeenCalledWith({ mode: "load_all" });
-    menuOpen();
+    menuOpen("MCP tools");
   });
 
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
     const onSelectMcp = vi.fn();
     render(<ComposerV2 {...props({
       config: { ...composerGalleryConfig, mcpServers: [] },
-      initialLayer: "capabilities",
+      initialLayer: "tools",
       mcpSelection: { mode: "off" },
       onSelectMcp
     })} />);
@@ -374,7 +383,7 @@ describe("Composer v2", () => {
       readiness: "ready"
     }]);
     render(<ComposerV2 {...props({
-      initialLayer: "capabilities",
+      initialLayer: "knowledge",
       onSearchKnowledgeSources,
       onSelectKnowledgeBaseIds: undefined,
       onSelectKnowledgeSelection,

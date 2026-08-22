@@ -150,7 +150,7 @@ function AnswerOutput({ state }: { state: AnswerOutputsGalleryState }) {
   return (
     <AnswerOutputsV2
       artifact={artifact}
-      identitySlot={surface === "assistant" ? <span>Research assistant · revision 4</span> : null}
+      identitySlot={surface === "assistant" ? <span>Research assistant</span> : null}
       knowledgeReference={surface
         ? { messageId: "answer-outputs-answer", runId: "answer-outputs-run" }
         : undefined}
