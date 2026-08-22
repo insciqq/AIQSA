@@ -127,6 +127,56 @@
   z-index: 50;
 }
 
+/* Sidebar-scoped chat filter: one quiet field, never a global command search. */
+.v2-navigation-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.v2-navigation-filter > .v2-icon {
+  position: absolute;
+  left: 0.5625rem;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--v2-color-text3);
+  pointer-events: none;
+}
+
+.v2-navigation-filter input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.25rem 2rem 0.25rem 1.875rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  outline: none;
+  color: var(--v2-color-text);
+  background: var(--v2-color-canvas);
+  font: inherit;
+  font-size: 0.8125rem;
+  appearance: none;
+}
+
+.v2-navigation-filter input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.v2-navigation-filter input::placeholder {
+  color: var(--v2-color-text3);
+}
+
+.v2-navigation-filter input:focus-visible {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 55%, var(--v2-color-border2));
+}
+
+.v2-navigation-filter-clear {
+  position: absolute;
+  right: 0.125rem;
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
 .v2-navigation-scroll {
   min-height: 0;
   padding: 0 0.5rem 0.75rem;
@@ -208,6 +258,22 @@
   letter-spacing: 0.065em;
   line-height: 1.2;
   text-transform: uppercase;
+}
+
+/* A group header that also hosts its one creation action (Folders "+"),
+   mirroring the Projects header row. */
+.v2-navigation-group-head {
+  display: flex;
+  min-height: 1.875rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+  padding-right: 0.25rem;
+}
+
+.v2-navigation-group-action {
+  width: 1.875rem;
+  height: 1.875rem;
 }
 
 .v2-folder-row {
@@ -608,7 +674,7 @@
 @media (hover: none), (pointer: coarse) {
   .v2-new-chat-main,
   .v2-new-chat-menu-trigger,
-  .v2-navigation-search-row,
+  .v2-navigation-filter input,
   .v2-folder-toggle,
   .v2-chat-row,
   .v2-navigation-destination,

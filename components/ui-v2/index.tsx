@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  type AnchorHTMLAttributes,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type ReactNode
@@ -251,10 +252,13 @@ export function UiV2MenuItem({
   children,
   selected = false,
   sub,
+  tone,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   selected?: boolean;
   sub?: string;
+  /** Destructive items keep their place in the menu but read in the danger color. */
+  tone?: "destructive";
 }) {
   return (
     <button
@@ -262,6 +266,7 @@ export function UiV2MenuItem({
       className="v2-menu-item v2-focusable"
       role="menuitem"
       aria-current={selected ? "true" : undefined}
+      data-tone={tone}
     >
       <span>
         {children}
@@ -270,6 +275,26 @@ export function UiV2MenuItem({
       {selected ? <span className="v2-menu-item-check"><UiV2Icon name="check" /></span> : null}
     </button>
   );
+}
+
+/**
+ * A navigation entry inside a menu: the same metrics as a menu item, but a
+ * real link (it keeps the link role so it reads as navigation, not a command).
+ */
+export function UiV2MenuLink({
+  children,
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement>) {
+  return (
+    <a {...props} className="v2-menu-item v2-focusable">
+      <span>{children}</span>
+    </a>
+  );
+}
+
+/** Visual group boundary inside a menu surface. */
+export function UiV2MenuSeparator() {
+  return <div className="v2-menu-separator" role="separator" />;
 }
 
 export function UiV2Chip({

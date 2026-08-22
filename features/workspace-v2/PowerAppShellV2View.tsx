@@ -397,6 +397,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
       attachmentPolicy={attachmentPolicyForModel(composer.currentModel)}
+      capabilityHints={thread.visibleMessages.length === 0}
       config={config}
       configError={Boolean(composer.catalogError)}
       contextStats={session.activeChatId ? composer.composerContextStats : null}

@@ -6,6 +6,7 @@ import {
   UiV2IconButton,
   UiV2IconSprite,
   UiV2MenuItem,
+  UiV2MenuLink,
   UiV2MenuSurface,
   UiV2Skeleton
 } from "@/components/ui-v2";
@@ -17,9 +18,10 @@ import {
 } from "@/components/app-shell/chatNavigationActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
-import type {
-  ChatNavigationFolderWire,
-  ChatNavigationSummaryWire
+import {
+  CHAT_NAVIGATION_QUERY_MAX_LENGTH,
+  type ChatNavigationFolderWire,
+  type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import {
@@ -560,6 +562,35 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   };
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  // "Filter chats…" is a sidebar-scoped lookup over the user's own chats on
+  // the existing server search (the list is paginated, so a client-side
+  // filter of loaded rows would miss chats). Typing is debounced; the owner's
+  // `searchQuery` stays the source of truth and clears the field when it is
+  // reset elsewhere (e.g. after a result is opened).
+  const [filterValue, setFilterValue] = useState(props.searchQuery);
+  const filterDirtyRef = useRef(false);
+  const { onSearch, searchQuery } = props;
+  useEffect(() => {
+    if (!filterDirtyRef.current) return;
+    const next = filterValue.trim();
+    if (next === searchQuery) {
+      filterDirtyRef.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      filterDirtyRef.current = false;
+      onSearch(next);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [filterValue, onSearch, searchQuery]);
+  useEffect(() => {
+    if (!searchQuery && !filterDirtyRef.current) setFilterValue("");
+  }, [searchQuery]);
+  const clearFilter = () => {
+    filterDirtyRef.current = false;
+    setFilterValue("");
+    if (searchQuery) onSearch("");
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLButtonElement>(null);
   const anchorRef = useRef<NavigationScrollAnchor | null>(null);
@@ -689,39 +720,38 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               >
                 Temporary chat
               </UiV2MenuItem>
-              {props.onCreateFolder ? (
-                <>
-                  <div aria-hidden="true" className="v2-menu-separator" />
-                  <UiV2MenuItem
-                    onClick={() => { setNewChatMenuOpen(false); setNewFolderOpen(true); }}
-                  >
-                    New folder
-                  </UiV2MenuItem>
-                </>
-              ) : null}
             </UiV2MenuSurface>
           ) : null}
         </div>
-        {props.onCreateFolder && newFolderOpen ? (
-          <form className="v2-new-folder-inline" onSubmit={(event) => {
-            event.preventDefault();
-            if (!newFolderName.trim()) return;
-            void Promise.resolve(props.onCreateFolder?.(null, newFolderName.trim())).then(() => {
-              setNewFolderName("");
-              setNewFolderOpen(false);
-            });
-          }}>
+        {!props.projectContextActive ? (
+          <div className="v2-navigation-filter">
+            <UiV2Icon name="search" />
             <input
-              autoFocus
-              aria-label="New folder name"
-              maxLength={80}
-              placeholder="Folder name"
-              value={newFolderName}
-              onChange={(event) => setNewFolderName(event.target.value)}
+              aria-label="Filter chats"
+              autoComplete="off"
+              maxLength={CHAT_NAVIGATION_QUERY_MAX_LENGTH}
+              placeholder="Filter chats…"
+              type="search"
+              value={filterValue}
+              onChange={(event) => {
+                filterDirtyRef.current = true;
+                setFilterValue(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || !filterValue) return;
+                event.preventDefault();
+                clearFilter();
+              }}
             />
-            <UiV2IconButton icon="check" label="Create folder" type="submit" />
-            <UiV2IconButton icon="close" label="Cancel" onClick={() => setNewFolderOpen(false)} />
-          </form>
+            {filterValue ? (
+              <UiV2IconButton
+                className="v2-navigation-filter-clear"
+                icon="close"
+                label="Clear filter"
+                onClick={clearFilter}
+              />
+            ) : null}
+          </div>
         ) : null}
       </div>
 
@@ -752,10 +782,8 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               Retry
             </button>
           </div>
-        ) : props.chats.length === 0 ? (
-          <div className="v2-navigation-status">
-            {props.searchQuery ? "Nothing found" : "Start your first chat"}
-          </div>
+        ) : props.searchQuery && props.chats.length === 0 ? (
+          <div className="v2-navigation-status">Nothing found</div>
         ) : props.searchQuery ? (
           <div className="v2-navigation-group">
             <div className="v2-navigation-group-label">Results</div>
@@ -785,6 +813,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           </div>
         ) : (
           <>
+            {props.chats.length === 0 ? (
+              <div className="v2-navigation-status">Start your first chat</div>
+            ) : null}
             {/* Recent unfiled chats first, then the folder tree (UX audit F10). */}
             {dateGroups.map((group) => (
               <div className="v2-navigation-group" key={group.id}>
@@ -814,10 +845,43 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 ))}
               </div>
             ))}
-            {roots.length > 0 ? (
+            {roots.length > 0 || props.onCreateFolder ? (
               <div className="v2-navigation-group">
-                {dateGroups.length > 0 ? (
+                {/* Folder creation lives with the folders, not in the New-chat
+                    mode menu (UX audit F16); the header row stays so the
+                    action is reachable before the first folder exists. */}
+                <div className="v2-navigation-group-head">
                   <div className="v2-navigation-group-label">Folders</div>
+                  {props.onCreateFolder ? (
+                    <UiV2IconButton
+                      className="v2-navigation-group-action"
+                      icon="plus"
+                      label="New folder"
+                      aria-expanded={newFolderOpen}
+                      onClick={() => setNewFolderOpen((open) => !open)}
+                    />
+                  ) : null}
+                </div>
+                {props.onCreateFolder && newFolderOpen ? (
+                  <form className="v2-new-folder-inline" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!newFolderName.trim()) return;
+                    void Promise.resolve(props.onCreateFolder?.(null, newFolderName.trim())).then(() => {
+                      setNewFolderName("");
+                      setNewFolderOpen(false);
+                    });
+                  }}>
+                    <input
+                      autoFocus
+                      aria-label="New folder name"
+                      maxLength={80}
+                      placeholder="Folder name"
+                      value={newFolderName}
+                      onChange={(event) => setNewFolderName(event.target.value)}
+                    />
+                    <UiV2IconButton icon="check" label="Create folder" type="submit" />
+                    <UiV2IconButton icon="close" label="Cancel" onClick={() => setNewFolderOpen(false)} />
+                  </form>
                 ) : null}
                 {roots.map((folder) => (
                   <FolderGroup
@@ -892,7 +956,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 </UiV2MenuItem>
               ) : null}
               {props.adminEntryVisible ? (
-                <a className="v2-live-menu-link v2-focusable" href="/admin">Control Center</a>
+                <UiV2MenuLink href="/admin">Control Center</UiV2MenuLink>
               ) : null}
               <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
                 {signingOut ? "Signing out…" : "Sign out"}

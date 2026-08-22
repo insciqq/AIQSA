@@ -145,6 +145,7 @@
   color: var(--v2-color-text);
   background: transparent;
   text-align: left;
+  text-decoration: none;
 }
 
 .v2-menu-item:hover:not(:disabled) {
@@ -153,6 +154,12 @@
 
 .v2-menu-item:disabled {
   color: var(--v2-color-text3);
+}
+
+/* The danger color is the only destructive marker; the item keeps its
+   place at the end of the menu's last group. */
+.v2-menu-item[data-tone="destructive"]:not(:disabled) {
+  color: var(--v2-color-danger);
 }
 
 .v2-menu-item-check {

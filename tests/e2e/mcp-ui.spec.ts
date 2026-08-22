@@ -179,7 +179,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   await signIn(page);
   const capabilitiesTrigger = page.getByRole("button", { name: "Capabilities" });
-  const toolsTrigger = page.getByRole("button", { name: "Change MCP tool mode" });
+  const toolsTrigger = page.getByRole("button", { name: "Change MCP mode" });
   await page.setViewportSize({ height: 844, width: 390 });
   await expectTouchSafe(capabilitiesTrigger);
   await expectTouchSafe(toolsTrigger);
@@ -256,7 +256,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   expect(skillListRequests).toBe(1);
   await skillLibrary.getByRole("button", { name: "Use Incident brief" }).click();
   await skillLibrary.getByRole("button", { name: "Close Skills" }).click();
-  await expect(page.getByRole("button", { name: "Change MCP tool mode" })).toContainText("Tools: Auto");
+  await expect(page.getByRole("button", { name: "Change MCP mode" })).toContainText("MCP: Auto");
 
   const skillsIndicator = page.getByRole("button", { name: "Manage selected Skills" });
   await expect(skillsIndicator).toContainText("Skills: 1");
