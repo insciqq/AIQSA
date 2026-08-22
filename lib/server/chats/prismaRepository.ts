@@ -78,6 +78,7 @@ import {
 
 const assistantRunDetailSelect = {
   assistantId: true,
+  assistantMessageId: true,
   assistantRevision: {
     select: {
       avatar: true,
@@ -145,6 +146,9 @@ const hydratedMessageSelect = {
     },
     select: assistantRunDetailSelect,
     take: 1
+  },
+  branchSourceModelRun: {
+    select: assistantRunDetailSelect
   },
   content: true,
   createdAt: true,
@@ -433,7 +437,11 @@ async function hydrateMessagePath(
     return found ? [found] : [];
   });
   const runIds = ordered.flatMap((message) =>
-    message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
+    message.assistantModelRuns[0]?.id
+      ? [message.assistantModelRuns[0].id]
+      : message.branchSourceModelRun?.id
+        ? [message.branchSourceModelRun.id]
+        : []);
   const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
@@ -585,7 +593,7 @@ function serializeHydratedMessage(
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>
 ): ChatDetailRecord["messages"][number] {
-  const modelRun = message.assistantModelRuns[0];
+  const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
@@ -605,6 +613,7 @@ function serializeHydratedMessage(
           userId: message.authorUserId
         }
       : null,
+    citationMessageId: modelRun?.assistantMessageId ?? message.id,
     content: message.content,
     createdAt: message.createdAt,
     errorMessage: message.errorMessage,

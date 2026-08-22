@@ -8,8 +8,15 @@ import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { resolveProjectAccess } from "@/lib/server/projects/access";
 import { prisma } from "@/lib/server/prisma";
 import { Prisma } from "@prisma/client";
+import { createAttachmentLibraryHandler } from "@/lib/server/uploads/libraryHandlers";
+import { attachmentLibraryRepository } from "@/lib/server/uploads/libraryRepository";
 
 export const runtime = "nodejs";
+
+export const GET = createAttachmentLibraryHandler({
+  repository: attachmentLibraryRepository,
+  resolveAuth: resolveRequestAuth
+});
 
 export const POST = createUploadHandler({
   createAttachment: async (input) => {

@@ -1,13 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { initialComposerControlSnapshot } from "@/components/app-shell/composerControlStore";
+import { afterEach, describe, expect, it } from "vitest";
 import {
+  initialComposerControlSnapshot,
+  useComposerControlStore,
+  type ComposerAssistantSelection,
+  type ComposerControlSnapshot
+} from "@/components/app-shell/composerControlStore";
+import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
+import {
+  enterProjectComposerControlBoundary,
   effectiveComposerDisabledHint,
   effectiveProjectCatalog,
+  restorePersonalComposerControls,
   runCatalogLoadDeduped,
   workspaceDefaultControlsFingerprint
 } from "./PowerAppShellV2";
 import type { Catalog } from "@/lib/contracts/catalog";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
+
+afterEach(() => resetComposerControlStoreForTest());
 
 describe("PowerAppShellV2 catalog loading", () => {
   it.each([
@@ -132,5 +142,136 @@ describe("Project effective catalog", () => {
     const project = {} as ProjectDetailWire;
 
     expect(effectiveProjectCatalog(personalCatalog, project)).toBeNull();
+  });
+
+  it("masks personal and Project-A controls during async Project entry/switch, then restores personal state", () => {
+    const personalAssistant: ComposerAssistantSelection = {
+      avatar: {
+        accents: [0],
+        backgroundShape: "circle" as const,
+        foregroundShape: "diamond" as const,
+        kind: "generated" as const,
+        paletteId: "ocean" as const,
+        recipeVersion: 1 as const,
+        rotations: [0, 1]
+      },
+      description: "Personal helper",
+      id: "personal-assistant",
+      name: "Personal helper",
+      promptCharacterCount: 25,
+      starterPrompts: ["Personal starter"]
+    };
+    useComposerControlStore.setState({
+      knowledgePlanSource: "explicit",
+      knowledgeSelection: {
+        baseIds: ["personal-base"],
+        mode: "explicit",
+        sourceIds: ["personal-source"],
+        version: 1
+      },
+      mcpSelection: { mode: "load_all" },
+      selectedAssistant: personalAssistant,
+      selectedKnowledgeBaseIds: ["personal-base"],
+      selectedModelId: "personal-model",
+      selectedProvider: "personal-provider",
+      selectedSearchOptionIds: ["personal-search"],
+      selectedSkills: [{
+        description: "Personal workflow",
+        id: "personal-skill",
+        name: "Personal skill",
+        promptCharacterCount: 20
+      }]
+    });
+    const ref = { current: null as ComposerControlSnapshot | null };
+    enterProjectComposerControlBoundary(ref);
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [] },
+      mcpSelection: { mode: "off" },
+      selectedAssistant: null,
+      selectedKnowledgeBaseIds: [],
+      selectedModelId: "",
+      selectedProvider: "",
+      selectedSearchOptionIds: [],
+      selectedSkills: []
+    });
+
+    // Personal blank activation runs between the controller's entry callback
+    // and Project-session activation. A second fence must remove the personal
+    // catalog defaults it may resolve when no Assistant is selected.
+    useComposerControlStore.setState({
+      knowledgePlanSource: "off",
+      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+      selectedModelId: "personal-catalog-default",
+      selectedProvider: "personal-catalog-provider"
+    });
+    enterProjectComposerControlBoundary(ref);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      selectedModelId: "",
+      selectedProvider: ""
+    });
+
+    useComposerControlStore.setState({
+      knowledgePlanSource: "project",
+      knowledgeSelection: {
+        baseIds: ["project-base"],
+        mode: "explicit",
+        sourceIds: [],
+        version: 1
+      },
+      mcpSelection: { mode: "auto" },
+      selectedAssistant: {
+        avatar: {
+          accents: [0],
+          backgroundShape: "circle",
+          foregroundShape: "diamond",
+          kind: "generated",
+          paletteId: "ocean",
+          recipeVersion: 1,
+          rotations: [0, 1]
+        },
+        description: "Project-only helper",
+        id: "project-assistant",
+        name: "Project helper",
+        promptCharacterCount: 30,
+        starterPrompts: ["Start together"]
+      },
+      selectedKnowledgeBaseIds: ["project-base"],
+      selectedSearchOptionIds: ["project-search"],
+      selectedSkills: []
+    });
+    enterProjectComposerControlBoundary(ref);
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [] },
+      mcpSelection: { mode: "off" },
+      selectedAssistant: null,
+      selectedKnowledgeBaseIds: [],
+      selectedModelId: "",
+      selectedProvider: "",
+      selectedSearchOptionIds: [],
+      selectedSkills: []
+    });
+
+    useComposerControlStore.getState().setShowCitations(false);
+    useComposerControlStore.getState().setShowReasoningBlocks(true);
+    restorePersonalComposerControls(ref);
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      knowledgePlanSource: "explicit",
+      knowledgeSelection: {
+        baseIds: ["personal-base"],
+        sourceIds: ["personal-source"]
+      },
+      mcpSelection: { mode: "load_all" },
+      selectedAssistant: expect.objectContaining({ id: "personal-assistant" }),
+      selectedModelId: "personal-model",
+      selectedProvider: "personal-provider",
+      selectedSearchOptionIds: ["personal-search"],
+      selectedSkills: [expect.objectContaining({ id: "personal-skill" })],
+      showCitations: false,
+      showReasoningBlocks: true
+    });
+    expect(ref.current).toBeNull();
   });
 });

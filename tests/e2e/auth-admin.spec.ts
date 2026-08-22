@@ -137,7 +137,18 @@ async function bootstrapAdmin(page: Page) {
 }
 
 async function loginWithPassword(page: Page, email: string, password: string) {
-  await page.goto("/login");
+  try {
+    await page.goto("/login");
+  } catch (error) {
+    // Revoking or disabling a live session can make the shell start its own
+    // login redirect at the same time as this explicit navigation. Chromium
+    // aborts one of those duplicate navigations, but the resulting page is
+    // still valid and is verified immediately below.
+    if (!(error instanceof Error) || !error.message.includes("net::ERR_ABORTED")) {
+      throw error;
+    }
+  }
+  await expect(page).toHaveURL(/\/login(?:\?|$)/);
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();

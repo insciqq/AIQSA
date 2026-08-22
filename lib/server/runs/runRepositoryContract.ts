@@ -170,6 +170,7 @@ export type RunChatUpdateRecord = {
   messages: {
     artifactSummary?: ThreadArtifactSummary | null;
     assistantIdentity?: ThreadAssistantIdentity | null;
+    citationMessageId?: string | null;
     content: unknown;
     createdAt: Date | string;
     errorMessage?: string | null;

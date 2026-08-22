@@ -75,6 +75,7 @@ describe("shell HTTP session handling", () => {
 function message(overrides: Partial<ChatMessageWire> = {}): ChatMessageWire {
   return {
     artifactSummary: null,
+    citationMessageId: null,
     content: { blocks: [{ text: "Persisted text", type: "text" }] },
     createdAt: "2026-07-12T00:00:30.000Z",
     errorMessage: null,
@@ -224,6 +225,19 @@ describe("chat wire mapping", () => {
         status: "cancelled"
       })
     ]);
+  });
+
+  it("keeps the source citation authority separate from the copied message id", () => {
+    const mapped = chatDetailFromApi({
+      ...detail,
+      messages: [message({ citationMessageId: "assistant-source", id: "assistant-branch" })]
+    }).messages[0];
+
+    expect(mapped).toMatchObject({
+      citationMessageId: "assistant-source",
+      id: "assistant-branch",
+      runId: "run-1"
+    });
   });
 
   it("preserves the server-owned context estimate and page fence", () => {

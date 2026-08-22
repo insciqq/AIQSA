@@ -43,6 +43,7 @@ const nullDefaultSummary = {
 
 const message = {
   artifactSummary: null,
+  citationMessageId: null,
   content: { blocks: [{ text: "Answer", type: "text" }] },
   createdAt: "2026-07-14T08:00:30.000Z",
   errorMessage: null,

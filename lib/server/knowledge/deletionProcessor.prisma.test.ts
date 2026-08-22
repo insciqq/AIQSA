@@ -415,45 +415,48 @@ async function createRetiredAnalysisPrivacyFixture(input: Readonly<{
   toolCallOrdinal: number;
 }>): Promise<Readonly<{ knowledgeRunId: string; toolCallId: string }>> {
   const now = new Date();
-  const toolCall = await prisma.modelRunToolCall.create({
-    data: {
-      arguments: { legacyPayload: input.marker },
-      completedAt: now,
-      modelRunId: input.modelRunId,
-      ordinal: input.toolCallOrdinal,
-      providerCallId: `retired-${input.operation}-${randomUUID()}`,
-      result: { legacyPayload: input.marker },
-      roundIndex: 0,
-      startedAt: now,
-      state: "complete",
-      toolName: input.operation
-    },
-    select: { id: true }
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+    const toolCall = await tx.modelRunToolCall.create({
+      data: {
+        arguments: { legacyPayload: input.marker },
+        completedAt: now,
+        modelRunId: input.modelRunId,
+        ordinal: input.toolCallOrdinal,
+        providerCallId: `retired-${input.operation}-${randomUUID()}`,
+        result: { legacyPayload: input.marker },
+        roundIndex: 0,
+        startedAt: now,
+        state: "complete",
+        toolName: input.operation
+      },
+      select: { id: true }
+    });
+    const results = input.operation === "structured_analysis"
+      ? [{ structuredAnalysis: { cells: [input.marker], summary: input.marker } }]
+      : [{ visualAnalysis: { observations: [input.marker], summary: input.marker } }];
+    const knowledgeRun = await tx.knowledgeRun.create({
+      data: {
+        baseEvidence: input.baseEvidence,
+        candidateCount: 1,
+        candidateLimit: 1,
+        durationMs: 1,
+        embeddingUsage: [],
+        fusion: "rrf_k60",
+        invocationOrdinal: input.invocationOrdinal,
+        modelRunId: input.modelRunId,
+        modelRunToolCallId: toolCall.id,
+        operation: input.operation,
+        outcome: "complete",
+        providerText: input.marker,
+        query: "deleted_knowledge_resource",
+        resultLimit: 1,
+        results
+      },
+      select: { id: true }
+    });
+    return { knowledgeRunId: knowledgeRun.id, toolCallId: toolCall.id };
   });
-  const results = input.operation === "structured_analysis"
-    ? [{ structuredAnalysis: { cells: [input.marker], summary: input.marker } }]
-    : [{ visualAnalysis: { observations: [input.marker], summary: input.marker } }];
-  const knowledgeRun = await prisma.knowledgeRun.create({
-    data: {
-      baseEvidence: input.baseEvidence,
-      candidateCount: 1,
-      candidateLimit: 1,
-      durationMs: 1,
-      embeddingUsage: [],
-      fusion: "rrf_k60",
-      invocationOrdinal: input.invocationOrdinal,
-      modelRunId: input.modelRunId,
-      modelRunToolCallId: toolCall.id,
-      operation: input.operation,
-      outcome: "complete",
-      providerText: input.marker,
-      query: "deleted_knowledge_resource",
-      resultLimit: 1,
-      results
-    },
-    select: { id: true }
-  });
-  return { knowledgeRunId: knowledgeRun.id, toolCallId: toolCall.id };
 }
 
 async function cleanup(input: Readonly<{

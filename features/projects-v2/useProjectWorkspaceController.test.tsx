@@ -1,6 +1,17 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import {
+  resetComposerControlStoreForTest,
+  resetComposerSessionStoreForTest,
+  resetWorkspaceStoreForTest
+} from "@/tests/support/appShellStores";
+import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import {
+  composerSessionKey,
+  projectComposerSessionKey,
+  selectComposerSession,
+  useComposerSessionStore
+} from "@/components/app-shell/composerSessionStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type {
   ProjectDetailWire,
@@ -73,6 +84,14 @@ const projectDetail: ProjectDetailWire = {
   resources: []
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 function projectChat(input: {
   activeRun?: boolean;
   id: string;
@@ -107,9 +126,15 @@ function controllerInput() {
     accountId: "user-1",
     activeChatId: null,
     activateBlankWorkspace: vi.fn(() => useWorkspaceStore.getState().setActiveChatId(null)),
+    activateProjectBlankWorkspace: vi.fn((projectId: string) => {
+      useWorkspaceStore.getState().setActiveChatId(null);
+      useComposerSessionStore.getState().activateSession(projectComposerSessionKey(projectId));
+    }),
     activateChat,
     applyProjectDefaults: vi.fn(),
     isLocallyStreaming: vi.fn(() => false),
+    onProjectContextEntered: vi.fn(),
+    onProjectContextLeft: vi.fn(),
     onProjectAccessLost: vi.fn(),
     refreshActiveChat: vi.fn().mockResolvedValue(null),
     setNotice: vi.fn()
@@ -146,6 +171,8 @@ class FakeEventSource {
 
 describe("useProjectWorkspaceController shared-desk reconciliation", () => {
   beforeEach(() => {
+    resetComposerControlStoreForTest();
+    resetComposerSessionStoreForTest();
     vi.useFakeTimers();
     vi.clearAllMocks();
     resetWorkspaceStoreForTest();
@@ -157,6 +184,8 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
   });
 
   afterEach(() => {
+    resetComposerControlStoreForTest();
+    resetComposerSessionStoreForTest();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
@@ -283,12 +312,194 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(await result.current.actions.selectProject("project-1")).toBe(true);
     });
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(
+      projectComposerSessionKey("project-1")
+    );
     act(() => result.current.actions.leave());
 
     expect(result.current.selectedProjectId).toBeNull();
+    expect(input.onProjectContextEntered).toHaveBeenCalledOnce();
+    expect(input.onProjectContextLeft).toHaveBeenCalledOnce();
     expect(apiMocks.leaveProject).not.toHaveBeenCalled();
     expect(useWorkspaceStore.getState().chats.some((chat) => chat.projectId === "project-1"))
       .toBe(true);
+  });
+
+  it("enters the isolated control boundary before personal-to-Project and Project-A-to-B loads settle", async () => {
+    const projectA = deferred<ProjectDetailWire>();
+    const projectB = deferred<ProjectDetailWire>();
+    apiMocks.loadProject.mockImplementation((projectId: string) =>
+      projectId === "project-1" ? projectA.promise : projectB.promise
+    );
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    let selectingA!: Promise<boolean>;
+    act(() => {
+      selectingA = result.current.actions.selectProject("project-1");
+    });
+    expect(input.onProjectContextEntered).toHaveBeenCalledOnce();
+    expect(result.current.selectedProjectId).toBe("project-1");
+    expect(result.current.detail).toBeNull();
+
+    await act(async () => {
+      projectA.resolve(projectDetail);
+      await expect(selectingA).resolves.toBe(true);
+    });
+
+    let selectingB!: Promise<boolean>;
+    act(() => {
+      selectingB = result.current.actions.selectProject("project-2");
+    });
+    expect(input.onProjectContextEntered).toHaveBeenCalledTimes(2);
+    expect(result.current.selectedProjectId).toBe("project-2");
+    expect(result.current.detail).toBeNull();
+
+    await act(async () => {
+      projectB.resolve({ ...projectDetail, id: "project-2", name: "Second room" });
+      await expect(selectingB).resolves.toBe(true);
+    });
+    expect(result.current.detail?.id).toBe("project-2");
+  });
+
+  it("activates a personal blank before restoring exact controls when Project access ends", async () => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    apiMocks.leaveProject.mockResolvedValue({ accessRemaining: false });
+    const order: string[] = [];
+    const input = controllerInput();
+    input.activateBlankWorkspace.mockImplementation(() => {
+      order.push("blank-default-resolution");
+      useWorkspaceStore.getState().setActiveChatId(null);
+    });
+    input.onProjectContextLeft.mockImplementation(() => {
+      order.push("restore-personal-controls");
+    });
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    order.length = 0;
+    await act(async () => {
+      expect(await result.current.actions.leaveProject()).toBe(true);
+    });
+
+    expect(order).toEqual(["blank-default-resolution", "restore-personal-controls"]);
+    expect(result.current.selectedProjectId).toBeNull();
+  });
+
+  it("transfers the first-send composer token without replacing manual Project controls", async () => {
+    const readyProject = {
+      ...projectDetail,
+      resources: [{
+        available: true,
+        id: "model-binding-1",
+        label: "Shared model",
+        modelId: "model-1",
+        provider: "openai",
+        reason: null,
+        resourceId: "model-1",
+        type: "model" as const
+      }]
+    };
+    apiMocks.loadProject.mockResolvedValue(readyProject);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    const input = controllerInput();
+    input.applyProjectDefaults.mockImplementation(() => {
+      useComposerControlStore.setState({
+        knowledgePlanSource: "project",
+        knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+        selectedAssistant: null,
+        selectedKnowledgeBaseIds: [],
+        selectedModelId: "model-1",
+        selectedProvider: "openai",
+        selectedSearchOptionIds: []
+      });
+    });
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    const sourceKey = projectComposerSessionKey("project-1");
+    useComposerControlStore.setState({
+      knowledgePlanSource: "explicit",
+      knowledgeSelection: {
+        baseIds: ["manual-base"],
+        mode: "explicit",
+        sourceIds: ["manual-source"],
+        version: 1
+      },
+      selectedAssistant: {
+        avatar: {
+          accents: [0],
+          backgroundShape: "circle",
+          foregroundShape: "diamond",
+          kind: "generated",
+          paletteId: "ocean",
+          recipeVersion: 1,
+          rotations: [0, 1]
+        },
+        description: "Manually selected for this question",
+        id: "manual-assistant",
+        name: "Manual assistant",
+        promptCharacterCount: 38,
+        starterPrompts: []
+      },
+      selectedKnowledgeBaseIds: ["manual-base"],
+      selectedModelId: "manual-model",
+      selectedProvider: "manual-provider",
+      selectedSearchOptionIds: ["manual-search"]
+    });
+    useComposerSessionStore.getState().setDraft("First shared question");
+    const sendToken = useComposerSessionStore.getState().beginSend(sourceKey)!;
+
+    let created: Awaited<ReturnType<typeof result.current.actions.createChatForSend>> = null;
+    await act(async () => {
+      created = await result.current.actions.createChatForSend(null, sourceKey);
+    });
+
+    expect(created).toMatchObject({
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: "project-1"
+    });
+    const targetKey = composerSessionKey(created!.id);
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(targetKey);
+    expect(useComposerSessionStore.getState().sessionsByKey[sourceKey]).toBeUndefined();
+    expect(selectComposerSession(useComposerSessionStore.getState(), targetKey).pendingSend)
+      .toMatchObject({ draft: "First shared question", generation: sendToken.generation });
+    expect(input.applyProjectDefaults).not.toHaveBeenCalled();
+    expect(useComposerControlStore.getState()).toMatchObject({
+      knowledgeSelection: {
+        baseIds: ["manual-base"],
+        sourceIds: ["manual-source"]
+      },
+      selectedAssistant: expect.objectContaining({ id: "manual-assistant" }),
+      selectedKnowledgeBaseIds: ["manual-base"],
+      selectedModelId: "manual-model",
+      selectedProvider: "manual-provider",
+      selectedSearchOptionIds: ["manual-search"]
+    });
+
+    useComposerSessionStore.getState().finishSend(
+      sendToken,
+      "failed",
+      "Send failed. Your draft was preserved."
+    );
+    expect(selectComposerSession(useComposerSessionStore.getState(), targetKey)).toMatchObject({
+      draft: "First shared question",
+      operationError: "Send failed. Your draft was preserved.",
+      pendingSend: null
+    });
+
+    await act(async () => {
+      expect(await result.current.actions.createChat()).toBe(true);
+    });
+    expect(input.applyProjectDefaults).toHaveBeenCalledOnce();
   });
 
   it("discovers another member's chat and refreshes the open run projection without a manual reload", async () => {

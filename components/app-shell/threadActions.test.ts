@@ -217,7 +217,7 @@ describe("thread actions", () => {
       useWorkspaceStore.getState().navigationChats.map((chat) => chat.id)
     ).toContain("chat-branch");
 
-    await actions.checkoutBranch("message-2");
+    await expect(actions.checkoutBranch("message-2")).resolves.toBe(true);
     await actions.deleteMessage("message-1");
 
     expect(fetchMock).toHaveBeenCalledWith("/api/messages/message-1/branch-chat", { method: "POST" });
@@ -381,7 +381,7 @@ describe("thread actions", () => {
     const { actions, chats, notices, refreshActiveChat, thread } = createActionsForTest();
     refreshActiveChat.mockResolvedValueOnce(null);
 
-    await actions.checkoutBranch("message-unloaded");
+    await expect(actions.checkoutBranch("message-unloaded")).resolves.toBe(false);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([

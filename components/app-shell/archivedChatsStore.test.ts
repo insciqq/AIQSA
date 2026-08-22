@@ -7,6 +7,7 @@ const updatedAt = "2026-08-10T08:00:00.000Z";
 function message(id: string, text: string, parentMessageId: string | null) {
   return {
     artifactSummary: null,
+    citationMessageId: null,
     content: { blocks: [{ text, type: "text" }] },
     createdAt: updatedAt,
     errorMessage: null,

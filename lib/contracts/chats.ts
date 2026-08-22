@@ -56,6 +56,7 @@ export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   author?: ProjectMessageAuthorWire | null;
+  citationMessageId?: string | null;
   content: unknown;
   id: string;
   modelId?: string;
@@ -196,6 +197,7 @@ export type ChatMessageWire = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   author?: ProjectMessageAuthorWire | null;
+  citationMessageId: string | null;
   content: unknown;
   createdAt: string;
   errorMessage: string | null;
@@ -819,6 +821,9 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   }
 
   const id = requiredString(value.id);
+  const citationMessageId = value.citationMessageId === undefined
+    ? null
+    : nullableId(value.citationMessageId);
   const createdAt = requiredString(value.createdAt);
   const errorMessage = nullableString(value.errorMessage);
   const modelId = nullableString(value.modelId);
@@ -878,6 +883,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   }
   if (
     !id ||
+    citationMessageId === undefined ||
     !createdAt ||
     errorMessage === undefined ||
     modelId === undefined ||
@@ -894,6 +900,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     artifactSummary,
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
     ...(author !== undefined ? { author } : {}),
+    citationMessageId,
     content: value.content,
     createdAt,
     errorMessage,

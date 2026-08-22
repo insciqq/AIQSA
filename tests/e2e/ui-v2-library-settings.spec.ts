@@ -32,12 +32,11 @@ test("Library tab state is keyboard-owned and dirty resource exit remains explic
   await expect(page.getByRole("tab", { name: "Memory" })).toHaveAttribute("aria-selected", "true");
 });
 
-test("administrator-disabled Memory preserves exact-fact management", async ({ page }) => {
+test("administrator-disabled Memory preserves its exact-fact management entry point", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=library&state=memory-disabled");
-  await expect(page.getByText("Memory is disabled by the administrator")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Memory needs administrator setup" })).toBeVisible();
   for (const control of await page.getByRole("switch").all()) await expect(control).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Manage memories" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: /Forget:/ }).first()).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Manage memory" })).toBeEnabled();
   expect((await page.locator("body").innerText()).toLocaleLowerCase()).not.toContain("temperature");
   expect((await page.locator("body").innerText()).toLocaleLowerCase()).not.toContain("profile");
 });

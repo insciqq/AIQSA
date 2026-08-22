@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -155,6 +155,56 @@ describe("Navigation v2", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
     expect(onCreateFolder).toHaveBeenCalledWith(null, "Исследования");
+  });
+
+  it("does not submit chat or folder rename forms when they are cancelled", () => {
+    const onCancelChatRename = vi.fn();
+    const onCancelFolderRename = vi.fn();
+    const onSaveChatRename = vi.fn();
+    const onSaveFolderRename = vi.fn();
+    sidebar({
+      editingChatId: "yesterday",
+      editingChatTitle: "Changed chat",
+      editingFolderId: "folder-research",
+      editingFolderName: "Changed folder",
+      folders: [{ id: "folder-research", name: "Research", parentId: null }],
+      onCancelChatRename,
+      onCancelFolderRename,
+      onSaveChatRename,
+      onSaveFolderRename
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel rename" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    expect(onCancelChatRename).toHaveBeenCalledOnce();
+    expect(onCancelFolderRename).toHaveBeenCalledOnce();
+    expect(onSaveChatRename).not.toHaveBeenCalled();
+    expect(onSaveFolderRename).not.toHaveBeenCalled();
+  });
+
+  it("does not create root or nested folders when their forms are cancelled", () => {
+    const onCreateFolder = vi.fn();
+    sidebar({
+      folders: [{ id: "folder-research", name: "Research", parentId: null }],
+      onCreateFolder
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New folder" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New folder name" }), {
+      target: { value: "Root draft" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Folder actions: Research" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New subfolder" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Subfolder name in Research" }), {
+      target: { value: "Nested draft" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    expect(onCreateFolder).not.toHaveBeenCalled();
   });
 
   it("fences archive during a run and names the current Memory action", () => {
@@ -329,6 +379,80 @@ describe("Navigation v2", () => {
     expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
   });
 
+  it("dismisses the mobile drawer after every personal new-chat mode", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true
+    } as MediaQueryList)));
+    useWorkspaceStore.getState().applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
+    const onNewChat = vi.fn();
+    render(
+      <ReadingRoomShellV2 onNewChat={onNewChat} onSelectChat={vi.fn()}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    const openDrawer = () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+      expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
+      return within(screen.getByRole("complementary", { name: "Chat navigation" }));
+    };
+
+    fireEvent.click(openDrawer().getByRole("button", { name: "New chat" }));
+    expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
+
+    let drawer = openDrawer();
+    fireEvent.click(drawer.getByRole("button", { name: "New chat mode" }));
+    fireEvent.click(drawer.getByRole("menuitem", { name: /Memory off/ }));
+    expect(onNewChat).toHaveBeenLastCalledWith("EXCLUDED");
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
+
+    drawer = openDrawer();
+    fireEvent.click(drawer.getByRole("button", { name: "New chat mode" }));
+    fireEvent.click(drawer.getByRole("menuitem", { name: /Temporary chat/ }));
+    expect(onNewChat).toHaveBeenLastCalledWith("TEMPORARY");
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
+  });
+
+  it("keeps the mobile drawer open when Escape only cancels an inline rename", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true
+    } as MediaQueryList)));
+    const onCancelChatRename = vi.fn();
+    const onCancelFolderRename = vi.fn();
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
+        <NavigationSidebar {...sidebarProps({
+          editingChatId: "yesterday",
+          editingChatTitle: "Changed chat",
+          editingFolderId: "folder-research",
+          editingFolderName: "Changed folder",
+          folders: [{ id: "folder-research", name: "Research", parentId: null }],
+          onCancelChatRename,
+          onCancelFolderRename,
+          onClose: close
+        })} />
+      )}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "New title: Selected brief" }), {
+      key: "Escape"
+    });
+    expect(onCancelChatRename).toHaveBeenCalledOnce();
+    expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
+
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "New folder name: Research" }), {
+      key: "Escape"
+    });
+    expect(onCancelFolderRename).toHaveBeenCalledOnce();
+    expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
+  });
+
   it("defaults 900–1023px to compact and preserves one sidebar owner when expanded", () => {
     let width = 1023;
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
@@ -372,6 +496,29 @@ describe("Navigation v2", () => {
     width = 1281;
     act(() => window.dispatchEvent(new Event("resize")));
     expect(source).toHaveFocus();
+  });
+
+  it("does not steal conversation focus when compact navigation returns to desktop", () => {
+    let width = 1281;
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
+        <NavigationSidebar {...sidebarProps({ onClose: close })} />
+      )}>
+        <button type="button">Conversation control</button>
+      </ReadingRoomShellV2>
+    );
+    const source = screen.getByRole("button", { name: "Selected brief" });
+    const conversation = screen.getByRole("button", { name: "Conversation control" });
+    source.focus();
+
+    width = 844;
+    act(() => window.dispatchEvent(new Event("resize")));
+    conversation.focus();
+    width = 1281;
+    act(() => window.dispatchEvent(new Event("resize")));
+
+    expect(conversation).toHaveFocus();
   });
 
   it("does not install a Ctrl/Cmd+K navigation surface", () => {

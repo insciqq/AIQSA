@@ -1,11 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeAttachmentLibraryResponse,
   decodePdfProcessing,
   decodeUploadAttachmentResponse,
   decodeUploadErrorResponse
 } from "./uploads";
 
 describe("upload wire decoders", () => {
+  it("accepts only bounded sent-file navigation projections", () => {
+    expect(decodeAttachmentLibraryResponse({
+      files: [{
+        byteSize: 1_024,
+        chatId: "chat-1",
+        chatTitle: "Research",
+        createdAt: "2026-08-22T10:00:00.000Z",
+        fileName: "notes.txt",
+        id: "attachment-1",
+        messageId: "message-1",
+        privateStorageKey: "must-not-project",
+        status: "ready"
+      }]
+    })).toEqual({
+      files: [{
+        byteSize: 1_024,
+        chatId: "chat-1",
+        chatTitle: "Research",
+        createdAt: "2026-08-22T10:00:00.000Z",
+        fileName: "notes.txt",
+        id: "attachment-1",
+        messageId: "message-1",
+        status: "ready"
+      }]
+    });
+    expect(decodeAttachmentLibraryResponse({
+      files: [{
+        byteSize: 1,
+        chatId: "chat-1",
+        chatTitle: "Research",
+        createdAt: "invalid",
+        fileName: "notes.txt",
+        id: "attachment-1",
+        messageId: "message-1",
+        status: "ready"
+      }]
+    })).toBeNull();
+  });
+
   it("projects only bounded, internally consistent PDF processing evidence", () => {
     expect(
       decodePdfProcessing({

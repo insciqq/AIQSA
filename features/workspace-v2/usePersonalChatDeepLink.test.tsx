@@ -1,6 +1,7 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  openPersonalChatMessage,
   revealPersonalChatDeepLinkMessage,
   usePersonalChatDeepLink
 } from "./usePersonalChatDeepLink";
@@ -11,6 +12,32 @@ afterEach(() => {
 });
 
 describe("usePersonalChatDeepLink", () => {
+  it("opens and anchors an explicit Library file source only after it is revealed", async () => {
+    const activateChat = vi.fn(async () => true);
+    const revealMessage = vi.fn(async () => true);
+    const onAnchor = vi.fn();
+
+    await expect(openPersonalChatMessage({
+      activateChat,
+      chatId: "chat-1",
+      messageId: "message-1",
+      onAnchor,
+      revealMessage
+    })).resolves.toBe(true);
+    expect(revealMessage).toHaveBeenCalledWith("chat-1", "message-1");
+    expect(onAnchor).toHaveBeenCalledWith("chat-1", "message-1");
+
+    revealMessage.mockResolvedValueOnce(false);
+    await expect(openPersonalChatMessage({
+      activateChat,
+      chatId: "chat-1",
+      messageId: "missing",
+      onAnchor,
+      revealMessage
+    })).resolves.toBe(false);
+    expect(onAnchor).toHaveBeenCalledOnce();
+  });
+
   it("loads older pages until the exact linked message is present", async () => {
     let current = {
       beforeCursor: "cursor-older" as string | null,

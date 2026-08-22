@@ -1844,7 +1844,10 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
 
   await section.getByRole("tab", { name: "Diagnostics" }).click();
   const diagnostics = section.getByTestId("provider-task-diagnostics");
-  await diagnostics.getByRole("button", { name: "Check model route" }).click();
+  await diagnostics.getByRole("button", { name: "Test model" }).click();
+  const paidDiagnostic = page.getByTestId("admin-confirm-provider-paid-diagnostic");
+  await expect(paidDiagnostic).toBeVisible();
+  await paidDiagnostic.getByRole("button", { name: "Confirm run paid diagnostic" }).click();
   await expect(section.getByText("The exact model and credential draft is available.")).toBeVisible();
   await expect(diagnostics.getByText("available", { exact: true })).toBeVisible();
 

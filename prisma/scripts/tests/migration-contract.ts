@@ -42,6 +42,8 @@ const KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION =
   "20260821000000_knowledge_basic_runtime_cleanup";
 const KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION =
   "20260822020000_knowledge_tool_coexistence_constraints";
+const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
+  "20260822143300_retired_knowledge_purge_guard";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -346,7 +348,7 @@ function deployAndVerify(
 }
 
 function runIntegrityProof(database: string): void {
-  const reviewedUnvalidatedConstraints = psqlScalar(database, `
+  const unvalidatedConstraints = psqlScalar(database, `
     SELECT COALESCE(
       string_agg(
         table_relation.relname || '.' || constraint_catalog.conname,
@@ -364,35 +366,10 @@ function runIntegrityProof(database: string): void {
       AND NOT constraint_catalog.convalidated;
   `);
   assert.equal(
-    reviewedUnvalidatedConstraints,
-    [
-      "KnowledgeBudgetReservation.KnowledgeBudgetReservation_basic_operation_check",
-      "KnowledgeGroundingResult.KnowledgeGroundingResult_basic_shape_check",
-      "KnowledgeRun.KnowledgeRun_budgetReservation_fkey",
-      "KnowledgeRun.KnowledgeRun_evidence_shape_check",
-      "KnowledgeRun.KnowledgeRun_limits_check",
-      "KnowledgeRun.KnowledgeRun_outcome_shape_check",
-      "KnowledgeRun.KnowledgeRun_read_receipt_operation_check",
-    ].join("\n"),
-    "clean install has an unreviewed NOT VALID constraint set",
+    unvalidatedConstraints,
+    "",
+    "clean install retained an unvalidated constraint",
   );
-  psqlScalar(database, `
-    ALTER TABLE "KnowledgeBudgetReservation"
-      VALIDATE CONSTRAINT "KnowledgeBudgetReservation_basic_operation_check";
-    ALTER TABLE "KnowledgeGroundingResult"
-      VALIDATE CONSTRAINT "KnowledgeGroundingResult_basic_shape_check";
-    ALTER TABLE "KnowledgeRun"
-      VALIDATE CONSTRAINT "KnowledgeRun_budgetReservation_fkey";
-    ALTER TABLE "KnowledgeRun"
-      VALIDATE CONSTRAINT "KnowledgeRun_evidence_shape_check";
-    ALTER TABLE "KnowledgeRun"
-      VALIDATE CONSTRAINT "KnowledgeRun_limits_check";
-    ALTER TABLE "KnowledgeRun"
-      VALIDATE CONSTRAINT "KnowledgeRun_outcome_shape_check";
-    ALTER TABLE "KnowledgeRun"
-      VALIDATE CONSTRAINT "KnowledgeRun_read_receipt_operation_check";
-    SELECT 1;
-  `);
   app(database, ["npx", "tsx", "prisma/schema-integrity-smoke.ts"]);
 }
 
@@ -874,14 +851,14 @@ function runKnowledgeReadReceiptMigrationProof(
         FROM pg_constraint
         WHERE conname = 'KnowledgeRun_read_receipt_operation_check'
           AND conrelid = '"KnowledgeRun"'::regclass
-          AND NOT convalidated
+          AND convalidated
           AND pg_get_constraintdef(oid) LIKE '%knowledge_read_source_receipt_valid_v2%'
           AND pg_get_constraintdef(oid) LIKE '%knowledge_exact_receipt_valid%'
           AND pg_get_constraintdef(oid) LIKE '%knowledge_discovery_receipt_valid%'
           AND pg_get_constraintdef(oid) NOT LIKE '%threshold%';
       `),
       "1",
-      "Current threshold-free read receipt constraint is missing or unexpectedly validated",
+      "Current threshold-free read receipt constraint is missing or unvalidated",
     );
     assert.equal(
       psqlScalar(database, `
@@ -3257,9 +3234,14 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
 ): void {
   const cleanupIndex = committed.indexOf(KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION);
   const deploymentIndex = committed.indexOf(KNOWLEDGE_H6_SEMANTIC_DEPLOYMENT_MIGRATION);
+  const retiredPurgeGuardIndex = committed.indexOf(KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION);
   assert.ok(
     cleanupIndex > deploymentIndex,
     "Knowledge Basic runtime cleanup migration must follow the historical H6 migration",
+  );
+  assert.ok(
+    retiredPurgeGuardIndex > cleanupIndex,
+    "Retired Knowledge purge guard migration must follow the Basic runtime cleanup",
   );
   const cleanupSql = readFileSync(
     join(migrationsRoot, KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION, "migration.sql"),
@@ -3269,6 +3251,20 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     cleanupSql,
     /\bUPDATE\s+"KnowledgeRun"\b/iu,
     "Knowledge Basic cleanup must not rewrite immutable historical operation receipts",
+  );
+  const retiredPurgeGuardSql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.match(
+    retiredPurgeGuardSql,
+    /CREATE OR REPLACE FUNCTION aiqsa_guard_knowledge_run_retired_operation\(\)/u,
+    "Retired Knowledge purge migration must replace the existing transition guard",
+  );
+  assert.doesNotMatch(
+    retiredPurgeGuardSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Retired Knowledge purge guard migration must not rewrite historical receipts",
   );
 
   psqlScalar(database, `
@@ -3286,6 +3282,12 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
         'knowledge-basic-legacy-visual-call', 'knowledge-h4-run-2', 0, 2,
         'knowledge-basic-legacy-visual-provider-call', 'retrieve_knowledge',
         '{"operation":"visual_analysis"}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-basic-legacy-structured-complete-call', 'knowledge-h4-run-2', 0, 4,
+        'knowledge-basic-legacy-structured-complete-provider-call', 'retrieve_knowledge',
+        '{"operation":"structured_analysis"}'::jsonb, 'complete',
         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       );
     INSERT INTO "KnowledgeBudgetReservation" (
@@ -3347,6 +3349,17 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
         'Visual analysis available.', '[]'::jsonb,
         '{"status":"available","version":1}'::jsonb,
         1, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-basic-legacy-structured-complete-run', 'knowledge-h4-run-2',
+        'knowledge-basic-legacy-structured-complete-call', 5,
+        'structured_analysis', 'summarize private revenue',
+        'complete', 'rrf_k60', 40, 8, 1, 0.01,
+        '[{"baseName":"Legacy Basic Base","ordinal":0},{"baseName":"Retained Basic Base","ordinal":1}]'::jsonb,
+        '[{"handle":"K5.1","structuredAnalysis":{"summary":"private legacy structured summary"}}]'::jsonb,
+        'Private legacy structured summary.', '[]'::jsonb,
+        '{"status":"complete","version":1}'::jsonb,
+        1, CURRENT_TIMESTAMP
       );
     SELECT 'knowledge-basic-legacy-analysis-ready';
   `);
@@ -3402,6 +3415,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
         (SELECT count(*) FROM "KnowledgeRun"
           WHERE id IN (
             'knowledge-basic-legacy-structured-run',
+            'knowledge-basic-legacy-structured-complete-run',
             'knowledge-basic-legacy-visual-run'
           )
           AND operation IN ('structured_analysis', 'visual_analysis')
@@ -3413,8 +3427,157 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
           )
           AND operation IN ('structured_analysis', 'visual_analysis'));
     `),
-    "4",
+    "5",
     "Basic cleanup rejected or rewrote accepted historical analysis records",
+  );
+
+  assert.equal(
+    psqlScalar(database, `
+      SELECT count(*) FROM pg_trigger
+      WHERE tgname IN (
+        'KnowledgeRun_retired_operation_guard',
+        'KnowledgeBudgetReservation_retired_operation_guard'
+      )
+        AND tgenabled = 'O'
+        AND NOT tgisinternal;
+    `),
+    "2",
+    "Retired Knowledge write guards are missing or disabled",
+  );
+
+  const rejectedRetiredInsert = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `
+      BEGIN;
+        INSERT INTO "ModelRunToolCall" (
+          id, "modelRunId", "roundIndex", ordinal, "providerCallId", "toolName",
+          arguments, state, "startedAt", "completedAt", "updatedAt"
+        ) VALUES (
+          'knowledge-basic-rejected-retired-call', 'knowledge-h4-run-2', 0, 6,
+          'knowledge-basic-rejected-retired-provider-call', 'retrieve_knowledge',
+          '{"operation":"structured_analysis"}'::jsonb, 'complete',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+        INSERT INTO "KnowledgeRun" (
+          id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation,
+          query, outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
+          "baseEvidence", results, "providerText", "embeddingUsage", "durationMs",
+          "updatedAt"
+        ) VALUES (
+          'knowledge-basic-rejected-retired-run', 'knowledge-h4-run-2',
+          'knowledge-basic-rejected-retired-call', 6, 'structured_analysis',
+          'new retired write', 'complete', 'rrf_k60', 40, 8, 1,
+          '[{"baseName":"New retired Base","ordinal":0}]'::jsonb,
+          '[{"structuredAnalysis":{"summary":"must be rejected"}}]'::jsonb,
+          'Must be rejected.', '[]'::jsonb, 1, CURRENT_TIMESTAMP
+        );
+      COMMIT;
+    `,
+  ]);
+  assert.notEqual(
+    rejectedRetiredInsert.status,
+    0,
+    "Retired Knowledge purge guard admitted a new analysis receipt",
+  );
+  assert.match(
+    `${rejectedRetiredInsert.stdout}\n${rejectedRetiredInsert.stderr}`,
+    /KnowledgeRun_read_receipt_operation_check/u,
+    "Retired analysis INSERT failed without the production transition guard",
+  );
+
+  for (const malformedPurge of [
+    {
+      label: "result-count-changing",
+      set: `
+        "baseEvidence" = "baseEvidence",
+        results = '[]'::jsonb,
+        "providerText" = 'Knowledge citation evidence was deleted.'`,
+    },
+    {
+      label: "invalid-handle",
+      set: `
+        "baseEvidence" = "baseEvidence",
+        results = '[{"deleted":true,"handle":"K9999"}]'::jsonb,
+        "providerText" = E'Knowledge passages:\n\n[K9999] Deleted Knowledge source.'`,
+    },
+    {
+      label: "content-bearing-result",
+      set: `
+        "baseEvidence" = "baseEvidence",
+        results = '[{"deleted":true,"handle":"K5.1","summary":"private"}]'::jsonb,
+        "providerText" = E'Knowledge passages:\n\n[K5.1] Deleted Knowledge source.'`,
+    },
+    {
+      label: "new-base-evidence",
+      set: `
+        "baseEvidence" = '[{"privatePayload":"new content"}]'::jsonb,
+        results = '[{"deleted":true,"handle":"K5.1"}]'::jsonb,
+        "providerText" = E'Knowledge passages:\n\n[K5.1] Deleted Knowledge source.'`,
+    },
+    {
+      label: "provider-text-mismatch",
+      set: `
+        "baseEvidence" = "baseEvidence",
+        results = '[{"deleted":true,"handle":"K5.1"}]'::jsonb,
+        "providerText" = 'private legacy structured summary'`,
+    },
+  ] as const) {
+    const rejectedPurge = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database,
+      "--command", `
+        BEGIN;
+          SET LOCAL aiqsa.knowledge_purge = 'on';
+          UPDATE "KnowledgeRun"
+          SET
+            query = 'deleted_knowledge_resource',
+            ${malformedPurge.set},
+            "readReceipt" = NULL,
+            "updatedAt" = CURRENT_TIMESTAMP
+          WHERE id = 'knowledge-basic-legacy-structured-complete-run';
+        COMMIT;
+      `,
+    ]);
+    assert.notEqual(
+      rejectedPurge.status,
+      0,
+      `Retired Knowledge purge guard admitted a ${malformedPurge.label} tombstone`,
+    );
+    assert.match(
+      `${rejectedPurge.stdout}\n${rejectedPurge.stderr}`,
+      /KnowledgeRun_read_receipt_operation_check/u,
+      `Malformed ${malformedPurge.label} tombstone failed without the transition guard`,
+    );
+  }
+
+  const rejectedUnscopedPurge = compose([
+    "exec", "-T", POSTGRES_SERVICE,
+    "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+    "--dbname", database,
+    "--command", `
+      UPDATE "KnowledgeRun"
+      SET
+        query = 'deleted_knowledge_resource',
+        "baseEvidence" = "baseEvidence",
+        results = '[{"deleted":true,"handle":"K5.1"}]'::jsonb,
+        "providerText" = E'Knowledge passages:\n\n[K5.1] Deleted Knowledge source.',
+        "readReceipt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = 'knowledge-basic-legacy-structured-complete-run';
+    `,
+  ]);
+  assert.notEqual(
+    rejectedUnscopedPurge.status,
+    0,
+    "Retired Knowledge purge guard admitted a tombstone outside the purge transaction",
+  );
+  assert.match(
+    `${rejectedUnscopedPurge.stdout}\n${rejectedUnscopedPurge.stderr}`,
+    /KnowledgeRun_read_receipt_operation_check/u,
+    "Unscoped retired purge failed without the transition guard",
   );
 
   psqlScalar(database, `
@@ -3423,18 +3586,30 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
       UPDATE "KnowledgeRun"
       SET
         query = 'deleted_knowledge_resource',
-        "baseEvidence" = '[{"deleted":true}]'::jsonb,
-        results = CASE operation
-          WHEN 'visual_analysis' THEN '[{"deleted":true}]'::jsonb
-          ELSE '[]'::jsonb
-        END,
+        "baseEvidence" = "baseEvidence",
+        results = '[]'::jsonb,
         "providerText" = 'Knowledge citation evidence was deleted.',
         "readReceipt" = NULL,
         "updatedAt" = CURRENT_TIMESTAMP
-      WHERE id IN (
-        'knowledge-basic-legacy-structured-run',
-        'knowledge-basic-legacy-visual-run'
-      );
+      WHERE id = 'knowledge-basic-legacy-structured-run';
+      UPDATE "KnowledgeRun"
+      SET
+        query = 'deleted_knowledge_resource',
+        "baseEvidence" = '[{"deleted":true}]'::jsonb,
+        results = '[{"deleted":true}]'::jsonb,
+        "providerText" = 'Knowledge citation evidence was deleted.',
+        "readReceipt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = 'knowledge-basic-legacy-visual-run';
+      UPDATE "KnowledgeRun"
+      SET
+        query = 'deleted_knowledge_resource',
+        "baseEvidence" = "baseEvidence",
+        results = '[{"deleted":true,"handle":"K5.1"}]'::jsonb,
+        "providerText" = E'Knowledge passages:\n\n[K5.1] Deleted Knowledge source.',
+        "readReceipt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = 'knowledge-basic-legacy-structured-complete-run';
       UPDATE "KnowledgeBudgetReservation"
       SET
         "dispatchAttemptKey" = NULL,
@@ -3460,16 +3635,26 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
         (SELECT count(*) FROM "KnowledgeRun"
           WHERE id IN (
             'knowledge-basic-legacy-structured-run',
+            'knowledge-basic-legacy-structured-complete-run',
             'knowledge-basic-legacy-visual-run'
           )
           AND operation IN ('structured_analysis', 'visual_analysis')
           AND query = 'deleted_knowledge_resource'
           AND "readReceipt" IS NULL
-          AND "baseEvidence" = '[{"deleted":true}]'::jsonb
-          AND "providerText" = 'Knowledge citation evidence was deleted.'
-          AND results = CASE operation
-            WHEN 'visual_analysis' THEN '[{"deleted":true}]'::jsonb
-            ELSE '[]'::jsonb
+          AND CASE id
+            WHEN 'knowledge-basic-legacy-structured-run' THEN
+              "baseEvidence" = '[{"baseName":"Legacy Basic Base","ordinal":0}]'::jsonb
+              AND results = '[]'::jsonb
+              AND "providerText" = 'Knowledge citation evidence was deleted.'
+            WHEN 'knowledge-basic-legacy-visual-run' THEN
+              "baseEvidence" = '[{"deleted":true}]'::jsonb
+              AND results = '[{"deleted":true}]'::jsonb
+              AND "providerText" = 'Knowledge citation evidence was deleted.'
+            WHEN 'knowledge-basic-legacy-structured-complete-run' THEN
+              "baseEvidence" = '[{"baseName":"Legacy Basic Base","ordinal":0},{"baseName":"Retained Basic Base","ordinal":1}]'::jsonb
+              AND results = '[{"deleted":true,"handle":"K5.1"}]'::jsonb
+              AND "providerText" = E'Knowledge passages:\n\n[K5.1] Deleted Knowledge source.'
+            ELSE false
           END)
         + (SELECT count(*) FROM "KnowledgeBudgetReservation"
           WHERE id IN (
@@ -3487,7 +3672,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
           AND "receiptHash" IS NULL
           AND "failureCode" IS NULL);
     `),
-    "4",
+    "5",
     "Basic cleanup blocked or incompletely scrubbed historical analysis tombstones",
   );
 
@@ -3588,10 +3773,10 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
           'KnowledgeRun_outcome_shape_check'
         )
         AND pg_get_constraintdef(oid) NOT LIKE '%strategyStepEvidence%'
-        AND NOT convalidated;
-    `),
-    "3",
-    "Basic historical-upgrade constraints are missing, validated, or still depend on strategy state",
+        AND convalidated;
+      `),
+      "3",
+      "Basic historical-upgrade constraints are missing, unvalidated, or still depend on strategy state",
   );
   assert.equal(
     psqlScalar(database, `
@@ -3599,7 +3784,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
       WHERE (
         conrelid = '"KnowledgeRun"'::regclass
         AND conname = 'KnowledgeRun_read_receipt_operation_check'
-        AND NOT convalidated
+        AND convalidated
         AND pg_get_constraintdef(oid) LIKE '%knowledge_read_source_receipt_valid_v2%'
         AND pg_get_constraintdef(oid) LIKE '%knowledge_exact_receipt_valid%'
         AND pg_get_constraintdef(oid) LIKE '%knowledge_discovery_receipt_valid%'
@@ -3608,16 +3793,16 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
       ) OR (
         conrelid = '"KnowledgeBudgetReservation"'::regclass
         AND conname = 'KnowledgeBudgetReservation_basic_operation_check'
-        AND NOT convalidated
+        AND convalidated
         AND pg_get_constraintdef(oid) LIKE '%structured_analysis%'
         AND pg_get_constraintdef(oid) LIKE '%visual_analysis%'
         AND pg_get_constraintdef(oid) LIKE '%purgedAt%'
         AND pg_get_constraintdef(oid) LIKE '%operationRequest%'
         AND pg_get_constraintdef(oid) LIKE '%idempotencyKey%'
       );
-    `),
-    "2",
-    "Basic retired-operation fences are missing or incompatible with historical rows",
+      `),
+      "2",
+      "Basic retired-operation fences are missing, unvalidated, or incompatible with historical rows",
   );
   assert.equal(
     psqlScalar(database, `
@@ -3666,14 +3851,14 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
       FROM pg_constraint
       WHERE conrelid = '"KnowledgeGroundingResult"'::regclass
         AND conname = 'KnowledgeGroundingResult_basic_shape_check'
-        AND NOT convalidated
+        AND convalidated
         AND pg_get_constraintdef(oid) LIKE '%answered%'
         AND pg_get_constraintdef(oid) LIKE '%insufficient_evidence%'
         AND pg_get_constraintdef(oid) LIKE '%originalAnswerHash%'
         AND pg_get_constraintdef(oid) LIKE '%finalAnswerHash%';
-    `),
-    "1",
-    "Basic grounding settlement constraint is missing or unexpectedly validated",
+      `),
+      "1",
+      "Basic grounding settlement constraint is missing or unvalidated",
   );
 
   psqlScalar(database, `

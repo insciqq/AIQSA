@@ -3,6 +3,7 @@ import type {
   ChatSummaryResponseWire,
   WorkspaceChatSummaryWire
 } from "../../contracts/chats";
+import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -25,6 +26,7 @@ export type BranchMessageRecord = {
 export type BranchChatRecord = {
   activeLeafMessageId: string | null;
   createdAt: Date | string;
+  defaultKnowledgePlan?: KnowledgePlan | null;
   defaultModelId: string | null;
   defaultProvider: string | null;
   folderId: string | null;
@@ -115,6 +117,7 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt instanceof Date ? chat.createdAt.toISOString() : chat.createdAt,
+    defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,

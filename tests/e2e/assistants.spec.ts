@@ -107,7 +107,7 @@ async function createAssistantViaApi(
       category: null,
       description: "",
       developerPrompt: null,
-      knowledgeBaseIds: [],
+      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       name: input.name,
       providerModelId: input.providerModelId,

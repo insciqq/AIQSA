@@ -56,8 +56,9 @@ function projectController(input: Readonly<{
 describe("Project navigation v2", () => {
   it("consolidates permitted folder commands in one accessible action menu", () => {
     const { controller, createChat } = projectController();
+    const onNavigate = vi.fn();
     render(
-      <ProjectNavigationV2 activeChatId={null} controller={controller} onNavigate={vi.fn()} />
+      <ProjectNavigationV2 activeChatId={null} controller={controller} onNavigate={onNavigate} />
     );
 
     expect(screen.queryByRole("button", { name: "+ chat" })).toBeNull();
@@ -68,6 +69,20 @@ describe("Project navigation v2", () => {
     expect(screen.getByRole("menu", { name: "Folder actions: Research" })).toBeVisible();
     fireEvent.click(screen.getByRole("menuitem", { name: "New chat in folder" }));
     expect(createChat).toHaveBeenCalledWith("folder-1");
+    expect(onNavigate).toHaveBeenCalledOnce();
+  });
+
+  it("dismisses navigation after starting a root shared chat", () => {
+    const { controller, createChat } = projectController();
+    const onNavigate = vi.fn();
+    render(
+      <ProjectNavigationV2 activeChatId={null} controller={controller} onNavigate={onNavigate} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New shared chat" }));
+
+    expect(createChat).toHaveBeenCalledWith();
+    expect(onNavigate).toHaveBeenCalledOnce();
   });
 
   it("does not expose folder mutations to a read-only Project member", () => {

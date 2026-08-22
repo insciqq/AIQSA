@@ -72,6 +72,7 @@ export type ShellWorkspacePaneActions = {
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
   openArchivedChats(): void;
+  openChatMessage(chatId: string, messageId: string): Promise<boolean>;
   openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
   saveChatTitle(chat: WorkspaceChatSummary): Promise<void> | void;
@@ -244,7 +245,7 @@ export type ShellComposerView = {
 
 export type ShellBranchesView = {
   close(): void;
-  checkoutBranch(messageId: string): void;
+  checkoutBranch(messageId: string): Promise<boolean>;
   error: string | null;
   graph: ChatBranchGraphWire | null;
   loading: boolean;

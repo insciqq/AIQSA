@@ -189,6 +189,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
     author: message.author ?? null,
+    citationMessageId: message.citationMessageId ?? null,
     content:
       message.status === "error"
         ? persistedText || message.errorMessage || ""

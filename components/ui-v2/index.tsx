@@ -211,12 +211,13 @@ type UiV2IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export const UiV2IconButton = forwardRef<HTMLButtonElement, UiV2IconButtonProps>(
   function UiV2IconButton(
-    { className = "", icon, label, round = false, title = label, ...props },
+    { className = "", icon, label, round = false, title = label, type = "button", ...props },
     ref
   ) {
     return (
       <button
         {...props}
+        type={type}
         ref={ref}
         className={`v2-icon-button v2-focusable ${className}`.trim()}
         data-round={round || undefined}

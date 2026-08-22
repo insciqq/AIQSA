@@ -10,12 +10,15 @@ import {
   WelcomeOrientationV2,
   WorkspaceHeaderV2,
   answerIdentityV2,
+  knowledgeReferenceForMessageV2,
   blankWelcomeStartersVisibleV2,
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
+  blankConversationOrientationV2,
   SkillLibraryOverlayV2,
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
+import { formatTemporaryRetentionDeadlineV2 } from "./WorkspaceHeaderV2";
 
 const galleryModels = composerGalleryConfig.catalog.models;
 
@@ -192,13 +195,42 @@ describe("Answer identity v2", () => {
   });
 });
 
+describe("Knowledge citation provenance v2", () => {
+  it("uses the original answer authority for a copied branch message", () => {
+    expect(knowledgeReferenceForMessageV2({
+      citationMessageId: "assistant-source",
+      id: "assistant-branch",
+      runId: "run-source"
+    }, {
+      citations: [],
+      knowledgeCitations: [{ handle: "K1" }],
+      reasoningText: [],
+      sources: []
+    }, true)).toEqual({
+      messageId: "assistant-source",
+      runId: "run-source"
+    });
+  });
+
+  it("does not expose a citation authority for unsettled or uncited answers", () => {
+    const message = { id: "assistant", runId: "run" };
+    expect(knowledgeReferenceForMessageV2(message, null, true)).toBeUndefined();
+    expect(knowledgeReferenceForMessageV2(message, {
+      citations: [],
+      knowledgeCitations: [{ handle: "K1" }],
+      reasoningText: [],
+      sources: []
+    }, false)).toBeUndefined();
+  });
+});
+
 describe("Temporary chat indicator v2", () => {
   const memory = {
     explanation: "Temporary Chat reads and writes no personal Memory.",
     externalRetention: "External providers may retain data under their disclosed policies.",
     label: "Temporary chat",
     retention: "The complete chat aggregate is deleted after 24 hours.",
-    retentionDeadline: "Aug 14, 12:00"
+    retentionDeadline: "2026-08-14T12:00:00.000Z"
   };
 
   it("stays quiet until clicked, then disclosing the retention explainer", () => {
@@ -212,13 +244,28 @@ describe("Temporary chat indicator v2", () => {
     const dialog = screen.getByRole("dialog", { name: "Temporary chat" });
     expect(dialog).toHaveTextContent("deleted after 24 hours");
     expect(dialog).toHaveTextContent("External providers");
-    expect(screen.getByTestId("temporary-retention-deadline")).toHaveTextContent(
-      "Aug 14, 12:00"
+    const deadline = screen.getByTestId("temporary-retention-deadline");
+    expect(deadline).toHaveTextContent("Scheduled deletion:");
+    expect(deadline).not.toHaveTextContent("2026-08-14T12:00:00.000Z");
+    expect(deadline.querySelector("time")).toHaveAttribute(
+      "datetime",
+      "2026-08-14T12:00:00.000Z"
     );
 
     fireEvent.keyDown(dialog, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(trigger).toHaveFocus();
+  });
+
+  it("localizes the server retention instant instead of exposing raw ISO", () => {
+    const formatted = formatTemporaryRetentionDeadlineV2(
+      "2026-08-22T10:15:00.000Z",
+      "en-US",
+      "UTC"
+    );
+
+    expect(formatted).toBe("Aug 22, 2026, 10:15 AM");
+    expect(formatted).not.toContain("T10:15:00.000Z");
   });
 });
 
@@ -408,6 +455,19 @@ describe("Workspace header v2", () => {
 });
 
 describe("Blank welcome v2", () => {
+  it("shows the Project Assistant intro instead of hiding it behind Project orientation", () => {
+    render(<>{blankConversationOrientationV2({
+      assistantOrientation: <section data-testid="project-assistant-intro">Assistant starters</section>,
+      projectOrientation: <section data-testid="project-generic-intro">Shared project</section>,
+      projectSelected: true,
+      welcomeOrientation: <section data-testid="personal-welcome">Welcome</section>
+    })}</>);
+
+    expect(screen.getByTestId("project-assistant-intro")).toBeVisible();
+    expect(screen.queryByTestId("project-generic-intro")).toBeNull();
+    expect(screen.queryByTestId("personal-welcome")).toBeNull();
+  });
+
   it("shows starter prompts exactly on the untouched blank welcome", () => {
     expect(blankWelcomeStartersVisibleV2({
       assistantSelected: false,

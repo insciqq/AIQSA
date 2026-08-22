@@ -489,6 +489,37 @@ describe("message run actions", () => {
     expect(bodies[1]).not.toHaveProperty("projectDraft");
   });
 
+  it("admits a Project Assistant starter through first-send Project draft semantics", async () => {
+    const pending = {
+      ...chat(),
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: "project-1"
+    };
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: pending,
+      attachments: [],
+      draft: "",
+      consumeRunStream: async () => ({
+        failed: false,
+        receivedChatUpdate: false,
+        runId: "run-project-starter",
+        terminalStatus: "complete"
+      })
+    });
+
+    await actions.sendStarterPrompt("Summarize our launch plan");
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      content: { blocks: [{ text: "Summarize our launch plan", type: "text" }] },
+      projectDraft: { folderId: null, projectId: "project-1" }
+    });
+    expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === pending.id)
+      ?.pendingProjectDraft).toBeUndefined();
+  });
+
   it.each([
     "project_setup_required",
     "project_default_model_unavailable"
@@ -1283,6 +1314,42 @@ describe("message run actions", () => {
     expect(body).not.toHaveProperty("temporaryRetentionPolicyVersion");
   });
 
+  it("refreshes the visible Temporary deadline after regeneration settles", async () => {
+    const oldDeadline = "2026-06-11T00:00:00.000Z";
+    const nextDeadline = "2026-06-12T00:00:00.000Z";
+    const existingTemporary = {
+      ...chat(),
+      activeLeafMessageId: "assistant-original",
+      memoryMode: "TEMPORARY" as const,
+      messageCount: 2,
+      temporaryRetentionDeadline: oldDeadline
+    };
+    const fetchMock = vi
+      .fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => Response.json({
+        allowedActions: [],
+        archived: false,
+        mode: "TEMPORARY",
+        temporaryRetentionDeadline: nextDeadline
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: existingTemporary,
+      attachments: []
+    });
+    prepareRegenerationThread();
+
+    await actions.regenerateMessage("assistant-original");
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/chats/chat-a/memory-mode");
+    expect(useWorkspaceStore.getState().chats[0]).toMatchObject({
+      memoryMode: "TEMPORARY",
+      temporaryRetentionDeadline: nextDeadline
+    });
+  });
+
   it("suppresses persisted MCP tools for a model without tool calling", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -2044,6 +2111,42 @@ describe("message run actions", () => {
     expect(actions.fetchRun).toHaveBeenCalledWith("run-edit", "chat-a");
     expect(actions.notifyAnswerReady).toHaveBeenCalledOnce();
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
+  });
+
+  it("refreshes the visible Temporary deadline after an edited-branch run settles", async () => {
+    const nextDeadline = "2026-06-12T00:00:00.000Z";
+    const existingTemporary = {
+      ...chat(),
+      memoryMode: "TEMPORARY" as const,
+      messageCount: 2,
+      temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z"
+    };
+    const fetchMock = vi
+      .fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => editResponse("Edited question"))
+      .mockImplementationOnce(async () => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => Response.json({
+        allowedActions: [],
+        archived: false,
+        mode: "TEMPORARY",
+        temporaryRetentionDeadline: nextDeadline
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: existingTemporary,
+      attachments: [],
+      draft: "Edited question",
+      editingMessageId: "message-1"
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/me/chats/chat-a/memory-mode");
+    expect(useWorkspaceStore.getState().chats[0]).toMatchObject({
+      memoryMode: "TEMPORARY",
+      temporaryRetentionDeadline: nextDeadline
+    });
   });
 
   it("does not apply staged attachments to the text-only edited branch run", async () => {

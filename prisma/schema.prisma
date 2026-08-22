@@ -2387,10 +2387,12 @@ model Message {
   authorUserId       String?
   authorDisplayName  String?
   authorProjectRole  ProjectRole?
+  branchSourceModelRunId String?
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
   assistantModelRuns ModelRun[]    @relation("AssistantMessageRun")
   author             User?         @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  branchSourceModelRun ModelRun?   @relation("BranchSourceModelRun", fields: [branchSourceModelRunId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   activeLeafForChats Chat[]        @relation("ChatActiveLeaf")
   chat               Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
   children           Message[]     @relation("MessageBranches")
@@ -2401,6 +2403,7 @@ model Message {
   @@index([chatId, parentMessageId])
   @@index([chatId, createdAt])
   @@index([authorUserId])
+  @@index([branchSourceModelRunId])
   @@index([groundingProvider, groundedAt])
 }
 
@@ -2429,6 +2432,7 @@ model ModelRun {
   createdAt                   DateTime                            @default(now())
   updatedAt                   DateTime                            @updatedAt
   assistantMessage            Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  branchSourceMessages        Message[]                           @relation("BranchSourceModelRun")
   /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
   assistantRevision           AssistantRevision?                  @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
   chat                        Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
