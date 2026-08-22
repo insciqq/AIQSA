@@ -1380,7 +1380,8 @@ const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
 ]);
 
 export function validMemoryRetrievalExecutionSequence(
-  bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[]
+  bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[],
+  profileRequested = false
 ): boolean {
   if (bindings.length > 6) return false;
   const positions = bindings.map((binding) =>
@@ -1390,13 +1391,25 @@ export function validMemoryRetrievalExecutionSequence(
     !retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal)
   )) return false;
   const present = new Set(positions);
+  if (profileRequested && positions.some((position) =>
+    position !== "MEMORY_CONTROL:0" &&
+    position !== "MEMORY_RERANK:2" &&
+    position !== "MEMORY_RERANK:3")) return false;
   return (
     (!present.has("MEMORY_CONTROL:1") || present.has("MEMORY_CONTROL:0")) &&
     (!present.has("MEMORY_QUERY_EMBED:1") || present.has("MEMORY_CONTROL:0")) &&
     (!present.has("MEMORY_QUERY_EMBED:3") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_RERANK:2") || present.has("MEMORY_QUERY_EMBED:1")) &&
+    (!present.has("MEMORY_RERANK:2") ||
+      (profileRequested
+        ? present.has("MEMORY_CONTROL:0")
+        : present.has("MEMORY_QUERY_EMBED:1"))) &&
     (!present.has("MEMORY_RERANK:3") || present.has("MEMORY_RERANK:2"))
   );
+}
+
+function profileInventoryDeclared(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.plan)) return false;
+  return value.plan.profileRequested === true;
 }
 
 export function validMemoryRerankRetrySettlement(
@@ -1604,7 +1617,10 @@ async function loadPreparingAttemptExecutionEvidence(
         .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id));
     }
     if (
-      !validMemoryRetrievalExecutionSequence(bindings) ||
+      !validMemoryRetrievalExecutionSequence(
+        bindings,
+        profileInventoryDeclared(budgetSnapshot)
+      ) ||
       !validMemoryRerankRetrySettlement(bindings)
     ) {
       throw new Error("binding_count_invalid");
@@ -2335,6 +2351,10 @@ export async function finalizePreparingRunWithClient(
   input: PreparingRunFinalizationInput & Readonly<{
     deadlineAtMs?: number;
     deadlineFallbackBudget?: Readonly<Record<string, unknown>>;
+    failedSafeFallback?: Readonly<{
+      budgetSnapshot: Readonly<Record<string, unknown>>;
+      degradationCode: "memory_admission_settings_changed";
+    }>;
   }>,
   memoryExecutionAuthority: MemoryExecutionAuthorityDependencies
 ): Promise<boolean> {
@@ -2347,8 +2367,14 @@ export async function finalizePreparingRunWithClient(
       userId: input.userId
     });
     if (!run || run.status !== "preparing" || !attempt) return false;
-    const deadlineFallback = input.deadlineFallbackBudget !== undefined;
-    if (deadlineFallback) {
+    const failedSafeFallback = input.failedSafeFallback ??
+      (input.deadlineFallbackBudget !== undefined
+        ? {
+            budgetSnapshot: input.deadlineFallbackBudget,
+            degradationCode: "memory_admission_deadline_exceeded"
+          }
+        : null);
+    if (failedSafeFallback) {
       if (!["PENDING", "EXECUTING", "READY"].includes(attempt.state)) return false;
       const lifecycleSnapshot = decodeMemoryActionLifecycleSnapshot(
         attempt.budgetSnapshot
@@ -2371,14 +2397,18 @@ export async function finalizePreparingRunWithClient(
       const executionEvidence = await loadPreparingAttemptExecutionEvidence(
         tx,
         attempt,
-        input.deadlineFallbackBudget
+        failedSafeFallback.budgetSnapshot
       );
+      const {
+        memoryActionResult: _memoryActionResult,
+        ...fallbackBudgetSnapshot
+      } = failedSafeFallback.budgetSnapshot;
       const safeBudgetSnapshot = {
-        ...input.deadlineFallbackBudget,
+        ...fallbackBudgetSnapshot,
         ...memoryActionLifecycleBudgetSnapshot(lifecycleSnapshot),
         itemCount: 0,
         memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
-        reason: "memory_admission_deadline_exceeded"
+        reason: failedSafeFallback.degradationCode
       };
       assertAttemptUtilityDeclaration(safeBudgetSnapshot, executionEvidence);
       await tx.memoryRetrievalAttempt.update({
@@ -2387,7 +2417,7 @@ export async function finalizePreparingRunWithClient(
             executionEvidence.acceptedUtilityEgressFingerprint,
           boundedSafeQuerySnapshot: null,
           budgetSnapshot: json(safeBudgetSnapshot),
-          degradationCode: "memory_admission_deadline_exceeded",
+          degradationCode: failedSafeFallback.degradationCode,
           externalRolesUsed: [...executionEvidence.externalRolesUsed],
           outcome: "FAILED_SAFE",
           preparedContextHash: null,
@@ -2405,7 +2435,7 @@ export async function finalizePreparingRunWithClient(
           executionEvidence.acceptedUtilityEgressFingerprint,
         boundedSafeQuerySnapshot: null,
         budgetSnapshot: safeBudgetSnapshot as Prisma.JsonValue,
-        degradationCode: "memory_admission_deadline_exceeded",
+        degradationCode: failedSafeFallback.degradationCode,
         externalRolesUsed: [...executionEvidence.externalRolesUsed],
         outcome: "FAILED_SAFE",
         preparedContextHash: null,
@@ -2566,7 +2596,7 @@ export async function finalizePreparingRunWithClient(
       }
     }
 
-    const currentSettings = deadlineFallback ||
+    const currentSettings = failedSafeFallback ||
         attempt.chatMemoryModeSnapshot === "TEMPORARY"
       ? null
       : await loadPreparingSettings(tx, input.userId, true);
@@ -2677,7 +2707,7 @@ export async function finalizePreparingRunWithClient(
       return true;
     }
 
-    if (!deadlineFallback && !currentSettings) {
+    if (!failedSafeFallback && !currentSettings) {
       throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
     }
     if (currentSettings) {
@@ -3211,6 +3241,10 @@ export async function createDormantPreparingRun(
     reason: "memory_admission_deadline_exceeded",
     schemaVersion: 2
   };
+  const currentStageFallbackBudget = (): Readonly<Record<string, unknown>> =>
+    memoryControlCache.settingsDriftFailedSafeAttemptId === currentAttemptId
+      ? memoryControlCache.settingsDriftFailedSafeBudget ?? deadlineFallbackBudget
+      : deadlineFallbackBudget;
   const finalizeDeadlineFallback = async (): Promise<PreparingRunAdmissionResult> => {
     const fallbackFinalized = await finalizePreparingRunWithClient(
       prismaClient,
@@ -3218,7 +3252,7 @@ export async function createDormantPreparingRun(
         ...(admission.assistant ? { assistant: admission.assistant } : {}),
         attemptId: currentAttemptId,
         deadlineFallbackBudget: {
-          ...deadlineFallbackBudget,
+          ...currentStageFallbackBudget(),
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
         },
         ...(admission.knowledgeAdmissionPlan
@@ -3237,6 +3271,45 @@ export async function createDormantPreparingRun(
     if (!fallbackFinalized) {
       throw new MemoryPreparingRunConflictError(
         "memory_preparing_deadline_fallback_unavailable",
+        false
+      );
+    }
+    return {
+      ...created,
+      attemptId: currentAttemptId,
+      memoryGeneration: currentSettings.memoryGeneration,
+      memoryRevision: currentSettings.memoryRevision,
+      settingsSnapshot: currentSettings.settingsSnapshot
+    };
+  };
+  const finalizeSettingsDriftFallback = async (
+    budgetSnapshot: Readonly<Record<string, unknown>>
+  ): Promise<PreparingRunAdmissionResult> => {
+    const fallbackFinalized = await finalizePreparingRunWithClient(
+      prismaClient,
+      {
+        ...(admission.assistant ? { assistant: admission.assistant } : {}),
+        attemptId: currentAttemptId,
+        failedSafeFallback: {
+          budgetSnapshot,
+          degradationCode: "memory_admission_settings_changed"
+        },
+        ...(admission.knowledgeAdmissionPlan
+          ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
+          : {}),
+        ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
+        normalizedRequest: admission.normalizedRequest,
+        providerAdmissionPlan: admission.providerAdmissionPlan,
+        providerRequestPreview: admission.providerRequestPreview,
+        runId: created.runId,
+        ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
+        userId: admission.userId
+      },
+      memoryExecutionAuthority
+    );
+    if (!fallbackFinalized) {
+      throw new MemoryPreparingRunConflictError(
+        "memory_preparing_settings_fallback_unavailable",
         false
       );
     }
@@ -3385,7 +3458,17 @@ export async function createDormantPreparingRun(
         };
       } catch (error) {
         if (error instanceof RunTransactionDeadlineError) {
-          return finalizeDeadlineFallback();
+          return await finalizeDeadlineFallback();
+        }
+        if (
+          error instanceof MemoryPreparingRunConflictError &&
+          error.code === "memory_admission_settings_changed" &&
+          error.retryable &&
+          attemptOrdinal === 1
+        ) {
+          return await finalizeSettingsDriftFallback(
+            currentStageFallbackBudget()
+          );
         }
         if (
           !(error instanceof MemoryPreparingRunConflictError) ||
@@ -3406,7 +3489,7 @@ export async function createDormantPreparingRun(
           });
         } catch (retryError) {
           if (retryError instanceof RunTransactionDeadlineError) {
-            return finalizeDeadlineFallback();
+            return await finalizeDeadlineFallback();
           }
           throw retryError;
         }

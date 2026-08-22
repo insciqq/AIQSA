@@ -18,6 +18,7 @@ function intent(overrides: Record<string, unknown> = {}) {
     confidenceBand: "HIGH",
     memoryUseful: false,
     pastChatsUseful: false,
+    profileRequested: false,
     queryText: null,
     reasonCode: "none",
     recencyRequested: false,
@@ -67,6 +68,9 @@ describe("MemoryActionIntent strict contract", () => {
     const missing = intent() as Record<string, unknown>;
     delete missing.queryText;
     expect(decodeMemoryActionIntent(missing)).toMatchObject({ ok: false });
+    const missingProfileDecision = intent() as Record<string, unknown>;
+    delete missingProfileDecision.profileRequested;
+    expect(decodeMemoryActionIntent(missingProfileDecision)).toMatchObject({ ok: false });
     expect(decodeMemoryActionIntent(intent({
       action: "SAVE",
       statement: "remembered preference",
@@ -78,6 +82,46 @@ describe("MemoryActionIntent strict contract", () => {
       action: "SAVE",
       statement: "x".repeat(2_001)
     }))).toMatchObject({ ok: false });
+  });
+
+  it("admits only an unqualified NONE fact inventory as a broad profile request", () => {
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: true,
+      profileRequested: true,
+      queryText: "current Saved and learned facts about the user"
+    }))).toMatchObject({
+      ok: true,
+      value: { memoryUseful: true, profileRequested: true, recencyRequested: false }
+    });
+
+    for (const invalid of [
+      {
+        memoryUseful: false,
+        profileRequested: true,
+        queryText: "current Saved and learned facts about the user"
+      },
+      {
+        action: "SAVE",
+        memoryUseful: true,
+        profileRequested: true,
+        queryText: "current Saved and learned facts about the user",
+        statement: "The user prefers tea."
+      },
+      {
+        memoryUseful: true,
+        profileRequested: true,
+        queryText: "current Saved and learned facts about the user",
+        recencyRequested: true
+      },
+      {
+        memoryUseful: true,
+        profileRequested: true,
+        queryText: null
+      }
+    ]) {
+      expect(decodeMemoryActionIntent(intent(invalid))).toMatchObject({ ok: false });
+    }
   });
 
   it("keeps Saved Memories management search separate from answer retrieval", () => {
@@ -95,6 +139,7 @@ describe("MemoryActionIntent strict contract", () => {
       { memoryUseful: true },
       { pastChatsUseful: true },
       { applyResponsePreferences: true },
+      { memoryUseful: true, profileRequested: true },
       { queryText: "how the user likes replies" }
     ]) {
       expect(decodeMemoryActionIntent(intent({

@@ -24,6 +24,8 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import type { MemoryExecutionOwner } from "../execution/owner";
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import { memorySha256 } from "../persistence/lexical";
+import { MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR } from
+  "../../../domain/memory/retrieval/config";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   type MemoryVectorProfile
@@ -39,7 +41,7 @@ import {
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v7";
+  "memory-multilingual-relevance-v8";
 export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
@@ -52,8 +54,8 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v7",
-  promptVersion: "memory-relevance-prompt-v5",
+  policyVersion: "memory-relevance-policy-v8",
+  promptVersion: "memory-relevance-prompt-v6",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
     maxCandidates: 30,
@@ -61,7 +63,8 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     maxOutputTokens: 4_096,
     maxTotalCharacters: 32_000,
     completePerCandidateDecisions: true,
-    version: 7
+    profileInventoryPostcondition: true,
+    version: 8
   }),
   schemaVersion: "memory-relevance-result-v4"
 });
@@ -148,6 +151,7 @@ export type MemoryRunUtilityService = Readonly<{
       sourceKind: "EVENT" | "FACT" | "HISTORY";
       text: string;
     }>[];
+    profileRequested: boolean;
     query: string;
   }>): Promise<MemoryRunRerankResult>;
 }>;
@@ -305,7 +309,8 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 function decodeRerank(
   calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"],
-  expectedHandles: readonly string[]
+  expectedHandles: readonly string[],
+  profileRequested: boolean
 ): readonly MemoryRunRerankDecision[] | null {
   const call = calls?.[0];
   if (
@@ -347,6 +352,10 @@ function decodeRerank(
       relevanceScore: value.relevance_score
     });
   }
+  if (profileRequested && decisions.some((decision) =>
+    !decision.applicable || !decision.current ||
+    decision.reasonCode !== "DIRECT_RELEVANCE" ||
+    decision.relevanceScore <= MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR)) return null;
   return decisions;
 }
 
@@ -656,6 +665,7 @@ export function createMemoryRunUtilityService(
       const handles = input.candidates.map((candidate) => candidate.handle);
       if (
         !validSafeQuery(input.query) ||
+        typeof input.profileRequested !== "boolean" ||
         input.candidates.length < 1 ||
         input.candidates.length > 30 ||
         totalCharacters > 32_000 ||
@@ -666,7 +676,8 @@ export function createMemoryRunUtilityService(
           candidate.text.length > 4_000 ||
           candidate.text.includes("\u0000") ||
           memoryExplicitStatementContainsSecret(candidate.text)
-        )
+        ) || input.profileRequested && input.candidates.some((candidate) =>
+          !candidate.current || candidate.sourceKind === "HISTORY")
       ) return unavailable("memory_utility_input_blocked");
       const inputHash = memoryExecutionSha256({
         candidates: input.candidates.map((candidate) => ({
@@ -680,14 +691,16 @@ export function createMemoryRunUtilityService(
           textHash: memorySha256(candidate.text)
         })),
         domain: "aiqsa.memory.relevance-input",
+        profileRequested: input.profileRequested,
         queryHash: memorySha256(input.query),
-        version: 4
+        version: 5
       });
       let result = await runTextUtility(
         deps,
         input,
         {
           candidates: input.candidates,
+          profileRequested: input.profileRequested,
           query: input.query,
           role: "MEMORY_RERANK"
         },
@@ -696,7 +709,7 @@ export function createMemoryRunUtilityService(
         rerankVersions,
         inputHash,
         null,
-        (calls) => decodeRerank(calls, handles)
+        (calls) => decodeRerank(calls, handles, input.profileRequested)
       );
       // A structurally invalid settled response is safe to retry once: the
       // reranker has no side effects, and each attempt receives its own
@@ -713,6 +726,7 @@ export function createMemoryRunUtilityService(
           input,
           {
             candidates: input.candidates,
+            profileRequested: input.profileRequested,
             query: input.query,
             role: "MEMORY_RERANK"
           },
@@ -721,7 +735,7 @@ export function createMemoryRunUtilityService(
           rerankVersions,
           inputHash,
           result.snapshotHash,
-          (calls) => decodeRerank(calls, handles)
+          (calls) => decodeRerank(calls, handles, input.profileRequested)
         );
       }
       return result.status === "READY"

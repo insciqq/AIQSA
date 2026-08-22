@@ -214,6 +214,9 @@ async function settleAttemptItems(
   userId: string,
   ids: HistoryTargetIds
 ): Promise<void> {
+  // Finalized bindings require their attempt to remain CONSUMED. Scrub an
+  // already-consumed pack to the canonical empty-text triple; only live
+  // attempts transition to STALE.
   await tx.$executeRaw(Prisma.sql`
     WITH deleted AS (
       DELETE FROM "MemoryRetrievalAttemptItem" AS item
@@ -234,14 +237,33 @@ async function settleAttemptItems(
           ) THEN 'STALE'::"MemoryRetrievalAttemptState"
           ELSE attempt."state"
         END,
-        "preparedContextText" = NULL,
-        "preparedContextHash" = NULL,
-        "preparedContextTokenCount" = NULL,
-        "errorCode" = CASE
+        "preparedContextText" = CASE
+          WHEN attempt."state" = 'CONSUMED'::"MemoryRetrievalAttemptState" THEN ''
+          ELSE NULL
+        END,
+        "preparedContextHash" = CASE
+          WHEN attempt."state" = 'CONSUMED'::"MemoryRetrievalAttemptState"
+            THEN 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+          ELSE NULL
+        END,
+        "preparedContextTokenCount" = CASE
+          WHEN attempt."state" = 'CONSUMED'::"MemoryRetrievalAttemptState" THEN 0
+          ELSE NULL
+        END,
+        "consumedAt" = CASE
           WHEN attempt."state" IN (
             'PENDING'::"MemoryRetrievalAttemptState",
             'EXECUTING'::"MemoryRetrievalAttemptState",
             'READY'::"MemoryRetrievalAttemptState"
+          ) THEN NULL
+          ELSE attempt."consumedAt"
+        END,
+        "errorCode" = CASE
+          WHEN attempt."state" IN (
+            'PENDING'::"MemoryRetrievalAttemptState",
+            'EXECUTING'::"MemoryRetrievalAttemptState",
+            'READY'::"MemoryRetrievalAttemptState",
+            'CONSUMED'::"MemoryRetrievalAttemptState"
           ) THEN 'memory_source_stale'
           ELSE attempt."errorCode"
         END,

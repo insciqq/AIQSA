@@ -130,6 +130,35 @@ describe("local Memory retrieval repository", () => {
     }
   });
 
+  it("runs one isolated fact-only profile lane with explicit memories ordered first", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "What do you know about me?",
+        filters: { sourceKinds: ["FACT", "EVENT"] },
+        now,
+        profileRequested: true
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual(["FACT_PROFILE"]);
+    expect(mocked.laneSql).toHaveLength(1);
+    const sql = mocked.laneSql[0]!;
+    expect(sql).not.toContain('"MemoryRecallChunk"');
+    expect(sql).not.toContain("plainto_tsquery");
+    const explicitOrder = sql.indexOf('(eligible."sourceMode" = \'EXPLICIT\') DESC');
+    const pinnedOrder = sql.indexOf('eligible."pinned" DESC');
+    expect(explicitOrder).toBeGreaterThan(-1);
+    expect(pinnedOrder).toBeGreaterThan(explicitOrder);
+    expect(sql).toContain('eligible."importance" DESC');
+    expect(sql).toContain('eligible."confidence" DESC');
+  });
+
   it("loads query-independent response preferences only when the plan admits them", async () => {
     for (const applyResponsePreferences of [false, true]) {
       const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));

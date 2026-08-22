@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
@@ -1002,6 +1003,496 @@ describe("PREPARING run orchestration", () => {
           prompt: { memoryActionAnswerResult: committedResult }
         },
         status: "streaming"
+      });
+    });
+  });
+
+  it("fails a second Memory settings drift safe without failing the ordinary run", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const fixture = await createPreparingEmbeddingAuthority(userId);
+      try {
+        const chat = await prisma.chat.create({
+          data: {
+            defaultProviderModelId: providerTemplateIds.fakeModel,
+            title: "Repeated Memory settings drift",
+            userId
+          }
+        });
+        const initial = normalizedRequest(chat.id, "What do you know about me?");
+        const request: NormalizedRunRequest = {
+          ...initial,
+          prompt: {
+            ...initial.prompt,
+            memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+          }
+        };
+        let callCount = 0;
+        let executionBindingId: string | null = null;
+        const retrieve = vi.fn(async (input: Readonly<{
+          attemptId: string;
+          controlCache?: {
+            settingsDriftFailedSafeAttemptId?: string;
+            settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
+          };
+          userId: string;
+        }>) => {
+          callCount += 1;
+          if (callCount === 1) {
+            await prisma.userMemorySettings.update({
+              data: { memoryRevision: { increment: 1 } },
+              where: { userId: input.userId }
+            });
+            if (!input.controlCache) throw new Error("control_cache_missing");
+            input.controlCache.settingsDriftFailedSafeAttemptId = input.attemptId;
+            input.controlCache.settingsDriftFailedSafeBudget = {
+              itemCount: 0,
+              memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+              reason: "memory_admission_settings_changed",
+              schemaVersion: 2,
+              utilityEgressMode: "LOCAL_ONLY"
+            };
+            throw new MemoryPreparingRunConflictError(
+              "memory_admission_settings_changed",
+              true
+            );
+          }
+
+          const execution = createPrismaMemoryExecutionService(
+            fixture.authority,
+            prisma
+          );
+          const control = await execution.admission.bind(input.userId, {
+            inputHash: "7".repeat(64),
+            ordinal: 0,
+            owner: {
+              retrievalAttemptId: input.attemptId,
+              type: "RETRIEVAL_ATTEMPT"
+            },
+            role: "MEMORY_CONTROL",
+            versions: MEMORY_CONTROL_VERSIONS
+          });
+          executionBindingId = control.id;
+          await execution.admission.start(input.userId, control.id);
+          await execution.lifecycle.settle(input.userId, control.id, {
+            acceptedOutputHash: "8".repeat(64),
+            errorCode: null,
+            providerResponseId: "repeated-drift-control-response",
+            state: "SUCCEEDED",
+            usage: {
+              cachedInputTokens: 0,
+              completeness: "COMPLETE",
+              estimatedCostMicros: null,
+              inputTokens: 9,
+              outputTokens: 4,
+              reasoningTokens: 0,
+              totalTokens: 13
+            }
+          });
+          await prisma.userMemorySettings.update({
+            data: {
+              memoryRevision: { increment: 1 },
+              referenceChatHistory: true
+            },
+            where: { userId: input.userId }
+          });
+          return {
+            budgetSnapshot: {
+              itemCount: 0,
+              memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+              reason: "no_relevant_memory",
+              schemaVersion: 2,
+              utilityEgressMode: "CONSENTED_EXTERNAL",
+              utilityExecutions: [{
+                reason: null,
+                role: "MEMORY_CONTROL",
+                state: "READY"
+              }]
+            },
+            items: [],
+            outcome: "EMPTY" as const,
+            preparedContext: null,
+            querySnapshot: null
+          };
+        });
+        const repository = createPrismaRunRepository(prisma, {
+          memoryExecutionAuthority: fixture.authority,
+          memoryRetrieval: { retrieve } as never
+        });
+        const created = await repository.createRun({
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          memoryMaterializer(personalContext, memoryActionAnswerResult) {
+            const finalRequest: NormalizedRunRequest = {
+              ...request,
+              ...(personalContext ? { personalContext } : {}),
+              prompt: {
+                ...request.prompt,
+                ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+              }
+            };
+            return {
+              contextTruncation: null,
+              normalizedRequest: finalRequest,
+              providerRequest: { ...finalRequest, attachments: [] },
+              providerRequestPreview: { request: "materialized" }
+            };
+          },
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: { request: "base" },
+          userId
+        });
+
+        const [run, attempts, binding, executionBinding, usageCount] =
+          await Promise.all([
+            prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } }),
+            prisma.memoryRetrievalAttempt.findMany({
+              orderBy: { attemptOrdinal: "asc" },
+              where: { modelRunId: created.runId }
+            }),
+            prisma.modelRunMemoryBinding.findUniqueOrThrow({
+              where: { modelRunId: created.runId }
+            }),
+            prisma.memoryExecutionBinding.findUniqueOrThrow({
+              where: { id: executionBindingId! }
+            }),
+            prisma.usageEvent.count({
+              where: { memoryExecutionBindingId: executionBindingId! }
+            })
+          ]);
+        const runItems = await prisma.modelRunMemoryItem.findMany({
+          where: { bindingId: binding.id }
+        });
+
+        expect(retrieve).toHaveBeenCalledTimes(2);
+        expect(run).toMatchObject({ normalizedRequest: request, status: "streaming" });
+        expect(attempts).toHaveLength(2);
+        expect(attempts[0]).toMatchObject({
+          attemptOrdinal: 0,
+          errorCode: "memory_admission_settings_changed",
+          state: "STALE"
+        });
+        expect(attempts[1]).toMatchObject({
+          acceptedUtilityEgressFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          attemptOrdinal: 1,
+          degradationCode: "memory_admission_settings_changed",
+          externalRolesUsed: ["MEMORY_CONTROL"],
+          outcome: "FAILED_SAFE",
+          state: "CONSUMED",
+          utilityEgressMode: "CONSENTED_EXTERNAL"
+        });
+        expect(attempts[1]?.budgetSnapshot).toMatchObject({
+          itemCount: 0,
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          reason: "memory_admission_settings_changed"
+        });
+        expect(attempts[1]?.budgetSnapshot).not.toHaveProperty("memoryActionResult");
+        expect(binding).toMatchObject({
+          contextTokenCount: 0,
+          degradationCode: "memory_admission_settings_changed",
+          outcome: "FAILED_SAFE",
+          retrievalAttemptId: attempts[1]?.id
+        });
+        expect(runItems).toEqual([]);
+        expect(executionBinding).toMatchObject({
+          logicalRole: "MEMORY_CONTROL",
+          retrievalAttemptId: attempts[1]?.id,
+          state: "SUCCEEDED"
+        });
+        expect(usageCount).toBe(1);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
+
+  it("uses current drift evidence when the retry transaction reaches the deadline", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const fixture = await createPreparingEmbeddingAuthority(userId);
+      let releaseRunLock!: () => void;
+      let blocker: Promise<void> | null = null;
+      const release = new Promise<void>((resolve) => {
+        releaseRunLock = resolve;
+      });
+      let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const chat = await prisma.chat.create({
+          data: {
+            defaultProviderModelId: providerTemplateIds.fakeModel,
+            title: "Memory drift retry deadline",
+            userId
+          }
+        });
+        const initial = normalizedRequest(chat.id, "What did Memory find?");
+        const request: NormalizedRunRequest = {
+          ...initial,
+          prompt: {
+            ...initial.prompt,
+            memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+          }
+        };
+        let executionBindingId: string | null = null;
+        const retrieve = vi.fn(async (input: Readonly<{
+          attemptId: string;
+          controlCache?: {
+            settingsDriftFailedSafeAttemptId?: string;
+            settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
+          };
+          modelRunId: string;
+          userId: string;
+        }>) => {
+          const execution = createPrismaMemoryExecutionService(
+            fixture.authority,
+            prisma
+          );
+          const control = await execution.admission.bind(input.userId, {
+            inputHash: "9".repeat(64),
+            ordinal: 0,
+            owner: {
+              retrievalAttemptId: input.attemptId,
+              type: "RETRIEVAL_ATTEMPT"
+            },
+            role: "MEMORY_CONTROL",
+            versions: MEMORY_CONTROL_VERSIONS
+          });
+          executionBindingId = control.id;
+          await execution.admission.start(input.userId, control.id);
+          await execution.lifecycle.settle(input.userId, control.id, {
+            acceptedOutputHash: "a".repeat(64),
+            errorCode: null,
+            providerResponseId: "drift-deadline-control-response",
+            state: "SUCCEEDED",
+            usage: {
+              cachedInputTokens: 0,
+              completeness: "COMPLETE",
+              estimatedCostMicros: null,
+              inputTokens: 8,
+              outputTokens: 3,
+              reasoningTokens: 0,
+              totalTokens: 11
+            }
+          });
+          let reportLocked!: () => void;
+          const locked = new Promise<void>((resolve) => {
+            reportLocked = resolve;
+          });
+          blocker = prisma.$transaction(async (tx) => {
+            await tx.$queryRaw(Prisma.sql`
+              SELECT "id"
+              FROM "ModelRun"
+              WHERE "id" = ${input.modelRunId}
+              FOR UPDATE
+            `);
+            reportLocked();
+            await release;
+          }, { timeout: 10_000 });
+          await locked;
+          releaseTimer = setTimeout(releaseRunLock, 2_000);
+          if (!input.controlCache) throw new Error("control_cache_missing");
+          input.controlCache.settingsDriftFailedSafeAttemptId = input.attemptId;
+          input.controlCache.settingsDriftFailedSafeBudget = {
+            itemCount: 0,
+            memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+            reason: "memory_admission_settings_changed",
+            schemaVersion: 2,
+            utilityEgressMode: "CONSENTED_EXTERNAL",
+            utilityExecutions: [{
+              reason: null,
+              role: "MEMORY_CONTROL",
+              state: "READY"
+            }]
+          };
+          throw new MemoryPreparingRunConflictError(
+            "memory_admission_settings_changed",
+            true
+          );
+        });
+        const repository = createPrismaRunRepository(prisma, {
+          memoryAdmissionDeadlineMs: 3_000,
+          memoryExecutionAuthority: fixture.authority,
+          memoryRetrieval: { retrieve } as never
+        });
+        const created = await repository.createRun({
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          memoryMaterializer(personalContext, memoryActionAnswerResult) {
+            const finalRequest: NormalizedRunRequest = {
+              ...request,
+              ...(personalContext ? { personalContext } : {}),
+              prompt: {
+                ...request.prompt,
+                ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+              }
+            };
+            return {
+              contextTruncation: null,
+              normalizedRequest: finalRequest,
+              providerRequest: { ...finalRequest, attachments: [] },
+              providerRequestPreview: { request: "materialized" }
+            };
+          },
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: { request: "base" },
+          userId
+        });
+
+        const [run, attempts, binding, executionBinding, usageCount] =
+          await Promise.all([
+            prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } }),
+            prisma.memoryRetrievalAttempt.findMany({
+              orderBy: { attemptOrdinal: "asc" },
+              where: { modelRunId: created.runId }
+            }),
+            prisma.modelRunMemoryBinding.findUniqueOrThrow({
+              where: { modelRunId: created.runId }
+            }),
+            prisma.memoryExecutionBinding.findUniqueOrThrow({
+              where: { id: executionBindingId! }
+            }),
+            prisma.usageEvent.count({
+              where: { memoryExecutionBindingId: executionBindingId! }
+            })
+          ]);
+        expect(retrieve).toHaveBeenCalledOnce();
+        expect(run).toMatchObject({ normalizedRequest: request, status: "streaming" });
+        expect(attempts).toHaveLength(1);
+        expect(attempts[0]).toMatchObject({
+          degradationCode: "memory_admission_deadline_exceeded",
+          externalRolesUsed: ["MEMORY_CONTROL"],
+          outcome: "FAILED_SAFE",
+          state: "CONSUMED",
+          utilityEgressMode: "CONSENTED_EXTERNAL"
+        });
+        expect(attempts[0]?.budgetSnapshot).toMatchObject({
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          reason: "memory_admission_deadline_exceeded",
+          utilityEgressMode: "CONSENTED_EXTERNAL"
+        });
+        expect(binding).toMatchObject({
+          degradationCode: "memory_admission_deadline_exceeded",
+          outcome: "FAILED_SAFE",
+          retrievalAttemptId: attempts[0]?.id
+        });
+        expect(executionBinding).toMatchObject({
+          logicalRole: "MEMORY_CONTROL",
+          retrievalAttemptId: attempts[0]?.id,
+          state: "SUCCEEDED"
+        });
+        expect(usageCount).toBe(1);
+      } finally {
+        if (releaseTimer) clearTimeout(releaseTimer);
+        releaseRunLock();
+        if (blocker) await blocker;
+        await fixture.cleanup();
+      }
+    });
+  }, 10_000);
+
+  it("settles the preparing run when the settings-drift fallback is rejected", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "Rejected Memory drift fallback",
+          userId
+        }
+      });
+      const initial = normalizedRequest(chat.id, "Continue without Memory.");
+      const request: NormalizedRunRequest = {
+        ...initial,
+        prompt: {
+          ...initial.prompt,
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+        }
+      };
+      let callCount = 0;
+      let runId: string | null = null;
+      const retrieve = vi.fn(async (input: Readonly<{
+        attemptId: string;
+        controlCache?: {
+          settingsDriftFailedSafeAttemptId?: string;
+          settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
+        };
+        modelRunId: string;
+      }>) => {
+        callCount += 1;
+        runId = input.modelRunId;
+        if (!input.controlCache) throw new Error("control_cache_missing");
+        input.controlCache.settingsDriftFailedSafeAttemptId = input.attemptId;
+        input.controlCache.settingsDriftFailedSafeBudget = {
+          itemCount: 0,
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          reason: "memory_admission_settings_changed",
+          schemaVersion: 2,
+          utilityEgressMode: callCount === 1
+            ? "LOCAL_ONLY"
+            : "CONSENTED_EXTERNAL"
+        };
+        throw new MemoryPreparingRunConflictError(
+          "memory_admission_settings_changed",
+          true
+        );
+      });
+      const repository = createPrismaRunRepository(prisma, {
+        memoryRetrieval: { retrieve } as never
+      });
+
+      await expect(repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        memoryMaterializer(personalContext, memoryActionAnswerResult) {
+          const finalRequest: NormalizedRunRequest = {
+            ...request,
+            ...(personalContext ? { personalContext } : {}),
+            prompt: {
+              ...request.prompt,
+              ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+            }
+          };
+          return {
+            contextTruncation: null,
+            normalizedRequest: finalRequest,
+            providerRequest: { ...finalRequest, attachments: [] },
+            providerRequestPreview: { request: "materialized" }
+          };
+        },
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      })).rejects.toMatchObject({ code: "memory_attempt_execution_invalid" });
+      expect(runId).not.toBeNull();
+
+      const [run, attempts] = await Promise.all([
+        prisma.modelRun.findUniqueOrThrow({ where: { id: runId! } }),
+        prisma.memoryRetrievalAttempt.findMany({
+          orderBy: { attemptOrdinal: "asc" },
+          where: { modelRunId: runId! }
+        })
+      ]);
+      expect(retrieve).toHaveBeenCalledTimes(2);
+      expect(run).toMatchObject({
+        errorPayload: {
+          code: "memory_attempt_execution_invalid",
+          message: "Memory preparation failed before provider dispatch."
+        },
+        status: "error"
+      });
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toMatchObject({
+        errorCode: "memory_admission_settings_changed",
+        state: "STALE"
+      });
+      expect(attempts[1]).toMatchObject({
+        errorCode: "memory_attempt_execution_invalid",
+        state: "FAILED"
       });
     });
   });

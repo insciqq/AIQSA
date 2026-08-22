@@ -1,6 +1,6 @@
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-v1";
-export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v3";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v3";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-v2";
+export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v4";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v4";
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;
 export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 30;
@@ -19,12 +19,15 @@ export const MEMORY_CONTEXT_HARD_CAP_TOKENS = 1_800;
 export const MEMORY_CORE_MAX_FACTS = 4;
 export const MEMORY_CONTEXT_MAX_ITEMS = 13;
 export const MEMORY_CONTEXT_MAX_DYNAMIC_FACTS = 6;
+export const MEMORY_CONTEXT_PROFILE_MAX_FACTS = 12;
 export const MEMORY_CONTEXT_MAX_HISTORY_SNIPPETS = 3;
 export const MEMORY_CONTEXT_MAX_SOURCE_CHATS = 3;
 export const MEMORY_CONTEXT_DYNAMIC_FACT_TARGET_TOKENS = 500;
+export const MEMORY_CONTEXT_PROFILE_FACT_TARGET_TOKENS = 1_100;
 export const MEMORY_CONTEXT_HISTORY_TARGET_TOKENS = 750;
 
 export const MEMORY_RETRIEVAL_LANE_LIMITS = Object.freeze({
+  FACT_PROFILE: 20,
   FACT_EXACT: 8,
   FACT_FTS_SIMPLE: 12,
   FACT_RECENT: 4,
@@ -36,6 +39,7 @@ export const MEMORY_RETRIEVAL_LANE_LIMITS = Object.freeze({
 } as const);
 
 export const MEMORY_RETRIEVAL_LANE_ORDER = Object.freeze([
+  "FACT_PROFILE",
   "FACT_EXACT",
   "HISTORY_RECALL_EXACT",
   "FACT_FTS_SIMPLE",

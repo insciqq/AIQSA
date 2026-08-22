@@ -31,10 +31,29 @@ describe("Memory retrieval lane scheduler", () => {
   });
 
   it("allocates all configured lanes under the shared candidate ceiling", () => {
-    const lanes: readonly MemoryRetrievalLane[] = MEMORY_RETRIEVAL_LANE_ORDER;
+    const lanes: readonly MemoryRetrievalLane[] = MEMORY_RETRIEVAL_LANE_ORDER.filter(
+      (lane) => lane !== "FACT_PROFILE"
+    );
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
+    expect(allocation).toEqual({
+      FACT_EXACT: 4,
+      FACT_FTS_SIMPLE: 7,
+      FACT_RECENT: 2,
+      FACT_VECTOR: 7,
+      HISTORY_RECALL_EXACT: 2,
+      HISTORY_RECALL_FTS_SIMPLE: 3,
+      HISTORY_RECALL_RECENT: 2,
+      HISTORY_RECALL_VECTOR: 3
+    });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);
+  });
+
+  it("keeps the bounded profile lane isolated from targeted lane allocation", () => {
+    expect(allocateMemoryRetrievalLaneLimits(["FACT_PROFILE"]))
+      .toEqual({ FACT_PROFILE: 20 });
+    expect(() => allocateMemoryRetrievalLaneLimits(["FACT_PROFILE", "FACT_VECTOR"]))
+      .toThrow("memory_retrieval_lane_contract_invalid");
   });
 });

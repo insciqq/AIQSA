@@ -120,7 +120,10 @@ function execution(log: string[]) {
     })
   };
   const admission = {
-    bind: vi.fn(async (_userId: string, input: { role: Parameters<typeof snapshot>[0] }) => {
+    bind: vi.fn(async (
+      _userId: string,
+      input: { inputHash: string; role: Parameters<typeof snapshot>[0] }
+    ) => {
       log.push(`bind:${input.role}`);
       return { id: `binding-${input.role}` };
     }),
@@ -340,6 +343,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
+      profileRequested: false,
       query: "How should I respond?"
     });
     expect(result).toEqual({
@@ -360,6 +364,242 @@ describe("Memory run utility execution", () => {
       "settle",
       "authorize"
     ]);
+  });
+
+  it("binds and dispatches distinct ordinary and broad-profile rerank inputs", async () => {
+    const log: string[] = [];
+    const bound = execution(log);
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async () => ({
+        providerResponseId: "response-1",
+        toolCalls: [{
+          arguments: {
+            decisions: [{
+              applicable: true,
+              current: true,
+              handle: "c0",
+              reason_code: "DIRECT_RELEVANCE",
+              relevance_score: 0.91
+            }]
+          },
+          id: "call-1",
+          name: MEMORY_RERANK_TOOL_NAME
+        }],
+        usage: {
+          cachedInputTokens: 0,
+          inputTokens: 10,
+          outputTokens: 4,
+          reasoningTokens: 0,
+          totalTokens: 14
+        }
+      }))
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider
+    });
+    const input = {
+      ...baseInput(),
+      candidates: [{
+        authorityLevel: "SAVED" as const,
+        current: true,
+        handle: "c0",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL" as const,
+        sourceKind: "FACT" as const,
+        text: "The user's name is Nebula."
+      }],
+      query: "What do you know about me?"
+    };
+
+    await expect(service.rerank({
+      ...input,
+      profileRequested: false
+    })).resolves.toMatchObject({ status: "READY" });
+    await expect(service.rerank({
+      ...input,
+      profileRequested: true
+    })).resolves.toMatchObject({ status: "READY" });
+
+    const ordinaryHash = bound.admission.bind.mock.calls[0]?.[1].inputHash;
+    const profileHash = bound.admission.bind.mock.calls[1]?.[1].inputHash;
+    expect(ordinaryHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(profileHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(profileHash).not.toBe(ordinaryHash);
+    expect(provider.run).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ profileRequested: false }),
+      input.signal
+    );
+    expect(provider.run).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ profileRequested: true }),
+      input.signal
+    );
+  });
+
+  it("rejects a broad-profile result that drops a supplied current fact", async () => {
+    const log: string[] = [];
+    const bound = execution(log);
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async () => ({
+        providerResponseId: "response-1",
+        toolCalls: [{
+          arguments: {
+            decisions: [{
+              applicable: true,
+              current: true,
+              handle: "c0",
+              reason_code: "DIRECT_RELEVANCE",
+              relevance_score: 0.95
+            }, {
+              applicable: false,
+              current: true,
+              handle: "c1",
+              reason_code: "NOT_RELEVANT",
+              relevance_score: 0.2
+            }]
+          },
+          id: "call-1",
+          name: MEMORY_RERANK_TOOL_NAME
+        }],
+        usage: {
+          cachedInputTokens: 0,
+          inputTokens: 12,
+          outputTokens: 8,
+          reasoningTokens: 0,
+          totalTokens: 20
+        }
+      }))
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider
+    });
+
+    await expect(service.rerank({
+      ...baseInput(),
+      candidates: [{
+        authorityLevel: "SAVED",
+        current: true,
+        handle: "c0",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL",
+        sourceKind: "FACT",
+        text: "The user's name is Nebula."
+      }, {
+        authorityLevel: "LEARNED",
+        current: true,
+        handle: "c1",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL",
+        sourceKind: "FACT",
+        text: "The user lives in Rostov."
+      }],
+      profileRequested: true,
+      query: "What do you know about me?"
+    })).resolves.toMatchObject({
+      reason: "memory_run_utility_output_invalid",
+      status: "UNAVAILABLE"
+    });
+    expect(provider.run).toHaveBeenCalledTimes(MEMORY_RERANK_MAX_ATTEMPTS);
+    expect(bound.lifecycle.settle).toHaveBeenCalledTimes(MEMORY_RERANK_MAX_ATTEMPTS);
+    for (const call of bound.lifecycle.settle.mock.calls) {
+      expect(call[2]).toMatchObject({
+        errorCode: "memory_run_utility_output_invalid",
+        state: "FAILED"
+      });
+    }
+  });
+
+  it("accepts a broad-profile result when every supplied fact is directly relevant", async () => {
+    const log: string[] = [];
+    const bound = execution(log);
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async () => ({
+        providerResponseId: "response-1",
+        toolCalls: [{
+          arguments: {
+            decisions: [{
+              applicable: true,
+              current: true,
+              handle: "c0",
+              reason_code: "DIRECT_RELEVANCE",
+              relevance_score: 0.95
+            }, {
+              applicable: true,
+              current: true,
+              handle: "c1",
+              reason_code: "DIRECT_RELEVANCE",
+              relevance_score: 0.61
+            }]
+          },
+          id: "call-1",
+          name: MEMORY_RERANK_TOOL_NAME
+        }],
+        usage: {
+          cachedInputTokens: 0,
+          inputTokens: 12,
+          outputTokens: 8,
+          reasoningTokens: 0,
+          totalTokens: 20
+        }
+      }))
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider
+    });
+
+    await expect(service.rerank({
+      ...baseInput(),
+      candidates: [{
+        authorityLevel: "SAVED",
+        current: true,
+        handle: "c0",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL",
+        sourceKind: "FACT",
+        text: "The user's name is Nebula."
+      }, {
+        authorityLevel: "LEARNED",
+        current: true,
+        handle: "c1",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL",
+        sourceKind: "FACT",
+        text: "The user lives in Rostov."
+      }],
+      profileRequested: true,
+      query: "What do you know about me?"
+    })).resolves.toEqual({
+      bindingId: "binding-MEMORY_RERANK",
+      decisions: [{
+        applicable: true,
+        current: true,
+        handle: "c0",
+        reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: 0.95
+      }, {
+        applicable: true,
+        current: true,
+        handle: "c1",
+        reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: 0.61
+      }],
+      status: "READY"
+    });
+    expect(provider.run).toHaveBeenCalledOnce();
   });
 
   it("records uncertain provider outcomes and never sends secret-tainted rerank input", async () => {
@@ -388,6 +628,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "HISTORY",
         text: "We discussed PostgreSQL migrations."
       }],
+      profileRequested: false,
       query: "what did we discuss last time"
     });
     expect(uncertain).toMatchObject({
@@ -412,6 +653,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "HISTORY",
         text: "API key sk-abcdefghijklmnopqrstuvwxyz123456"
       }],
+      profileRequested: false,
       query: "previous chat"
     });
     expect(blocked).toEqual({
@@ -443,6 +685,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT" as const,
         text: `Fact ${index}`
       })),
+      profileRequested: false,
       query: "Which facts apply?"
     })).resolves.toEqual({
       reason: "memory_utility_input_blocked",
@@ -507,6 +750,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
+      profileRequested: false,
       query: "How should I respond?"
     })).resolves.toEqual({
       bindingId: "binding-3",
@@ -614,6 +858,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
+      profileRequested: false,
       query: "How should I respond?"
     })).resolves.toEqual({
       bindingId: "binding-3",
@@ -719,6 +964,7 @@ describe("Memory run utility execution", () => {
           sourceKind: "FACT",
           text: "The user prefers concise replies."
         }],
+        profileRequested: false,
         query: "How should I respond?"
       })).resolves.toEqual({
         bindingId: "binding-3",
@@ -787,6 +1033,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
+      profileRequested: false,
       query: "How should I respond?"
     })).resolves.toMatchObject({
       reason: "memory_run_utility_settle_failed",
@@ -830,6 +1077,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
+      profileRequested: false,
       query: "How should I respond?"
     })).resolves.toMatchObject({
       reason: "memory_run_utility_binding_invalid",
@@ -896,6 +1144,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
+      profileRequested: false,
       query: "How should I respond?"
     })).resolves.toMatchObject({
       bindingId: "binding-3",

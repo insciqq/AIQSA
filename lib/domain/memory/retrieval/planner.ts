@@ -5,7 +5,7 @@ import type {
   MemoryRetrievalSourceKind
 } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v6";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v7";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 
 const sourceKinds = new Set<MemoryRetrievalSourceKind>(["EVENT", "FACT", "HISTORY"]);
@@ -70,7 +70,14 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     typeof input.applyResponsePreferences !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
+  if (input.profileRequested !== undefined && typeof input.profileRequested !== "boolean") {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
   const applyResponsePreferences = input.applyResponsePreferences === true;
+  const profileRequested = input.profileRequested === true;
+  if (profileRequested && input.recencyRequested === true) {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
   const normalizedQuery = boundedUnicode(input.currentUserText);
   return {
     applyResponsePreferences,
@@ -79,6 +86,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     normalizedExactQuery: normalizedQuery.toLocaleLowerCase("und"),
     normalizedQuery,
     plannerVersion: MEMORY_RETRIEVAL_PLANNER_VERSION,
+    profileRequested,
     queryPresent: normalizedQuery.length > 0,
     recencyRequested: input.recencyRequested === true
   };

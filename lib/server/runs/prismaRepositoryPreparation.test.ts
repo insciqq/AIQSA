@@ -165,6 +165,20 @@ describe("Memory retrieval execution sequence", () => {
     ])).toBe(true);
   });
 
+  it("allows the embedding-free reranker sequence only for a broad profile inventory", () => {
+    const profileSequence = [
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 }
+    ];
+    expect(validMemoryRetrievalExecutionSequence(profileSequence, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence(profileSequence)).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 }
+    ], true)).toBe(false);
+  });
+
   it("allows only the six exact control, target, retrieval, and retry bindings", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },

@@ -34,6 +34,8 @@ export type MemoryRetrievalPlan = Readonly<{
   normalizedExactQuery: string;
   normalizedQuery: string;
   plannerVersion: string;
+  /** Broad, System-Model-authorized inventory of current Personal Memory facts. */
+  profileRequested: boolean;
   queryPresent: boolean;
   recencyRequested: boolean;
 }>;
@@ -43,6 +45,7 @@ export type MemoryRetrievalPlannerInput = Readonly<{
   currentUserText: string;
   filters?: Partial<MemoryRetrievalFilters>;
   now: Date;
+  profileRequested?: boolean;
   recencyRequested?: boolean;
 }>;
 

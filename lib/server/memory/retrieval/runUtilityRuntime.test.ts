@@ -137,6 +137,7 @@ describe("Memory run utility provider runtime", () => {
         expect(JSON.stringify(body)).toContain(
           "SAVED outranks LEARNED, and LEARNED outranks PAST_CHAT"
         );
+        expect(JSON.stringify(body)).toContain('\\"profile_requested\\":false');
         expect(JSON.stringify(body)).not.toContain("SENSITIVE");
         expect(body).toMatchObject(adapterKind === "openrouter_chat_completions"
           ? {
@@ -193,6 +194,7 @@ describe("Memory run utility provider runtime", () => {
             sourceKind: "FACT",
             text: "The user's name is Nebula."
           }],
+          profileRequested: false,
           query: "What is my name?",
           role: "MEMORY_RERANK"
         },
@@ -207,6 +209,75 @@ describe("Memory run utility provider runtime", () => {
       expect(fetchFn).toHaveBeenCalledOnce();
     }
   );
+
+  it("serializes ordinary and broad-profile requests into distinct provider payloads", async () => {
+    const fixture = client();
+    const requestBodies: string[] = [];
+    const decision = JSON.stringify({
+      decisions: [{
+        applicable: true,
+        current: true,
+        handle: "c0",
+        reason_code: "DIRECT_RELEVANCE",
+        relevance_score: 0.95
+      }]
+    });
+    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
+      const body = typeof init?.body === "string"
+        ? JSON.parse(init.body) as unknown
+        : null;
+      requestBodies.push(JSON.stringify(body));
+      return new Response(JSON.stringify({
+        id: "response-1",
+        output: [{
+          content: [{ text: decision, type: "output_text" }],
+          id: "message-1",
+          role: "assistant",
+          status: "completed",
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 20, output_tokens: 12, total_tokens: 32 }
+      }));
+    });
+    const provider = createAcceptedMemoryRunUtilityProvider(fixture.client, {
+      createFetch: () => fetchFn,
+      encryptionKey: () => KEY
+    });
+    const evidence = memoryRunUtilityProviderEvidence(snapshot(
+      "openai_responses_compatible"
+    ));
+    const input = {
+      candidates: [{
+        authorityLevel: "SAVED" as const,
+        current: true,
+        handle: "c0",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL" as const,
+        sourceKind: "FACT" as const,
+        text: "The user's name is Nebula."
+      }],
+      query: "What do you know about me?",
+      role: "MEMORY_RERANK" as const
+    };
+
+    await provider.run(
+      evidence,
+      { ...input, profileRequested: false },
+      new AbortController().signal
+    );
+    await provider.run(
+      evidence,
+      { ...input, profileRequested: true },
+      new AbortController().signal
+    );
+
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).toContain('\\"profile_requested\\":false');
+    expect(requestBodies[1]).toContain('\\"profile_requested\\":true');
+    expect(requestBodies[1]).not.toBe(requestBodies[0]);
+  });
 
   it("rejects a binding without admitted strict-output evidence", () => {
     expect(() => memoryRunUtilityProviderEvidence(snapshot(
@@ -230,7 +301,12 @@ describe("Memory run utility provider runtime", () => {
 
     await expect(provider.run(
       evidence,
-      { candidates: [], query: "query", role: "MEMORY_RERANK" },
+      {
+        candidates: [],
+        profileRequested: false,
+        query: "query",
+        role: "MEMORY_RERANK"
+      },
       new AbortController().signal
     )).rejects.toThrow("memory_run_utility_runtime_invalid");
     expect(fixture.transaction).not.toHaveBeenCalled();
@@ -247,7 +323,12 @@ describe("Memory run utility provider runtime", () => {
 
     await expect(provider.run(
       memoryRunUtilityProviderEvidence(snapshot("openai_chat_completions_compatible")),
-      { candidates: [], query: "query", role: "MEMORY_RERANK" },
+      {
+        candidates: [],
+        profileRequested: false,
+        query: "query",
+        role: "MEMORY_RERANK"
+      },
       new AbortController().signal
     )).rejects.toThrow("memory_run_utility_runtime_invalid");
     expect(fixture.transaction).not.toHaveBeenCalled();

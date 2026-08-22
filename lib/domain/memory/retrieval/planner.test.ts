@@ -48,6 +48,32 @@ describe("language-agnostic Memory retrieval planning", () => {
     })).toMatchObject({ recencyRequested: true });
   });
 
+  it("carries the trusted broad-profile decision without inferring it from wording", () => {
+    const broadLookingText = "расскажи всё, что ты знаешь обо мне";
+    expect(planMemoryRetrieval({ currentUserText: broadLookingText, now }))
+      .toMatchObject({ profileRequested: false });
+    expect(planMemoryRetrieval({
+      currentUserText: broadLookingText,
+      now,
+      profileRequested: true
+    })).toMatchObject({
+      profileRequested: true,
+      queryPresent: true,
+      recencyRequested: false
+    });
+    expect(() => planMemoryRetrieval({
+      currentUserText: broadLookingText,
+      now,
+      profileRequested: true,
+      recencyRequested: true
+    })).toThrow("memory_retrieval_plan_invalid");
+    expect(() => planMemoryRetrieval({
+      currentUserText: broadLookingText,
+      now,
+      profileRequested: "true" as never
+    })).toThrow("memory_retrieval_plan_invalid");
+  });
+
   it("carries only the trusted response-preference admission decision", () => {
     expect(planMemoryRetrieval({ currentUserText: "answer", now }))
       .toMatchObject({ applyResponsePreferences: false });

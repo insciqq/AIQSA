@@ -31,18 +31,18 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v2";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v5";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v2",
-  promptVersion: "memory-control-prompt-v2",
+  policyVersion: "memory-control-policy-v5",
+  promptVersion: "memory-control-prompt-v5",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 1
+    version: 2
   }),
-  schemaVersion: "memory-action-intent-v1"
+  schemaVersion: "memory-action-intent-v2"
 });
 
 export type MemoryControlResult =
@@ -174,7 +174,7 @@ function decodeProviderResult(result: MemoryLearningProviderResult): MemoryActio
 }
 
 export function memoryControlIntentHash(intent: MemoryActionIntent): string {
-  return memoryExecutionSha256({ intent, version: 1 });
+  return memoryExecutionSha256({ intent, version: 2 });
 }
 
 export function memoryControlInputHash(context: MemoryActionIntentContext): string {
@@ -194,10 +194,10 @@ export function memoryControlAcceptedOutputHash(
   inputHash: string,
   intentHash: string
 ): string {
-  return memoryExecutionSha256({ inputHash, intentHash, version: 2 });
+  return memoryExecutionSha256({ inputHash, intentHash, version: 3 });
 }
 
-export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 1 as const;
+export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 2 as const;
 
 export type MemoryReadOnlyControlReuseProof = Readonly<{
   acceptedOutputHash: string;

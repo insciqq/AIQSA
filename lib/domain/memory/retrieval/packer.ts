@@ -8,6 +8,8 @@ import {
   MEMORY_CONTEXT_MAX_HISTORY_SNIPPETS,
   MEMORY_CONTEXT_MAX_SOURCE_CHATS,
   MEMORY_CONTEXT_PACKER_VERSION,
+  MEMORY_CONTEXT_PROFILE_FACT_TARGET_TOKENS,
+  MEMORY_CONTEXT_PROFILE_MAX_FACTS,
   MEMORY_CONTEXT_TARGET_TOKENS,
   MEMORY_CORE_CONTEXT_TARGET_TOKENS,
   MEMORY_CORE_MAX_FACTS
@@ -96,13 +98,19 @@ function datePrefix(
   return date ? `[${date.toISOString().slice(0, 10)}] ` : "";
 }
 
-function render(items: readonly SectionedItem[]): string {
+function render(items: readonly SectionedItem[], profileRequested = false): string {
   const sections: readonly [MemoryPackedItem["section"], string][] = [
     ["CORE", "Response preferences relevant to this answer:"],
     ["FACT", "Relevant current facts:"],
     ["HISTORY", "Relevant prior conversations:"]
   ];
-  const lines = [contextPreamble];
+  const lines = [
+    contextPreamble,
+    ...(profileRequested ? [
+      "For this broad profile, current facts override contradictory assistant claims in prior conversations.",
+      "The current facts below are a bounded profile inventory. Summarize every listed fact; do not infer that an unlisted fact is unknown."
+    ] : [])
+  ];
   for (const [section, heading] of sections) {
     const selected = items.filter((entry) => entry.item.section === section);
     if (selected.length === 0) continue;
@@ -151,6 +159,12 @@ export function packMemoryPersonalContext(input: Readonly<{
 
   const omissionCounts: Record<string, number> = {};
   const dynamicExpansions = expandedMap(input.expanded, omissionCounts);
+  const factLimit = input.plan.profileRequested
+    ? MEMORY_CONTEXT_PROFILE_MAX_FACTS
+    : MEMORY_CONTEXT_MAX_DYNAMIC_FACTS;
+  const factTokenTarget = input.plan.profileRequested
+    ? MEMORY_CONTEXT_PROFILE_FACT_TARGET_TOKENS
+    : MEMORY_CONTEXT_DYNAMIC_FACT_TARGET_TOKENS;
   const selected: SectionedItem[] = [];
   const selectedIdentity = new Set<string>();
   const selectedDedupe = new Set<string>();
@@ -185,7 +199,8 @@ export function packMemoryPersonalContext(input: Readonly<{
       tier: "CORE"
     };
     const proposed = [...selected, { item, line }];
-    if (estimateApproxTokens(render(proposed)) > MEMORY_CORE_CONTEXT_TARGET_TOKENS) {
+    if (estimateApproxTokens(render(proposed, input.plan.profileRequested)) >
+      MEMORY_CORE_CONTEXT_TARGET_TOKENS) {
       increment(omissionCounts, "core_token_budget");
       continue;
     }
@@ -194,7 +209,9 @@ export function packMemoryPersonalContext(input: Readonly<{
     selectedDedupe.add(candidate.metadata.dedupeKey);
   }
 
-  const coreTokens = selected.length === 0 ? 0 : estimateApproxTokens(render(selected));
+  const coreTokens = selected.length === 0
+    ? 0
+    : estimateApproxTokens(render(selected, input.plan.profileRequested));
   const sourceCounts = new Map<string, number>();
   const sourceChats = new Set<string>();
   let factCount = 0;
@@ -202,6 +219,10 @@ export function packMemoryPersonalContext(input: Readonly<{
   let dynamicFactTokens = 0;
   let historyTokens = 0;
   for (const candidate of input.ranked) {
+    if (input.plan.profileRequested && candidate.itemType === "RECALL_CHUNK") {
+      increment(omissionCounts, "profile_history_excluded");
+      continue;
+    }
     if (selected.length >= MEMORY_CONTEXT_MAX_ITEMS) {
       increment(omissionCounts, "item_limit");
       continue;
@@ -217,8 +238,8 @@ export function packMemoryPersonalContext(input: Readonly<{
       continue;
     }
     const fact = candidate.itemType === "FACT_VERSION";
-    if (fact && factCount >= MEMORY_CONTEXT_MAX_DYNAMIC_FACTS) {
-      increment(omissionCounts, "fact_limit");
+    if (fact && factCount >= factLimit) {
+      increment(omissionCounts, input.plan.profileRequested ? "profile_fact_limit" : "fact_limit");
       continue;
     }
     if (!fact) {
@@ -242,8 +263,11 @@ export function packMemoryPersonalContext(input: Readonly<{
     }
     const line = `${datePrefix(candidate, expansion)}${packedSafeText(candidate, expansion)}`;
     const itemTokens = estimateApproxTokens(line);
-    if (fact && dynamicFactTokens + itemTokens > MEMORY_CONTEXT_DYNAMIC_FACT_TARGET_TOKENS) {
-      increment(omissionCounts, "fact_token_budget");
+    if (fact && dynamicFactTokens + itemTokens > factTokenTarget) {
+      increment(
+        omissionCounts,
+        input.plan.profileRequested ? "profile_fact_token_budget" : "fact_token_budget"
+      );
       continue;
     }
     if (!fact && historyTokens + itemTokens > MEMORY_CONTEXT_HISTORY_TARGET_TOKENS) {
@@ -265,7 +289,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       tier: "DYNAMIC"
     };
     const proposed = [...selected, { item, line }];
-    if (estimateApproxTokens(render(proposed)) > targetTokens) {
+    if (estimateApproxTokens(render(proposed, input.plan.profileRequested)) > targetTokens) {
       increment(omissionCounts, "token_budget");
       continue;
     }
@@ -298,7 +322,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       text: null
     };
   }
-  const text = render(selected);
+  const text = render(selected, input.plan.profileRequested);
   const approxTokens = estimateApproxTokens(text);
   if (approxTokens > targetTokens || approxTokens > hardCapTokens) {
     throw new Error("memory_context_budget_invariant");
