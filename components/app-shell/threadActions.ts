@@ -253,9 +253,9 @@ export function createThreadActions({
     return persistActiveLeafRequest(chatId, messageId, currentLeafId);
   }
 
-  async function checkoutBranch(messageId: string) {
+  async function checkoutBranch(messageId: string): Promise<boolean> {
     if (!activeChatId || activeChatStreaming) {
-      return;
+      return false;
     }
 
     const chatId = activeChatId;
@@ -341,7 +341,8 @@ export function createThreadActions({
     pendingBranchCheckouts.set(chatId, operation);
 
     try {
-      await operation;
+      const settlement = await operation;
+      return settlement.succeeded;
     } finally {
       if (pendingBranchCheckouts.get(chatId) === operation) {
         pendingBranchCheckouts.delete(chatId);

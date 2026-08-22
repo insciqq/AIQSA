@@ -7,6 +7,8 @@ import {
   composerSessionModeFromKey,
   emptyComposerSessionSnapshot,
   folderIdFromComposerSessionKey,
+  projectComposerSessionKey,
+  projectIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore
@@ -68,6 +70,35 @@ describe("composer session store", () => {
     const missing = composerSessionKey("missing");
     expect(session(missing)).toBe(emptyComposerSessionSnapshot);
     expect(session(missing)).toBe(session(composerSessionKey("also-missing")));
+  });
+
+  it("keeps local Project blanks distinct from personal drafts and preserves their scope", () => {
+    const personal = composerSessionKey(null);
+    const projectRoot = projectComposerSessionKey("project/one");
+    const projectFolder = projectComposerSessionKey("project/one", "folder/two");
+    const otherProject = projectComposerSessionKey("project-two");
+    const store = useComposerSessionStore.getState();
+
+    expect(new Set([personal, projectRoot, projectFolder, otherProject]).size).toBe(4);
+    expect(chatIdFromComposerSessionKey(projectRoot)).toBeNull();
+    expect(projectIdFromComposerSessionKey(projectRoot)).toBe("project/one");
+    expect(projectIdFromComposerSessionKey(projectFolder)).toBe("project/one");
+    expect(projectIdFromComposerSessionKey(personal)).toBeNull();
+    expect(folderIdFromComposerSessionKey(projectRoot)).toBeNull();
+    expect(folderIdFromComposerSessionKey(projectFolder)).toBe("folder/two");
+    expect(composerSessionModeFromKey(projectRoot)).toBe("NORMAL");
+
+    store.setDraft("Personal draft");
+    store.activateSession(projectRoot);
+    store.setDraft("Shared draft");
+    store.setAttachments([attachment("shared")]);
+    store.activateSession(personal);
+
+    expect(session(personal)).toMatchObject({ attachments: [], draft: "Personal draft" });
+    expect(session(projectRoot)).toMatchObject({
+      attachments: [attachment("shared")],
+      draft: "Shared draft"
+    });
   });
 
   it("keeps Normal, Memory-off, and Temporary drafts in distinct keyed sessions", () => {

@@ -1275,6 +1275,7 @@ export function createPrismaRunRepository(
                 },
                 select: {
                   assistantId: true,
+                  assistantMessageId: true,
                   assistantRevision: {
                     select: {
                       avatar: true,
@@ -1409,6 +1410,7 @@ export function createPrismaRunRepository(
                     userId: message.authorUserId
                   }
                 : null,
+              citationMessageId: modelRun?.assistantMessageId ?? message.id,
               content: message.content,
               createdAt: message.createdAt,
               errorMessage: message.errorMessage,

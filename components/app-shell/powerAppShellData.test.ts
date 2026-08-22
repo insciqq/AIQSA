@@ -20,6 +20,7 @@ const contextStats = {
 
 const assistantMessage = {
   artifactSummary: null,
+  citationMessageId: null,
   content: {
     blocks: [{ text: "Canonical answer", type: "text" }]
   },

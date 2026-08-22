@@ -38,6 +38,7 @@ export type ChatMessageRecord = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   author?: ChatMessageWire["author"];
+  citationMessageId?: string | null;
   content: unknown;
   createdAt: Date | string;
   errorMessage?: string | null;
@@ -248,6 +249,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     artifactSummary: message.artifactSummary ?? null,
     assistantIdentity: message.assistantIdentity ?? null,
     author: message.author ?? null,
+    citationMessageId: message.citationMessageId ?? null,
     content: message.content,
     createdAt: iso(message.createdAt),
     errorMessage: message.errorMessage ?? null,

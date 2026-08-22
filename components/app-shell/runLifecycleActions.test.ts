@@ -7,6 +7,7 @@ import {
 } from "@/tests/support/appShellStores";
 import {
   composerSessionKey,
+  projectComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
@@ -163,6 +164,30 @@ describe("run lifecycle actions", () => {
 
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
     expect(refreshActiveChat).not.toHaveBeenCalled();
+  });
+
+  it("uploads a local blank-Project file under Project ownership before a chat exists", async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      attachment: {
+        fileName: "shared.pdf",
+        id: "attachment-project",
+        kind: "pdf",
+        status: "ready"
+      }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions } = useRunLifecycleActionsForTest();
+    const sourceKey = projectComposerSessionKey("project/one");
+    useComposerSessionStore.getState().activateSession(sourceKey);
+
+    await actions.uploadFiles([new File(["shared"], "shared.pdf", { type: "application/pdf" })]);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("projectId")).toBe("project/one");
+    expect(selectComposerSession(useComposerSessionStore.getState(), sourceKey).attachments)
+      .toEqual([expect.objectContaining({ id: "attachment-project", status: "ready" })]);
   });
 
   it("does not start resume polling while the same chat has a stream producer", async () => {

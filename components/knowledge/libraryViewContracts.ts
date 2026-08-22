@@ -82,6 +82,7 @@ export type KnowledgeListView = {
   onOpenBase(baseId: string): void;
   onOpenSource(sourceId: string): void;
   onQueryChange(query: string): void;
+  onRefresh(): Promise<void>;
   query: string;
   sourceData: KnowledgeSourceListResponse | null;
   sourceDataError: string | null;

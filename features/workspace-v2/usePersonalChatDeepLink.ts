@@ -45,6 +45,23 @@ export async function revealPersonalChatDeepLinkMessage(input: Readonly<{
   }
 }
 
+export async function openPersonalChatMessage(input: Readonly<{
+  activateChat(chatId: string): Promise<boolean>;
+  chatId: string;
+  messageId: string;
+  onAnchor(chatId: string, messageId: string): void;
+  revealMessage(chatId: string, messageId: string): Promise<boolean>;
+}>): Promise<boolean> {
+  try {
+    if (!await input.activateChat(input.chatId)) return false;
+    if (!await input.revealMessage(input.chatId, input.messageId)) return false;
+    input.onAnchor(input.chatId, input.messageId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function usePersonalChatDeepLink({
   activateChat,
   onAnchor,

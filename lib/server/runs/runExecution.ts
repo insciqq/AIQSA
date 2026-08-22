@@ -331,6 +331,7 @@ function serializeChatUpdate(
       artifactSummary: message.artifactSummary ?? null,
       assistantIdentity: message.assistantIdentity ?? null,
       ...(message.author !== undefined ? { author: message.author } : {}),
+      citationMessageId: message.citationMessageId ?? null,
       content:
         liveGroundedAnswer && message.id === liveGroundedAnswer.assistantMessageId
           ? textMessageContent(liveGroundedAnswer.finalText)

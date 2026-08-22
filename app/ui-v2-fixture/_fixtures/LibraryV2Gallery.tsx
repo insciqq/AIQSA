@@ -69,7 +69,7 @@ const bases = [
     id: "research",
     name: "Research 2026",
     owned: true,
-    status: "indexing" as const
+    status: "processing" as const
   },
   {
     description: "Общая база команды поддержки.",

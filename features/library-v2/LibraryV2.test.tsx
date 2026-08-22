@@ -95,6 +95,58 @@ describe("Library resource panels", () => {
     expect(onCreate).toHaveBeenCalledOnce();
   });
 
+  it("shows the exact Knowledge readiness instead of presenting every active Base as ready", () => {
+    render(
+      <KnowledgePanelV2
+        bases={[
+          {
+            description: "No Sources yet",
+            id: "empty",
+            name: "Empty Base",
+            owned: true,
+            sourceCount: 0,
+            status: "empty"
+          },
+          {
+            description: "One Source failed",
+            id: "attention",
+            name: "Review Base",
+            owned: true,
+            sourceCount: 2,
+            status: "needs_attention"
+          }
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Empty")).toBeVisible();
+    expect(screen.getByText("Needs attention")).toBeVisible();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+  });
+
+  it("keeps first-load and retryable Knowledge failures distinct from an empty Library", () => {
+    const onRetry = vi.fn();
+    const { rerender } = render(
+      <KnowledgePanelV2 bases={[]} loadState="loading" />
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading knowledge…");
+    expect(screen.queryByText("No knowledge bases yet.")).not.toBeInTheDocument();
+
+    rerender(
+      <KnowledgePanelV2
+        bases={[]}
+        error="Knowledge is temporarily unavailable."
+        loadState="error"
+        onRetry={onRetry}
+      />
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Knowledge is temporarily unavailable.");
+    expect(screen.queryByText("No knowledge bases yet.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
   it("keeps assistant selection and owned management actions explicit", () => {
     const onOpen = vi.fn();
     const onPinToggle = vi.fn();
@@ -219,7 +271,29 @@ describe("Library resource panels", () => {
   });
 
   it("labels uploads private without advertising disabled generated files", () => {
+    const onOpen = vi.fn();
     render(
+      <FilesPanelV2
+        files={[{
+          id: "upload",
+          meta: "214 kB",
+          name: "source.csv",
+          private: true,
+          status: "ready"
+        }]}
+        onOpen={onOpen}
+      />
+    );
+    expect(screen.getByText("Files are private and visible only to you.")).toBeInTheDocument();
+    expect(screen.getByText("Upload · Private")).toBeInTheDocument();
+    expect(screen.queryByText(/generated files/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go to source" }));
+    expect(onOpen).toHaveBeenCalledWith("upload");
+  });
+
+  it("does not expose a dead source action and provides a retryable load failure", () => {
+    const onRetry = vi.fn();
+    const { rerender } = render(
       <FilesPanelV2
         files={[{
           id: "upload",
@@ -230,8 +304,11 @@ describe("Library resource panels", () => {
         }]}
       />
     );
-    expect(screen.getByText("Files are private and visible only to you.")).toBeInTheDocument();
-    expect(screen.getByText("Upload · Private")).toBeInTheDocument();
-    expect(screen.queryByText(/generated files/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Go to source" })).toBeDisabled();
+
+    rerender(<FilesPanelV2 files={[]} loadState="error" onRetry={onRetry} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Files could not be loaded.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 });

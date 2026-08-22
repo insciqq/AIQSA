@@ -198,6 +198,7 @@ export function ProjectNavigationV2({
                 type="button"
                 onClick={() => {
                   void controller.actions.createChat();
+                  onNavigate();
                 }}
               >
                 <UiV2Icon name="plus" /> New shared chat
@@ -238,7 +239,10 @@ export function ProjectNavigationV2({
                         canCreateChat={canStartChat}
                         canManage={selected?.status === "ACTIVE" && selected.capabilities.manageProject}
                         folderName={folder.name}
-                        onCreateChat={() => void controller.actions.createChat(folder.id)}
+                        onCreateChat={() => {
+                          void controller.actions.createChat(folder.id);
+                          onNavigate();
+                        }}
                         onDelete={() => setDeleteFolderId(folder.id)}
                         onRename={() => {
                           setFolderDialog({

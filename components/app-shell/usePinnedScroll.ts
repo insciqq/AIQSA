@@ -57,7 +57,7 @@ export function usePinnedScroll<T extends HTMLElement>({
   const pinnedRef = useRef(true);
   const readingAnchorPendingRef = useRef(false);
   const readingAnchorActiveRef = useRef(false);
-  const readingAnchorPresentRef = useRef(false);
+  const readingAnchorKeyRef = useRef<string | null>(null);
   const onReadingAnchorAppliedRef = useRef(onReadingAnchorApplied);
   const resetStateRef = useRef<{ initialized: boolean; value: unknown }>({
     initialized: false,
@@ -194,7 +194,7 @@ export function usePinnedScroll<T extends HTMLElement>({
   const scheduleScrollToTop = useCallback(() => {
     readingAnchorPendingRef.current = false;
     readingAnchorActiveRef.current = false;
-    readingAnchorPresentRef.current = false;
+    readingAnchorKeyRef.current = null;
     pinnedRef.current = true;
     showJumpToLatestRef.current = false;
     scheduleFrame((element) => {
@@ -310,7 +310,7 @@ export function usePinnedScroll<T extends HTMLElement>({
     }
     resetState.initialized = true;
     resetState.value = resetKey;
-    readingAnchorPresentRef.current = Boolean(readingAnchorKey);
+    readingAnchorKeyRef.current = readingAnchorKey;
     if (readingAnchorKey) {
       pinnedRef.current = true;
       scheduleReadingAnchor(readingAnchorKey);
@@ -321,19 +321,24 @@ export function usePinnedScroll<T extends HTMLElement>({
 
   useLayoutEffect(() => {
     if (!hasContent) {
-      readingAnchorPresentRef.current = false;
+      readingAnchorKeyRef.current = null;
       return;
     }
     if (!readingAnchorKey) {
-      readingAnchorPresentRef.current = false;
+      readingAnchorKeyRef.current = null;
       return;
     }
-    if (readingAnchorPresentRef.current) {
+    const previousAnchorKey = readingAnchorKeyRef.current;
+    if (previousAnchorKey === readingAnchorKey) {
       return;
     }
 
-    readingAnchorPresentRef.current = true;
-    if (pinnedRef.current) {
+    readingAnchorKeyRef.current = readingAnchorKey;
+    if (
+      pinnedRef.current ||
+      (previousAnchorKey !== null &&
+        (readingAnchorPendingRef.current || readingAnchorActiveRef.current))
+    ) {
       scheduleReadingAnchor(readingAnchorKey);
     }
   }, [hasContent, readingAnchorKey, scheduleReadingAnchor]);

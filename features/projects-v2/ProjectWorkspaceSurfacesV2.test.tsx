@@ -180,14 +180,28 @@ describe("Project workspace surfaces", () => {
   });
 
   it("keeps shared audience, role, personal-memory isolation, defaults, and live state permanently visible", () => {
-    render(<ProjectContextRailV2 activeChatProjectId="project-1" controller={controller()} />);
+    const baseController = controller();
+    const projectController: ProjectWorkspaceController = {
+      ...baseController,
+      detail: {
+        ...baseController.detail!,
+        defaults: {
+          ...baseController.detail!.defaults,
+          knowledgePlan: {
+            ...baseController.detail!.defaults.knowledgePlan,
+            sourceIds: ["source-1"]
+          }
+        }
+      }
+    };
+    render(<ProjectContextRailV2 activeChatProjectId="project-1" controller={projectController} />);
 
     const rail = screen.getByRole("complementary", { name: "Shared project context" });
     expect(within(rail).getByText("Launch room")).toBeVisible();
     expect(within(rail).getByText("Shared with all project members · Personal Memory is off")).toBeVisible();
     expect(within(rail).getByText("owner")).toBeVisible();
     expect(within(rail).queryByText(/Project Memory/i)).toBeNull();
-    expect(within(rail).getByText("Search 1 · Knowledge 1")).toBeVisible();
+    expect(within(rail).getByText("Search 1 · Knowledge 2")).toBeVisible();
     expect(within(rail).getByText("Shared desk live")).toBeVisible();
   });
 

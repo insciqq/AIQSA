@@ -1,5 +1,6 @@
 import {
   chatIdFromComposerSessionKey,
+  projectIdFromComposerSessionKey,
   type ComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
@@ -134,7 +135,8 @@ export function useRunLifecycleActions({
   setNotice
 }: RunLifecycleActionsInput) {
   function attachmentPath(sourceKey: ComposerSessionKey, attachmentId: string): string {
-    const projectId = projectIdForChat(chatIdFromComposerSessionKey(sourceKey));
+    const projectId = projectIdFromComposerSessionKey(sourceKey) ??
+      projectIdForChat(chatIdFromComposerSessionKey(sourceKey));
     return projectId
       ? `/api/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachmentId)}`
       : `/api/uploads/${encodeURIComponent(attachmentId)}`;
@@ -232,7 +234,8 @@ export function useRunLifecycleActions({
         try {
           const formData = new FormData();
           formData.append("file", file);
-          const projectId = projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
+          const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
+            projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
           if (projectId) formData.append("projectId", projectId);
           const response = await shellFetch("/api/uploads", {
             body: formData,

@@ -1688,6 +1688,9 @@ export function buildKnowledgeLibraryView(
         const current = useKnowledgeLibraryStore.getState();
         if (!current.busy) current.patch({ query });
       },
+      onRefresh() {
+        return actions.refreshList();
+      },
       query: snapshot.query,
       sourceData: snapshot.sourceData,
       sourceDataError: snapshot.sourceDataError,

@@ -20,6 +20,20 @@ export type TemporaryChatHeaderMemoryV2 = Readonly<{
   retentionDeadline: string | null;
 }>;
 
+export function formatTemporaryRetentionDeadlineV2(
+  value: string,
+  locale?: string,
+  timeZone?: string
+): string {
+  const instant = new Date(value);
+  if (!Number.isFinite(instant.getTime())) return value;
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    ...(timeZone ? { timeZone } : {})
+  }).format(instant);
+}
+
 /**
  * The single sanctioned Temporary indication surface: a quiet header element
  * that exists only while the session is Temporary. Clicking it discloses the
@@ -63,7 +77,11 @@ export function TemporaryChatIndicatorV2({ memory }: Readonly<{
           <p>{memory.explanation}</p>
           <p>{memory.retention}</p>
           {memory.retentionDeadline ? (
-            <p data-testid="temporary-retention-deadline">{memory.retentionDeadline}</p>
+            <p data-testid="temporary-retention-deadline">
+              Scheduled deletion: <time dateTime={memory.retentionDeadline}>
+                {formatTemporaryRetentionDeadlineV2(memory.retentionDeadline)}
+              </time>
+            </p>
           ) : null}
           <p>{memory.externalRetention}</p>
         </section>

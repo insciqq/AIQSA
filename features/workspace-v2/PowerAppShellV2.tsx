@@ -8,13 +8,16 @@ import {
 } from "@/components/app-shell/attachmentLimitUsage";
 import { reconcileCurrentComposerAttachments } from "@/components/app-shell/attachmentReconciliation";
 import {
-  useComposerControlStore
+  initialComposerControlSnapshot,
+  useComposerControlStore,
+  type ComposerControlSnapshot
 } from "@/components/app-shell/composerControlStore";
 import { defaultParameterControls } from "@/components/app-shell/controlDefaults";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
   composerSessionModeFromKey,
+  projectComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
@@ -139,6 +142,7 @@ import {
 } from "@/components/app-shell/powerAppShellData";
 import { useBranchGraphController } from "./useBranchGraphController";
 import {
+  openPersonalChatMessage,
   revealPersonalChatDeepLinkMessage,
   usePersonalChatDeepLink
 } from "./usePersonalChatDeepLink";
@@ -166,6 +170,87 @@ export function effectiveComposerDisabledHint(input: Readonly<{
   projectHint: string | null;
 }>): string | null {
   return input.projectContext ? input.projectHint : input.personalHint;
+}
+
+function cloneComposerControlSnapshot(
+  state: ComposerControlSnapshot
+): ComposerControlSnapshot {
+  return {
+    ...state,
+    assistantManualBackup: state.assistantManualBackup ? {
+      ...state.assistantManualBackup,
+      knowledgeSelection: {
+        ...state.assistantManualBackup.knowledgeSelection,
+        baseIds: [...state.assistantManualBackup.knowledgeSelection.baseIds],
+        sourceIds: [...state.assistantManualBackup.knowledgeSelection.sourceIds]
+      },
+      mcpSelection: { ...state.assistantManualBackup.mcpSelection },
+      selectedKnowledgeBaseIds: [...state.assistantManualBackup.selectedKnowledgeBaseIds],
+      selectedSearchOptionIds: [...state.assistantManualBackup.selectedSearchOptionIds],
+      selectedSkills: state.assistantManualBackup.selectedSkills.map((skill) => ({ ...skill }))
+    } : null,
+    knowledgeSelection: {
+      ...state.knowledgeSelection,
+      baseIds: [...state.knowledgeSelection.baseIds],
+      sourceIds: [...state.knowledgeSelection.sourceIds]
+    },
+    mcpSelection: { ...state.mcpSelection },
+    selectedAssistant: state.selectedAssistant ? {
+      ...state.selectedAssistant,
+      includedSkills: state.selectedAssistant.includedSkills?.map((skill) => ({ ...skill })),
+      starterPrompts: [...state.selectedAssistant.starterPrompts]
+    } : null,
+    selectedKnowledgeBaseIds: [...state.selectedKnowledgeBaseIds],
+    selectedSearchOptionIds: [...state.selectedSearchOptionIds],
+    selectedSkills: state.selectedSkills.map((skill) => ({ ...skill }))
+  };
+}
+
+export function capturePersonalComposerControls(
+  ref: { current: ComposerControlSnapshot | null }
+): void {
+  if (ref.current) return;
+  ref.current = cloneComposerControlSnapshot(useComposerControlStore.getState());
+}
+
+/**
+ * Entering or switching Project authority is synchronous even though its
+ * canonical defaults load asynchronously. Preserve the personal snapshot once,
+ * then replace every run-scoped selection with a neutral disabled projection so
+ * neither personal controls nor Project A can appear inside Project B.
+ */
+export function enterProjectComposerControlBoundary(
+  ref: { current: ComposerControlSnapshot | null }
+): void {
+  capturePersonalComposerControls(ref);
+  const current = useComposerControlStore.getState();
+  const neutral = cloneComposerControlSnapshot(initialComposerControlSnapshot);
+  useComposerControlStore.setState({
+    ...neutral,
+    mcpSelection: { mode: "off" },
+    selectedModelId: "",
+    selectedProvider: "",
+    selectedSearchOptionIds: [],
+    // Citation/reasoning visibility are local presentation preferences rather
+    // than Project run authority, so do not flicker them during revalidation.
+    showCitations: current.showCitations,
+    showReasoningBlocks: current.showReasoningBlocks
+  });
+}
+
+export function restorePersonalComposerControls(
+  ref: { current: ComposerControlSnapshot | null }
+): void {
+  if (!ref.current) return;
+  const current = useComposerControlStore.getState();
+  useComposerControlStore.setState({
+    ...cloneComposerControlSnapshot(ref.current),
+    // These are account-level presentation preferences, not Project run
+    // authority. Keep changes made while a Project was open.
+    showCitations: current.showCitations,
+    showReasoningBlocks: current.showReasoningBlocks
+  });
+  ref.current = null;
 }
 
 export function PowerAppShellV2({
@@ -321,6 +406,7 @@ export function PowerAppShellV2({
   const settingsMutationCoordinatorRef = useRef<SettingsMutationCoordinator | null>(null);
   const runCatalogRef = useRef<Catalog | null>(catalog);
   const projectRunContextRef = useRef(false);
+  const personalComposerControlsRef = useRef<ComposerControlSnapshot | null>(null);
   const workspaceRefreshPromiseRef = useRef<Promise<ChatDetail | null> | null>(null);
   const sessionExpiredHandledRef = useRef(false);
 
@@ -620,6 +706,22 @@ export function PowerAppShellV2({
   const anchorPersonalChatMessage = useEventCallback((chatId: string, messageId: string) => {
     setPersonalReadingAnchor({ chatId, messageId });
   });
+  const openPersonalChatMessageEvent = useEventCallback(async (
+    chatId: string,
+    messageId: string
+  ): Promise<boolean> => {
+    const opened = await openPersonalChatMessage({
+      activateChat: activatePersonalChatDeepLink,
+      chatId,
+      messageId,
+      onAnchor: anchorPersonalChatMessage,
+      revealMessage: revealPersonalChatMessage
+    });
+    if (!opened) {
+      setSettingsNotice({ kind: "error", text: "This file's source message is no longer available." });
+    }
+    return opened;
+  });
   const showUnavailableMemorySource = useEventCallback(() => {
     setNotice({ kind: "error", text: memoryUiCopy("source.unavailableBody") });
   });
@@ -818,13 +920,31 @@ export function PowerAppShellV2({
     }
   });
 
+  const activateProjectBlankWorkspace = useEventCallback((projectId: string) => {
+    activateBlankWorkspace();
+    // Personal blank activation intentionally resolves personal defaults when
+    // no Assistant is selected. Re-apply the already-captured Project fence so
+    // those defaults cannot become the loading projection for this Project.
+    enterProjectComposerControlBoundary(personalComposerControlsRef);
+    useComposerSessionStore.getState().activateSession(projectComposerSessionKey(projectId));
+  });
+  const onProjectContextEntered = useEventCallback(() => {
+    enterProjectComposerControlBoundary(personalComposerControlsRef);
+  });
+  const onProjectContextLeft = useEventCallback(() => {
+    restorePersonalComposerControls(personalComposerControlsRef);
+  });
+
   const projectWorkspace = useProjectWorkspaceController({
     accountId,
     activeChatId,
     activateBlankWorkspace,
+    activateProjectBlankWorkspace,
     activateChat,
     applyProjectDefaults,
     isLocallyStreaming: (chatId) => Boolean(useRunLifecycleStore.getState().activeStreams[chatId]),
+    onProjectContextEntered,
+    onProjectContextLeft,
     onProjectAccessLost,
     preferredModelId: selectedModelId || undefined,
     refreshActiveChat,
@@ -944,7 +1064,7 @@ export function PowerAppShellV2({
     sourceSessionKey?: ComposerSessionKey
   ): Promise<WorkspaceChatSummary | null> => {
     if (projectWorkspace.selectedProjectId && !activeChatId) {
-      return projectWorkspace.actions.createChatForSend(folderId);
+      return projectWorkspace.actions.createChatForSend(folderId, sourceSessionKey);
     }
     return createChat(folderId, sourceSessionKey);
   });
@@ -1202,6 +1322,7 @@ export function PowerAppShellV2({
       openArchivedChats: () => {
         void openArchivedChats().catch(() => undefined);
       },
+      openChatMessage: openPersonalChatMessageEvent,
       retry: retryWorkspace,
       saveChatTitle: renameChat,
       saveFolder: renameFolder,

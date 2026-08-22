@@ -76,6 +76,12 @@ function createMemoryRepository() {
       state.branchedChat = {
         activeLeafMessageId: clonedMessages.at(-1)?.id ?? null,
         createdAt: "2026-06-07T09:00:00.000Z",
+        defaultKnowledgePlan: {
+          baseIds: ["base-policies"],
+          mode: "explicit",
+          sourceIds: ["source-handbook"],
+          version: 1
+        },
         defaultModelId: "fake-qsa",
         defaultProvider: "fake",
         folderId: null,
@@ -355,6 +361,12 @@ describe("message branch route handlers", () => {
     expect(body).toMatchObject({
       chat: {
         activeLeafMessageId: "branch-message-2",
+        defaultKnowledgePlan: {
+          baseIds: ["base-policies"],
+          mode: "explicit",
+          sourceIds: ["source-handbook"],
+          version: 1
+        },
         id: "chat-branch-1",
         messageCount: 2,
         pinned: false,

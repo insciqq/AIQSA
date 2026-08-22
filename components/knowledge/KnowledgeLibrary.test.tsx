@@ -68,6 +68,7 @@ function list(overrides: Partial<KnowledgeListView> = {}): KnowledgeListView {
     onOpenBase: vi.fn(),
     onOpenSource: vi.fn(),
     onQueryChange: vi.fn(),
+    onRefresh: vi.fn(),
     onSourceFilterChange: vi.fn(),
     onSourcePageChange: vi.fn(),
     onSourceQueryChange: vi.fn(),

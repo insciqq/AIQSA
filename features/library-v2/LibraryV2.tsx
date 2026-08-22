@@ -341,21 +341,30 @@ function AssistantCardV2({
 
 const knowledgeStatusLabel: Record<KnowledgeSummaryV2["status"], string> = {
   archived: "Archived",
-  indexing: "Processing",
+  empty: "Empty",
+  needs_attention: "Needs attention",
+  processing: "Processing",
   ready: "Ready",
+  trashed: "In Trash",
   unavailable: "Unavailable"
 };
 
 export function KnowledgePanelV2({
   bases,
+  error,
+  loadState = "ready",
   onBrowseSources,
   onCreate,
-  onOpen
+  onOpen,
+  onRetry
 }: Readonly<{
   bases: readonly KnowledgeSummaryV2[];
+  error?: string | null;
+  loadState?: "error" | "loading" | "ready";
   onBrowseSources?(): void;
   onCreate?(): void;
   onOpen?(id: string): void;
+  onRetry?(): void;
 }>) {
   return (
     <div data-testid="library-knowledge-panel">
@@ -370,7 +379,14 @@ export function KnowledgePanelV2({
       >
         Knowledge
       </SectionHeading>
-      {bases.length ? (
+      {loadState === "loading" && bases.length === 0 ? (
+        <p className="v2-resource-empty" role="status">Loading knowledge…</p>
+      ) : loadState === "error" && bases.length === 0 ? (
+        <div className="v2-resource-empty" role="alert">
+          <p>{error || "Knowledge could not be loaded."}</p>
+          <UiV2Button onClick={onRetry}>Retry</UiV2Button>
+        </div>
+      ) : bases.length ? (
         <ul className="v2-resource-list" aria-label="Knowledge bases">
           {bases.map((base) => (
             <li className="v2-resource-row" key={base.id}>
@@ -400,10 +416,14 @@ const fileStatusLabel: Record<FileSummaryV2["status"], string> = {
 
 export function FilesPanelV2({
   files,
+  loadState = "ready",
+  onRetry,
   onOpen
 }: Readonly<{
   files: readonly FileSummaryV2[];
+  loadState?: "error" | "idle" | "loading" | "ready";
   onOpen?(id: string): void;
+  onRetry?(): void;
 }>) {
   return (
     <div data-testid="library-files-panel">
@@ -413,7 +433,14 @@ export function FilesPanelV2({
       <p className="v2-library-disclosure">
         <UiV2Icon name="lock" /> Files are private and visible only to you.
       </p>
-      {files.length ? (
+      {loadState === "loading" && files.length === 0 ? (
+        <p className="v2-resource-empty" role="status">Loading files…</p>
+      ) : loadState === "error" && files.length === 0 ? (
+        <div className="v2-resource-empty" role="alert">
+          <p>Files could not be loaded.</p>
+          <UiV2Button onClick={onRetry}>Retry</UiV2Button>
+        </div>
+      ) : files.length ? (
         <ul className="v2-resource-list" aria-label="Files">
           {files.map((file) => (
             <li className="v2-resource-row" key={file.id}>
@@ -426,7 +453,10 @@ export function FilesPanelV2({
                 <p>{file.meta}</p>
                 <small>Upload{file.private ? " · Private" : ""}</small>
               </div>
-              <UiV2Button disabled={file.status !== "ready"} onClick={() => onOpen?.(file.id)}>
+              <UiV2Button
+                disabled={file.status !== "ready" || !onOpen}
+                onClick={() => onOpen?.(file.id)}
+              >
                 Go to source
               </UiV2Button>
             </li>

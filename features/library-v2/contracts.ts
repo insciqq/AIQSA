@@ -40,7 +40,14 @@ export type KnowledgeSummaryV2 = Readonly<{
   id: string;
   name: string;
   owned: boolean;
-  status: "archived" | "indexing" | "ready" | "unavailable";
+  status:
+    | "archived"
+    | "empty"
+    | "needs_attention"
+    | "processing"
+    | "ready"
+    | "trashed"
+    | "unavailable";
 }>;
 
 export type FileSummaryV2 = Readonly<{

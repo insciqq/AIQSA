@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
+import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, type RunRepository } from "../runs/runRepositoryContract";
@@ -721,6 +722,271 @@ describe("Prisma-backed message branch repository", () => {
         inputTokens: 13,
         outputTokens: 17,
         reasoningTokens: 19
+      });
+    });
+  });
+
+  it("copies chat defaults and projects source answer provenance without cloning execution", async () => {
+    await withMessageBranchUser(async ({ userId }) => {
+      const assistant = await prisma.assistantDefinition.create({ data: { ownerUserId: userId } });
+      const revision = await prisma.assistantRevision.create({
+        data: {
+          assistantId: assistant.id,
+          authorUserId: userId,
+          avatar: {
+            accents: [0, 4],
+            backgroundShape: "circle",
+            foregroundShape: "diamond",
+            kind: "generated",
+            paletteId: "ocean",
+            recipeVersion: 1,
+            rotations: [0, 2]
+          },
+          name: "Branch analyst",
+          providerModelId: providerTemplateIds.fakeModel,
+          revisionNumber: 1,
+          runControls: {},
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          systemPrompt: "Analyze the supplied context."
+        }
+      });
+      const knowledgePlan = {
+        baseIds: ["base-policies"],
+        mode: "explicit" as const,
+        sourceIds: ["source-handbook"],
+        version: 1 as const
+      };
+
+      try {
+        const sourceChat = await prisma.chat.create({
+          data: {
+            defaultKnowledgePlan: knowledgePlan,
+            title: "Provenance source",
+            userId
+          }
+        });
+        const userMessage = await prisma.message.create({
+          data: {
+            chatId: sourceChat.id,
+            content: textMessageContent("Summarize the policy"),
+            role: "user",
+            status: "complete"
+          }
+        });
+        const assistantMessage = await prisma.message.create({
+          data: {
+            chatId: sourceChat.id,
+            content: textMessageContent("The policy is current."),
+            modelId: "fake-qsa",
+            parentMessageId: userMessage.id,
+            provider: "fake",
+            role: "assistant",
+            status: "complete"
+          }
+        });
+        const sourceRun = await prisma.modelRun.create({
+          data: {
+            assistantId: assistant.id,
+            assistantMessageId: assistantMessage.id,
+            assistantRevisionId: revision.id,
+            chatId: sourceChat.id,
+            inputTokens: 5,
+            modelId: "fake-qsa",
+            normalizedRequest: {
+              mcp: {
+                tools: [{
+                  namespacedName: "mcp_weather_forecast",
+                  originalName: "forecast",
+                  serverName: "Weather"
+                }]
+              },
+              toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 }
+            },
+            outputTokens: 7,
+            provider: "fake",
+            status: "complete",
+            totalTokens: 12,
+            userId,
+            userMessageId: userMessage.id
+          }
+        });
+        await prisma.searchRun.create({
+          data: {
+            artifacts: {
+              sources: [{
+                snippet: "Public policy summary",
+                title: "Policy source",
+                url: "https://example.com/policy"
+              }]
+            },
+            modelRunId: sourceRun.id,
+            provider: "fake",
+            status: "complete",
+            strategyId: "fixture-search"
+          }
+        });
+        await prisma.modelRunEvent.create({
+          data: {
+            eventType: "artifact",
+            modelRunId: sourceRun.id,
+            payload: {
+              artifactType: "citation",
+              payload: {
+                title: "Direct citation",
+                url: "https://example.com/direct"
+              }
+            },
+            sequence: 1
+          }
+        });
+        await prisma.modelRunToolCall.create({
+          data: {
+            arguments: {},
+            completedAt: new Date("2026-08-22T09:00:01.000Z"),
+            modelRunId: sourceRun.id,
+            ordinal: 0,
+            providerCallId: "call-1",
+            result: {},
+            roundIndex: 1,
+            startedAt: new Date("2026-08-22T09:00:00.000Z"),
+            state: "complete",
+            toolName: "mcp_weather_forecast"
+          }
+        });
+        await prisma.chat.update({
+          data: { activeLeafMessageId: assistantMessage.id },
+          where: { id: sourceChat.id }
+        });
+
+        const branched = await createPrismaMessageBranchRepository(prisma)
+          .createChatBranchFromMessage({ sourceMessageId: assistantMessage.id, userId });
+        expect(branched?.defaultKnowledgePlan).toEqual(knowledgePlan);
+        if (!branched) throw new Error("branch_not_created");
+
+        const detail = await createPrismaChatRepository(prisma).getChat({
+          chatId: branched.id,
+          userId
+        });
+        const projected = detail?.messages.find((message) => message.role === "assistant");
+        expect(projected).toMatchObject({
+          artifactSummary: {
+            citations: [{
+              index: 1,
+              title: "Direct citation",
+              url: "https://example.com/direct"
+            }],
+            sources: [{
+              rank: 1,
+              snippet: "Public policy summary",
+              title: "Policy source",
+              url: "https://example.com/policy"
+            }]
+          },
+          assistantIdentity: {
+            name: "Branch analyst",
+            revisionNumber: 1
+          },
+          citationMessageId: assistantMessage.id,
+          modelRunId: sourceRun.id,
+          toolActivity: {
+            calls: [{
+              durationMs: 1_000,
+              round: 1,
+              serverName: "Weather",
+              status: "complete",
+              toolName: "forecast"
+            }]
+          }
+        });
+        expect(detail?.defaultKnowledgePlan).toEqual(knowledgePlan);
+        expect(detail?.usageStats).toMatchObject({
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          totalTokens: 0
+        });
+        await expect(prisma.modelRun.count({ where: { chatId: branched.id } })).resolves.toBe(0);
+        const clonedAssistant = await prisma.message.findFirstOrThrow({
+          select: { branchSourceModelRunId: true, id: true },
+          where: { chatId: branched.id, role: "assistant" }
+        });
+        expect(clonedAssistant.branchSourceModelRunId).toBe(sourceRun.id);
+
+        await prisma.chat.delete({ where: { id: sourceChat.id } });
+        await expect(createPrismaChatRepository(prisma).getChat({
+          chatId: branched.id,
+          userId
+        })).resolves.toMatchObject({
+          messages: expect.arrayContaining([expect.objectContaining({
+            artifactSummary: null,
+            assistantIdentity: null,
+            citationMessageId: clonedAssistant.id,
+            id: clonedAssistant.id,
+            modelRunId: null
+          })])
+        });
+      } finally {
+        await prisma.chat.deleteMany({ where: { userId } });
+        await prisma.assistantRevision.deleteMany({ where: { assistantId: assistant.id } });
+        await prisma.assistantDefinition.delete({ where: { id: assistant.id } });
+      }
+    });
+  });
+
+  it("rejects projecting answer provenance across personal owners", async () => {
+    await withMessageBranchUser(async ({ userId: sourceUserId }) => {
+      const sourceChat = await prisma.chat.create({
+        data: {
+          title: "Provenance source owner",
+          userId: sourceUserId
+        }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: sourceChat.id,
+          content: textMessageContent("Owner-only question"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId: sourceChat.id,
+          content: textMessageContent("Owner-only answer"),
+          parentMessageId: userMessage.id,
+          role: "assistant",
+          status: "complete"
+        }
+      });
+      const sourceRun = await prisma.modelRun.create({
+        data: {
+          assistantMessageId: assistantMessage.id,
+          chatId: sourceChat.id,
+          modelId: "fake-qsa",
+          normalizedRequest: {},
+          provider: "fake",
+          status: "complete",
+          userId: sourceUserId,
+          userMessageId: userMessage.id
+        }
+      });
+
+      await withMessageBranchUser(async ({ userId: destinationUserId }) => {
+        const destinationChat = await prisma.chat.create({
+          data: {
+            title: "Different provenance owner",
+            userId: destinationUserId
+          }
+        });
+
+        await expect(prisma.message.create({
+          data: {
+            branchSourceModelRunId: sourceRun.id,
+            chatId: destinationChat.id,
+            content: textMessageContent("Illegally projected answer"),
+            role: "assistant",
+            status: "complete"
+          }
+        })).rejects.toThrow(/branch source model run tenant mismatch/);
       });
     });
   });

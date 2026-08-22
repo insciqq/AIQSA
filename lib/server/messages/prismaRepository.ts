@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type MessageStatus, type ModelRunStatus } from "@prisma/client";
+import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import {
   applyMemorySourceMutations,
@@ -39,6 +40,7 @@ function isProjectChat(chat: LockedOwnedChat): chat is LockedOwnedChat & { proje
 }
 
 type LockedOwnedChat = LockedMemorySourceChat & {
+  defaultKnowledgePlan: Prisma.JsonValue | null;
   defaultProviderModelId: string | null;
   projectFolderId: string | null;
   projectId: string | null;
@@ -63,6 +65,7 @@ async function lockOwnedChatForMessage(
   const chats = await tx.$queryRaw<LockedOwnedChat[]>`
     SELECT
       chat."activeLeafMessageId",
+      chat."defaultKnowledgePlan",
       chat."defaultProviderModelId",
       chat."folderId",
       chat."id",
@@ -241,6 +244,13 @@ function rewriteMessageAttachmentIds(
   });
 }
 
+function storedKnowledgePlan(value: unknown): KnowledgePlan | null {
+  if (value === null || value === undefined) return null;
+  const decoded = decodeKnowledgePlan(value);
+  if (!decoded.ok) throw new Error("knowledge_default_integrity_invalid");
+  return decoded.plan;
+}
+
 export function createPrismaMessageBranchRepository(
   prismaClient = prisma,
   options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
@@ -283,6 +293,12 @@ export function createPrismaMessageBranchRepository(
             createdAt: "asc"
           },
           select: {
+            assistantModelRuns: {
+              orderBy: { createdAt: "desc" },
+              select: { id: true },
+              take: 1
+            },
+            branchSourceModelRunId: true,
             content: true,
             errorMessage: true,
             id: true,
@@ -309,6 +325,7 @@ export function createPrismaMessageBranchRepository(
         if (path.some((message) => isActiveMessageStatus(message.status))) {
           throw new ActiveMessageMutationConflictError();
         }
+        const defaultKnowledgePlan = storedKnowledgePlan(lockedChat.defaultKnowledgePlan);
 
         const sourceAnswerBinding =
           source.role === "assistant"
@@ -402,6 +419,9 @@ export function createPrismaMessageBranchRepository(
             ? {
                 createdByDisplayName: projectAuthor!.user!.displayName,
                 createdByUserId: userId,
+                defaultKnowledgePlan: defaultKnowledgePlan === null
+                  ? Prisma.DbNull
+                  : json(defaultKnowledgePlan),
                 defaultProviderModelId:
                   sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
                 memoryMode: "EXCLUDED",
@@ -412,6 +432,9 @@ export function createPrismaMessageBranchRepository(
                 userId: null
               }
             : {
+                defaultKnowledgePlan: defaultKnowledgePlan === null
+                  ? Prisma.DbNull
+                  : json(defaultKnowledgePlan),
                 defaultProviderModelId:
                   sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
                 folderId: lockedChat.folderId,
@@ -437,6 +460,10 @@ export function createPrismaMessageBranchRepository(
           );
           const cloned = await tx.message.create({
             data: {
+              branchSourceModelRunId: sourceMessage.role === "assistant"
+                ? sourceMessage.assistantModelRuns[0]?.id ??
+                  sourceMessage.branchSourceModelRunId
+                : null,
               chatId: chat.id,
               content: rewriteMessageAttachmentIds(
                 sourceMessage.content,
@@ -523,6 +550,7 @@ export function createPrismaMessageBranchRepository(
           select: {
             activeLeafMessageId: true,
             createdAt: true,
+            defaultKnowledgePlan: true,
             defaultProviderModel: {
               select: {
                 connectionId: true,
@@ -546,6 +574,7 @@ export function createPrismaMessageBranchRepository(
 
         return {
           ...chatSummary,
+          defaultKnowledgePlan: storedKnowledgePlan(updated.defaultKnowledgePlan),
           folderId: updated.projectFolderId ?? updated.folderId,
           defaultModelId: defaultProviderModel?.id ?? null,
           defaultProvider: defaultProviderModel?.connectionId ?? null,

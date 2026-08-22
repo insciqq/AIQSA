@@ -40,6 +40,24 @@ describe("UI v2 primitives", () => {
     );
   });
 
+  it("keeps icon controls non-submitting by default while allowing explicit submit", () => {
+    const onSubmit = vi.fn((event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+    });
+    render(
+      <form onSubmit={onSubmit}>
+        <UiV2IconButton icon="close" label="Cancel" />
+        <UiV2IconButton icon="check" label="Save" type="submit" />
+      </form>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
   it("projects selected and disabled menu facts separately", () => {
     render(
       <>

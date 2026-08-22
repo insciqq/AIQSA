@@ -281,6 +281,12 @@ export function useMessageRunActions({
     }
   }
 
+  function isTemporaryChat(chatId: string): boolean {
+    return useWorkspaceStore.getState().chats.some((chat) =>
+      chat.id === chatId && chat.memoryMode === "TEMPORARY"
+    );
+  }
+
   function runControlPayload(snapshot: MessageRunControlSnapshot, projectScoped: boolean) {
     if (snapshot.assistantId) {
       // The server resolves the currently authorized revision at admission;
@@ -419,6 +425,9 @@ export function useMessageRunActions({
     });
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
+    }
+    if (isTemporaryChat(chatId)) {
+      await reconcileTemporaryAdmission(chatId);
     }
   }
 
@@ -949,6 +958,7 @@ export function useMessageRunActions({
         currentChatSummary = chat;
         parentLeafForSend = chat.activeLeafMessageId;
       }
+      const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
       const starterControlPayload = runControlPayload(
         runControlSnapshot,
         Boolean(currentChatSummary?.projectId)
@@ -1033,11 +1043,12 @@ export function useMessageRunActions({
           );
         },
         refreshActiveChat,
-        request(signal) {
-          return shellFetch(`/api/chats/${chatIdForSend}/messages`, {
+        async request(signal) {
+          const response = await shellFetch(`/api/chats/${chatIdForSend}/messages`, {
             body: JSON.stringify({
               content: { blocks: contentBlocks },
               expectedActiveLeafId: parentLeafForSend,
+              ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
               ...starterControlPayload
             }),
@@ -1045,6 +1056,16 @@ export function useMessageRunActions({
             method: "POST",
             signal
           });
+          if (response.ok && projectDraftForSend) {
+            useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
+              chat.id === chatIdForSend &&
+              chat.pendingProjectDraft?.projectId === projectDraftForSend.projectId &&
+              chat.pendingProjectDraft.folderId === projectDraftForSend.folderId
+                ? { ...chat, pendingProjectDraft: undefined }
+                : chat
+            ));
+          }
+          return response;
         },
         settleFailedRunState({ kind }) {
           if (kind === "rejected") {
@@ -1176,6 +1197,9 @@ export function useMessageRunActions({
     });
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
+    }
+    if (isTemporaryChat(chatIdForRegenerate)) {
+      await reconcileTemporaryAdmission(chatIdForRegenerate);
     }
   }
 

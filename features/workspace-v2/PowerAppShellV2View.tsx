@@ -158,6 +158,19 @@ export function answerIdentityV2(
   return null;
 }
 
+export function knowledgeReferenceForMessageV2(
+  message: Pick<ThreadMessage, "citationMessageId" | "id" | "runId">,
+  artifact: ThreadMessage["artifactSummary"] | null,
+  settled: boolean
+): Readonly<{ messageId: string; runId: string }> | undefined {
+  return settled && message.runId && (artifact?.knowledgeCitations?.length ?? 0) > 0
+    ? {
+        messageId: message.citationMessageId ?? message.id,
+        runId: message.runId
+      }
+    : undefined;
+}
+
 export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
   useComposerControlStore.getState().setMcpSelection({ mode: "auto" });
   regenerate();
@@ -166,6 +179,17 @@ export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
 export function applyLoadAllAfterMcpDiscoveryFailureV2(regenerate: () => void): void {
   useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
   regenerate();
+}
+
+export function blankConversationOrientationV2(input: Readonly<{
+  assistantOrientation?: ReactNode;
+  projectOrientation?: ReactNode;
+  projectSelected: boolean;
+  welcomeOrientation?: ReactNode;
+}>): ReactNode {
+  return input.projectSelected
+    ? input.assistantOrientation ?? input.projectOrientation
+    : input.assistantOrientation ?? input.welcomeOrientation;
 }
 
 export function SkillLibraryOverlayV2({
@@ -605,9 +629,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const knowledgeHandles = new Set(
       artifact?.knowledgeCitations?.map((citation) => citation.handle) ?? []
     );
-    const knowledgeReference = settled && source.runId && knowledgeHandles.size > 0
-      ? { messageId: source.id, runId: source.runId }
-      : undefined;
+    const knowledgeReference = knowledgeReferenceForMessageV2(source, artifact, settled);
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
@@ -878,9 +900,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onLoadEarlier={thread.loadEarlierMessages}
               onRetry={thread.retryActiveChatDetail}
               onScroll={thread.handleThreadScroll}
-              orientationSlot={workspace.projects.selectedProjectId
-                ? <ProjectBlankOrientationV2 activeChat={Boolean(activeProjectChat)} controller={workspace.projects} />
-                : assistantOrientation ?? welcomeOrientation}
+              orientationSlot={blankConversationOrientationV2({
+                assistantOrientation,
+                projectOrientation: (
+                  <ProjectBlankOrientationV2
+                    activeChat={Boolean(activeProjectChat)}
+                    controller={workspace.projects}
+                  />
+                ),
+                projectSelected: Boolean(workspace.projects.selectedProjectId),
+                welcomeOrientation
+              })}
               renderMessage={renderMessage}
               scrollRef={thread.threadScrollRef}
               showJumpToLatest={thread.showJumpToLatest}
@@ -906,10 +936,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           error={branches.error}
           graph={branches.graph}
           loading={branches.loading}
-          onCheckout={(leafId) => {
-            branches.checkoutBranch(leafId);
-            return true;
-          }}
+          onCheckout={branches.checkoutBranch}
           onClose={branches.close}
           onRetry={branches.retry}
         />

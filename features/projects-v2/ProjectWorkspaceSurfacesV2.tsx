@@ -102,7 +102,8 @@ export function ProjectContextRailV2({
     resource.type === "model" && resource.resourceId === project.defaults.providerModelId
   );
   const searchCount = project.defaults.searchPlan.optionIds.length;
-  const knowledgeCount = project.defaults.knowledgePlan.baseIds.length;
+  const knowledgeCount = project.defaults.knowledgePlan.baseIds.length +
+    project.defaults.knowledgePlan.sourceIds.length;
   return (
     <aside className="v2-project-context" aria-label="Shared project context">
       <span className="v2-project-context-mark" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>

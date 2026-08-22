@@ -29,6 +29,11 @@ import {
   updateProjectGrant
 } from "@/components/app-shell/projectWorkspaceApi";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
+import {
+  composerSessionKey,
+  useComposerSessionStore,
+  type ComposerSessionKey
+} from "@/components/app-shell/composerSessionStore";
 import type { Notice, WorkspaceChatSummary } from "@/components/app-shell/types";
 import { sortChatsByFavoriteThenUpdatedAt, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { mergeWorkspaceProjectDrafts } from "@/components/app-shell/workspaceProjectDraftMerge";
@@ -79,7 +84,10 @@ export type ProjectWorkspaceController = Readonly<{
     create(name: string, description?: string): Promise<boolean>;
     createChat(folderId?: string | null): Promise<boolean>;
     /** Creates and activates a shared chat for the first-send path. */
-    createChatForSend(folderId?: string | null): Promise<WorkspaceChatSummary | null>;
+    createChatForSend(
+      folderId?: string | null,
+      sourceSessionKey?: ComposerSessionKey
+    ): Promise<WorkspaceChatSummary | null>;
     createFolder(name: string, parentId?: string | null): Promise<boolean>;
     deleteFolder(folderId: string): Promise<boolean>;
     deleteProject(): Promise<boolean>;
@@ -115,12 +123,15 @@ type ControllerInput = Readonly<{
   accountId: string;
   activeChatId: string | null;
   activateBlankWorkspace(): void;
+  activateProjectBlankWorkspace(projectId: string): void;
   activateChat(
     chat: WorkspaceChatSummary,
     options?: { preserveControls?: boolean; resumeRuns?: boolean }
   ): Promise<unknown> | unknown;
   applyProjectDefaults(project: ProjectDetailWire, chat: WorkspaceChatSummary): void;
   isLocallyStreaming(chatId: string): boolean;
+  onProjectContextEntered(): void;
+  onProjectContextLeft(): void;
   onProjectAccessLost(chatIds: readonly string[]): void;
   preferredModelId?: string;
   refreshActiveChat(
@@ -298,6 +309,10 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       setActivityError(null);
       settingsOpenRef.current = false;
       setSettingsOpen(false);
+      input.activateBlankWorkspace();
+      // Blank personal activation may resolve catalog defaults when no
+      // Assistant is selected. Restore the exact pre-Project controls last.
+      input.onProjectContextLeft();
       if (notify) {
         input.setNotice({ kind: "error", text: "Project access changed. The shared workspace was closed." });
       }
@@ -519,7 +534,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   });
 
   const createProjectChatForSend = useEventCallback(async (
-    folderId: string | null = null
+    folderId: string | null = null,
+    sourceSessionKey?: ComposerSessionKey
   ): Promise<WorkspaceChatSummary | null> => {
     const projectId = selectedRef.current;
     if (!projectId || !detail?.capabilities.mutateChats || busy) return null;
@@ -563,15 +579,28 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         chats: [chat, ...(workspace?.chats ?? []).filter((candidate) => candidate.id !== chat.id)],
         folders: workspace?.folders ?? []
       };
-      setWorkspace(reconcileWorkspace(projectId, next));
       const summary: WorkspaceChatSummary = {
         ...projectChatSummaryFromApi(chat),
         pendingProjectDraft: { folderId, projectId }
       };
+      if (
+        sourceSessionKey &&
+        !useComposerSessionStore.getState().transferSession(
+          sourceSessionKey,
+          composerSessionKey(summary.id)
+        )
+      ) {
+        setActionError("Wait for files to finish uploading before starting the shared chat.");
+        return null;
+      }
+      setWorkspace(reconcileWorkspace(projectId, next));
       useWorkspaceStore.getState().updateChats((current) =>
         current.map((candidate) => candidate.id === summary.id ? summary : candidate)
       );
-      input.applyProjectDefaults(detail, summary);
+      // A first send already owns an exact user-selected control snapshot.
+      // Keep it through local-chat activation; only an explicit New shared chat
+      // starts from the Project defaults.
+      if (!sourceSessionKey) input.applyProjectDefaults(detail, summary);
       await input.activateChat(summary, { preserveControls: true });
       return summary;
     } catch (error) {
@@ -782,7 +811,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
           setMemory(null);
           setActivity(null);
           setActivityError(null);
-          input.activateBlankWorkspace();
+          input.onProjectContextEntered();
+          input.activateProjectBlankWorkspace(created.id);
           setCreateOpen(false);
           setLastSyncedAt(Date.now());
           return true;
@@ -817,6 +847,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         { refreshMemory: true }
       ),
       leave: () => {
+        input.onProjectContextLeft();
         selectedRef.current = null;
         realtimeChatRevisionsRef.current.clear();
         setSelectedProjectId(null);
@@ -1007,6 +1038,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         return true;
       },
       selectProject: async (projectId) => {
+        input.onProjectContextEntered();
         selectedRef.current = projectId;
         realtimeChatRevisionsRef.current.clear();
         setSelectedProjectId(projectId);
@@ -1016,7 +1048,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         setActivity(null);
         setActivityError(null);
         setActionError(null);
-        input.activateBlankWorkspace();
+        input.activateProjectBlankWorkspace(projectId);
         return refresh(false);
       },
       updateGrant: (grantId, role) => detail

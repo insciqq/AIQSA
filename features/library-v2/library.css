@@ -325,6 +325,7 @@
 }
 
 .v2-resource-row-title span[data-status="indexing"],
+.v2-resource-row-title span[data-status="needs_attention"],
 .v2-resource-row-title span[data-status="processing"] {
   color: var(--v2-color-warn);
 }

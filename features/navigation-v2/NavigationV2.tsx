@@ -230,6 +230,7 @@ function ChatRow({
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
+              event.stopPropagation();
               onCancelRename?.();
             }
           }}
@@ -373,7 +374,11 @@ function FolderGroup({
               value={props.editingFolderName ?? folder.name}
               onChange={(event) => props.onChangeFolderRename?.(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Escape") props.onCancelFolderRename?.();
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  props.onCancelFolderRename?.();
+                }
               }}
             />
             <UiV2IconButton icon="check" label="Save folder" type="submit" />
@@ -887,6 +892,9 @@ export function ReadingRoomShellV2({
     const previous = previousCompositionRef.current;
     previousCompositionRef.current = composition;
     if (previous === composition) return;
+    let cancelled = false;
+    let focusFrame: number | null = null;
+    let focusAttemptsRemaining = 8;
     const navigation = document.querySelector<HTMLElement>(".v2-navigation");
     const active = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -908,12 +916,39 @@ export function ReadingRoomShellV2({
     if (
       composition === "desktop" &&
       !desktopCollapsed &&
-      active === openButtonRef.current &&
+      (active === openButtonRef.current || active === document.body) &&
       focusBeforeCompactRef.current?.isConnected
     ) {
-      focusBeforeCompactRef.current.focus();
+      const restoreTarget = focusBeforeCompactRef.current;
+      const restore = () => {
+        if (
+          cancelled ||
+          compositionRef.current !== "desktop" ||
+          desktopCollapsed ||
+          !restoreTarget.isConnected
+        ) return;
+        restoreTarget.focus();
+        if (document.activeElement === restoreTarget) {
+          focusBeforeCompactRef.current = null;
+        } else if (focusAttemptsRemaining > 0) {
+          focusAttemptsRemaining -= 1;
+          focusFrame = window.requestAnimationFrame(restore);
+        }
+      };
+      restore();
+    } else if (
+      composition === "desktop" &&
+      focusBeforeCompactRef.current &&
+      active !== document.body
+    ) {
+      // A user may have deliberately moved into the conversation while the
+      // compact navigation was closed. Resizing must not steal that focus.
       focusBeforeCompactRef.current = null;
     }
+    return () => {
+      cancelled = true;
+      if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
+    };
   }, [composition, desktopCollapsed]);
 
   useLayoutEffect(() => {
@@ -963,7 +998,23 @@ export function ReadingRoomShellV2({
     ].join(",");
     const focusable = () => [...navigationElement.querySelectorAll<HTMLElement>(focusableSelector)]
       .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
-    focusable()[0]?.focus();
+    let cancelled = false;
+    let focusFrame: number | null = null;
+    let focusAttemptsRemaining = 8;
+    // Chromium can clear focus after the opener becomes inert while the drawer
+    // is still visibility:hidden for the current frame. Retry for a bounded
+    // set of frames until the first drawer control accepts focus; cleanup stops
+    // the retry as soon as the modal closes or changes composition.
+    const focusInitialControl = () => {
+      if (cancelled) return;
+      const target = focusable()[0];
+      target?.focus();
+      if (target && document.activeElement !== target && focusAttemptsRemaining > 0) {
+        focusAttemptsRemaining -= 1;
+        focusFrame = window.requestAnimationFrame(focusInitialControl);
+      }
+    };
+    focusInitialControl();
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
       const items = focusable();
@@ -979,7 +1030,11 @@ export function ReadingRoomShellV2({
       }
     };
     window.addEventListener("keydown", trapFocus);
-    return () => window.removeEventListener("keydown", trapFocus);
+    return () => {
+      cancelled = true;
+      if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", trapFocus);
+    };
   }, [mobileOpen]);
 
   useEffect(() => {
@@ -1000,11 +1055,16 @@ export function ReadingRoomShellV2({
         if (composition !== "desktop") closeSidebar();
       })
     : projectSlot;
+  const createPersonalChat = (mode: NewChatMode) => {
+    onNewChat(mode);
+    if (composition === "mobile") setMobileOpen(false);
+  };
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
       projectsSlot={navigationProjectsSlot}
       onClose={closeSidebar}
+      onNewChat={createPersonalChat}
       onSelectChat={(chat) => { navigationOwnerProps.onSelectChat(chat); setMobileOpen(false); }}
     />
   );
@@ -1048,7 +1108,7 @@ export function ReadingRoomShellV2({
             else setDesktopCollapsed(false);
           }}
         />
-        <UiV2IconButton icon="plus" label="New chat" onClick={() => onNewChat("NORMAL")} />
+        <UiV2IconButton icon="plus" label="New chat" onClick={() => createPersonalChat("NORMAL")} />
       </div>
       <div className="v2-workspace-content" inert={mobileOpen ? true : undefined}>{children}</div>
     </div>

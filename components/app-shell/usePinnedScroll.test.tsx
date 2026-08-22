@@ -439,6 +439,78 @@ describe("usePinnedScroll", () => {
     expect(element.scrollTop).toBe(1800);
   });
 
+  it("retargets a pending reading anchor when optimistic message ids reconcile before its frame", async () => {
+    const onReadingAnchorApplied = vi.fn();
+    const questionDocumentTop = 800;
+    const questionHeight = 420;
+    const answerHeight = 48;
+    const element = scrollElement({
+      clientHeight: 300,
+      scrollHeight: 1500,
+      scrollTop: 200
+    });
+    element.getBoundingClientRect = () =>
+      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
+
+    const question = document.createElement("article");
+    question.dataset.messageId = "user-optimistic";
+    question.getBoundingClientRect = () => ({
+      bottom: questionDocumentTop + questionHeight - element.scrollTop,
+      height: questionHeight,
+      top: questionDocumentTop - element.scrollTop
+    } as DOMRect);
+    const answer = document.createElement("article");
+    answer.dataset.messageId = "assistant-optimistic";
+    answer.getBoundingClientRect = () => ({
+      bottom: questionDocumentTop + questionHeight + answerHeight - element.scrollTop,
+      height: answerHeight,
+      top: questionDocumentTop + questionHeight - element.scrollTop
+    } as DOMRect);
+    const spacer = document.createElement("div");
+    spacer.dataset.threadReadingSpacer = "true";
+    element.append(question, answer, spacer);
+
+    const { rerender, result } = renderHook(
+      ({ followKey, readingAnchorKey }) =>
+        usePinnedScroll<HTMLDivElement>({
+          followKey,
+          onReadingAnchorApplied,
+          readingAnchorKey,
+          resetKey: "chat-reconciled-submit"
+        }),
+      {
+        initialProps: {
+          followKey: "historical-turn",
+          readingAnchorKey: null as string | null
+        }
+      }
+    );
+
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.handleScroll();
+      result.current.resetToLatest();
+    });
+    rerender({
+      followKey: "optimistic-turn",
+      readingAnchorKey: "user-optimistic"
+    });
+
+    question.dataset.messageId = "user-persisted";
+    answer.dataset.messageId = "assistant-persisted";
+    rerender({
+      followKey: "persisted-turn",
+      readingAnchorKey: "user-persisted"
+    });
+    await waitForAnimationFrame();
+
+    expect(element.scrollTop).toBe(968);
+    expect(question.getBoundingClientRect()).toMatchObject({ bottom: 252, top: -168 });
+    expect(answer.getBoundingClientRect()).toMatchObject({ bottom: 300, top: 252 });
+    expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
+    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-persisted");
+  });
+
   it("keeps an oversized fallback anchor top-aligned when it is also the live tail", async () => {
     const element = scrollElement({ clientHeight: 300, scrollHeight: 1200, scrollTop: 700 });
     element.getBoundingClientRect = () =>
