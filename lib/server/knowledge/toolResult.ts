@@ -131,7 +131,7 @@ function decodeVectorSearch(value: unknown): KnowledgeVectorSearchEvidence | nul
     efSearch === null && value.scan.efSearch !== null ||
     maxScanTuples === null && value.scan.maxScanTuples !== null ||
     (value.mode === "ann" && (
-      eligibleRows <= 512 || efSearch === null || efSearch < 1 ||
+      eligibleRows < 1 || efSearch === null || efSearch < 1 ||
       maxScanTuples === null || maxScanTuples < 1 ||
       value.scan.iterativeScan !== "strict_order"
     )) ||

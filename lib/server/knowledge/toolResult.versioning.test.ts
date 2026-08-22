@@ -465,6 +465,47 @@ describe("Knowledge result contract versioning", () => {
     expect(decodeKnowledgeRetrievalEvidence(duplicated)).toBeNull();
   });
 
+  it("persists current ANN evidence for a non-empty scope below the legacy exact cutoff", () => {
+    const ordinary = currentEvidence();
+    const evidence = currentEvidence({
+      bases: [{
+        ...ordinary.bases[0]!,
+        vectorSearch: {
+          bindingOrdinal: 0,
+          candidateCount: 1,
+          eligibleRows: 152,
+          mode: "ann",
+          scan: {
+            efSearch: 400,
+            iterativeScan: "strict_order",
+            maxScanTuples: 100_000,
+            retrievalBucket: 0
+          },
+          targetDimension: 1024
+        }
+      }],
+      fusion: "weighted_rrf_v2",
+      results: [{
+        ...ordinary.results[0]!,
+        contentHash: "b".repeat(64),
+        signalProvenance: [{
+          exactKind: null,
+          lane: "passage_semantic",
+          rank: 1,
+          rawScore: 0.9,
+          vectorDistance: 0.1,
+          vectorMode: "ann"
+        }]
+      }]
+    });
+    const result = executionResult(evidence);
+    const compacted = compactKnowledgeToolExecutionResult(result);
+
+    expect(decodeKnowledgeRetrievalEvidence(evidence)).not.toBeNull();
+    expect(compacted).not.toBeNull();
+    expect(rehydratePersistedKnowledgeToolExecutionResult(compacted!)).toEqual(result);
+  });
+
   it("dual-reads, compacts, and rehydrates V1 and V2 using their exact marker versions", () => {
     for (const evidence of [legacyEvidence(), currentEvidence()]) {
       const result = executionResult(evidence);
