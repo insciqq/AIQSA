@@ -256,6 +256,10 @@
   background: var(--v2-color-accent);
 }
 
+.v2-composer-indicator[data-quiet] > span:first-child {
+  display: none;
+}
+
 .v2-composer-indicator .v2-icon {
   width: 0.75rem;
   height: 0.75rem;
@@ -429,12 +433,35 @@
   left: 2.5rem;
 }
 
-/* The blank-chat composer is vertically centered rather than docked. Keep its
-   upward-opening desktop popover inside the viewport and let the option list
-   scroll; mobile uses the full-height bottom sheet below. */
+/* The blank-chat composer is vertically centered rather than docked: it fills
+   the reading measure (no dock gutter) and, with room to spare, opens a
+   taller field so the first message does not start in a one-line slot. Keep
+   its upward-opening desktop popover inside the viewport and let the option
+   list scroll; mobile uses the full-height bottom sheet below. */
+.v2-conversation-empty-composer .v2-composer-wrap {
+  width: 100%;
+  padding: 0;
+}
+
 @media (min-width: 900px) and (min-height: 32.01rem) {
+  .v2-conversation-empty-composer .v2-composer {
+    padding: 0.875rem 0.875rem 0.625rem;
+  }
+
+  .v2-conversation-empty-composer .v2-composer-input {
+    min-height: 4.5rem;
+    font-size: 1rem;
+  }
+
   .v2-conversation-empty-composer .v2-composer-layer {
     max-height: min(34rem, calc(50dvh - 2rem));
+  }
+}
+
+/* Tall viewports may grow the field further before it scrolls internally. */
+@media (min-width: 900px) and (min-height: 48rem) {
+  .v2-composer-input {
+    max-height: 18rem;
   }
 }
 

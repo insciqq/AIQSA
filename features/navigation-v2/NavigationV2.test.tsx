@@ -580,6 +580,22 @@ describe("Navigation v2", () => {
     expect(onNewChat).not.toHaveBeenCalled();
   });
 
+  it("shows the earlier-page control as busy, then as a manual Retry after a failed page", () => {
+    const { props, view } = sidebar({ hasMore: true, loading: true });
+    const busy = screen.getByRole("button", { name: "Loading…" });
+    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute("aria-busy", "true");
+
+    view.rerender(<NavigationSidebar {...props} error="chat_navigation_failed" loading={false} />);
+    expect(screen.getByText("Could not load earlier chats.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(props.onLoadMore).toHaveBeenCalledTimes(1);
+
+    view.rerender(<NavigationSidebar {...props} error={null} loading={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier" }));
+    expect(props.onLoadMore).toHaveBeenCalledTimes(2);
+  });
+
   it("reconciles local run start and settlement with the server summary cue", () => {
     useWorkspaceStore.getState().applyNavigationPage({
       chats: [{ ...chats[1], activeRun: false }],

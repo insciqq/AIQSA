@@ -7,11 +7,9 @@ import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores
 import {
   RunSetupV2,
   TemporaryChatIndicatorV2,
-  WelcomeOrientationV2,
   WorkspaceHeaderV2,
   answerIdentityV2,
   knowledgeReferenceForMessageV2,
-  blankWelcomeStartersVisibleV2,
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
   blankConversationOrientationV2,
@@ -459,69 +457,23 @@ describe("Blank welcome v2", () => {
     render(<>{blankConversationOrientationV2({
       assistantOrientation: <section data-testid="project-assistant-intro">Assistant starters</section>,
       projectOrientation: <section data-testid="project-generic-intro">Shared project</section>,
-      projectSelected: true,
-      welcomeOrientation: <section data-testid="personal-welcome">Welcome</section>
+      projectSelected: true
     })}</>);
 
     expect(screen.getByTestId("project-assistant-intro")).toBeVisible();
     expect(screen.queryByTestId("project-generic-intro")).toBeNull();
-    expect(screen.queryByTestId("personal-welcome")).toBeNull();
   });
 
-  it("shows starter prompts exactly on the untouched blank welcome", () => {
-    expect(blankWelcomeStartersVisibleV2({
-      assistantSelected: false,
-      attachmentCount: 0,
-      draft: "",
-      uploading: false
-    })).toBe(true);
-    expect(blankWelcomeStartersVisibleV2({
-      assistantSelected: true,
-      attachmentCount: 0,
-      draft: "",
-      uploading: false
-    })).toBe(false);
-    expect(blankWelcomeStartersVisibleV2({
-      assistantSelected: false,
-      attachmentCount: 0,
-      draft: "  черновик",
-      uploading: false
-    })).toBe(false);
-    expect(blankWelcomeStartersVisibleV2({
-      assistantSelected: false,
-      attachmentCount: 1,
-      draft: "",
-      uploading: false
-    })).toBe(false);
-    expect(blankWelcomeStartersVisibleV2({
-      assistantSelected: false,
-      attachmentCount: 0,
-      draft: "",
-      uploading: true
-    })).toBe(false);
-  });
+  it("leaves the personal blank chat to the quiet greeting with no generic starter prompts", () => {
+    expect(blankConversationOrientationV2({
+      projectOrientation: <section>Shared project</section>,
+      projectSelected: false
+    })).toBeUndefined();
 
-  it("greets quietly with prompts and no wordmark or marketing subtitle", () => {
-    const onPickPrompt = vi.fn();
-    const onOpenAssistantPicker = vi.fn();
-    render(
-      <WelcomeOrientationV2
-        showAssistantEntry
-        onOpenAssistantPicker={onOpenAssistantPicker}
-        onPickPrompt={onPickPrompt}
-      />
-    );
-
-    expect(screen.getByRole("heading", { name: "What are we working on?" })).toBeVisible();
-    expect(screen.queryByText("AIQSA")).toBeNull();
-    expect(screen.queryByText(/Спросите, исследуйте/u)).toBeNull();
-
-    const starters = screen.getByLabelText("Starter prompts");
-    const buttons = within(starters).getAllByRole("button");
-    expect(buttons.length).toBeLessThanOrEqual(4);
-    fireEvent.click(buttons[0]!);
-    expect(onPickPrompt).toHaveBeenCalledWith(buttons[0]!.textContent);
-    fireEvent.click(within(starters).getByRole("button", { name: "Start with an Assistant…" }));
-    expect(onOpenAssistantPicker).toHaveBeenCalledTimes(1);
+    render(<>{blankConversationOrientationV2({
+      assistantOrientation: <section data-testid="assistant-intro">Assistant</section>,
+      projectSelected: false
+    })}</>);
+    expect(screen.getByTestId("assistant-intro")).toBeVisible();
   });
 });

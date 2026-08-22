@@ -165,7 +165,7 @@ describe("Composer v2", () => {
     await waitFor(() => expect(modelTrigger).toHaveFocus());
   });
 
-  it("closes direct capability toggles while keeping Skills and MCP setup open", () => {
+  it("keeps the Capabilities menu open across Search, Knowledge, Skills, and MCP toggles", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();
     const onSelectMcp = vi.fn();
@@ -205,32 +205,30 @@ describe("Composer v2", () => {
       onSelectSkillIds: onSelectSkills,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
-    const reopen = () => fireEvent.click(screen.getByRole("button", { name: "Capabilities" }));
-    const menuClosed = () =>
-      expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
+    // One visit combines several selections: no toggle closes the menu, so a
+    // second Search engine or Knowledge Base never needs the "+" reopened.
+    const menuOpen = () =>
+      expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Research Search/ }));
     expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
-    menuClosed();
+    menuOpen();
 
-    reopen();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["missing-base"]);
-    menuClosed();
+    menuOpen();
 
-    reopen();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Unavailable knowledge base/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
-    menuClosed();
+    menuOpen();
 
-    reopen();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Careful editor/ }));
     expect(onSelectSkills).toHaveBeenCalledWith(["skill-editor"]);
-    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+    menuOpen();
 
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^Load all/ }));
     expect(onSelectMcp).toHaveBeenCalledWith({ mode: "load_all" });
-    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+    menuOpen();
   });
 
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
