@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v1" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v2" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -109,6 +109,7 @@ const memoryActionIntentSchema = z.strictObject({
   confidenceBand: z.enum(MEMORY_ACTION_INTENT_CONFIDENCE_BANDS),
   memoryUseful: z.boolean(),
   pastChatsUseful: z.boolean(),
+  profileRequested: z.boolean(),
   queryText: nullableText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH),
   reasonCode: z.enum(MEMORY_ACTION_INTENT_REASON_CODES),
   recencyRequested: z.boolean(),
@@ -131,7 +132,7 @@ const memoryActionIntentSchema = z.strictObject({
     context.addIssue({ code: "custom", message: "SEARCH requires targetQuery" });
   }
   const dynamicRetrievalRequested = value.memoryUseful || value.pastChatsUseful ||
-    value.applyResponsePreferences;
+    value.applyResponsePreferences || value.profileRequested;
   if ((value.action === "LIST" || value.action === "SEARCH") && (
     dynamicRetrievalRequested || value.queryText !== null
   )) {
@@ -144,6 +145,14 @@ const memoryActionIntentSchema = z.strictObject({
     context.addIssue({
       code: "custom",
       message: "NONE answer retrieval requires queryText"
+    });
+  }
+  if (value.profileRequested && (
+    value.action !== "NONE" || !value.memoryUseful || value.recencyRequested
+  )) {
+    context.addIssue({
+      code: "custom",
+      message: "profile inventory requires a non-recency NONE answer retrieval"
     });
   }
   if (value.responsePreference && value.category !== "preferences" && !(
@@ -171,7 +180,11 @@ export type MemoryActionIntent = z.infer<typeof memoryActionIntentSchema>;
 export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
   additionalProperties: false,
   properties: {
-    action: { enum: [...MEMORY_ACTION_INTENT_ACTIONS], type: "string" },
+    action: {
+      description: "Use NONE for ordinary answers, including a broad personal-profile inventory. LIST is only explicit Saved Memories management, never an answer about what is known about the user.",
+      enum: [...MEMORY_ACTION_INTENT_ACTIONS],
+      type: "string"
+    },
     applyResponsePreferences: { type: "boolean" },
     category: {
       enum: [...MEMORY_ACTION_INTENT_CATEGORIES, null],
@@ -184,7 +197,12 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     confidenceBand: { enum: [...MEMORY_ACTION_INTENT_CONFIDENCE_BANDS], type: "string" },
     memoryUseful: { type: "boolean" },
     pastChatsUseful: { type: "boolean" },
+    profileRequested: {
+      description: "True only for a broad answer summarizing everything Personal Memory knows about the user; it requires action NONE, memoryUseful true, and recencyRequested false.",
+      type: "boolean"
+    },
     queryText: {
+      description: "A concise non-null semantic query whenever a NONE answer enables any retrieval control, including profileRequested.",
       maxLength: MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH,
       minLength: 1,
       type: ["string", "null"]
@@ -224,6 +242,7 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "confidenceBand",
     "memoryUseful",
     "pastChatsUseful",
+    "profileRequested",
     "queryText",
     "reasonCode",
     "recencyRequested",

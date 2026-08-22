@@ -14,6 +14,12 @@ const plan = planMemoryRetrieval({
   currentUserText: "query",
   now
 });
+const profilePlan = planMemoryRetrieval({
+  currentUserText: "what do you know about me",
+  filters: { sourceKinds: ["FACT", "EVENT"] },
+  now,
+  profileRequested: true
+});
 
 function metadata(id: string, history = false): MemoryCandidateMetadata {
   return {
@@ -180,5 +186,52 @@ describe("Personal Memory context pack", () => {
     expect(pack.items.filter(({ section }) => section === "FACT")).toHaveLength(6);
     expect(pack.omissionCounts.core_item_limit).toBe(8);
     expect(pack.omissionCounts.fact_limit).toBe(6);
+  });
+
+  it("packs at most twelve bounded profile facts in deterministic input order", () => {
+    const dynamic = Array.from({ length: 15 }, (_, index) => ranked(`profile-${index}`));
+    const pack = packMemoryPersonalContext({
+      expanded: dynamic.map((candidate) => expansion(candidate.itemId, false, "profile fact")),
+      plan: profilePlan,
+      ranked: dynamic
+    });
+
+    expect(pack.items).toHaveLength(12);
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `profile-${index}`)
+    );
+    expect(pack.items.every(({ section }) => section === "FACT")).toBe(true);
+    expect(pack.omissionCounts.profile_fact_limit).toBe(3);
+    expect(pack.text).toContain("bounded profile inventory");
+  });
+
+  it("excludes history from a profile pack even when a caller supplies it", () => {
+    const dynamic = [ranked("fact"), ranked("contradictory-history", true)];
+    const pack = packMemoryPersonalContext({
+      expanded: [expansion("fact"), expansion("contradictory-history", true)],
+      plan: profilePlan,
+      ranked: dynamic
+    });
+
+    expect(pack.items).toMatchObject([{ itemId: "fact", section: "FACT" }]);
+    expect(pack.omissionCounts.profile_history_excluded).toBe(1);
+    expect(pack.text).not.toContain("contradictory-history");
+  });
+
+  it("leaves targeted pack limits and preamble unchanged", () => {
+    const targeted = planMemoryRetrieval({ currentUserText: "specific preference", now });
+    const dynamic = Array.from({ length: 8 }, (_, index) => ranked(`targeted-${index}`));
+    const pack = packMemoryPersonalContext({
+      expanded: dynamic.map((candidate) => expansion(candidate.itemId)),
+      plan: targeted,
+      ranked: dynamic
+    });
+
+    expect(pack.items).toHaveLength(6);
+    expect(pack.omissionCounts.fact_limit).toBe(2);
+    expect(pack.text).toContain(
+      "Prefer the current user message and current active chat context on conflict."
+    );
+    expect(pack.text).not.toContain("bounded profile inventory");
   });
 });

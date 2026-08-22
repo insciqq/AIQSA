@@ -108,6 +108,13 @@ function factLaneCandidate(id: string, rawScore: number): MemoryLaneCandidate {
   };
 }
 
+function profileFactLaneCandidate(id: string, rawScore: number): MemoryLaneCandidate {
+  return {
+    ...factLaneCandidate(id, rawScore),
+    lane: "FACT_PROFILE"
+  };
+}
+
 function rankedHistory(
   id: string,
   historySafetyClass: "NORMAL" | "SENSITIVE"
@@ -255,6 +262,7 @@ function retrievalOptions(
           confidenceBand: "HIGH" as const,
           memoryUseful: true,
           pastChatsUseful: true,
+          profileRequested: false,
           queryText: input.context.currentUserMessage,
           reasonCode: "none" as const,
           recencyRequested,
@@ -292,6 +300,7 @@ function intentOptions(overrides: Record<string, unknown>) {
           confidenceBand: "HIGH" as const,
           memoryUseful: false,
           pastChatsUseful: false,
+          profileRequested: false,
           queryText: input.context.currentUserMessage,
           reasonCode: "none" as const,
           recencyRequested: false,
@@ -626,6 +635,74 @@ describe("Personal Memory v1 run admission", () => {
     expect(candidates.some(({ candidate }) => candidate.itemId === "history-10")).toBe(false);
   });
 
+  it("deduplicates only byte-identical history projections before bounded reranking", () => {
+    const fact = core("fact");
+    const history = [
+      rankedHistory("history-best", "NORMAL"),
+      rankedHistory("history-duplicate", "NORMAL"),
+      rankedHistory("history-distinct", "NORMAL")
+    ].map((candidate, index) => ({
+      ...candidate,
+      metadata: {
+        ...candidate.metadata,
+        dedupeKey: `history-source-${index}`,
+        sourceChatId: `chat-source-${index}`
+      }
+    }));
+    const candidates = memoryRelevanceCandidates(
+      [fact.candidate, ...history],
+      [
+        fact.expansion,
+        ...history.map((candidate, index) => ({
+          ...expandedHistory(candidate.itemId),
+          occurredFrom: new Date(now.getTime() + index * 60_000),
+          occurredTo: new Date(now.getTime() + (index + 1) * 60_000),
+          safeText: index < 2 ? "User: exact repeated history" : "User: distinct history",
+          sourceChatId: `chat-source-${index}`
+        }))
+      ]
+    );
+
+    expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual([
+      "fact", "history-best", "history-distinct"
+    ]);
+    expect(candidates.map(({ handle }) => handle)).toEqual(["c0", "c1", "c2"]);
+    expect(candidates.filter(({ sourceKind }) => sourceKind === "HISTORY")).toHaveLength(2);
+  });
+
+  it("preserves identical history projections at distinct times for a recency plan", () => {
+    const history = [
+      rankedHistory("history-earlier", "NORMAL"),
+      rankedHistory("history-later", "NORMAL")
+    ].map((candidate, index) => ({
+      ...candidate,
+      metadata: {
+        ...candidate.metadata,
+        dedupeKey: `history-recency-source-${index}`,
+        sourceChatId: `chat-recency-source-${index}`
+      }
+    }));
+    const candidates = memoryRelevanceCandidates(
+      history,
+      history.map((candidate, index) => ({
+        ...expandedHistory(candidate.itemId),
+        occurredFrom: new Date(now.getTime() + index * 3_600_000),
+        occurredTo: new Date(now.getTime() + index * 3_600_000 + 60_000),
+        safeText: "User: exact repeated temporal history",
+        sourceChatId: `chat-recency-source-${index}`
+      })),
+      { recencyRequested: true }
+    );
+
+    expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual([
+      "history-earlier", "history-later"
+    ]);
+    expect(candidates.map(({ occurredFrom }) => occurredFrom)).toEqual([
+      now.toISOString(),
+      new Date(now.getTime() + 3_600_000).toISOString()
+    ]);
+  });
+
   it("does not replay a resolved Memory action across a preparing retry", async () => {
     const local = repository({});
     const control = {
@@ -639,6 +716,7 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           memoryUseful: false,
           pastChatsUseful: false,
+          profileRequested: false,
           queryText: null,
           reasonCode: "save_request" as const,
           recencyRequested: false,
@@ -756,6 +834,7 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           memoryUseful: false,
           pastChatsUseful: false,
+          profileRequested: false,
           queryText: null,
           reasonCode: "update_request" as const,
           recencyRequested: false,
@@ -807,6 +886,7 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           memoryUseful: false,
           pastChatsUseful: false,
+          profileRequested: false,
           queryText: null,
           reasonCode: "save_request" as const,
           recencyRequested: false,
@@ -851,6 +931,7 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           memoryUseful: false,
           pastChatsUseful: false,
+          profileRequested: false,
           queryText: null,
           reasonCode: "save_request" as const,
           recencyRequested: false,
@@ -983,13 +1064,28 @@ describe("Personal Memory v1 run admission", () => {
     const options = retrievalOptions(["c0"]);
     const controlCache: MemoryRunControlCache = {};
     const service = createMemoryRunRetrievalService(local.value, options);
-    await expect(service.retrieve({
+    const firstError = await service.retrieve({
       ...runInput("What is my name?"),
       controlCache
-    })).rejects.toMatchObject({
+    }).catch((error: unknown) => error);
+    expect(firstError).toMatchObject({
       code: "memory_admission_settings_changed",
       retryable: true
     });
+    expect(controlCache).toMatchObject({
+      settingsDriftFailedSafeAttemptId: "attempt-1",
+      settingsDriftFailedSafeBudget: {
+        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        reason: "memory_admission_settings_changed",
+        utilityEgressMode: "CONSENTED_EXTERNAL",
+        utilityExecutions: [
+          { role: "MEMORY_CONTROL", state: "READY" },
+          { role: "MEMORY_QUERY_EMBED", state: "READY" }
+        ]
+      }
+    });
+    expect(controlCache.settingsDriftFailedSafeBudget)
+      .not.toHaveProperty("memoryActionResult");
     const retry = await service.retrieve({
       ...runInput("What is my name?"),
       attemptId: "attempt-2",
@@ -1008,7 +1104,7 @@ describe("Personal Memory v1 run admission", () => {
           intent: { action: "NONE", queryText: "What is my name?" },
           sourceAttemptId: "attempt-1",
           sourceBindingId: "binding-control",
-          version: 1
+          version: 2
         },
         utilityEgressMode: "CONSENTED_EXTERNAL"
       },
@@ -1061,7 +1157,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext).toBeNull();
   });
 
-  it("treats memoryUseful false as an authoritative dynamic-retrieval veto", async () => {
+  it("admits the past-chat lane independently when fact retrieval is vetoed", async () => {
     const local = repository({ candidates: [laneCandidate("past-chat")] });
     const options = intentOptions({
       memoryUseful: false,
@@ -1071,13 +1167,16 @@ describe("Personal Memory v1 run admission", () => {
       .retrieve(runInput("What did we discuss?"));
 
     expect(result).toMatchObject({
-      budgetSnapshot: { reason: "memory_not_useful" },
-      items: [],
-      outcome: "EMPTY"
+      items: [{ exactItemId: "past-chat", itemType: "RECALL_CHUNK" }],
+      outcome: "USED"
     });
-    expect(local.retrieve).not.toHaveBeenCalled();
-    expect(options.utilities.embedQuery).not.toHaveBeenCalled();
-    expect(options.utilities.rerank).not.toHaveBeenCalled();
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        filters: expect.objectContaining({ sourceKinds: ["HISTORY"] })
+      })
+    }));
+    expect(options.utilities.embedQuery).toHaveBeenCalledOnce();
+    expect(options.utilities.rerank).toHaveBeenCalledOnce();
   });
 
   it("admits only the narrow response-preference lane when dynamic Memory is vetoed", async () => {
@@ -1088,7 +1187,7 @@ describe("Personal Memory v1 run admission", () => {
     const options = intentOptions({
       applyResponsePreferences: true,
       memoryUseful: false,
-      pastChatsUseful: true
+      pastChatsUseful: false
     });
     vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
       bindingId: "binding-relevance",
@@ -1174,6 +1273,161 @@ describe("Personal Memory v1 run admission", () => {
     }).retrieve(runInput("cross language query"));
     expect(result.items).toEqual([expect.objectContaining({ recallChunkId: "b" })]);
     expect(result.items?.[0]?.selectionReason).toContain("direct_relevance");
+  });
+
+  it.each(["HYBRID", "LEXICAL_ONLY"] as const)(
+    "answers a broad profile from current facts on a usable %s index without query embedding",
+    async (indexMode) => {
+      const candidates = [
+        profileFactLaneCandidate("saved-name", 1),
+        profileFactLaneCandidate("saved-city", 0.95)
+      ];
+      const state = { ...snapshot("generation-1"), indexMode };
+      const retrieve = vi.fn(async () => ({
+        core: [],
+        laneResults: [{ candidates, lane: "FACT_PROFILE" as const }],
+        lexicalFailures: [],
+        lexicalState: "READY" as const,
+        snapshot: state,
+        vectorEvidence: [],
+        vectorState: "NOT_CONFIGURED" as const
+      }));
+      const local = {
+        expand: vi.fn(async () => [
+          {
+            itemId: "saved-name",
+            itemType: "FACT_VERSION" as const,
+            occurredFrom: null,
+            occurredTo: null,
+            projectionKind: "FACT_DISPLAY_TEXT" as const,
+            safeText: "The user's name is Dmitry.",
+            sourceChatId: null,
+            supportingItemId: null
+          },
+          {
+            itemId: "saved-city",
+            itemType: "FACT_VERSION" as const,
+            occurredFrom: null,
+            occurredTo: null,
+            projectionKind: "FACT_DISPLAY_TEXT" as const,
+            safeText: "The user lives in Rostov.",
+            sourceChatId: null,
+            supportingItemId: null
+          }
+        ]),
+        retrieve,
+        snapshot: vi.fn(async () => state)
+      } as unknown as PrismaLocalMemoryRetrievalRepository;
+      const options = intentOptions({
+        memoryUseful: true,
+        pastChatsUseful: true,
+        profileRequested: true
+      });
+      vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
+        bindingId: "binding-relevance",
+        decisions: input.candidates.map((candidate) => ({
+          applicable: true,
+          current: true,
+          handle: candidate.handle,
+          reasonCode: "DIRECT_RELEVANCE" as const,
+          relevanceScore: 0.9
+        })),
+        status: "READY"
+      }));
+
+      const result = await createMemoryRunRetrievalService(local, options)
+        .retrieve(runInput("Что ты обо мне знаешь?"));
+
+      expect(retrieve).toHaveBeenCalledWith(expect.objectContaining({
+        plan: expect.objectContaining({
+          filters: expect.objectContaining({ sourceKinds: ["FACT", "EVENT"] }),
+          profileRequested: true
+        })
+      }));
+      expect(retrieve).toHaveBeenCalledWith(expect.not.objectContaining({
+        vector: expect.anything()
+      }));
+      expect(options.utilities.embedQuery).not.toHaveBeenCalled();
+      expect(options.vectorRepository.resolveActiveProfile).not.toHaveBeenCalled();
+      expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
+        candidates: [
+          expect.objectContaining({ sourceKind: "FACT", text: "The user's name is Dmitry." }),
+          expect.objectContaining({ sourceKind: "FACT", text: "The user lives in Rostov." })
+        ],
+        profileRequested: true
+      }));
+      expect(result.outcome).toBe("USED");
+      expect(result.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ factVersionId: "saved-name", itemType: "FACT_VERSION" }),
+        expect.objectContaining({ factVersionId: "saved-city", itemType: "FACT_VERSION" })
+      ]));
+      expect(result.items).toHaveLength(2);
+      expect(result.items?.some(({ itemType }) => itemType === "RECALL_CHUNK")).toBe(false);
+    }
+  );
+
+  it("fails a broad profile safe when no usable local index is available", async () => {
+    const local = repository({ activeIndexGenerationId: null });
+    const options = intentOptions({
+      memoryUseful: true,
+      pastChatsUseful: true,
+      profileRequested: true
+    });
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Что ты обо мне знаешь?", null));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: { reason: "memory_index_unavailable" },
+      items: [],
+      outcome: "FAILED_SAFE",
+      preparedContext: null
+    });
+    expect(local.retrieve).not.toHaveBeenCalled();
+    expect(options.utilities.embedQuery).not.toHaveBeenCalled();
+    expect(options.utilities.rerank).not.toHaveBeenCalled();
+  });
+
+  it("fails a broad profile safe when the local index becomes unavailable", async () => {
+    const initialState = snapshot("generation-1");
+    const unavailableState = {
+      ...initialState,
+      indexMode: null,
+      reason: "memory_index_unavailable"
+    } as const;
+    const retrieve = vi.fn(async () => ({
+      core: [],
+      laneResults: [],
+      lexicalFailures: [],
+      lexicalState: "DISABLED" as const,
+      snapshot: unavailableState,
+      vectorEvidence: [],
+      vectorState: "NOT_CONFIGURED" as const
+    }));
+    const local = {
+      expand: vi.fn(async () => []),
+      retrieve,
+      snapshot: vi.fn(async () => initialState)
+    } as unknown as PrismaLocalMemoryRetrievalRepository;
+    const options = intentOptions({
+      memoryUseful: true,
+      pastChatsUseful: true,
+      profileRequested: true
+    });
+
+    const result = await createMemoryRunRetrievalService(local, options)
+      .retrieve(runInput("Что ты обо мне знаешь?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: { reason: "memory_index_unavailable" },
+      items: [],
+      outcome: "FAILED_SAFE",
+      preparedContext: null
+    });
+    expect(retrieve).toHaveBeenCalledOnce();
+    expect(local.expand).not.toHaveBeenCalled();
+    expect(options.utilities.embedQuery).not.toHaveBeenCalled();
+    expect(options.utilities.rerank).not.toHaveBeenCalled();
   });
 
   it("reranks legacy sensitive history with the same policy as normal history", () => {

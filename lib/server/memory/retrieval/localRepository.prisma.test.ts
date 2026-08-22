@@ -857,6 +857,57 @@ describe("local Memory retrieval on PostgreSQL", () => {
     );
   });
 
+  it("returns a bounded broad profile with explicit facts before learned facts and no history", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({
+      currentUserText: "What do you know about me?",
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      now: fixtureNow,
+      profileRequested: true
+    });
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual(["FACT_PROFILE"]);
+    const candidates = result.laneResults[0]?.candidates ?? [];
+    const ids = candidates.map(({ itemId }) => itemId);
+    expect(candidates.length).toBeLessThanOrEqual(20);
+    expect(ids).toEqual(expect.arrayContaining([
+      fixture.enFactVersionId,
+      fixture.ruFactVersionId,
+      fixture.sensitiveFactVersionId,
+      fixture.automaticSensitiveFactVersionId
+    ]));
+    for (const excludedId of [
+      fixture.foreignFactVersionId,
+      fixture.historicalFactVersionId,
+      fixture.legacyAssistantFactVersionId,
+      fixture.legacyChatFactVersionId,
+      fixture.legacyFolderFactVersionId,
+      fixture.otherFolderFactVersionId,
+      fixture.staleAutomaticFactVersionId,
+      fixture.validChunkId
+    ]) expect(ids).not.toContain(excludedId);
+    const learnedIndex = ids.indexOf(fixture.automaticSensitiveFactVersionId);
+    expect(learnedIndex).toBeGreaterThan(-1);
+    for (const explicitId of [
+      fixture.enFactVersionId,
+      fixture.ruFactVersionId,
+      fixture.sensitiveFactVersionId
+    ]) {
+      expect(ids.indexOf(explicitId)).toBeLessThan(learnedIndex);
+    }
+
+    const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
+    expect(ranked.map(({ itemId }) => itemId)).toEqual(ids);
+    expect(ranked.every(({ itemType }) => itemType === "FACT_VERSION")).toBe(true);
+  });
+
   it("keeps matching legacy folder, assistant, and chat facts dormant", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const result = await repository.retrieve({

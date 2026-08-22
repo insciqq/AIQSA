@@ -20,6 +20,7 @@ const output = {
   confidenceBand: "HIGH",
   memoryUseful: false,
   pastChatsUseful: false,
+  profileRequested: false,
   queryText: null,
   reasonCode: "save_request",
   recencyRequested: false,
@@ -39,15 +40,43 @@ describe("MemoryActionIntent service", () => {
     expect(request.name).toBe("MemoryActionIntent");
     expect(request.schema).toMatchObject({
       additionalProperties: false,
-      required: expect.arrayContaining(["action", "thisChatOnly"])
+      required: expect.arrayContaining(["action", "profileRequested", "thisChatOnly"])
     });
     expect(request.userPrompt).toContain("current_user_message");
     expect(request.userPrompt).toContain("Please remember that I prefer tea.");
     expect(request.systemPrompt).toContain(
       "LIST and SEARCH are explicit management actions over Saved Memories"
     );
+    expect(request.systemPrompt).toContain(
+      "Never choose LIST for a conversational answer to what the assistant knows"
+    );
     expect(request.systemPrompt).toContain("Put that management lookup in targetQuery");
     expect(request.systemPrompt).toContain("ordinary answer requests: choose NONE");
+    expect(request.systemPrompt).toContain("Automatic learning is a separate later stage");
+    expect(request.systemPrompt).toContain(
+      "responsePreference classifies only the statement or replacementStatement"
+    );
+    expect(request.systemPrompt).toContain(
+      "applyResponsePreferences means that already-saved response-style preferences"
+    );
+    expect(request.systemPrompt).toContain(
+      "any of memoryUseful, pastChatsUseful, applyResponsePreferences, or profileRequested"
+    );
+    expect(request.systemPrompt).toContain(
+      "profileRequested true only when the user asks for a broad inventory"
+    );
+    expect(request.systemPrompt).toContain(
+      "profileRequested true always means action NONE"
+    );
+    expect(request.systemPrompt).toContain(
+      "Расскажи всё, что ты знаешь обо мне из сохранённой памяти"
+    );
+    expect(request.systemPrompt).toContain(
+      "false for targeted identity, preference, recommendation, event, and past-conversation questions"
+    );
+    expect(request.systemPrompt).toContain(
+      "current Saved and learned facts directly"
+    );
     expect(request.systemPrompt).toContain("meaning, not from surface wording");
     expect(request.systemPrompt).toContain("Do not use SENSITIVE");
   });

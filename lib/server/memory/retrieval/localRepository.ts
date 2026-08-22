@@ -817,6 +817,29 @@ function exactSql(
   `;
 }
 
+function profileSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  limit: number
+): Prisma.Sql {
+  const eligible = factEligibleSelect(snapshot, plan);
+  const authorityScore = Prisma.sql`CASE
+    WHEN eligible."sourceMode" = 'EXPLICIT' THEN 1.0
+    ELSE 0.8
+  END`;
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${eligible})
+    SELECT ${candidateColumns(authorityScore)} FROM eligible
+    ORDER BY (eligible."sourceMode" = 'EXPLICIT') DESC,
+      eligible."pinned" DESC,
+      eligible."importance" DESC,
+      eligible."confidence" DESC,
+      eligible."systemFrom" DESC,
+      eligible."itemId"
+    LIMIT ${limit}
+  `;
+}
+
 function ftsSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
@@ -881,11 +904,14 @@ function localLexicalLanes(
   const lanes: MemoryRetrievalLane[] = [];
   if (snapshot.useMemoryFacts &&
     (plan.filters.sourceKinds.includes("FACT") || plan.filters.sourceKinds.includes("EVENT"))) {
-    lanes.push("FACT_EXACT");
-    if (plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
-    if (plan.recencyRequested) lanes.push("FACT_RECENT");
+    if (plan.profileRequested) lanes.push("FACT_PROFILE");
+    else {
+      lanes.push("FACT_EXACT");
+      if (plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
+      if (plan.recencyRequested) lanes.push("FACT_RECENT");
+    }
   }
-  if (snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
+  if (!plan.profileRequested && snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
     plan.filters.sourceKinds.includes("HISTORY")) {
     lanes.push("HISTORY_RECALL_EXACT");
     if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
@@ -912,6 +938,7 @@ function laneSql(
   limit: number
 ): Prisma.Sql {
   const itemType = lane.startsWith("FACT_") ? "FACT_VERSION" : "RECALL_CHUNK";
+  if (lane === "FACT_PROFILE") return profileSql(snapshot, plan, limit);
   if (lane.endsWith("_EXACT")) return exactSql(snapshot, plan, itemType, limit);
   if (lane.endsWith("_FTS_SIMPLE")) return ftsSql(snapshot, plan, itemType, limit);
   if (lane.endsWith("_RECENT")) return recentSql(snapshot, plan, itemType, limit);
@@ -983,9 +1010,10 @@ function localVectorLanes(
 ): readonly MemoryRetrievalLane[] {
   if (!input.plan.queryPresent || !input.vector || snapshot.indexMode !== "HYBRID") return [];
   const lanes: MemoryRetrievalLane[] = [];
-  if (snapshot.useMemoryFacts && (input.plan.filters.sourceKinds.includes("FACT") ||
+  if (!input.plan.profileRequested && snapshot.useMemoryFacts &&
+    (input.plan.filters.sourceKinds.includes("FACT") ||
     input.plan.filters.sourceKinds.includes("EVENT"))) lanes.push("FACT_VECTOR");
-  if (snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
+  if (!input.plan.profileRequested && snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
     input.plan.filters.sourceKinds.includes("HISTORY")) {
     lanes.push("HISTORY_RECALL_VECTOR");
   }
@@ -1101,6 +1129,7 @@ function chunkExpansionSql(
 function validPlan(plan: MemoryRetrievalPlan): boolean {
   const requestedKinds = plan.filters.sourceKinds;
   return typeof plan.applyResponsePreferences === "boolean" &&
+    typeof plan.profileRequested === "boolean" &&
     Array.isArray(requestedKinds) &&
     requestedKinds.length <= retrievalSourceKinds.size &&
     (requestedKinds.length > 0 || plan.applyResponsePreferences) &&
@@ -1110,6 +1139,7 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
     plan.normalizedExactQuery.length <= 2_000 &&
     plan.queryPresent === (plan.normalizedQuery.length > 0) &&
     typeof plan.recencyRequested === "boolean" &&
+    (!plan.profileRequested || !plan.recencyRequested) &&
     (plan.lexicalQuery === null || plan.lexicalQuery.length <= 2_000);
 }
 

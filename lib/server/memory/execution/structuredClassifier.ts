@@ -25,6 +25,10 @@ import type { MemoryExecutionOwner } from "./owner";
 import type { MemoryExecutionRole } from "./roles";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
+import { MEMORY_ADMISSION_MAX_TIMEOUT_MS } from "../admissionDeadline";
+
+export const MEMORY_STRUCTURED_OUTPUT_PROVIDER_TIMEOUT_MS =
+  MEMORY_ADMISSION_MAX_TIMEOUT_MS;
 
 export type MemoryStructuredOutputProviderResult = Readonly<{
   output: Record<string, unknown>;
@@ -126,7 +130,10 @@ export function createAcceptedMemoryStructuredOutputProvider(
             onProviderResponseId: (value) => { providerResponseId = value; },
             onUsage: (value) => { usage = value; },
             signal,
-            timeoutMs: 15_000
+            // Interactive Memory is bounded by its administrator-selected
+            // outer AbortSignal. Keep this transport ceiling at the product
+            // maximum so a hidden shorter per-call cap cannot pre-empt it.
+            timeoutMs: MEMORY_STRUCTURED_OUTPUT_PROVIDER_TIMEOUT_MS
           }
         );
         return { output, providerResponseId, usage };

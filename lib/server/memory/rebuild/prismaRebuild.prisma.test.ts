@@ -1013,7 +1013,8 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
     }
   });
   const preparedContext = `Accepted ${marker}`;
-  const { binding } = await prisma.$transaction(async (tx) => {
+  const includedText = `Remembered ${marker}`;
+  const { attempt, binding } = await prisma.$transaction(async (tx) => {
     const attempt = await tx.memoryRetrievalAttempt.create({
       data: {
         admissionKind: "NORMAL_SEND",
@@ -1061,9 +1062,30 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
         userId: input.userId
       }
     });
-    return { binding };
+    await tx.memoryRetrievalAttemptItem.create({
+      data: {
+        attemptId: attempt.id,
+        exactItemId: input.chunkId,
+        exactSafeText: includedText,
+        factVersionId: null,
+        featureSnapshot: {},
+        itemType: "RECALL_CHUNK",
+        laneRanks: {},
+        ordinal: 0,
+        recallChunkId: input.chunkId,
+        selectionReason: "history-receipt-fixture",
+        sourceBranchGenerationSnapshot: chunk.branchGeneration,
+        sourceChatIdSnapshot: input.chatId,
+        sourceContentHashSnapshot: chunk.contentHash,
+        sourceRevisionSnapshot: chunk.sourceRevisionAtCreation,
+        sourceSnapshot: { sourceMessageIds: [input.sourceMessageId] },
+        textHash: memorySha256(includedText),
+        userId: input.userId,
+        versionSnapshot: {}
+      }
+    });
+    return { attempt, binding };
   });
-  const includedText = `Remembered ${marker}`;
   const memoryItem = await prisma.modelRunMemoryItem.create({
     data: {
       bindingId: binding.id,
@@ -1174,6 +1196,7 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
     }
   });
   return {
+    attemptId: attempt.id,
     bindingId: binding.id,
     egressReceiptId: egressReceipt.id,
     destinationSnapshot,
@@ -1226,6 +1249,20 @@ async function expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(
     includedText: expect.stringContaining(receipt.marker),
     itemType: "RECALL_CHUNK"
   });
+  await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+    where: { id: receipt.attemptId }
+  })).resolves.toMatchObject({
+    consumedAt: expect.any(Date),
+    errorCode: "memory_source_stale",
+    outcome: "USED",
+    preparedContextHash: memorySha256(""),
+    preparedContextText: "",
+    preparedContextTokenCount: 0,
+    state: "CONSUMED"
+  });
+  await expect(prisma.memoryRetrievalAttemptItem.count({
+    where: { attemptId: receipt.attemptId }
+  })).resolves.toBe(0);
 }
 
 describe("Prisma Memory shadow rebuild and history clear", () => {

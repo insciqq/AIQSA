@@ -68,17 +68,24 @@ function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetad
     sameDate(left.validFrom, right.validFrom) && sameDate(left.validTo, right.validTo);
 }
 
-function boundedCandidates(results: readonly MemoryLaneResult[]): readonly MemoryLaneCandidate[] {
+function boundedCandidates(
+  plan: MemoryRetrievalPlan,
+  results: readonly MemoryLaneResult[]
+): readonly MemoryLaneCandidate[] {
   const byLane = new Map<MemoryRetrievalLane, MemoryLaneCandidate[]>();
   for (const lane of MEMORY_RETRIEVAL_LANE_ORDER) byLane.set(lane, []);
   for (const result of results) {
-    if (!MEMORY_RETRIEVAL_LANE_ORDER.includes(result.lane)) continue;
+    if (
+      !MEMORY_RETRIEVAL_LANE_ORDER.includes(result.lane) ||
+      (plan.profileRequested ? result.lane !== "FACT_PROFILE" : result.lane === "FACT_PROFILE")
+    ) continue;
     const bucket = byLane.get(result.lane)!;
     for (const candidate of result.candidates) {
       if (
         candidate.lane !== result.lane || !candidate.hardFilterPassed ||
         !candidate.itemId || candidate.itemId.length > 256 ||
         !["FACT_VERSION", "RECALL_CHUNK"].includes(candidate.itemType) ||
+        (result.lane === "FACT_PROFILE" && candidate.itemType !== "FACT_VERSION") ||
         !Number.isFinite(candidate.rawScore) || !validMetadata(candidate.metadata)
       ) continue;
       bucket.push(candidate);
@@ -123,7 +130,7 @@ export function fuseMemoryRetrievalCandidates(
   const aggregates = new Map<string, Aggregate>();
   const invalidKeys = new Set<string>();
   const ranksByLane = new Map<MemoryRetrievalLane, number>();
-  for (const candidate of boundedCandidates(results)) {
+  for (const candidate of boundedCandidates(plan, results)) {
     const rank = (ranksByLane.get(candidate.lane) ?? 0) + 1;
     ranksByLane.set(candidate.lane, rank);
     const key = candidateKey(candidate);

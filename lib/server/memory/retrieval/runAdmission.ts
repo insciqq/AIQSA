@@ -66,7 +66,7 @@ import {
 } from "./vector";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v3";
+  "memory-run-retrieval-admission-v6";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -130,6 +130,8 @@ export type MemoryRunControlCache = {
   readOnlyControlReuseAttemptId?: string;
   readOnlyControlReuseProof?: MemoryReadOnlyControlReuseProof;
   rerankConsumed?: boolean;
+  settingsDriftFailedSafeAttemptId?: string;
+  settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
 };
 
 type MemoryAdmissionDeadline = Readonly<{
@@ -394,9 +396,14 @@ function sameRetrievalSnapshot(
 
 function assertStableSnapshot(
   actual: MemoryLocalRetrievalSnapshot,
-  expected: MemoryRunRetrievalExpectedSnapshot
+  expected: MemoryRunRetrievalExpectedSnapshot,
+  cache: MemoryRunControlCache,
+  attemptId: string,
+  failedSafeBudget: Readonly<Record<string, unknown>>
 ): void {
   if (!sameRetrievalSnapshot(actual, expected)) {
+    cache.settingsDriftFailedSafeAttemptId = attemptId;
+    cache.settingsDriftFailedSafeBudget = failedSafeBudget;
     throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
   }
 }
@@ -454,6 +461,7 @@ function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknow
     filterTo: plan.filters.to?.toISOString() ?? null,
     lexicalAvailable: plan.lexicalQuery !== null,
     plannerVersion: plan.plannerVersion,
+    profileRequested: plan.profileRequested,
     queryPresent: plan.queryPresent,
     recencyRequested: plan.recencyRequested
   };
@@ -530,6 +538,29 @@ function admissionDeadlineAttempt(
   });
 }
 
+function settingsDriftFailedSafeBudget(
+  expected: MemoryRunRetrievalExpectedSnapshot,
+  cache: MemoryRunControlCache,
+  attemptId: string,
+  utilities: readonly Readonly<{
+    result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null;
+    role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+  }>[] = []
+): Readonly<Record<string, unknown>> {
+  const deadlineBudget = admissionDeadlineAttempt(
+    expected,
+    cache,
+    attemptId,
+    utilities
+  ).budgetSnapshot;
+  const { memoryActionResult: _memoryActionResult, ...safeBudget } = deadlineBudget;
+  return {
+    ...safeBudget,
+    memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+    reason: "memory_admission_settings_changed"
+  };
+}
+
 export type MemoryRelevanceCandidate = Readonly<{
   authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
   candidate: MemoryRankedCandidate;
@@ -544,15 +575,27 @@ export type MemoryRelevanceCandidate = Readonly<{
 
 export function memoryRelevanceCandidates(
   ranked: readonly MemoryRankedCandidate[],
-  expanded: readonly MemoryExpandedCandidate[]
+  expanded: readonly MemoryExpandedCandidate[],
+  options: Readonly<{ recencyRequested?: boolean }> = {}
 ): readonly MemoryRelevanceCandidate[] {
   const projections = new Map(expanded.map((candidate) => [
     `${candidate.itemType}:${candidate.itemId}`,
     candidate
   ]));
+  const seenHistoryProjections = new Set<string>();
   const projected = ranked.flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
+    // Chunks retain source-specific identities, but repeated chats can still
+    // produce the exact same safe projection. For non-temporal plans, one copy
+    // is sufficient evidence; removing later byte-for-byte copies before the
+    // bounded reranker preserves room for distinct facts and history without
+    // fuzzy or semantic deduplication. Recency plans keep every occurrence
+    // because its timestamp is part of the evidence.
+    if (candidate.itemType === "RECALL_CHUNK" && !options.recencyRequested) {
+      if (seenHistoryProjections.has(projection.safeText)) return [];
+      seenHistoryProjections.add(projection.safeText);
+    }
     const sourceKind = candidate.itemType === "RECALL_CHUNK"
       ? "HISTORY" as const
       : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const;
@@ -609,7 +652,8 @@ function degradationFor(
   result: MemoryLocalRetrievalResult,
   relevance: MemoryRunRerankResult | null,
   hadCandidates: boolean,
-  dynamicAllowed = true
+  dynamicAllowed = true,
+  profileRequested = false
 ): string | null {
   if (hadCandidates && relevance?.status === "UNAVAILABLE") {
     return "memory_relevance_unavailable";
@@ -617,12 +661,16 @@ function degradationFor(
   if (!dynamicAllowed) return null;
   if (result.lexicalState === "FAILED") return "memory_fts_unavailable";
   if (result.lexicalState === "DEGRADED") return "memory_fts_partial_unavailable";
+  if (!result.snapshot.indexMode) {
+    return "memory_index_unavailable";
+  }
+  // A broad profile request deliberately reads the bounded current-fact lane.
+  // It neither needs nor uses query-vector retrieval, so vector degradation is
+  // not a failure for this mode.
+  if (profileRequested) return null;
   if (result.vectorState === "DEGRADED") return "memory_vector_unavailable";
   if (result.snapshot.indexMode === "HYBRID" && result.vectorState === "NOT_CONFIGURED") {
     return "memory_query_embedding_unavailable";
-  }
-  if (!result.snapshot.indexMode && result.snapshot.reason === "memory_index_unavailable") {
-    return "memory_index_unavailable";
   }
   return null;
 }
@@ -713,7 +761,17 @@ export function createMemoryRunRetrievalService(
         return emptyAttempt(input.expected, "DISABLED", "assistant_memory_grant_missing", null,
           cachedActionEvidence);
       }
-      assertStableSnapshot(snapshot, input.expected);
+      assertStableSnapshot(
+        snapshot,
+        input.expected,
+        controlCache,
+        input.attemptId,
+        settingsDriftFailedSafeBudget(
+          input.expected,
+          controlCache,
+          input.attemptId
+        )
+      );
       if (snapshot.status === "DISABLED") {
         return emptyAttempt(input.expected, "DISABLED", snapshot.reason, null,
           cachedActionEvidence);
@@ -799,9 +857,14 @@ export function createMemoryRunRetrievalService(
           ? "CONSENTED_EXTERNAL" as const
           : "LOCAL_ONLY" as const
       };
+      const factsRequested = control.intent.memoryUseful &&
+        input.expected.settings.useMemoryFacts;
+      const historyRequested = !control.intent.profileRequested &&
+        control.intent.pastChatsUseful &&
+        input.expected.settings.referenceChatHistory;
       const preferencesRequested = control.intent.applyResponsePreferences &&
         input.expected.settings.useMemoryFacts;
-      const retrievalRequested = control.intent.memoryUseful || preferencesRequested;
+      const retrievalRequested = factsRequested || historyRequested || preferencesRequested;
       if (!retrievalRequested) {
         return emptyAttempt(input.expected, "EMPTY", "memory_not_useful", null, {
           ...actionEvidence,
@@ -817,17 +880,15 @@ export function createMemoryRunRetrievalService(
         });
       }
       const dynamicSourceKinds = [
-        ...(control.intent.memoryUseful && input.expected.settings.useMemoryFacts
-          ? ["FACT" as const, "EVENT" as const] : []),
-        ...(control.intent.memoryUseful && control.intent.pastChatsUseful &&
-          input.expected.settings.referenceChatHistory
-          ? ["HISTORY" as const] : [])
+        ...(factsRequested ? ["FACT" as const, "EVENT" as const] : []),
+        ...(historyRequested ? ["HISTORY" as const] : [])
       ];
       const plan = planMemoryRetrieval({
         applyResponsePreferences: preferencesRequested,
         currentUserText: control.intent.queryText,
         filters: { sourceKinds: dynamicSourceKinds },
         now: input.now,
+        profileRequested: control.intent.profileRequested,
         recencyRequested: control.intent.recencyRequested
       });
       const querySecret = memoryExplicitStatementContainsSecret(plan.normalizedQuery);
@@ -838,15 +899,23 @@ export function createMemoryRunRetrievalService(
           queryHash: memorySha256(plan.normalizedQuery)
         });
       }
-      if (!plan.queryPresent || snapshot.indexMode !== "HYBRID") {
+      const queryEmbeddingRequired = !plan.profileRequested;
+      if (!plan.queryPresent ||
+        (queryEmbeddingRequired && snapshot.indexMode !== "HYBRID") ||
+        (plan.profileRequested && snapshot.indexMode === null)) {
         return emptyAttempt(input.expected, "FAILED_SAFE",
-          !plan.queryPresent ? "memory_plan_query_missing" : "memory_vector_index_unavailable",
+          !plan.queryPresent
+            ? "memory_plan_query_missing"
+            : plan.profileRequested
+              ? "memory_index_unavailable"
+              : "memory_vector_index_unavailable",
           plan.queryPresent ? plan.normalizedQuery : null,
           { ...actionEvidence, plan: planEvidence(plan) });
       }
 
       let queryEmbedding: MemoryRunQueryEmbeddingResult | null = null;
-      if (plan.queryPresent && !querySecret && snapshot.indexMode === "HYBRID") {
+      if (queryEmbeddingRequired && plan.queryPresent && !querySecret &&
+        snapshot.indexMode === "HYBRID") {
         if (options.utilities && options.vectorRepository) {
           const profile = await abortableRead(
             options.vectorRepository.resolveActiveProfile(input.userId),
@@ -880,7 +949,7 @@ export function createMemoryRunRetrievalService(
           queryEmbedding = { reason: "memory_query_embedding_unavailable", status: "UNAVAILABLE" };
         }
       }
-      if (queryEmbedding?.status !== "READY") {
+      if (queryEmbeddingRequired && queryEmbedding?.status !== "READY") {
         return emptyAttempt(input.expected, "FAILED_SAFE", "memory_query_embedding_unavailable",
           plan.normalizedQuery, {
             ...actionEvidence,
@@ -928,9 +997,20 @@ export function createMemoryRunRetrievalService(
             utilityExecutions: [utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding)]
           });
       }
-      assertStableSnapshot(local.snapshot, input.expected);
+      assertStableSnapshot(
+        local.snapshot,
+        input.expected,
+        controlCache,
+        input.attemptId,
+        settingsDriftFailedSafeBudget(
+          input.expected,
+          controlCache,
+          input.attemptId,
+          [{ result: queryEmbedding, role: "MEMORY_QUERY_EMBED" }]
+        )
+      );
 
-      const dynamicAllowed = control.intent.memoryUseful;
+      const dynamicAllowed = factsRequested || historyRequested;
       const dynamicLaneResults = dynamicAllowed ? local.laneResults : [];
       const fused = fuseMemoryRetrievalCandidates(plan, dynamicLaneResults, input.now);
       const coreKeys = new Set(local.core.map(({ candidate }) =>
@@ -963,7 +1043,8 @@ export function createMemoryRunRetrievalService(
         : [];
       const relevanceInput = memoryRelevanceCandidates(
         [...eligibleCore.map(({ candidate }) => candidate), ...dynamicFused],
-        [...eligibleCore.map(({ expansion }) => expansion), ...expanded]
+        [...eligibleCore.map(({ expansion }) => expansion), ...expanded],
+        { recencyRequested: plan.recencyRequested }
       );
       let relevance: MemoryRunRerankResult | null = null;
       if (relevanceInput.length > 0) {
@@ -977,6 +1058,7 @@ export function createMemoryRunRetrievalService(
           relevance = await options.utilities.rerank({
               attemptId: input.attemptId,
               candidates: relevanceInput.map(({ candidate: _candidate, ...candidate }) => candidate),
+              profileRequested: plan.profileRequested,
               query: control.intent.queryText,
               signal,
               userId: input.userId
@@ -1023,7 +1105,13 @@ export function createMemoryRunRetrievalService(
         selectedKeys.has(`${candidate.itemType}:${candidate.itemId}`));
       const degradationCode = expansionFailed
         ? "memory_expansion_unavailable"
-        : degradationFor(local, relevance, relevanceInput.length > 0, dynamicAllowed);
+        : degradationFor(
+          local,
+          relevance,
+          relevanceInput.length > 0,
+          dynamicAllowed,
+          plan.profileRequested
+        );
       if (degradationCode) {
         return emptyAttempt(input.expected, "FAILED_SAFE", degradationCode,
           plan.normalizedQuery, {

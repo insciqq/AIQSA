@@ -19,10 +19,12 @@ export type MemoryRetrievalLaneLimitAllocation = Readonly<
 export function allocateMemoryRetrievalLaneLimits(
   lanes: readonly MemoryRetrievalLane[]
 ): MemoryRetrievalLaneLimitAllocation {
+  const profileRequested = lanes.includes("FACT_PROFILE");
   if (
     lanes.length === 0 || lanes.length > MEMORY_RETRIEVAL_LANE_ORDER.length ||
     new Set(lanes).size !== lanes.length ||
-    lanes.some((lane) => !MEMORY_RETRIEVAL_LANE_ORDER.includes(lane))
+    lanes.some((lane) => !MEMORY_RETRIEVAL_LANE_ORDER.includes(lane)) ||
+    (profileRequested && lanes.length !== 1)
   ) throw new Error("memory_retrieval_lane_contract_invalid");
   const configuredTotal = lanes.reduce(
     (total, lane) => total + MEMORY_RETRIEVAL_LANE_LIMITS[lane],
