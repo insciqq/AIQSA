@@ -86,7 +86,19 @@ export type AdminProviderModelConfiguration = {
 
 export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMapping;
 
+export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
+
+export type AdminProviderCompatibilityEvidence = {
+  directPdf: AdminProviderCompatibilityStatus;
+  modelAccess: AdminProviderCompatibilityStatus;
+  probeVersion: 1;
+  streaming: AdminProviderCompatibilityStatus;
+  structuredOutput: AdminProviderCompatibilityStatus;
+  usage: AdminProviderCompatibilityStatus;
+};
+
 export type AdminProviderTestEvidence = {
+  compatibility?: AdminProviderCompatibilityEvidence;
   detail: "model_missing" | "ok" | "route_missing";
   method: "models_catalog" | "openrouter_account_catalog" | "tiny_generation";
   selectedProviders: string[];

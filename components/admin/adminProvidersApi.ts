@@ -429,14 +429,14 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_discovery_failed: "Model discovery failed. Check the credential, endpoint, and account access.",
     provider_discovery_unsupported: "Remote model discovery is available only for OpenRouter and Custom compatible connections.",
     provider_draft_stale: "The draft changed in another request. Refresh and retry.",
-    provider_draft_test_failed: "The connectivity test failed. The prior active configuration was not changed.",
+    provider_draft_test_failed: "The compatibility checks could not be completed. Existing evidence was not changed.",
     provider_family_adapter_mismatch: "The selected protocol does not match this provider family.",
     provider_group_not_found: "This group no longer exists.",
     provider_model_not_found: "This model deployment no longer exists.",
     provider_model_class_immutable: "A deployment cannot change between answer and embedding classes; add a new deployment instead.",
-    provider_paid_test_confirmation_required: "Confirm the paid tiny-generation request before testing.",
+    provider_paid_test_confirmation_required: "Confirm the provider requests before running compatibility checks.",
     provider_revoke_confirmation_required: "This destructive credential action requires confirmation.",
-    provider_refresh_failed: "The active refresh failed transiently. Prior matching availability was preserved and marked for attention.",
+    provider_refresh_failed: "The active compatibility checks hit a transient provider failure. Existing evidence was preserved.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {

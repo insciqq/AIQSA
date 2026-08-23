@@ -51,7 +51,7 @@ import type {
 } from "./tester";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
-import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 
 const MAX_NAME_LENGTH = 160;
 
@@ -206,13 +206,31 @@ function validateEvidence(
   );
   const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(evidence, "pdfInput");
+  const compatibility = decodeAdminProviderCompatibilityEvidence(evidence.compatibility);
+  const hasCompatibility = Object.prototype.hasOwnProperty.call(evidence, "compatibility");
   if (
     evidence.method !== expectedMethod ||
     evidence.upstreamModelId !== model.upstreamModelId ||
     evidence.selectedProviders.length !== expectedProviders.length ||
     evidence.selectedProviders.some((provider, index) => provider !== expectedProviders[index]) ||
     (outcome.status === "available") !== (evidence.detail === "ok") ||
-    (hasPdfInput && (!pdfInput || !model.capabilities.nativePdfInput ||
+    (hasCompatibility && !compatibility) ||
+    (compatibility && (
+      compatibility.modelAccess !== (outcome.status === "available"
+        ? "verified"
+        : "not_supported") ||
+      (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
+      (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput) ||
+      (outcome.status === "unavailable" && (
+        compatibility.streaming === "verified" || compatibility.usage === "verified"
+      )) ||
+      (model.modelClass === "embedding" && (
+        compatibility.directPdf === "verified" ||
+        compatibility.streaming === "verified" ||
+        compatibility.structuredOutput === "verified"
+      ))
+    )) ||
+    (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
     (structuredOutput !== null && (
@@ -223,6 +241,7 @@ function validateEvidence(
     throw new AdminProviderServiceError("provider_test_evidence_invalid");
   }
   return {
+    ...(compatibility ? { compatibility } : {}),
     detail: evidence.detail,
     method: evidence.method,
     selectedProviders: [...evidence.selectedProviders],
@@ -464,9 +483,7 @@ export function createAdminProviderService(input: Readonly<{
       const mode: AdminProviderDraftTestMode = candidate.connection.family === "openrouter"
         ? "account_catalog"
         : "tiny_generation";
-      if ((mode === "tiny_generation" ||
-        model.modelClass === "answer" && supportsStructuredOutputAdapter(model.adapterKind)) &&
-        value.confirmPaidRequest !== true) {
+      if (value.confirmPaidRequest !== true) {
         throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
       }
       const secret = credentialSecretSource(candidate.credential.id, {
@@ -685,7 +702,7 @@ export function createAdminProviderService(input: Readonly<{
       providerModelId: string;
       signal?: AbortSignal;
     }): Promise<AdminProviderDraftCheck> {
-      if (value.mode === "tiny_generation" && value.confirmPaidRequest !== true) {
+      if (value.confirmPaidRequest !== true) {
         throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
       }
       const candidate = await input.repository.loadDraftTestCandidate(value);
@@ -697,11 +714,6 @@ export function createAdminProviderService(input: Readonly<{
       validateFamily(candidate.connection.family, model);
       if (value.mode === "account_catalog" && candidate.connection.family !== "openrouter") {
         throw new AdminProviderServiceError("provider_test_mode_invalid");
-      }
-      if (model.modelClass === "answer" &&
-        supportsStructuredOutputAdapter(model.adapterKind) &&
-        value.confirmPaidRequest !== true) {
-        throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
       }
       const source = candidate.credential.source;
       const secret = credentialSecretSource(candidate.credential.id, source);

@@ -30,6 +30,7 @@ import type {
 } from "./repositoryContract";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
   countBlockingMemoryExecutionBindings,
   detachExpiredMemoryExecutionBindings,
@@ -71,7 +72,9 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   }
   const structuredOutput = decodeStructuredOutputVerificationEvidence(value.structuredOutput);
   const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
+  const compatibility = decodeAdminProviderCompatibilityEvidence(value.compatibility);
   return {
+    ...(compatibility ? { compatibility } : {}),
     detail: value.detail,
     method: value.method,
     selectedProviders: value.selectedProviders as string[],

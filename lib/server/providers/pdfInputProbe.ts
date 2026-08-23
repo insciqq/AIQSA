@@ -113,7 +113,7 @@ function pdfObject(id: number, body: Buffer | string): Buffer {
 function buildImageOnlyProbePdf(): Buffer {
   const compressedRaster = deflateSync(imageOnlyProbeRaster(), { level: 9 });
   const content = Buffer.from(
-    `q\n${PDF_INPUT_PROBE_WIDTH} 0 0 -${PDF_INPUT_PROBE_HEIGHT} 0 ${PDF_INPUT_PROBE_HEIGHT} cm\n/Im0 Do\nQ\n`,
+    `q\n${PDF_INPUT_PROBE_WIDTH} 0 0 ${PDF_INPUT_PROBE_HEIGHT} 0 0 cm\n/Im0 Do\nQ\n`,
     "ascii"
   );
   const objects = [
@@ -214,6 +214,8 @@ function executionSnapshot(input: ProviderPdfInputProbeInput): ProviderExecution
 
 function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
   const fixture = imageOnlyPdfInputProbeFixture();
+  const responsesAdapter = input.model.adapterKind === "openai_responses_native" ||
+    input.model.adapterKind === "openai_responses_compatible";
   return {
     attachmentIds: ["pdf-input-probe"],
     attachments: [{
@@ -242,6 +244,9 @@ function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
       maxOutputTokens: 64,
       maxTokens: 64,
       max_output_tokens: 64,
+      ...(responsesAdapter
+        ? { reasoning: { effort: "none", summary: "none" } }
+        : {}),
       store: false,
       stream: false
     },
@@ -276,7 +281,6 @@ export function createProviderPdfInputProbe(
     async probe(input) {
       if (
         input.model.modelClass !== "answer" ||
-        !input.model.capabilities.nativePdfInput ||
         !supportsPdfInputAdapter(input.model.adapterKind)
       ) return null;
 

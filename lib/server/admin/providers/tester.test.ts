@@ -74,12 +74,72 @@ function structuredChatResponse() {
         }),
         role: "assistant"
       }
-    }]
+    }],
+    usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
   }), { headers: { "content-type": "application/json" }, status: 200 });
 }
 
+function streamedChatResponse() {
+  const body = [
+    'data: {"id":"chat-1","model":"vendor/model","choices":[{"delta":{"content":"OK"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chat-1","model":"vendor/model","choices":[],"usage":{"completion_tokens":1,"prompt_tokens":2,"total_tokens":3}}',
+    "",
+    "data: [DONE]",
+    ""
+  ].join("\n");
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream" },
+    status: 200
+  });
+}
+
 describe("admin provider draft tester", () => {
-  it("does not run the PDF probe when Direct PDF input is not requested", async () => {
+  it("verifies all five answer-model compatibility contracts", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+      return body.stream === true ? streamedChatResponse() : structuredChatResponse();
+    });
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => fetchFn,
+      pdfInputProbe: {
+        async probe() {
+          return {
+            adapterKind: "openrouter_chat_completions" as const,
+            probeVersion: 1 as const,
+            upstreamModelId: "vendor/model",
+            verified: true as const
+          };
+        }
+      }
+    });
+
+    await expect(providerTester.test(input())).resolves.toMatchObject({
+      evidence: {
+        compatibility: {
+          directPdf: "verified",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "verified",
+          structuredOutput: "verified",
+          usage: "verified"
+        },
+        pdfInput: { verified: true },
+        structuredOutput: { verified: true }
+      },
+      status: "available"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({
+      stream: false
+    });
+    expect(JSON.parse(String(fetchFn.mock.calls[2]?.[1]?.body))).toMatchObject({
+      stream: true
+    });
+  });
+
+  it("runs the PDF probe even when Direct PDF input is not preconfigured", async () => {
     const probe = vi.fn(async () => null);
     const providerTester = createAdminProviderDraftTester({
       createDiscoveryClient: () => discovery(),
@@ -91,7 +151,7 @@ describe("admin provider draft tester", () => {
       evidence: { detail: "ok" },
       status: "available"
     });
-    expect(probe).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledOnce();
   });
 
   it("adds exact PDF evidence after a successful image-only probe", async () => {
@@ -153,6 +213,22 @@ describe("admin provider draft tester", () => {
     expect(outcome.evidence).not.toHaveProperty("pdfInput");
   });
 
+  it("does not convert a transient capability failure into Not supported", async () => {
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => async () => structuredChatResponse(),
+      pdfInputProbe: {
+        async probe() {
+          throw new Error("OpenAI request failed with status 503");
+        }
+      }
+    });
+
+    await expect(providerTester.test(input())).rejects.toThrow(
+      "OpenAI request failed with status 503"
+    );
+  });
+
   it("checks embedding deployments against the OpenRouter embedding catalog", async () => {
     const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
     const listEmbeddingModels = vi.fn<OpenRouterDiscoveryClient["listEmbeddingModels"]>(async () => [{
@@ -163,8 +239,14 @@ describe("admin provider draft tester", () => {
       pricing: {},
       supportedParameters: []
     }]);
+    const createFetch = vi.fn(() => async () => new Response(JSON.stringify({
+      data: [{ embedding: Array.from({ length: 4_096 }, (_, index) => index === 0 ? 1 : 0), index: 0 }],
+      model: "qwen/qwen3-embedding-8b",
+      usage: { prompt_tokens: 4, total_tokens: 4 }
+    }), { headers: { "content-type": "application/json" }, status: 200 }));
     const tester = createAdminProviderDraftTester({
-      createDiscoveryClient: () => discovery({ listEmbeddingModels, listModels })
+      createDiscoveryClient: () => discovery({ listEmbeddingModels, listModels }),
+      createFetch
     });
 
     await expect(tester.test(input({
@@ -193,6 +275,14 @@ describe("admin provider draft tester", () => {
       modelDisplayName: "Qwen3 Embedding 8B"
     }))).resolves.toMatchObject({
       evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "verified"
+        },
         detail: "ok",
         selectedProviders: [],
         upstreamModelId: "qwen/qwen3-embedding-8b"
@@ -201,6 +291,7 @@ describe("admin provider draft tester", () => {
     });
     expect(listEmbeddingModels).toHaveBeenCalledOnce();
     expect(listModels).not.toHaveBeenCalled();
+    expect(createFetch).toHaveBeenCalledOnce();
   });
 
   it("uses the credential-specific OpenRouter account catalog", async () => {
@@ -210,6 +301,14 @@ describe("admin provider draft tester", () => {
 
     await expect(providerTester.test(input())).resolves.toEqual({
       evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "not_supported",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "not_supported"
+        },
         detail: "model_missing",
         method: "openrouter_account_catalog",
         selectedProviders: [],
@@ -287,6 +386,14 @@ describe("admin provider draft tester", () => {
 
     await expect(providerTester.test(selected)).resolves.toEqual({
       evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "verified",
+          usage: "verified"
+        },
         detail: "ok",
         method: "openrouter_account_catalog",
         selectedProviders: ["Anthropic"],
@@ -316,6 +423,14 @@ describe("admin provider draft tester", () => {
 
     await expect(providerTester.test(input())).resolves.toEqual({
       evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "not_supported"
+        },
         detail: "ok",
         method: "openrouter_account_catalog",
         selectedProviders: [],
@@ -323,7 +438,7 @@ describe("admin provider draft tester", () => {
       },
       status: "available"
     });
-    const [, request] = fetchFn.mock.calls[0] ?? [];
+    const [, request] = fetchFn.mock.calls[1] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
       provider: { require_parameters: true },
       response_format: { json_schema: { strict: true }, type: "json_schema" }
@@ -369,7 +484,7 @@ describe("admin provider draft tester", () => {
     expect(outcome.evidence).not.toHaveProperty("structuredOutput");
   });
 
-  it("falls back to an ordinary tiny generation when optional probes prove nothing", async () => {
+  it("records explicit negatives when optional probes prove nothing", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{
         finish_reason: "stop",
@@ -382,6 +497,14 @@ describe("admin provider draft tester", () => {
 
     expect(outcome).toEqual({
       evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "not_supported"
+        },
         detail: "ok",
         method: "tiny_generation",
         selectedProviders: [],
@@ -389,11 +512,13 @@ describe("admin provider draft tester", () => {
       },
       status: "available"
     });
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
     const firstBody = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
     const secondBody = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
-    expect(firstBody).toHaveProperty("response_format.json_schema.strict", true);
-    expect(secondBody).not.toHaveProperty("response_format");
+    const fourthBody = JSON.parse(String(fetchFn.mock.calls[3]?.[1]?.body));
+    expect(firstBody).not.toHaveProperty("response_format");
+    expect(secondBody).toHaveProperty("response_format.json_schema.strict", true);
+    expect(fourthBody).toMatchObject({ stream: true });
   });
 
   it("runs the explicit tiny generation through the existing runtime adapter and stores no output", async () => {
@@ -426,6 +551,14 @@ describe("admin provider draft tester", () => {
     const result = await providerTester.test(compatible);
     expect(result).toEqual({
       evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "verified"
+        },
         detail: "ok",
         method: "tiny_generation",
         selectedProviders: [],
@@ -434,7 +567,7 @@ describe("admin provider draft tester", () => {
       status: "available"
     });
     expect(JSON.stringify(result)).not.toContain("private output");
-    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(fetchFn).toHaveBeenCalledTimes(2);
     const [endpoint, request] = fetchFn.mock.calls[0] ?? [];
     expect(endpoint).toBe("https://compatible.example.test/v1/chat/completions");
     expect(request).toMatchObject({ method: "POST", redirect: "error" });
@@ -473,7 +606,7 @@ describe("admin provider draft tester", () => {
       evidence: { detail: "ok", method: "tiny_generation" },
       status: "available"
     });
-    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("does not allow no-auth to enter the OpenRouter account-catalog path", async () => {
@@ -510,7 +643,7 @@ describe("admin provider draft tester", () => {
       evidence: { detail: "ok", method: "tiny_generation" },
       status: "available"
     });
-    const [, request] = fetchFn.mock.calls[0] ?? [];
+    const [, request] = fetchFn.mock.calls[1] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
       max_completion_tokens: 128,
       provider: { require_parameters: true },
@@ -567,7 +700,7 @@ describe("admin provider draft tester", () => {
       evidence: { detail: "ok", method: "tiny_generation" },
       status: "available"
     });
-    const [endpoint, request] = fetchFn.mock.calls[0] ?? [];
+    const [endpoint, request] = fetchFn.mock.calls[1] ?? [];
     expect(endpoint).toBe("https://responses.example.test/v1/responses");
     const requestBody = JSON.parse(String(request?.body));
     expect(requestBody).toMatchObject({

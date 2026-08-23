@@ -9,6 +9,7 @@ import {
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
   adminSearchExecutionDefaults,
   type AdminSearchDraft,
@@ -185,13 +186,26 @@ function validatedEvidence(
   );
   const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
+  const compatibility = decodeAdminProviderCompatibilityEvidence(
+    outcome.evidence.compatibility
+  );
+  const hasCompatibility = Object.prototype.hasOwnProperty.call(
+    outcome.evidence,
+    "compatibility"
+  );
   if (
     outcome.status !== "available" ||
     outcome.evidence.detail !== "ok" ||
     outcome.evidence.method !== "tiny_generation" ||
     outcome.evidence.upstreamModelId !== model.upstreamModelId ||
     outcome.evidence.selectedProviders.length !== 0 ||
-    (hasPdfInput && (!pdfInput || !model.capabilities.nativePdfInput ||
+    (hasCompatibility && !compatibility) ||
+    (compatibility && (
+      compatibility.modelAccess !== "verified" ||
+      (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
+      (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput)
+    )) ||
+    (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
     (structuredOutput !== null && (
@@ -204,6 +218,7 @@ function validatedEvidence(
     );
   }
   return {
+    ...(compatibility ? { compatibility } : {}),
     detail: "ok",
     method: "tiny_generation",
     selectedProviders: [],

@@ -36,6 +36,18 @@ async function collect(
   return next.value;
 }
 
+async function collectEvents(
+  stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResult>
+): Promise<ModelRunSseEvent[]> {
+  const events: ModelRunSseEvent[] = [];
+  let next = await stream.next();
+  while (!next.done) {
+    events.push(next.value);
+    next = await stream.next();
+  }
+  return events;
+}
+
 describe("Gemini Interactions adapter", () => {
   it("uses unary create when streaming is disabled", async () => {
     const createInteraction = vi.fn<GeminiInteractionsClient["createInteraction"]>(async () => ({
@@ -53,6 +65,24 @@ describe("Gemini Interactions adapter", () => {
     expect(createInteraction).toHaveBeenCalledOnce();
     expect(createInteraction.mock.calls[0]?.[0]).toMatchObject({ store: false, stream: false });
     expect(result.finalText).toBe("ok");
+  });
+
+  it("does not synthesize a usage event when unary usage is absent", async () => {
+    const client: GeminiInteractionsClient = {
+      createInteraction: vi.fn(async () => ({
+        id: "unary-no-usage",
+        model: "gemini-3.6-flash",
+        status: "completed",
+        steps: [{ content: [{ text: "ok", type: "text" }], type: "model_output" }]
+      })),
+      streamInteraction: vi.fn()
+    };
+
+    const events = await collectEvents(
+      createGeminiInteractionsAdapter({ client }).stream(request(false))
+    );
+
+    expect(events.some(({ type }) => type === "usage")).toBe(false);
   });
 
   it("uses strict SSE when streaming is enabled", async () => {

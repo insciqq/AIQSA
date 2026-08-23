@@ -494,6 +494,64 @@ describe("admin provider service", () => {
     })).rejects.toBeInstanceOf(AdminProviderServiceError);
   });
 
+  it("accepts discovered PDF support independently of the runtime opt-in and rejects inconsistent compatibility", async () => {
+    const storeDraftCheckCas = vi.fn<AdminProviderRepository["storeDraftCheckCas"]>(
+      async () => "stored"
+    );
+    const providerRepository = repository({
+      async loadDraftTestCandidate() { return draftCandidate(); },
+      storeDraftCheckCas
+    });
+    const compatibleEvidence = {
+      compatibility: {
+        directPdf: "verified" as const,
+        modelAccess: "verified" as const,
+        probeVersion: 1 as const,
+        streaming: "verified" as const,
+        structuredOutput: "not_supported" as const,
+        usage: "verified" as const
+      },
+      detail: "ok" as const,
+      method: "tiny_generation" as const,
+      pdfInput: {
+        adapterKind: "openai_responses_compatible" as const,
+        probeVersion: 1 as const,
+        upstreamModelId: "vendor/model",
+        verified: true as const
+      },
+      selectedProviders: [],
+      upstreamModelId: "vendor/model"
+    };
+    const providers = service(providerRepository, tester(async () => ({
+      evidence: compatibleEvidence,
+      status: "available"
+    })));
+
+    await expect(providers.testDraft({
+      confirmPaidRequest: true,
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      mode: "tiny_generation",
+      providerModelId: "model-1"
+    })).resolves.toMatchObject({ evidence: compatibleEvidence });
+    expect(storeDraftCheckCas).toHaveBeenCalledOnce();
+
+    const inconsistent = service(providerRepository, tester(async () => ({
+      evidence: {
+        ...compatibleEvidence,
+        pdfInput: undefined
+      },
+      status: "available"
+    })));
+    await expect(inconsistent.testDraft({
+      confirmPaidRequest: true,
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      mode: "tiny_generation",
+      providerModelId: "model-1"
+    })).rejects.toMatchObject({ code: "provider_test_evidence_invalid" });
+  });
+
   it("validates each referenced credential once and derives the model matrix from catalogs", async () => {
     const activateConnectionCas = vi.fn<AdminProviderRepository["activateConnectionCas"]>(async () => "updated");
     const providerRepository = repository({
