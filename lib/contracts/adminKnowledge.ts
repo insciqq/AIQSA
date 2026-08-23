@@ -6,11 +6,35 @@ export type AdminKnowledgeProfileDestination = Readonly<{
   targetDimension: number;
 }>;
 
+export type AdminKnowledgePdfProcessingMode =
+  | "local"
+  | "system_model_direct_pdf"
+  | "system_model_vision";
+
+export type AdminKnowledgePdfProcessingDestination = Readonly<{
+  connectionDisplayName: string;
+  deploymentId: string;
+  modelDisplayName: string;
+  provider: string;
+  upstreamModelId: string;
+}>;
+
+export type AdminKnowledgePdfProcessingOption = Readonly<{
+  available: boolean;
+  mode: AdminKnowledgePdfProcessingMode;
+  representation: "local_only" | "original_pdf_page_ranges" | "rendered_pdf_page_images";
+}>;
+
 export type AdminKnowledgeProfileRevision = Readonly<{
   activatedAt: string;
   destination: AdminKnowledgeProfileDestination;
   executionAuthority: "installation" | "legacy_user";
   id: string;
+  pdfProcessing: Readonly<{
+    destination: AdminKnowledgePdfProcessingDestination | null;
+    mode: AdminKnowledgePdfProcessingMode;
+    parserProfileVersion: number;
+  }>;
   revisionNumber: number;
 }>;
 
@@ -18,8 +42,14 @@ export type AdminKnowledgeProfileSettings = Readonly<{
   activeRevision: AdminKnowledgeProfileRevision | null;
   availableDestinations: AdminKnowledgeProfileDestination[];
   egress: Readonly<{
-    destination: string | null;
-    representations: readonly ["document_text_chunks", "search_queries"];
+    embeddingDestination: string | null;
+    pdfDestination: string | null;
+    representations: readonly (
+      | "document_text_chunks"
+      | "original_pdf_page_ranges"
+      | "rendered_pdf_page_images"
+      | "search_queries"
+    )[];
   }>;
   health: Readonly<{
     checkedAt: string | null;
@@ -34,7 +64,9 @@ export type AdminKnowledgeProfileSettings = Readonly<{
     profiledGenerations: number;
     totalBases: number;
   }>;
+  pdfProcessingOptions: readonly AdminKnowledgePdfProcessingOption[];
   recentRevisions: AdminKnowledgeProfileRevision[];
+  systemModelDestination: AdminKnowledgePdfProcessingDestination | null;
   updatedAt: string;
   updatedBy: { displayName: string; id: string } | null;
   version: number;
@@ -96,6 +128,15 @@ export type AdminKnowledgeOperations = Readonly<{
 }>;
 
 export type AdminKnowledgeSettings = Readonly<{
+  answerPolicy: Readonly<{
+    fullContextThresholdPercent: 70;
+    maximum: 32;
+    maximumKnowledgeSearches: number;
+    minimum: 1;
+    updatedAt: string;
+    updatedBy: { displayName: string; id: string } | null;
+    version: number;
+  }>;
   ingestionLimits: {
     maxChunksPerDocument: number;
     maxFileBytes: number;
@@ -148,6 +189,43 @@ function decodeDestination(value: unknown): AdminKnowledgeProfileDestination | n
   };
 }
 
+function pdfProcessingMode(value: unknown): AdminKnowledgePdfProcessingMode | null {
+  return value === "local" || value === "system_model_direct_pdf" ||
+    value === "system_model_vision" ? value : null;
+}
+
+function decodePdfDestination(value: unknown): AdminKnowledgePdfProcessingDestination | null {
+  if (!record(value) || !safeString(value.connectionDisplayName) ||
+    !safeString(value.deploymentId) || !safeString(value.modelDisplayName) ||
+    !safeString(value.provider) || !safeString(value.upstreamModelId, 512)) return null;
+  return {
+    connectionDisplayName: value.connectionDisplayName,
+    deploymentId: value.deploymentId,
+    modelDisplayName: value.modelDisplayName,
+    provider: value.provider,
+    upstreamModelId: value.upstreamModelId
+  };
+}
+
+function decodePdfOption(value: unknown): AdminKnowledgePdfProcessingOption | null {
+  if (!record(value) || typeof value.available !== "boolean") return null;
+  const mode = pdfProcessingMode(value.mode);
+  const representations = new Set([
+    "local_only",
+    "original_pdf_page_ranges",
+    "rendered_pdf_page_images"
+  ]);
+  if (!mode || !representations.has(String(value.representation))) return null;
+  const expected = mode === "local"
+    ? "local_only"
+    : mode === "system_model_direct_pdf"
+      ? "original_pdf_page_ranges"
+      : "rendered_pdf_page_images";
+  return value.representation === expected
+    ? { available: value.available, mode, representation: expected }
+    : null;
+}
+
 function decodeRevision(value: unknown): AdminKnowledgeProfileRevision | null {
   if (!record(value) || !isoDate(value.activatedAt) || !safeString(value.id) ||
     !positiveInteger(value.revisionNumber) ||
@@ -155,23 +233,42 @@ function decodeRevision(value: unknown): AdminKnowledgeProfileRevision | null {
     return null;
   }
   const destination = decodeDestination(value.destination);
-  return destination ? {
+  const processing = record(value.pdfProcessing) ? value.pdfProcessing : null;
+  const mode = pdfProcessingMode(processing?.mode);
+  const processingDestination = processing?.destination === null
+    ? null
+    : decodePdfDestination(processing?.destination);
+  if (!destination || !processing || !mode ||
+    !positiveInteger(processing.parserProfileVersion) ||
+    (mode === "local" && processingDestination !== null) ||
+    (mode !== "local" && processingDestination === null)) return null;
+  return {
     activatedAt: value.activatedAt,
     destination,
     executionAuthority: value.executionAuthority,
     id: value.id,
+    pdfProcessing: {
+      destination: processingDestination,
+      mode,
+      parserProfileVersion: Number(processing.parserProfileVersion)
+    },
     revisionNumber: value.revisionNumber
-  } : null;
+  };
 }
 
 function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
   if (!record(value) || !Array.isArray(value.availableDestinations) ||
     !record(value.egress) || !record(value.health) || !record(value.migration) ||
-    !Array.isArray(value.recentRevisions) || !isoDate(value.updatedAt) ||
+    !Array.isArray(value.pdfProcessingOptions) || !Array.isArray(value.recentRevisions) ||
+    !isoDate(value.updatedAt) ||
     !positiveInteger(value.version)) return null;
   const activeRevision = value.activeRevision === null ? null : decodeRevision(value.activeRevision);
   const availableDestinations = value.availableDestinations.map(decodeDestination);
   const recentRevisions = value.recentRevisions.map(decodeRevision);
+  const pdfProcessingOptions = value.pdfProcessingOptions.map(decodePdfOption);
+  const systemModelDestination = value.systemModelDestination === null
+    ? null
+    : decodePdfDestination(value.systemModelDestination);
   const updatedBy = value.updatedBy;
   const healthStates = new Set(["not_configured", "ready", "ready_with_warnings", "unavailable"]);
   const healthCodes = new Set([
@@ -182,13 +279,25 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
   if ((value.activeRevision !== null && activeRevision === null) ||
     availableDestinations.some((destination) => destination === null) ||
     recentRevisions.some((revision) => revision === null) ||
+    pdfProcessingOptions.some((option) => option === null) ||
+    pdfProcessingOptions.length !== 3 ||
+    pdfProcessingOptions[0]?.mode !== "local" ||
+    pdfProcessingOptions[0]?.available !== true ||
+    pdfProcessingOptions[1]?.mode !== "system_model_direct_pdf" ||
+    pdfProcessingOptions[2]?.mode !== "system_model_vision" ||
+    (value.systemModelDestination !== null && systemModelDestination === null) ||
     new Set(availableDestinations.map((destination) => destination?.deploymentId)).size !==
       availableDestinations.length ||
-    value.egress.destination !== null && !safeString(value.egress.destination, 512) ||
+    value.egress.embeddingDestination !== null &&
+      !safeString(value.egress.embeddingDestination, 512) ||
+    value.egress.pdfDestination !== null && !safeString(value.egress.pdfDestination, 512) ||
     !Array.isArray(value.egress.representations) ||
-    value.egress.representations.length !== 2 ||
+    value.egress.representations.length < 2 || value.egress.representations.length > 3 ||
     value.egress.representations[0] !== "document_text_chunks" ||
     value.egress.representations[1] !== "search_queries" ||
+    (value.egress.representations.length === 3 &&
+      value.egress.representations[2] !== "original_pdf_page_ranges" &&
+      value.egress.representations[2] !== "rendered_pdf_page_images") ||
     !healthStates.has(String(value.health.state)) ||
     value.health.code !== null && !healthCodes.has(String(value.health.code)) ||
     value.health.checkedAt !== null && !isoDate(value.health.checkedAt) ||
@@ -221,8 +330,9 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
     activeRevision,
     availableDestinations: availableDestinations as AdminKnowledgeProfileDestination[],
     egress: {
-      destination: value.egress.destination as string | null,
-      representations: ["document_text_chunks", "search_queries"]
+      embeddingDestination: value.egress.embeddingDestination as string | null,
+      pdfDestination: value.egress.pdfDestination as string | null,
+      representations: value.egress.representations as AdminKnowledgeProfileSettings["egress"]["representations"]
     },
     health: {
       checkedAt: value.health.checkedAt as string | null,
@@ -236,7 +346,9 @@ function decodeProfile(value: unknown): AdminKnowledgeProfileSettings | null {
       profiledGenerations: Number(value.migration.profiledGenerations),
       totalBases: Number(value.migration.totalBases)
     },
+    pdfProcessingOptions: pdfProcessingOptions as AdminKnowledgePdfProcessingOption[],
     recentRevisions: recentRevisions as AdminKnowledgeProfileRevision[],
+    systemModelDestination,
     updatedAt: value.updatedAt,
     updatedBy: updatedBy as { displayName: string; id: string } | null,
     version: Number(value.version)
@@ -323,15 +435,25 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
 export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResponse | null {
   if (!record(value) || !record(value.knowledge)) return null;
   const knowledge = value.knowledge;
-  if (!record(knowledge.ingestionLimits) || !record(knowledge.retrieval)) return null;
+  if (!record(knowledge.answerPolicy) || !record(knowledge.ingestionLimits) ||
+    !record(knowledge.retrieval)) return null;
+  const answerPolicy = knowledge.answerPolicy;
   const ingestion = knowledge.ingestionLimits;
   const retrieval = knowledge.retrieval;
   const profile = decodeProfile(knowledge.profile);
   const operations = decodeOperations(knowledge.operations);
+  const answerPolicyUpdatedBy = answerPolicy.updatedBy;
   if (!profile || !operations || !positiveInteger(ingestion.maxChunksPerDocument) ||
     !positiveInteger(ingestion.maxFileBytes) ||
     !positiveInteger(ingestion.maxNormalizedChars) ||
     !positiveInteger(ingestion.maxPages) ||
+    answerPolicy.fullContextThresholdPercent !== 70 || answerPolicy.minimum !== 1 ||
+    answerPolicy.maximum !== 32 || !positiveInteger(answerPolicy.maximumKnowledgeSearches) ||
+    Number(answerPolicy.maximumKnowledgeSearches) > 32 ||
+    !positiveInteger(answerPolicy.version) || !isoDate(answerPolicy.updatedAt) ||
+    answerPolicyUpdatedBy !== null && (!record(answerPolicyUpdatedBy) ||
+      !safeString(answerPolicyUpdatedBy.id) ||
+      !safeString(answerPolicyUpdatedBy.displayName, 160)) ||
     retrieval.candidateLimit !== 40 || retrieval.resultLimit !== 8 ||
     Object.keys(retrieval).some((key) => key !== "candidateLimit" && key !== "resultLimit")) {
     return null;
@@ -339,6 +461,15 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
 
   return {
     knowledge: {
+      answerPolicy: {
+        fullContextThresholdPercent: 70,
+        maximum: 32,
+        maximumKnowledgeSearches: Number(answerPolicy.maximumKnowledgeSearches),
+        minimum: 1,
+        updatedAt: answerPolicy.updatedAt as string,
+        updatedBy: answerPolicyUpdatedBy as { displayName: string; id: string } | null,
+        version: Number(answerPolicy.version)
+      },
       ingestionLimits: {
         maxChunksPerDocument: Number(ingestion.maxChunksPerDocument),
         maxFileBytes: Number(ingestion.maxFileBytes),

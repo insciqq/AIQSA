@@ -4,6 +4,7 @@ import { utils, write } from "xlsx";
 import { parseSpreadsheetDocument, type ParsedDocument } from "../parsing";
 import { finalizeParsedDocument } from "../parsing/assessment";
 import type { StorageAdapter } from "../uploads/storage";
+import { toolLoopCheckpoint } from "../runs/toolLoopPersistence";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import { STRUCTURED_PLAN_VERSION } from "./structuredData";
@@ -435,11 +436,15 @@ function personalClient(input: Readonly<{
   deletedEvidenceFallback?: boolean;
   evidence?: Record<string, unknown> | null;
   evidenceRetrievalSessionId?: string;
+  fullContextEvidence?: Record<string, unknown> | null;
+  fullContextEvidenceCount?: number;
   groupIds?: readonly string[];
   manifestRetrievalSessionId?: string;
   projectSourceBindingVisible?: boolean;
+  ragEvidence?: Record<string, unknown> | null;
   sourceDeletionRequested?: boolean;
   sourceTrashed?: boolean;
+  toolLoopCheckpointRound?: number;
   versionVisible?: boolean;
 }> = {}) {
   const evidence = input.evidence === undefined ? defaultEvidence() : input.evidence;
@@ -454,9 +459,40 @@ function personalClient(input: Readonly<{
         }
       }
     : null);
-  const deletedEvidenceFindFirst = vi.fn().mockResolvedValue(
-    input.deletedEvidenceFallback ? { handle: "K1" } : null
-  );
+  const deletedEvidenceFindFirst = vi.fn().mockImplementation((query: Readonly<{
+    where?: Readonly<{ state?: string }>;
+  }>) => {
+    if (query.where?.state === "available") {
+      return Promise.resolve(input.ragEvidence
+        ? {
+            ...input.ragEvidence,
+            retrievalSessionId: input.evidenceRetrievalSessionId ?? "retrieval-session-1"
+          }
+        : null);
+    }
+    return Promise.resolve(input.deletedEvidenceFallback ? { handle: "K1" } : null);
+  });
+  const fullContextEvidence = input.fullContextEvidence ?? null;
+  const fullContextEvidenceCount = input.fullContextEvidenceCount ?? 1;
+  const fullContextMessage = fullContextEvidence
+    ? JSON.stringify({
+        citation: `[${String(fullContextEvidence.handle)}]`,
+        exactExcerpt: fullContextEvidence.excerpt,
+        fileName: fullContextEvidence.fileName,
+        handle: fullContextEvidence.handle,
+        sourceVersionNumber: fullContextEvidence.sourceVersionNumber,
+        type: "source_evidence"
+      })
+    : "";
+  const retrievalSessionFindFirst = vi.fn().mockResolvedValue(fullContextEvidence
+    ? {
+        _count: { evidenceItems: fullContextEvidenceCount },
+        evidenceItems: [{
+          ...fullContextEvidence,
+          retrievalSessionId: input.evidenceRetrievalSessionId ?? "retrieval-session-1"
+        }]
+      }
+    : null);
   const baseFindFirst = vi.fn().mockResolvedValue(input.baseVisible === false ? null : {
     name: "Engineering handbook",
     ownerUserId: input.baseOwnerUserId ?? "user-1",
@@ -526,6 +562,7 @@ function personalClient(input: Readonly<{
       knowledgeBase: { findFirst: baseFindFirst },
       knowledgeEvidenceDispatchManifestItem: { findFirst: dispatchManifestItemFindFirst },
       knowledgeEvidenceItem: { findFirst: deletedEvidenceFindFirst },
+      knowledgeRetrievalSession: { findFirst: retrievalSessionFindFirst },
       knowledgeRunSourceBinding: { findFirst: bindingFindFirst },
       knowledgeSourceVersion: { findFirst: versionFindFirst },
       modelRun: {
@@ -536,7 +573,30 @@ function personalClient(input: Readonly<{
             }
           },
           chatId: "chat-1",
-          id: "run-1"
+          id: "run-1",
+          normalizedRequest: fullContextEvidence
+            ? {
+                context: {
+                  messages: [{
+                    content: { blocks: [{ text: fullContextMessage, type: "text" }] },
+                    id: "knowledge-evidence:v2",
+                    purpose: "knowledge_evidence"
+                  }]
+                },
+                knowledgeAnswering: {
+                  evidenceCount: fullContextEvidenceCount,
+                  route: "full_context_v1",
+                  version: 1
+                }
+              }
+            : null,
+          toolLoopState: input.toolLoopCheckpointRound === undefined
+            ? null
+            : toolLoopCheckpoint({
+                phase: "provider_running",
+                providerContinuation: { responseId: "response-after-tools" },
+                roundIndex: input.toolLoopCheckpointRound
+              })
         })
       },
       project: {
@@ -560,6 +620,7 @@ function personalClient(input: Readonly<{
         )
       }
     },
+    retrievalSessionFindFirst,
     versionFindFirst
   };
 }
@@ -664,6 +725,85 @@ describe("Knowledge citation viewer authorization and projection", () => {
       expect(fixture.versionFindFirst).not.toHaveBeenCalled();
     }
   );
+
+  it("resolves settled RAG evidence delivered before the final provider checkpoint", async () => {
+    const fixture = personalClient({
+      evidence: null,
+      ragEvidence: defaultEvidence(),
+      toolLoopCheckpointRound: 2
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { handle: "K1", state: "available" }
+    });
+    expect(fixture.deletedEvidenceFindFirst).toHaveBeenCalledWith({
+      select: expect.objectContaining({ handle: true, retrievalSessionId: true }),
+      where: {
+        handle: "K1",
+        operationLinks: {
+          some: {
+            knowledgeRun: {
+              is: {
+                modelRunId: "run-1",
+                modelRunToolCall: {
+                  is: {
+                    modelRunId: "run-1",
+                    roundIndex: { lt: 2 },
+                    state: "complete",
+                    toolName: "search_knowledge"
+                  }
+                }
+              }
+            }
+          }
+        },
+        retrievalSession: {
+          acceptedAt: { not: null },
+          groundingResult: { isNot: null },
+          modelRunId: "run-1",
+          originalIntent: { equals: { kind: "tool_loop_v1" } },
+          receiptHash: { not: null }
+        },
+        state: "available"
+      }
+    });
+  });
+
+  it("resolves legacy full-context evidence from its settled grounding receipt", async () => {
+    const fixture = personalClient({
+      evidence: null,
+      fullContextEvidence: defaultEvidence()
+    });
+
+    await expect(resolveKnowledgeCitationViewer(
+      fixture.value as never,
+      storage(),
+      request
+    )).resolves.toMatchObject({
+      citation: { handle: "K1", state: "available" }
+    });
+    expect(fixture.retrievalSessionFindFirst).toHaveBeenCalledWith({
+      select: {
+        _count: { select: { evidenceItems: true } },
+        evidenceItems: {
+          select: expect.objectContaining({ handle: true, retrievalSessionId: true }),
+          take: 1,
+          where: { handle: "K1", state: "available" }
+        }
+      },
+      where: {
+        acceptedAt: { not: null },
+        groundingResult: { isNot: null },
+        modelRunId: "run-1",
+        originalIntent: { equals: { kind: "full_context_v1" } },
+        receiptHash: { not: null }
+      }
+    });
+  });
 
   it("fails closed when the manifest and evidence item belong to different retrieval sessions", async () => {
     const fixture = personalClient({

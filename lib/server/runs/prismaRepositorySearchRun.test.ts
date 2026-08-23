@@ -162,6 +162,28 @@ describe("Prisma run repository search evidence", () => {
       { isolationLevel: "RepeatableRead" }
     );
     expect(transactionChatRead).toHaveBeenCalledOnce();
+    expect(transactionChatRead).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({
+        messages: expect.objectContaining({
+          include: expect.objectContaining({
+            assistantModelRuns: expect.objectContaining({
+              select: expect.objectContaining({
+                knowledgeRetrievalSession: {
+                  select: {
+                    degradedFlags: true,
+                    evidenceItems: {
+                      orderBy: { ordinal: "asc" },
+                      select: { handle: true, state: true }
+                    },
+                    groundingResult: { select: { outcome: true } }
+                  }
+                }
+              })
+            })
+          })
+        })
+      })
+    }));
     expect(transactionMessagesRead).toHaveBeenCalledWith(expect.objectContaining({
       where: { chatId: "chat-1" }
     }));

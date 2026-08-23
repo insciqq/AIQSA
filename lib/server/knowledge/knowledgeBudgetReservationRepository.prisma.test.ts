@@ -67,7 +67,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
     await prisma.$disconnect();
   });
 
-  it("admits only four of eight concurrent operations at the fixed operation limit", async () => {
+  it("admits only twelve of sixteen concurrent operations at the installation default", async () => {
     const suffix = randomUUID();
     const connectionId = `knowledge-budget-connection-${suffix}`;
     const credentialId = randomUUID();
@@ -184,7 +184,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
           vectorSpaceFingerprint: "d".repeat(64)
         }
       });
-      const calls = await Promise.all(Array.from({ length: 8 }, (_, ordinal) =>
+      const calls = await Promise.all(Array.from({ length: 16 }, (_, ordinal) =>
         prisma.modelRunToolCall.create({
           data: {
             arguments: { query: `policy ${ordinal}` },
@@ -235,18 +235,18 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
 
       const results = await Promise.all(inputs.map((input) => repository.reserve(input)));
 
-      expect(results.filter((result) => result.kind === "admitted")).toHaveLength(4);
+      expect(results.filter((result) => result.kind === "admitted")).toHaveLength(12);
       expect(results.filter((result) =>
         result.kind === "rejected" && result.reason === "operation_budget")).toHaveLength(4);
       await expect(prisma.knowledgeBudgetReservation.count({
         where: { modelRunId: run.id }
-      })).resolves.toBe(4);
+      })).resolves.toBe(12);
       const admittedIndex = results.findIndex((result) => result.kind === "admitted");
       await expect(repository.reserve(inputs[admittedIndex]!))
         .resolves.toMatchObject({ kind: "idempotent" });
       await expect(prisma.knowledgeBudgetReservation.count({
         where: { modelRunId: run.id }
-      })).resolves.toBe(4);
+      })).resolves.toBe(12);
 
       const admitted = results.find((result) => result.kind === "admitted");
       if (!admitted || admitted.kind !== "admitted" || admitted.record.purgedAt !== null ||

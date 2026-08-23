@@ -393,7 +393,9 @@ describe("Knowledge budget reservation Prisma repository", () => {
   });
 
   it("counts purged settled usage but fences every further mutation", async () => {
-    const harness = repositoryHarness();
+    const harness = repositoryHarness({
+      budgetPolicy: { ...DEFAULT_KNOWLEDGE_BUDGET_POLICY, maxOperations: 4 }
+    });
     harness.rows.push(...Array.from({ length: 4 }, (_, index) => persistenceRow({
       actualCandidates: 5,
       actualCostMicros: 9,

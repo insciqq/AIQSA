@@ -26,7 +26,15 @@ import {
   sameKnowledgeRunAdmissionPlan,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import { KNOWLEDGE_EVIDENCE_CITATION_CONTRACT } from "../knowledge/evidencePackage";
+import { DEFAULT_KNOWLEDGE_ANSWER_POLICY } from "../knowledge/answerPolicy";
+import {
+  KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
+  knowledgeSourceEvidenceKey
+} from "../knowledge/evidencePackage";
+import {
+  KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT,
+  KNOWLEDGE_ANSWER_ROUTE_RAG
+} from "../knowledge/fullContext";
 import {
   KnowledgeSourceSnapshotConflictError,
   materializeKnowledgeBaseSnapshot
@@ -896,8 +904,21 @@ export async function insertAcceptedKnowledgeRunBindings(
     throw new KnowledgeRunPlanConflictError();
   }
   const canonicalBindings = prepareCanonicalKnowledgeBindings(current, lockedProfiles);
+  const answerPolicy = current.answerPolicy ?? DEFAULT_KNOWLEDGE_ANSWER_POLICY;
+  const answeringPlan = input.plan.answeringPlan;
+  const fullContextPlan = answeringPlan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT
+    ? answeringPlan
+    : null;
+  const answerRoute = fullContextPlan
+    ? KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT
+    : KNOWLEDGE_ANSWER_ROUTE_RAG;
+  if (fullContextPlan && (!canonicalBindings || fullContextPlan.evidenceItems.length < 1)) {
+    throw new KnowledgeRunPlanConflictError();
+  }
   await tx.knowledgeRunScope.create({
     data: {
+      answerPolicy: json(answerPolicy),
+      answerRoute,
       budgetPolicy: json(current.budgetPolicy),
       exclusions: json(current.exclusions),
       modelRunId: input.runId,
@@ -910,19 +931,27 @@ export async function insertAcceptedKnowledgeRunBindings(
     (total, exclusion) => total + exclusion.count,
     0
   );
+  const retrievalSessionId = randomUUID();
   await tx.knowledgeRetrievalSession.create({
     data: {
       citationContract: json(KNOWLEDGE_EVIDENCE_CITATION_CONTRACT),
       degradedFlags: excludedResources > 0 ? ["partial_readiness"] : [],
-      id: randomUUID(),
+      id: retrievalSessionId,
       modelRunId: input.runId,
-      originalIntent: json({ kind: "tool_loop_v1" }),
+      nextEvidenceOrdinal: fullContextPlan
+        ? fullContextPlan.evidenceItems.length + 1
+        : 1,
+      originalIntent: json({ kind: answerRoute === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT
+        ? "full_context_v1"
+        : "tool_loop_v1" }),
       readinessSummary: json({
         excludedResources,
         readyBases: current.bindings.length,
         readySources: current.resolvedSourceCount
       }),
       scopeSnapshot: json({
+        answerPolicy,
+        answerRoute,
         budgetPolicy: current.budgetPolicy,
         exclusions: current.exclusions,
         resolvedBaseCount: current.bindings.length,
@@ -1019,6 +1048,108 @@ export async function insertAcceptedKnowledgeRunBindings(
         sourceVersionId: source.value.sourceVersionId,
         sourceVersionNumber: source.value.sourceVersionNumber
       }
+    });
+  }
+
+  if (fullContextPlan && canonicalBindings) {
+    const evidenceItems = fullContextPlan.evidenceItems;
+    if (new Set(evidenceItems.map((item) => item.id)).size !== evidenceItems.length ||
+      new Set(evidenceItems.map((item) => item.evidenceId)).size !== evidenceItems.length ||
+      evidenceItems.some((item, index) => item.handle !== `K${index + 1}`)) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    const persistedPassages = await tx.knowledgeArtifactPassageIndex.findMany({
+      select: {
+        contentHash: true,
+        documentContext: true,
+        headingPath: true,
+        id: true,
+        indexArtifact: {
+          select: {
+            sourceArtifactId: true,
+            sourceVersionId: true,
+            state: true
+          }
+        },
+        ordinal: true,
+        page: true,
+        pageEnd: true,
+        sectionId: true,
+        text: true,
+        tokenCount: true
+      },
+      where: { id: { in: evidenceItems.map((item) => item.passageId) } }
+    });
+    const passageById = new Map(persistedPassages.map((passage) => [passage.id, passage]));
+    for (const item of evidenceItems) {
+      const passage = passageById.get(item.passageId);
+      if (!passage || passage.indexArtifact.state !== "ready" ||
+        passage.indexArtifact.sourceArtifactId !== item.sourceArtifactId ||
+        passage.indexArtifact.sourceVersionId !== item.sourceVersionId ||
+        passage.ordinal !== item.passageOrdinal || passage.page !== item.page ||
+        passage.pageEnd !== item.pageEnd || passage.sectionId !== item.sectionId ||
+        passage.text !== item.text || passage.tokenCount !== item.tokenCount ||
+        passage.contentHash !== item.contentHash ||
+        canonicalJsonForComparison(passage.headingPath) !==
+          canonicalJsonForComparison(item.headingPath) ||
+        canonicalJsonForComparison(passage.documentContext) !==
+          canonicalJsonForComparison(item.documentContext)) {
+        throw new KnowledgeRunPlanConflictError();
+      }
+    }
+    const profileBindingIdBySourceOrdinal = new Map(
+      canonicalBindings.sources.map((source) => [source.value.ordinal, source.profileBindingId])
+    );
+    await tx.knowledgeEvidenceItem.createMany({
+      data: evidenceItems.map((item, index) => {
+        const profileBindingId = profileBindingIdBySourceOrdinal.get(item.sourceOrdinal);
+        if (!profileBindingId) throw new KnowledgeRunPlanConflictError();
+        const excerptBytes = Buffer.byteLength(item.text, "utf8");
+        return {
+          baseName: item.baseName,
+          contentHash: item.contentHash,
+          contextBoundaries: json({
+            ...(item.documentContext ? { documentContext: item.documentContext } : {}),
+            expanded: false,
+            excerptBytes,
+            ...(item.documentContext
+              ? { layoutKind: item.documentContext.locator.kind }
+              : { layoutKind: "body" }),
+            sourceTextBytes: excerptBytes
+          }),
+          documentId: item.sourceId,
+          documentVersionId: item.sourceVersionId,
+          evidenceKey: knowledgeSourceEvidenceKey({
+            documentVersionId: item.sourceVersionId,
+            excerpt: item.text,
+            passageId: item.passageId,
+            sourceArtifactId: item.sourceArtifactId,
+            sourceId: item.sourceId,
+            sourceVersionId: item.sourceVersionId
+          }),
+          excerpt: item.text,
+          excerptBytes,
+          fileName: item.sourceFileName,
+          handle: item.handle,
+          headingPath: [...item.headingPath],
+          id: item.id,
+          knowledgeBaseId: profileBindingId,
+          locator: json({ page: item.page }),
+          ordinal: index + 1,
+          page: item.page,
+          passageId: item.passageId,
+          retrievalSessionId,
+          sectionId: item.sectionId,
+          sourceArtifactId: item.sourceArtifactId,
+          sourceId: item.sourceId,
+          sourceName: item.sourceName,
+          sourceTextBytes: excerptBytes,
+          sourceVersionId: item.sourceVersionId,
+          sourceVersionNumber: item.sourceVersionNumber,
+          state: "available",
+          textTruncated: false
+        };
+      })
     });
   }
 }

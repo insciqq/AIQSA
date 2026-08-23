@@ -225,6 +225,16 @@ async function cleanupProviderReferences(
         WHERE binding."credentialId" = version."credentialId"
           AND binding."credentialVersionId" = version."id"
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM "KnowledgeRunBinding" AS binding
+        WHERE binding."embeddingCredentialId" = version."credentialId"
+          AND binding."embeddingCredentialVersionId" = version."id"
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "KnowledgeRunProfileBinding" AS binding
+        WHERE binding."embeddingCredentialId" = version."credentialId"
+          AND binding."embeddingCredentialVersionId" = version."id"
+      )
   `);
 }
 
@@ -1451,6 +1461,51 @@ export function createPrismaAdminProviderRepository(
           return "stale" as const;
         }
 
+        const draftChecks = await tx.providerDraftCheck.findMany({
+          orderBy: { checkedAt: "desc" },
+          where: {
+            connectionDraftVersion: input.connection.draftVersion,
+            connectionId: input.connection.id,
+            OR: input.checks.map((check) => {
+              const credential = input.credentials.find(({ id }) => id === check.credentialId)!;
+              return {
+                credentialDraftVersion: credential.kind === "draft"
+                  ? credential.draftVersion
+                  : null,
+                credentialId: credential.id,
+                credentialVersionId: credential.kind === "active"
+                  ? credential.versionId
+                  : null,
+                modelDraftVersion: check.modelDraftVersion,
+                providerModelId: check.providerModelId
+              };
+            })
+          }
+        });
+        const checks = input.checks.map((check) => {
+          const credential = input.credentials.find(({ id }) => id === check.credentialId)!;
+          const previous = draftChecks.find((candidate) =>
+            candidate.status === check.status &&
+            candidate.providerModelId === check.providerModelId &&
+            candidate.modelDraftVersion === check.modelDraftVersion &&
+            candidate.credentialId === credential.id &&
+            candidate.credentialDraftVersion === (credential.kind === "draft"
+              ? credential.draftVersion
+              : null) &&
+            candidate.credentialVersionId === (credential.kind === "active"
+              ? credential.versionId
+              : null)
+          );
+          const previousEvidence = previous ? evidence(previous.evidence) : null;
+          return previousEvidence?.upstreamModelId === check.evidence.upstreamModelId
+            ? {
+                ...check,
+                checkedAt: previous!.checkedAt,
+                evidence: previousEvidence
+              }
+            : check;
+        });
+
         const activeVersionIds = new Map<string, string>();
         for (const credential of input.credentials) {
           if (credential.kind === "active") {
@@ -1520,7 +1575,7 @@ export function createPrismaAdminProviderRepository(
         }
         await synchronizeProviderSearch(tx, input, connection);
 
-        const tuples = input.checks.map((check) => ({
+        const tuples = checks.map((check) => ({
           connectionVersion: input.connection.draftVersion,
           credentialVersionId: activeVersionIds.get(check.credentialId) as string,
           modelVersion: check.modelDraftVersion,
@@ -1530,7 +1585,7 @@ export function createPrismaAdminProviderRepository(
           where: { OR: tuples }
         });
         await tx.providerModelCredentialCheck.createMany({
-          data: input.checks.map((check) => ({
+          data: checks.map((check) => ({
             checkedAt: check.checkedAt,
             connectionId: input.connection.id,
             connectionVersion: input.connection.draftVersion,

@@ -3,6 +3,7 @@ import { finalizeParsedDocument } from "./assessment";
 import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
 import { DocumentParserError } from "./errors";
 import type {
+  DocumentParserEngine,
   DocumentParserEngineAdapter,
   ParsedDocument,
   ParserProbeResult,
@@ -19,7 +20,7 @@ function engineConfig(baseUrl: string, overrides: Partial<ParserEngineConfig> = 
   };
 }
 
-function parsed(engine: SidecarParserEngine, text = "parsed"): ParsedDocument {
+function parsed(engine: DocumentParserEngine, text = "parsed"): ParsedDocument {
   return finalizeParsedDocument({
     blocks: [{
       assetIds: [],
@@ -182,6 +183,75 @@ describe("document parser boundary", () => {
     expect(result.warnings).not.toContain("parser_fallback_failed");
     expect(doclingParse).toHaveBeenCalledOnce();
     expect(tikaParse).toHaveBeenCalledOnce();
+  });
+
+  it("returns native-text PDF output without consulting a sidecar", async () => {
+    const nativeDocument = parsed("native_pdf", "Metric\t6.7");
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "native_text" as const,
+      document: nativeDocument
+    }));
+    const doclingParse = vi.fn<DocumentParserEngineAdapter["parse"]>();
+    const boundary = createDocumentParserBoundary({
+      adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    })).resolves.toBe(nativeDocument);
+    expect(nativePdfParser).toHaveBeenCalledOnce();
+    expect(doclingParse).not.toHaveBeenCalled();
+  });
+
+  it("routes image-only PDFs to Docling with native quality evidence", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "ocr output"));
+    const boundary = createDocumentParserBoundary({
+      adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    })).resolves.toMatchObject({
+      attempts: [
+        { engine: "native_pdf", errorCode: null, outcome: "quality_failure" },
+        { engine: "docling", errorCode: null, outcome: "complete" }
+      ],
+      engine: "docling",
+      text: "ocr output"
+    });
+    expect(nativePdfParser).toHaveBeenCalledOnce();
+    expect(doclingParse).toHaveBeenCalledOnce();
+  });
+
+  it("does not hide a native PDF output bound behind a sidecar", async () => {
+    const nativePdfParser = vi.fn(async () => {
+      throw new DocumentParserError("parser_output_too_large", "native_pdf");
+    });
+    const doclingParse = vi.fn(async () => parsed("docling"));
+    const boundary = createDocumentParserBoundary({
+      adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    })).rejects.toMatchObject({ code: "parser_output_too_large", engine: "native_pdf" });
+    expect(doclingParse).not.toHaveBeenCalled();
   });
 
   it("keeps a usable partial result when the bounded fallback is unavailable", async () => {

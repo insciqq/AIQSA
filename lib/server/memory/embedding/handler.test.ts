@@ -69,6 +69,7 @@ function claim(): MemoryJobClaim {
     pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
     recoveredLease: false,
     sourceHash: null,
+    sourceMessageId: null,
     sourceRevision: null,
     stage: null,
     userId: "user-1"

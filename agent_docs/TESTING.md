@@ -60,7 +60,7 @@ Knowledge changes use small co-located tests through the same narrow, hermetic, 
 - no generated focused request on new runs, plus read/recovery compatibility for accepted historical focused runs;
 - Search, Knowledge, MCP, attachments, Assistants, and Personal Memory context remain independently composable;
 - one query embedding per compatible Profile and one hybrid repository operation per accepted Knowledge call;
-- atomic four-call budgets, pre-I/O rejection of call five, authority/egress rechecks, and bounded timeout;
+- installation-scoped Knowledge-search limits (default `12`, bounded `1..32`), pre-I/O rejection of the next over-budget call, authority/egress rechecks, and bounded timeout;
 - mandatory vector and `simple`/English/Russian lexical lanes fail closed together;
 - weighted reciprocal-rank fusion, fixed Source diversity, content deduplication, and same-Source neighbor bounds;
 - completed result replay in execution/recovery and normal continuation after zero candidates;
@@ -68,7 +68,8 @@ Knowledge changes use small co-located tests through the same narrow, hermetic, 
 - distinct processing, partial-ready, zero-candidate, insufficient-evidence, retrieval, provider, and contract outcomes;
 - embedding-free Source-local reads, bounded exact search, and metadata-only discovery;
 - recovery never repeats settled or crash-ambiguous provider I/O;
-- one session per run, one receipt per Knowledge call, and four-binding receipt persistence/replay;
+- adaptive full-context admission proves the entire canonical ready corpus is retained inside the frozen provider budget with zero query embeddings and zero Knowledge-search calls, otherwise routing falls back to RAG before provider I/O;
+- one session per run, durable full-context evidence without synthetic retrieval receipts, and one receipt per actual RAG Knowledge call with exact binding persistence/replay;
 - replacement/deletion immutability, private-payload purge, and content-free logs/client projections;
 - normalized page, heading, table, form, OCR, and layout locators remain attributable citation context.
 

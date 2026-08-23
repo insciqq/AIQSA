@@ -866,6 +866,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
         pipelineVersion: job.pipelineVersion,
         recoveredLease: false,
         sourceHash: job.sourceHash,
+        sourceMessageId: job.sourceMessageId,
         sourceRevision: job.sourceRevision,
         stage: job.stage,
         userId

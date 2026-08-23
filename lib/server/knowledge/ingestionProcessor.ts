@@ -3,6 +3,8 @@ import {
   createDocumentParserBoundary,
   getDocumentParserConfig,
   isDocumentParserError,
+  NATIVE_PDF_MAX_BLOCKS_CEILING,
+  resolveDocumentParserRoute,
   type DocumentParserBoundary
 } from "../parsing";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
@@ -41,6 +43,10 @@ import {
   KnowledgeNormalizedDocumentError,
   type StoredKnowledgeNormalizedDocument
 } from "./normalizedDocument";
+import {
+  KnowledgeModelPdfParsingError,
+  type KnowledgeModelPdfParser
+} from "./modelPdfParser";
 
 export type KnowledgeIngestionProcessorRepository = Readonly<{
   activateSourceVersion(input: KnowledgeWorkIdentity & {
@@ -94,6 +100,9 @@ function digest(body: Buffer): string {
 }
 
 function parserFailure(error: unknown): KnowledgeIngestionError {
+  if (error instanceof KnowledgeModelPdfParsingError) {
+    return new KnowledgeIngestionError(error.code);
+  }
   if (!isDocumentParserError(error)) {
     return new KnowledgeIngestionError("parser_unavailable", true);
   }
@@ -168,6 +177,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
   config?: KnowledgeExtractionConfig;
   embeddingRuntime: KnowledgeEmbeddingRuntime;
   now?: () => Date;
+  modelPdfParser?: KnowledgeModelPdfParser;
   parser?: Pick<DocumentParserBoundary, "parse">;
   repository: KnowledgeIngestionProcessorRepository;
   storage: Pick<StorageAdapter, "getObject" | "putObject">;
@@ -177,7 +187,12 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     config: getDocumentParserConfig(process.env, {
       requestMaxBytesDefault: config.maxFileBytes
     }),
-    inlineMaxChars: config.maxNormalizedChars + 1
+    inlineMaxChars: config.maxNormalizedChars + 1,
+    nativePdfLimits: {
+      maxBlocks: NATIVE_PDF_MAX_BLOCKS_CEILING,
+      maxCharacters: config.maxNormalizedChars + 1,
+      maxPages: config.maxPages
+    }
   });
   const now = input.now ?? (() => new Date());
 
@@ -350,12 +365,37 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       });
       let parsed: Awaited<ReturnType<DocumentParserBoundary["parse"]>>;
       try {
-        parsed = await parser.parse({
-          bytes: body,
-          fileName: claim.fileName,
-          mimeType: claim.mimeType,
-          ...(signal ? { signal } : {})
-        });
+        const route = resolveDocumentParserRoute(claim.fileName, claim.mimeType);
+        const modelMode = route?.mediaType === "application/pdf" &&
+          claim.artifact.pdfProcessingMode !== "local";
+        if (modelMode) {
+          if (!input.modelPdfParser || claim.artifact.profileExecutionAuthority !== "installation" ||
+            !claim.artifact.profileRevisionId) {
+            throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
+          }
+          parsed = await input.modelPdfParser.parse({
+            artifactId: claim.artifact.id,
+            bytes: body,
+            maxBlocks: NATIVE_PDF_MAX_BLOCKS_CEILING,
+            maxCharacters: config.maxNormalizedChars + 1,
+            maxPages: config.maxPages,
+            mode: claim.artifact.pdfProcessingMode,
+            ownerUserId: claim.ownerUserId,
+            parserProfileVersion: claim.artifact.pdfParserProfileVersion,
+            profileRevisionId: claim.artifact.profileRevisionId,
+            ...(signal ? { signal } : {}),
+            sourceVersionId: claim.sourceVersionId,
+            systemModelPolicyVersion: claim.artifact.pdfSystemModelPolicyVersion,
+            systemModelSnapshot: claim.artifact.pdfSystemModelSnapshot
+          });
+        } else {
+          parsed = await parser.parse({
+            bytes: body,
+            fileName: claim.fileName,
+            mimeType: claim.mimeType,
+            ...(signal ? { signal } : {})
+          });
+        }
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? error;
         throw parserFailure(error);

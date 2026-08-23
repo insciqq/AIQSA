@@ -30,23 +30,29 @@ describe("Knowledge execution budgets", () => {
     })).toEqual(DEFAULT_KNOWLEDGE_BUDGET_POLICY);
   });
 
-  it("allows four operations and embeddings without planner-era dimensions", () => {
+  it("allows the default twelve operations and derives smaller administrator limits", () => {
     const policy = DEFAULT_KNOWLEDGE_BUDGET_POLICY;
     expect(policy).toMatchObject({
+      maxCumulativeCandidates: 480,
+      maxLatencyMs: 360_000,
+      maxOperations: 12,
+      maxQueryEmbeddingCalls: 12,
+      maxRetrievedTokens: 147_456
+    });
+    expect(Object.hasOwn(policy, "maxRerankerCalls")).toBe(false);
+    expect(Object.hasOwn(policy, "maxSearchPhases")).toBe(false);
+    expect(knowledgeBudgetStopReason(policy, usage({ operations: 12 }))).toBeNull();
+    expect(knowledgeBudgetStopReason(policy, usage({ operations: 13 })))
+      .toBe("operation_budget");
+    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 12 }))).toBeNull();
+    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 13 })))
+      .toBe("embedding_budget");
+    expect(knowledgeBudgetPolicyFromProfileConfiguration(null, 4)).toMatchObject({
       maxCumulativeCandidates: 160,
-      maxLatencyMs: 120_000,
       maxOperations: 4,
       maxQueryEmbeddingCalls: 4,
       maxRetrievedTokens: 49_152
     });
-    expect(Object.hasOwn(policy, "maxRerankerCalls")).toBe(false);
-    expect(Object.hasOwn(policy, "maxSearchPhases")).toBe(false);
-    expect(knowledgeBudgetStopReason(policy, usage({ operations: 4 }))).toBeNull();
-    expect(knowledgeBudgetStopReason(policy, usage({ operations: 5 })))
-      .toBe("operation_budget");
-    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 4 }))).toBeNull();
-    expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 5 })))
-      .toBe("embedding_budget");
   });
 
   it("keeps the structural decoding ceiling separate from the default policy", () => {

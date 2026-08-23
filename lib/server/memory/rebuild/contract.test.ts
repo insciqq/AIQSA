@@ -23,6 +23,7 @@ function descriptor(input: Readonly<{
     memoryRevisionSnapshot: 7,
     pipelineVersion: input.pipelineVersion,
     sourceHash: null,
+    sourceMessageId: null,
     sourceRevision: null,
     stage: null,
     userId: "user-1"

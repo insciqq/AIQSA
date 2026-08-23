@@ -46,6 +46,7 @@ function claim(): MemoryJobClaim {
     memoryRevisionSnapshot: 5,
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
     recoveredLease: false,
+    sourceMessageId: null,
     stage: null
   };
 }

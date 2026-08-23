@@ -61,6 +61,8 @@ import type {
 } from "./preparingRun";
 import type { MemoryInitialChatMode } from "../../contracts/memory";
 import type { ProjectDefaultsWire, ProjectPolicyWire } from "../../contracts/projects";
+import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
+import type { KnowledgeRunAdmissionSource } from "../knowledge/runAdmission";
 
 export type ProjectRunMemoryItem = Readonly<{
   factId: string;
@@ -581,6 +583,9 @@ export type RunRepository = {
   }): Promise<boolean>;
   isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
   loadAttachments(userId: string, attachmentIds: string[], projectId?: string): Promise<RunAttachmentRecord[]>;
+  loadKnowledgeFullContextPassages?(
+    sources: readonly KnowledgeRunAdmissionSource[]
+  ): Promise<readonly KnowledgeFullContextPassage[] | null>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   loadModelPricing(provider: string, modelId: string): Promise<ModelTokenPricing | null>;
   loadRunUsageAttributions(input: {

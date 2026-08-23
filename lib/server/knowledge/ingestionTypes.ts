@@ -1,5 +1,6 @@
 import type { EmbeddingUsage } from "../providers/embeddings";
 import type { ParsedDocumentWarningCode } from "../parsing";
+import type { KnowledgePdfProcessingMode } from "./knowledgeProfile";
 import type { KnowledgeVectorSpaceConfiguration } from "./indexProfile";
 
 export type KnowledgeIngestionFailureCode =
@@ -17,7 +18,10 @@ export type KnowledgeIngestionFailureCode =
   | "knowledge_text_limit_exceeded"
   | "normalized_text_unavailable"
   | "parser_rejected"
-  | "parser_unavailable";
+  | "parser_unavailable"
+  | "pdf_processing_ambiguous"
+  | "pdf_processing_failed"
+  | "pdf_processing_unavailable";
 
 export class KnowledgeIngestionError extends Error {
   constructor(
@@ -34,6 +38,10 @@ export type KnowledgeSourceArtifactPinRecord = Readonly<{
   embeddingConfiguration: KnowledgeVectorSpaceConfiguration;
   embeddingProviderModelId: string;
   id: string;
+  pdfParserProfileVersion: number;
+  pdfProcessingMode: KnowledgePdfProcessingMode;
+  pdfSystemModelPolicyVersion: number | null;
+  pdfSystemModelSnapshot: unknown;
   profileExecutionAuthority: "installation" | "legacy_user";
   profileRevisionId: string | null;
   targetDimension: number;

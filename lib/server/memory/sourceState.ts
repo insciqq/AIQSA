@@ -1,4 +1,8 @@
-import { Prisma, type MemoryChatMode } from "@prisma/client";
+import {
+  Prisma,
+  type MemoryChatMode,
+  type MemoryJobKind
+} from "@prisma/client";
 import {
   memoryCounterEffectFor,
   type MemoryCounterAdvance,
@@ -11,6 +15,7 @@ import {
 } from "./persistence/transaction";
 
 export const MEMORY_SOURCE_PROJECTION_VERSION = "memory-source-v1";
+const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v1";
 
 const MAX_COUNTER = 2_147_483_647;
 
@@ -530,8 +535,11 @@ export async function memorySourceJobSnapshotMatches(
     activeLeafMessageId: string | null;
     branchGeneration: number | null;
     chatId: string | null;
+    kind: MemoryJobKind;
     memoryGenerationSnapshot: number;
+    pipelineVersion: string;
     sourceHash: string | null;
+    sourceMessageId: string | null;
     sourceRevision: number | null;
     userId: string;
   }>,
@@ -542,6 +550,7 @@ export async function memorySourceJobSnapshotMatches(
   if (job.chatId === null) {
     const sourceIsGlobal = job.activeLeafMessageId === null &&
       job.branchGeneration === null &&
+      job.sourceMessageId === null &&
       job.sourceRevision === null &&
       job.sourceHash === null;
     if (!sourceIsGlobal || options.memoryRevisionSnapshot === undefined) {
@@ -571,6 +580,27 @@ export async function memorySourceJobSnapshotMatches(
   `);
   if (settings[0]?.memoryGeneration !== job.memoryGenerationSnapshot) return false;
   if (
+    job.kind === "EXTRACT_FACTS" &&
+    job.pipelineVersion === vNextFactExtractionPipeline
+  ) {
+    if (job.sourceMessageId === null) return false;
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT message."id"
+      FROM "Message" AS message
+      INNER JOIN "Chat" AS chat ON chat."id" = message."chatId"
+      WHERE message."id" = ${job.sourceMessageId}
+        AND message."chatId" = ${job.chatId}
+        AND message."role" = 'user'
+        AND message."status" = 'complete'::"MessageStatus"
+        AND chat."userId" = ${job.userId}
+        AND chat."projectId" IS NULL
+        AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+        AND chat."permanentDeletionAt" IS NULL
+      FOR SHARE OF message, chat
+    `);
+    return rows.length === 1;
+  }
+  if (
     job.activeLeafMessageId === null ||
     job.branchGeneration === null ||
     job.sourceRevision === null ||
@@ -598,8 +628,11 @@ export async function deleteMemorySourceJobsForMessages(
   if (input.messageIds.length === 0) return 0;
   const deleted = await tx.memoryJob.deleteMany({
     where: {
-      activeLeafMessageId: { in: [...input.messageIds] },
       chatId: input.chatId,
+      OR: [
+        { activeLeafMessageId: { in: [...input.messageIds] } },
+        { sourceMessageId: { in: [...input.messageIds] } }
+      ],
       userId: input.userId
     }
   });

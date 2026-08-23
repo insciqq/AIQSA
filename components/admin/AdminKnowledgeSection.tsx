@@ -4,10 +4,12 @@ import {
   activateAdminKnowledgeProfile,
   adminKnowledgeErrorMessage,
   getAdminKnowledgeSettings,
-  rollbackAdminKnowledgeProfile
+  rollbackAdminKnowledgeProfile,
+  updateAdminKnowledgeAnswerPolicy
 } from "@/components/admin/adminKnowledgeApi";
 import { inputClass, primaryButton, quietButton } from "@/components/admin/adminPrimitives";
 import type {
+  AdminKnowledgePdfProcessingMode,
   AdminKnowledgeOperationsAlert,
   AdminKnowledgeSettings
 } from "@/lib/contracts/adminKnowledge";
@@ -58,7 +60,10 @@ export function AdminKnowledgeSection({
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedDestinationId, setSelectedDestinationId] = useState("");
+  const [selectedPdfMode, setSelectedPdfMode] =
+    useState<AdminKnowledgePdfProcessingMode>("local");
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
+  const [maximumKnowledgeSearches, setMaximumKnowledgeSearches] = useState(12);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const autoLoadAttemptedRef = useRef(false);
@@ -76,6 +81,8 @@ export function AdminKnowledgeSection({
         revision.executionAuthority === "installation" &&
         revision.id !== next.profile.activeRevision?.id)?.id ?? ""
     );
+    setSelectedPdfMode(next.profile.activeRevision?.pdfProcessing.mode ?? "local");
+    setMaximumKnowledgeSearches(next.answerPolicy.maximumKnowledgeSearches);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -107,7 +114,8 @@ export function AdminKnowledgeSection({
     setNotice(null);
     const result = await activateAdminKnowledgeProfile({
       deploymentId: selectedDestinationId,
-      expectedVersion: settings.profile.version
+      expectedVersion: settings.profile.version,
+      pdfProcessingMode: selectedPdfMode
     });
     setBusy(false);
     if (!result.ok) {
@@ -138,6 +146,27 @@ export function AdminKnowledgeSection({
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
+  const saveAnswerPolicy = async () => {
+    if (!settings || busy || !Number.isSafeInteger(maximumKnowledgeSearches) ||
+      maximumKnowledgeSearches < settings.answerPolicy.minimum ||
+      maximumKnowledgeSearches > settings.answerPolicy.maximum) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const result = await updateAdminKnowledgeAnswerPolicy({
+      expectedVersion: settings.answerPolicy.version,
+      maximumKnowledgeSearches
+    });
+    setBusy(false);
+    if (!result.ok) {
+      setError(adminKnowledgeErrorMessage(result.error));
+      return;
+    }
+    apply(result.data);
+    setNotice("Answer retrieval settings saved. New answers use the updated limit.");
+    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
+  };
+
   const activeProfile = settings?.profile.activeRevision ?? null;
   const rollbackRevisions = settings?.profile.recentRevisions.filter((revision) =>
     revision.executionAuthority === "installation" && revision.id !== activeProfile?.id) ?? [];
@@ -150,8 +179,29 @@ export function AdminKnowledgeSection({
         : "Not configured";
   const activationChangesProfile = Boolean(settings && selectedDestinationId && (
     selectedDestinationId !== activeProfile?.destination.deploymentId ||
+    selectedPdfMode !== activeProfile?.pdfProcessing.mode ||
     settings.profile.health.state !== "ready"
   ));
+  const selectedPdfOption = settings?.profile.pdfProcessingOptions.find(
+    ({ mode }) => mode === selectedPdfMode
+  ) ?? null;
+  const processingCopy: Record<AdminKnowledgePdfProcessingMode, Readonly<{
+    label: string;
+    summary: string;
+  }>> = {
+    local: {
+      label: "Local",
+      summary: "PDF.js preserves born-digital rows; image and mixed PDFs use the installed OCR route. PDF pages stay on this installation."
+    },
+    system_model_direct_pdf: {
+      label: "System Model · Direct PDF",
+      summary: "Sends bounded PDF page ranges to the pinned System Model. Its transcription is authoritative; there is no local cross-check or silent fallback."
+    },
+    system_model_vision: {
+      label: "System Model · Vision",
+      summary: "Renders bounded page images locally, then sends them to the pinned System Model. Activation runs a real vision probe first."
+    }
+  };
   const profileRollout = settings?.profile.migration ?? null;
   const profileRolloutPercent = profileRollout && profileRollout.totalBases > 0
     ? Math.round(profileRollout.activeProfileBases / profileRollout.totalBases * 100)
@@ -165,7 +215,7 @@ export function AdminKnowledgeSection({
             <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation settings</p>
             <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="admin-knowledge-heading">Knowledge processing</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">
-              Choose the installation route for indexing and query embeddings. Retrieval limits are fixed by the application; profile changes apply only to future work.
+              Choose how Sources are processed and how new answers use them. Accepted runs keep their original route and limits.
             </p>
           </div>
           <button
@@ -207,7 +257,21 @@ export function AdminKnowledgeSection({
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-xs text-ink-secondary">
                   <span className="inline-flex items-center gap-1.5 font-medium text-ink"><Route aria-hidden="true" className="size-4 text-proof" />Documents</span>
                   <ArrowRight aria-hidden="true" className="size-3.5 text-ink-muted" />
-                  <span>Parser &amp; OCR</span>
+                  <span>
+                    {activeProfile
+                      ? processingCopy[activeProfile.pdfProcessing.mode].label
+                      : "PDF route not selected"}
+                  </span>
+                  {activeProfile?.pdfProcessing.destination ? (
+                    <>
+                      <ArrowRight aria-hidden="true" className="size-3.5 text-ink-muted" />
+                      <span className="font-medium text-ink">
+                        {activeProfile.pdfProcessing.destination.connectionDisplayName} / {activeProfile.pdfProcessing.destination.modelDisplayName}
+                      </span>
+                    </>
+                  ) : null}
+                  <ArrowRight aria-hidden="true" className="size-3.5 text-ink-muted" />
+                  <span>Normalized text</span>
                   <ArrowRight aria-hidden="true" className="size-3.5 text-ink-muted" />
                   <span className="font-medium text-ink">
                     {activeProfile
@@ -216,7 +280,7 @@ export function AdminKnowledgeSection({
                   </span>
                 </div>
                 <p className="mt-2 text-xs leading-5 text-ink-muted">
-                  The destination receives bounded normalized document text during indexing and search queries during retrieval. Activating a profile is the installation data-processing decision; the active profile, not an ordinary request, controls this destination.
+                  The embedding destination receives bounded normalized text and search queries. Direct PDF sends original page ranges; Vision sends locally rendered page images. The immutable profile pins both routes for every rebuild.
                 </p>
               </div>
 
@@ -233,6 +297,47 @@ export function AdminKnowledgeSection({
                   No processing route is active. Configure and test an embedding model in Providers, then activate it here before users create Knowledge Bases.
                 </p>
               ) : null}
+
+              <fieldset className="mt-4" disabled={busy}>
+                <legend className="text-xs font-medium text-ink-secondary">PDF processing</legend>
+                <p className="mt-1 text-xs leading-5 text-ink-muted">
+                  Select one route. Non-PDF documents continue through the local document pipeline.
+                </p>
+                <div className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle">
+                  {settings.profile.pdfProcessingOptions.map((option) => {
+                    const copy = processingCopy[option.mode];
+                    return (
+                      <label
+                        className={`grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] gap-3 px-3 py-3 ${!option.available ? "cursor-not-allowed opacity-55" : "hover:bg-workspace-rail/35"}`}
+                        key={option.mode}
+                      >
+                        <input
+                          checked={selectedPdfMode === option.mode}
+                          className="mt-0.5 size-4 accent-[rgb(var(--proof))]"
+                          disabled={!option.available}
+                          name="knowledge-pdf-processing-mode"
+                          onChange={() => setSelectedPdfMode(option.mode)}
+                          type="radio"
+                        />
+                        <span>
+                          <span className="block text-xs font-semibold text-ink">{copy.label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-ink-muted">{copy.summary}</span>
+                        </span>
+                        <span className="text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted">
+                          {option.available ? "" : "Not supported"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {settings.profile.systemModelDestination ? (
+                  <p className="mt-2 text-xs text-ink-muted">
+                    Current System Model · {settings.profile.systemModelDestination.connectionDisplayName} / {settings.profile.systemModelDestination.modelDisplayName}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-xs text-caution">Set an installation System Model to use Direct PDF or Vision.</p>
+                )}
+              </fieldset>
 
               <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
                 <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
@@ -255,7 +360,7 @@ export function AdminKnowledgeSection({
                 </label>
                 <button
                   className={primaryButton}
-                  disabled={busy || !activationChangesProfile}
+                  disabled={busy || !activationChangesProfile || !selectedPdfOption?.available}
                   onClick={() => void activateProfile()}
                   type="button"
                 >
@@ -305,7 +410,7 @@ export function AdminKnowledgeSection({
                     >
                       {rollbackRevisions.map((revision) => (
                         <option key={revision.id} value={revision.id}>
-                          Revision {revision.revisionNumber} · {revision.destination.connectionDisplayName} / {revision.destination.modelDisplayName}
+                          Revision {revision.revisionNumber} · {processingCopy[revision.pdfProcessing.mode].label} · {revision.destination.connectionDisplayName} / {revision.destination.modelDisplayName}
                         </option>
                       ))}
                     </select>
@@ -402,26 +507,40 @@ export function AdminKnowledgeSection({
             </section>
 
             <div className="grid gap-8 border-t border-trace-subtle pt-7 xl:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
-              <div>
-                <h3 className="text-sm font-semibold text-ink">Fixed retrieval</h3>
-                <p className="mt-1 text-xs leading-5 text-ink-muted">
-                  Code-owned limits are applied to every focused Knowledge request and cannot be changed from Control Center.
+              <section aria-labelledby="knowledge-answer-retrieval-heading">
+                <h3 className="text-sm font-semibold text-ink" id="knowledge-answer-retrieval-heading">Answer retrieval</h3>
+                <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
+                  A selected corpus that fits within {settings.answerPolicy.fullContextThresholdPercent}% of the model context is sent in full. Larger selections may use this many bounded Knowledge searches per answer.
                 </p>
-                <dl className="mt-4 grid border-y border-trace-subtle text-xs sm:grid-cols-2">
-                  <div className="px-3 py-3 sm:border-r sm:border-trace-subtle">
-                    <dt className="text-ink-muted">Hybrid candidates</dt>
-                    <dd className="mt-1 text-base font-semibold tabular-nums text-ink">
-                      {settings.retrieval.candidateLimit}
-                    </dd>
-                  </div>
-                  <div className="border-t border-trace-subtle px-3 py-3 sm:border-t-0">
-                    <dt className="text-ink-muted">Returned passages</dt>
-                    <dd className="mt-1 text-base font-semibold tabular-nums text-ink">
-                      {settings.retrieval.resultLimit}
-                    </dd>
-                  </div>
-                </dl>
-              </div>
+                <div className="mt-4 grid gap-3 border-y border-trace-subtle px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end">
+                  <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="maximum-knowledge-searches">
+                    Maximum Knowledge searches per answer
+                    <span className="font-normal leading-5 text-ink-muted">Applies only to new answers. Small full-context selections use no Knowledge searches.</span>
+                  </label>
+                  <input
+                    className={inputClass}
+                    disabled={busy}
+                    id="maximum-knowledge-searches"
+                    max={settings.answerPolicy.maximum}
+                    min={settings.answerPolicy.minimum}
+                    onChange={(event) => setMaximumKnowledgeSearches(Number(event.currentTarget.value))}
+                    step={1}
+                    type="number"
+                    value={maximumKnowledgeSearches}
+                  />
+                  <button
+                    className={primaryButton}
+                    disabled={busy || maximumKnowledgeSearches === settings.answerPolicy.maximumKnowledgeSearches ||
+                      !Number.isSafeInteger(maximumKnowledgeSearches) ||
+                      maximumKnowledgeSearches < settings.answerPolicy.minimum ||
+                      maximumKnowledgeSearches > settings.answerPolicy.maximum}
+                    onClick={() => void saveAnswerPolicy()}
+                    type="button"
+                  >
+                    Save
+                  </button>
+                </div>
+              </section>
 
               <aside className="border-l border-trace-subtle pl-5" aria-label="Effective Knowledge ingestion limits">
                 <h3 className="text-sm font-semibold text-ink">Effective ingestion limits</h3>

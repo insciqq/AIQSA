@@ -5,7 +5,13 @@ import type { KnowledgeProcessingWarningCode } from "../../domain/knowledgeProce
 import type { DocumentParserErrorCode } from "./errors";
 
 export type SidecarParserEngine = RegistrySidecarParserEngine;
-export type DocumentParserEngine = "inline" | "spreadsheet" | SidecarParserEngine;
+export type DocumentParserEngine =
+  | "inline"
+  | "native_pdf"
+  | "spreadsheet"
+  | "system_model_direct_pdf"
+  | "system_model_vision"
+  | SidecarParserEngine;
 
 export type DocumentParseInput = Readonly<{
   bytes: Buffer;

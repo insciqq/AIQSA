@@ -648,6 +648,7 @@ async function claimRebuildJob(jobId: string, now: Date): Promise<MemoryJobClaim
     pipelineVersion: claimed.pipelineVersion,
     recoveredLease: false,
     sourceHash: claimed.sourceHash,
+    sourceMessageId: claimed.sourceMessageId,
     sourceRevision: claimed.sourceRevision,
     stage: claimed.stage,
     userId: claimed.userId

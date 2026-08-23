@@ -127,7 +127,7 @@ async function recoverPriorExecution(
       job,
       input,
       await deps.repository.applied(job, succeeded.id)
-        ? "fact_candidates_ready"
+        ? "fact_observations_committed"
         : "fact_result_unavailable",
       succeeded.acceptedOutputHash
     );
@@ -322,8 +322,8 @@ export function createMemoryFactExtractionHandler(
       return {
         acceptedResultHash: plan.outputHash,
         stage: plan.candidates.length > 0
-          ? "fact_candidates_ready"
-          : "fact_candidates_empty"
+          ? "fact_observations_committed"
+          : "fact_observations_empty"
       };
     }
   });

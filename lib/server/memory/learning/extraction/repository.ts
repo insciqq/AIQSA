@@ -12,9 +12,7 @@ import type {
 } from "../../coordinator/types";
 import {
   buildMemorySafeSourceSnapshot,
-  type MemoryHistorySourceMessageInput,
-  type MemoryHistorySourceOrigin,
-  type MemoryHistoryTaintSource
+  type MemoryHistorySourceMessageInput
 } from "../../history/sourceProjection";
 import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import { memorySha256 } from "../../persistence/lexical";
@@ -28,19 +26,13 @@ import type {
   MemoryTransaction
 } from "../../persistence/transaction";
 import {
-  loadMemorySourceSnapshot,
-  type MemorySourceSnapshot
-} from "../../sourceState";
-import {
   loadMemorySuppressionKeyring,
   type MemorySuppressionKeyring
 } from "../../suppressionKeyring";
 import {
-  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
-  MEMORY_FACT_TEMPORAL_RESOLVER_VERSION,
   memoryFactExtractionClaimIsValid,
   memoryFactExtractionInputHash,
   memoryFactExtractionOutputHash,
@@ -49,6 +41,7 @@ import {
   type MemoryFactExtractionPlan,
   type MemoryFactSourceIdentity
 } from "./contract";
+import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
 
 type PrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -105,18 +98,84 @@ export function memoryAutomaticCandidateContainsSecret(
     modelValueContainsSecret(candidate.temporalResolutionEvidence);
 }
 
-function sourceMatchesJob(
-  source: MemorySourceSnapshot | null,
+type MemoryFactSourceMessage = Readonly<{
+  chatId: string;
+  content: Prisma.JsonValue;
+  createdAt: Date;
+  id: string;
+  parentMessageId: string | null;
+  role: string;
+  status: string;
+  updatedAt: Date;
+}>;
+
+type MemoryFactBoundSource = Readonly<{
+  chat: Readonly<{
+    folderId: string | null;
+    id: string;
+    userId: string;
+  }>;
+  message: MemoryFactSourceMessage;
+}>;
+
+const sourceMessageSelect = Object.freeze({
+  chatId: true,
+  content: true,
+  createdAt: true,
+  id: true,
+  parentMessageId: true,
+  role: true,
+  status: true,
+  updatedAt: true
+});
+
+async function loadBoundSource(
+  tx: MemoryTransaction,
   job: MemoryJobDescriptor
-): source is MemorySourceSnapshot & Readonly<{ activeLeafMessageId: string }> {
-  return Boolean(
-    source && source.memoryMode === "NORMAL" && source.activeLeafMessageId &&
-    source.activeLeafMessageId === job.activeLeafMessageId &&
-    source.id === job.chatId &&
-    source.memoryBranchGeneration === job.branchGeneration &&
-    source.memorySourceRevision === job.sourceRevision &&
-    source.sourceHash === job.sourceHash && source.userId === job.userId
-  );
+): Promise<MemoryFactBoundSource | null> {
+  if (job.chatId === null || job.sourceMessageId === null) return null;
+  const [chat, message] = await Promise.all([
+    tx.chat.findFirst({
+      select: { folderId: true, id: true, userId: true },
+      where: {
+        id: job.chatId,
+        memoryMode: "NORMAL",
+        permanentDeletionAt: null,
+        projectId: null,
+        userId: job.userId
+      }
+    }),
+    tx.message.findFirst({
+      select: sourceMessageSelect,
+      where: {
+        chatId: job.chatId,
+        id: job.sourceMessageId,
+        role: "user",
+        status: "complete"
+      }
+    })
+  ]);
+  if (!chat?.userId || !message) return null;
+  return {
+    chat: { folderId: chat.folderId, id: chat.id, userId: chat.userId },
+    message
+  };
+}
+
+async function loadContextMessage(
+  tx: MemoryTransaction,
+  chatId: string,
+  id: string
+): Promise<MemoryFactSourceMessage | null> {
+  return tx.message.findFirst({
+    select: sourceMessageSelect,
+    where: {
+      chatId,
+      id,
+      role: { in: ["assistant", "user"] },
+      status: "complete"
+    }
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -140,36 +199,16 @@ function runTimeZone(value: Prisma.JsonValue | null): string {
   return canonicalTimeZone(value.prompt.baseline.timeZone);
 }
 
-function provenanceForRole(role: string): Readonly<{
-  origin: MemoryHistorySourceOrigin;
-  taintSources: readonly MemoryHistoryTaintSource[];
-}> {
-  if (role === "user") return { origin: "DIRECT_USER", taintSources: [] };
-  if (role === "assistant") {
-    return { origin: "VISIBLE_ASSISTANT", taintSources: ["PROVIDER_PAYLOAD"] };
-  }
-  if (role === "system") return { origin: "SYSTEM", taintSources: ["SYSTEM"] };
-  if (role === "developer") {
-    return { origin: "DEVELOPER", taintSources: ["DEVELOPER"] };
-  }
-  if (role === "tool") return { origin: "TOOL", taintSources: ["TOOL"] };
-  return { origin: "PROVIDER_PAYLOAD", taintSources: ["PROVIDER_PAYLOAD"] };
-}
-
 async function probeWith(
   tx: MemoryTransaction,
-  job: MemoryJobDescriptor
+  job: MemoryJobDescriptor,
+  now: Date
 ): Promise<MemoryJobGateDecision> {
   if (!memoryFactExtractionClaimIsValid(job)) {
     return { errorCode: "memory_fact_job_invalid", status: "CANCELLED" };
   }
-  const source = await loadMemorySourceSnapshot(tx, {
-    chatId: job.chatId,
-    lock: "SHARE",
-    personalOnly: true,
-    userId: job.userId
-  });
-  if (!sourceMatchesJob(source, job)) return staleDecision;
+  const source = await loadBoundSource(tx, job);
+  if (!source) return staleDecision;
   const settings = await tx.userMemorySettings.findUnique({
     select: {
       learnAutomatically: true,
@@ -182,19 +221,21 @@ async function probeWith(
     return staleDecision;
   }
   if (!settings.useMemoryFacts || !settings.learnAutomatically) return disabledDecision;
+  const admission = await loadAdmission(tx, source, job.branchGeneration, now);
+  if (admission.excluded) return staleDecision;
   return { status: "READY" };
 }
 
 async function loadAdmission(
   tx: MemoryTransaction,
-  source: MemorySourceSnapshot,
+  source: MemoryFactBoundSource,
+  sourceBranchGeneration: number,
   now: Date
 ): Promise<Readonly<{
-  excludedMessageIds: ReadonlySet<string>;
+  excluded: boolean;
   sourceCreatedAtCutoff: Date | null;
   suppressionIdentitySnapshot: string;
 }>> {
-  const pathMessageIds = source.messages.map((message) => message.id);
   const [barriers, pauseIntervals, suppressions, checkpoint] = await Promise.all([
     tx.memorySourceBarrier.findMany({
       orderBy: [{ sourceCreatedAtCutoff: "asc" }, { id: "asc" }],
@@ -207,7 +248,7 @@ async function loadAdmission(
       where: {
         explicitOverrideAllowed: false,
         kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] },
-        userId: source.userId
+        userId: source.chat.userId
       }
     }),
     tx.memoryPauseInterval.findMany({
@@ -221,57 +262,48 @@ async function loadAdmission(
       },
       where: {
         scope: { in: ["MASTER", "AUTOMATIC_LEARNING"] },
-        userId: source.userId
+        userId: source.chat.userId
       }
     }),
-    pathMessageIds.length === 0
-      ? Promise.resolve([])
-      : tx.memorySuppression.findMany({
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          select: {
-            expiresAt: true,
-            fingerprintKeyVersion: true,
-            id: true,
-            scope: true,
-            sourceBranchGeneration: true,
-            sourceChatId: true,
-            sourceMessageId: true
-          },
-          where: {
-            AND: [
-              { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+    tx.memorySuppression.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        expiresAt: true,
+        fingerprintKeyVersion: true,
+        id: true,
+        scope: true,
+        sourceBranchGeneration: true,
+        sourceChatId: true,
+        sourceMessageId: true
+      },
+      where: {
+        AND: [
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+          {
+            OR: [
+              { scope: "ALL" },
               {
-                OR: [
-                  { scope: "ALL" },
-                  {
-                    scope: "SOURCE_MESSAGE",
-                    sourceBranchGeneration: source.memoryBranchGeneration,
-                    sourceChatId: source.id,
-                    sourceMessageId: { in: pathMessageIds }
-                  }
-                ]
+                scope: "SOURCE_MESSAGE",
+                sourceBranchGeneration,
+                sourceChatId: source.chat.id,
+                sourceMessageId: source.message.id
               }
-            ],
-            userId: source.userId
+            ]
           }
-        }),
+        ],
+        userId: source.chat.userId
+      }
+    }),
     tx.chatMemoryCheckpoint.findUnique({
       select: { resumeCreatedAtCutoff: true },
-      where: { userId_chatId: { chatId: source.id, userId: source.userId } }
+      where: {
+        userId_chatId: {
+          chatId: source.chat.id,
+          userId: source.chat.userId
+        }
+      }
     })
   ]);
-  const excludesAll = suppressions.some((suppression) => suppression.scope === "ALL");
-  const excludedMessageIds = new Set(excludesAll
-    ? pathMessageIds
-    : suppressions.flatMap((suppression) =>
-        suppression.scope === "SOURCE_MESSAGE" && suppression.sourceMessageId
-          ? [suppression.sourceMessageId]
-          : []));
-  for (const message of source.messages) {
-    if (memorySourceIsInsidePause(message.createdAt, pauseIntervals)) {
-      excludedMessageIds.add(message.id);
-    }
-  }
   const globalCutoff = memoryDestructiveSourceCutoff(
     barriers.map((barrier) => ({
       explicitOverrideAllowed: false,
@@ -283,7 +315,10 @@ async function loadAdmission(
     ? (globalCutoff > resumeCutoff ? globalCutoff : resumeCutoff)
     : globalCutoff ?? resumeCutoff;
   return {
-    excludedMessageIds,
+    excluded: suppressions.length > 0 ||
+      memorySourceIsInsidePause(source.message.createdAt, pauseIntervals) ||
+      (sourceCreatedAtCutoff !== null &&
+        source.message.createdAt <= sourceCreatedAtCutoff),
     sourceCreatedAtCutoff,
     suppressionIdentitySnapshot: memorySha256({
       barriers,
@@ -294,18 +329,143 @@ async function loadAdmission(
   };
 }
 
-function boundedRecentMessages<T extends Readonly<{ text: string }>>(
+function boundedContextMessages<T extends Readonly<{
+  evidenceEligible: boolean;
+  text: string;
+}>>(
   messages: readonly T[]
 ): readonly T[] {
-  const selected: T[] = [];
-  let characters = 0;
-  for (const message of [...messages].reverse()) {
-    if (selected.length >= MEMORY_FACT_MAX_INPUT_MESSAGES) break;
-    if (characters + message.text.length > MEMORY_FACT_MAX_INPUT_CHARACTERS) continue;
-    selected.push(message);
-    characters += message.text.length;
+  const targetIndex = messages.findIndex((message) => message.evidenceEligible);
+  const target = messages[targetIndex];
+  if (!target || target.text.length > MEMORY_FACT_MAX_INPUT_CHARACTERS ||
+    messages.some((message, index) =>
+      index !== targetIndex && message.evidenceEligible)) return [];
+  const selected = new Set([targetIndex]);
+  let characters = target.text.length;
+  for (let distance = 1; selected.size < MEMORY_FACT_MAX_INPUT_MESSAGES; distance += 1) {
+    const indexes = [targetIndex + distance, targetIndex - distance]
+      .filter((index) => index >= 0 && index < messages.length);
+    if (indexes.length === 0) break;
+    for (const index of indexes) {
+      if (selected.size >= MEMORY_FACT_MAX_INPUT_MESSAGES) break;
+      const message = messages[index]!;
+      if (characters + message.text.length > MEMORY_FACT_MAX_INPUT_CHARACTERS) continue;
+      selected.add(index);
+      characters += message.text.length;
+    }
   }
-  return selected.reverse();
+  return messages.filter((_message, index) => selected.has(index));
+}
+
+async function loadBoundContext(
+  tx: MemoryTransaction,
+  job: MemoryJobDescriptor & MemoryFactSourceIdentity,
+  source: MemoryFactBoundSource
+): Promise<Readonly<{
+  activeLeafMessageId: string;
+  messages: readonly MemoryHistorySourceMessageInput[];
+  timeZone: string;
+}>> {
+  const before: MemoryFactSourceMessage[] = [];
+  let cursor = source.message.parentMessageId;
+  const precedingLimit = Math.max(0, MEMORY_FACT_MAX_INPUT_MESSAGES - 2);
+  for (let index = 0; cursor !== null && index < precedingLimit; index += 1) {
+    const message = await loadContextMessage(tx, source.chat.id, cursor);
+    if (!message) break;
+    before.push(message);
+    cursor = message.parentMessageId;
+  }
+  before.reverse();
+
+  const activeRun = await tx.modelRun.findFirst({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: {
+      assistantId: true,
+      assistantMessageId: true,
+      id: true,
+      normalizedRequest: true,
+      status: true,
+      userMessageId: true
+    },
+    where: {
+      assistantMessageId: job.activeLeafMessageId,
+      chatId: source.chat.id,
+      status: "complete",
+      userId: source.chat.userId,
+      userMessageId: source.message.id
+    }
+  });
+  const after = activeRun?.assistantMessageId
+    ? await tx.message.findFirst({
+        select: sourceMessageSelect,
+        where: {
+          chatId: source.chat.id,
+          id: activeRun.assistantMessageId,
+          parentMessageId: source.message.id,
+          role: "assistant",
+          status: "complete"
+        }
+      })
+    : null;
+  const rows = [...before, source.message, ...(after ? [after] : [])];
+  const assistantIds = rows.flatMap((message) =>
+    message.role === "assistant" ? [message.id] : []);
+  const runs = assistantIds.length === 0
+    ? []
+    : await tx.modelRun.findMany({
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: {
+          assistantId: true,
+          assistantMessageId: true,
+          id: true,
+          status: true,
+          userMessageId: true
+        },
+        where: {
+          assistantMessageId: { in: assistantIds },
+          chatId: source.chat.id,
+          status: "complete",
+          userId: source.chat.userId
+        }
+      });
+  const runsByAssistantMessage = new Map(runs.flatMap((run) =>
+    run.assistantMessageId ? [[run.assistantMessageId, run] as const] : []));
+  const messages = rows.map((message, index): MemoryHistorySourceMessageInput => {
+    const parentMessageId = index === 0 ? null : rows[index - 1]!.id;
+    if (message.role === "user") {
+      return {
+        ...message,
+        parentMessageId,
+        provenance: {
+          assistantId: null,
+          complete: true,
+          influencedByMessageIds: [],
+          modelRunId: null,
+          origin: "DIRECT_USER",
+          taintSources: []
+        }
+      };
+    }
+    const run = runsByAssistantMessage.get(message.id);
+    const validRun = run?.userMessageId === parentMessageId ? run : null;
+    return {
+      ...message,
+      parentMessageId,
+      provenance: {
+        assistantId: validRun?.assistantId ?? null,
+        complete: validRun?.status === "complete",
+        influencedByMessageIds: validRun ? [validRun.userMessageId] : [],
+        modelRunId: validRun?.id ?? null,
+        origin: "VISIBLE_ASSISTANT",
+        taintSources: []
+      }
+    };
+  });
+  return {
+    activeLeafMessageId: after?.id ?? source.message.id,
+    messages,
+    timeZone: runTimeZone(activeRun?.normalizedRequest ?? null)
+  };
 }
 
 /** Returns the sole direct-user message belonging to a settled assistant
@@ -335,130 +495,88 @@ async function prepareWith(
   job: MemoryJobDescriptor,
   now: Date
 ): Promise<PrepareResult> {
-  const decision = await probeWith(tx, job);
+  const decision = await probeWith(tx, job, now);
   if (decision.status !== "READY") return { decision };
   if (!memoryFactExtractionClaimIsValid(job)) {
     return {
       decision: { errorCode: "memory_fact_job_invalid", status: "CANCELLED" }
     };
   }
-  const source = await loadMemorySourceSnapshot(tx, {
-    chatId: job.chatId,
-    lock: "SHARE",
-    personalOnly: true,
-    userId: job.userId
-  });
-  if (!sourceMatchesJob(source, job)) return { decision: staleDecision };
-  const pathIds = source.messages.map((message) => message.id);
-  const rows = await tx.message.findMany({
-    select: {
-      chatId: true,
-      content: true,
-      createdAt: true,
-      id: true,
-      parentMessageId: true,
-      role: true,
-      status: true,
-      updatedAt: true
-    },
-    where: { chatId: source.id, id: { in: pathIds } }
-  });
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  if (pathIds.some((id) => !byId.has(id))) return { decision: staleDecision };
-  const messages: MemoryHistorySourceMessageInput[] = pathIds.map((id) => {
-    const row = byId.get(id);
-    if (!row) throw new MemoryCoordinatorError("memory_fact_source_stale", false);
-    const provenance = provenanceForRole(row.role);
-    return {
-      chatId: row.chatId,
-      content: row.content,
-      createdAt: row.createdAt,
-      id: row.id,
-      parentMessageId: row.parentMessageId,
-      provenance: {
-        assistantId: null,
-        complete: true,
-        influencedByMessageIds: [],
-        modelRunId: null,
-        origin: provenance.origin,
-        taintSources: provenance.taintSources
-      },
-      role: row.role,
-      status: row.status,
-      updatedAt: row.updatedAt
-    };
-  });
-  const activeRun = await tx.modelRun.findFirst({
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { normalizedRequest: true },
-    where: {
-      assistantMessageId: source.activeLeafMessageId,
-      chatId: source.id,
-      userId: source.userId
-    }
-  });
-  const timeZone = runTimeZone(activeRun?.normalizedRequest ?? null);
+  const source = await loadBoundSource(tx, job);
+  if (!source) return { decision: staleDecision };
+  const context = await loadBoundContext(tx, job, source);
   const safeSnapshot = buildMemorySafeSourceSnapshot({
-    activeLeafMessageId: source.activeLeafMessageId,
-    branchGeneration: source.memoryBranchGeneration,
-    chatId: source.id,
-    folderId: source.folderId,
-    messages,
+    activeLeafMessageId: context.activeLeafMessageId,
+    branchGeneration: job.branchGeneration,
+    chatId: source.chat.id,
+    folderId: source.chat.folderId,
+    messages: context.messages,
     mode: "NORMAL",
-    sourceContentHash: source.sourceHash,
-    sourceRevision: source.memorySourceRevision,
-    timeZone,
-    userId: source.userId
+    sourceContentHash: memorySha256(context.messages.map((message) => ({
+      content: message.content,
+      createdAt: new Date(message.createdAt).toISOString(),
+      id: message.id,
+      updatedAt: new Date(message.updatedAt).toISOString()
+    }))),
+    sourceRevision: job.sourceRevision,
+    timeZone: context.timeZone,
+    userId: source.chat.userId
   });
-  const admission = await loadAdmission(tx, source, now);
-  // A settled assistant leaf identifies exactly one turn.  Automatic Memory
-  // may inspect only its direct user parent; older user turns and every
-  // assistant/tool/provider projection are intentionally out of scope.
-  const currentUserMessageId = currentDirectUserMessageId(
-    rows,
-    source.activeLeafMessageId
+  const admission = await loadAdmission(tx, source, job.branchGeneration, now);
+  const projectedById = new Map(
+    safeSnapshot.factEvidenceProjection.messages.map((message) =>
+      [message.id, message] as const)
   );
-  const admitted = safeSnapshot.factEvidenceProjection.messages.flatMap((message) => {
-    if (
-      currentUserMessageId === null ||
-      message.id !== currentUserMessageId ||
-      message.role !== "user" ||
-      admission.excludedMessageIds.has(message.id) ||
-      (admission.sourceCreatedAtCutoff !== null &&
-        new Date(message.createdAt) <= admission.sourceCreatedAtCutoff)
-    ) return [];
+  for (const group of safeSnapshot.recallChunkProjection.turnGroups) {
+    for (const message of group.messages) projectedById.set(message.id, message);
+  }
+  const admitted = context.messages.flatMap((contextMessage) => {
+    const message = projectedById.get(contextMessage.id);
+    if (!message) return [];
+    const evidenceEligible = message.id === source.message.id &&
+      message.role === "user" &&
+      !admission.excluded &&
+      (admission.sourceCreatedAtCutoff === null ||
+        new Date(message.createdAt) > admission.sourceCreatedAtCutoff);
     return [{
       contentHash: message.safeTextHash,
       createdAt: message.createdAt,
+      evidenceEligible,
       id: message.id,
       languageCode: message.languageCode,
+      role: message.role,
       text: message.safeText,
       updatedAt: message.updatedAt
     }];
   });
-  const selected = boundedRecentMessages(admitted);
+  const selected = boundedContextMessages(admitted);
+  if (!selected.some((message) => message.evidenceEligible)) {
+    return { decision: staleDecision };
+  }
   const sourceProjectionHash = memorySha256({
-    baseProjectionHash: safeSnapshot.factEvidenceProjection.projectionHash,
+    baseProjectionHash: safeSnapshot.snapshotHash,
     messages: selected,
     projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
   });
   const sourceIdentity: MemoryFactSourceIdentity = {
-    activeLeafMessageId: source.activeLeafMessageId,
-    branchGeneration: source.memoryBranchGeneration,
-    chatId: source.id,
-    sourceHash: source.sourceHash,
-    sourceRevision: source.memorySourceRevision,
-    userId: source.userId
+    activeLeafMessageId: job.activeLeafMessageId,
+    branchGeneration: job.branchGeneration,
+    chatId: source.chat.id,
+    memoryGenerationSnapshot: job.memoryGenerationSnapshot,
+    sourceHash: job.sourceHash,
+    sourceMessageId: source.message.id,
+    sourceRevision: job.sourceRevision,
+    userId: source.chat.userId
   };
   const withoutInputHash: Omit<MemoryFactExtractionInput, "inputHash"> = {
-    folderId: source.folderId,
+    folderId: source.chat.folderId,
     messages: selected,
     source: sourceIdentity,
     sourceProjectionHash,
     sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
-    timeZone
+    timeZone: context.timeZone
   };
   return {
     input: {
@@ -539,94 +657,16 @@ async function applyPlan(
     }
   }
 
-  for (const candidate of admittedCandidates) {
-    const [existing] = await tx.$queryRaw<Array<{
-      contentPurgedAt: Date | null;
-      id: string;
-      reasonCode: string | null;
-      state: string;
-      userId: string;
-    }>>(Prisma.sql`
-      SELECT "contentPurgedAt", "id", "reasonCode", "state"::text AS "state", "userId"
-      FROM "MemoryCandidate"
-      WHERE "id" = ${candidate.id}
-      FOR UPDATE
-    `);
-    if (existing) {
-      if (existing.userId !== claim.userId) {
-        throw new MemoryCoordinatorError("memory_fact_candidate_collision", false);
-      }
-      if (
-        existing.state !== "STALE" ||
-        existing.reasonCode !== "source_invalidated" ||
-        existing.contentPurgedAt !== null
-      ) continue;
-      await tx.memoryCandidate.delete({ where: { id: existing.id } });
-    }
-    await tx.memoryCandidate.create({
-      data: {
-        branchGeneration: claim.branchGeneration,
-        chatId: claim.chatId,
-        confidence: candidate.confidence,
-        createdByExecutionId: bindingId,
-        id: candidate.id,
-        importance: candidate.importance,
-        jobId: claim.id,
-        languageCode: candidate.languageCode,
-        negated: candidate.negated,
-        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-        proposedCanonicalKey: candidate.canonicalKey,
-        proposedCategory: candidate.category,
-        proposedCoreEligible: candidate.coreEligible,
-        proposedCoreSalience: candidate.coreSalience,
-        proposedDirectness: candidate.directness,
-        proposedDisplayText: candidate.displayText,
-        proposedModality: candidate.modality,
-        proposedScope: {
-          target_id: candidate.scope.targetId,
-          type: candidate.scope.type
-        },
-        proposedSensitivity: candidate.sensitivity,
-        proposedValidFrom: candidate.validFrom
-          ? new Date(candidate.validFrom)
-          : null,
-        proposedValidTo: candidate.validTo ? new Date(candidate.validTo) : null,
-        proposedValue: candidate.proposedValue === null
-          ? Prisma.JsonNull
-          : candidate.proposedValue as Prisma.InputJsonValue,
-        rawTemporalExpression: candidate.rawTemporalExpression,
-        reasonCode: candidate.reasonCode,
-        resolvedAt: null,
-        sourceHash: claim.sourceHash,
-        sourceProjectionHash: plan.input.sourceProjectionHash,
-        sourceProjectionVersion: plan.input.sourceProjectionVersion,
-        sourceRevision: claim.sourceRevision,
-        sourceTimezone: plan.input.timeZone,
-        state: candidate.state,
-        temporalResolutionEvidence: candidate.temporalResolutionEvidence === null
-          ? Prisma.DbNull
-          : candidate.temporalResolutionEvidence as Prisma.InputJsonValue,
-        temporalResolverVersion: candidate.temporalResolutionEvidence === null
-          ? null
-          : MEMORY_FACT_TEMPORAL_RESOLVER_VERSION,
-        userId: claim.userId
-      }
-    });
-    await tx.memoryCandidateMessage.createMany({
-      data: candidate.evidence.map((evidence, ordinal) => ({
-        candidateId: candidate.id,
-        chatId: claim.chatId,
-        endOffset: evidence.endOffset,
-        messageId: evidence.messageId,
-        ordinal,
-        sourceTextHash: evidence.sourceTextHash,
-        startOffset: evidence.startOffset,
-        userId: claim.userId
-      }))
-    });
-  }
+  await commitMemoryVNextExtractionPlan(
+    tx,
+    settings,
+    claim,
+    { ...plan, candidates: admittedCandidates },
+    bindingId,
+    now
+  );
   await tx.memoryJob.updateMany({
-    data: { stage: "fact_candidates_applied" },
+    data: { stage: "fact_observations_applied" },
     where: {
       id: claim.id,
       leaseToken: claim.claimToken,
@@ -661,17 +701,12 @@ export function createPrismaMemoryFactExtractionRepository(
     ) {
       return applyPlan(tx, settings, claim, plan, bindingId, keyring(), now);
     },
-    async applied(job: MemoryJobDescriptor, bindingId: string): Promise<boolean> {
-      const [candidateCount, marker] = await Promise.all([
-        client.memoryCandidate.count({
-          where: { createdByExecutionId: bindingId, userId: job.userId }
-        }),
-        client.memoryJob.findFirst({
-          select: { stage: true },
-          where: { id: job.id, userId: job.userId }
-        })
-      ]);
-      return candidateCount > 0 || marker?.stage === "fact_candidates_applied";
+    async applied(job: MemoryJobDescriptor, _bindingId: string): Promise<boolean> {
+      const marker = await client.memoryJob.findFirst({
+        select: { stage: true },
+        where: { id: job.id, userId: job.userId }
+      });
+      return marker?.stage === "fact_observations_applied";
     },
     bindings(userId: string, memoryJobId: string): Promise<MemoryFactExecutionBinding[]> {
       return client.memoryExecutionBinding.findMany({
@@ -698,7 +733,7 @@ export function createPrismaMemoryFactExtractionRepository(
       });
     },
     preflight(job: MemoryJobDescriptor): Promise<MemoryJobGateDecision> {
-      return client.$transaction((tx) => probeWith(tx, job), {
+      return client.$transaction((tx) => probeWith(tx, job, new Date()), {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
       });
     }

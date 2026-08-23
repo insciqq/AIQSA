@@ -28,6 +28,7 @@ function jobClaim(input: Partial<MemoryJobClaim> = {}): MemoryJobClaim {
     pipelineVersion: "memory-test-v1",
     recoveredLease: false,
     sourceHash: null,
+    sourceMessageId: null,
     sourceRevision: null,
     stage: null,
     userId: "user-1",

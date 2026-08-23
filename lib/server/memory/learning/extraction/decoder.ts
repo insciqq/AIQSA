@@ -1,4 +1,7 @@
-import { memorySha256 } from "../../persistence/lexical";
+import {
+  memorySha256,
+  normalizeMemorySearchText
+} from "../../persistence/lexical";
 import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import type { ModelToolCall } from "../../../tools/types";
 import {
@@ -89,8 +92,12 @@ function decodeV1Candidate(
   input: MemoryFactExtractionInput
 ): MemoryExtractedCandidate {
   if (!isRecord(value) || !hasExactKeys(value, v1CandidateKeys)) fail();
-  if (input.messages.length !== 1) fail("memory_fact_source_stale");
-  const source = input.messages[0];
+  const eligible = input.messages.filter((message) => message.evidenceEligible);
+  const source = eligible.length === 1 &&
+    eligible[0]?.id === input.source.sourceMessageId &&
+    eligible[0].role === "user"
+    ? eligible[0]
+    : null;
   if (!source) fail("memory_fact_source_stale");
   const statement = boundedString(value.statement, 2_000);
   const quote = boundedString(value.quote, 2_000);
@@ -114,7 +121,7 @@ function decodeV1Candidate(
   if (typeof value.sensitivity !== "string" ||
     !v1Sensitivities.has(value.sensitivity)) fail();
   if (value.sensitivity === "SECRET") fail("memory_fact_secret");
-  if (value.sensitivity === "UNCERTAIN") fail("memory_fact_unsupported");
+  if (value.sensitivity !== "NORMAL") fail("memory_fact_unsupported");
   if (value.response_preference !== null) {
     const responsePreference = boundedString(value.response_preference, 512);
     if (memoryExplicitStatementContainsSecret(responsePreference)) {
@@ -172,10 +179,9 @@ function decodeV1Candidate(
     validFrom: null,
     validTo: null
   };
-  const canonicalKey = `auto.${memorySha256({
-    category,
-    domain: "aiqsa.memory.personal-v1",
-    statement
+  const canonicalKey = `prop.v1.${memorySha256({
+    domain: "aiqsa.memory.proposition-v1",
+    proposition: normalizeMemorySearchText(statement)
   })}`;
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     ...base,

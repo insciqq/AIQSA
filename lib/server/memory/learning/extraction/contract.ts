@@ -3,7 +3,8 @@ import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTextLanguage } from "../../history/language";
 
-export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION = "memory-fact-extraction-v1";
+export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
+  "memory-fact-extraction-vnext-v1";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
   "memory-fact-personal-v2-policy";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
@@ -13,19 +14,18 @@ export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   "memory-fact-temporal-conservative-v1";
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
-  "memory-fact-source-projection-v1";
-export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:";
+  "memory-fact-source-projection-v2";
+export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 
-// Automatic learning is intentionally scoped to the one direct-user message
-// that caused the settled turn.  Keeping this bound in the contract prevents
-// a worker from silently widening the evidence window later.
-export const MEMORY_FACT_MAX_INPUT_MESSAGES = 1;
+// Two preceding turns, the immutable target, and its optional completed
+// assistant response are enough for bounded coreference without widening the
+// direct-user evidence boundary.
+export const MEMORY_FACT_MAX_INPUT_MESSAGES = 6;
 export const MEMORY_FACT_MAX_INPUT_CHARACTERS = 16_000;
 /** Public output cap: no more than four candidates can be accepted per turn. */
 export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = 4;
-/** The model packet is bounded separately so invalid siblings do not consume
- * an accepted slot. */
-export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 8;
+/** Strict public and wire bound: a target message yields zero to four rows. */
+export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 4;
 export const MEMORY_FACT_MAX_ACCEPTED_CANDIDATES = MEMORY_FACT_MAX_OUTPUT_CANDIDATES;
 export const MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE = 1;
 
@@ -89,7 +89,9 @@ export type MemoryFactSourceIdentity = Readonly<{
   activeLeafMessageId: string;
   branchGeneration: number;
   chatId: string;
+  memoryGenerationSnapshot: number;
   sourceHash: string;
+  sourceMessageId: string;
   sourceRevision: number;
   userId: string;
 }>;
@@ -97,8 +99,10 @@ export type MemoryFactSourceIdentity = Readonly<{
 export type MemoryFactInputMessage = Readonly<{
   contentHash: string;
   createdAt: string;
+  evidenceEligible: boolean;
   id: string;
   languageCode: MemoryTextLanguage;
+  role: "assistant" | "user";
   text: string;
   updatedAt: string;
 }>;
@@ -197,14 +201,19 @@ export function memoryFactExtractionJobFingerprint(
   if (
     !validIdentity(source.activeLeafMessageId) ||
     !validIdentity(source.chatId) ||
+    !validIdentity(source.sourceMessageId) ||
     !validIdentity(source.userId) ||
     !validCounter(source.branchGeneration) ||
+    !validCounter(source.memoryGenerationSnapshot) ||
     !validCounter(source.sourceRevision) ||
     !sha256Pattern.test(source.sourceHash)
   ) throw new Error("memory_fact_source_invalid");
   return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}${memorySha256({
+    chatId: source.chatId,
+    memoryGenerationSnapshot: source.memoryGenerationSnapshot,
     pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-    source
+    sourceMessageId: source.sourceMessageId,
+    userId: source.userId
   })}`;
 }
 
@@ -215,13 +224,16 @@ export function memoryFactExtractionClaimIsValid(
     job.kind !== "EXTRACT_FACTS" ||
     job.pipelineVersion !== MEMORY_FACT_EXTRACTION_PIPELINE_VERSION ||
     job.activeLeafMessageId === null || job.branchGeneration === null ||
-    job.chatId === null || job.sourceHash === null || job.sourceRevision === null
+    job.chatId === null || job.sourceHash === null ||
+    job.sourceMessageId === null || job.sourceRevision === null
   ) return false;
   const source: MemoryFactSourceIdentity = {
     activeLeafMessageId: job.activeLeafMessageId,
     branchGeneration: job.branchGeneration,
     chatId: job.chatId,
+    memoryGenerationSnapshot: job.memoryGenerationSnapshot,
     sourceHash: job.sourceHash,
+    sourceMessageId: job.sourceMessageId,
     sourceRevision: job.sourceRevision,
     userId: job.userId
   };

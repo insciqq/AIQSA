@@ -351,6 +351,109 @@ describe("provider dispatch recovery request loading", () => {
     });
   });
 
+  it("round-trips a frozen full-context request with its exact evidence envelope", async () => {
+    const evidenceBlock = JSON.stringify({
+      citation: "[K1]",
+      exactExcerpt: "The exact admitted Source passage.",
+      handle: "K1",
+      schemaVersion: 1,
+      type: "source_evidence"
+    });
+    const fullContextRequest: NormalizedRunRequest = {
+      ...normalizedRequest,
+      context: {
+        messages: [{
+          content: {
+            blocks: [{
+              text: [
+                '<private_knowledge_evidence version="4" coverage="full_admitted_corpus">\nFrozen private evidence contract.',
+                "The full admitted corpus is included with no passage omitted.",
+                evidenceBlock,
+                "</private_knowledge_evidence>"
+              ].join("\n\n"),
+              type: "text"
+            }]
+          },
+          id: "knowledge-evidence:v2",
+          purpose: "knowledge_evidence",
+          role: "user"
+        }],
+        mode: "branch_path"
+      },
+      knowledgeAnswering: {
+        answerPolicy: {
+          fullContextThresholdBasisPoints: 7_000,
+          maximumKnowledgeSearches: 12,
+          revision: 1,
+          version: 1
+        },
+        approximateDocumentTokens: 16,
+        evidenceCount: 1,
+        exactDocumentTokens: 8,
+        route: "full_context_v1",
+        version: 1
+      },
+      knowledgePlan: {
+        baseIds: ["base-one"],
+        mode: "explicit",
+        sourceIds: [],
+        version: 1
+      },
+      prompt: { ...normalizedRequest.prompt, knowledgeAnswerContract: 1 }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: {
+        findUnique: vi.fn(async () => ({
+          chat: { projectId: null, userId: "owner-one" },
+          chatId: "chat-one",
+          modelId: "model-one",
+          normalizedRequest: fullContextRequest,
+          provider: "provider-one"
+        }))
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).resolves.toEqual(fullContextRequest);
+  });
+
+  it("rejects a full-context recovery request without its exact evidence envelope", async () => {
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: {
+        findUnique: vi.fn(async () => ({
+          chat: { projectId: null, userId: "owner-one" },
+          chatId: "chat-one",
+          modelId: "model-one",
+          normalizedRequest: {
+            ...normalizedRequest,
+            knowledgeAnswering: {
+              answerPolicy: {
+                fullContextThresholdBasisPoints: 7_000,
+                maximumKnowledgeSearches: 12,
+                revision: 1,
+                version: 1
+              },
+              approximateDocumentTokens: 16,
+              evidenceCount: 1,
+              exactDocumentTokens: 8,
+              route: "full_context_v1",
+              version: 1
+            },
+            prompt: { ...normalizedRequest.prompt, knowledgeAnswerContract: 1 }
+          },
+          provider: "provider-one"
+        }))
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    await expect(operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("round-trips only the server-minted focused Knowledge contract version", async () => {
     const focusedRequest = createKnowledgeFocusedRequest({ currentUserMessage: "Question" })!;
     for (const [contract, accepted] of [[1, true], [2, false]] as const) {

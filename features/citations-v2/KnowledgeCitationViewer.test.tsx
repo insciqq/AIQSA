@@ -197,8 +197,12 @@ describe("Knowledge citation viewer", () => {
     expect(rail).toHaveClass("w-full", "sm:max-w-[44rem]");
     expect(screen.getByText("Earlier accepted version · Removed from this base after the answer")).toBeVisible();
     expect(screen.getByRole("cell", { name: "25 MB" })).toBeVisible();
-    expect(screen.getByTitle("policy.pdf, page 18")).toHaveAttribute(
+    expect(screen.getByRole("img", { name: "Highlighted cited area on page 18" })).toHaveAttribute(
       "src",
+      "/api/runs/run-1/messages/message-1/citations/K1?asset=page"
+    );
+    expect(screen.getByRole("link", { name: "Open page 18" })).toHaveAttribute(
+      "href",
       "/api/runs/run-1/messages/message-1/citations/K1?asset=original#page=18"
     );
     expect(shellFetch).toHaveBeenLastCalledWith(
@@ -230,6 +234,28 @@ describe("Knowledge citation viewer", () => {
     expect(await screen.findByText(/Original page preview is unavailable/u)).toBeVisible();
     expect(screen.queryByText(/Stored highlight coordinates/u)).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /Highlighted regions on page/u })).not.toBeInTheDocument();
+  });
+
+  it("falls back to the exact PDF page when highlighted rendering is unavailable", async () => {
+    shellFetch.mockImplementation(async () => jsonResponse({ citation: citation() }));
+    render(
+      <KnowledgeCitationViewerProvider>
+        <KnowledgeCitationControl reference={{
+          handle: "K1",
+          messageId: "message-1",
+          runId: "run-1"
+        }} />
+      </KnowledgeCitationViewerProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open source K1" }));
+    const highlighted = await screen.findByRole("img", {
+      name: "Highlighted cited area on page 18"
+    });
+    fireEvent.error(highlighted);
+    expect(await screen.findByTitle("policy.pdf, page 18")).toHaveAttribute(
+      "src",
+      "/api/runs/run-1/messages/message-1/citations/K1?asset=original#page=18"
+    );
   });
 
   it("keeps unavailable and deleted references privacy neutral", async () => {

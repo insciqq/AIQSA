@@ -7,6 +7,7 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
+import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -460,6 +461,7 @@ type HarnessOptions = Readonly<{
   capabilities?: ProviderModelCapabilities | null;
   defaultParams?: Readonly<Record<string, unknown>>;
   entitlements?: ResolvedEntitlements;
+  fullContextPassages?: readonly KnowledgeFullContextPassage[] | null;
   mcpPlan?: McpRunPlanResult;
   providerIds?: readonly string[];
   regenerateContext?: readonly ProviderConversationMessage[];
@@ -532,7 +534,15 @@ function createHarness(options: HarnessOptions = {}) {
       calls.push("context:regenerate");
       regenerateContextLoads.push({ chatId, leafMessageId, userId });
       return [...(options.regenerateContext ?? [priorMessage, storedUserMessage])];
-    }
+    },
+    ...(Object.hasOwn(options, "fullContextPassages")
+      ? {
+          async loadKnowledgeFullContextPassages() {
+            calls.push("knowledge:full-context");
+            return options.fullContextPassages ?? null;
+          }
+        }
+      : {})
   };
   const storage = options.storageObjects
     ? {
@@ -2288,6 +2298,121 @@ describe("run preparation", () => {
       ok: false,
       status: 400
     });
+  });
+
+  it("uses the complete small corpus alongside MCP Auto without a Knowledge tool call", async () => {
+    const sourceId = "00000000-0000-4000-8000-000000000011";
+    const sourceVersionId = "00000000-0000-4000-8000-000000000012";
+    const sourceArtifactId = "00000000-0000-4000-8000-000000000013";
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, contextWindow: 16_000, toolCalling: true },
+      fullContextPassages: [{
+        baseName: "Health",
+        contentHash: "d".repeat(64),
+        documentContext: null,
+        headingPath: ["Lipid panel"],
+        page: 1,
+        pageEnd: 1,
+        passageId: "passage-1",
+        passageOrdinal: 0,
+        sectionId: "section-1",
+        sourceArtifactId,
+        sourceId,
+        sourceOrdinal: 0,
+        sourceVersionId,
+        sourceVersionNumber: 1,
+        text: "Total cholesterol 5.3 mmol/L",
+        tokenCount: 8
+      }]
+    });
+    const catalog = vi.fn(async () => ({
+      servers: [{
+        description: "Issue tracking",
+        namespace: "jira",
+        revisionId: "revision-jira",
+        serverId: "server-jira",
+        serverName: "Jira",
+        tools: [{
+          description: "Create an issue",
+          namespacedName: "mcp_jira_create_issue_1",
+          originalName: "create_issue"
+        }]
+      }],
+      version: 1 as const
+    }));
+    const prepareMcp = vi.fn(async () => readyMcpPlan());
+    const prepared = preparedFrom(await prepareRun(
+      {
+        ...harness.deps,
+        mcp: { catalog, prepare: prepareMcp },
+        knowledgeAdmission: {
+          async load(input) {
+            return {
+              ...admittedKnowledge(input, "e"),
+              answerPolicy: {
+                fullContextThresholdBasisPoints: 7_000 as const,
+                maximumKnowledgeSearches: 12,
+                revision: 1,
+                version: 1 as const
+              },
+              profiles: [{
+                embeddingCredentialSource: "default" as const,
+                embeddingExecutionSnapshot: {} as never,
+                embeddingProviderModelId: "embedding-model-1",
+                ordinal: 0,
+                profileRevisionId: "profile-revision-1",
+                targetDimension: 1_024,
+                vectorSpaceFingerprint: "a".repeat(64)
+              }],
+              resolvedSourceCount: 1,
+              sources: [{
+                approxTokens: 8,
+                authority: {
+                  knowledgeBaseIds: ["knowledge-base-1"],
+                  owner: true,
+                  projectId: null
+                },
+                baseProvenance: [{
+                  indexGenerationId: "generation-1",
+                  knowledgeBaseId: "knowledge-base-1"
+                }],
+                directSelected: false,
+                ordinal: 0,
+                passageCount: 1,
+                privateLabels: { fileName: "lipids.pdf", sourceName: "Lipids" },
+                profileOrdinal: 0,
+                profileRevisionId: "profile-revision-1",
+                selectionProvenance: ["base" as const],
+                sourceAlias: "S1",
+                sourceArtifactId,
+                sourceId,
+                sourceVersionId,
+                sourceVersionNumber: 1
+              }]
+            };
+          }
+        }
+      },
+      sendInput(successBody({
+        content: textMessageContent("What is my cholesterol?"),
+        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
+        modelId: "openai-tool-model",
+        provider: "openai"
+      }))
+    ));
+
+    expect(harness.calls).toContain("knowledge:full-context");
+    expect(prepared.normalizedRequest.knowledgeAnswering).toMatchObject({
+      evidenceCount: 1,
+      route: "full_context_v1"
+    });
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["find_tools"]);
+    expect(catalog).toHaveBeenCalledWith("user-1");
+    expect(prepareMcp).not.toHaveBeenCalled();
+    expect(prepared.providerRequest.context?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "knowledge-evidence:v2", purpose: "knowledge_evidence" })
+    ]));
+    expect(prepared.knowledgeAdmissionPlan?.answeringPlan?.route).toBe("full_context_v1");
   });
 
   it("does not double-count one canonical Source selected through a Base and directly", async () => {

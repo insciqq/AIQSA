@@ -37,6 +37,10 @@ type SourceClaimRow = Readonly<{
   normalizedTextStorageKey: string | null;
   originalStorageKey: string | null;
   ownerUserId: string;
+  pdfParserProfileVersion: number;
+  pdfProcessingMode: "local" | "system_model_direct_pdf" | "system_model_vision";
+  pdfSystemModelPolicyVersion: number | null;
+  pdfSystemModelSnapshot: Prisma.JsonValue | null;
   profileExecutionAuthority: "installation" | "legacy_user";
   profileRevisionId: string;
   sourceId: string;
@@ -82,6 +86,10 @@ function artifactPin(row: SourceClaimRow): KnowledgeSourceArtifactPinRecord {
       row.embeddingConfiguration as unknown as KnowledgeSourceArtifactPinRecord["embeddingConfiguration"],
     embeddingProviderModelId: row.embeddingProviderModelId,
     id: row.artifactId,
+    pdfParserProfileVersion: row.pdfParserProfileVersion,
+    pdfProcessingMode: row.pdfProcessingMode,
+    pdfSystemModelPolicyVersion: row.pdfSystemModelPolicyVersion,
+    pdfSystemModelSnapshot: row.pdfSystemModelSnapshot,
     profileExecutionAuthority: row.profileExecutionAuthority,
     profileRevisionId: row.profileRevisionId,
     targetDimension: row.targetDimension,
@@ -314,6 +322,10 @@ async function claimForOwner(
       profile."vectorSpaceFingerprint",
       profile."targetDimension",
       profile."chunkingProfileVersion",
+      profile."pdfProcessingMode"::text AS "pdfProcessingMode",
+      profile."pdfParserProfileVersion",
+      profile."pdfSystemModelPolicyVersion",
+      profile."pdfSystemModelSnapshot",
       profile."executionAuthority"::text AS "profileExecutionAuthority",
       origin."knowledgeBaseId"
     FROM claimed
@@ -659,25 +671,36 @@ export function createPrismaKnowledgeSourceIngestionRepository(
       warningCodes: readonly KnowledgeIngestionWarningCode[];
     }): Promise<boolean> {
       const identity = sourceIdentity(input);
-      const updated = await client.knowledgeSourceIndexArtifact.updateMany({
-        data: {
-          normalizedTextByteSize: input.normalizedTextByteSize,
-          normalizedTextChecksum: input.normalizedTextChecksum,
-          normalizedTextStorageKey: input.normalizedTextStorageKey,
-          pageCount: input.pageCount,
-          processingStage: "chunking",
-          updatedAt: input.now,
-          warningCodes: [...input.warningCodes]
-        },
-        where: {
-          claimToken: identity.claimToken,
-          id: identity.artifactId,
-          processingStage: "parsing",
-          sourceVersionId: identity.sourceVersionId,
-          state: "processing"
-        }
+      return client.$transaction(async (tx) => {
+        const updated = await tx.knowledgeSourceIndexArtifact.updateMany({
+          data: {
+            normalizedTextByteSize: input.normalizedTextByteSize,
+            normalizedTextChecksum: input.normalizedTextChecksum,
+            normalizedTextStorageKey: input.normalizedTextStorageKey,
+            pageCount: input.pageCount,
+            processingStage: "chunking",
+            updatedAt: input.now,
+            warningCodes: [...input.warningCodes]
+          },
+          where: {
+            claimToken: identity.claimToken,
+            id: identity.artifactId,
+            processingStage: "parsing",
+            sourceVersionId: identity.sourceVersionId,
+            state: "processing"
+          }
+        });
+        if (updated.count !== 1) return false;
+        await tx.knowledgePdfProcessingAttempt.updateMany({
+          data: { resultChecksum: null, resultText: null, updatedAt: input.now },
+          where: {
+            sourceArtifactId: identity.artifactId,
+            sourceVersionId: identity.sourceVersionId,
+            state: "settled"
+          }
+        });
+        return true;
       });
-      return updated.count === 1;
     },
 
     async heartbeat(input: KnowledgeWorkIdentity & { now: Date }): Promise<boolean> {

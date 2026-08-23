@@ -40,25 +40,33 @@ ENV NODE_ENV=production
 COPY . .
 RUN npm run build
 
-# Retain only the four direct tools roots and let npm preserve their complete
-# locked transitive closure. Deriving their versions from the npm-ci result
-# keeps package-lock.json authoritative without naming transitive packages.
+# Retain the direct installation-tool and isolated PDF-worker roots and let npm
+# preserve their complete locked transitive closure. Deriving versions from the
+# npm-ci result keeps package-lock.json authoritative without naming transitive
+# packages.
 FROM runtime-deps AS tools-deps
 
 RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
   && PRISMA_CLIENT_VERSION="$(node -p "require('./node_modules/@prisma/client/package.json').version")" \
   && AWS_SDK_VERSION="$(node -p "require('./node_modules/@aws-sdk/client-s3/package.json').version")" \
   && TSX_VERSION="$(node -p "require('./node_modules/tsx/package.json').version")" \
+  && CANVAS_VERSION="$(node -p "require('./node_modules/@napi-rs/canvas/package.json').version")" \
+  && PDF_LIB_VERSION="$(node -p "require('./node_modules/pdf-lib/package.json').version")" \
+  && UNPDF_VERSION="$(node -p "require('./node_modules/unpdf/package.json').version")" \
   && npm pkg delete dependencies devDependencies overrides \
   && npm pkg set \
+    "dependencies.@napi-rs/canvas=$CANVAS_VERSION" \
     "dependencies.@aws-sdk/client-s3=$AWS_SDK_VERSION" \
     "dependencies.@prisma/client=$PRISMA_CLIENT_VERSION" \
+    "dependencies.pdf-lib=$PDF_LIB_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \
     "dependencies.tsx=$TSX_VERSION" \
+    "dependencies.unpdf=$UNPDF_VERSION" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
-# One published image owns the standalone application, private Memory worker,
-# and narrowly pruned installation tools. Compose selects the role by command.
+# One published image owns the standalone application, private Memory and PDF
+# workers, and narrowly pruned installation tools. Compose selects the role by
+# command.
 FROM ${NODE_IMAGE} AS release
 
 WORKDIR /app

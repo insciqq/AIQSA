@@ -1,18 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../../domain/content";
+import { providerTemplateIds } from "../../../../domain/providerTemplates";
 import { prisma } from "../../../prisma";
-import type {
-  MemoryDeletionClaim,
-  MemoryJobClaim
-} from "../../coordinator/types";
+import type { MemoryJobClaim } from "../../coordinator/types";
 import {
-  memoryHistorySourceDeletionHandler,
-  reconcileCompletedMemoryHistorySourceDeletionAudits
-} from "../../history/purge";
-import { memorySha256 } from "../../persistence/lexical";
-import { createMemorySuppressionInTransaction } from "../../persistence/suppressions";
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  memorySha256
+} from "../../persistence/lexical";
 import { withLockedMemoryTransaction } from "../../persistence/transaction";
+import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../../retrieval/vector";
 import { defaultMemorySourceMutationHooks } from "../../sourceHooks";
 import {
   applyMemorySourceMutations,
@@ -24,8 +23,6 @@ import {
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
-  memoryFactExtractionOutputHash,
-  type MemoryExtractedCandidate,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "./contract";
@@ -40,20 +37,17 @@ const keyring = MemorySuppressionKeyring.parse(
 
 async function createOwner(label: string): Promise<string> {
   const suffix = randomUUID();
-  const userId = `memory-fact-${label}-${suffix}`;
+  const userId = `memory-vnext-${label}-${suffix}`;
   await prisma.user.create({
     data: {
-      displayName: "Memory fact extraction test",
+      displayName: "Memory vNext extraction test",
       email: `${userId}@example.test`,
       id: userId,
       status: "active"
     }
   });
   await prisma.userMemorySettings.update({
-    data: {
-      learnAutomatically: true,
-      referenceChatHistory: false
-    },
+    data: { learnAutomatically: true, referenceChatHistory: false },
     where: { userId }
   });
   return userId;
@@ -89,9 +83,9 @@ async function createTurn(input: Readonly<{
       chatId: input.chatId,
       content: textMessageContent(input.assistantText),
       createdAt: assistantAt,
-      modelId: "memory-fact-test-model",
+      modelId: "memory-vnext-test-model",
       parentMessageId: userMessage.id,
-      provider: "memory-fact-test-provider",
+      provider: "memory-vnext-test-provider",
       role: "assistant",
       status: "complete",
       updatedAt: assistantAt
@@ -101,7 +95,7 @@ async function createTurn(input: Readonly<{
     data: {
       assistantMessageId: assistantMessage.id,
       chatId: input.chatId,
-      modelId: "memory-fact-test-model",
+      modelId: "memory-vnext-test-model",
       normalizedRequest: {
         prompt: {
           baseline: {
@@ -111,7 +105,7 @@ async function createTurn(input: Readonly<{
           }
         }
       },
-      provider: "memory-fact-test-provider",
+      provider: "memory-vnext-test-provider",
       status: "complete",
       userId: input.userId,
       userMessageId: userMessage.id
@@ -120,52 +114,51 @@ async function createTurn(input: Readonly<{
   return { assistantMessage, run, userMessage };
 }
 
-async function mutateSource(
-  userId: string,
-  chatId: string,
-  input: Omit<Parameters<typeof applyMemorySourceMutations>[1], "chat" | "hooks">
-) {
-  return prisma.$transaction(async (tx) => {
-    const chat = await lockMemorySourceChat(tx, {
-      chatId,
-      lock: "UPDATE",
-      userId
-    });
-    if (!chat) throw new Error("memory_fact_test_chat_missing");
-    return applyMemorySourceMutations(tx, {
-      ...input,
-      chat,
-      hooks: defaultMemorySourceMutationHooks
-    });
-  });
-}
-
 async function settleChat(
   userId: string,
   chatId: string,
   turn: Awaited<ReturnType<typeof createTurn>>
 ): Promise<void> {
-  await mutateSource(userId, chatId, {
-    mutations: ["NORMAL_APPEND"],
-    patch: { activeLeafMessageId: turn.assistantMessage.id }
+  await prisma.$transaction(async (tx) => {
+    const chat = await lockMemorySourceChat(tx, { chatId, lock: "UPDATE", userId });
+    if (!chat) throw new Error("memory_vnext_test_chat_missing");
+    await applyMemorySourceMutations(tx, {
+      chat,
+      hooks: defaultMemorySourceMutationHooks,
+      mutations: ["NORMAL_APPEND"],
+      patch: { activeLeafMessageId: turn.assistantMessage.id }
+    });
   });
-  await mutateSource(userId, chatId, {
-    mutations: ["TERMINAL_SETTLEMENT"],
-    terminalSettlement: {
-      assistantMessageId: turn.assistantMessage.id,
-      runId: turn.run.id,
-      status: "complete"
-    }
+  await prisma.$transaction(async (tx) => {
+    const chat = await lockMemorySourceChat(tx, { chatId, lock: "UPDATE", userId });
+    if (!chat) throw new Error("memory_vnext_test_chat_missing");
+    await applyMemorySourceMutations(tx, {
+      chat,
+      hooks: defaultMemorySourceMutationHooks,
+      mutations: ["TERMINAL_SETTLEMENT"],
+      terminalSettlement: {
+        assistantMessageId: turn.assistantMessage.id,
+        runId: turn.run.id,
+        status: "complete"
+      }
+    });
   });
 }
 
-async function claimFactJob(userId: string): Promise<MemoryJobClaim> {
+async function claimFactJob(
+  userId: string,
+  sourceMessageId: string
+): Promise<MemoryJobClaim> {
   const job = await prisma.memoryJob.findFirstOrThrow({
-    orderBy: [{ sourceRevision: "desc" }, { createdAt: "desc" }],
-    where: { kind: "EXTRACT_FACTS", state: "QUEUED", userId }
+    where: {
+      kind: "EXTRACT_FACTS",
+      sourceMessageId,
+      state: "QUEUED",
+      userId
+    }
   });
   const claimToken = randomUUID();
-  const leaseExpiresAt = new Date(Date.now() + 60_000);
+  const leaseExpiresAt = new Date(Date.now() + 120_000);
   const claimed = await prisma.memoryJob.update({
     data: {
       attemptCount: { increment: 1 },
@@ -190,29 +183,30 @@ async function claimFactJob(userId: string): Promise<MemoryJobClaim> {
     pipelineVersion: claimed.pipelineVersion,
     recoveredLease: false,
     sourceHash: claimed.sourceHash,
+    sourceMessageId: claimed.sourceMessageId,
     sourceRevision: claimed.sourceRevision,
     stage: claimed.stage,
     userId: claimed.userId
   };
 }
 
-function candidatePlan(
+function extractionPlan(
   input: MemoryFactExtractionInput,
-  _messageId: string,
-  text: string
+  quote: string,
+  statement = "The user bought a MacBook Air."
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
       candidates: [{
-        category: "preferences",
+        category: "about_you",
         confidence_band: "HIGH",
         correction: false,
         future_useful: true,
-        quote: text,
-        reason_code: "durable_preference",
-        response_preference: text,
+        quote,
+        reason_code: "durable_direct_fact",
+        response_preference: null,
         sensitivity: "NORMAL",
-        statement: text,
+        statement,
         temporary: false
       }]
     },
@@ -228,12 +222,12 @@ async function createSucceededBinding(
   outputHash: string
 ): Promise<string> {
   const id = `fact-binding-${randomUUID()}`;
-  const now = new Date();
-  const createdAt = new Date(now.getTime() - 1_000);
+  const completedAt = new Date();
+  const createdAt = new Date(completedAt.getTime() - 1_000);
   await prisma.memoryExecutionBinding.create({
     data: {
       acceptedOutputHash: outputHash,
-      completedAt: now,
+      completedAt,
       createdAt,
       destinationFingerprint: "d".repeat(64),
       id,
@@ -246,12 +240,22 @@ async function createSucceededBinding(
       policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
       promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
       providerId: "openai_compatible",
-      recoverableUntil: now,
-      relationsDetachedAt: now,
+      recoverableUntil: completedAt,
+      relationsDetachedAt: completedAt,
       schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
       secretFreeExecutionSnapshot: {},
       startedAt: createdAt,
       state: "SUCCEEDED",
+      usageCompleteness: "UNAVAILABLE",
+      userId
+    }
+  });
+  await prisma.usageEvent.create({
+    data: {
+      memoryExecutionBindingId: id,
+      modelId: "memory-vnext-test-model",
+      provider: "openai_compatible",
+      providerModelId: "memory-vnext-test-model",
       userId
     }
   });
@@ -264,560 +268,375 @@ function repository() {
   });
 }
 
-async function prepareFactJob(claim: MemoryJobClaim) {
-  const prepared = await repository().prepare(claim);
-  if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
-  return prepared.input;
+async function prepare(claim: MemoryJobClaim): Promise<MemoryFactExtractionInput> {
+  const result = await repository().prepare(claim);
+  if ("decision" in result) throw new Error(result.decision.errorCode);
+  return result.input;
 }
 
-describe("Prisma Memory fact extraction", () => {
+async function applyPlan(
+  userId: string,
+  claim: MemoryJobClaim,
+  plan: MemoryFactExtractionPlan,
+  bindingId: string
+) {
+  return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
+    repository().apply(tx, settings, claim, plan, bindingId, new Date()));
+}
+
+async function activateHybridIndex(userId: string): Promise<void> {
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    where: { userId }
+  });
+  const model = await prisma.providerModel.findUniqueOrThrow({
+    select: { connectionId: true },
+    where: { id: providerTemplateIds.fakeModel }
+  });
+  const latest = await prisma.memoryIndexGeneration.aggregate({
+    _max: { generation: true },
+    where: { userId }
+  });
+  const now = new Date();
+  const generation = await prisma.memoryIndexGeneration.create({
+    data: {
+      chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+      embeddingConfigurationFingerprint: "b".repeat(64),
+      embeddingConnectionId: model.connectionId,
+      embeddingDimension: 1_024,
+      embeddingProviderModelId: providerTemplateIds.fakeModel,
+      generation: (latest._max.generation ?? -1) + 1,
+      indexMode: "HYBRID",
+      indexedThroughMemoryRevision: settings.memoryRevision,
+      languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+      normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+      readyAt: now,
+      retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
+      state: "READY",
+      targetMemoryRevision: settings.memoryRevision,
+      userId,
+      vectorSpaceFingerprint: "c".repeat(64)
+    }
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.userMemorySettings.update({
+      data: {
+        activeIndexGenerationId: generation.id,
+        embeddingProviderModelId: providerTemplateIds.fakeModel
+      },
+      where: { userId }
+    });
+    await tx.memoryIndexGeneration.update({
+      data: { activatedAt: now, state: "ACTIVE" },
+      where: { id: generation.id }
+    });
+  });
+}
+
+describe("Prisma Memory vNext source-message ingestion", () => {
   afterAll(async () => {
     await prisma.$disconnect();
   });
 
-  it("admits only the settled assistant leaf's direct user parent", async () => {
-    const userId = await createOwner("projection");
+  it("survives a rapid next turn, commits exact evidence, and deduplicates retry and repeat", async () => {
+    const userId = await createOwner("rapid-retry");
     try {
       const chat = await prisma.chat.create({
-        data: { title: "Independent fact extraction", userId }
+        data: { title: "Stable per-message ingestion", userId }
       });
-      const safe = await createTurn({
-        assistantText: "Tea noted.",
+      const first = await createTurn({
+        assistantText: "Congratulations.",
         chatId: chat.id,
-        createdAt: new Date("2026-08-11T08:00:00.000Z"),
+        createdAt: new Date("2026-08-22T10:00:00.000Z"),
         parentMessageId: null,
         userId,
-        userText: "I prefer tea."
+        userText: "I bought a MacBook Air."
       });
-      const secret = await createTurn({
-        assistantText: "I will not retain credentials.",
+      await settleChat(userId, chat.id, first);
+      const firstClaim = await claimFactJob(userId, first.userMessage.id);
+      const firstInput = await prepare(firstClaim);
+      expect(firstInput.messages.map(({ evidenceEligible, id, role }) => ({
+        evidenceEligible,
+        id,
+        role
+      }))).toEqual([
+        { evidenceEligible: true, id: first.userMessage.id, role: "user" },
+        { evidenceEligible: false, id: first.assistantMessage.id, role: "assistant" }
+      ]);
+      expect(firstInput.source.sourceMessageId).toBe(first.userMessage.id);
+
+      const second = await createTurn({
+        assistantText: "Still noted.",
         chatId: chat.id,
-        createdAt: new Date("2026-08-11T08:05:00.000Z"),
-        parentMessageId: safe.assistantMessage.id,
+        createdAt: new Date("2026-08-22T10:01:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
         userId,
-        userText: "My API key is sk-ABCDEFGHIJKLMNOP1234567890."
+        userText: "I bought a MacBook Air."
       });
-      const sensitive = await createTurn({
-        assistantText: "Understood.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-11T08:10:00.000Z"),
-        parentMessageId: secret.assistantMessage.id,
-        userId,
-        userText: "My salary is 100000."
-      });
-      await settleChat(userId, chat.id, sensitive);
+      await settleChat(userId, chat.id, second);
 
-      await expect(prisma.memoryJob.count({
-        where: { kind: "EXTRACT_FACTS", userId }
-      })).resolves.toBe(1);
-      await expect(prisma.memoryJob.count({
-        where: { kind: "INDEX_HISTORY", userId }
-      })).resolves.toBe(0);
-
-      const claim = await claimFactJob(userId);
-      const input = await prepareFactJob(claim);
-      expect(input.messages.map(({ id }) => id)).toEqual([sensitive.userMessage.id]);
-      expect(input.messages[0]).toMatchObject({
-        languageCode: "und",
-        text: "My salary is 100000."
-      });
-      const serialized = JSON.stringify(input);
-      expect(serialized).not.toContain("ABCDEFGHIJKLMNOP1234567890");
-      expect(serialized).toContain("salary");
-      expect(serialized).not.toContain("I prefer tea");
-      expect(serialized).not.toContain("Tea noted");
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("persists no candidate or evidence when model output contains a structural secret", async () => {
-    const userId = await createOwner("output-secret");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "Secret output defense", userId }
-      });
-      const turn = await createTurn({
-        assistantText: "Tea noted.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-11T08:30:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "I prefer tea."
-      });
-      await settleChat(userId, chat.id, turn);
-      const claim = await claimFactJob(userId);
-      const input = await prepareFactJob(claim);
-      const plan = decodeMemoryFactExtraction([{
-        arguments: {
-          candidates: [{
-            category: "preferences",
-            confidence_band: "HIGH",
-            correction: false,
-            future_useful: true,
-            quote: "I prefer tea.",
-            reason_code: "durable_preference",
-            response_preference: "tea",
-            sensitivity: "NORMAL",
-            statement: "API key: sk-abcdefghijklmnopqrstuvwxyz123456",
-            temporary: false
-          }]
-        },
-        id: `fact-call-${randomUUID()}`,
-        name: MEMORY_FACT_EXTRACTION_TOOL_NAME
-      }], input);
-      expect(plan.candidates).toEqual([]);
-      expect(plan.rejections).toEqual([{
-        candidateOrdinal: 0,
-        reasonCode: "REJECT_SECRET"
-      }]);
-      const bindingId = await createSucceededBinding(
-        userId,
-        claim,
-        input.inputHash,
-        plan.outputHash
-      );
-      await expect(withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          claim,
-          plan,
-          bindingId,
-          new Date()
-        )
-      )).resolves.toBe("APPLIED");
-      await expect(prisma.memoryCandidate.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.memoryCandidateMessage.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it.each(["statement", "quote", "responsePreference", "proposedValue"] as const)(
-    "repository independently fences a forged secret in %s",
-    async (secretField) => {
-    const userId = await createOwner(`forged-${secretField}`);
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "Forged secret defense", userId }
-      });
-      const turn = await createTurn({
-        assistantText: "Tea noted.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-11T08:40:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "I prefer tea."
-      });
-      await settleChat(userId, chat.id, turn);
-      const claim = await claimFactJob(userId);
-      const input = await prepareFactJob(claim);
-      const safePlan = candidatePlan(input, turn.userMessage.id, "I prefer tea.");
-      const base = safePlan.candidates[0]!;
-      const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
-      let forged: MemoryExtractedCandidate;
-      if (secretField === "statement") {
-        forged = { ...base, displayText: secret, statement: secret };
-      } else if (secretField === "quote") {
-        forged = {
-          ...base,
-          evidence: base.evidence.map((evidence) => ({ ...evidence, quote: secret })),
-          quote: secret
-        };
-      } else if (secretField === "responsePreference") {
-        forged = {
-          ...base,
-          proposedValue: { responsePreference: secret, statement: base.statement },
-          responsePreference: secret
-        };
-      } else {
-        forged = {
-          ...base,
-          proposedValue: {
-            responsePreference: secret,
-            statement: base.statement
-          }
-        };
-      }
-      const plan: MemoryFactExtractionPlan = {
-        ...safePlan,
-        candidates: [forged],
-        outputHash: memoryFactExtractionOutputHash(input, [forged])
-      };
-      const bindingId = await createSucceededBinding(
-        userId,
-        claim,
-        input.inputHash,
-        plan.outputHash
-      );
-      await expect(withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          claim,
-          plan,
-          bindingId,
-          new Date()
-        )
-      )).resolves.toBe("APPLIED");
-      await expect(prisma.memoryCandidate.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.memoryCandidateMessage.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("persists exact direct-message evidence and source-purges it atomically", async () => {
-    const userId = await createOwner("apply-purge");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "Fact candidate apply", userId }
-      });
-      const turn = await createTurn({
-        assistantText: "Tea noted.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-11T09:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "I prefer tea."
-      });
-      await settleChat(userId, chat.id, turn);
-      const claim = await claimFactJob(userId);
-      const input = await prepareFactJob(claim);
-      const plan = candidatePlan(input, turn.userMessage.id, "I prefer tea.");
-      const bindingId = await createSucceededBinding(
-        userId,
-        claim,
-        input.inputHash,
-        plan.outputHash
-      );
-      await prisma.memoryJob.update({
-        data: { leaseToken: randomUUID() },
-        where: { id: claim.id }
-      });
-      await expect(withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          claim,
-          plan,
-          bindingId,
-          new Date()
-        )
-      )).resolves.toBe("STALE");
-      await expect(prisma.memoryCandidate.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await prisma.memoryJob.update({
-        data: {
-          leaseExpiresAt: new Date(Date.now() + 60_000),
-          leaseToken: claim.claimToken
-        },
-        where: { id: claim.id }
-      });
-      const applied = await withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          claim,
-          plan,
-          bindingId,
-          new Date()
-        )
-      );
-      expect(applied).toBe("APPLIED");
-      await expect(prisma.memoryCandidate.findUniqueOrThrow({
-        where: { id: plan.candidates[0]!.id }
-      })).resolves.toMatchObject({
-        chatId: chat.id,
-        proposedCoreEligible: true,
-        proposedCoreSalience: "HIGH",
-        createdByExecutionId: bindingId,
-        jobId: claim.id,
-        proposedDisplayText: "I prefer tea.",
-        state: "PENDING",
-        userId
-      });
-      await expect(prisma.memoryCandidateMessage.findFirstOrThrow({
-        where: { candidateId: plan.candidates[0]!.id, userId }
-      })).resolves.toMatchObject({
-        chatId: chat.id,
-        endOffset: "I prefer tea.".length,
-        messageId: turn.userMessage.id,
-        sourceTextHash: memorySha256("I prefer tea."),
-        startOffset: 0
-      });
-
-      await mutateSource(userId, chat.id, {
-        mutations: ["BRANCH_PATH_CHANGE"],
-        patch: { activeLeafMessageId: turn.assistantMessage.id }
-      });
-      await expect(prisma.memoryCandidate.findUniqueOrThrow({
-        where: { id: plan.candidates[0]!.id }
-      })).resolves.toMatchObject({
-        reasonCode: "source_invalidated",
-        resolvedAt: expect.any(Date),
-        state: "STALE"
-      });
-      const deletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
-        where: { operation: "SOURCE_PURGE", targetId: chat.id, userId }
-      });
-      const completedAt = new Date("2026-08-11T09:06:00.000Z");
-      await prisma.memoryDeletionOutbox.update({
-        data: {
-          completedAt,
-          lastAuditAt: completedAt,
-          state: "SUCCEEDED",
-          updatedAt: completedAt
-        },
-        where: { id: deletion.id }
-      });
-      const replay = await reconcileCompletedMemoryHistorySourceDeletionAudits(
-        prisma,
-        { now: new Date("2026-08-11T09:07:00.000Z") }
-      );
-      expect(replay.reopened).toBeGreaterThanOrEqual(1);
-      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
-        where: { id: deletion.id }
-      })).resolves.toMatchObject({
-        completedAt: null,
-        errorCode: "memory_purge_incomplete",
-        state: "PENDING"
-      });
-      const claimToken = randomUUID();
-      const leaseExpiresAt = new Date(Date.now() + 60_000);
-      const running = await prisma.memoryDeletionOutbox.update({
-        data: {
-          attemptCount: { increment: 1 },
-          leaseExpiresAt,
-          leaseToken: claimToken,
-          state: "RUNNING"
-        },
-        where: { id: deletion.id }
-      });
-      const deletionClaim: MemoryDeletionClaim = {
-        admissionAuthorizationId: running.admissionAuthorizationId,
-        admittedActiveLeafMessageId: running.admittedActiveLeafMessageId,
-        admittedChatSourceRevision: running.admittedChatSourceRevision,
-        alsoForgetOriginMemories: running.alsoForgetOriginMemories,
-        attemptCount: running.attemptCount,
-        claimToken,
-        id: running.id,
-        leaseExpiresAt,
-        memoryGeneration: running.memoryGeneration,
-        operation: running.operation,
-        recoveredLease: false,
-        resumedFromBlocked: false,
-        targetId: running.targetId,
-        targetType: running.targetType,
-        userId: running.userId
-      };
-      const execution = await memoryHistorySourceDeletionHandler.execute(
-        deletionClaim,
-        { now: () => new Date(), signal: new AbortController().signal }
-      );
-      await expect(prisma.$transaction(async (tx) => {
-        await execution.apply?.(tx, deletionClaim);
-        throw new Error("memory_fact_purge_crash_fixture");
-      })).rejects.toThrow("memory_fact_purge_crash_fixture");
-      await expect(prisma.memoryCandidate.count({ where: { userId } }))
-        .resolves.toBe(1);
-
-      await prisma.$transaction(async (tx) => {
-        await execution.apply?.(tx, deletionClaim);
-      });
-      await expect(prisma.memoryCandidate.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.memoryCandidateMessage.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("rejects an apply raced by a fact suppression without partial candidates", async () => {
-    const userId = await createOwner("suppression-race");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "Fact suppression race", userId }
-      });
-      const turn = await createTurn({
-        assistantText: "Tea noted.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-11T10:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "I prefer tea."
-      });
-      await settleChat(userId, chat.id, turn);
-      const claim = await claimFactJob(userId);
-      const input = await prepareFactJob(claim);
-      const plan = candidatePlan(input, turn.userMessage.id, "I prefer tea.");
-      const bindingId = await createSucceededBinding(
-        userId,
-        claim,
-        input.inputHash,
-        plan.outputHash
-      );
-      await withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
-        createMemorySuppressionInTransaction(tx, settings, keyring, {
-          canonicalKey: plan.candidates[0]!.canonicalKey,
-          explicitOverrideAllowed: false,
-          scope: "FACT",
-          suppressionId: randomUUID()
-        }));
-
-      const applied = await withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          claim,
-          plan,
-          bindingId,
-          new Date()
-        )
-      );
-      expect(applied).toBe("STALE");
-      await expect(prisma.memoryCandidate.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.memoryCandidateMessage.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("reprocesses unchanged current evidence after branch invalidation without reviving suppressed rows", async () => {
-    const userId = await createOwner("branch-reprocess");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "Fact candidate branch reprocessing", userId }
-      });
-      const turn = await createTurn({
-        assistantText: "Tea noted.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-11T11:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "I prefer tea."
-      });
-      await settleChat(userId, chat.id, turn);
-      const firstClaim = await claimFactJob(userId);
-      const firstInput = await prepareFactJob(firstClaim);
-      const firstPlan = candidatePlan(
-        firstInput,
-        turn.userMessage.id,
-        "I prefer tea."
-      );
-      const firstBindingId = await createSucceededBinding(
+      const preparedAfterNextTurn = await prepare(firstClaim);
+      expect(preparedAfterNextTurn.inputHash).toBe(firstInput.inputHash);
+      const firstPlan = extractionPlan(firstInput, "I bought a MacBook Air.");
+      const firstBinding = await createSucceededBinding(
         userId,
         firstClaim,
         firstInput.inputHash,
         firstPlan.outputHash
       );
-      await expect(withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          firstClaim,
-          firstPlan,
-          firstBindingId,
-          new Date()
-        )
-      )).resolves.toBe("APPLIED");
+      await expect(applyPlan(userId, firstClaim, firstPlan, firstBinding))
+        .resolves.toBe("APPLIED");
 
-      await mutateSource(userId, chat.id, {
-        mutations: ["BRANCH_PATH_CHANGE"],
-        patch: { activeLeafMessageId: turn.assistantMessage.id }
-      });
-      await expect(prisma.memoryCandidate.findUniqueOrThrow({
-        where: { id: firstPlan.candidates[0]!.id }
-      })).resolves.toMatchObject({
-        reasonCode: "source_invalidated",
-        state: "STALE"
-      });
-
-      await mutateSource(userId, chat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: {
-          assistantMessageId: turn.assistantMessage.id,
-          runId: turn.run.id,
-          status: "complete"
-        }
-      });
-      const secondClaim = await claimFactJob(userId);
-      const secondInput = await prepareFactJob(secondClaim);
-      const secondPlan = candidatePlan(
-        secondInput,
-        turn.userMessage.id,
-        "I prefer tea."
-      );
-      expect(secondPlan.candidates[0]!.id).toBe(firstPlan.candidates[0]!.id);
-      const secondBindingId = await createSucceededBinding(
+      const secondClaim = await claimFactJob(userId, second.userMessage.id);
+      const secondInput = await prepare(secondClaim);
+      const secondPlan = extractionPlan(secondInput, "I bought a MacBook Air.");
+      const secondBinding = await createSucceededBinding(
         userId,
         secondClaim,
         secondInput.inputHash,
         secondPlan.outputHash
       );
-      await expect(withLockedMemoryTransaction(
-        prisma,
-        userId,
-        (tx, settings) => repository().apply(
-          tx,
-          settings,
-          secondClaim,
-          secondPlan,
-          secondBindingId,
-          new Date()
-        )
-      )).resolves.toBe("APPLIED");
-      await expect(prisma.memoryCandidate.findUniqueOrThrow({
-        where: { id: secondPlan.candidates[0]!.id }
-      })).resolves.toMatchObject({
-        branchGeneration: secondClaim.branchGeneration,
-        createdByExecutionId: secondBindingId,
-        jobId: secondClaim.id,
-        reasonCode: null,
-        state: "PENDING"
-      });
+      await expect(applyPlan(userId, secondClaim, secondPlan, secondBinding))
+        .resolves.toBe("APPLIED");
+      await expect(applyPlan(userId, firstClaim, firstPlan, firstBinding))
+        .resolves.toBe("APPLIED");
 
-      const deletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
-        where: { operation: "SOURCE_PURGE", targetId: chat.id, userId }
+      const facts = await prisma.memoryFact.findMany({ where: { userId } });
+      const versions = await prisma.memoryFactVersion.findMany({ where: { userId } });
+      const evidence = await prisma.memoryEvidence.findMany({
+        orderBy: { observedAt: "asc" },
+        where: { userId }
       });
-      const completedAt = new Date("2026-08-11T11:06:00.000Z");
-      await prisma.memoryDeletionOutbox.update({
-        data: {
-          completedAt,
-          lastAuditAt: completedAt,
-          state: "SUCCEEDED",
-          updatedAt: completedAt
+      expect(facts).toHaveLength(1);
+      expect(versions).toHaveLength(1);
+      expect(versions[0]).toMatchObject({
+        observedAt: first.userMessage.createdAt,
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        sourceMode: "AUTOMATIC",
+        state: "ACTIVE"
+      });
+      await expect(prisma.memoryFactVersion.update({
+        data: { observedAt: second.userMessage.createdAt },
+        where: { id: versions[0]!.id }
+      })).rejects.toThrow(/observedAt is immutable once assigned/u);
+      expect(evidence).toHaveLength(2);
+      expect(evidence.map((item) => ({
+        excerpt: item.safeExcerpt,
+        messageId: item.messageId,
+        role: item.sourceRole
+      }))).toEqual([
+        {
+          excerpt: "I bought a MacBook Air.",
+          messageId: first.userMessage.id,
+          role: "user"
         },
-        where: { id: deletion.id }
-      });
-      await reconcileCompletedMemoryHistorySourceDeletionAudits(prisma, {
-        now: new Date("2026-08-11T11:07:00.000Z")
-      });
-      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
-        where: { id: deletion.id }
-      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+        {
+          excerpt: "I bought a MacBook Air.",
+          messageId: second.userMessage.id,
+          role: "user"
+        }
+      ]);
       await expect(prisma.memoryCandidate.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.memoryEvent.count({
+        where: { operation: "PROMOTE", userId }
+      })).resolves.toBe(1);
+      await expect(prisma.memoryEvent.count({
+        where: { operation: "REINFORCE", userId }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("terminalizes a valid empty extraction without writing semantic rows", async () => {
+    const userId = await createOwner("empty");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "No memory", userId } });
+      const turn = await createTurn({
+        assistantText: "Hello.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-22T11:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Hello!"
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      const plan = decodeMemoryFactExtraction([{
+        arguments: { candidates: [] },
+        id: `fact-call-${randomUUID()}`,
+        name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+      }], input);
+      const bindingId = await createSucceededBinding(
+        userId,
+        claim,
+        input.inputHash,
+        plan.outputHash
+      );
+      await expect(applyPlan(userId, claim, plan, bindingId)).resolves.toBe("APPLIED");
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: claim.id } }))
+        .resolves.toMatchObject({ stage: "fact_observations_applied" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("rejects a delayed job whose direct source message was deleted", async () => {
+    const userId = await createOwner("deleted-source");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Deleted source", userId } });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-22T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I bought a MacBook Air."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      await prisma.memoryJob.delete({ where: { id: claim.id } });
+      await prisma.modelRun.delete({ where: { id: turn.run.id } });
+      await prisma.message.delete({ where: { id: turn.assistantMessage.id } });
+      await prisma.message.delete({ where: { id: turn.userMessage.id } });
+
+      await expect(repository().preflight(claim)).resolves.toEqual({
+        errorCode: "memory_fact_source_stale",
+        status: "STALE"
+      });
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("rejects messages created inside a closed automatic-learning pause interval", async () => {
+    const userId = await createOwner("pause");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Paused source", userId } });
+      const createdAt = new Date("2026-08-22T13:00:00.000Z");
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt,
+        parentMessageId: null,
+        userId,
+        userText: "I bought a MacBook Air."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      await prisma.memoryPauseInterval.create({
+        data: {
+          memoryGeneration: claim.memoryGenerationSnapshot,
+          pausedAt: new Date(createdAt.getTime() - 1_000),
+          resumedAt: new Date(createdAt.getTime() + 1_000),
+          scope: "AUTOMATIC_LEARNING",
+          userId
+        }
+      });
+      await expect(repository().preflight(claim)).resolves.toMatchObject({
+        status: "STALE"
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("rejects a pre-reset job after the Memory generation advances", async () => {
+    const userId = await createOwner("generation");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Generation fence", userId } });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-22T14:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I bought a MacBook Air."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      await prisma.userMemorySettings.update({
+        data: { memoryGeneration: { increment: 1 } },
+        where: { userId }
+      });
+      await expect(repository().preflight(claim)).resolves.toMatchObject({
+        status: "STALE"
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("enforces direct-user source identity at the database boundary", async () => {
+    const userId = await createOwner("assistant-source");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Assistant source", userId } });
+      const turn = await createTurn({
+        assistantText: "Assistant text is not evidence.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-22T15:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Hello."
+      });
+      await expect(prisma.memoryJob.create({
+        data: {
+          activeLeafMessageId: turn.assistantMessage.id,
+          branchGeneration: 0,
+          chatId: chat.id,
+          idempotencyFingerprint: memorySha256(randomUUID()),
+          kind: "EXTRACT_FACTS",
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+          sourceHash: "a".repeat(64),
+          sourceMessageId: turn.assistantMessage.id,
+          sourceRevision: 0,
+          userId
+        }
+      })).rejects.toThrow(/exact settled direct USER message/u);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("commits the fact before embedding work and leaves a retryable pending index job", async () => {
+    const userId = await createOwner("embedding-outage");
+    try {
+      await activateHybridIndex(userId);
+      const chat = await prisma.chat.create({ data: { title: "Embedding outage", userId } });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-22T16:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I bought a MacBook Air."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      const plan = extractionPlan(input, "I bought a MacBook Air.");
+      const bindingId = await createSucceededBinding(
+        userId,
+        claim,
+        input.inputHash,
+        plan.outputHash
+      );
+      await expect(applyPlan(userId, claim, plan, bindingId)).resolves.toBe("APPLIED");
+
+      await expect(prisma.memoryFactVersion.count({ where: { userId } }))
         .resolves.toBe(1);
+      await expect(prisma.memorySearchEntry.findFirstOrThrow({ where: { userId } }))
+        .resolves.toMatchObject({ embeddingState: "PENDING" });
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EMBED_ITEMS", state: "QUEUED", userId }
+      })).resolves.toBe(1);
     } finally {
       await cleanupOwner(userId);
     }

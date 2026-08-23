@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeVectorSpacePin } from "../../knowledge/indexProfile";
+import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import {
   knowledgeProfileConfiguration,
   knowledgeProfileEgressPolicy
@@ -29,6 +30,40 @@ const pin: KnowledgeVectorSpacePin = {
   targetDimension: 1024
 };
 
+function systemSnapshot(): ProviderExecutionSnapshot {
+  return {
+    connection: {
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.openai.com/v1",
+      authenticationMode: "bearer",
+      responseTimeoutMs: 300_000
+    },
+    connectionDisplayName: "OpenAI",
+    connectionId: "connection-1",
+    credentialId: "credential-1",
+    credentialVersionId: "credential-version-1",
+    model: {
+      adapterKind: "openai_responses_native",
+      answerSelectable: true,
+      capabilities: {
+        nativePdfInput: true,
+        nativeSearch: false,
+        pdf: true,
+        reasoning: false,
+        streaming: true,
+        vision: true
+      },
+      defaultParams: {},
+      modelClass: "answer",
+      upstreamModelId: "gpt-test"
+    },
+    modelDisplayName: "GPT Test",
+    providerFamily: "openai",
+    providerModelId: "answer-1",
+    version: 1
+  };
+}
+
 function revision(overrides: Record<string, unknown> = {}) {
   return {
     activatedAt: NOW,
@@ -48,6 +83,10 @@ function revision(overrides: Record<string, unknown> = {}) {
     embeddingProviderModelId: "embedding-1",
     executionAuthority: "installation",
     id: "revision-1",
+    pdfParserProfileVersion: 1,
+    pdfProcessingMode: "local",
+    pdfSystemModelPolicyVersion: null,
+    pdfSystemModelSnapshot: null,
     preflightCheckedAt: NOW,
     preflightErrorCode: null,
     preflightStatus: "ready",
@@ -63,6 +102,111 @@ function revision(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator Knowledge profile service", () => {
+  it("pins the exact evidence-backed System Model for Direct PDF without a Vision probe", async () => {
+    const create = vi.fn().mockResolvedValue({ id: "revision-2" });
+    const credentialVersion = {
+      credentialId: "credential-1",
+      id: "credential-version-1",
+      revokedAt: null
+    };
+    const tx = {
+      knowledgeIndexProfile: {
+        findUnique: vi.fn().mockResolvedValue({ version: 4 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      },
+      knowledgeIndexProfileRevision: {
+        create,
+        findFirst: vi.fn().mockResolvedValue({ revisionNumber: 1 })
+      },
+      providerCredentialVersion: {
+        findUnique: vi.fn().mockResolvedValue(credentialVersion)
+      }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+        operation(tx)),
+      knowledgeIndexProfile: { findUnique: vi.fn().mockResolvedValue({ version: 4 }) },
+      providerCredentialVersion: {
+        findUnique: vi.fn().mockResolvedValue(credentialVersion)
+      }
+    } as unknown as PrismaClient;
+    const systemModel = { policyVersion: 7, snapshot: systemSnapshot() };
+    const probeVision = vi.fn(async () => true);
+    const service = createAdminKnowledgeProfileService(prisma, {
+      probeVision,
+      resolveInstallationDestination: vi.fn(async () => ({ pin })),
+      resolveSystemModel: vi.fn(async () => systemModel),
+      scheduleMigration: vi.fn(async () => ({
+        activatedBases: 0,
+        alreadyActiveBases: 0,
+        buildingBases: 0,
+        createdGenerations: 0,
+        queuedArtifacts: 0,
+        supersededGenerations: 0
+      }))
+    });
+
+    await service.activate({
+      deploymentId: "embedding-1",
+      expectedVersion: 4,
+      now: NOW,
+      pdfProcessingMode: "system_model_direct_pdf",
+      userId: "admin-1"
+    });
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        pdfParserProfileVersion: 1,
+        pdfProcessingMode: "system_model_direct_pdf",
+        pdfSystemModelPolicyVersion: 7,
+        pdfSystemModelSnapshot: systemModel.snapshot,
+        profileConfiguration: expect.objectContaining({
+          operationRoles: [
+            expect.objectContaining({ operation: "embeddings" }),
+            expect.objectContaining({
+              allowedRepresentations: ["pdf_page_ranges"],
+              operation: "pdf_transcription",
+              providerModelId: "answer-1"
+            })
+          ],
+          pdfProcessingMode: "system_model_direct_pdf"
+        })
+      }),
+      select: { id: true }
+    });
+    expect(probeVision).not.toHaveBeenCalled();
+  });
+
+  it("refuses Vision activation when the feature-specific image probe fails", async () => {
+    const credentialVersion = {
+      credentialId: "credential-1",
+      id: "credential-version-1",
+      revokedAt: null
+    };
+    const prisma = {
+      $transaction: vi.fn(),
+      knowledgeIndexProfile: { findUnique: vi.fn().mockResolvedValue({ version: 4 }) },
+      providerCredentialVersion: {
+        findUnique: vi.fn().mockResolvedValue(credentialVersion)
+      }
+    } as unknown as PrismaClient;
+    const service = createAdminKnowledgeProfileService(prisma, {
+      probeVision: vi.fn(async () => false),
+      resolveInstallationDestination: vi.fn(async () => ({ pin })),
+      resolveSystemModel: vi.fn(async () => ({ policyVersion: 7, snapshot: systemSnapshot() }))
+    });
+
+    await expect(service.activate({
+      deploymentId: "embedding-1",
+      expectedVersion: 4,
+      pdfProcessingMode: "system_model_vision",
+      userId: "admin-1"
+    })).rejects.toEqual(
+      new AdminKnowledgeProfileServiceError("knowledge_pdf_processing_mode_unavailable")
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it("creates a preflighted immutable revision and schedules shadow cutover atomically", async () => {
     const create = vi.fn().mockResolvedValue({ id: "revision-2" });
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
@@ -97,6 +241,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 4,
       now: NOW,
+      pdfProcessingMode: "local",
       userId: "admin-1"
     });
 
@@ -113,8 +258,9 @@ describe("administrator Knowledge profile service", () => {
             operation: "embeddings",
             providerModelId: "embedding-1"
           })],
-          rolePolicyVersion: 3,
-          schemaVersion: 5
+          pdfProcessingMode: "local",
+          rolePolicyVersion: 4,
+          schemaVersion: 6
         },
         profileId: "installation",
         revisionNumber: 2,
@@ -125,7 +271,7 @@ describe("administrator Knowledge profile service", () => {
             operation: "embeddings",
             providerModelId: "embedding-1"
           })],
-          policyVersion: "knowledge-profile-egress-v5"
+          policyVersion: "knowledge-profile-egress-v6"
         }
       }),
       select: { id: true }
@@ -182,7 +328,8 @@ describe("administrator Knowledge profile service", () => {
         revisionNumber: 1
       },
       egress: {
-        destination: "Embedding route / Multilingual embed",
+        embeddingDestination: "Embedding route / Multilingual embed",
+        pdfDestination: null,
         representations: ["document_text_chunks", "search_queries"]
       },
       health: { code: null, state: "ready" },
@@ -208,7 +355,13 @@ describe("administrator Knowledge profile service", () => {
       }
     };
     const prisma = {
-      $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx))
+      $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)),
+      knowledgeIndexProfile: {
+        findUnique: vi.fn().mockResolvedValue({
+          revisions: [revision({ id: "revision-1" })],
+          version: 3
+        })
+      }
     } as unknown as PrismaClient;
     const resolveInstallationDestination = vi.fn().mockResolvedValue(null);
     const service = createAdminKnowledgeProfileService(prisma, {
@@ -219,6 +372,7 @@ describe("administrator Knowledge profile service", () => {
       deploymentId: "embedding-1",
       expectedVersion: 2,
       now: NOW,
+      pdfProcessingMode: "local",
       userId: "admin-1"
     })).rejects.toEqual(new AdminKnowledgeProfileServiceError("knowledge_profile_stale"));
     await expect(service.rollback({
@@ -244,7 +398,10 @@ describe("administrator Knowledge profile service", () => {
       }
     };
     const prisma = {
-      $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx))
+      $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)),
+      knowledgeIndexProfile: {
+        findUnique: vi.fn().mockResolvedValue({ revisions: [target], version: 4 })
+      }
     } as unknown as PrismaClient;
     const scheduleMigration = vi.fn(async () => ({
       activatedBases: 1,
@@ -275,6 +432,7 @@ describe("administrator Knowledge profile service", () => {
       where: { id: "installation", version: 4 }
     });
     expect(tx.knowledgeIndexProfileRevision.findFirst).toHaveBeenCalledWith({
+      include: expect.any(Object),
       where: { id: "revision-1", profileId: "installation" }
     });
     expect(scheduleMigration).toHaveBeenCalledWith(tx, {
@@ -300,9 +458,20 @@ describe("administrator Knowledge profile service", () => {
         }))
       }
     };
+    const historical = revision({
+      egressPolicy: {
+        operations: [{ operation: "query_planning" }],
+        policyVersion: "knowledge-profile-egress-v3"
+      },
+      profileConfiguration: { schemaVersion: 3 }
+    });
+    tx.knowledgeIndexProfileRevision.findFirst.mockResolvedValue(historical);
     const prisma = {
       $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
-        operation(tx))
+        operation(tx)),
+      knowledgeIndexProfile: {
+        findUnique: vi.fn().mockResolvedValue({ revisions: [historical], version: 4 })
+      }
     } as unknown as PrismaClient;
     const service = createAdminKnowledgeProfileService(prisma, {
       resolveInstallationDestination: vi.fn(async () => ({ pin }))

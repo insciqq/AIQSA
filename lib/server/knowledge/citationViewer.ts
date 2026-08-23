@@ -16,6 +16,7 @@ import {
 } from "../../contracts/knowledgeCitations";
 import {
   decodeKnowledgeCitationHandle,
+  KNOWLEDGE_CITATION_V2_MAX,
   knowledgeCitationHandlesFromText
 } from "../../contracts/knowledge";
 import type { StorageAdapter } from "../uploads/storage";
@@ -28,6 +29,8 @@ import {
   type StoredKnowledgeNormalizedDocument
 } from "./normalizedDocument";
 import { decodeKnowledgeRetrievedPassage } from "./toolResult";
+import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
+import { parseToolLoopCheckpoint } from "../runs/toolLoopPersistence";
 import { decodeStructuredAnalysisResult, type StructuredAnalysisResult } from "./structuredData";
 import {
   decodeKnowledgeDocumentContext,
@@ -162,6 +165,124 @@ const evidenceItemViewerSelect = {
   state: true,
   textTruncated: true
 } satisfies Prisma.KnowledgeEvidenceItemSelect;
+
+async function settledToolLoopEvidenceItem(
+  client: CitationViewerClient,
+  input: Readonly<{
+    handle: string;
+    modelRunId: string;
+    toolLoopState: Prisma.JsonValue | null;
+  }>
+): Promise<(EvidenceItem & Readonly<{ retrievalSessionId: string }>) | null> {
+  const checkpoint = parseToolLoopCheckpoint(input.toolLoopState);
+  if (!checkpoint || checkpoint.phase !== "provider_running" || checkpoint.roundIndex < 1) {
+    return null;
+  }
+  return client.knowledgeEvidenceItem.findFirst({
+    select: evidenceItemViewerSelect,
+    where: {
+      handle: input.handle,
+      operationLinks: {
+        some: {
+          knowledgeRun: {
+            is: {
+              modelRunId: input.modelRunId,
+              modelRunToolCall: {
+                is: {
+                  modelRunId: input.modelRunId,
+                  roundIndex: { lt: checkpoint.roundIndex },
+                  state: "complete",
+                  toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+                }
+              }
+            }
+          }
+        }
+      },
+      retrievalSession: {
+        acceptedAt: { not: null },
+        groundingResult: { isNot: null },
+        modelRunId: input.modelRunId,
+        originalIntent: { equals: { kind: "tool_loop_v1" } },
+        receiptHash: { not: null }
+      },
+      state: "available"
+    }
+  });
+}
+
+function fullContextEvidenceSnapshot(value: Prisma.JsonValue | null): Readonly<{
+  evidenceCount: number;
+  message: string;
+}> | null {
+  if (!record(value) || !record(value.knowledgeAnswering) || !record(value.context) ||
+    value.knowledgeAnswering.route !== "full_context_v1" ||
+    value.knowledgeAnswering.version !== 1 ||
+    !Number.isSafeInteger(value.knowledgeAnswering.evidenceCount) ||
+    Number(value.knowledgeAnswering.evidenceCount) < 1 ||
+    Number(value.knowledgeAnswering.evidenceCount) > KNOWLEDGE_CITATION_V2_MAX ||
+    !Array.isArray(value.context.messages)) return null;
+  const messages = value.context.messages.filter((candidate) =>
+    record(candidate) && candidate.id === "knowledge-evidence:v2" &&
+    candidate.purpose === "knowledge_evidence" && record(candidate.content));
+  const evidenceMessage = messages[0];
+  if (messages.length !== 1 || !record(evidenceMessage) || !record(evidenceMessage.content)) {
+    return null;
+  }
+  const message = messageText(evidenceMessage.content);
+  return message ? { evidenceCount: Number(value.knowledgeAnswering.evidenceCount), message } : null;
+}
+
+function fullContextMessageContainsItem(message: string, item: EvidenceItem): boolean {
+  if (item.excerpt === null || !item.fileName || item.sourceVersionNumber === null) return false;
+  return message.split("\n\n").some((part) => {
+    try {
+      const block: unknown = JSON.parse(part);
+      return record(block) && block.type === "source_evidence" &&
+        block.citation === `[${item.handle}]` && block.handle === item.handle &&
+        block.exactExcerpt === item.excerpt && block.fileName === item.fileName &&
+        block.sourceVersionNumber === item.sourceVersionNumber;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function settledFullContextEvidenceItem(
+  client: CitationViewerClient,
+  input: Readonly<{
+    handle: string;
+    modelRunId: string;
+    normalizedRequest: Prisma.JsonValue | null;
+  }>
+): Promise<(EvidenceItem & Readonly<{ retrievalSessionId: string }>) | null> {
+  const snapshot = fullContextEvidenceSnapshot(input.normalizedRequest);
+  const decoded = decodeKnowledgeCitationHandle(input.handle);
+  if (!snapshot || !decoded || !("evidenceOrdinal" in decoded) ||
+    decoded.evidenceOrdinal > snapshot.evidenceCount) return null;
+  const session = await client.knowledgeRetrievalSession.findFirst({
+    select: {
+      _count: { select: { evidenceItems: true } },
+      evidenceItems: {
+        select: evidenceItemViewerSelect,
+        take: 1,
+        where: { handle: input.handle, state: "available" }
+      }
+    },
+    where: {
+      acceptedAt: { not: null },
+      groundingResult: { isNot: null },
+      modelRunId: input.modelRunId,
+      originalIntent: { equals: { kind: "full_context_v1" } },
+      receiptHash: { not: null }
+    }
+  });
+  const item = session?.evidenceItems[0] ?? null;
+  return session?._count.evidenceItems === snapshot.evidenceCount && item &&
+    fullContextMessageContainsItem(snapshot.message, item)
+    ? item
+    : null;
+}
 
 type EvidenceAuthority = Readonly<{
   base: CurrentBase | null;
@@ -941,7 +1062,9 @@ export async function resolveKnowledgeCitationViewer(
     select: {
       assistantMessage: { select: { content: true } },
       chatId: true,
-      id: true
+      id: true,
+      normalizedRequest: true,
+      toolLoopState: true
     },
     where: { assistantMessageId: input.assistantMessageId, id: input.runId }
   });
@@ -986,6 +1109,24 @@ export async function resolveKnowledgeCitationViewer(
       if (!run.assistantMessage || !knowledgeCitationHandlesFromText(
         messageText(run.assistantMessage.content)
       ).includes(decodedHandle.handle)) return null;
+      const toolLoopItem = await settledToolLoopEvidenceItem(client, {
+        handle: decodedHandle.handle,
+        modelRunId: run.id,
+        toolLoopState: run.toolLoopState
+      });
+      const acceptedItem = toolLoopItem ?? await settledFullContextEvidenceItem(client, {
+        handle: decodedHandle.handle,
+        modelRunId: run.id,
+        normalizedRequest: run.normalizedRequest
+      });
+      if (acceptedItem) {
+        return citationFromEvidence(client, storage, {
+          access,
+          item: acceptedItem,
+          runId: run.id,
+          userId: input.userId
+        });
+      }
       const deletedItem = await client.knowledgeEvidenceItem.findFirst({
         select: { handle: true },
         where: {

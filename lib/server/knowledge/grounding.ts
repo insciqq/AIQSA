@@ -36,10 +36,15 @@ const statusAnswered = "AIQSA_KB_STATUS=ANSWERED";
 const statusInsufficient = "AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE";
 const groupedCitation = /[\[(【]\s*((?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?)(?:\s*(?:[,;&/+]|and|и)\s*(?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?))*)\s*[\])】]/giu;
 const citationToken = /K[1-9]\d{0,3}(?:\.[1-9]\d?)?/giu;
-const bracketedKnowledgeCandidate = /\[\s*([Kk][0-9][^\]]{0,63})\s*\]/gu;
+const bracketedKnowledgeCandidate = /[\[【]\s*([Kk][0-9][^\]】]{0,63})\s*[\]】]/gu;
 const knowledgeCitationPrefix = /^[Kk][0-9]+(?:\.[0-9]+)?(?=$|[^\p{L}\p{M}\p{N}_])/u;
 const adjacentDuplicate = /(\[K[1-9]\d{0,3}(?:\.[1-9]\d?)?\])(?:\s*\1)+/giu;
 const commaGroupedCitation = /\[\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?(?:\s*,\s*K[1-9]\d{0,3}(?:\.[1-9]\d?)?)+)\s*\]/giu;
+const fullWidthCitation = /【\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\s*】/giu;
+const providerWrappedCitation = /cite([\s\S]{0,1024}?)/giu;
+const providerWrappedHandle = /^(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)/iu;
+const providerWrappedBracketedHandle = /^\[\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\s*\]/iu;
+const providerWrappedFullWidthHandle = /^【\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\s*】/iu;
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -49,12 +54,66 @@ function normalizeToolLoopCitationSyntax(
   value: string,
   availableHandles: ReadonlySet<string>
 ): string {
-  return value.replace(commaGroupedCitation, (match, body: string) => {
-    const handles = body.split(",").map((handle) => handle.trim().toUpperCase());
-    return handles.every((handle) => availableHandles.has(handle))
-      ? handles.map((handle) => `[${handle}]`).join("")
-      : match;
+  return normalizeProviderWrappedCitations(value, availableHandles)
+    .replace(commaGroupedCitation, (match, body: string) => {
+      const handles = body.split(",").map((handle) => handle.trim().toUpperCase());
+      return handles.every((handle) => availableHandles.has(handle))
+        ? handles.map((handle) => `[${handle}]`).join("")
+        : match;
+    })
+    .replace(fullWidthCitation, (match, handle: string) => {
+      const normalized = handle.toUpperCase();
+      return availableHandles.has(normalized) ? `[${normalized}]` : match;
+    })
+    .replace(adjacentDuplicate, "$1");
+}
+
+function normalizeProviderWrappedCitations(
+  value: string,
+  availableHandles: ReadonlySet<string>
+): string {
+  const normalized = value.replace(providerWrappedCitation, (_match, rawBody: string) => {
+    let body = rawBody.trim();
+    const handles: string[] = [];
+    while (body.trim().length > 0) {
+      const prefix = handles.length === 0
+        ? /^\s*/u.exec(body)
+        : /^(?:\s*\s*|\s*(?:[,;&/+]|and\b|и\b)\s*(?:\s*)?|\s+)/iu.exec(body);
+      if (!prefix) {
+        throw new KnowledgeAnswerContractError(
+          "knowledge_citation_contract_failed",
+          "The provider returned a malformed citation wrapper"
+        );
+      }
+      body = body.slice(prefix[0].length);
+      const handleMatch = providerWrappedBracketedHandle.exec(body) ??
+        providerWrappedFullWidthHandle.exec(body) ?? providerWrappedHandle.exec(body);
+      const handle = handleMatch?.[1]?.toUpperCase();
+      if (!handleMatch || !handle) {
+        throw new KnowledgeAnswerContractError(
+          "knowledge_citation_contract_failed",
+          "The provider returned a malformed citation wrapper"
+        );
+      }
+      handles.push(handle);
+      body = body.slice(handleMatch[0].length);
+    }
+    if (handles.length < 1 || handles.some((handle) => !availableHandles.has(handle))) {
+      throw new KnowledgeAnswerContractError(
+        "knowledge_citation_contract_failed",
+        "The provider citation wrapper referenced evidence outside the final manifest"
+      );
+    }
+    return handles.map((handle) => `[${handle}]`).join("");
   });
+  if (normalized.includes("cite") || normalized.includes("") ||
+    normalized.includes("")) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_citation_contract_failed",
+      "The provider returned a malformed citation wrapper"
+    );
+  }
+  return normalized;
 }
 
 function containsEvidenceInternalIdentity(
@@ -80,8 +139,12 @@ function containsEvidenceInternalIdentity(
   return sentinels.some((entry) => answer.includes(entry));
 }
 
-function normalizeCitationSyntax(value: string): string {
-  const grouped = value.replace(groupedCitation, (match, body: string) => {
+function normalizeCitationSyntax(
+  value: string,
+  availableHandles: ReadonlySet<string>
+): string {
+  const wrapped = normalizeProviderWrappedCitations(value, availableHandles);
+  const grouped = wrapped.replace(groupedCitation, (match, body: string) => {
     const handles = body.match(citationToken)?.map((handle) => handle.toUpperCase()) ?? [];
     return handles.length > 0 && handles.every((handle) => decodeKnowledgeCitationHandle(handle))
       ? handles.map((handle) => `[${handle}]`).join("")
@@ -140,12 +203,12 @@ export function groundKnowledgeAnswer(input: Readonly<{
         : "The Knowledge answer leaked an internal identity"
     );
   }
-  const normalizedBody = normalizeCitationSyntax(body);
   const availableHandles = new Set(
     input.evidence.items
       .filter((item) => item.state === "available" && item.excerpt !== null)
       .map((item) => item.handle)
   );
+  const normalizedBody = normalizeCitationSyntax(body, availableHandles);
   const handles = assertNoMalformedOrUnknownHandles(normalizedBody, availableHandles);
   if (status === statusAnswered && handles.length < 1) {
     throw new KnowledgeAnswerContractError(

@@ -10,16 +10,20 @@ import {
 } from "../../knowledge/retrievalTypes";
 import { createAdminKnowledgeOperationsService } from "./operationsService";
 import { createAdminKnowledgeProfileService } from "./profileService";
+import { createAdminKnowledgeAnswerPolicyService } from "./answerPolicyService";
 
 export function createAdminKnowledgePolicyService(
   prisma: PrismaClient,
   options: Readonly<{
     extractionConfig?: () => KnowledgeExtractionConfig;
+    answerPolicyService?: ReturnType<typeof createAdminKnowledgeAnswerPolicyService>;
     operationsService?: ReturnType<typeof createAdminKnowledgeOperationsService>;
     profileService?: ReturnType<typeof createAdminKnowledgeProfileService>;
   }> = {}
 ) {
   const extractionConfig = options.extractionConfig ?? getKnowledgeExtractionConfig;
+  const answerPolicyService = options.answerPolicyService ??
+    createAdminKnowledgeAnswerPolicyService(prisma);
   const operationsService = options.operationsService ??
     createAdminKnowledgeOperationsService(prisma);
   const profileService = options.profileService ?? createAdminKnowledgeProfileService(prisma);
@@ -27,12 +31,14 @@ export function createAdminKnowledgePolicyService(
     activateProfile: profileService.activate,
 
     async list(): Promise<AdminKnowledgeSettings> {
-      const [profile, operations] = await Promise.all([
+      const [answerPolicy, profile, operations] = await Promise.all([
+        answerPolicyService.list(),
         profileService.list(),
         operationsService.read()
       ]);
       const ingestion = extractionConfig();
       return {
+        answerPolicy,
         ingestionLimits: {
           maxChunksPerDocument: ingestion.maxChunksPerDocument,
           maxFileBytes: ingestion.maxFileBytes,
@@ -47,6 +53,8 @@ export function createAdminKnowledgePolicyService(
         }
       };
     },
+
+    updateAnswerPolicy: answerPolicyService.update,
 
     rollbackProfile: profileService.rollback
   };

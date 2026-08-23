@@ -66,6 +66,15 @@ import type {
   KnowledgeProviderDispatchLifecycle,
   PreparedKnowledgeProviderDispatch
 } from "../knowledge/providerDispatchLifecycle";
+import {
+  knowledgeAnsweringRequestSnapshot,
+  KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT,
+  planKnowledgeAnswering
+} from "../knowledge/fullContext";
+import {
+  knowledgeEvidenceMessageFromDispatchDraft,
+  withAutomaticKnowledgeEvidence
+} from "../knowledge/automaticEvidence";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -627,6 +636,67 @@ function focusedCanonicalSourcePreparedData(
       knowledgePlan
     },
     ...(executionScope === "project" ? { project: projectAdmission() } : {})
+  };
+}
+
+function fullContextKnowledgePreparedData(): MaterializedPreparedRunData {
+  const prepared = focusedCanonicalSourcePreparedData("personal");
+  const admission = {
+    ...prepared.knowledgeAdmissionPlan!,
+    answerPolicy: {
+      fullContextThresholdBasisPoints: 7_000 as const,
+      maximumKnowledgeSearches: 12,
+      revision: 1,
+      version: 1 as const
+    },
+    sources: prepared.knowledgeAdmissionPlan!.sources!.map((source) => ({
+      ...source,
+      approxTokens: 8,
+      passageCount: 1
+    }))
+  };
+  const plan = planKnowledgeAnswering({
+    admissionPlan: admission,
+    passages: [{
+      baseName: "Health",
+      contentHash: "c".repeat(64),
+      documentContext: null,
+      headingPath: ["Lipid panel"],
+      page: 1,
+      pageEnd: 1,
+      passageId: "passage-1",
+      passageOrdinal: 0,
+      sectionId: "section-1",
+      sourceArtifactId: "artifact-1",
+      sourceId: "source-1",
+      sourceOrdinal: 0,
+      sourceVersionId: "version-1",
+      sourceVersionNumber: 1,
+      text: "Total cholesterol 5.3 mmol/L",
+      tokenCount: 8
+    }],
+    request: prepared.providerRequest
+  });
+  if (plan.route !== KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT) {
+    throw new Error("full_context_fixture_invalid");
+  }
+  const normalizedRequest: NormalizedRunRequest = {
+    ...prepared.normalizedRequest,
+    context: withAutomaticKnowledgeEvidence(
+      prepared.providerRequest,
+      knowledgeEvidenceMessageFromDispatchDraft(plan.dispatchDraft)
+    ).context,
+    knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan),
+    prompt: { ...prepared.normalizedRequest.prompt, knowledgeAnswerContract: 1 }
+  };
+  return {
+    ...prepared,
+    knowledgeAdmissionPlan: { ...admission, answeringPlan: plan },
+    normalizedRequest,
+    providerRequest: withAutomaticKnowledgeEvidence(
+      { ...normalizedRequest, attachments: [], toolChoice: "none", tools: undefined },
+      knowledgeEvidenceMessageFromDispatchDraft(plan.dispatchDraft)
+    )
   };
 }
 
@@ -2407,6 +2477,51 @@ describe("run execution", () => {
       type: "token"
     }]);
     expect(body).not.toContain("AIQSA_KB_STATUS=");
+    expect(dispatch.order).toEqual(["prepare", "dispatch", "settle"]);
+  });
+
+  it("answers from a complete small corpus with zero Knowledge searches", async () => {
+    const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
+    const providerText = `AIQSA_KB_STATUS=ANSWERED\n${finalText}`;
+    const repository = createRepository({
+      groundingResult: structuralGroundingResult(finalText)
+    });
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      yield { data: { delta: "AIQSA_KB_STATUS=" }, type: "token" };
+      yield { data: { delta: "ANSWERED\nTotal cholesterol is 5.3 mmol/L citeK1." }, type: "token" };
+      return providerResult({ finalText: providerText });
+    });
+
+    const body = await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeProviderDispatch: dispatch.lifecycle,
+      prepared: fullContextKnowledgePreparedData(),
+      repository: repository.repository
+    })).text();
+    const events = parseSse(body);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.tools).toBeUndefined();
+    expect(requests[0]?.toolChoice).toBe("none");
+    expect(requests[0]?.context?.messages.filter((message) =>
+      message.purpose === "knowledge_evidence")).toHaveLength(1);
+    expect(dispatch.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      evidenceBindings: [expect.objectContaining({
+        dispatchEvidenceId: expect.stringContaining("full-context-"),
+        evidenceItemId: expect.any(String)
+      })]
+    }));
+    expect(repository.toolCalls.size).toBe(0);
+    expect(repository.groundingAnswers).toEqual([providerText]);
+    expect(events.filter((event) => event.type === "token")).toEqual([{
+      data: { delta: finalText },
+      type: "token"
+    }]);
+    expect(body).not.toContain("AIQSA_KB_STATUS=");
+    expect(body).not.toContain("cite");
     expect(dispatch.order).toEqual(["prepare", "dispatch", "settle"]);
   });
 

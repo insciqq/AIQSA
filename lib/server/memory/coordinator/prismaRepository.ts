@@ -375,7 +375,8 @@ async function claimJobFromCandidate(
       FROM candidate
       WHERE job."id" = candidate."id"
       RETURNING
-        job."id", job."userId", job."chatId", job."activeLeafMessageId",
+        job."id", job."userId", job."chatId", job."sourceMessageId",
+        job."activeLeafMessageId",
         job."branchGeneration", job."sourceRevision", job."sourceHash",
         job."kind"::text AS "kind", job."stage", job."attemptCount",
         job."pipelineVersion", job."memoryGenerationSnapshot",
@@ -860,7 +861,8 @@ export function createPrismaMemoryCoordinatorRepository(
       if (input.kinds.length === 0) return [];
       return client.$queryRaw<WaitingJobRow[]>(Prisma.sql`
         SELECT
-          job."id", job."userId", job."chatId", job."activeLeafMessageId",
+          job."id", job."userId", job."chatId", job."sourceMessageId",
+          job."activeLeafMessageId",
           job."branchGeneration", job."sourceRevision", job."sourceHash",
           job."kind"::text AS "kind", job."stage", job."attemptCount",
           job."pipelineVersion", job."memoryGenerationSnapshot",

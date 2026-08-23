@@ -105,6 +105,7 @@ export type KnowledgeEvidencePackage = Readonly<{
   items: readonly KnowledgeEvidencePackageItem[];
   originalIntent:
     | Readonly<{ kind: "focused_v1"; query: string }>
+    | Readonly<{ kind: "full_context_v1" }>
     | Readonly<{ kind: "tool_loop_v1" }>;
   readiness: Readonly<{
     excludedResources: number;

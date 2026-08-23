@@ -374,6 +374,7 @@ async function createFactCandidateFixture(input: Readonly<{
         memoryRevisionSnapshot: settings.memoryRevision,
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
         sourceHash,
+        sourceMessageId: input.messageId,
         sourceRevision: 0,
         state: "SUCCEEDED",
         userId: input.userId
@@ -1762,6 +1763,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           memoryRevisionSnapshot: before.memoryRevision,
           pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
           sourceHash: memorySha256({ chatId: chat.id, messageId: oldMessage.id }),
+          sourceMessageId: oldMessage.id,
           sourceRevision: 0,
           state: "QUEUED",
           userId

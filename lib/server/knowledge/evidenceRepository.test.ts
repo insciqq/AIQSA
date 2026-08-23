@@ -398,6 +398,57 @@ describe("Knowledge Evidence v2 repository projection", () => {
     });
   });
 
+  it("loads full-context evidence without synthetic retrieval provenance and verifies its final dispatch", async () => {
+    const fixture = row();
+    const evidenceRow = fixture.evidenceItems[0]!;
+    const evidence = await loadKnowledgeEvidencePackage(client(row({
+      evidenceItems: [{ ...evidenceRow, operationLinks: [] }],
+      originalIntent: { kind: "full_context_v1" }
+    })), { runId: "run-1", userId: "user-1" });
+    expect(evidence).toMatchObject({
+      coverage: { expectedPassageCount: 1, mode: "verified_only", verified: true },
+      items: [{ handle: "K1", provenance: [] }],
+      originalIntent: { kind: "full_context_v1" }
+    });
+    expect(evidence).not.toBeNull();
+
+    const draft = packKnowledgeEvidenceDispatchManifest({
+      allowExpandedContextOmission: false,
+      candidates: [{
+        ambiguity: "none",
+        evidenceId: "full-context-evidence-1:result:1",
+        exactExcerpt: evidenceRow.excerpt,
+        fileName: evidenceRow.fileName,
+        handle: "K1",
+        locator: "page=2; heading=Retention",
+        operationOrdinal: 0,
+        resultOrdinal: 1,
+        sourceAlias: "S1",
+        sourceLabel: evidenceRow.sourceName,
+        sourceTruncated: false,
+        sourceVersionNumber: 3,
+        state: "available"
+      }],
+      coverageStatement: "The full admitted corpus is included with no passage omitted.",
+      footer: "</private_knowledge_evidence>",
+      header: '<private_knowledge_evidence version="4" coverage="full_admitted_corpus">',
+      maximumBytes: 8_192,
+      maximumTokens: 2_048,
+      runtimeVersion: 2,
+      profileId: "test:answer-model",
+      promptFragmentVersion: 4
+    });
+    const narrowed = knowledgeEvidencePackageForGroundingDispatch(
+      evidence!,
+      settledDispatch({ draft })
+    );
+    expect(narrowed.coverage.verified).toBe(true);
+    expect(groundKnowledgeAnswer({
+      answer: "AIQSA_KB_STATUS=ANSWERED\nAtlas retains exports for 30 days citeK1.",
+      evidence: narrowed
+    }).finalText).toBe("Atlas retains exports for 30 days [K1].");
+  });
+
   it("keeps partial readiness unverified", async () => {
     const evidence = await loadKnowledgeEvidencePackage(client(row({
       readinessSummary: { excludedResources: 1, readyBases: 1, readySources: 1 }

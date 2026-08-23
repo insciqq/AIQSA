@@ -89,6 +89,43 @@ describe("Knowledge answer citation contract", () => {
     expect(result.finalText).toBe("Answer [K1].");
   });
 
+  it("normalizes the provider-native wrapped citation syntax", () => {
+    const result = groundKnowledgeAnswer({
+      answer: "AIQSA_KB_STATUS=ANSWERED\nОтвет citeK1.",
+      evidence: evidence()
+    });
+    expect(result.finalText).toBe("Ответ [K1].");
+  });
+
+  it("normalizes unambiguous provider wrapper separator variants", () => {
+    const current = toolLoopEvidence();
+    for (const wrapper of [
+      "citeK1, K2",
+      "citeK1; K2",
+      "cite[K1] and 【K2】",
+      "citeK1 K2"
+    ]) {
+      expect(groundKnowledgeAnswer({
+        answer: `AIQSA_KB_STATUS=ANSWERED\nSupported ${wrapper}.`,
+        evidence: current
+      }).finalText).toBe("Supported [K1][K2].");
+    }
+  });
+
+  it("fails closed for malformed or unknown provider-native citation wrappers", () => {
+    for (const answer of [
+      "Ответ citeK2.",
+      "Ответ citeK1.",
+      "Ответ citeK1-K2.",
+      "Ответ citeK1 unsupported K2."
+    ]) {
+      expect(() => groundKnowledgeAnswer({
+        answer: `AIQSA_KB_STATUS=ANSWERED\n${answer}`,
+        evidence: evidence()
+      })).toThrow(KnowledgeAnswerContractError);
+    }
+  });
+
   it("canonicalizes lowercase handles while preserving Markdown whitespace", () => {
     const result = groundKnowledgeAnswer({
       answer: "AIQSA_KB_STATUS=ANSWERED\n    code block [k1]\n",
@@ -231,6 +268,20 @@ describe("Knowledge tool-loop citation contract", () => {
     })).toThrow(KnowledgeAnswerContractError);
   });
 
+  it("normalizes provider full-width citation brackets in an ordinary tool-loop answer", () => {
+    expect(groundKnowledgeToolLoopAnswer({
+      answer: "Подтверждено 【K2】【K1】.",
+      evidence: toolLoopEvidence()
+    }).finalText).toBe("Подтверждено [K2][K1].");
+  });
+
+  it("normalizes a multi-handle provider-native wrapper", () => {
+    expect(groundKnowledgeToolLoopAnswer({
+      answer: "Supported citeK2K1.",
+      evidence: toolLoopEvidence()
+    }).finalText).toBe("Supported [K2][K1].");
+  });
+
   it("rejects unknown, deleted, non-dispatched, and malformed handles", () => {
     const current = toolLoopEvidence();
     const deleted: KnowledgeEvidencePackage = {
@@ -244,7 +295,8 @@ describe("Knowledge tool-loop citation contract", () => {
       ["Deleted [K1].", deleted],
       ["Malformed [K0].", toolLoopEvidence()],
       ["Malformed [K01].", toolLoopEvidence()],
-      ["Malformed [K1 and K2].", toolLoopEvidence()]
+      ["Malformed [K1 and K2].", toolLoopEvidence()],
+      ["Malformed 【K0】.", toolLoopEvidence()]
     ] as const) {
       expect(() => groundKnowledgeToolLoopAnswer({
         answer,

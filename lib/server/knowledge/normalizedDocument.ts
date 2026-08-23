@@ -145,6 +145,15 @@ const ATTEMPT_OUTCOMES = [
   "rejected",
   "retryable_failure"
 ] as const;
+const PARSER_ENGINES: readonly DocumentParserEngine[] = [
+  "docling",
+  "inline",
+  "native_pdf",
+  "spreadsheet",
+  "system_model_direct_pdf",
+  "system_model_vision",
+  "tika"
+];
 const PARSER_ERROR_CODES = [
   "parser_invalid_output",
   "parser_output_too_large",
@@ -593,7 +602,7 @@ function normalizedWorkbook(value: ParsedWorkbook | null): ParsedWorkbook | null
 
 function normalizedAttempt(value: ParsedDocumentParserAttempt): ParsedDocumentParserAttempt {
   if (
-    !["docling", "inline", "spreadsheet", "tika"].includes(value.engine) ||
+    !PARSER_ENGINES.includes(value.engine) ||
     !ATTEMPT_OUTCOMES.includes(value.outcome) ||
     (value.errorCode !== null && !PARSER_ERROR_CODES.includes(value.errorCode))
   ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
@@ -1087,7 +1096,7 @@ function decodeV2ToV4(
     !Array.isArray(value.languages) || value.languages.some((item) => typeof item !== "string") ||
     !Array.isArray(value.warnings) || value.warnings.some((item) => !WARNING_CODES.includes(item as ParsedDocumentWarningCode)) ||
     !isRecord(value.parser) || !Array.isArray(value.parser.attempts) ||
-    !["docling", "inline", "spreadsheet", "tika"].includes(String(value.parser.engine)) ||
+    !PARSER_ENGINES.includes(value.parser.engine as DocumentParserEngine) ||
     !isRecord(value.source) || (value.source.displayName !== null && typeof value.source.displayName !== "string") ||
     typeof value.source.mediaType !== "string" || !isRecord(value.quality) ||
     (value.status !== "complete" && value.status !== "partial") ||

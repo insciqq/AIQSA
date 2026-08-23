@@ -206,6 +206,7 @@ async function claimJob(jobId: string): Promise<MemoryJobClaim> {
     pipelineVersion: claimed.pipelineVersion,
     recoveredLease: false,
     sourceHash: claimed.sourceHash,
+    sourceMessageId: claimed.sourceMessageId,
     sourceRevision: claimed.sourceRevision,
     stage: claimed.stage,
     userId: claimed.userId
@@ -328,16 +329,74 @@ async function createCandidate(input: Readonly<{
   const committed = await coordinator.commitJobSuccess({
     acceptedResultHash: plan.outputHash,
     apply: async (tx, exactClaim) => {
-      const settings = await lockMemorySettings(tx, input.userId, true);
-      const applied = await extractionRepository().apply(
-        tx,
-        settings,
-        exactClaim,
-        plan,
-        bindingId,
-        new Date()
-      );
-      if (applied !== "APPLIED") throw new Error("memory_candidate_apply_failed");
+      const candidate = plan.candidates[0];
+      if (!candidate) throw new Error("memory_candidate_fixture_missing");
+      if (
+        exactClaim.branchGeneration === null || exactClaim.chatId === null ||
+        exactClaim.sourceHash === null || exactClaim.sourceRevision === null
+      ) throw new Error("memory_candidate_fixture_source_missing");
+      const sourceChatId = exactClaim.chatId;
+      // Slice 1 promotes active vNext extraction directly to MemoryFact. This
+      // suite still owns the retained legacy consolidation module, so seed its
+      // input boundary explicitly instead of routing a live extraction job
+      // through an obsolete candidate-producing path.
+      await tx.memoryCandidate.create({
+        data: {
+          branchGeneration: exactClaim.branchGeneration,
+          chatId: sourceChatId,
+          confidence: candidate.confidence,
+          createdByExecutionId: bindingId,
+          id: candidate.id,
+          importance: candidate.importance,
+          jobId: exactClaim.id,
+          languageCode: candidate.languageCode,
+          negated: candidate.negated,
+          pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+          proposedCanonicalKey: candidate.canonicalKey,
+          proposedCategory: candidate.category,
+          proposedCoreEligible: candidate.coreEligible,
+          proposedCoreSalience: candidate.coreSalience,
+          proposedDirectness: candidate.directness,
+          proposedDisplayText: candidate.displayText,
+          proposedModality: candidate.modality,
+          proposedScope: {
+            target_id: candidate.scope.targetId,
+            type: candidate.scope.type
+          },
+          proposedSensitivity: candidate.sensitivity,
+          proposedValidFrom: candidate.validFrom
+            ? new Date(candidate.validFrom)
+            : null,
+          proposedValidTo: candidate.validTo ? new Date(candidate.validTo) : null,
+          proposedValue: candidate.proposedValue === null
+            ? Prisma.JsonNull
+            : candidate.proposedValue as Prisma.InputJsonValue,
+          rawTemporalExpression: candidate.rawTemporalExpression,
+          reasonCode: candidate.reasonCode,
+          sourceHash: exactClaim.sourceHash,
+          sourceProjectionHash: plan.input.sourceProjectionHash,
+          sourceProjectionVersion: plan.input.sourceProjectionVersion,
+          sourceRevision: exactClaim.sourceRevision,
+          sourceTimezone: plan.input.timeZone,
+          state: candidate.state,
+          temporalResolutionEvidence: candidate.temporalResolutionEvidence === null
+            ? Prisma.DbNull
+            : candidate.temporalResolutionEvidence as Prisma.InputJsonValue,
+          userId: exactClaim.userId
+        }
+      });
+      await tx.memoryCandidateMessage.createMany({
+        data: candidate.evidence.map((evidence, ordinal) => ({
+          candidateId: candidate.id,
+          chatId: sourceChatId,
+          endOffset: evidence.endOffset,
+          messageId: evidence.messageId,
+          ordinal,
+          sourceTextHash: evidence.sourceTextHash,
+          startOffset: evidence.startOffset,
+          userId: exactClaim.userId
+        }))
+      });
     },
     claim,
     now: new Date(),
@@ -738,7 +797,10 @@ describe("Prisma Memory fact consolidation", () => {
       const bPrepared = await extractionRepository().prepare(bClaim);
       if ("decision" in bPrepared) throw new Error(bPrepared.decision.errorCode);
       expect(bPrepared.input.messages.map(({ id }) => id))
-        .toEqual([turnB.userMessage.id]);
+        .toEqual([turnB.userMessage.id, turnB.assistantMessage.id]);
+      expect(bPrepared.input.messages
+        .filter(({ evidenceEligible }) => evidenceEligible)
+        .map(({ id }) => id)).toEqual([turnB.userMessage.id]);
       const bPlan = decodeMemoryFactExtraction([{
         arguments: {
           candidates: [{
@@ -1133,7 +1195,8 @@ describe("Prisma Memory fact consolidation", () => {
       expect(prepared.input.relatedFacts[0]).toMatchObject({
         scope: { targetId: null, type: "GLOBAL_USER" }
       });
-      expect(prepared.input.relatedFacts[0]!.canonicalKey).toMatch(/^auto\.[a-f0-9]{64}$/u);
+      expect(prepared.input.relatedFacts[0]!.canonicalKey)
+        .toMatch(/^prop\.v1\.[a-f0-9]{64}$/u);
       expect(prepared.input.relatedFacts[0]!.canonicalKey)
         .not.toBe(prepared.input.candidate.canonicalKey);
       expect(prepared.input.relatedFacts[0]?.versions).toHaveLength(1);

@@ -12,6 +12,7 @@ const KEY = Buffer.alloc(32, 20);
 const NOW = new Date("2026-07-23T14:00:00.000Z");
 
 function transactional<T extends Record<string, unknown>>(db: T): T & {
+  $executeRaw: ReturnType<typeof vi.fn>;
   $queryRaw: ReturnType<typeof vi.fn>;
   $transaction: (operation: (tx: T) => Promise<unknown>) => Promise<unknown>;
 } {
@@ -428,7 +429,26 @@ describe("Prisma admin provider repository", () => {
       templateKey: "gemini"
     }
   ])("atomically materializes a tested $label draft and both active Search routes", async (scenario) => {
-    const candidateCheck = storedCheck();
+    const candidateCheck: StoredProviderDraftCheck = {
+      ...storedCheck(),
+      evidence: {
+        ...storedCheck().evidence,
+        compatibility: {
+          directPdf: "verified",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "verified",
+          structuredOutput: "not_supported",
+          usage: "verified"
+        },
+        pdfInput: {
+          adapterKind: scenario.adapterKind,
+          probeVersion: 1,
+          upstreamModelId: "vendor/model",
+          verified: true
+        }
+      }
+    };
     const secondCandidateCheck: StoredProviderDraftCheck = {
       ...candidateCheck,
       evidence: {
@@ -627,6 +647,10 @@ describe("Prisma admin provider repository", () => {
         expect.objectContaining({
           connectionVersion: 2,
           credentialVersionId: "version-1",
+          evidence: expect.objectContaining({
+            compatibility: expect.objectContaining({ directPdf: "verified" }),
+            pdfInput: expect.objectContaining({ verified: true })
+          }),
           modelVersion: 4,
           providerModelId: "model-1",
           status: "available"
@@ -640,6 +664,12 @@ describe("Prisma admin provider repository", () => {
         })
       ])
     });
+    const cleanupQuery = db.$executeRaw.mock.calls.at(-1)?.[0] as
+      | { strings?: readonly string[] }
+      | undefined;
+    const cleanupSql = cleanupQuery?.strings?.join(" ") ?? "";
+    expect(cleanupSql).toContain('FROM "KnowledgeRunBinding"');
+    expect(cleanupSql).toContain('FROM "KnowledgeRunProfileBinding"');
     expect(createSearchOption).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: scenario.optionRowId,
