@@ -17,8 +17,14 @@ export type ProviderSafeFetchErrorCode =
   | "provider_http_invalid_request"
   | "provider_http_origin_forbidden"
   | "provider_http_redirect_forbidden"
+  | "provider_http_request_body_too_large"
   | "provider_http_request_failed"
   | "provider_http_url_forbidden";
+
+// Provider requests may contain inline PDFs/images admitted by the run-level
+// attachment bounds. Keep their transport ceiling independent from the much
+// smaller MCP JSON-RPC request ceiling reused by the pinned-fetch primitive.
+const PROVIDER_HTTP_REQUEST_MAX_BYTES = 512 * 1_024 * 1_024;
 
 export class ProviderSafeFetchError extends Error {
   readonly code: ProviderSafeFetchErrorCode;
@@ -34,6 +40,7 @@ export type ProviderSafeFetchOptions = {
   configuration: ProviderConnectionConfiguration;
   dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
   lookupHostname?: (hostname: string) => Promise<readonly McpResolvedAddress[]>;
+  requestBodyMaxBytes?: number;
 };
 
 function inputUrl(input: RequestInfo | URL): URL {
@@ -58,6 +65,8 @@ function mapSafeFetchError(error: McpSafeFetchError): ProviderSafeFetchError {
       return new ProviderSafeFetchError("provider_http_redirect_forbidden");
     case "mcp_http_request_failed":
       return new ProviderSafeFetchError("provider_http_request_failed");
+    case "mcp_http_request_body_too_large":
+      return new ProviderSafeFetchError("provider_http_request_body_too_large");
     case "mcp_http_protocol_forbidden":
     case "mcp_http_url_credentials_forbidden":
     case "mcp_http_url_fragment_forbidden":
@@ -108,7 +117,9 @@ export async function providerSafeFetch(
         allowInsecureHttp: configuration.allowPrivateNetwork,
         dispatch: options.dispatch,
         lookupHostname: options.lookupHostname,
-        maxRedirects: 0
+        maxRedirects: 0,
+        requestBodyMaxBytes:
+          options.requestBodyMaxBytes ?? PROVIDER_HTTP_REQUEST_MAX_BYTES
       }
     );
   } catch (error) {

@@ -1654,9 +1654,23 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
         credentialId: "credential-e2e",
         credentialVersionId: null,
         evidence: {
+          compatibility: {
+            directPdf: "not_supported",
+            modelAccess: "verified",
+            probeVersion: 1,
+            streaming: "verified",
+            structuredOutput: "verified",
+            usage: "verified"
+          },
           detail: "ok",
           method: "openrouter_account_catalog",
           selectedProviders: ["acme-primary", "acme-backup"],
+          structuredOutput: {
+            adapterKind: "openrouter_chat_completions",
+            probeVersion: 2,
+            upstreamModelId: "vendor/e2e-model",
+            verified: true
+          },
           upstreamModelId: "vendor/e2e-model"
         },
         fingerprint: "provider-e2e-check",
@@ -1846,12 +1860,16 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await section.getByRole("tab", { name: "Models" }).click();
   await section.getByRole("button", { name: "Open E2E Model capabilities" }).click();
   const capabilities = section.getByTestId("provider-model-capabilities-model-e2e");
-  await capabilities.getByRole("button", { name: "Test capabilities" }).click();
+  await capabilities.getByRole("button", { name: "Run compatibility checks" }).click();
   const capabilityTest = page.getByTestId("admin-confirm-provider-capability-test");
   await expect(capabilityTest).toBeVisible();
-  await capabilityTest.getByRole("button", { name: "Confirm run capability test" }).click();
+  await capabilityTest.getByRole("button", { name: "Confirm run checks" }).click();
   await expect(section.getByText("The exact model and credential draft is available.")).toBeVisible();
   await expect(capabilities.getByLabel("Model access verified")).toBeVisible();
+  await expect(capabilities.getByLabel("Structured Output verified")).toBeVisible();
+  await expect(capabilities.getByLabel("Direct PDF not supported")).toBeVisible();
+  await expect(capabilities.getByLabel("Streaming protocol verified")).toBeVisible();
+  await expect(capabilities.getByLabel("Usage reporting verified")).toBeVisible();
 
   await section.getByRole("button", { name: "Activate and enable" }).click();
   await expect(section.getByText("Provider draft activated and enabled for new runs.")).toBeVisible();

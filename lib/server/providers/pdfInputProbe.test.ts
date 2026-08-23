@@ -109,6 +109,12 @@ describe("direct PDF input probe", () => {
     expect(fixture.bytes.includes(Buffer.from(PDF_INPUT_PROBE_CODE, "ascii"))).toBe(false);
     expect(fixture.bytes.toString("latin1")).toContain("/Subtype /Image");
     expect(fixture.bytes.toString("latin1")).not.toContain("/Font");
+    expect(fixture.bytes.toString("latin1")).toContain(
+      `${PDF_INPUT_PROBE_WIDTH} 0 0 ${PDF_INPUT_PROBE_HEIGHT} 0 0 cm`
+    );
+    expect(fixture.bytes.toString("latin1")).not.toContain(
+      `0 -${PDF_INPUT_PROBE_HEIGHT}`
+    );
 
     const raster = compressedRaster(fixture.bytes);
     expect(raster).toHaveLength(PDF_INPUT_PROBE_WIDTH * PDF_INPUT_PROBE_HEIGHT);
@@ -181,7 +187,7 @@ describe("direct PDF input probe", () => {
     await expect(probe.probe(input())).resolves.toBeNull();
   });
 
-  it("does not call an adapter for undeclared or unsupported deployments", async () => {
+  it("discovers PDF support without a declared flag and skips unsupported adapters", async () => {
     const createAdapter = vi.fn(() => adapter(PDF_INPUT_PROBE_CODE, []));
     const probe = createProviderPdfInputProbe({ createAdapter });
 
@@ -191,11 +197,11 @@ describe("direct PDF input probe", () => {
         ...input().model,
         capabilities: { ...input().model.capabilities, nativePdfInput: false }
       }
-    })).resolves.toBeNull();
+    })).resolves.toMatchObject({ verified: true });
     await expect(probe.probe({
       ...input(),
       model: { ...input().model, adapterKind: "openai_chat_completions_compatible" }
     })).resolves.toBeNull();
-    expect(createAdapter).not.toHaveBeenCalled();
+    expect(createAdapter).toHaveBeenCalledOnce();
   });
 });

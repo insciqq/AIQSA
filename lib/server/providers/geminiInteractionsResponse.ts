@@ -766,7 +766,9 @@ export async function* streamGeminiInteractionsJsonResponse(
   if (normalized.grounding) {
     yield normalized.grounding;
   }
-  yield { data: normalized.usage, type: "usage" };
+  if (isRecord(response.usage)) {
+    yield { data: normalized.usage, type: "usage" };
+  }
   if (normalized.finalText) {
     yield { data: { delta: normalized.finalText }, type: "token" };
   }

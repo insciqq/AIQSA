@@ -1,5 +1,6 @@
 import type {
   AdminProviderCheckStatus,
+  AdminProviderCompatibilityStatus,
   AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
 import {
@@ -27,6 +28,11 @@ import {
   createProviderPdfInputProbe,
   type ProviderPdfInputProbe
 } from "../../providers/pdfInputProbe";
+import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
+import {
+  ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+  unsupportedAdminProviderCompatibilityEvidence
+} from "./compatibilityEvidence";
 
 export type AdminProviderDraftTestMode = "account_catalog" | "tiny_generation";
 
@@ -82,7 +88,10 @@ function executionSnapshot(input: AdminProviderDraftTesterInput): ProviderExecut
   };
 }
 
-function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRunRequest {
+function generationRequest(
+  input: AdminProviderDraftTesterInput,
+  streaming: boolean
+): ProviderRunRequest {
   const responsesAdapter = input.model.adapterKind === "openai_responses_native" ||
     input.model.adapterKind === "openai_responses_compatible";
   const maxOutputTokens = 1_000;
@@ -91,11 +100,14 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
     attachmentIds: [],
     attachments: [],
     chatId: "provider-admin-test",
-    content: { blocks: [{ text: "Reply with OK.", type: "text" }] },
-    forceNonStreaming: true,
+    content: { blocks: [{ text: "Reply with exactly OK.", type: "text" }] },
+    forceNonStreaming: !streaming,
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
-    modelCapabilities: input.model.capabilities,
+    modelCapabilities: {
+      ...input.model.capabilities,
+      ...(streaming ? { streaming: true, streamUsage: true } : {})
+    },
     modelId: input.model.upstreamModelId,
     params: {
       ...input.model.defaultParams,
@@ -106,7 +118,7 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
         ? { reasoning: { effort: "none", summary: "none" } }
         : {}),
       store: false,
-      stream: false
+      stream: streaming
     },
     prompt: {
       developer: null,
@@ -184,31 +196,96 @@ async function runStructuredOutputProbe(
   return evidence;
 }
 
-async function tryStructuredOutputProbe(
+type CapabilityProbeResult<Evidence> = Readonly<{
+  evidence: Evidence | null;
+  status: AdminProviderCompatibilityStatus;
+}>;
+
+type GenerationProbeResult = Readonly<{
+  status: AdminProviderCompatibilityStatus;
+  usageSeen: boolean;
+}>;
+
+const deterministicCapabilityHttpStatuses = new Set([400, 405, 415, 422]);
+const testWideErrorCodes = new Set([
+  "provider_request_timed_out",
+  "provider_response_too_large",
+  "provider_stream_deadline_exceeded",
+  "provider_stream_event_too_large",
+  "provider_stream_timeout",
+  "provider_stream_too_large"
+]);
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function providerHttpStatus(error: unknown): number | null {
+  const candidate = record(error);
+  if (Number.isSafeInteger(candidate?.status)) return Number(candidate?.status);
+  const message = error instanceof Error ? error.message : "";
+  const match = /request failed with status (\d{3})$/u.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
+function isTestWideCapabilityFailure(error: unknown): boolean {
+  if (error instanceof TypeError || error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  const candidate = record(error);
+  const code = typeof candidate?.code === "string" ? candidate.code : null;
+  if (code?.startsWith("provider_http_") || code && testWideErrorCodes.has(code)) {
+    return true;
+  }
+  const status = providerHttpStatus(error);
+  return status !== null && !deterministicCapabilityHttpStatuses.has(status);
+}
+
+function preserveTestWideFailure(
+  input: AdminProviderDraftTesterInput,
+  error: unknown
+): void {
+  if (input.signal?.aborted) {
+    throw input.signal.reason ?? error;
+  }
+  if (isTestWideCapabilityFailure(error)) throw error;
+}
+
+async function testStructuredOutput(
   input: AdminProviderDraftTesterInput,
   options: TesterOptions
-) {
+): Promise<CapabilityProbeResult<NonNullable<AdminProviderTestEvidence["structuredOutput"]>>> {
+  if (
+    input.model.modelClass !== "answer" ||
+    !supportsStructuredOutputAdapter(input.model.adapterKind)
+  ) {
+    return { evidence: null, status: "not_supported" };
+  }
   try {
-    return await runStructuredOutputProbe(input, options);
+    return {
+      evidence: await runStructuredOutputProbe(input, options),
+      status: "verified"
+    };
   } catch (error) {
-    if (input.signal?.aborted) {
-      throw input.signal.reason ?? error;
-    }
-    // Structured output is capability evidence, not the availability gate.
-    // A failed probe remains unmarked while the other probes continue.
-    return null;
+    preserveTestWideFailure(input, error);
+    return { evidence: null, status: "not_supported" };
   }
 }
 
-async function runPdfInputProbe(
+async function testPdfInput(
   input: AdminProviderDraftTesterInput,
   options: ResolvedTesterOptions
-) {
-  if (input.model.modelClass !== "answer" || !input.model.capabilities.nativePdfInput) {
-    return null;
+): Promise<CapabilityProbeResult<NonNullable<AdminProviderTestEvidence["pdfInput"]>>> {
+  if (
+    input.model.modelClass !== "answer" ||
+    !supportsPdfInputAdapter(input.model.adapterKind)
+  ) {
+    return { evidence: null, status: "not_supported" };
   }
   try {
-    return await options.pdfInputProbe.probe({
+    const evidence = await options.pdfInputProbe.probe({
       connection: input.connection,
       connectionDisplayName: input.connectionDisplayName,
       connectionId: input.connectionId,
@@ -221,87 +298,131 @@ async function runPdfInputProbe(
       secret: input.secret,
       ...(input.signal ? { signal: input.signal } : {})
     });
+    return evidence
+      ? { evidence, status: "verified" }
+      : { evidence: null, status: "not_supported" };
   } catch (error) {
-    if (input.signal?.aborted) {
-      throw input.signal.reason ?? error;
-    }
-    // Direct PDF verification is an optional capability probe. Connectivity
-    // remains available and the exact check simply carries no PDF evidence.
-    return null;
+    preserveTestWideFailure(input, error);
+    return { evidence: null, status: "not_supported" };
   }
 }
 
-async function runOrdinaryGeneration(
+async function runGenerationProbe(
   input: AdminProviderDraftTesterInput,
-  options: TesterOptions
-): Promise<void> {
-  const runtime = providerRuntime(input, options);
-  const stream = runtime.adapter.stream(tinyGenerationRequest(input), {
-    signal: input.signal
-  });
-  while (!(await stream.next()).done) {
-    // The provider output is deliberately discarded and never becomes test evidence.
+  options: TesterOptions,
+  streaming: boolean
+): Promise<GenerationProbeResult> {
+  const stream = providerRuntime(input, options).adapter.stream(
+    generationRequest(input, streaming),
+    { signal: input.signal }
+  );
+  let usageSeen = false;
+  try {
+    let next = await stream.next();
+    while (!next.done) {
+      if (next.value.type === "usage") usageSeen = true;
+      next = await stream.next();
+    }
+    if (
+      !usageSeen &&
+      (input.model.adapterKind === "openai_chat_completions_compatible" ||
+        input.model.adapterKind === "openrouter_chat_completions") &&
+      record(next.value.finalProviderResponsePreview.usage)
+    ) {
+      usageSeen = true;
+    }
+    return { status: "verified", usageSeen };
+  } catch (error) {
+    if (!streaming) throw error;
+    preserveTestWideFailure(input, error);
+    return { status: "not_supported", usageSeen };
   }
+}
+
+async function testEmbedding(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions,
+  method: AdminProviderTestEvidence["method"],
+  selectedProviders: string[]
+): Promise<AdminProviderDraftTestOutcome> {
+  const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
+    configuration: input.connection
+  });
+  const result = await createOpenAICompatibleEmbeddingAdapter({
+    connection: input.connection,
+    model: input.model,
+    network: { fetchFn },
+    secret: input.secret
+  }).embed({
+    mode: "document",
+    signal: input.signal,
+    texts: ["AIQSA provider compatibility check"]
+  });
+  const usage = result.usage.inputTokens !== null || result.usage.totalTokens !== null
+    ? "verified"
+    : "not_supported";
+
+  return {
+    evidence: {
+      compatibility: {
+        directPdf: "not_supported",
+        modelAccess: "verified",
+        probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+        streaming: "not_supported",
+        structuredOutput: "not_supported",
+        usage
+      },
+      detail: "ok",
+      method,
+      selectedProviders,
+      upstreamModelId: input.model.upstreamModelId
+    },
+    status: "available"
+  };
+}
+
+async function testAnswerModel(
+  input: AdminProviderDraftTesterInput,
+  options: ResolvedTesterOptions,
+  method: AdminProviderTestEvidence["method"],
+  selectedProviders: string[]
+): Promise<AdminProviderDraftTestOutcome> {
+  const access = await runGenerationProbe(input, options, false);
+  const structuredOutput = await testStructuredOutput(input, options);
+  const pdfInput = await testPdfInput(input, options);
+  const streaming = await runGenerationProbe(input, options, true);
+
+  return {
+    evidence: {
+      compatibility: {
+        directPdf: pdfInput.status,
+        modelAccess: access.status,
+        probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+        streaming: streaming.status,
+        structuredOutput: structuredOutput.status,
+        usage: access.usageSeen || streaming.usageSeen ? "verified" : "not_supported"
+      },
+      detail: "ok",
+      method,
+      selectedProviders,
+      ...(pdfInput.evidence ? { pdfInput: pdfInput.evidence } : {}),
+      ...(structuredOutput.evidence
+        ? { structuredOutput: structuredOutput.evidence }
+        : {}),
+      upstreamModelId: input.model.upstreamModelId
+    },
+    status: "available"
+  };
 }
 
 async function runTinyGeneration(
   input: AdminProviderDraftTesterInput,
   options: ResolvedTesterOptions
 ): Promise<AdminProviderDraftTestOutcome> {
-  if (input.model.modelClass === "embedding") {
-    const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
-      configuration: input.connection
-    });
-    await createOpenAICompatibleEmbeddingAdapter({
-      connection: input.connection,
-      model: input.model,
-      network: { fetchFn },
-      secret: input.secret
-    }).embed({
-      mode: "document",
-      signal: input.signal,
-      texts: ["AIQSA provider connectivity check"]
-    });
-    return {
-      evidence: {
-        detail: "ok",
-        method: "tiny_generation",
-        selectedProviders: [],
-        upstreamModelId: input.model.upstreamModelId
-      },
-      status: "available"
-    };
-  }
-  if (supportsStructuredOutputAdapter(input.model.adapterKind)) {
-    const structuredOutput = await tryStructuredOutputProbe(input, options);
-    const pdfInput = await runPdfInputProbe(input, options);
-    if (!structuredOutput && !pdfInput) {
-      await runOrdinaryGeneration(input, options);
-    }
-    return {
-      evidence: {
-        detail: "ok",
-        method: "tiny_generation",
-        selectedProviders: input.model.openRouterRouting?.providers ?? [],
-        ...(pdfInput ? { pdfInput } : {}),
-        ...(structuredOutput ? { structuredOutput } : {}),
-        upstreamModelId: input.model.upstreamModelId
-      },
-      status: "available"
-    };
-  }
-  await runOrdinaryGeneration(input, options);
-  const pdfInput = await runPdfInputProbe(input, options);
-  return {
-    evidence: {
-      detail: "ok",
-      method: "tiny_generation",
-      selectedProviders: input.model.openRouterRouting?.providers ?? [],
-      ...(pdfInput ? { pdfInput } : {}),
-      upstreamModelId: input.model.upstreamModelId
-    },
-    status: "available"
-  };
+  const selectedProviders = input.model.openRouterRouting?.providers ?? [];
+  return input.model.modelClass === "embedding"
+    ? testEmbedding(input, options, "tiny_generation", selectedProviders)
+    : testAnswerModel(input, options, "tiny_generation", selectedProviders);
 }
 
 async function testOpenRouterCatalog(
@@ -334,6 +455,7 @@ async function testOpenRouterCatalog(
   if (!model) {
     return {
       evidence: {
+        compatibility: unsupportedAdminProviderCompatibilityEvidence(),
         detail: "model_missing",
         method: "openrouter_account_catalog",
         selectedProviders: routing?.providers ?? [],
@@ -352,6 +474,7 @@ async function testOpenRouterCatalog(
     if (selectedProviders.some((provider) => !endpointTags.has(provider.toLowerCase()))) {
       return {
         evidence: {
+          compatibility: unsupportedAdminProviderCompatibilityEvidence(),
           detail: "route_missing",
           method: "openrouter_account_catalog",
           selectedProviders,
@@ -362,22 +485,9 @@ async function testOpenRouterCatalog(
     }
   }
 
-  const structuredOutput = input.model.modelClass === "answer"
-    ? await tryStructuredOutputProbe(input, options)
-    : null;
-  const pdfInput = await runPdfInputProbe(input, options);
-
-  return {
-    evidence: {
-      detail: "ok",
-      method: "openrouter_account_catalog",
-      selectedProviders,
-      ...(pdfInput ? { pdfInput } : {}),
-      ...(structuredOutput ? { structuredOutput } : {}),
-      upstreamModelId: input.model.upstreamModelId
-    },
-    status: "available"
-  };
+  return input.model.modelClass === "embedding"
+    ? testEmbedding(input, options, "openrouter_account_catalog", selectedProviders)
+    : testAnswerModel(input, options, "openrouter_account_catalog", selectedProviders);
 }
 
 export function createAdminProviderDraftTester(

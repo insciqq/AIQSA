@@ -41,6 +41,7 @@ export type McpSafeFetchOptions = {
   dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
   lookupHostname?: (hostname: string) => Promise<readonly McpResolvedAddress[]>;
   maxRedirects?: number;
+  requestBodyMaxBytes?: number;
 };
 
 export type McpSafeFetchErrorCode =
@@ -441,6 +442,14 @@ function configuredMaxRedirects(options: McpSafeFetchOptions): number {
   return value;
 }
 
+function configuredRequestBodyMaxBytes(options: McpSafeFetchOptions): number {
+  const value = options.requestBodyMaxBytes ?? MCP_JSON_RPC_REQUEST_MAX_BYTES;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new McpSafeFetchError("mcp_http_invalid_request");
+  }
+  return value;
+}
+
 function attachFinalResponseMetadata(response: Response, url: URL, redirected: boolean): Response {
   for (const [property, value] of [
     ["redirected", redirected],
@@ -466,6 +475,7 @@ export async function mcpSafeFetch(
   options: McpSafeFetchOptions = {}
 ): Promise<Response> {
   const maxRedirects = configuredMaxRedirects(options);
+  const requestBodyMaxBytes = configuredRequestBodyMaxBytes(options);
   try {
     const inputUrl = new URL(input instanceof Request ? input.url : input.toString());
     validateUrl(inputUrl, options);
@@ -485,7 +495,7 @@ export async function mcpSafeFetch(
   try {
     if (sourceRequest.body) {
       body = await readBoundedRequestBody(sourceRequest, {
-        maxBytes: MCP_JSON_RPC_REQUEST_MAX_BYTES
+        maxBytes: requestBodyMaxBytes
       });
     }
   } catch (error) {

@@ -185,6 +185,7 @@ function createRunInput(input: {
   attachmentIds?: string[];
   chatId: string;
   defaults?: Partial<AcceptedRunDefaults>;
+  nativePdfInput?: boolean;
   project?: ProjectRunAdmission;
   providerAdmissionPlan?: Awaited<ReturnType<typeof projectProviderAdmission>>;
   question: string;
@@ -214,7 +215,7 @@ function createRunInput(input: {
       knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
-        nativePdfInput: false,
+        nativePdfInput: input.nativePdfInput ?? false,
         nativeSearch: false,
         pdf: false,
         reasoning: false,
@@ -2203,6 +2204,50 @@ describe("Prisma-backed run repository", () => {
       ).resolves.toEqual({
         chatId: otherChat.id,
         messageId: otherMessage.id
+      });
+    });
+  });
+
+  it("links a processing PDF for an admitted native-PDF run", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "Direct PDF processing",
+          userId
+        }
+      });
+      const attachment = await prisma.attachment.create({
+        data: {
+          byteSize: 12,
+          checksum: "b".repeat(64),
+          extractedText: null,
+          fileName: "processing.pdf",
+          kind: "pdf",
+          metadata: {},
+          mimeType: "application/pdf",
+          status: "processing",
+          storageKey: `${userId}/direct-pdf-processing-${randomUUID()}`,
+          userId
+        }
+      });
+      const repository = createPrismaRunRepository(prisma);
+
+      const created = await repository.createRun(createRunInput({
+        attachmentIds: [attachment.id],
+        chatId: chat.id,
+        nativePdfInput: true,
+        question: "Use the original PDF while extraction continues",
+        userId
+      }));
+
+      await expect(prisma.attachment.findUniqueOrThrow({
+        select: { chatId: true, messageId: true, status: true },
+        where: { id: attachment.id }
+      })).resolves.toEqual({
+        chatId: chat.id,
+        messageId: created.userMessageId,
+        status: "processing"
       });
     });
   });

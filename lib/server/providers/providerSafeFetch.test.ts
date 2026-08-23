@@ -5,6 +5,7 @@ import type {
   McpPinnedHttpRequest,
   McpResolvedAddress
 } from "../mcp/safeFetch";
+import { MCP_JSON_RPC_REQUEST_MAX_BYTES } from "../mcp/responseLimits";
 import {
   createProviderSafeFetch as createCurrentProviderSafeFetch,
   ProviderSafeFetchError
@@ -24,6 +25,7 @@ function createProviderSafeFetch(options: Readonly<{
     Partial<Pick<ProviderConnectionConfiguration, "authenticationMode" | "responseTimeoutMs">>;
   dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
   lookupHostname?: (hostname: string) => Promise<readonly McpResolvedAddress[]>;
+  requestBodyMaxBytes?: number;
 }>): typeof fetch {
   return createCurrentProviderSafeFetch({
     ...options,
@@ -161,6 +163,49 @@ describe("provider SSRF-safe fetch", () => {
       "provider_http_origin_forbidden"
     );
     expect(lookupHostname).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts provider bodies larger than the MCP JSON-RPC request ceiling", async () => {
+    const dispatch = vi.fn(async (request: McpPinnedHttpRequest) => {
+      expect(request.body?.byteLength).toBe(MCP_JSON_RPC_REQUEST_MAX_BYTES + 1);
+      return new Response("ok");
+    });
+    const safeFetch = createProviderSafeFetch({
+      configuration: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://provider.example.test/v1"
+      },
+      dispatch,
+      lookupHostname: async () => [PUBLIC_ADDRESS]
+    });
+
+    await expect(safeFetch("https://provider.example.test/v1/responses", {
+      body: "x".repeat(MCP_JSON_RPC_REQUEST_MAX_BYTES + 1),
+      method: "POST"
+    }).then((response) => response.text())).resolves.toBe("ok");
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("reports the provider request-body bound distinctly", async () => {
+    const dispatch = vi.fn(async () => new Response("unexpected"));
+    const safeFetch = createProviderSafeFetch({
+      configuration: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://provider.example.test/v1"
+      },
+      dispatch,
+      lookupHostname: async () => [PUBLIC_ADDRESS],
+      requestBodyMaxBytes: 4
+    });
+
+    await expectCode(
+      safeFetch("https://provider.example.test/v1/responses", {
+        body: "12345",
+        method: "POST"
+      }),
+      "provider_http_request_body_too_large"
+    );
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it.each([

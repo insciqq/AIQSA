@@ -1172,7 +1172,7 @@ describe("AdminProvidersSection", () => {
     expect(within(models).getByText(/Answer model/)).toBeVisible();
   });
 
-  it("shows only positive credential-scoped capability evidence", () => {
+  it("shows five credential-scoped compatibility outcomes", () => {
     const configuredModel = providerModel({
       draftConfig: {
         ...providerModel().draftConfig,
@@ -1192,6 +1192,14 @@ describe("AdminProvidersSection", () => {
         credentialId: "credential-1",
         credentialVersionId: null,
         evidence: {
+          compatibility: {
+            directPdf: "verified",
+            modelAccess: "verified",
+            probeVersion: 1,
+            streaming: "not_supported",
+            structuredOutput: "not_supported",
+            usage: "not_supported"
+          },
           detail: "ok",
           method: "tiny_generation",
           pdfInput: {
@@ -1222,11 +1230,12 @@ describe("AdminProvidersSection", () => {
     const capabilities = screen.getByTestId("provider-model-capabilities-model-1");
     expect(within(capabilities).getByLabelText("Model access verified")).toBeVisible();
     expect(within(capabilities).getByLabelText("Direct PDF verified")).toBeVisible();
-    expect(within(capabilities).queryByLabelText("Structured output verified"))
-      .not.toBeInTheDocument();
+    expect(within(capabilities).getByLabelText("Structured Output not supported")).toBeVisible();
+    expect(within(capabilities).getByLabelText("Streaming protocol not supported")).toBeVisible();
+    expect(within(capabilities).getByLabelText("Usage reporting not supported")).toBeVisible();
     expect(capabilities).not.toHaveTextContent(/Not verified|Configured, not separately verified/u);
-    fireEvent.click(within(capabilities).getByRole("button", { name: "Test capabilities" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm run capability test" }));
+    fireEvent.click(within(capabilities).getByRole("button", { name: "Run compatibility checks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run checks" }));
     expect(view.actions.testDraft).toHaveBeenCalledWith(
       "connection-1",
       "model-1",
@@ -1532,7 +1541,7 @@ describe("AdminProvidersSection", () => {
     })).not.toBeInTheDocument();
   });
 
-  it("runs one active capability test from Models without a Diagnostics tab", () => {
+  it("runs active compatibility checks from Models without a Diagnostics tab", () => {
     const activeModel = {
       activatedAt: "2026-07-23T00:00:00.000Z",
       activeConfig: {
@@ -1617,8 +1626,8 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open Active Model capabilities" }));
     const capabilities = screen.getByTestId("provider-model-capabilities-model-active");
     expect(within(capabilities).queryByText("Verified")).not.toBeInTheDocument();
-    fireEvent.click(within(capabilities).getByRole("button", { name: "Test capabilities" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm run capability test" }));
+    fireEvent.click(within(capabilities).getByRole("button", { name: "Run compatibility checks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run checks" }));
     expect(view.actions.refreshActive).toHaveBeenCalledWith(
       "connection-1",
       "model-active",

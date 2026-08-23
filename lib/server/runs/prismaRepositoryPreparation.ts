@@ -138,6 +138,24 @@ const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 1_500;
 const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 1_200;
 const MEMORY_PREPARING_FINALIZATION_RESERVE_MS = 1_000;
 
+function attachmentLinkReadinessWhere(
+  input: PreparingRunAdmissionInput
+): Prisma.AttachmentWhereInput {
+  if (!input.normalizedRequest.modelCapabilities.nativePdfInput) {
+    return { status: "ready" };
+  }
+
+  return {
+    OR: [
+      { status: "ready" },
+      {
+        kind: "pdf",
+        status: { in: ["processing", "failed"] }
+      }
+    ]
+  };
+}
+
 type LockedPreparingAttempt = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
   admittedAssistantLeafMessageId: string;
@@ -705,11 +723,11 @@ export async function admitProjectRunWithClient(
           const linked = await tx.attachment.updateMany({
             data: { chatId: input.chatId, messageId: userMessage.id },
             where: {
+              ...attachmentLinkReadinessWhere(input),
               chatId: null,
               id: { in: attachmentIds },
               messageId: null,
-              projectId: project.projectId,
-              status: "ready"
+              projectId: project.projectId
             }
           });
           if (linked.count !== attachmentIds.length) throw new AttachmentLinkConflictError();
@@ -1038,10 +1056,10 @@ export async function admitPreparingRunWithClient(
           const linkedAttachments = await tx.attachment.updateMany({
             data: { chatId: input.chatId, messageId: userMessage.id },
             where: {
+              ...attachmentLinkReadinessWhere(input),
               chatId: null,
               id: { in: attachmentIds },
               messageId: null,
-              status: "ready",
               userId: input.userId
             }
           });
