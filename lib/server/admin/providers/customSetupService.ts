@@ -8,6 +8,7 @@ import {
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import {
   adminSearchExecutionDefaults,
   type AdminSearchDraft,
@@ -119,7 +120,11 @@ function modelConfiguration(
       ? "openai_responses_compatible"
       : "openai_chat_completions_compatible",
     answerSelectable: true,
-    capabilities: request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
+    capabilities: {
+      ...(request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES),
+      // Local PDF extraction is an AIQSA capability, not an upstream claim.
+      pdf: true
+    },
     defaultParams: request.defaultParams ?? {},
     modelClass: "answer",
     ...(request.reasoningRequestMapping
@@ -178,12 +183,17 @@ function validatedEvidence(
   const structuredOutput = decodeStructuredOutputVerificationEvidence(
     outcome.evidence.structuredOutput
   );
+  const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
+  const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
   if (
     outcome.status !== "available" ||
     outcome.evidence.detail !== "ok" ||
     outcome.evidence.method !== "tiny_generation" ||
     outcome.evidence.upstreamModelId !== model.upstreamModelId ||
     outcome.evidence.selectedProviders.length !== 0 ||
+    (hasPdfInput && (!pdfInput || !model.capabilities.nativePdfInput ||
+      pdfInput.adapterKind !== model.adapterKind ||
+      pdfInput.upstreamModelId !== model.upstreamModelId)) ||
     (structuredOutput !== null && (
       structuredOutput.adapterKind !== model.adapterKind ||
       structuredOutput.upstreamModelId !== model.upstreamModelId
@@ -197,6 +207,7 @@ function validatedEvidence(
     detail: "ok",
     method: "tiny_generation",
     selectedProviders: [],
+    ...(pdfInput ? { pdfInput } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: model.upstreamModelId
   };

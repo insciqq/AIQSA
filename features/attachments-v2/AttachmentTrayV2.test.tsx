@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
+import type { CatalogModel } from "@/components/app-shell/types";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import { AttachmentTrayV2 } from "./AttachmentTrayV2";
 import { SentAttachmentsV2 } from "./SentAttachmentsV2";
@@ -112,6 +113,37 @@ describe("AttachmentTrayV2", () => {
     expect(mapped[0]?.detail).not.toContain("pdf_extraction_failed");
     expect(mapped[1]?.warning).toMatchObject({ blocking: true, label: "Text limited" });
     expect(attachmentSendBlockReasonV2(mapped, null, false)).toContain("scan.pdf");
+  });
+
+  it("explains a non-blocking direct-PDF parser failure without hiding integrity failures", () => {
+    const directModel = {
+      capabilities: { documentInputMode: "native_pdf" }
+    } as CatalogModel;
+    const parserFailure: ComposerAttachment = {
+      fileName: "scan.pdf",
+      id: "parser-failure",
+      kind: "pdf",
+      processingErrorCode: "parser_unavailable",
+      status: "failed"
+    };
+    const integrityFailure: ComposerAttachment = {
+      ...parserFailure,
+      id: "integrity-failure",
+      processingErrorCode: "attachment_checksum_mismatch"
+    };
+    const mapped = attachmentItemsForV2(
+      [parserFailure, integrityFailure],
+      [],
+      directModel
+    );
+
+    expect(mapped[0]).toMatchObject({
+      blocksSend: false,
+      detail: "Local text extraction failed. The original PDF will be sent directly to the selected provider."
+    });
+    expect(mapped[1]).toMatchObject({ blocksSend: true });
+    expect(attachmentSendBlockReasonV2([mapped[0]!], null, false)).toBeNull();
+    expect(attachmentSendBlockReasonV2([mapped[1]!], null, false)).toContain("scan.pdf");
   });
 });
 

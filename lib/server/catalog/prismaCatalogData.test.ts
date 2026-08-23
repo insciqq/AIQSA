@@ -495,6 +495,7 @@ describe("prisma catalog data loader", () => {
       adapterKind: "openai_chat_completions_compatible",
       capabilities: {
         nativeSearch: false,
+        pdf: true,
         reasoning: false,
         streaming: false
       },
@@ -512,6 +513,35 @@ describe("prisma catalog data loader", () => {
       defaultValue: false,
       supported: false
     });
+  });
+
+  it("advertises direct PDF input only with matching verification evidence", () => {
+    const model = providerModel({
+      activeConfig: {
+        adapterKind: "openai_responses_native",
+        capabilities: { ...capabilities, nativePdfInput: true, pdf: true },
+        defaultParams: {},
+        upstreamModelId: "gpt-pdf"
+      }
+    });
+    const matchingEvidence = {
+      pdfInput: {
+        adapterKind: "openai_responses_native",
+        probeVersion: 1,
+        upstreamModelId: "gpt-pdf",
+        verified: true
+      }
+    };
+
+    expect(providerModelToCatalogEntry(model)?.capabilities.nativePdfInput).toBe(false);
+    expect(providerModelToCatalogEntry(model, {
+      credentialCheckEvidence: matchingEvidence
+    })?.capabilities.nativePdfInput).toBe(true);
+    expect(providerModelToCatalogEntry(model, {
+      credentialCheckEvidence: {
+        pdfInput: { ...matchingEvidence.pdfInput, upstreamModelId: "other-model" }
+      }
+    })?.capabilities.nativePdfInput).toBe(false);
   });
 
   it("exposes compatible Chat modes only with an explicit mode request mapping", () => {
@@ -1034,6 +1064,121 @@ describe("prisma catalog data loader", () => {
       models: ["deployment-answer"],
       name: "Primary account"
     }]);
+  });
+
+  it("uses only the current user's exact credential-check evidence for PDF capability", async () => {
+    const direct = credential("credential-user", { userIds: ["user-1"] });
+    const model = providerModel({
+      activeConfig: {
+        adapterKind: "openai_responses_native",
+        capabilities: { ...capabilities, nativePdfInput: true, pdf: true },
+        defaultParams: {},
+        upstreamModelId: "gpt-pdf"
+      },
+      credentials: [credential("credential-default"), direct]
+    });
+    const baseCheck = model.activeCredentialChecks[0]!;
+    model.activeCredentialChecks = [
+      {
+        ...baseCheck,
+        evidence: {
+          pdfInput: {
+            adapterKind: "openai_responses_native",
+            probeVersion: 1,
+            upstreamModelId: "gpt-pdf",
+            verified: true
+          }
+        }
+      },
+      {
+        ...baseCheck,
+        credentialId: direct.id,
+        credentialVersionId: direct.activeVersion!.id,
+        evidence: {},
+        status: "available"
+      }
+    ];
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [model]) },
+      searchOption: { findMany: vi.fn(async () => []) },
+      user: {
+        findUnique: vi.fn(async () => ({
+          groups: [],
+          settings: {
+            defaultControlValues: {},
+            defaultProviderModelId: model.id,
+            defaultSearchPlan: { mode: "all_selected", optionIds: [] },
+            showCitations: true,
+            showReasoningBlocks: false
+          }
+        }))
+      }
+    };
+    const loader = createPrismaCatalogDataLoader({
+      loadEntitlements: async () => entitlements({ fullAccess: true }),
+      prisma: prisma as never
+    });
+
+    const [directData, defaultData] = await Promise.all([
+      loader("user-1"),
+      loader("user-2")
+    ]);
+
+    expect(directData?.models).toHaveLength(1);
+    expect(directData?.models[0]?.capabilities.nativePdfInput).toBe(false);
+    expect(defaultData?.models[0]?.capabilities.nativePdfInput).toBe(true);
+  });
+
+  it("ignores verified PDF evidence from a stale model-check tuple", async () => {
+    const model = providerModel({
+      activeConfig: {
+        adapterKind: "openai_responses_native",
+        capabilities: { ...capabilities, nativePdfInput: true, pdf: true },
+        defaultParams: {},
+        upstreamModelId: "gpt-pdf"
+      }
+    });
+    const currentCheck = model.activeCredentialChecks[0]!;
+    model.activeCredentialChecks = [
+      {
+        ...currentCheck,
+        evidence: {
+          pdfInput: {
+            adapterKind: "openai_responses_native",
+            probeVersion: 1,
+            upstreamModelId: "gpt-pdf",
+            verified: true
+          }
+        },
+        modelVersion: currentCheck.modelVersion - 1
+      },
+      { ...currentCheck, evidence: {} }
+    ];
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [model]) },
+      searchOption: { findMany: vi.fn(async () => []) },
+      user: {
+        findUnique: vi.fn(async () => ({
+          groups: [],
+          settings: {
+            defaultControlValues: {},
+            defaultProviderModelId: model.id,
+            defaultSearchPlan: { mode: "all_selected", optionIds: [] },
+            showCitations: true,
+            showReasoningBlocks: false
+          }
+        }))
+      }
+    };
+    const loader = createPrismaCatalogDataLoader({
+      loadEntitlements: async () => entitlements({ fullAccess: true }),
+      prisma: prisma as never
+    });
+
+    const data = await loader("user-1");
+
+    expect(data?.models).toHaveLength(1);
+    expect(data?.models[0]?.capabilities.nativePdfInput).toBe(false);
   });
 
   it("does not expose or silently replace an unavailable saved deployment", () => {

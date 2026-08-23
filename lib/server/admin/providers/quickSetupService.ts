@@ -41,6 +41,7 @@ import type {
 } from "./quickSetupRepositoryContract";
 import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
 import { searchDraftHash } from "../../search/configuration";
+import type { ProviderPdfInputProbe } from "../../providers/pdfInputProbe";
 
 export class AdminProviderQuickSetupServiceError extends Error {
   readonly code: AdminProviderQuickSetupErrorCode;
@@ -112,6 +113,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
   now?: () => Date;
+  pdfInputProbe: ProviderPdfInputProbe;
   searchTester?: AdminProviderQuickSetupSearchTester;
   repository: AdminProviderQuickSetupRepository;
   stateTokenKey: () => Buffer;
@@ -315,6 +317,47 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
       }
       const versionId = idFactory();
+      const modelChecks: Array<AdminProviderQuickSetupCommitPlan["modelChecks"][number]> = [];
+      for (const availableCandidate of availableCandidates) {
+        let pdfInput = null;
+        if (availableCandidate.configuration.capabilities.nativePdfInput) {
+          try {
+            pdfInput = await input.pdfInputProbe.probe({
+              connection: policy.connection.configuration,
+              connectionDisplayName: policy.connection.displayName,
+              connectionId: policy.connection.id,
+              credentialId,
+              credentialVersionId: versionId,
+              model: availableCandidate.configuration,
+              modelDisplayName: availableCandidate.displayName,
+              providerFamily: policy.provider,
+              providerModelId: availableCandidate.modelId,
+              secret,
+              ...(inputValue.signal ? { signal: inputValue.signal } : {})
+            });
+          } catch (error) {
+            if (inputValue.signal?.aborted) {
+              throw new AdminProviderQuickSetupServiceError(
+                "provider_credential_test_failed"
+              );
+            }
+            // A failed capability probe must not turn a catalog-verified text
+            // deployment into an unavailable model.
+            pdfInput = null;
+          }
+        }
+        modelChecks.push({
+          evidence: {
+            detail: "ok",
+            method: "models_catalog",
+            ...(pdfInput ? { pdfInput } : {}),
+            selectedProviders:
+              availableCandidate.configuration.openRouterRouting?.providers ?? [],
+            upstreamModelId: availableCandidate.configuration.upstreamModelId
+          },
+          modelId: availableCandidate.modelId
+        });
+      }
       let search: AdminProviderQuickSetupCommitPlan["search"];
       if ((policy.provider === "anthropic" || policy.provider === "openai" ||
         policy.provider === "gemini") &&
@@ -380,6 +423,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           modelId
         })),
         mode: inspection.mode,
+        modelChecks,
         now: now(),
         preservedModels: inspection.preservedModels,
         provider: policy.provider,

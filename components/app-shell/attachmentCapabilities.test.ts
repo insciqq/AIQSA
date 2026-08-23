@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { attachmentAcceptForPolicy } from "./attachmentSelection";
 import type { CatalogModel } from "./types";
 import {
+  attachmentBlocksSend,
+  attachmentPolicyForModel,
   attachmentWarningsForModel,
   firstBlockingAttachmentWarning,
   partitionAttachmentsForModel,
@@ -45,10 +48,19 @@ const attachments = [
 ];
 
 describe("attachment capabilities", () => {
+  it("publishes PDF picker formats for a selected model with legacy capability metadata", () => {
+    const accept = attachmentAcceptForPolicy(
+      attachmentPolicyForModel(model("none", false))
+    );
+
+    expect(accept).toContain(".pdf");
+    expect(accept).toContain("application/pdf");
+  });
+
   it("reconciles staged files when a model changes", () => {
     expect(partitionAttachmentsForModel(attachments, model("none", true))).toEqual({
-      supported: [attachments[0], attachments[1]],
-      unsupported: [attachments[2]]
+      supported: attachments,
+      unsupported: []
     });
 
     expect(
@@ -150,6 +162,33 @@ describe("attachment capabilities", () => {
       supported: [noText],
       unsupported: []
     });
+  });
+
+  it("keeps direct PDF parser states sendable but blocks storage and integrity failures", () => {
+    const directModel = model("native_pdf", false);
+    const extractionModel = model("pdf_text_extraction", false);
+    const processing = {
+      fileName: "scan.pdf",
+      id: "scan",
+      kind: "pdf" as const,
+      processingErrorCode: null,
+      status: "processing" as const
+    };
+    const parserFailure = {
+      ...processing,
+      processingErrorCode: "parser_unavailable",
+      status: "failed" as const
+    };
+    const storageFailure = {
+      ...parserFailure,
+      processingErrorCode: "attachment_checksum_mismatch"
+    };
+
+    expect(attachmentBlocksSend(processing, directModel)).toBe(false);
+    expect(attachmentBlocksSend(parserFailure, directModel)).toBe(false);
+    expect(attachmentBlocksSend(storageFailure, directModel)).toBe(true);
+    expect(attachmentBlocksSend(processing, extractionModel)).toBe(true);
+    expect(attachmentBlocksSend(parserFailure, extractionModel)).toBe(true);
   });
 
   it("ignores malformed processing metadata in browser-side decisions", () => {

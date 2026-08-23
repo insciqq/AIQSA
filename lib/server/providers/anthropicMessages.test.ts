@@ -283,6 +283,7 @@ describe("Anthropic Messages adapter", () => {
         attachmentIds: ["pdf-1", "doc-1", "image-1"],
         attachments: [
           {
+            base64Data: "PDF_BYTES_MUST_NOT_BE_SENT",
             byteSize: 32,
             extractedText: "Extracted PDF body",
             fileName: "brief.pdf",
@@ -351,6 +352,7 @@ describe("Anthropic Messages adapter", () => {
         })
       ])
     );
+    expect(JSON.stringify(body)).not.toContain("PDF_BYTES_MUST_NOT_BE_SENT");
   });
 
   it("maps accepted max-output-token aliases to max_tokens", () => {

@@ -7,6 +7,8 @@ import {
 } from "../../../domain/search";
 import type { AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
+import { pdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import type { ProviderPdfInputProbeInput } from "../../providers/pdfInputProbe";
 import type {
   AdminProviderQuickSetupInspection,
   AdminProviderQuickSetupRepository
@@ -49,6 +51,7 @@ function fixture(input: {
   >>>;
   inspections?: Partial<Record<AdminProviderQuickSetupProviderId, AdminProviderQuickSetupInspection>>;
   modelIds?: string[];
+  pdfProbeResults?: Record<string, "failed" | "throw" | "verified">;
   repositoryCommit?: AdminProviderQuickSetupRepository["commit"];
   searchOutcome?: { normalizedSourceCount: number; status: "available" | "unavailable" };
   searchThrows?: boolean;
@@ -91,19 +94,31 @@ function fixture(input: {
     if (input.searchThrows) throw new Error("search probe failed");
     return input.searchOutcome ?? { normalizedSourceCount: 0, status: "unavailable" as const };
   });
+  const pdfInputProbe = vi.fn(async (probeInput: ProviderPdfInputProbeInput) => {
+    order.push("pdf");
+    const result = input.pdfProbeResults?.[probeInput.model.upstreamModelId] ?? "verified";
+    if (result === "throw") throw new Error("private PDF probe failure");
+    return result === "failed"
+      ? null
+      : pdfInputVerificationEvidence(
+          probeInput.model.adapterKind,
+          probeInput.model.upstreamModelId
+        );
+  });
   let nextId = 0;
   const service = createAdminProviderQuickSetupService({
     credentialTester: { test },
     encryptionKey: () => key,
     idFactory: () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`,
     now: () => checkedAt,
+    pdfInputProbe: { probe: pdfInputProbe },
     repository,
     ...(input.searchOutcome || input.searchThrows
       ? { searchTester: { test: searchTest } }
       : {}),
     stateTokenKey: () => stateTokenKey
   });
-  return { commit, inspections, order, repository, searchTest, service, test };
+  return { commit, inspections, order, pdfInputProbe, repository, searchTest, service, test };
 }
 
 async function expectedState(
@@ -186,7 +201,7 @@ describe("provider Quick setup service", () => {
     expect(value.commit).toHaveBeenCalledTimes(1);
     expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe(candidateId);
     expect(result).toMatchObject({ models: [{ displayName: expect.any(String) }] });
-    expect(value.order).toEqual(["network", "commit"]);
+    expect(value.order).toEqual(["network", "pdf", "commit"]);
     expect(JSON.stringify(value.commit.mock.calls[0][0])).not.toContain("sk-one-use");
     expect(JSON.stringify(result)).not.toContain("sk-one-use");
   });
@@ -223,6 +238,9 @@ describe("provider Quick setup service", () => {
       plan.candidates.map(({ modelId }) => modelId)
     );
     expect(new Set(plan.grants.map(({ id }) => id)).size).toBe(3);
+    expect(value.pdfInputProbe).toHaveBeenCalledTimes(3);
+    expect(plan.modelChecks).toHaveLength(3);
+    expect(plan.modelChecks.every(({ evidence }) => Boolean(evidence.pdfInput))).toBe(true);
     expect(result).toMatchObject({
       model: { displayName: "GPT-5.6 Terra" },
       models: [
@@ -266,6 +284,9 @@ describe("provider Quick setup service", () => {
     expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
       plan.candidates.map(({ modelId }) => modelId)
     );
+    expect(plan.candidates.every(({ configuration }) =>
+      configuration.capabilities.nativePdfInput)).toBe(true);
+    expect(value.pdfInputProbe).toHaveBeenCalledTimes(4);
     expect(result).toMatchObject({
       model: { displayName: "Gemini 3.6 Flash" },
       models: [
@@ -310,7 +331,7 @@ describe("provider Quick setup service", () => {
     });
 
     expect(value.searchTest).not.toHaveBeenCalled();
-    expect(value.order).toEqual(["network", "commit"]);
+    expect(value.order).toEqual(["network", "pdf", "commit"]);
     expect(value.commit.mock.calls[0][0].search).toMatchObject({
       draft: {
         adapterKind: "provider_model_client",
@@ -353,7 +374,7 @@ describe("provider Quick setup service", () => {
 
     const plan = value.commit.mock.calls[0][0];
     expect(value.searchTest).not.toHaveBeenCalled();
-    expect(value.order).toEqual(["network", "commit"]);
+    expect(value.order).toEqual(["network", "pdf", "commit"]);
     expect(plan.search).toMatchObject({
       draft: {
         adapterKind: "provider_model_client",
@@ -443,7 +464,7 @@ describe("provider Quick setup service", () => {
         { candidateId: "p2-o3" }
       ],
       outcome: "selection_required",
-      policyVersion: 4
+      policyVersion: 5
     });
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).not.toHaveBeenCalled();
@@ -459,12 +480,33 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 4 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 5 }
       }
     });
     expect(result.outcome).toBe("ready");
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe("p2-o2");
+  });
+
+  it("keeps Quick setup ready but omits direct PDF evidence after a failed probe", async () => {
+    const value = fixture({
+      modelIds: ["gpt-5.6-terra"],
+      pdfProbeResults: { "gpt-5.6-terra": "throw" }
+    });
+
+    await expect(value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-pdf-fallback"
+      }
+    })).resolves.toMatchObject({ outcome: "ready" });
+
+    const plan = value.commit.mock.calls[0][0];
+    expect(plan.candidate.configuration.capabilities.nativePdfInput).toBe(true);
+    expect(plan.modelChecks[0]?.evidence).not.toHaveProperty("pdfInput");
+    expect(value.commit).toHaveBeenCalledOnce();
   });
 
   it("rejects stale state before network or persistence", async () => {

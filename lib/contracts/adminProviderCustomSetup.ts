@@ -26,7 +26,7 @@ export const ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES = {
   nativeImageGeneration: false,
   nativeSearch: false,
   parallelToolCalls: false,
-  pdf: false,
+  pdf: true,
   reasoning: false,
   streaming: true,
   toolCalling: false,

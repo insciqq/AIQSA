@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
+import { pdfInputVerificationEvidence } from "../providers/pdfInputEvidence";
 import { createPrismaProjectContentRepository } from "./contentRepository";
 import { createPrismaProjectMemoryRepository } from "./memoryRepository";
 import { createPrismaProjectRepository } from "./prismaRepository";
@@ -292,6 +293,157 @@ describe("Prisma-backed Project repository", () => {
         where: { projectId }
       })).resolves.toContainEqual({ eventType: "project_created" });
     }, 0, providerTemplateIds.fakeModel);
+  });
+
+  it("publishes direct PDF input only from exact active credential evidence", async () => {
+    const suffix = randomUUID();
+    const connectionId = `project-pdf-connection-${suffix}`;
+    const credentialId = `project-pdf-credential-${suffix}`;
+    const credentialVersionId = `project-pdf-credential-version-${suffix}`;
+    const modelId = `project-pdf-model-${suffix}`;
+    const upstreamModelId = `project-pdf-upstream-${suffix}`;
+    const now = new Date("2026-08-23T08:00:00.000Z");
+    const connectionConfiguration = {
+      allowPrivateNetwork: false,
+      apiRoot: "https://project-pdf-provider.example.test/v1",
+      authenticationMode: "bearer",
+      responseTimeoutMs: 30_000
+    };
+    const modelConfiguration = {
+      adapterKind: "openai_responses_compatible",
+      answerSelectable: true,
+      capabilities: {
+        nativePdfInput: true,
+        nativeSearch: false,
+        pdf: true,
+        reasoning: false,
+        streaming: false,
+        toolCalling: false,
+        vision: true
+      },
+      defaultParams: {},
+      modelClass: "answer",
+      upstreamModelId
+    };
+
+    await prisma.providerConnection.create({
+      data: {
+        activeConfig: connectionConfiguration,
+        activeVersion: 1,
+        activatedAt: now,
+        displayName: "Project direct PDF provider",
+        draftConfig: connectionConfiguration,
+        draftVersion: 1,
+        enabled: true,
+        family: "openai_compatible",
+        id: connectionId,
+        unassignedPolicy: "use_default"
+      }
+    });
+    await prisma.providerCredential.create({
+      data: {
+        activatedAt: now,
+        connectionId,
+        draftVersion: 1,
+        enabled: true,
+        id: credentialId,
+        label: "Project direct PDF account",
+        testedAt: now
+      }
+    });
+    await prisma.providerCredentialVersion.create({
+      data: {
+        activatedAt: now,
+        credentialId,
+        id: credentialVersionId,
+        secretEnvelope: "test-only-envelope",
+        testedAt: now,
+        testEvidence: { authenticationMode: "bearer" },
+        version: 1
+      }
+    });
+    await prisma.providerCredential.update({
+      data: { activeVersionId: credentialVersionId },
+      where: { id: credentialId }
+    });
+    await prisma.providerConnection.update({
+      data: { defaultCredentialId: credentialId },
+      where: { id: connectionId }
+    });
+    await prisma.providerModel.create({
+      data: {
+        activeConfig: modelConfiguration,
+        activeVersion: 1,
+        activatedAt: now,
+        capabilities: modelConfiguration.capabilities,
+        connectionId,
+        defaultParams: {},
+        displayName: "Project direct PDF model",
+        draftConfig: modelConfiguration,
+        draftVersion: 1,
+        enabled: true,
+        id: modelId,
+        modelClass: "answer",
+        modelId: upstreamModelId,
+        provider: "openai_compatible",
+        supportsPdf: true,
+        supportsVision: true
+      }
+    });
+    const check = await prisma.providerModelCredentialCheck.create({
+      data: {
+        checkedAt: now,
+        connectionId,
+        connectionVersion: 1,
+        credentialId,
+        credentialVersionId,
+        evidence: {
+          pdfInput: pdfInputVerificationEvidence(
+            modelConfiguration.adapterKind,
+            upstreamModelId
+          )
+        },
+        modelVersion: 1,
+        providerModelId: modelId,
+        status: "available"
+      }
+    });
+
+    try {
+      await withProjectFixture(async ({ ownerId, projectId }) => {
+        const repository = createPrismaProjectRepository(prisma);
+        const verified = await repository.getDetail(ownerId, projectId);
+        expect(verified?.composer?.catalog.models).toContainEqual(expect.objectContaining({
+          capabilities: expect.objectContaining({ documentInputMode: "native_pdf" }),
+          modelId
+        }));
+
+        await prisma.providerModelCredentialCheck.update({
+          data: { evidence: {} },
+          where: { id: check.id }
+        });
+
+        const unverified = await repository.getDetail(ownerId, projectId);
+        expect(unverified?.composer?.catalog.models).toContainEqual(expect.objectContaining({
+          capabilities: expect.objectContaining({ documentInputMode: "pdf_text_extraction" }),
+          modelId
+        }));
+      }, 0, modelId);
+    } finally {
+      await prisma.providerModelCredentialCheck.deleteMany({ where: { providerModelId: modelId } });
+      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerConnection.update({
+        data: { defaultCredentialId: null },
+        where: { id: connectionId }
+      });
+      await prisma.providerCredential.update({
+        data: { activeVersionId: null },
+        where: { id: credentialId }
+      });
+      await prisma.providerCredentialVersion.deleteMany({ where: { id: credentialVersionId } });
+      await prisma.providerCredential.deleteMany({ where: { id: credentialId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
   });
 
   it("writes durable Project outbox rows for run artifacts and tool checkpoints", async () => {

@@ -167,7 +167,7 @@ function openConnection(name = "OpenRouter") {
   fireEvent.click(connectionButton);
 }
 
-function openTask(name: "Authentication" | "Credentials" | "Diagnostics" | "Models") {
+function openTask(name: "Authentication" | "Credentials" | "Models") {
   openConnection();
   fireEvent.click(screen.getByRole("tab", { name }));
 }
@@ -1133,6 +1133,7 @@ describe("AdminProvidersSection", () => {
             defaultReasoningEffort: "medium",
             defaultReasoningMode: "standard",
             nativeSearch: true,
+            pdf: true,
             reasoning: true,
             reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
             reasoningModes: ["standard", "pro"]
@@ -1169,6 +1170,84 @@ describe("AdminProvidersSection", () => {
     expect(within(models).getByRole("button", { name: "Delete Configured model model" })).toBeVisible();
     expect(within(models).queryByText("vendor/model", { exact: true })).not.toBeInTheDocument();
     expect(within(models).getByText(/Answer model/)).toBeVisible();
+  });
+
+  it("shows only positive credential-scoped capability evidence", () => {
+    const configuredModel = providerModel({
+      draftConfig: {
+        ...providerModel().draftConfig,
+        capabilities: {
+          ...providerModel().draftConfig.capabilities,
+          nativePdfInput: true,
+          pdf: true
+        }
+      }
+    });
+    const configuredConnection: AdminProviderConnection = {
+      ...connection,
+      draftChecks: [{
+        checkedAt: "2026-07-23T00:00:00.000Z",
+        connectionDraftVersion: connection.draftVersion,
+        credentialDraftVersion: 1,
+        credentialId: "credential-1",
+        credentialVersionId: null,
+        evidence: {
+          detail: "ok",
+          method: "tiny_generation",
+          pdfInput: {
+            adapterKind: "openrouter_chat_completions",
+            probeVersion: 1,
+            upstreamModelId: "vendor/model",
+            verified: true
+          },
+          selectedProviders: [],
+          upstreamModelId: "vendor/model"
+        },
+        fingerprint: "draft-check",
+        modelDraftVersion: configuredModel.draftVersion,
+        providerModelId: configuredModel.id,
+        status: "available"
+      }],
+      models: [configuredModel]
+    };
+    const view = controller();
+    view.state.connections = [configuredConnection];
+    view.state.selectedConnection = configuredConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Models");
+    expect(screen.queryByRole("tab", { name: "Diagnostics" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Configured model capabilities" }));
+    const capabilities = screen.getByTestId("provider-model-capabilities-model-1");
+    expect(within(capabilities).getByLabelText("Model access verified")).toBeVisible();
+    expect(within(capabilities).getByLabelText("Direct PDF verified")).toBeVisible();
+    expect(within(capabilities).queryByLabelText("Structured output verified"))
+      .not.toBeInTheDocument();
+    expect(capabilities).not.toHaveTextContent(/Not verified|Configured, not separately verified/u);
+    fireEvent.click(within(capabilities).getByRole("button", { name: "Test capabilities" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run capability test" }));
+    expect(view.actions.testDraft).toHaveBeenCalledWith(
+      "connection-1",
+      "model-1",
+      {
+        confirmPaidRequest: true,
+        credentialId: "credential-1",
+        mode: "account_catalog"
+      }
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Configured model" }));
+    fireEvent.click(screen.getByText("Advanced model settings"));
+
+    const directPdf = screen.getByRole("checkbox", { name: /Direct PDF input/u });
+    expect(directPdf).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "PDF" })).not.toBeInTheDocument();
+    expect(screen.getByText(/The provider may process the file natively or through its own file parser/u))
+      .toBeVisible();
+    expect(screen.getByText(/enabled for users only after an image-only PDF probe succeeds/u))
+      .toBeVisible();
+    expect(screen.queryByText(/^Status:/u)).not.toBeInTheDocument();
   });
 
   it("labels technical-only model drafts without presenting them as answer models", () => {
@@ -1453,7 +1532,7 @@ describe("AdminProvidersSection", () => {
     })).not.toBeInTheDocument();
   });
 
-  it("keeps model testing optional instead of rendering a required credential matrix", () => {
+  it("runs one active capability test from Models without a Diagnostics tab", () => {
     const activeModel = {
       activatedAt: "2026-07-23T00:00:00.000Z",
       activeConfig: {
@@ -1531,33 +1610,22 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
-    expect(screen.queryByText("Available · refresh needs attention")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Test model" })).not.toBeInTheDocument();
-    openConnection();
-    expect(screen.queryByText("Available · refresh needs attention")).not.toBeVisible();
-    openTask("Diagnostics");
-    expect(screen.getByText("Available · refresh needs attention")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Test model" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Test model" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm run paid diagnostic" }));
-    expect(view.actions.testDraft).toHaveBeenCalledWith(
-      "connection-1",
-      "model-active",
-      {
-        confirmPaidRequest: true,
-        credentialId: "credential-1",
-        mode: "account_catalog"
-      }
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Refresh active check" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm refresh active check" }));
+    openTask("Models");
+    expect(screen.queryByRole("tab", { name: "Diagnostics" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Available · refresh needs attention")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Active Model capabilities" }));
+    const capabilities = screen.getByTestId("provider-model-capabilities-model-active");
+    expect(within(capabilities).queryByText("Verified")).not.toBeInTheDocument();
+    fireEvent.click(within(capabilities).getByRole("button", { name: "Test capabilities" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run capability test" }));
     expect(view.actions.refreshActive).toHaveBeenCalledWith(
       "connection-1",
       "model-active",
       "credential-1",
       true
     );
+    expect(view.actions.testDraft).not.toHaveBeenCalled();
   });
 
   it("renders a load failure as an error instead of an empty connection catalog", () => {

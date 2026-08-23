@@ -408,14 +408,7 @@ function buildOpenRouterBody(input: {
   }
 
   if (input.nativePdfInput) {
-    body.plugins = [
-      {
-        id: "file-parser",
-        pdf: {
-          engine: "native"
-        }
-      }
-    ];
+    body.plugins = [{ id: "file-parser" }];
   }
 
   if (input.tools && input.tools.length > 0) {
@@ -434,7 +427,9 @@ function buildOpenRouterChatBody(
   const params = normalizeOpenRouterParams(request.params);
   const serializedTools = (request.tools ?? []).map((tool) => openRouterChatToolBridge.serializeTool(tool).tool);
   const nativePdfInput =
-    request.modelCapabilities.nativePdfInput && request.attachments.some((attachment) => attachment.kind === "pdf");
+    request.modelCapabilities.nativePdfInput && request.attachments.some((attachment) =>
+      attachment.kind === "pdf" && (options.preview || Boolean(attachment.base64Data))
+    );
 
   return buildOpenRouterBody({
     chatId: request.chatId,

@@ -10,6 +10,18 @@ const capabilities = {
 };
 
 describe("provider model capability resolution", () => {
+  it("enables AIQSA local PDF extraction without inventing Direct PDF support", () => {
+    const resolved = resolveProviderModelCapabilities({
+      adapterKind: "openai_responses_compatible",
+      capabilities,
+      providerFamily: "openai_compatible",
+      upstreamModelId: "private/model"
+    });
+
+    expect(resolved.pdf).toBe(true);
+    expect(resolved.nativePdfInput).toBe(false);
+  });
+
   it("keeps an explicitly configured context window", () => {
     expect(
       resolveProviderModelCapabilities({

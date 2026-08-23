@@ -27,6 +27,7 @@ import {
 } from "../search/configuration";
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
+import { hasVerifiedPdfInput } from "../providers/pdfInputEvidence";
 
 export type ProviderAdmissionErrorCode =
   | "credential_active_version_missing"
@@ -170,7 +171,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function withResolvedModelCapabilities(
-  snapshot: ProviderExecutionSnapshot
+  snapshot: ProviderExecutionSnapshot,
+  options: Readonly<{ nativePdfInput?: boolean }> = {}
 ): ProviderExecutionSnapshot {
   if (
     snapshot.model.adapterKind !== "fake" &&
@@ -182,12 +184,15 @@ function withResolvedModelCapabilities(
     ...snapshot,
     model: {
       ...snapshot.model,
-      capabilities: resolveProviderModelCapabilities({
-        adapterKind: snapshot.model.adapterKind as CatalogAdapterKind,
-        capabilities: snapshot.model.capabilities,
-        providerFamily: snapshot.providerFamily,
-        upstreamModelId: snapshot.model.upstreamModelId
-      })
+      capabilities: {
+        ...resolveProviderModelCapabilities({
+          adapterKind: snapshot.model.adapterKind as CatalogAdapterKind,
+          capabilities: snapshot.model.capabilities,
+          providerFamily: snapshot.providerFamily,
+          upstreamModelId: snapshot.model.upstreamModelId
+        }),
+        nativePdfInput: options.nativePdfInput ?? false
+      }
     }
   });
 }
@@ -417,6 +422,9 @@ async function loadRole(
   if (!check) throw new ProviderAdmissionError("model_not_available");
   const structuredOutput = input.modelClass === "answer" &&
     hasVerifiedStructuredOutput(check.evidence, modelConfig);
+  const nativePdfInput = input.modelClass === "answer" &&
+    modelConfig.capabilities.nativePdfInput &&
+    hasVerifiedPdfInput(check.evidence, modelConfig);
 
   const normalizedSnapshot = normalizeProviderExecutionSnapshot({
     connection: connectionConfig,
@@ -431,7 +439,7 @@ async function loadRole(
     version: 1
   });
   const resolvedSnapshot = input.modelClass === "answer"
-    ? withResolvedModelCapabilities(normalizedSnapshot)
+    ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput })
     : normalizedSnapshot;
   const snapshot = structuredOutput && resolvedSnapshot.model.adapterKind !== "fake"
     ? {

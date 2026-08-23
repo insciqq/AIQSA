@@ -129,6 +129,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
     expect(plan.models[0]!.configuration.capabilities).toMatchObject({
       contextWindow: 8_192,
       defaultMaxOutputTokens: 1_024,
+      pdf: true,
       toolCalling: false
     });
   });
@@ -190,7 +191,8 @@ describe("custom OpenAI-compatible provider setup service", () => {
         adapterKind: "openai_responses_compatible",
         capabilities: expect.objectContaining({
           nativeImageGeneration: true,
-          nativeSearch: true
+          nativeSearch: true,
+          pdf: true
         })
       })
     }));

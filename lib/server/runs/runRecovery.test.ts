@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
@@ -3639,12 +3640,14 @@ describe("run recovery", () => {
     });
     harness.repository.loadAttachments = async () => [{
       byteSize: 32,
+      checksum: null,
       extractedText: "Private attachment evidence",
       fileName: "private.txt",
       id: "document-1",
       kind: "document",
       metadata: {},
       mimeType: "text/plain",
+      processingErrorCode: null,
       status: "ready",
       storageKey: "private/document-1"
     }];
@@ -4422,23 +4425,27 @@ describe("run recovery", () => {
     harness.repository.loadAttachments = async () => [
       {
         byteSize: 11,
+        checksum: null,
         extractedText: null,
         fileName: "diagram.png",
         id: "image-1",
         kind: "image",
         metadata: { image: { height: 10, width: 10 } },
         mimeType: "image/png",
+        processingErrorCode: null,
         status: "ready",
         storageKey: "image-key"
       },
       {
         byteSize: 9,
+        checksum: createHash("sha256").update(Buffer.from("pdf-bytes")).digest("hex"),
         extractedText: null,
         fileName: "document.pdf",
         id: "pdf-1",
         kind: "pdf",
         metadata: { pdf: { pageCount: 1 } },
         mimeType: "application/pdf",
+        processingErrorCode: null,
         status: "ready",
         storageKey: "pdf-key"
       }
@@ -4501,12 +4508,14 @@ describe("run recovery", () => {
     harness.repository.loadAttachments = async () => [
       {
         byteSize: 11,
+        checksum: null,
         extractedText: null,
         fileName: "diagram.png",
         id: "image-1",
         kind: "image",
         metadata: { image: { height: 10, width: 10 } },
         mimeType: "image/png",
+        processingErrorCode: null,
         status: "ready",
         storageKey: "image-key"
       }
@@ -4682,12 +4691,14 @@ describe("run recovery", () => {
     });
     harness.repository.loadAttachments = async () => [{
       byteSize: 3,
+      checksum: null,
       extractedText: null,
       fileName: "diagram.png",
       id: "image-1",
       kind: "image",
       metadata: {},
       mimeType: "image/png",
+      processingErrorCode: null,
       status: "ready",
       storageKey: "image-key"
     }];
@@ -4752,12 +4763,14 @@ describe("run recovery", () => {
     });
     harness.repository.loadAttachments = async () => [{
       byteSize: 3,
+      checksum: null,
       extractedText: null,
       fileName: "diagram.png",
       id: "image-1",
       kind: "image",
       metadata: {},
       mimeType: "image/png",
+      processingErrorCode: null,
       status: "ready",
       storageKey: "image-key"
     }];

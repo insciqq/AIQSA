@@ -7,6 +7,13 @@ import type {
 import type { ComposerAttachmentPolicy } from "@/components/app-shell/attachmentSelection";
 import { decodePdfProcessing } from "@/lib/contracts/uploads";
 
+const directPdfStorageFailureCodes = new Set([
+  "attachment_checksum_mismatch",
+  "attachment_object_read_failed",
+  "attachment_object_size_mismatch",
+  "attachment_unavailable"
+]);
+
 export function pdfProcessingForAttachment(
   attachment: ComposerAttachment
 ): ComposerPdfProcessing | null {
@@ -73,17 +80,31 @@ export function firstBlockingAttachmentWarning(
   return attachmentWarningsForModel(attachments, model).find((warning) => warning.blocking) ?? null;
 }
 
+export function attachmentBlocksSend(
+  attachment: ComposerAttachment,
+  model: CatalogModel | undefined
+): boolean {
+  const status = attachment.status ?? "ready";
+  const directPdf = attachment.kind === "pdf" &&
+    model?.capabilities.documentInputMode === "native_pdf";
+
+  if (!directPdf) return status !== "ready";
+  if (
+    attachment.processingErrorCode &&
+    directPdfStorageFailureCodes.has(attachment.processingErrorCode)
+  ) return true;
+  return status !== "ready" && status !== "processing" && status !== "failed";
+}
+
 export function attachmentPolicyForModel(
   model: CatalogModel | undefined
 ): ComposerAttachmentPolicy {
-  const pdfs = Boolean(
-    model && model.capabilities.documentInputMode !== "none"
-  );
-
   return {
     documents: Boolean(model),
     images: Boolean(model?.capabilities.imageInput),
-    pdfs
+    // Every answer model can consume AIQSA's locally extracted PDF text.
+    // documentInputMode only selects local extraction versus verified direct input.
+    pdfs: Boolean(model)
   };
 }
 

@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { loadInstallationAnswerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
+  nativePdfInput?: boolean;
   nativeSearch?: boolean;
+  pdf?: boolean;
   toolCalling?: boolean;
 }> = {}) => ({
-  nativePdfInput: true,
+  nativePdfInput: input.nativePdfInput ?? true,
   nativeSearch: input.nativeSearch ?? false,
-  pdf: true,
+  pdf: input.pdf ?? true,
   reasoning: true,
   streaming: true,
   toolCalling: input.toolCalling ?? true,
@@ -29,7 +31,9 @@ type ModelSpec = Readonly<{
   displayName?: string;
   family: "anthropic" | "gemini" | "openai" | "openai_compatible" | "openrouter";
   id: string;
+  nativePdfInput?: boolean;
   nativeSearch?: boolean;
+  pdf?: boolean;
   responseTimeoutMs?: number;
   toolCalling?: boolean;
   upstreamModelId: string;
@@ -74,7 +78,9 @@ function providerModel(
       adapterKind: spec.adapterKind,
       answerSelectable: spec.answerSelectable ?? true,
       capabilities: capabilities({
+        nativePdfInput: spec.nativePdfInput,
         nativeSearch: spec.nativeSearch,
+        pdf: spec.pdf,
         toolCalling: spec.toolCalling
       }),
       defaultParams: {},
@@ -187,7 +193,8 @@ function admissionDb(input: Readonly<{
   fullAccess?: boolean;
   grantedSearchOptionIds?: readonly string[];
   options: readonly OptionSpec[];
-  structuredOutputEvidenceByModel?: Readonly<Record<string, unknown>>;
+  credentialCheckEvidenceByModel?: Readonly<Record<string, unknown>>;
+  credentialCheckEvidenceByCredential?: Readonly<Record<string, unknown>>;
   technicalModels?: readonly ModelSpec[];
   unassignedPolicy?: "require_assignment" | "use_default";
   unavailableModelIds?: readonly string[];
@@ -258,8 +265,12 @@ function admissionDb(input: Readonly<{
       findUnique: providerModelFindUnique
     },
     providerModelCredentialCheck: {
-      findFirst: vi.fn(async (args?: { where?: { providerModelId?: string } }) => ({
-        evidence: input.structuredOutputEvidenceByModel?.[
+      findFirst: vi.fn(async (args?: {
+        where?: { credentialId?: string; providerModelId?: string };
+      }) => ({
+        evidence: input.credentialCheckEvidenceByCredential?.[
+          args?.where?.credentialId ?? ""
+        ] ?? input.credentialCheckEvidenceByModel?.[
           args?.where?.providerModelId ?? input.answer.id
         ] ?? {},
         id: "check-1"
@@ -561,7 +572,7 @@ describe("provider admission", () => {
     const verified = admissionDb({
       answer: officialOpenAiModel,
       options: [off],
-      structuredOutputEvidenceByModel: {
+      credentialCheckEvidenceByModel: {
         [officialOpenAiModel.id]: {
           structuredOutput: {
             adapterKind: officialOpenAiModel.adapterKind,
@@ -596,6 +607,141 @@ describe("provider admission", () => {
     expect(verifiedPlan.answer.snapshot.model.capabilities.structuredOutput).toBe(true);
     expect(unverifiedPlan.answer.modelConfiguration.capabilities.structuredOutput).not.toBe(true);
     expect(unverifiedPlan.answer.snapshot.model.capabilities.structuredOutput).not.toBe(true);
+  });
+
+  it.each([
+    {
+      declared: false,
+      evidence: undefined,
+      expected: false,
+      scenario: "undeclared without evidence"
+    },
+    {
+      declared: false,
+      evidence: {
+        adapterKind: officialOpenAiModel.adapterKind,
+        probeVersion: 1,
+        upstreamModelId: officialOpenAiModel.upstreamModelId,
+        verified: true
+      },
+      expected: false,
+      scenario: "undeclared with matching evidence"
+    },
+    {
+      declared: true,
+      evidence: undefined,
+      expected: false,
+      scenario: "declared without evidence"
+    },
+    {
+      declared: true,
+      evidence: { verified: true },
+      expected: false,
+      scenario: "declared with malformed evidence"
+    },
+    {
+      declared: true,
+      evidence: {
+        adapterKind: officialOpenAiModel.adapterKind,
+        probeVersion: 1,
+        upstreamModelId: "gpt-other",
+        verified: true
+      },
+      expected: false,
+      scenario: "declared with evidence for another deployment"
+    },
+    {
+      declared: true,
+      evidence: {
+        adapterKind: "anthropic_messages",
+        probeVersion: 1,
+        upstreamModelId: officialOpenAiModel.upstreamModelId,
+        verified: true
+      },
+      expected: false,
+      scenario: "declared with evidence for another adapter"
+    },
+    {
+      declared: true,
+      evidence: {
+        adapterKind: officialOpenAiModel.adapterKind,
+        probeVersion: 1,
+        upstreamModelId: officialOpenAiModel.upstreamModelId,
+        verified: true
+      },
+      expected: true,
+      scenario: "declared with current matching evidence"
+    }
+  ])("normalizes direct PDF for $scenario", async ({ declared, evidence, expected }) => {
+    const answer = { ...officialOpenAiModel, nativePdfInput: declared };
+    const { db } = admissionDb({
+      answer,
+      ...(evidence === undefined
+        ? {}
+        : { credentialCheckEvidenceByModel: { [answer.id]: { pdfInput: evidence } } }),
+      options: [off]
+    });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: answer.connectionId,
+      providerModelId: answer.id,
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      userId: "user-1"
+    });
+
+    expect(plan.answer.modelConfiguration.capabilities.nativePdfInput).toBe(expected);
+    expect(plan.answer.snapshot.model.capabilities.nativePdfInput).toBe(expected);
+  });
+
+  it("enables local PDF extraction for a new answer run with legacy capability metadata", async () => {
+    const answer = { ...officialOpenAiModel, nativePdfInput: false, pdf: false };
+    const { db } = admissionDb({ answer, options: [off] });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: answer.connectionId,
+      providerModelId: answer.id,
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      userId: "user-1"
+    });
+
+    expect(plan.answer.modelConfiguration.capabilities.pdf).toBe(true);
+    expect(plan.answer.snapshot.model.capabilities.pdf).toBe(true);
+    expect(plan.answer.snapshot.model.capabilities.nativePdfInput).toBe(false);
+  });
+
+  it("does not reuse credential A PDF evidence for a user routed through credential B", async () => {
+    const credentialB = "credential-b";
+    const { db } = admissionDb({
+      answer: officialOpenAiModel,
+      credentialCheckEvidenceByCredential: {
+        "credential-a": {
+          pdfInput: {
+            adapterKind: officialOpenAiModel.adapterKind,
+            probeVersion: 1,
+            upstreamModelId: officialOpenAiModel.upstreamModelId,
+            verified: true
+          }
+        },
+        [credentialB]: {}
+      },
+      credentialIdByConnection: {
+        [officialOpenAiModel.connectionId]: credentialB
+      },
+      options: [off]
+    });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: officialOpenAiModel.connectionId,
+      providerModelId: officialOpenAiModel.id,
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      userId: "user-1"
+    });
+
+    expect(plan.answer.snapshot.credentialId).toBe(credentialB);
+    expect(plan.answer.snapshot.model.capabilities.nativePdfInput).toBe(false);
+    expect(db.providerModelCredentialCheck.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ credentialId: credentialB })
+    }));
   });
 
   it.each([

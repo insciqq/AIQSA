@@ -1485,12 +1485,14 @@ export function createPrismaRunRepository(
       return attachments.map(
         (attachment): RunAttachmentRecord => ({
           byteSize: attachment.byteSize,
+          checksum: attachment.checksum,
           extractedText: attachment.extractedText,
           fileName: attachment.fileName,
           id: attachment.id,
           kind: attachment.kind,
           metadata: attachment.metadata,
           mimeType: attachment.mimeType,
+          processingErrorCode: attachment.processingErrorCode,
           status: attachment.status,
           storageKey: attachment.storageKey
         })

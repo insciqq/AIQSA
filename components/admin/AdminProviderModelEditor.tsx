@@ -99,7 +99,7 @@ function initialCapabilities(
     nativePdfInput: family === "openai",
     nativeSearch: family === "openai" || family === "gemini",
     parallelToolCalls: family !== "gemini",
-    pdf: family === "openai" || family === "gemini",
+    pdf: true,
     reasoning: family === "gemini",
     streaming: true,
     toolCalling: true,
@@ -148,7 +148,7 @@ function existingModel(model: AdminProviderModel): ModelForm {
   return {
     adapterKind: model.draftConfig.adapterKind,
     answerSelectable: model.draftConfig.answerSelectable,
-    capabilities: { ...model.draftConfig.capabilities },
+    capabilities: { ...model.draftConfig.capabilities, pdf: true },
     defaultParamsText: JSON.stringify(model.draftConfig.defaultParams, null, 2),
     displayName: model.displayName,
     openRouterRoutingMode: model.draftConfig.openRouterRouting?.mode ?? "automatic",
@@ -172,7 +172,7 @@ function capabilityFromDiscovery(
     nativePdfInput: false,
     nativeSearch: false,
     parallelToolCalls: parameters.has("tools"),
-    pdf: inputs.has("file"),
+    pdf: true,
     reasoning: parameters.has("reasoning"),
     streaming: true,
     toolCalling: parameters.has("tools"),
@@ -1011,8 +1011,24 @@ export function AdminProviderModelEditor({
           </div>
           <fieldset>
             <legend className={fieldLabel}>Capability overrides</legend>
-            <div className="flex flex-wrap gap-2">
-              {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['pdf', 'PDF'], ['nativePdfInput', 'Native PDF input'], ['nativeSearch', 'Search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const)
+            <div className="grid gap-2">
+              <label className={`flex min-h-control items-start gap-2 rounded-control bg-answer-paper px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
+                <input
+                  checked={form.capabilities.nativePdfInput === true}
+                  className="mt-0.5 size-4 shrink-0 accent-proof"
+                  disabled={controller.state.busy}
+                  onChange={(event) => updateCapability("nativePdfInput", event.currentTarget.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <span className="block font-medium text-ink">Direct PDF input</span>
+                  <span className="mt-0.5 block max-w-4xl leading-4 text-ink-muted">
+                    AIQSA sends the original PDF to this provider deployment. The provider may process the file natively or through its own file parser. Direct PDF input is enabled for users only after an image-only PDF probe succeeds.
+                  </span>
+                </span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+              {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['nativeSearch', 'Search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const)
                 .filter(([key]) => !compatibleAdapters || (key !== "reasoning" && key !== "nativeSearch"))
                 .map(([key, label]) => (
                 <label className={`flex min-h-control items-center gap-2 rounded-control bg-answer-paper px-3 text-xs text-ink-secondary ${touchTarget}`} key={key}>
@@ -1020,6 +1036,7 @@ export function AdminProviderModelEditor({
                   {label}
                 </label>
               ))}
+              </div>
             </div>
           </fieldset>
           <label>

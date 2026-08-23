@@ -103,12 +103,6 @@ export type ComposerV2Props = Readonly<{
   activeRun?: boolean;
   assistantRemovedNotice?: boolean;
   attachmentItems?: readonly ComposerAttachmentItemV2[];
-  /**
-   * Blank-chat orientation (UX audit F18): one quiet row of shortcut chips
-   * under the surface that open the same layers/pickers the "+" menu holds.
-   * The shell passes it only while the conversation has no messages.
-   */
-  capabilityHints?: boolean;
   attachmentLimitUsage?: AttachmentLimitUsage | null;
   attachmentPolicy?: ComposerAttachmentPolicy;
   config: ComposerConfig | null;
@@ -327,7 +321,6 @@ export function ComposerV2({
   activeRun = false,
   assistantRemovedNotice = false,
   attachmentItems = [],
-  capabilityHints = false,
   attachmentLimitUsage = null,
   attachmentPolicy = DEFAULT_COMPOSER_ATTACHMENT_POLICY,
   config,
@@ -392,8 +385,6 @@ export function ComposerV2({
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const knowledgeTriggerRef = useRef<HTMLButtonElement>(null);
-  /** Set by a hint chip so the opened layer focuses its section, not its first row. */
-  const pendingLayerSectionRef = useRef<"search" | null>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -421,7 +412,7 @@ export function ComposerV2({
     uploading
   );
   const readyAttachment = hasReadyAttachments || attachmentItems.some(
-    (item) => item.status === "ready" && !attachmentItemBlocksSend(item)
+    (item) => !attachmentItemBlocksSend(item)
   );
   const sendDisabled = Boolean(
     sending || inputDisabled || attachmentBlockReason || (!draft.trim() && !readyAttachment)
@@ -546,18 +537,12 @@ export function ComposerV2({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled || !layerRef.current) return;
-      const section = pendingLayerSectionRef.current;
-      pendingLayerSectionRef.current = null;
-      const sectionRoot = section
-        ? layerRef.current.querySelector<HTMLElement>(`[data-v2-layer-section="${section}"]`)
-        : null;
       const target = layer === "model"
         ? layerRef.current.querySelector<HTMLElement>("[data-v2-model-search]")
         : layer === "knowledge"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
             optionElements(layerRef.current)[0]
-          : (sectionRoot ? optionElements(sectionRoot)[0] : undefined) ??
-            optionElements(layerRef.current)[0];
+          : optionElements(layerRef.current)[0];
       target?.focus();
     });
     const dismiss = (event: PointerEvent) => {
@@ -786,50 +771,6 @@ export function ComposerV2({
     const kind = mcpReadinessPresentation(server.readiness).kind;
     return kind === "attention" || kind === "failed";
   }).length;
-
-  // Blank-chat shortcut chips (UX audit F18). Each chip exists only while its
-  // action is really available, and the row yields to a selected Assistant's
-  // own intro.
-  const hintChips: Array<{
-    icon: UiV2IconName;
-    label: string;
-    onClick(target: HTMLButtonElement): void;
-  }> = capabilityHints && !selectedAssistant && !activeRun && config && !configError && !noModels
-    ? [
-        ...(!attachmentSelectionDisabled
-          ? [{
-              icon: "attach" as const,
-              label: "Attach",
-              onClick: () => fileInputRef.current?.click()
-            }]
-          : []),
-        ...(concreteSearchOptions.length > 0 && onSelectSearchOptionIds
-          ? [{
-              icon: "search" as const,
-              label: "Search",
-              onClick: (target: HTMLButtonElement) => {
-                pendingLayerSectionRef.current = "search";
-                openLayer("capabilities", plusTriggerRef.current ?? target);
-              }
-            }]
-          : []),
-        ...(knowledgeChipVisible && knowledgeAvailable
-          ? [{
-              icon: "book" as const,
-              label: "Knowledge",
-              onClick: (target: HTMLButtonElement) =>
-                openLayer("knowledge", knowledgeTriggerRef.current ?? target)
-            }]
-          : []),
-        ...(onOpenAssistantPicker
-          ? [{
-              icon: "assistant" as const,
-              label: "Assistant",
-              onClick: () => onOpenAssistantPicker()
-            }]
-          : [])
-      ]
-    : [];
 
   return (
     <div className="v2-composer-wrap" data-testid="composer-v2">
@@ -1464,29 +1405,6 @@ export function ComposerV2({
           </>
         ) : null}
       </div>
-      {/* Positioned out of flow (composer.css) so the surface keeps its
-          centred blank-state geometry and an upward layer still clears the
-          header. */}
-      {hintChips.length > 0 ? (
-        <div
-          className="v2-composer-hints"
-          data-testid="composer-v2-hints"
-          role="group"
-          aria-label="Ways to start"
-        >
-          {hintChips.map((chip) => (
-            <button
-              key={chip.label}
-              className="v2-composer-hint v2-focusable"
-              type="button"
-              onClick={(event) => chip.onClick(event.currentTarget)}
-            >
-              <UiV2Icon name={chip.icon} />
-              {chip.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }

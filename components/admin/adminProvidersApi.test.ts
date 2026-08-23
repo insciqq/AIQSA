@@ -4,6 +4,7 @@ import {
   createAdminProviderCredential,
   discoverAdminCompatibleModels,
   getAdminProviderConnections,
+  runAdminProviderConnectionAction,
   testAdminProviderCredential
 } from "./adminProvidersApi";
 
@@ -124,6 +125,25 @@ describe("admin provider browser API", () => {
       error: { blockers: [], code: "provider_admin_response_invalid", resourceIds: [] },
       ok: false
     });
+  });
+
+  it("identifies a missing provider action route instead of showing a generic provider error", async () => {
+    const result = await runAdminProviderConnectionAction(
+      "connection-1",
+      { action: "refresh_active" },
+      vi.fn(async () => new Response("<!doctype html><title>Not Found</title>", {
+        headers: { "content-type": "text/html" },
+        status: 404
+      }))
+    );
+
+    expect(result).toEqual({
+      error: { blockers: [], code: "provider_admin_route_unavailable", resourceIds: [] },
+      ok: false
+    });
+    if (!result.ok) {
+      expect(adminProviderErrorMessage(result.error)).toContain("Restart the development app");
+    }
   });
 
   it("decodes only bounded safe credential-test metadata", async () => {

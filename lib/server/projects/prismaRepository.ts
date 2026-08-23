@@ -248,7 +248,11 @@ const projectDetailInclude = {
               activeVersion: true,
               activatedAt: true,
               defaultCredential: {
-                select: { activeVersion: { select: { revokedAt: true } }, enabled: true }
+                select: {
+                  activeVersion: { select: { id: true, revokedAt: true } },
+                  enabled: true,
+                  id: true
+                }
               },
               defaultCredentialId: true,
               displayName: true,
@@ -257,6 +261,18 @@ const projectDetailInclude = {
               id: true,
               templateKey: true,
               unassignedPolicy: true
+            }
+          },
+          activeCredentialChecks: {
+            select: {
+              connectionId: true,
+              connectionVersion: true,
+              credentialId: true,
+              credentialVersionId: true,
+              evidence: true,
+              modelVersion: true,
+              providerModelId: true,
+              status: true
             }
           },
           activeConfig: true,
@@ -697,14 +713,29 @@ function projectComposer(
   });
   const modelEntries = row.modelBindings.flatMap((binding) => {
     if (!visibleModelIds.has(binding.providerModelId)) return [];
+    const providerModel = binding.providerModel;
+    const defaultCredential = providerModel.connection.defaultCredential;
+    const credentialCheck = defaultCredential?.enabled && defaultCredential.activeVersion &&
+      defaultCredential.activeVersion.revokedAt === null
+      ? providerModel.activeCredentialChecks.find((check) =>
+          check.status === "available" &&
+          check.connectionId === providerModel.connectionId &&
+          check.providerModelId === providerModel.id &&
+          check.credentialId === defaultCredential.id &&
+          check.credentialVersionId === defaultCredential.activeVersion!.id &&
+          check.connectionVersion === providerModel.connection.activeVersion &&
+          check.modelVersion === providerModel.activeVersion
+        ) ?? null
+      : null;
     const entry = providerModelToCatalogEntry({
-      ...binding.providerModel,
-      activeCredentialChecks: [],
+      ...providerModel,
       connection: {
-        ...binding.providerModel.connection,
+        ...providerModel.connection,
         credentials: []
       }
-    } as unknown as CatalogProviderModelRow);
+    } as unknown as CatalogProviderModelRow, {
+      credentialCheckEvidence: credentialCheck?.evidence
+    });
     return entry ? [entry] : [];
   });
   const models = modelEntries.map((entry) => buildCatalogModel(entry, searchEntries));

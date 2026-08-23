@@ -4,7 +4,6 @@ import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { AdminProviderAuthenticationTask } from "@/components/admin/AdminProviderAuthenticationTask";
 import { AdminProviderConnectionEditor } from "@/components/admin/AdminProviderConnectionEditor";
 import { AdminProviderCredentialsTask } from "@/components/admin/AdminProviderCredentialsTask";
-import { AdminProviderDiagnosticsTask } from "@/components/admin/AdminProviderDiagnosticsTask";
 import { AdminProviderModelsTask } from "@/components/admin/AdminProviderModelsTask";
 import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import {
@@ -580,13 +579,6 @@ function ConnectionDetail({
           connection={connection}
           controller={controller}
           discovery={discovery}
-          requestConfirmation={requestConfirmation}
-        />
-      </div>
-      <div hidden={activeTask !== "diagnostics"}>
-        <AdminProviderDiagnosticsTask
-          connection={connection}
-          controller={controller}
           requestConfirmation={requestConfirmation}
         />
       </div>

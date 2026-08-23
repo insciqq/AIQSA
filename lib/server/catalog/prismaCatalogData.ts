@@ -23,6 +23,7 @@ import {
   type ProviderModelConfiguration
 } from "@/lib/server/providers/providerConfiguration";
 import { resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
+import { hasVerifiedPdfInput } from "@/lib/server/providers/pdfInputEvidence";
 import {
   compatibleTechnicalAdapter,
   searchStrategyKind,
@@ -96,7 +97,9 @@ type CatalogCredentialCheckRow = Pick<
   | "modelVersion"
   | "providerModelId"
   | "status"
->;
+> & {
+  evidence?: ProviderModelCredentialCheck["evidence"];
+};
 
 export type CatalogProviderModelRow = ProviderModel & {
   activeCredentialChecks: CatalogCredentialCheckRow[];
@@ -124,6 +127,7 @@ export function providerModelCatalogAuthorityInclude(userId: string) {
         connectionVersion: true,
         credentialId: true,
         credentialVersionId: true,
+        evidence: true,
         modelVersion: true,
         providerModelId: true,
         status: true
@@ -245,12 +249,12 @@ function activeModelConfiguration(
   }
 }
 
-function hasCurrentAvailableCheck(
+function currentAvailableCheck(
   model: CatalogProviderModelRow,
   credentialId: string,
   credentialVersionId: string
-): boolean {
-  return model.activeCredentialChecks.some(
+): CatalogCredentialCheckRow | null {
+  return model.activeCredentialChecks.find(
     (check) =>
       check.status === "available" &&
       check.connectionId === model.connectionId &&
@@ -259,14 +263,14 @@ function hasCurrentAvailableCheck(
       check.credentialVersionId === credentialVersionId &&
       check.connectionVersion === model.connection.activeVersion &&
       check.modelVersion === model.activeVersion
-  );
+  ) ?? null;
 }
 
-function activeProviderAuthority(input: {
+function activeProviderCredentialCheck(input: {
   memberships?: CatalogMembershipRow[];
   model: CatalogProviderModelRow;
   userId?: string;
-}): SearchProbeBinding | null {
+}): CatalogCredentialCheckRow | null {
   const credentials = input.model.connection.credentials;
   const directAssignmentCredentialId = input.userId
     ? credentials.flatMap((credential) => credential.userAssignments ?? [])
@@ -292,18 +296,26 @@ function activeProviderAuthority(input: {
     })),
     policy: input.model.connection.unassignedPolicy
   });
-  if (!resolution.ok || !hasCurrentAvailableCheck(
+  if (!resolution.ok) return null;
+  return currentAvailableCheck(
     input.model,
     resolution.credentialId,
     resolution.credentialVersionId
-  )) {
-    return null;
-  }
+  );
+}
+
+function activeProviderAuthority(input: {
+  memberships?: CatalogMembershipRow[];
+  model: CatalogProviderModelRow;
+  userId?: string;
+}): SearchProbeBinding | null {
+  const check = activeProviderCredentialCheck(input);
+  if (!check) return null;
   return {
     connectionId: input.model.connectionId,
     connectionVersion: input.model.connection.activeVersion,
-    credentialId: resolution.credentialId,
-    credentialVersionId: resolution.credentialVersionId,
+    credentialId: check.credentialId,
+    credentialVersionId: check.credentialVersionId,
     modelVersion: input.model.activeVersion,
     providerModelId: input.model.id
   };
@@ -359,7 +371,8 @@ export function filterExposedProviderModels(input: {
 }
 
 export function providerModelToCatalogEntry(
-  model: CatalogProviderModelRow
+  model: CatalogProviderModelRow,
+  options: Readonly<{ credentialCheckEvidence?: unknown }> = {}
 ): ProviderModelCatalogEntry | null {
   const configuration = activeModelConfiguration(model);
   if (
@@ -378,7 +391,8 @@ export function providerModelToCatalogEntry(
   const capabilities = {
     backgroundStreaming: resolvedCapabilities.backgroundStreaming ?? false,
     nativeBackground: resolvedCapabilities.nativeBackground ?? false,
-    nativePdfInput: resolvedCapabilities.nativePdfInput,
+    nativePdfInput: resolvedCapabilities.nativePdfInput &&
+      hasVerifiedPdfInput(options.credentialCheckEvidence, configuration),
     nativeSearch: resolvedCapabilities.nativeSearch,
     parallelToolCalls: resolvedCapabilities.parallelToolCalls ?? false,
     pdf: resolvedCapabilities.pdf,
@@ -699,7 +713,13 @@ export function createPrismaCatalogDataLoader({
       entitlements,
       modelPolicy,
       models: exposedModels
-        .map(providerModelToCatalogEntry)
+        .map((model) => providerModelToCatalogEntry(model, {
+          credentialCheckEvidence: activeProviderCredentialCheck({
+            memberships: user.groups,
+            model,
+            userId
+          })?.evidence
+        }))
         .filter((model): model is ProviderModelCatalogEntry => model !== null),
       searchPolicy,
       searchStrategies: exposedSearchOptions,

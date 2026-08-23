@@ -40,6 +40,8 @@ export type AdminProviderModelCapabilities = {
    * AIQSA records this for future image workflows; the current run pipeline
    * does not expose image generation as a runnable tool. */
   nativeImageGeneration?: boolean;
+  /** Legacy/internal declared Direct PDF input flag. Effective user access also
+   * requires current verification evidence for the exact credential tuple. */
   nativePdfInput: boolean;
   nativeSearch: boolean;
   parallelToolCalls?: boolean;
@@ -88,6 +90,17 @@ export type AdminProviderTestEvidence = {
   detail: "model_missing" | "ok" | "route_missing";
   method: "models_catalog" | "openrouter_account_catalog" | "tiny_generation";
   selectedProviders: string[];
+  pdfInput?: {
+    adapterKind:
+      | "anthropic_messages"
+      | "gemini_interactions_native"
+      | "openai_responses_compatible"
+      | "openai_responses_native"
+      | "openrouter_chat_completions";
+    probeVersion: 1;
+    upstreamModelId: string;
+    verified: true;
+  };
   structuredOutput?: {
     adapterKind:
       | "openai_responses_compatible"

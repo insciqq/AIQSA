@@ -79,6 +79,80 @@ function structuredChatResponse() {
 }
 
 describe("admin provider draft tester", () => {
+  it("does not run the PDF probe when Direct PDF input is not requested", async () => {
+    const probe = vi.fn(async () => null);
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => async () => structuredChatResponse(),
+      pdfInputProbe: { probe }
+    });
+
+    await expect(providerTester.test(input())).resolves.toMatchObject({
+      evidence: { detail: "ok" },
+      status: "available"
+    });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("adds exact PDF evidence after a successful image-only probe", async () => {
+    const probe = vi.fn(async () => ({
+      adapterKind: "openrouter_chat_completions" as const,
+      probeVersion: 1 as const,
+      upstreamModelId: "vendor/model",
+      verified: true as const
+    }));
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => async () => structuredChatResponse(),
+      pdfInputProbe: { probe }
+    });
+    const direct = input({
+      model: {
+        ...input().model,
+        capabilities: { ...input().model.capabilities, nativePdfInput: true, pdf: true }
+      }
+    });
+
+    await expect(providerTester.test(direct)).resolves.toMatchObject({
+      evidence: {
+        pdfInput: {
+          adapterKind: "openrouter_chat_completions",
+          probeVersion: 1,
+          upstreamModelId: "vendor/model",
+          verified: true
+        }
+      },
+      status: "available"
+    });
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: "credential-1",
+      credentialVersionId: "draft:1",
+      model: expect.objectContaining({ upstreamModelId: "vendor/model" })
+    }));
+  });
+
+  it("keeps ordinary model availability when the PDF probe fails", async () => {
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => async () => structuredChatResponse(),
+      pdfInputProbe: {
+        async probe() {
+          throw new Error("private upstream PDF failure");
+        }
+      }
+    });
+    const direct = input({
+      model: {
+        ...input().model,
+        capabilities: { ...input().model.capabilities, nativePdfInput: true, pdf: true }
+      }
+    });
+
+    const outcome = await providerTester.test(direct);
+    expect(outcome.status).toBe("available");
+    expect(outcome.evidence).not.toHaveProperty("pdfInput");
+  });
+
   it("checks embedding deployments against the OpenRouter embedding catalog", async () => {
     const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
     const listEmbeddingModels = vi.fn<OpenRouterDiscoveryClient["listEmbeddingModels"]>(async () => [{
@@ -228,7 +302,7 @@ describe("admin provider draft tester", () => {
     });
   });
 
-  it("rejects an OpenRouter backend that ignores strict response_format", async () => {
+  it("keeps model access verified when an OpenRouter backend ignores strict response_format", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{
         finish_reason: "stop",
@@ -240,12 +314,86 @@ describe("admin provider draft tester", () => {
       createFetch: () => fetchFn
     });
 
-    await expect(providerTester.test(input())).rejects.toThrow("structured_output_invalid");
+    await expect(providerTester.test(input())).resolves.toEqual({
+      evidence: {
+        detail: "ok",
+        method: "openrouter_account_catalog",
+        selectedProviders: [],
+        upstreamModelId: "vendor/model"
+      },
+      status: "available"
+    });
     const [, request] = fetchFn.mock.calls[0] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
       provider: { require_parameters: true },
       response_format: { json_schema: { strict: true }, type: "json_schema" }
     });
+  });
+
+  it("keeps Direct PDF evidence when the independent structured-output probe fails", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "stop",
+        message: { content: "ordinary free-form reply", role: "assistant" }
+      }]
+    }), { headers: { "content-type": "application/json" }, status: 200 }));
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => fetchFn,
+      pdfInputProbe: {
+        async probe() {
+          return {
+            adapterKind: "openrouter_chat_completions" as const,
+            probeVersion: 1 as const,
+            upstreamModelId: "vendor/model",
+            verified: true as const
+          };
+        }
+      }
+    });
+    const direct = input({
+      model: {
+        ...input().model,
+        capabilities: { ...input().model.capabilities, nativePdfInput: true, pdf: true }
+      }
+    });
+
+    const outcome = await providerTester.test(direct);
+    expect(outcome).toMatchObject({
+      evidence: {
+        pdfInput: { verified: true },
+        upstreamModelId: "vendor/model"
+      },
+      status: "available"
+    });
+    expect(outcome.evidence).not.toHaveProperty("structuredOutput");
+  });
+
+  it("falls back to an ordinary tiny generation when optional probes prove nothing", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "stop",
+        message: { content: "ordinary free-form reply", role: "assistant" }
+      }]
+    }), { headers: { "content-type": "application/json" }, status: 200 }));
+    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+
+    const outcome = await providerTester.test(input({ mode: "tiny_generation" }));
+
+    expect(outcome).toEqual({
+      evidence: {
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: [],
+        upstreamModelId: "vendor/model"
+      },
+      status: "available"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+    const secondBody = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
+    expect(firstBody).toHaveProperty("response_format.json_schema.strict", true);
+    expect(secondBody).not.toHaveProperty("response_format");
   });
 
   it("runs the explicit tiny generation through the existing runtime adapter and stores no output", async () => {

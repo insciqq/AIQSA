@@ -236,6 +236,30 @@ describe("Gemini Interactions request builder", () => {
     ]);
   });
 
+  it("uses extracted text without PDF bytes on the fallback route", () => {
+    const base = request();
+    const body = buildGeminiInteractionsRequest(request({
+      attachmentIds: ["pdf-fallback"],
+      attachments: [{
+        base64Data: "PRIVATE_FALLBACK_PDF_BYTES",
+        byteSize: 16,
+        extractedText: "PDF_FALLBACK_TEXT",
+        fileName: "fallback.pdf",
+        id: "pdf-fallback",
+        kind: "pdf",
+        metadata: {},
+        mimeType: "application/pdf",
+        status: "ready"
+      }],
+      modelCapabilities: { ...base.modelCapabilities, nativePdfInput: false }
+    }));
+    const serialized = JSON.stringify(body);
+
+    expect(serialized).toContain("PDF_FALLBACK_TEXT");
+    expect(serialized).not.toContain("PRIVATE_FALLBACK_PDF_BYTES");
+    expect(serialized).not.toContain('"mime_type":"application/pdf"');
+  });
+
   it("represents attachment-only history without replaying private attachment data", () => {
     const fileName = "HISTORY_FILENAME_CANARY.txt";
     const runRequest = request({

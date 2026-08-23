@@ -416,6 +416,7 @@ describe("OpenRouter request builders", () => {
       }
     });
     const actual = JSON.stringify(buildOpenRouterChatRequest(runRequest, { maxAttachmentTextChars: 5 }));
+    const transport = buildOpenRouterChatRequest(runRequest, { maxAttachmentTextChars: 5 });
     const preview = buildOpenRouterChatRequestPreview(runRequest, {
       maxAttachmentTextChars: 5
     });
@@ -425,6 +426,8 @@ describe("OpenRouter request builders", () => {
     expect(actual).toContain("PRIVATE_IMAGE_BYTES");
     expect(actual).toContain("DOCUM\\n[truncated 15 chars]");
     expect(actual).not.toContain("PDF fallback must not be sent");
+    expect(transport.plugins).toEqual([{ id: "file-parser" }]);
+    expect(actual).not.toContain('"engine"');
     expect(previewJson).not.toContain("PRIVATE_PDF_BYTES");
     expect(previewJson).not.toContain("PRIVATE_IMAGE_BYTES");
     for (const canary of [
@@ -465,6 +468,28 @@ describe("OpenRouter request builders", () => {
         }
       ]
     });
+  });
+
+  it("uses extracted text without PDF bytes or parser plugins on the fallback route", () => {
+    const body = buildOpenRouterChatRequest(request({
+      attachmentIds: ["pdf-fallback"],
+      attachments: [{
+        base64Data: "PRIVATE_FALLBACK_PDF_BYTES",
+        byteSize: 16,
+        extractedText: "PDF_FALLBACK_TEXT",
+        fileName: "fallback.pdf",
+        id: "pdf-fallback",
+        kind: "pdf",
+        metadata: {},
+        mimeType: "application/pdf",
+        status: "ready"
+      }]
+    }));
+    const serialized = JSON.stringify(body);
+
+    expect(serialized).toContain("PDF_FALLBACK_TEXT");
+    expect(serialized).not.toContain("PRIVATE_FALLBACK_PDF_BYTES");
+    expect(body).not.toHaveProperty("plugins");
   });
 
   it("keeps live missing-payload errors while safe previews remain buildable", () => {

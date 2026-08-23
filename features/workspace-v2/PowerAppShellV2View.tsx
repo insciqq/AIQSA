@@ -378,7 +378,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
-      attachmentWarningsForModel(composer.attachments, composer.currentModel)
+      attachmentWarningsForModel(composer.attachments, composer.currentModel),
+      composer.currentModel
     ),
     [composer.attachments, composer.currentModel]
   );
@@ -397,7 +398,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
       attachmentPolicy={attachmentPolicyForModel(composer.currentModel)}
-      capabilityHints={thread.visibleMessages.length === 0}
       config={config}
       configError={Boolean(composer.catalogError)}
       contextStats={session.activeChatId ? composer.composerContextStats : null}
@@ -410,7 +410,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onCancel={composer.composerActions.cancelMessageEdit}
         />
       ) : null}
-      hasReadyAttachments={attachmentItems.some((item) => item.status === "ready")}
+      hasReadyAttachments={attachmentItems.some((item) => !item.blocksSend)}
       onAttachmentCountLimitExceeded={composer.composerActions.rejectAttachmentCount}
       onDismissAssistantRemovedNotice={composer.assistant.clearRemovedNotice}
       onDraftChange={composer.composerActions.changeDraft}

@@ -23,6 +23,10 @@ import {
   type ProviderStructuredOutputAdapter
 } from "../../providers/structuredOutput";
 import { structuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import {
+  createProviderPdfInputProbe,
+  type ProviderPdfInputProbe
+} from "../../providers/pdfInputProbe";
 
 export type AdminProviderDraftTestMode = "account_catalog" | "tiny_generation";
 
@@ -56,6 +60,11 @@ type TesterOptions = Readonly<{
     secret: ProviderCredentialSource;
   }) => OpenRouterDiscoveryClient;
   createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
+  pdfInputProbe?: ProviderPdfInputProbe;
+}>;
+
+type ResolvedTesterOptions = TesterOptions & Readonly<{
+  pdfInputProbe: ProviderPdfInputProbe;
 }>;
 
 function executionSnapshot(input: AdminProviderDraftTesterInput): ProviderExecutionSnapshot {
@@ -175,9 +184,69 @@ async function runStructuredOutputProbe(
   return evidence;
 }
 
-async function runTinyGeneration(
+async function tryStructuredOutputProbe(
   input: AdminProviderDraftTesterInput,
   options: TesterOptions
+) {
+  try {
+    return await runStructuredOutputProbe(input, options);
+  } catch (error) {
+    if (input.signal?.aborted) {
+      throw input.signal.reason ?? error;
+    }
+    // Structured output is capability evidence, not the availability gate.
+    // A failed probe remains unmarked while the other probes continue.
+    return null;
+  }
+}
+
+async function runPdfInputProbe(
+  input: AdminProviderDraftTesterInput,
+  options: ResolvedTesterOptions
+) {
+  if (input.model.modelClass !== "answer" || !input.model.capabilities.nativePdfInput) {
+    return null;
+  }
+  try {
+    return await options.pdfInputProbe.probe({
+      connection: input.connection,
+      connectionDisplayName: input.connectionDisplayName,
+      connectionId: input.connectionId,
+      credentialId: input.credentialId,
+      credentialVersionId: input.credentialVersionIdentity,
+      model: input.model,
+      modelDisplayName: input.modelDisplayName,
+      providerFamily: input.providerFamily,
+      providerModelId: input.providerModelId,
+      secret: input.secret,
+      ...(input.signal ? { signal: input.signal } : {})
+    });
+  } catch (error) {
+    if (input.signal?.aborted) {
+      throw input.signal.reason ?? error;
+    }
+    // Direct PDF verification is an optional capability probe. Connectivity
+    // remains available and the exact check simply carries no PDF evidence.
+    return null;
+  }
+}
+
+async function runOrdinaryGeneration(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions
+): Promise<void> {
+  const runtime = providerRuntime(input, options);
+  const stream = runtime.adapter.stream(tinyGenerationRequest(input), {
+    signal: input.signal
+  });
+  while (!(await stream.next()).done) {
+    // The provider output is deliberately discarded and never becomes test evidence.
+  }
+}
+
+async function runTinyGeneration(
+  input: AdminProviderDraftTesterInput,
+  options: ResolvedTesterOptions
 ): Promise<AdminProviderDraftTestOutcome> {
   if (input.model.modelClass === "embedding") {
     const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
@@ -204,30 +273,31 @@ async function runTinyGeneration(
     };
   }
   if (supportsStructuredOutputAdapter(input.model.adapterKind)) {
-    const structuredOutput = await runStructuredOutputProbe(input, options);
+    const structuredOutput = await tryStructuredOutputProbe(input, options);
+    const pdfInput = await runPdfInputProbe(input, options);
+    if (!structuredOutput && !pdfInput) {
+      await runOrdinaryGeneration(input, options);
+    }
     return {
       evidence: {
         detail: "ok",
         method: "tiny_generation",
         selectedProviders: input.model.openRouterRouting?.providers ?? [],
-        structuredOutput,
+        ...(pdfInput ? { pdfInput } : {}),
+        ...(structuredOutput ? { structuredOutput } : {}),
         upstreamModelId: input.model.upstreamModelId
       },
       status: "available"
     };
   }
-  const runtime = providerRuntime(input, options);
-  const stream = runtime.adapter.stream(tinyGenerationRequest(input), {
-    signal: input.signal
-  });
-  while (!(await stream.next()).done) {
-    // The provider output is deliberately discarded and never becomes test evidence.
-  }
+  await runOrdinaryGeneration(input, options);
+  const pdfInput = await runPdfInputProbe(input, options);
   return {
     evidence: {
       detail: "ok",
       method: "tiny_generation",
       selectedProviders: input.model.openRouterRouting?.providers ?? [],
+      ...(pdfInput ? { pdfInput } : {}),
       upstreamModelId: input.model.upstreamModelId
     },
     status: "available"
@@ -236,7 +306,7 @@ async function runTinyGeneration(
 
 async function testOpenRouterCatalog(
   input: AdminProviderDraftTesterInput,
-  options: TesterOptions
+  options: ResolvedTesterOptions
 ): Promise<AdminProviderDraftTestOutcome> {
   if (input.providerFamily !== "openrouter") {
     throw new Error("provider_account_catalog_test_unsupported");
@@ -293,14 +363,16 @@ async function testOpenRouterCatalog(
   }
 
   const structuredOutput = input.model.modelClass === "answer"
-    ? await runStructuredOutputProbe(input, options)
+    ? await tryStructuredOutputProbe(input, options)
     : null;
+  const pdfInput = await runPdfInputProbe(input, options);
 
   return {
     evidence: {
       detail: "ok",
       method: "openrouter_account_catalog",
       selectedProviders,
+      ...(pdfInput ? { pdfInput } : {}),
       ...(structuredOutput ? { structuredOutput } : {}),
       upstreamModelId: input.model.upstreamModelId
     },
@@ -311,11 +383,17 @@ async function testOpenRouterCatalog(
 export function createAdminProviderDraftTester(
   options: TesterOptions = {}
 ): AdminProviderDraftTester {
+  const resolvedOptions: ResolvedTesterOptions = {
+    ...options,
+    pdfInputProbe: options.pdfInputProbe ?? createProviderPdfInputProbe({
+      ...(options.createFetch ? { createFetch: options.createFetch } : {})
+    })
+  };
   return {
     async test(input) {
       return input.mode === "account_catalog"
-        ? testOpenRouterCatalog(input, options)
-        : runTinyGeneration(input, options);
+        ? testOpenRouterCatalog(input, resolvedOptions)
+        : runTinyGeneration(input, resolvedOptions);
     }
   };
 }

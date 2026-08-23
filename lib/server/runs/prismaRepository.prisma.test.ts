@@ -458,6 +458,38 @@ describe("Prisma-backed run repository", () => {
     await prisma.$disconnect();
   });
 
+  it("loads server-only attachment integrity and processing metadata", async () => {
+    await withRunUser(async ({ userId }) => {
+      const storageKey = `${userId}/direct-pdf-${randomUUID()}`;
+      const attachment = await prisma.attachment.create({
+        data: {
+          byteSize: 12,
+          checksum: "b".repeat(64),
+          extractedText: null,
+          fileName: "scan.pdf",
+          kind: "pdf",
+          metadata: {},
+          mimeType: "application/pdf",
+          processingErrorCode: "parser_unavailable",
+          status: "failed",
+          storageKey,
+          userId
+        }
+      });
+
+      await expect(
+        createPrismaRunRepository(prisma).loadAttachments(userId, [attachment.id])
+      ).resolves.toEqual([expect.objectContaining({
+        byteSize: 12,
+        checksum: "b".repeat(64),
+        id: attachment.id,
+        processingErrorCode: "parser_unavailable",
+        status: "failed",
+        storageKey
+      })]);
+    });
+  });
+
   it("admits a Project run with an exact normalized request and no personal Memory binding", async () => {
     await withRunUser(async ({ userId }) => {
       const projectRepository = createPrismaProjectRepository(prisma);

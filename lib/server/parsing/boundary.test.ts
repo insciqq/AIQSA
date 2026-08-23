@@ -99,7 +99,7 @@ describe("document parser boundary", () => {
       expect(init?.body).toBeInstanceOf(FormData);
       const form = init?.body as FormData;
       expect(form.get("to_formats")).toBe("json");
-      expect(form.get("table_mode")).toBe("fast");
+      expect(form.get("table_mode")).toBe("accurate");
       expect(form.get("do_ocr")).toBe("true");
       expect(form.get("force_ocr")).toBe("false");
       expect(form.get("ocr_preset")).toBe("easyocr");

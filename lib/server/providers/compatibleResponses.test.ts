@@ -112,6 +112,45 @@ describe("compatible Responses adapter", () => {
     expect(JSON.stringify(body)).toContain("Earlier answer");
   });
 
+  it("preserves direct and fallback PDF routing through the compatible Responses adapter", () => {
+    const attachment = {
+      base64Data: "COMPATIBLE_PRIVATE_PDF_BYTES",
+      byteSize: 16,
+      extractedText: "COMPATIBLE_PDF_FALLBACK_TEXT",
+      fileName: "compatible.pdf",
+      id: "compatible-pdf",
+      kind: "pdf" as const,
+      metadata: {},
+      mimeType: "application/pdf",
+      status: "ready" as const
+    };
+    const direct = JSON.stringify(buildCompatibleResponsesRequest(request({
+      attachmentIds: [attachment.id],
+      attachments: [attachment],
+      modelCapabilities: {
+        ...request().modelCapabilities,
+        nativePdfInput: true,
+        pdf: true
+      }
+    })));
+    const fallback = JSON.stringify(buildCompatibleResponsesRequest(request({
+      attachmentIds: [attachment.id],
+      attachments: [attachment],
+      modelCapabilities: {
+        ...request().modelCapabilities,
+        nativePdfInput: false,
+        pdf: true
+      }
+    })));
+
+    expect(direct).toContain("COMPATIBLE_PRIVATE_PDF_BYTES");
+    expect(direct).toContain('"type":"input_file"');
+    expect(direct).not.toContain("COMPATIBLE_PDF_FALLBACK_TEXT");
+    expect(fallback).toContain("COMPATIBLE_PDF_FALLBACK_TEXT");
+    expect(fallback).not.toContain("COMPATIBLE_PRIVATE_PDF_BYTES");
+    expect(fallback).not.toContain('"type":"input_file"');
+  });
+
   it("does not expose native retrieve, refresh, or cancel lifecycle", () => {
     const client: OpenAIResponsesClient = {
       cancel: async () => ({}),

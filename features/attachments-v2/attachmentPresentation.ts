@@ -7,9 +7,12 @@ import type {
   ComposerAttachment,
   ComposerAttachmentWarning
 } from "@/components/app-shell/attachmentContracts";
+import { attachmentBlocksSend } from "@/components/app-shell/attachmentCapabilities";
+import type { CatalogModel } from "@/components/app-shell/types";
 
 export type ComposerAttachmentItemV2 = Readonly<{
   byteSize?: number;
+  blocksSend?: boolean;
   detail?: string | null;
   fileName: string;
   id: string;
@@ -52,15 +55,27 @@ function failureDetail(attachment: ComposerAttachment): string {
 
 export function attachmentItemsForV2(
   attachments: readonly ComposerAttachment[],
-  warnings: readonly ComposerAttachmentWarning[] = []
+  warnings: readonly ComposerAttachmentWarning[] = [],
+  model?: CatalogModel
 ): ComposerAttachmentItemV2[] {
   const warningById = new Map(warnings.map((warning) => [warning.attachmentId, warning]));
   return attachments.map((attachment) => {
     const status = attachment.status ?? "ready";
     const warning = warningById.get(attachment.id);
+    const blocksSend = attachmentBlocksSend(attachment, model);
+    const directPdf = attachment.kind === "pdf" &&
+      model?.capabilities.documentInputMode === "native_pdf";
+    const detail = status === "failed" && directPdf && !blocksSend
+      ? "Local text extraction failed. The original PDF will be sent directly to the selected provider."
+      : status === "processing" && directPdf && !blocksSend
+        ? "The original PDF can be sent directly while local text extraction continues."
+        : status === "failed"
+          ? failureDetail(attachment)
+          : null;
     return {
       ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
-      ...(status === "failed" ? { detail: failureDetail(attachment) } : {}),
+      blocksSend,
+      ...(detail ? { detail } : {}),
       fileName: attachment.fileName,
       id: attachment.id,
       kind: attachment.kind,
@@ -78,7 +93,7 @@ export function attachmentItemsForV2(
 }
 
 export function attachmentItemBlocksSend(item: ComposerAttachmentItemV2): boolean {
-  return item.status !== "ready" || Boolean(item.warning?.blocking);
+  return (item.blocksSend ?? item.status !== "ready") || Boolean(item.warning?.blocking);
 }
 
 function firstBlockingItemReason(items: readonly ComposerAttachmentItemV2[]): string | null {
