@@ -24,6 +24,10 @@ export function resolveProviderModelCapabilities(
 
   return {
     ...input.capabilities,
+    // Text extraction is provided by AIQSA before answer-provider execution.
+    // It is therefore available for every answer deployment independently of
+    // the provider's separately verified Direct PDF capability.
+    pdf: true,
     ...(contextWindow === undefined ? {} : { contextWindow })
   };
 }

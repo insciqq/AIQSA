@@ -96,6 +96,8 @@ export type ProjectRunAdmission = Readonly<{
 }>;
 
 export type RunAttachmentRecord = ProviderAttachment & {
+  checksum: string | null;
+  processingErrorCode: string | null;
   storageKey: string;
 };
 

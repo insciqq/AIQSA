@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
@@ -26,6 +27,10 @@ const baseCapabilities: ProviderModelCapabilities = {
   streaming: true,
   vision: true
 };
+
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 const priorMessage: ProviderConversationMessage = {
   content: textMessageContent("Server-owned prior question"),
@@ -421,6 +426,7 @@ function nativeSearchCoexistencePlans(
 
 function runAttachment(input: {
   byteSize?: number;
+  checksum?: string | null;
   extractedText?: string | null;
   id: string;
   kind: "document" | "image" | "pdf";
@@ -430,6 +436,7 @@ function runAttachment(input: {
 }): RunAttachmentRecord {
   return {
     byteSize: input.byteSize ?? 32,
+    checksum: input.checksum ?? null,
     extractedText:
       input.extractedText === undefined
         ? input.kind === "pdf"
@@ -441,6 +448,7 @@ function runAttachment(input: {
     kind: input.kind,
     metadata: input.metadata ?? {},
     mimeType: input.mimeType,
+    processingErrorCode: null,
     status: "ready",
     storageKey: input.storageKey
   };
@@ -3175,7 +3183,7 @@ describe("run preparation", () => {
     });
     await expectFailure({
       calls: ["entitlements", "capabilities", "context:send", "attachments"],
-      expected: { code: "attachment_not_found", status: 400 },
+      expected: { code: "attachment_reference_invalid", status: 400 },
       request: sendInput(
         successBody({
           content: {
@@ -3403,6 +3411,7 @@ describe("run preparation", () => {
       attachments: [
         runAttachment({
           byteSize: pdfBytes.length,
+          checksum: sha256(pdfBytes),
           extractedText: null,
           id: "pdf-no-text",
           kind: "pdf",
@@ -3458,6 +3467,7 @@ describe("run preparation", () => {
       attachments: [
         runAttachment({
           byteSize: pdfBytes.length,
+          checksum: sha256(pdfBytes),
           extractedText: null,
           id: "pdf-zero-partial",
           kind: "pdf",
@@ -3653,6 +3663,7 @@ describe("run preparation", () => {
         }),
         runAttachment({
           byteSize: pdfBytes.length,
+          checksum: sha256(pdfBytes),
           id: "pdf-1",
           kind: "pdf",
           mimeType: "application/pdf",

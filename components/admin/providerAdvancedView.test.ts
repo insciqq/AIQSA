@@ -6,7 +6,6 @@ import type {
 import { providerTemplateIds } from "@/lib/domain/providerTemplates";
 import { describe, expect, it } from "vitest";
 import {
-  activeProviderCheckLabel,
   preferredProviderConnectionId,
   presentProviderConnection,
   presentProviderCredential,
@@ -130,19 +129,7 @@ describe("providerAdvancedView", () => {
     });
   });
 
-  it("keeps active refresh warnings factual and deletion blockers readable", () => {
-    expect(activeProviderCheckLabel({
-      checkedAt: "2026-07-26T00:00:00.000Z",
-      connectionVersion: 1,
-      credentialId: credential.id,
-      credentialVersionId: "version-1",
-      evidence: null,
-      latestRefreshError: { code: "provider_refresh_failed", version: 1 },
-      modelVersion: 1,
-      providerModelId: model.id,
-      refreshFailedAt: "2026-07-26T01:00:00.000Z",
-      status: "available"
-    })).toBe("Available · refresh needs attention");
+  it("keeps deletion blockers readable", () => {
     expect(providerDeleteBlockerLabel({ count: 2, kind: "run_profiles" }))
       .toBe("run profiles: 2");
     expect(providerDeleteBlockerLabel({ count: 1, kind: "user_assignments" }))

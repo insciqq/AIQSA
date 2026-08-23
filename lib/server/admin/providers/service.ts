@@ -50,6 +50,7 @@ import type {
   AdminProviderDraftTestOutcome
 } from "./tester";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 
 const MAX_NAME_LENGTH = 160;
@@ -203,12 +204,17 @@ function validateEvidence(
   const structuredOutput = decodeStructuredOutputVerificationEvidence(
     evidence.structuredOutput
   );
+  const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
+  const hasPdfInput = Object.prototype.hasOwnProperty.call(evidence, "pdfInput");
   if (
     evidence.method !== expectedMethod ||
     evidence.upstreamModelId !== model.upstreamModelId ||
     evidence.selectedProviders.length !== expectedProviders.length ||
     evidence.selectedProviders.some((provider, index) => provider !== expectedProviders[index]) ||
     (outcome.status === "available") !== (evidence.detail === "ok") ||
+    (hasPdfInput && (!pdfInput || !model.capabilities.nativePdfInput ||
+      pdfInput.adapterKind !== model.adapterKind ||
+      pdfInput.upstreamModelId !== model.upstreamModelId)) ||
     (structuredOutput !== null && (
       structuredOutput.adapterKind !== model.adapterKind ||
       structuredOutput.upstreamModelId !== model.upstreamModelId
@@ -220,6 +226,7 @@ function validateEvidence(
     detail: evidence.detail,
     method: evidence.method,
     selectedProviders: [...evidence.selectedProviders],
+    ...(pdfInput ? { pdfInput } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: evidence.upstreamModelId
   };

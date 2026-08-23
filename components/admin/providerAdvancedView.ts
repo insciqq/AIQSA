@@ -1,5 +1,4 @@
 import type {
-  AdminProviderActiveCheck,
   AdminProviderConnection,
   AdminProviderCredential,
   AdminProviderDeleteBlocker,
@@ -14,8 +13,7 @@ import {
 export const PROVIDER_ADVANCED_TASKS = [
   "credentials",
   "authentication",
-  "models",
-  "diagnostics"
+  "models"
 ] as const;
 
 export type ProviderAdvancedTask = (typeof PROVIDER_ADVANCED_TASKS)[number];
@@ -25,7 +23,6 @@ export type ProviderAdvancedFamily = "anthropic" | "gemini" | "openai" | "openro
 export const PROVIDER_ADVANCED_TASK_LABELS: Record<ProviderAdvancedTask, string> = {
   authentication: "Authentication",
   credentials: "Credentials",
-  diagnostics: "Diagnostics",
   models: "Models"
 };
 
@@ -100,7 +97,7 @@ export function providerTaskForPrimaryAction(
     return "authentication";
   }
   if (action.kind === "activate" || action.kind === "enable") {
-    return "diagnostics";
+    return "models";
   }
   return "credentials";
 }
@@ -190,15 +187,6 @@ export function presentProviderModel(
     publicationLabel: `Active v${model.activeVersion}`,
     runtimeLabel: model.enabled ? "Enabled" : "Disabled"
   };
-}
-
-export function activeProviderCheckLabel(check: AdminProviderActiveCheck): string {
-  if (check.latestRefreshError) {
-    return check.status === "available"
-      ? "Available · refresh needs attention"
-      : "Unavailable · refresh needs attention";
-  }
-  return check.status === "available" ? "Available" : "Unavailable";
 }
 
 const blockerLabels: Record<AdminProviderDeleteBlocker["kind"], string> = {

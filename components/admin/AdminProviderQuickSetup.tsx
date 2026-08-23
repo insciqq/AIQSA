@@ -549,7 +549,7 @@ function SelectedProviderTask({
             Connect {provider.providerDisplayName}
           </h3>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-            Paste a key. AIQSA will verify it and make the current supported models visible to that key available to your account.
+            Paste a key. AIQSA will verify it, check proposed models with a small image-only PDF, and make the supported models available to your account.
           </p>
           {provider.state === "advanced_required" ? (
             <p className="mt-3 max-w-xl border-l-2 border-proof/40 pl-3 text-xs leading-5 text-ink-muted">
@@ -575,7 +575,7 @@ function SelectedProviderTask({
 function SetupGuide() {
   const steps = [
     {
-      detail: "The candidate key is checked against the provider before anything is saved.",
+      detail: "The key and each proposed model’s Direct PDF input are checked before anything is saved. The small model probes may use provider quota.",
       Icon: ShieldCheck,
       title: "Verify the key"
     },

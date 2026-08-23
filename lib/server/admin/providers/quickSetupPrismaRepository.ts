@@ -25,6 +25,7 @@ import {
   searchValidationFingerprint
 } from "../../search/probeBinding";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import type {
   AdminProviderQuickSetupActor,
   AdminProviderQuickSetupClearPlan,
@@ -1236,6 +1237,7 @@ async function applyQuickSetupPlan(
   );
   const grantIds = plan.grants.map(({ id }) => id);
   const grantModelIds = plan.grants.map(({ modelId }) => modelId);
+  const modelCheckIds = plan.modelChecks.map(({ modelId }) => modelId);
   if (
     plan.candidates.length < 1 || plan.candidates.length > policy.candidates.length ||
     canonicalCandidates.length !== plan.candidates.length ||
@@ -1243,11 +1245,36 @@ async function applyQuickSetupPlan(
     !selectedCandidate ||
     selectedCandidate.modelId !== plan.candidate.modelId ||
     plan.grants.length !== canonicalCandidates.length ||
+    plan.modelChecks.length !== canonicalCandidates.length ||
     new Set(grantIds).size !== grantIds.length || grantIds.some((id) => !id) ||
     new Set(grantModelIds).size !== grantModelIds.length ||
-    grantModelIds.some((modelId) => !candidateModelIds.includes(modelId))
+    grantModelIds.some((modelId) => !candidateModelIds.includes(modelId)) ||
+    new Set(modelCheckIds).size !== modelCheckIds.length ||
+    modelCheckIds.some((modelId) => !candidateModelIds.includes(modelId))
   ) {
     return "stale";
+  }
+  const modelEvidence = new Map<string, typeof plan.modelChecks[number]["evidence"]>();
+  for (const check of plan.modelChecks) {
+    const candidate = canonicalCandidates.find(({ modelId }) => modelId === check.modelId);
+    const expectedProviders = candidate?.configuration.openRouterRouting?.providers ?? [];
+    const pdfInput = decodePdfInputVerificationEvidence(check.evidence.pdfInput);
+    const hasPdfInput = Object.prototype.hasOwnProperty.call(check.evidence, "pdfInput");
+    if (
+      !candidate ||
+      check.evidence.detail !== "ok" ||
+      check.evidence.method !== "models_catalog" ||
+      check.evidence.upstreamModelId !== candidate.configuration.upstreamModelId ||
+      check.evidence.selectedProviders.length !== expectedProviders.length ||
+      check.evidence.selectedProviders.some(
+        (provider, index) => provider !== expectedProviders[index]
+      ) ||
+      (hasPdfInput && (!pdfInput ||
+        !candidate.configuration.capabilities.nativePdfInput ||
+        pdfInput.adapterKind !== candidate.configuration.adapterKind ||
+        pdfInput.upstreamModelId !== candidate.configuration.upstreamModelId))
+    ) return "stale";
+    modelEvidence.set(check.modelId, check.evidence);
   }
   if (
     current.inspection.mode !== plan.mode ||
@@ -1484,7 +1511,7 @@ async function applyQuickSetupPlan(
         connectionVersion,
         credentialId: plan.credential.id,
         credentialVersionId: plan.credential.versionId,
-        evidence: json({
+        evidence: json(modelEvidence.get(providerModelId) ?? {
           detail: "ok",
           method: "models_catalog",
           selectedProviders: target.configuration.openRouterRouting?.providers ?? [],

@@ -1,5 +1,8 @@
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
-import { firstBlockingAttachmentWarning } from "@/components/app-shell/attachmentCapabilities";
+import {
+  attachmentBlocksSend,
+  firstBlockingAttachmentWarning
+} from "@/components/app-shell/attachmentCapabilities";
 import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifecycle";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
@@ -585,23 +588,25 @@ export function useMessageRunActions({
     ) {
       return;
     }
-    const unsettledAttachment = sourceSession.attachments.find(
-      (attachment) => attachment.status !== undefined && attachment.status !== "ready"
-    );
-    if (unsettledAttachment) {
-      setNotice({
-        kind: "error",
-        text: unsettledAttachment.status === "failed"
-          ? attachmentRetryAvailable(unsettledAttachment)
-            ? `Remove or retry ${unsettledAttachment.fileName} before sending.`
-            : `Remove ${unsettledAttachment.fileName} before sending.`
-          : `Wait for ${unsettledAttachment.fileName} to finish processing before sending.`
-      });
-      return;
-    }
     const runControlSnapshot = captureRunControlSnapshot();
     const modelForSend = runControlSnapshot.model;
     if (!modelForSend) {
+      return;
+    }
+    const blockingAttachment = sourceSession.attachments.find(
+      (attachment) => attachmentBlocksSend(attachment, modelForSend)
+    );
+    if (blockingAttachment) {
+      setNotice({
+        kind: "error",
+        text: blockingAttachment.status === "failed"
+          ? attachmentRetryAvailable(blockingAttachment)
+            ? `Remove or retry ${blockingAttachment.fileName} before sending.`
+            : `Remove ${blockingAttachment.fileName} before sending.`
+          : blockingAttachment.processingErrorCode
+            ? `Remove ${blockingAttachment.fileName} before sending.`
+            : `Wait for ${blockingAttachment.fileName} to finish processing before sending.`
+      });
       return;
     }
     const blockingAttachmentWarning = firstBlockingAttachmentWarning(
@@ -649,7 +654,9 @@ export function useMessageRunActions({
       return;
     }
 
-    const sendToken = useComposerSessionStore.getState().beginSend(sourceSessionKey);
+    const sendToken = useComposerSessionStore.getState().beginSend(sourceSessionKey, {
+      attachmentBlocksSend: (attachment) => attachmentBlocksSend(attachment, modelForSend)
+    });
     if (!sendToken) {
       return;
     }

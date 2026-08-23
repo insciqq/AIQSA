@@ -1842,14 +1842,16 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await section.locator("#provider-default-credential").selectOption("credential-e2e");
   await expect(section.getByText("Ready to activate.")).toBeVisible();
 
-  await section.getByRole("tab", { name: "Diagnostics" }).click();
-  const diagnostics = section.getByTestId("provider-task-diagnostics");
-  await diagnostics.getByRole("button", { name: "Test model" }).click();
-  const paidDiagnostic = page.getByTestId("admin-confirm-provider-paid-diagnostic");
-  await expect(paidDiagnostic).toBeVisible();
-  await paidDiagnostic.getByRole("button", { name: "Confirm run paid diagnostic" }).click();
+  await expect(section.getByRole("tab", { name: "Diagnostics" })).toHaveCount(0);
+  await section.getByRole("tab", { name: "Models" }).click();
+  await section.getByRole("button", { name: "Open E2E Model capabilities" }).click();
+  const capabilities = section.getByTestId("provider-model-capabilities-model-e2e");
+  await capabilities.getByRole("button", { name: "Test capabilities" }).click();
+  const capabilityTest = page.getByTestId("admin-confirm-provider-capability-test");
+  await expect(capabilityTest).toBeVisible();
+  await capabilityTest.getByRole("button", { name: "Confirm run capability test" }).click();
   await expect(section.getByText("The exact model and credential draft is available.")).toBeVisible();
-  await expect(diagnostics.getByText("available", { exact: true })).toBeVisible();
+  await expect(capabilities.getByLabel("Model access verified")).toBeVisible();
 
   await section.getByRole("button", { name: "Activate and enable" }).click();
   await expect(section.getByText("Provider draft activated and enabled for new runs.")).toBeVisible();

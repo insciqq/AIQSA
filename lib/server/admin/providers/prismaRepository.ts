@@ -29,6 +29,7 @@ import type {
   StoredProviderDraftCheck
 } from "./repositoryContract";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import {
   countBlockingMemoryExecutionBindings,
   detachExpiredMemoryExecutionBindings,
@@ -69,10 +70,12 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     return null;
   }
   const structuredOutput = decodeStructuredOutputVerificationEvidence(value.structuredOutput);
+  const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
   return {
     detail: value.detail,
     method: value.method,
     selectedProviders: value.selectedProviders as string[],
+    ...(pdfInput ? { pdfInput } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: value.upstreamModelId
   };

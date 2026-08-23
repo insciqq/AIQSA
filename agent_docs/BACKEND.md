@@ -29,6 +29,8 @@ Authenticate before consuming uploads. Validate complete multipart size, extensi
 
 Attachment and Knowledge objects remain private. Reads occur only after current ownership/capability checks, and client errors omit filenames, storage keys, checksums, bytes, extracted text, parser bodies, and adapter failures. Retention and deletion use idempotent durable obligations rather than best-effort request cleanup.
 
+An attachment's original private object remains available independently of background extraction state. A run admitted for Direct PDF input may materialize that object before extraction settles, but only through a bounded read followed by recorded-size and SHA-256 validation; the provider-facing projection excludes storage and integrity fields. Local-extraction routes consume only ready usable text and do not read the original PDF for answer execution.
+
 Anonymous sharing creates a sanitized immutable snapshot behind a hashed high-entropy bearer token. It never points a public reader at live private chat state. Creation and reads use the same positive public schema; unknown fields and all private attachments, Memory/Knowledge internals, tool evidence, run checkpoints, and identifiers are dropped.
 
 Use [Persistence](PERSISTENCE.md) for durable mechanics, [Run contracts](RUN_CONTRACTS.md) for accepted execution, [Providers](PROVIDERS.md) for external transports, and [Environment](ENV_VARIABLES.md) for operator configuration.

@@ -8,6 +8,7 @@ import type {
   AdminSearchTestEvidence
 } from "../../../contracts/adminSearch";
 import type { ProviderModelTemplateKey } from "../../../domain/providerTemplates";
+import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import type { AdminProviderQuickSetupPolicyCandidate } from "./quickSetupPolicy";
 
 export type AdminProviderQuickSetupActor = Readonly<{
@@ -60,6 +61,10 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
     modelId: string;
   }>>;
   mode: "initial" | "recovery" | "replacement";
+  modelChecks: ReadonlyArray<Readonly<{
+    evidence: AdminProviderTestEvidence;
+    modelId: string;
+  }>>;
   now: Date;
   preservedModels: AdminProviderQuickSetupInspection["preservedModels"];
   provider: AdminProviderQuickSetupProviderId;

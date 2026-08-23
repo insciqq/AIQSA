@@ -53,13 +53,13 @@ describe("attachment reconciliation", () => {
       selectedProvider: textOnlyModel.provider
     });
     store.activateSession(sessionA);
-    store.setAttachments([{ fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }]);
+    store.setAttachments([{ fileName: "scan.png", id: "image-a", kind: "image" }]);
     store.activateSession(sessionB);
     store.setAttachments([{ fileName: "notes.txt", id: "text-b", kind: "document" }]);
 
     expect(reconcileCurrentComposerAttachments(sessionA, textOnlyModel)).toBe(false);
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).attachments).toEqual([
-      { fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }
+      { fileName: "scan.png", id: "image-a", kind: "image" }
     ]);
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionB).attachments).toEqual([
       { fileName: "notes.txt", id: "text-b", kind: "document" }
@@ -74,7 +74,7 @@ describe("attachment reconciliation", () => {
       selectedProvider: textOnlyModel.provider
     });
     store.activateSession(sessionA);
-    store.setAttachments([{ fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }]);
+    store.setAttachments([{ fileName: "scan.png", id: "image-a", kind: "image" }]);
     const uploadGeneration = store.beginUpload(sessionA)!;
     store.appendUploadedAttachment(sessionA, uploadGeneration, {
       fileName: "late-notes.txt",
@@ -87,7 +87,7 @@ describe("attachment reconciliation", () => {
     expect(reconcileCurrentComposerAttachments(sessionA, textOnlyModel)).toBe(true);
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionA)).toMatchObject({
       attachments: [{ fileName: "late-notes.txt", id: "text-late", kind: "document" }],
-      operationError: expect.stringContaining("paper.pdf")
+      operationError: expect.stringContaining("scan.png")
     });
   });
 
@@ -100,13 +100,13 @@ describe("attachment reconciliation", () => {
     });
     store.activateSession(sessionA);
     store.updateSession(sessionA, {
-      attachments: [{ fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }],
+      attachments: [{ fileName: "scan.png", id: "image-a", kind: "image" }],
       operationError: "This run contains 24 attachments; the limit is 20."
     });
 
     expect(reconcileCurrentComposerAttachments(sessionA, textOnlyModel)).toBe(true);
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
-      .toBe("Removed an attachment unsupported by Text model: paper.pdf");
+      .toBe("Removed an attachment unsupported by Text model: scan.png");
   });
 
   it("clears resolved binary-limit feedback only after a model-limit context change", () => {

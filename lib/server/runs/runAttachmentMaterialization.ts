@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   ProviderAttachment,
   ProviderModelCapabilities
@@ -14,6 +15,7 @@ export const MAX_RUN_CONTENT_BLOCKS = 256;
 export type AttachmentMaterializationErrorCode =
   | "attachment_count_limit_exceeded"
   | "attachment_encoded_size_limit_exceeded"
+  | "attachment_checksum_mismatch"
   | "attachment_materialization_limit_exceeded"
   | "attachment_object_read_failed"
   | "attachment_object_size_mismatch"
@@ -184,6 +186,28 @@ function safeByteSize(record: RunAttachmentRecord): number {
   return record.byteSize;
 }
 
+function checksumMismatch(): AttachmentMaterializationError {
+  return new AttachmentMaterializationError({
+    code: "attachment_checksum_mismatch",
+    message: "An attachment object did not match its recorded checksum.",
+    status: 409
+  });
+}
+
+function safeDirectPdfChecksum(record: RunAttachmentRecord): string {
+  if (typeof record.checksum !== "string" || !/^[a-f0-9]{64}$/u.test(record.checksum)) {
+    throw checksumMismatch();
+  }
+  return record.checksum;
+}
+
+function safeStorageKey(record: RunAttachmentRecord): string {
+  if (!record.storageKey || record.storageKey !== record.storageKey.trim()) {
+    throw objectReadFailed();
+  }
+  return record.storageKey;
+}
+
 function safeSum(left: number, right: number): number | null {
   const result = left + right;
   return Number.isSafeInteger(result) && result >= left ? result : null;
@@ -236,6 +260,8 @@ function materializationPlan(
     if (!requiresBinaryMaterialization(record, capabilities)) {
       continue;
     }
+    safeStorageKey(record);
+    if (record.kind === "pdf") safeDirectPdfChecksum(record);
     const recordSourceBytes = safeByteSize(record);
     const recordEncodedBytes = estimatedEncodedBytes(record);
     // Reserve the metadata-sized objects in stable order. Each concurrent read
@@ -322,15 +348,32 @@ function objectReadFailed(): AttachmentMaterializationError {
   });
 }
 
+function providerAttachment(
+  record: RunAttachmentRecord,
+  overrides: Partial<Pick<ProviderAttachment, "base64Data" | "dataUrl" | "extractedText">> = {}
+): ProviderAttachment {
+  return {
+    byteSize: record.byteSize,
+    extractedText: record.extractedText,
+    fileName: record.fileName,
+    id: record.id,
+    kind: record.kind,
+    metadata: record.metadata,
+    mimeType: record.mimeType,
+    status: record.status,
+    ...overrides
+  };
+}
+
 async function materializeOne(
   storage: Pick<StorageAdapter, "getObject">,
   entry: MaterializationPlanEntry,
   signal: AbortSignal
 ): Promise<ProviderAttachment> {
-  const { storageKey, ...attachment } = entry.record;
+  const { record } = entry;
   let object: Awaited<ReturnType<StorageAdapter["getObject"]>>;
   try {
-    object = await storage.getObject(storageKey, {
+    object = await storage.getObject(record.storageKey, {
       maxBytes: entry.maxReadBytes,
       signal
     });
@@ -354,18 +397,59 @@ async function materializeOne(
     });
   }
 
-  if (attachment.kind === "pdf") {
-    return {
-      ...attachment,
-      base64Data: object.body.toString("base64")
-    };
+  if (record.kind === "pdf") {
+    const actualChecksum = createHash("sha256").update(object.body).digest("hex");
+    if (actualChecksum !== safeDirectPdfChecksum(record)) throw checksumMismatch();
+    return providerAttachment(record, {
+      base64Data: object.body.toString("base64"),
+      extractedText: null
+    });
   }
 
-  const contentType = attachment.mimeType || object.contentType;
-  return {
-    ...attachment,
+  const contentType = record.mimeType || object.contentType;
+  return providerAttachment(record, {
     dataUrl: `data:${contentType};base64,${object.body.toString("base64")}`
-  };
+  });
+}
+
+const directPdfBlockingErrorCodes = new Set([
+  "attachment_checksum_mismatch",
+  "attachment_object_read_failed",
+  "attachment_object_size_mismatch",
+  "attachment_unavailable"
+]);
+
+function validateAttachmentReadiness(
+  record: RunAttachmentRecord,
+  capabilities: ProviderModelCapabilities
+): void {
+  const directPdf = record.kind === "pdf" && capabilities.nativePdfInput;
+  if (directPdf) {
+    if (record.processingErrorCode === "attachment_checksum_mismatch") {
+      throw checksumMismatch();
+    }
+    if (record.processingErrorCode === "attachment_object_size_mismatch") {
+      throw objectSizeMismatch({
+        maxBytes: safeByteSize(record),
+        recordedBytes: record.byteSize
+      });
+    }
+    if (
+      record.processingErrorCode &&
+      directPdfBlockingErrorCodes.has(record.processingErrorCode)
+    ) {
+      throw objectReadFailed();
+    }
+    return;
+  }
+
+  if (record.status !== "ready") {
+    throw new AttachmentMaterializationError({
+      code: "attachment_not_ready",
+      message: "Every selected attachment must finish processing before a run can start.",
+      status: 409
+    });
+  }
 }
 
 export async function loadProviderAttachments(
@@ -402,21 +486,28 @@ export async function loadProviderAttachments(
     options.projectId
   );
   if (options.signal?.aborted) throw abortReason(options.signal);
-  const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
-  if (records.some((record) => record.status !== "ready")) {
-    throw new AttachmentMaterializationError({
-      code: "attachment_not_ready",
-      message: "Every selected attachment must finish processing before a run can start.",
-      status: 409
+  const loadedIds = new Set(loadedRecords.map(({ id }) => id));
+  if (
+    loadedRecords.length !== attachmentIds.length ||
+    loadedIds.size !== attachmentIds.length ||
+    attachmentIds.some((attachmentId) => !loadedIds.has(attachmentId))
+  ) {
+    throw referenceError({
+      actual: {
+        requestedCount: attachmentIds.length,
+        resolvedCount: loadedIds.size
+      },
+      code: "attachment_reference_invalid",
+      message: "One or more attachment references are unavailable for this run."
     });
   }
-  if (records.length !== attachmentIds.length) {
-    return records.map(({ storageKey: _storageKey, ...attachment }) => attachment);
-  }
+  const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
+  records.forEach((record) => validateAttachmentReadiness(record, options.capabilities));
   const plan = materializationPlan(records, options.capabilities, options.limits);
-  if (!deps.storage || plan.binaryById.size === 0) {
-    return records.map(({ storageKey: _storageKey, ...attachment }) => attachment);
+  if (plan.binaryById.size === 0) {
+    return records.map((record) => providerAttachment(record));
   }
+  if (!deps.storage) throw objectReadFailed();
 
   const internalController = new AbortController();
   let firstError: unknown;
@@ -437,8 +528,7 @@ export async function loadProviderAttachments(
       const record = records[index];
       const entry = plan.binaryById.get(record.id);
       if (!entry) {
-        const { storageKey: _storageKey, ...attachment } = record;
-        results[index] = attachment;
+        results[index] = providerAttachment(record);
         continue;
       }
 

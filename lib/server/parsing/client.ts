@@ -107,7 +107,7 @@ function requestBody(input: SidecarParseInput, engine: SidecarParserEngine): Bod
   form.append("files", new Blob([bytes], { type: input.mediaType }), sidecarFileName(input.fileName));
   form.append("to_formats", "json");
   form.append("image_export_mode", "placeholder");
-  form.append("table_mode", "fast");
+  form.append("table_mode", "accurate");
   form.append("abort_on_error", "true");
   form.append("do_ocr", "true");
   form.append("force_ocr", "false");

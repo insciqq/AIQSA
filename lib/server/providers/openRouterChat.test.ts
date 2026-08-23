@@ -243,7 +243,7 @@ describe("OpenRouter Chat facade", () => {
 
     expect(preview).toMatchObject({
       body: {
-        plugins: [{ id: "file-parser", pdf: { engine: "native" } }],
+        plugins: [{ id: "file-parser" }],
         stream: true
       },
       provider: "openrouter",
@@ -270,7 +270,7 @@ describe("OpenRouter Chat facade", () => {
     const [body, options] = createChatCompletion.mock.calls[0] ?? [];
     const bodyJson = JSON.stringify(body);
     expect(body).toMatchObject({
-      plugins: [{ id: "file-parser", pdf: { engine: "native" } }],
+      plugins: [{ id: "file-parser" }],
       stream: true
     });
     expect(bodyJson).toContain("PRIVATE_PDF_BYTES");

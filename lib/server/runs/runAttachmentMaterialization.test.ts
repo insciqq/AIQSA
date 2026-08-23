@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderModelCapabilities } from "../providers/types";
 import { StoredObjectTooLargeError } from "../uploads/storage";
@@ -38,12 +39,14 @@ function attachment(
 ): RunAttachmentRecord {
   return {
     byteSize,
+    checksum: null,
     extractedText: kind === "image" ? null : "bounded extracted text",
     fileName: `${id}.bin`,
     id,
     kind,
     metadata: {},
     mimeType: kind === "image" ? "image/png" : kind === "pdf" ? "application/pdf" : "text/plain",
+    processingErrorCode: null,
     status: "ready",
     storageKey: `private/${id}`
   };
@@ -68,6 +71,221 @@ describe("run attachment materialization", () => {
     )).rejects.toMatchObject({
       code: "attachment_not_ready",
       status: 409
+    });
+    expect(getObject).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { processingErrorCode: null, status: "processing" },
+    { processingErrorCode: null, status: "ready" },
+    { processingErrorCode: "parser_unavailable", status: "failed" },
+    { processingErrorCode: "pdf_extraction_failed", status: "failed" }
+  ])("sends direct PDF bytes while local processing is $status", async ({
+    processingErrorCode,
+    status
+  }) => {
+    const bytes = Buffer.from("%PDF-direct");
+    const record = {
+      ...attachment("direct", "pdf", bytes.length),
+      checksum: createHash("sha256").update(bytes).digest("hex"),
+      processingErrorCode,
+      status
+    };
+    const getObject = vi.fn(async (storageKey: string, options?: { maxBytes?: number }) => {
+      expect(options?.maxBytes).toBe(bytes.length);
+      return {
+        body: bytes,
+        contentType: "application/pdf",
+        storageKey
+      };
+    });
+
+    const result = await loadProviderAttachments(
+      { repository: repository([record]), storage: { getObject } },
+      "user-1",
+      [record.id],
+      {
+        capabilities: { ...baseCapabilities, nativePdfInput: true },
+        limits: limits()
+      }
+    );
+
+    expect(result).toEqual([expect.objectContaining({
+      base64Data: bytes.toString("base64"),
+      extractedText: null,
+      id: record.id
+    })]);
+    expect(result[0]).not.toHaveProperty("checksum");
+    expect(result[0]).not.toHaveProperty("processingErrorCode");
+    expect(result[0]).not.toHaveProperty("storageKey");
+  });
+
+  it.each(["processing", "failed"])(
+    "keeps extraction-mode PDF blocked while local processing is %s",
+    async (status) => {
+      const record = { ...attachment("fallback", "pdf", 10), status };
+      await expect(loadProviderAttachments(
+        { repository: repository([record]) },
+        "user-1",
+        [record.id],
+        { capabilities: baseCapabilities, limits: limits() }
+      )).rejects.toMatchObject({ code: "attachment_not_ready", status: 409 });
+    }
+  );
+
+  it("leaves ready extraction-mode PDF text semantics to run validation without reading storage", async () => {
+    const record = { ...attachment("fallback", "pdf", 10), extractedText: "   " };
+    const result = await loadProviderAttachments(
+      { repository: repository([record]) },
+      "user-1",
+      [record.id],
+      { capabilities: baseCapabilities, limits: limits() }
+    );
+
+    expect(result).toEqual([expect.objectContaining({ extractedText: "   " })]);
+  });
+
+  it.each([
+    ["attachment_checksum_mismatch", "attachment_checksum_mismatch"],
+    ["attachment_object_size_mismatch", "attachment_object_size_mismatch"],
+    ["attachment_object_read_failed", "attachment_object_read_failed"],
+    ["attachment_unavailable", "attachment_object_read_failed"]
+  ])("blocks direct PDF storage failure %s", async (processingErrorCode, expectedCode) => {
+    const record = {
+      ...attachment("broken", "pdf", 10),
+      checksum: "a".repeat(64),
+      processingErrorCode,
+      status: "failed"
+    };
+    const getObject = vi.fn();
+    await expect(loadProviderAttachments(
+      { repository: repository([record]), storage: { getObject } },
+      "user-1",
+      [record.id],
+      {
+        capabilities: { ...baseCapabilities, nativePdfInput: true },
+        limits: limits()
+      }
+    )).rejects.toMatchObject({ code: expectedCode });
+    expect(getObject).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a missing or mismatched direct-PDF checksum", async () => {
+    const bytes = Buffer.from("%PDF-direct");
+    const getObject = vi.fn(async (storageKey: string) => ({
+      body: bytes,
+      contentType: "application/pdf",
+      storageKey
+    }));
+    const missing = attachment("missing-checksum", "pdf", bytes.length);
+    const mismatched = {
+      ...attachment("wrong-checksum", "pdf", bytes.length),
+      checksum: "a".repeat(64)
+    };
+    const options = {
+      capabilities: { ...baseCapabilities, nativePdfInput: true },
+      limits: limits()
+    };
+
+    await expect(loadProviderAttachments(
+      { repository: repository([missing]), storage: { getObject } },
+      "user-1",
+      [missing.id],
+      options
+    )).rejects.toMatchObject({ code: "attachment_checksum_mismatch" });
+    expect(getObject).not.toHaveBeenCalled();
+
+    await expect(loadProviderAttachments(
+      { repository: repository([mismatched]), storage: { getObject } },
+      "user-1",
+      [mismatched.id],
+      options
+    )).rejects.toMatchObject({ code: "attachment_checksum_mismatch" });
+    expect(getObject).toHaveBeenCalledOnce();
+  });
+
+  it("rejects direct PDF object size drift and missing objects", async () => {
+    const bytes = Buffer.from("%PDF-direct");
+    const record = {
+      ...attachment("direct-object", "pdf", bytes.length),
+      checksum: createHash("sha256").update(bytes).digest("hex")
+    };
+    const options = {
+      capabilities: { ...baseCapabilities, nativePdfInput: true },
+      limits: limits()
+    };
+
+    await expect(loadProviderAttachments(
+      {
+        repository: repository([record]),
+        storage: {
+          async getObject(storageKey) {
+            return { body: bytes.subarray(1), contentType: "application/pdf", storageKey };
+          }
+        }
+      },
+      "user-1",
+      [record.id],
+      options
+    )).rejects.toMatchObject({
+      code: "attachment_object_size_mismatch",
+      status: 409
+    });
+
+    await expect(loadProviderAttachments(
+      {
+        repository: repository([record]),
+        storage: {
+          async getObject() {
+            throw new Error("NoSuchKey: private/direct-object");
+          }
+        }
+      },
+      "user-1",
+      [record.id],
+      options
+    )).rejects.toMatchObject({
+      code: "attachment_object_read_failed",
+      status: 503
+    });
+  });
+
+  it("lets a processing direct PDF through readiness checks but blocks a processing document", async () => {
+    const bytes = Buffer.from("%PDF-direct");
+    const pdf = {
+      ...attachment("direct", "pdf", bytes.length),
+      checksum: createHash("sha256").update(bytes).digest("hex"),
+      status: "processing"
+    };
+    const document = {
+      ...attachment("document", "document", 10),
+      status: "processing"
+    };
+    const getObject = vi.fn();
+
+    await expect(loadProviderAttachments(
+      { repository: repository([pdf, document]), storage: { getObject } },
+      "user-1",
+      [pdf.id, document.id],
+      {
+        capabilities: { ...baseCapabilities, nativePdfInput: true },
+        limits: limits()
+      }
+    )).rejects.toMatchObject({ code: "attachment_not_ready", status: 409 });
+    expect(getObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing references without returning a partial attachment list", async () => {
+    const present = attachment("present", "document", 10);
+    const getObject = vi.fn();
+    await expect(loadProviderAttachments(
+      { repository: repository([present]), storage: { getObject } },
+      "user-1",
+      [present.id, "missing"],
+      { capabilities: baseCapabilities, limits: limits() }
+    )).rejects.toMatchObject({
+      actual: { requestedCount: 2, resolvedCount: 1 },
+      code: "attachment_reference_invalid"
     });
     expect(getObject).not.toHaveBeenCalled();
   });

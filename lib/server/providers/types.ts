@@ -39,6 +39,8 @@ export type ProviderModelCapabilities = {
   backgroundStreaming?: boolean;
   contextWindow?: number;
   defaultMaxOutputTokens?: number;
+  /** Legacy/internal declared flag in mutable model configuration. Catalog and
+   * run admission replace it with the evidence-backed effective capability. */
   nativePdfInput: boolean;
   nativeBackground?: boolean;
   nativeImageGeneration?: boolean;

@@ -6,8 +6,8 @@ import {
 } from "./quickSetupPolicy";
 
 describe("provider Quick setup policy", () => {
-  it("keeps the v4 current-model candidates, defaults, and recommendations explicit", () => {
-    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(4);
+  it("keeps the v5 current-model candidates, defaults, and recommendations explicit", () => {
+    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(5);
     expect(adminProviderQuickSetupPolicy("openai").connection.configuration.responseTimeoutMs)
       .toBe(300_000);
     expect(adminProviderQuickSetupPolicy("openai").candidates.map((candidate) => ({
@@ -75,12 +75,12 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["google/gemini-3.5-flash"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 4 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 5 }
     }).kind).toBe("selected");
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["other"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 4 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 5 }
     })).toEqual({ kind: "selection_invalid" });
   });
 });

@@ -543,6 +543,40 @@ describe("message run actions", () => {
   });
 
   it.each([
+    ["processing", null],
+    ["failed", "parser_unavailable"],
+    ["failed", "pdf_extraction_failed"]
+  ])("sends a direct PDF while local extraction is %s", async (status, processingErrorCode) => {
+    const nativeModel: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "native_pdf"
+      }
+    };
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [{
+        fileName: "scan.pdf",
+        id: "direct-pdf",
+        kind: "pdf",
+        processingErrorCode,
+        status: status as "failed" | "processing"
+      }],
+      draft: "Read the scan",
+      model: nativeModel
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("before sending")
+    }));
+  });
+
+  it.each([
     ["attachment_unavailable", "Remove report.docx before sending."],
     ["attachment_poll_timeout", "Remove or retry report.docx before sending."]
   ])("keeps programmatic send recovery truthful for %s", async (

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { getAuthConfig } from "../auth/config";
@@ -685,12 +686,14 @@ function createMemoryRepository(
     loadAttachments: async (_userId, attachmentIds) =>
       attachmentIds.map((id) => ({
         byteSize: 512,
+        checksum: null,
         extractedText: "Extracted PDF text",
         fileName: "brief.pdf",
         id,
         kind: "pdf",
         metadata: {},
         mimeType: "application/pdf",
+        processingErrorCode: null,
         status: "ready",
         storageKey: `storage/${id}`
       })),
@@ -1220,12 +1223,14 @@ describe("model run route handlers", () => {
     const { repository, state } = createMemoryRepository();
     repository.loadAttachments = async () => [{
       byteSize: 3,
+      checksum: null,
       extractedText: null,
       fileName: "private-diagram.png",
       id: "image-1",
       kind: "image",
       metadata: {},
       mimeType: "image/png",
+      processingErrorCode: null,
       status: "ready",
       storageKey: "private/user/object-key"
     }];
@@ -1268,6 +1273,140 @@ describe("model run route handlers", () => {
     });
     expect(JSON.stringify(body)).not.toContain(privateFailure);
     expect(JSON.stringify(body)).not.toContain("object-key");
+    expect(state.created).toBeNull();
+  });
+
+  it("rejects a direct-PDF checksum mismatch before request building or provider execution", async () => {
+    const directCapabilities: ProviderModelCapabilities = {
+      nativePdfInput: true,
+      nativeSearch: false,
+      pdf: true,
+      reasoning: true,
+      streaming: true,
+      toolCalling: false,
+      vision: true
+    };
+    const { repository, state } = createMemoryRepository(
+      entitledFakeModel,
+      [],
+      { inputTokenPriceMicros: 2, outputTokenPriceMicros: 8 },
+      directCapabilities
+    );
+    const bytes = Buffer.from("%PDF-private");
+    repository.loadAttachments = async () => [{
+      byteSize: bytes.length,
+      checksum: "a".repeat(64),
+      extractedText: null,
+      fileName: "private.pdf",
+      id: "pdf-1",
+      kind: "pdf",
+      metadata: {},
+      mimeType: "application/pdf",
+      processingErrorCode: null,
+      status: "processing",
+      storageKey: "private/user/pdf-1"
+    }];
+    const buildRequestPreview = vi.fn(() => ({}));
+    const stream = vi.fn(async function* () {
+      return {
+        finalProviderResponsePreview: {},
+        finalText: "must not run",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 0
+        }
+      };
+    });
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: { buildRequestPreview, stream } },
+      repository,
+      storage: {
+        async deleteObject() {},
+        async getObject(storageKey) {
+          return { body: bytes, contentType: "application/pdf", storageKey };
+        },
+        async putObject() {}
+      }
+    });
+
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          content: { blocks: [{ attachmentId: "pdf-1", type: "file" }] },
+          modelId: "fake-qsa",
+          provider: "fake",
+          searchPlan: { mode: "all_selected", optionIds: [] }
+        }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "attachment_checksum_mismatch"
+    });
+    expect(buildRequestPreview).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(state.created).toBeNull();
+  });
+
+  it("keeps runtime admission authoritative when a browser believed direct PDF was available", async () => {
+    const { repository, state } = createMemoryRepository();
+    repository.loadAttachments = async () => [{
+      byteSize: 16,
+      checksum: null,
+      extractedText: null,
+      fileName: "processing.pdf",
+      id: "pdf-1",
+      kind: "pdf",
+      metadata: {},
+      mimeType: "application/pdf",
+      processingErrorCode: null,
+      status: "processing",
+      storageKey: "private/user/pdf-1"
+    }];
+    const buildRequestPreview = vi.fn(() => ({}));
+    const stream = vi.fn(async function* () {
+      return {
+        finalProviderResponsePreview: {},
+        finalText: "must not run",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 0
+        }
+      };
+    });
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: { buildRequestPreview, stream } },
+      repository
+    });
+
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          content: { blocks: [{ attachmentId: "pdf-1", type: "file" }] },
+          modelId: "fake-qsa",
+          provider: "fake",
+          searchPlan: { mode: "all_selected", optionIds: [] }
+        }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: "attachment_not_ready" });
+    expect(buildRequestPreview).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
     expect(state.created).toBeNull();
   });
 
@@ -1448,12 +1587,14 @@ describe("model run route handlers", () => {
     repository.loadAttachments = async (_userId, attachmentIds) =>
       attachmentIds.map((id) => ({
         byteSize: 42,
+        checksum: null,
         extractedText: "Document body",
         fileName: "notes.md",
         id,
         kind: "document",
         metadata: {},
         mimeType: "text/plain",
+        processingErrorCode: null,
         status: "ready",
         storageKey: `storage/${id}`
       }));
@@ -1544,12 +1685,14 @@ describe("model run route handlers", () => {
     repository.loadAttachments = async (_userId, attachmentIds) =>
       attachmentIds.map((id) => ({
         byteSize: 8000,
+        checksum: null,
         extractedText: "large attachment text ".repeat(200),
         fileName: "large.md",
         id,
         kind: "document",
         metadata: {},
         mimeType: "text/markdown",
+        processingErrorCode: null,
         status: "ready",
         storageKey: `storage/${id}`
       }));
@@ -1619,12 +1762,14 @@ describe("model run route handlers", () => {
     repository.loadAttachments = async (_userId, attachmentIds) =>
       attachmentIds.map((id) => ({
         byteSize: pdfBytes.length,
+        checksum: createHash("sha256").update(pdfBytes).digest("hex"),
         extractedText: "Extracted fallback text",
         fileName: "brief.pdf",
         id,
         kind: "pdf",
         metadata: {},
         mimeType: "application/pdf",
+        processingErrorCode: null,
         status: "ready",
         storageKey: `storage/${id}`
       }));

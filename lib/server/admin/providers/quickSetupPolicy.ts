@@ -17,8 +17,9 @@ import {
   type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
+import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 4;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 5;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -152,6 +153,9 @@ export function providerModelConfigurationFromCatalogEntry(
     answerSelectable: true,
     capabilities: {
       ...model.capabilities,
+      // Quick setup owns this declaration for its code-owned candidates, then
+      // probes every exact deployment before direct input becomes effective.
+      nativePdfInput: supportsPdfInputAdapter(model.adapterKind),
       ...(model.contextWindow === null ? {} : { contextWindow: model.contextWindow })
     },
     defaultParams: model.defaultParams,

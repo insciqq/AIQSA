@@ -243,68 +243,13 @@ describe("Composer v2", () => {
     menuOpen("MCP tools");
   });
 
-  it("offers blank-chat hint chips that open the same layers and pickers as the chips", async () => {
-    const onOpenAssistantPicker = vi.fn();
-    const onUploadFiles = vi.fn();
-    render(<ComposerV2 {...props({
-      capabilityHints: true,
-      draft: "",
-      onOpenAssistantPicker,
-      onUploadFiles
-    })} />);
+  it("keeps blank-chat actions in the single composer capability rail", () => {
+    render(<ComposerV2 {...props({ draft: "", onUploadFiles: vi.fn() })} />);
 
-    const hints = within(screen.getByTestId("composer-v2-hints"));
-    expect(hints.getAllByRole("button").map((button) => button.textContent))
-      .toEqual(["Attach", "Search", "Knowledge", "Assistant"]);
-
-    // Attach reaches the hidden file input directly.
-    const fileInput = screen.getByLabelText("Attach files") as HTMLInputElement;
-    const click = vi.spyOn(fileInput, "click");
-    fireEvent.click(hints.getByRole("button", { name: "Attach" }));
-    expect(click).toHaveBeenCalledTimes(1);
-
-    // Search opens the "+" layer and lands on its Search section.
-    fireEvent.click(hints.getByRole("button", { name: "Search" }));
-    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
-    await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByRole("menuitemcheckbox", { name: /Web Search/ }));
-    });
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Capabilities" }), { key: "Escape" });
-
-    // Knowledge opens the Knowledge layer anchored to its chip (focus returns there).
-    fireEvent.click(hints.getByRole("button", { name: "Knowledge" }));
-    expect(screen.getByRole("menu", { name: "Knowledge" })).toBeVisible();
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge" }), { key: "Escape" });
-    await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Choose Knowledge" }));
-    });
-
-    fireEvent.click(hints.getByRole("button", { name: "Assistant" }));
-    expect(onOpenAssistantPicker).toHaveBeenCalledTimes(1);
-  });
-
-  it("omits hint chips whose capability is unavailable and yields to a selected Assistant", () => {
-    const { rerender } = render(<ComposerV2 {...props({
-      capabilityHints: true,
-      config: {
-        ...composerGalleryConfig,
-        catalog: { ...composerGalleryConfig.catalog, searchStrategies: [] }
-      },
-      draft: ""
-    })} />);
-    // No file handler, no Search strategies, no Assistant picker: only Knowledge remains.
-    expect(within(screen.getByTestId("composer-v2-hints")).getAllByRole("button")
-      .map((button) => button.textContent)).toEqual(["Knowledge"]);
-
-    rerender(<ComposerV2 {...props({
-      capabilityHints: true,
-      draft: "",
-      selectedAssistant: composerGalleryConfig.assistants[0]
-    })} />);
-    expect(screen.queryByTestId("composer-v2-hints")).toBeNull();
-
-    rerender(<ComposerV2 {...props({ draft: "" })} />);
-    expect(screen.queryByTestId("composer-v2-hints")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Ways to start" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Capabilities" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Turn off Search" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Choose Knowledge" })).toBeVisible();
   });
 
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
@@ -543,29 +488,39 @@ describe("Composer v2", () => {
     expect(makeDefault).toBeVisible();
   });
 
-  it("routes picker, drop, and clipboard files through one capability filter", () => {
+  it("accepts PDFs through picker, drop, and clipboard with one capability filter", () => {
     const onUploadFiles = vi.fn();
     const onRejectedFiles = vi.fn();
     render(<ComposerV2 {...props({ onRejectedFiles, onUploadFiles })} />);
-    const pickerFile = new File(["notes"], "notes.txt", { type: "text/plain" });
-    const droppedFile = new File(["binary"], "setup.exe", {
+    const pickerFile = new File(["pdf-picker"], "picker.pdf", { type: "application/pdf" });
+    const droppedFile = new File(["pdf-drop"], "dropped.pdf", { type: "application/pdf" });
+    const rejectedFile = new File(["binary"], "setup.exe", {
       type: "application/x-msdownload"
     });
-    const pastedFile = new File(["pdf"], "brief.pdf", { type: "application/pdf" });
+    const pastedFile = new File(["pdf-paste"], "pasted.pdf", { type: "application/pdf" });
+    const fileInput = screen.getByLabelText("Attach files") as HTMLInputElement;
 
-    fireEvent.change(screen.getByLabelText("Attach files"), {
+    expect(fileInput.accept).toContain(".pdf");
+    expect(fileInput.accept).toContain("application/pdf");
+
+    fireEvent.change(fileInput, {
       target: { files: [pickerFile] }
     });
     fireEvent.drop(screen.getByTestId("composer-v2-surface"), {
-      dataTransfer: { dropEffect: "copy", files: [droppedFile], types: ["Files"] }
+      dataTransfer: {
+        dropEffect: "copy",
+        files: [droppedFile, rejectedFile],
+        types: ["Files"]
+      }
     });
     fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), {
       clipboardData: { files: [pastedFile] }
     });
 
     expect(onUploadFiles).toHaveBeenNthCalledWith(1, [pickerFile]);
-    expect(onRejectedFiles).toHaveBeenCalledWith([droppedFile]);
-    expect(onUploadFiles).toHaveBeenNthCalledWith(2, [pastedFile]);
+    expect(onUploadFiles).toHaveBeenNthCalledWith(2, [droppedFile]);
+    expect(onRejectedFiles).toHaveBeenCalledWith([rejectedFile]);
+    expect(onUploadFiles).toHaveBeenNthCalledWith(3, [pastedFile]);
   });
 
   it("keeps draft editing available while a blocking row explains disabled Send", () => {
@@ -595,6 +550,27 @@ describe("Composer v2", () => {
       onSend
     })} />);
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it("allows an attachment-only direct PDF after local parser failure", () => {
+    const onSend = vi.fn();
+    render(<ComposerV2 {...props({
+      attachmentItems: [{
+        blocksSend: false,
+        detail: "Local text extraction failed. The original PDF will be sent directly to the selected provider.",
+        fileName: "scan.pdf",
+        id: "direct-pdf",
+        status: "failed"
+      }],
+      draft: "",
+      onSend
+    })} />);
+
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toBeEnabled();
+    expect(screen.getByText(/The original PDF will be sent directly/u)).toBeVisible();
+    fireEvent.click(send);
     expect(onSend).toHaveBeenCalledOnce();
   });
 

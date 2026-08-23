@@ -160,12 +160,18 @@ async function request<T>(
   url: string,
   init: RequestInit,
   decode: (value: unknown) => T | null,
-  fetcher: Fetcher
+  fetcher: Fetcher,
+  nonJsonNotFoundCode?: string
 ): Promise<AdminProviderClientResult<T>> {
   try {
     const response = await fetcher(url, { credentials: "same-origin", ...init });
     const value = await response.json().catch(() => null);
-    if (!response.ok) return { error: clientError(value, "provider_admin_action_failed"), ok: false };
+    if (!response.ok) {
+      const fallback = response.status === 404 && value === null && nonJsonNotFoundCode
+        ? nonJsonNotFoundCode
+        : "provider_admin_action_failed";
+      return { error: clientError(value, fallback), ok: false };
+    }
     const data = decode(value);
     return data === null
       ? { error: clientError(null, "provider_admin_response_invalid"), ok: false }
@@ -228,7 +234,8 @@ export function runAdminProviderConnectionAction(
     `/api/admin/providers/${encoded(connectionId)}/actions`,
     json("POST", body),
     catalog,
-    fetcher
+    fetcher,
+    "provider_admin_route_unavailable"
   );
 }
 
@@ -243,7 +250,8 @@ export function discoverAdminOpenRouterModels(
     (value) => record(value) && Array.isArray(value.models) && value.models.every(isDiscoveredModel)
       ? value.models
       : null,
-    fetcher
+    fetcher,
+    "provider_admin_route_unavailable"
   );
 }
 
@@ -259,7 +267,8 @@ export function discoverAdminOpenRouterEndpoints(
     (value) => record(value) && Array.isArray(value.endpoints) && value.endpoints.every(isDiscoveredEndpoint)
       ? value.endpoints
       : null,
-    fetcher
+    fetcher,
+    "provider_admin_route_unavailable"
   );
 }
 
@@ -277,7 +286,8 @@ export function discoverAdminCompatibleModels(
       new Set(value.models.map((model) => model.id)).size === value.models.length
       ? value.models
       : null,
-    fetcher
+    fetcher,
+    "provider_admin_route_unavailable"
   );
 }
 
@@ -409,6 +419,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_activation_unavailable_confirmation_required: "A configured model ID is absent from one or more referenced key catalogs. Review the setup or confirm the override.",
     provider_active_tuple_not_found: "This exact active model and credential tuple is no longer usable.",
     provider_admin_action_failed: "The provider action could not be completed.",
+    provider_admin_route_unavailable: "The provider action route is unavailable in this app process. Restart the development app and try again.",
     provider_admin_response_invalid: "The provider API returned an unexpected response. Refresh and try again.",
     provider_configuration_invalid: "Review the provider fields and try again.",
     provider_connection_not_found: "This provider connection no longer exists.",

@@ -65,6 +65,10 @@ export type ComposerSendToken = {
 
 export type ComposerSendOutcome = "cancelled" | "failed" | "succeeded";
 
+export type ComposerSendOptions = Readonly<{
+  attachmentBlocksSend?(attachment: ComposerAttachment): boolean;
+}>;
+
 export type ComposerSessionPatch = Partial<
   Pick<ComposerSessionSnapshot, "attachments" | "draft" | "editingMessageId" | "operationError">
 >;
@@ -82,7 +86,7 @@ type ComposerSessionStore = {
     attachment: ComposerAttachment
   ): boolean;
   beginEdit(key: ComposerSessionKey, messageId: string): ComposerEditToken | null;
-  beginSend(key: ComposerSessionKey): ComposerSendToken | null;
+  beginSend(key: ComposerSessionKey, options?: ComposerSendOptions): ComposerSendToken | null;
   beginUpload(key: ComposerSessionKey): number | null;
   cancelEdit(key: ComposerSessionKey, expectedMessageId?: string): void;
   editGenerationCounter: number;
@@ -346,7 +350,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       sourceKey: key
     };
   },
-  beginSend(key) {
+  beginSend(key, options) {
     const state = get();
     const session = state.sessionsByKey[key];
     if (
@@ -355,7 +359,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       session.pendingUploadGenerations.length > 0 ||
       session.editingMessageId ||
       session.attachments.some(
-        (attachment) => attachment.status !== undefined && attachment.status !== "ready"
+        options?.attachmentBlocksSend ??
+          ((attachment) => attachment.status !== undefined && attachment.status !== "ready")
       ) ||
       (!session.draft.trim() && session.attachments.length === 0)
     ) {

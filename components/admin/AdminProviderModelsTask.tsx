@@ -4,6 +4,7 @@ import {
   AdminProviderModelEditor,
   adminProviderAdapterLabel
 } from "@/components/admin/AdminProviderModelEditor";
+import { AdminProviderCapabilities } from "@/components/admin/AdminProviderCapabilities";
 import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import {
   AdminAvailabilityStatus,
@@ -23,7 +24,7 @@ import {
   embeddingPresetsForFamily,
   type EmbeddingModelPreset
 } from "@/lib/domain/embeddingModels";
-import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
+import { MoreHorizontal, Pencil, Plus, TestTube2, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 export function AdminProviderModelsTask({
@@ -38,6 +39,7 @@ export function AdminProviderModelsTask({
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>) {
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
+  const [capabilitiesId, setCapabilitiesId] = useState<string | null>(null);
   const requestDraftDiscard = useAdminDiscardAction();
   const editing = editingId && editingId !== "new"
     ? connection.models.find(({ id }) => id === editingId) ?? null
@@ -194,13 +196,15 @@ export function AdminProviderModelsTask({
                 : routing
                   ? "Automatic routing"
                   : adminProviderAdapterLabel(model.draftConfig.adapterKind);
+              const capabilitiesOpen = capabilitiesId === model.id;
               return (
                 <div
-                  className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${adminAvailabilityRowClass(model.enabled)}`}
+                  className={adminAvailabilityRowClass(model.enabled)}
                   data-resource-availability-row={model.enabled ? "enabled" : "disabled"}
                   key={model.id}
                   role="listitem"
                 >
+                  <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="break-words text-sm font-medium text-ink">{model.displayName}</p>
                     <p className="mt-1 text-xs leading-5 text-ink-muted">
@@ -220,6 +224,18 @@ export function AdminProviderModelsTask({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1">
+                    <button
+                      aria-controls={`provider-model-capabilities-${model.id}`}
+                      aria-expanded={capabilitiesOpen}
+                      aria-label={`${capabilitiesOpen ? "Close" : "Open"} ${model.displayName} capabilities`}
+                      className={capabilitiesOpen ? primaryButton : quietButton}
+                      disabled={controller.state.busy}
+                      onClick={() => setCapabilitiesId((current) => current === model.id ? null : model.id)}
+                      type="button"
+                    >
+                      <TestTube2 aria-hidden="true" className="size-3.5" />
+                      Capabilities
+                    </button>
                     {!isEmbedding ? (
                       <button
                         aria-label={`Edit ${model.displayName}`}
@@ -294,6 +310,17 @@ export function AdminProviderModelsTask({
                       </div>
                     </details>
                   </div>
+                  </div>
+                  {capabilitiesOpen ? (
+                    <div id={`provider-model-capabilities-${model.id}`}>
+                      <AdminProviderCapabilities
+                        connection={connection}
+                        controller={controller}
+                        model={model}
+                        requestConfirmation={requestConfirmation}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
