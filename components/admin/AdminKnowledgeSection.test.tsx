@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
   adminKnowledgeDestinationFixture,
+  adminKnowledgeAnswerPolicyFixture,
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
 } from "@/tests/support/knowledgeProfile";
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdminKnowledgeSection } from "./AdminKnowledgeSection";
 
 const settings = {
+  answerPolicy: adminKnowledgeAnswerPolicyFixture(),
   ingestionLimits: {
     maxChunksPerDocument: 10_000,
     maxFileBytes: 25_000_000,
@@ -27,7 +29,7 @@ afterEach(() => {
 });
 
 describe("administrator Knowledge section", () => {
-  it("shows fixed privacy-neutral retrieval and ingestion facts without mutable controls", async () => {
+  it("shows one privacy-neutral answer retrieval control and read-only ingestion facts", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ knowledge: settings }), { status: 200 })
     ));
@@ -36,14 +38,13 @@ describe("administrator Knowledge section", () => {
 
     expect(await screen.findByText("25 MB")).toBeVisible();
     expect(screen.getByText(/never lists private bases/i)).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Fixed retrieval" })).toBeVisible();
-    const fixedRetrieval = screen.getByRole("heading", { name: "Fixed retrieval" })
-      .parentElement!;
-    expect(within(fixedRetrieval).getByText("40")).toBeVisible();
-    expect(within(fixedRetrieval).getByText("8")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /save retrieval policy/i }))
-      .not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Answer retrieval" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", {
+      name: /Maximum Knowledge searches per answer/
+    })).toHaveValue(12);
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.queryByLabelText(/candidate passages/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Hybrid candidates")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/visual-analysis destination/i)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Operations health" })).toBeVisible();
     expect(screen.getByText("No active alerts")).toBeVisible();
@@ -102,6 +103,11 @@ describe("administrator Knowledge section", () => {
           destination: remote,
           executionAuthority: "installation",
           id: "profile-revision-2",
+          pdfProcessing: {
+            destination: null,
+            mode: "local",
+            parserProfileVersion: 1
+          },
           revisionNumber: 2
         },
         availableDestinations: [adminKnowledgeDestinationFixture, remote],
@@ -124,7 +130,7 @@ describe("administrator Knowledge section", () => {
 
     const route = await screen.findByTestId("knowledge-profile-route");
     expect(within(route).getByText("Documents")).toBeVisible();
-    expect(within(route).getByText("Parser & OCR")).toBeVisible();
+    expect(within(route).getByText("Local")).toBeVisible();
     expect(within(route).getByText("Local embeddings / Multilingual embed")).toBeVisible();
     fireEvent.change(screen.getByRole("combobox", { name: /Embedding destination/i }), {
       target: { value: remote.deploymentId }
@@ -142,7 +148,8 @@ describe("administrator Knowledge section", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       action: "activate_profile",
       deploymentId: remote.deploymentId,
-      expectedVersion: 1
+      expectedVersion: 1,
+      pdfProcessingMode: "local"
     });
     expect(onMutationCommitted).toHaveBeenCalledOnce();
   });

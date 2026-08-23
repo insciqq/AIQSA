@@ -78,12 +78,12 @@ export type LegacyKnowledgeBudgetEvidence = Readonly<{
 
 export const DEFAULT_KNOWLEDGE_BUDGET_POLICY: KnowledgeBudgetPolicy = Object.freeze({
   estimatedEmbeddingCostMicrosPerThousandTokens: 100,
-  maxCumulativeCandidates: 160,
-  maxEstimatedCostMicros: 10_000,
-  maxLatencyMs: 120_000,
-  maxOperations: 4,
-  maxQueryEmbeddingCalls: 4,
-  maxRetrievedTokens: 49_152,
+  maxCumulativeCandidates: 480,
+  maxEstimatedCostMicros: 30_000,
+  maxLatencyMs: 360_000,
+  maxOperations: 12,
+  maxQueryEmbeddingCalls: 12,
+  maxRetrievedTokens: 147_456,
   version: KNOWLEDGE_BUDGET_POLICY_VERSION
 });
 
@@ -130,12 +130,26 @@ export function decodeKnowledgeBudgetPolicy(value: unknown): KnowledgeBudgetPoli
 }
 
 export function knowledgeBudgetPolicyFromProfileConfiguration(
-  value: unknown
+  value: unknown,
+  maximumKnowledgeSearches = DEFAULT_KNOWLEDGE_BUDGET_POLICY.maxOperations
 ): KnowledgeBudgetPolicy {
   // Immutable historical profiles may still contain wider planner-era
   // budgets. They are decode-only and never override the fixed focused path.
   void value;
-  return DEFAULT_KNOWLEDGE_BUDGET_POLICY;
+  if (!integer(maximumKnowledgeSearches, 1, 32)) {
+    throw new Error("knowledge_answer_policy_invalid");
+  }
+  return Object.freeze({
+    estimatedEmbeddingCostMicrosPerThousandTokens:
+      DEFAULT_KNOWLEDGE_BUDGET_POLICY.estimatedEmbeddingCostMicrosPerThousandTokens,
+    maxCumulativeCandidates: maximumKnowledgeSearches * 40,
+    maxEstimatedCostMicros: maximumKnowledgeSearches * 2_500,
+    maxLatencyMs: maximumKnowledgeSearches * 30_000,
+    maxOperations: maximumKnowledgeSearches,
+    maxQueryEmbeddingCalls: maximumKnowledgeSearches,
+    maxRetrievedTokens: maximumKnowledgeSearches * 12_288,
+    version: KNOWLEDGE_BUDGET_POLICY_VERSION
+  });
 }
 
 export function isKnowledgeOperationKind(value: unknown): value is KnowledgeOperationKind {

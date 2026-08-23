@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminEmailState } from "@/lib/contracts/email";
 import {
+  adminKnowledgeAnswerPolicyFixture,
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
 } from "@/tests/support/knowledgeProfile";
@@ -968,9 +969,10 @@ describe("AdminPanel", () => {
     expect(window.location.search).toBe("?section=users");
   });
 
-  it("refreshes Knowledge directly because retrieval has no mutable draft", async () => {
+  it("refreshes Knowledge directly while the answer policy is unchanged", async () => {
     window.history.replaceState(null, "", "/admin?section=knowledge");
     const knowledge = {
+      answerPolicy: adminKnowledgeAnswerPolicyFixture(),
       ingestionLimits: {
         maxChunksPerDocument: 10_000,
         maxFileBytes: 25_000_000,
@@ -996,13 +998,12 @@ describe("AdminPanel", () => {
     });
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    await screen.findByRole("heading", { name: "Fixed retrieval" });
+    await screen.findByRole("heading", { name: "Answer retrieval" });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(knowledgeGets).toBe(2));
     expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" }))
       .not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save retrieval policy" }))
-      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.getByRole("tab", { name: "Providers" })).toBeEnabled();
     const unload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(unload);

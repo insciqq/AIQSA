@@ -1,4 +1,5 @@
 import { textMessageContent } from "../../domain/content";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
   decodeKnowledgePlan,
   decodeKnowledgeSelection,
@@ -67,6 +68,17 @@ import type {
 import { withSelectedSkillContext } from "../skills/userContext";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/knowledgeTools";
+import {
+  knowledgeAdmissionMayFitFullContext,
+  knowledgeAnsweringRequestSnapshot,
+  KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT,
+  planKnowledgeAnswering,
+  type KnowledgeAnsweringPlan
+} from "../knowledge/fullContext";
+import {
+  knowledgeEvidenceMessageFromDispatchDraft,
+  withAutomaticKnowledgeEvidence
+} from "../knowledge/automaticEvidence";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   getRunAttachmentLimits,
@@ -112,7 +124,7 @@ type RunPreparationRepository = Pick<
   | "loadAttachments"
   | "loadConversationContextForExpectedLeaf"
   | "loadConversationContextForLeaf"
->;
+> & Partial<Pick<RunRepository, "loadKnowledgeFullContextPassages">>;
 
 export type RunPreparationDeps = Readonly<{
   allowFakeProvider?: boolean;
@@ -1451,16 +1463,6 @@ export async function prepareRun(
       affected ? `MCP tools are not ready: ${affected}.` : "MCP tools are not ready."
     );
   }
-  const knowledgeCompatibility = validateKnowledgeCapabilities({
-    ...(toolBridge ? { bridge: toolBridge } : {}),
-    capabilities: modelCapabilities,
-    enabled: knowledgeRequested,
-    modelId: executionModelId,
-    provider: executionProvider
-  });
-  if (knowledgeCompatibility) {
-    return failure(knowledgeCompatibility.code, knowledgeCompatibility.status);
-  }
   const mcpCompatibility = validateMcpCapabilities({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     capabilities: modelCapabilities,
@@ -1503,7 +1505,7 @@ export async function prepareRun(
     );
   }
 
-  const unbudgetedNormalizedRequest: NormalizedRunRequest = {
+  const baseNormalizedRequest: NormalizedRunRequest = {
     attachmentIds,
     chatId: chat.id,
     content,
@@ -1561,38 +1563,125 @@ export async function prepareRun(
     toolMode: knowledgeRequested || body?.tools !== "none" ? "auto" : "none"
   };
   const plannedSearchTools = createSearchPlanToolRouter({
-    plan: unbudgetedNormalizedRequest.searchPlan,
+    plan: baseNormalizedRequest.searchPlan,
     runtimes: {}
   })?.tools ?? [];
-  const clientTools = unbudgetedNormalizedRequest.toolMode === "none"
+  const nonKnowledgeClientTools = baseNormalizedRequest.toolMode === "none"
     ? []
     : [
-        ...(knowledgeRequested ? [knowledgeRetrievalTool] : []),
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
-        ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
+        ...mcpRunTools(baseNormalizedRequest.mcp)
       ];
-  const unbudgetedProviderRequest: ProviderRunRequest = {
-    ...unbudgetedNormalizedRequest,
-    attachments,
-    ...(clientTools.length > 0 ? { tools: clientTools } : {})
-  };
-  const providerBudget = applyProviderRequestContextBudget({
-    ...(toolBridge ? { bridge: toolBridge } : {}),
-    request: unbudgetedProviderRequest
-  });
-  if (!providerBudget.ok) {
-    return failure(providerBudget.error.code, providerBudget.status, providerBudget.error.message);
+
+  let answeringPlan: KnowledgeAnsweringPlan | undefined;
+  if (knowledgeAdmissionPlan) {
+    // Knowledge context injection is independent from Search and MCP tool
+    // availability. Those tools remain callable without forcing a small,
+    // otherwise admissible Knowledge corpus through iterative retrieval.
+    const fullContextEligible = knowledgeAdmissionMayFitFullContext(
+      knowledgeAdmissionPlan,
+      modelCapabilities.contextWindow
+    );
+    const passages = fullContextEligible && deps.repository.loadKnowledgeFullContextPassages &&
+      knowledgeAdmissionPlan.sources
+      ? await deps.repository.loadKnowledgeFullContextPassages(knowledgeAdmissionPlan.sources)
+      : null;
+    answeringPlan = planKnowledgeAnswering({
+      admissionPlan: knowledgeAdmissionPlan,
+      passages,
+      request: {
+        ...baseNormalizedRequest,
+        attachments,
+        ...(nonKnowledgeClientTools.length > 0 ? { tools: nonKnowledgeClientTools } : {})
+      }
+    });
   }
+
+  const budgetAnsweringRequest = (plan: KnowledgeAnsweringPlan | undefined) => {
+    const fullContext = plan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
+    const clientTools = baseNormalizedRequest.toolMode === "none"
+      ? []
+      : [
+          ...(!fullContext && knowledgeRequested ? [knowledgeRetrievalTool] : []),
+          ...nonKnowledgeClientTools
+        ];
+    const normalized: NormalizedRunRequest = {
+      ...baseNormalizedRequest,
+      ...(plan ? { knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan) } : {})
+    };
+    const unbudgeted: ProviderRunRequest = {
+      ...normalized,
+      attachments,
+      ...(clientTools.length > 0 ? { tools: clientTools } : {})
+    };
+    const withEvidence = fullContext
+      ? withAutomaticKnowledgeEvidence(
+          unbudgeted,
+          knowledgeEvidenceMessageFromDispatchDraft(plan.dispatchDraft)
+        )
+      : unbudgeted;
+    const budget = applyProviderRequestContextBudget({
+      ...(toolBridge ? { bridge: toolBridge } : {}),
+      request: withEvidence
+    });
+    const retainedEvidence = fullContext && budget.ok
+      ? budget.request.context?.messages.find((message) =>
+          message.purpose === "knowledge_evidence")
+      : null;
+    const exactEvidenceRetained = !fullContext || Boolean(
+      retainedEvidence &&
+      textFromContentBlocks(retainedEvidence.content) === plan.dispatchDraft.message
+    );
+    const normalizedWithEvidence: NormalizedRunRequest = {
+      ...normalized,
+      ...(withEvidence.context ? { context: withEvidence.context } : {}),
+      prompt: withEvidence.prompt
+    };
+    return { budget, exactEvidenceRetained, normalized: normalizedWithEvidence };
+  };
+
+  let budgetedAnswer = budgetAnsweringRequest(answeringPlan);
+  if (answeringPlan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT &&
+    (!budgetedAnswer.budget.ok || !budgetedAnswer.exactEvidenceRetained)) {
+    answeringPlan = planKnowledgeAnswering({
+      admissionPlan: knowledgeAdmissionPlan!,
+      passages: null,
+      request: { ...baseNormalizedRequest, attachments }
+    });
+    budgetedAnswer = budgetAnsweringRequest(answeringPlan);
+  }
+  if (!budgetedAnswer.budget.ok) {
+    return failure(
+      budgetedAnswer.budget.error.code,
+      budgetedAnswer.budget.status,
+      budgetedAnswer.budget.error.message
+    );
+  }
+  if (!budgetedAnswer.exactEvidenceRetained) {
+    return failure("context_too_large", 400, "The exact Knowledge evidence did not fit.");
+  }
+  if (answeringPlan?.route !== KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT) {
+    const knowledgeCompatibility = validateKnowledgeCapabilities({
+      ...(toolBridge ? { bridge: toolBridge } : {}),
+      capabilities: modelCapabilities,
+      enabled: knowledgeRequested,
+      modelId: executionModelId,
+      provider: executionProvider
+    });
+    if (knowledgeCompatibility) {
+      return failure(knowledgeCompatibility.code, knowledgeCompatibility.status);
+    }
+  }
+  if (knowledgeAdmissionPlan && answeringPlan) {
+    knowledgeAdmissionPlan = Object.freeze({ ...knowledgeAdmissionPlan, answeringPlan });
+  }
+  const providerBudget = budgetedAnswer.budget;
   const normalizedRequest: NormalizedRunRequest = {
-    ...unbudgetedNormalizedRequest,
+    ...budgetedAnswer.normalized,
     context: providerBudget.request.context!
   };
-  const providerRequest: ProviderRunRequest = {
-    ...normalizedRequest,
-    attachments: providerBudget.request.attachments,
-    ...(clientTools.length > 0 ? { tools: clientTools } : {})
-  };
+  const providerRequest: ProviderRunRequest = providerBudget.request;
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   // Assistant-derived values never overwrite the user's ordinary manual
   // defaults, so an Assistant run persists no accepted-defaults update.

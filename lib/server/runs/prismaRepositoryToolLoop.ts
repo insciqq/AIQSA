@@ -32,6 +32,12 @@ import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer"
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import { KNOWLEDGE_EVIDENCE_MESSAGE_ID } from "../knowledge/evidenceContext";
+import {
+  KNOWLEDGE_FULL_CONTEXT_THRESHOLD_BASIS_POINTS,
+  KNOWLEDGE_MAXIMUM_SEARCHES_MAXIMUM,
+  KNOWLEDGE_MAXIMUM_SEARCHES_MINIMUM
+} from "../knowledge/answerPolicy";
 import {
   parseToolLoopCheckpoint,
   AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
@@ -422,6 +428,7 @@ const normalizedRequestKeys = new Set([
   "chatId",
   "content",
   "context",
+  "knowledgeAnswering",
   "knowledgeFocusedRequest",
   "knowledgePlan",
   "memoryActionTools",
@@ -543,6 +550,72 @@ function validContext(value: unknown): boolean {
   return true;
 }
 
+function validKnowledgeAnswering(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !onlyKnownKeys(value, new Set([
+    "answerPolicy",
+    "approximateDocumentTokens",
+    "evidenceCount",
+    "exactDocumentTokens",
+    "route",
+    "version"
+  ])) || value.version !== 1 ||
+    (value.route !== "rag_v1" && value.route !== "full_context_v1") ||
+    !Number.isSafeInteger(value.approximateDocumentTokens) ||
+    Number(value.approximateDocumentTokens) < 1 || !isRecord(value.answerPolicy) ||
+    !onlyKnownKeys(value.answerPolicy, new Set([
+      "fullContextThresholdBasisPoints",
+      "maximumKnowledgeSearches",
+      "revision",
+      "version"
+    ])) || value.answerPolicy.version !== 1 ||
+    value.answerPolicy.fullContextThresholdBasisPoints !==
+      KNOWLEDGE_FULL_CONTEXT_THRESHOLD_BASIS_POINTS ||
+    !Number.isSafeInteger(value.answerPolicy.maximumKnowledgeSearches) ||
+    Number(value.answerPolicy.maximumKnowledgeSearches) < KNOWLEDGE_MAXIMUM_SEARCHES_MINIMUM ||
+    Number(value.answerPolicy.maximumKnowledgeSearches) > KNOWLEDGE_MAXIMUM_SEARCHES_MAXIMUM ||
+    !Number.isSafeInteger(value.answerPolicy.revision) || Number(value.answerPolicy.revision) < 1) {
+    return false;
+  }
+  const fullContext = value.route === "full_context_v1";
+  return fullContext
+    ? Number.isSafeInteger(value.evidenceCount) && Number(value.evidenceCount) >= 1 &&
+      Number(value.evidenceCount) <= 2_048 &&
+      Number.isSafeInteger(value.exactDocumentTokens) && Number(value.exactDocumentTokens) >= 1
+    : value.evidenceCount === undefined && value.exactDocumentTokens === undefined;
+}
+
+function validFullContextEvidenceContext(value: unknown, evidenceCount: number): boolean {
+  if (!isRecord(value) || !Array.isArray(value.messages)) return false;
+  const evidenceMessages = value.messages.filter((message) =>
+    isRecord(message) && message.purpose === "knowledge_evidence");
+  if (evidenceMessages.length !== 1) return false;
+  const message = evidenceMessages[0]!;
+  if (message.id !== KNOWLEDGE_EVIDENCE_MESSAGE_ID || message.role !== "user" ||
+    !isRecord(message.content) || !Array.isArray(message.content.blocks) ||
+    message.content.blocks.length !== 1) return false;
+  const block = message.content.blocks[0];
+  if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") return false;
+  const parts = block.text.split("\n\n");
+  if (parts.length !== evidenceCount + 3 ||
+    !parts[0]!.startsWith(
+      '<private_knowledge_evidence version="4" coverage="full_admitted_corpus">\n'
+    ) || !parts[1]!.trim() || parts.at(-1) !== "</private_knowledge_evidence>") return false;
+  for (const [index, serialized] of parts.slice(2, -1).entries()) {
+    let item: unknown;
+    try {
+      item = JSON.parse(serialized);
+    } catch {
+      return false;
+    }
+    const handle = `K${index + 1}`;
+    if (!isRecord(item) || item.type !== "source_evidence" || item.schemaVersion !== 1 ||
+      item.handle !== handle || item.citation !== `[${handle}]` ||
+      typeof item.exactExcerpt !== "string" || !item.exactExcerpt.trim()) return false;
+  }
+  return true;
+}
+
 function validSearchPlan(value: unknown): boolean {
   if (!isRecord(value) || !onlyKnownKeys(value, new Set(["mode", "options"])) ||
     !searchPlanModes.includes(value.mode as (typeof searchPlanModes)[number]) ||
@@ -652,7 +725,8 @@ function decodeProviderDispatchRecoveryRequest(
     new Set(value.attachmentIds).size !== value.attachmentIds.length ||
     !isRecord(value.content) || !onlyKnownKeys(value.content, new Set(["blocks"])) ||
     !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
-    !validContext(value.context) || !validCapabilities(value.modelCapabilities) ||
+    !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
+    !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
       "baseline", "developer", "knowledgeAnswerContract", "memoryActionAnswerResult", "system"
@@ -673,15 +747,30 @@ function decodeProviderDispatchRecoveryRequest(
     value.knowledgeFocusedRequest !== undefined &&
       decodeKnowledgeFocusedRequest(value.knowledgeFocusedRequest) === null ||
     value.prompt.knowledgeAnswerContract !== undefined &&
-      value.knowledgeFocusedRequest === undefined ||
+      value.knowledgeFocusedRequest === undefined &&
+      (!isRecord(value.knowledgeAnswering) ||
+        value.knowledgeAnswering.route !== "full_context_v1") ||
     value.mcpDiscovery !== undefined && !decodeMcpDiscoveryState(value.mcpDiscovery, 100)) return null;
   if (value.knowledgeFocusedRequest !== undefined && (
+    value.knowledgeAnswering !== undefined ||
     value.toolMode !== "none" ||
     !isRecord(value.searchPlan) || !Array.isArray(value.searchPlan.options) ||
     value.searchPlan.options.length !== 0 || value.mcp !== undefined ||
     value.mcpDiscovery !== undefined || value.memoryActionTools !== undefined ||
     value.memoryHistoryTool !== undefined
   )) return null;
+  if (isRecord(value.knowledgeAnswering) &&
+    value.knowledgeAnswering.route === "full_context_v1" && (
+      value.prompt.knowledgeAnswerContract !== 1 ||
+      !validFullContextEvidenceContext(
+        value.context,
+        Number(value.knowledgeAnswering.evidenceCount)
+      ) ||
+      !isRecord(value.searchPlan) || !Array.isArray(value.searchPlan.options) ||
+      value.searchPlan.options.length !== 0 || value.mcp !== undefined ||
+      value.mcpDiscovery !== undefined || value.memoryActionTools !== undefined ||
+      value.memoryHistoryTool !== undefined
+    )) return null;
   if (value.memoryActionTools !== undefined && (!isRecord(value.memoryActionTools) ||
     !onlyKnownKeys(value.memoryActionTools, new Set(["version"])) ||
     value.memoryActionTools.version !== "model-driven-v2")) return null;

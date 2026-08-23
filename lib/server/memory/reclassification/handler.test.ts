@@ -55,6 +55,7 @@ function job() {
     leaseExpiresAt: new Date("2026-08-21T00:05:00.000Z"),
     recoveredLease: false,
     sourceHash: null,
+    sourceMessageId: null,
     sourceRevision: null,
     stage: null,
     userId: "user-1"

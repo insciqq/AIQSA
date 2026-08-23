@@ -149,7 +149,14 @@ describe("direct PDF input probe", () => {
       }],
       forceNonStreaming: true,
       knowledgePlan: { mode: "none" },
-      params: { background: false, store: false, stream: false },
+      params: {
+        background: false,
+        maxOutputTokens: 512,
+        maxTokens: 512,
+        max_output_tokens: 512,
+        store: false,
+        stream: false
+      },
       searchPlan: { options: [] },
       toolChoice: "none",
       toolMode: "none",

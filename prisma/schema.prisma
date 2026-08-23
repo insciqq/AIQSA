@@ -593,6 +593,7 @@ model User {
   knowledgeBasePublications           KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
   knowledgeBases                      KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
   knowledgeIndexProfileUpdates        KnowledgeIndexProfile[]            @relation("KnowledgeIndexProfileUpdater")
+  knowledgeAnswerPolicyUpdates        KnowledgeAnswerPolicy[]            @relation("KnowledgeAnswerPolicyUpdater")
   knowledgeSources                    KnowledgeSource[]                  @relation("KnowledgeSourceOwner")
   knowledgeUploadBatches              KnowledgeUploadBatch[]
   memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
@@ -898,6 +899,18 @@ model SystemModelPolicy {
   @@index([updatedByUserId])
 }
 
+model KnowledgeAnswerPolicy {
+  id                       String   @id
+  maximumKnowledgeSearches Int      @default(12)
+  version                  Int      @default(1)
+  updatedByUserId          String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @default(now()) @updatedAt
+  updatedBy                User?    @relation("KnowledgeAnswerPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
 model MemoryEgressAdminPolicy {
   id                    String    @id
   acceptedFingerprint   String?   @db.VarChar(128)
@@ -997,6 +1010,19 @@ enum KnowledgeIndexProfileExecutionAuthority {
 enum KnowledgeIndexProfilePreflightStatus {
   ready
   failed
+}
+
+enum KnowledgePdfProcessingMode {
+  local
+  system_model_direct_pdf
+  system_model_vision
+}
+
+enum KnowledgePdfProcessingAttemptState {
+  reserved
+  dispatched
+  settled
+  ambiguous
 }
 
 enum KnowledgeSourceArtifactState {
@@ -1239,29 +1265,33 @@ model KnowledgeIndexProfile {
 }
 
 model KnowledgeIndexProfileRevision {
-  id                       String                                  @id @default(uuid())
-  profileId                String
-  revisionNumber           Int
-  embeddingProviderModelId String
-  embeddingConfiguration   Json
-  vectorSpaceFingerprint   String                                  @db.Char(64)
-  targetDimension          Int
-  chunkingProfileVersion   Int
-  executionAuthority       KnowledgeIndexProfileExecutionAuthority
-  profileConfiguration     Json
-  egressPolicy             Json
-  preflightStatus          KnowledgeIndexProfilePreflightStatus
-  preflightErrorCode       String?                                 @db.VarChar(64)
-  preflightCheckedAt       DateTime
-  activatedAt              DateTime
-  createdAt                DateTime                                @default(now())
-  activeFor                KnowledgeIndexProfile?                  @relation("KnowledgeIndexProfileActiveRevision")
-  embeddingProviderModel   ProviderModel                           @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
-  baseSnapshots            KnowledgeBaseSnapshot[]
-  generations              KnowledgeIndexGeneration[]
-  profile                  KnowledgeIndexProfile                   @relation("KnowledgeIndexProfileRevisions", fields: [profileId], references: [id], onDelete: Restrict)
-  sourceArtifacts          KnowledgeSourceIndexArtifact[]
-  runProfileBindings       KnowledgeRunProfileBinding[]
+  id                          String                                  @id @default(uuid())
+  profileId                   String
+  revisionNumber              Int
+  embeddingProviderModelId    String
+  embeddingConfiguration      Json
+  vectorSpaceFingerprint      String                                  @db.Char(64)
+  targetDimension             Int
+  chunkingProfileVersion      Int
+  pdfProcessingMode           KnowledgePdfProcessingMode              @default(local)
+  pdfParserProfileVersion     Int                                     @default(1)
+  pdfSystemModelPolicyVersion Int?
+  pdfSystemModelSnapshot      Json?
+  executionAuthority          KnowledgeIndexProfileExecutionAuthority
+  profileConfiguration        Json
+  egressPolicy                Json
+  preflightStatus             KnowledgeIndexProfilePreflightStatus
+  preflightErrorCode          String?                                 @db.VarChar(64)
+  preflightCheckedAt          DateTime
+  activatedAt                 DateTime
+  createdAt                   DateTime                                @default(now())
+  activeFor                   KnowledgeIndexProfile?                  @relation("KnowledgeIndexProfileActiveRevision")
+  embeddingProviderModel      ProviderModel                           @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
+  baseSnapshots               KnowledgeBaseSnapshot[]
+  generations                 KnowledgeIndexGeneration[]
+  profile                     KnowledgeIndexProfile                   @relation("KnowledgeIndexProfileRevisions", fields: [profileId], references: [id], onDelete: Restrict)
+  sourceArtifacts             KnowledgeSourceIndexArtifact[]
+  runProfileBindings          KnowledgeRunProfileBinding[]
 
   @@unique([profileId, revisionNumber])
   @@unique([profileId, id])
@@ -1532,6 +1562,7 @@ model KnowledgeSourceIndexArtifact {
   createdAt                DateTime                                @default(now())
   updatedAt                DateTime                                @updatedAt
   profileRevision          KnowledgeIndexProfileRevision           @relation(fields: [profileRevisionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  pdfProcessingAttempts    KnowledgePdfProcessingAttempt[]
   runSourceBindings        KnowledgeRunSourceBinding[]
   hierarchicalIndexes      KnowledgeHierarchicalIndexArtifact[]
   snapshotSources          KnowledgeBaseSnapshotSource[]
@@ -1542,6 +1573,31 @@ model KnowledgeSourceIndexArtifact {
   @@unique([sourceVersionId, id])
   @@index([profileRevisionId, state])
   @@index([state, nextAttemptAt, claimedAt, createdAt], map: "KnowledgeSourceIndexArtifact_queue_idx")
+}
+
+model KnowledgePdfProcessingAttempt {
+  id               String                             @id @default(uuid())
+  sourceArtifactId String
+  sourceVersionId  String
+  batchIndex       Int
+  mode             KnowledgePdfProcessingMode
+  pageStart        Int
+  pageEnd          Int
+  requestDigest    String                             @db.Char(64)
+  state            KnowledgePdfProcessingAttemptState @default(reserved)
+  resultText       String?
+  resultChecksum   String?                            @db.Char(64)
+  usage            Json?
+  dispatchedAt     DateTime?
+  settledAt        DateTime?
+  createdAt        DateTime                           @default(now())
+  updatedAt        DateTime                           @updatedAt
+  sourceArtifact   KnowledgeSourceIndexArtifact       @relation(fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgePdfAttempt_source_artifact_fkey")
+  usageEvent       UsageEvent?
+
+  @@unique([sourceArtifactId, batchIndex])
+  @@index([sourceVersionId, sourceArtifactId], map: "KnowledgePdfAttempt_source_artifact_idx")
+  @@index([state, updatedAt])
 }
 
 model KnowledgeHierarchicalIndexArtifact {
@@ -2369,35 +2425,35 @@ model Chat {
 }
 
 model Message {
-  id                 String        @id @default(uuid())
-  chatId             String
-  role               String
-  parentMessageId    String?
-  content            Json
-  groundedAt         DateTime?
-  groundingProvider  String?
-  groundingStrategy  String?
-  provider           String?
-  modelId            String?
-  status             MessageStatus @default(complete)
-  inputTokens        Int           @default(0)
-  outputTokens       Int           @default(0)
-  reasoningTokens    Int           @default(0)
-  errorMessage       String?
-  authorUserId       String?
-  authorDisplayName  String?
-  authorProjectRole  ProjectRole?
+  id                     String        @id @default(uuid())
+  chatId                 String
+  role                   String
+  parentMessageId        String?
+  content                Json
+  groundedAt             DateTime?
+  groundingProvider      String?
+  groundingStrategy      String?
+  provider               String?
+  modelId                String?
+  status                 MessageStatus @default(complete)
+  inputTokens            Int           @default(0)
+  outputTokens           Int           @default(0)
+  reasoningTokens        Int           @default(0)
+  errorMessage           String?
+  authorUserId           String?
+  authorDisplayName      String?
+  authorProjectRole      ProjectRole?
   branchSourceModelRunId String?
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
-  assistantModelRuns ModelRun[]    @relation("AssistantMessageRun")
-  author             User?         @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  branchSourceModelRun ModelRun?   @relation("BranchSourceModelRun", fields: [branchSourceModelRunId], references: [id], onDelete: SetNull, onUpdate: Restrict)
-  activeLeafForChats Chat[]        @relation("ChatActiveLeaf")
-  chat               Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
-  children           Message[]     @relation("MessageBranches")
-  parent             Message?      @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
-  userModelRuns      ModelRun[]    @relation("UserMessageRun")
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  assistantModelRuns     ModelRun[]    @relation("AssistantMessageRun")
+  author                 User?         @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  branchSourceModelRun   ModelRun?     @relation("BranchSourceModelRun", fields: [branchSourceModelRunId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  activeLeafForChats     Chat[]        @relation("ChatActiveLeaf")
+  chat                   Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
+  children               Message[]     @relation("MessageBranches")
+  parent                 Message?      @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
+  userModelRuns          ModelRun[]    @relation("UserMessageRun")
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
@@ -2975,29 +3031,31 @@ model KnowledgeRunScope {
   resolvedSourceCount Int
   exclusions          Json     @default("[]")
   budgetPolicy        Json
+  answerPolicy        Json     @default("{\"version\":1,\"revision\":1,\"maximumKnowledgeSearches\":12,\"fullContextThresholdBasisPoints\":7000}")
+  answerRoute         String   @default("rag_v1") @db.VarChar(32)
   createdAt           DateTime @default(now())
   modelRun            ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
 }
 
 model KnowledgeRetrievalSession {
-  id                   String                              @id @default(uuid())
-  modelRunId           String                              @unique
-  version              Int                                 @default(2)
-  originalIntent       Json
-  scopeSnapshot        Json
-  readinessSummary     Json
-  degradedFlags        String[]                            @default([])
-  citationContract     Json
-  nextEvidenceOrdinal  Int                                 @default(1)
-  acceptedAt           DateTime?
-  receiptHash          String?                             @db.Char(64)
-  createdAt            DateTime                            @default(now())
-  updatedAt            DateTime                            @updatedAt
-  modelRun             ModelRun                            @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  operations           KnowledgeRun[]
-  evidenceItems        KnowledgeEvidenceItem[]
-  groundingResult      KnowledgeGroundingResult?
-  dispatchManifests    KnowledgeEvidenceDispatchManifest[]
+  id                  String                              @id @default(uuid())
+  modelRunId          String                              @unique
+  version             Int                                 @default(2)
+  originalIntent      Json
+  scopeSnapshot       Json
+  readinessSummary    Json
+  degradedFlags       String[]                            @default([])
+  citationContract    Json
+  nextEvidenceOrdinal Int                                 @default(1)
+  acceptedAt          DateTime?
+  receiptHash         String?                             @db.Char(64)
+  createdAt           DateTime                            @default(now())
+  updatedAt           DateTime                            @updatedAt
+  modelRun            ModelRun                            @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  operations          KnowledgeRun[]
+  evidenceItems       KnowledgeEvidenceItem[]
+  groundingResult     KnowledgeGroundingResult?
+  dispatchManifests   KnowledgeEvidenceDispatchManifest[]
 }
 
 model KnowledgeEvidenceItem {
@@ -3183,33 +3241,35 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
-  id                         String                    @id @default(uuid())
-  userId                     String
-  chatId                     String?
-  modelRunId                 String?
-  projectId                  String?
-  provider                   String
-  modelId                    String
-  providerModelId            String?
-  knowledgeBaseId            String?
-  knowledgeIndexGenerationId String?
-  knowledgeDocumentVersionId String?
-  knowledgeBatchIndex        Int?
-  memoryExecutionBindingId   String?                   @unique
-  inputTokens                Int?
-  cachedInputTokens          Int?
-  cacheWriteInputTokens      Int?
-  outputTokens               Int?
-  reasoningTokens            Int?
-  totalTokens                Int?
-  estimatedCostMicros        Int?
-  createdAt                  DateTime                  @default(now())
-  knowledgeBase              KnowledgeBase?            @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
-  knowledgeDocumentVersion   KnowledgeDocumentVersion? @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")
-  knowledgeIndexGeneration   KnowledgeIndexGeneration? @relation("KnowledgeUsageGeneration", fields: [knowledgeBaseId, knowledgeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeIndexGeneration_fkey")
-  modelRun                   ModelRun?                 @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
-  project                    Project?                  @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  user                       User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                              String                         @id @default(uuid())
+  userId                          String
+  chatId                          String?
+  modelRunId                      String?
+  projectId                       String?
+  provider                        String
+  modelId                         String
+  providerModelId                 String?
+  knowledgeBaseId                 String?
+  knowledgeIndexGenerationId      String?
+  knowledgeDocumentVersionId      String?
+  knowledgeBatchIndex             Int?
+  memoryExecutionBindingId        String?                        @unique
+  knowledgePdfProcessingAttemptId String?                        @unique
+  inputTokens                     Int?
+  cachedInputTokens               Int?
+  cacheWriteInputTokens           Int?
+  outputTokens                    Int?
+  reasoningTokens                 Int?
+  totalTokens                     Int?
+  estimatedCostMicros             Int?
+  createdAt                       DateTime                       @default(now())
+  knowledgeBase                   KnowledgeBase?                 @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  knowledgeDocumentVersion        KnowledgeDocumentVersion?      @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")
+  knowledgeIndexGeneration        KnowledgeIndexGeneration?      @relation("KnowledgeUsageGeneration", fields: [knowledgeBaseId, knowledgeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeIndexGeneration_fkey")
+  knowledgePdfProcessingAttempt   KnowledgePdfProcessingAttempt? @relation(fields: [knowledgePdfProcessingAttemptId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  modelRun                        ModelRun?                      @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
+  project                         Project?                       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  user                            User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
   @@index([userId, createdAt])
@@ -3606,21 +3666,21 @@ model MemoryScope {
 }
 
 model ChatMemoryCheckpoint {
-  id                   String                        @id @default(uuid())
-  userId               String
-  chatId               String
-  pipelineVersion      String                        @default("memory-history-index-v3") @db.VarChar(64)
-  branchGeneration     Int
-  sourceRevision       Int
-  activeLeafMessageId  String
-  sourceContentHash    String                        @db.VarChar(128)
-  lastIndexedMessageId String?
-  status               MemoryHistoryCheckpointStatus @default(PENDING)
-  lastSucceededAt      DateTime?
-  lastErrorCode        String?                       @db.VarChar(64)
+  id                    String                        @id @default(uuid())
+  userId                String
+  chatId                String
+  pipelineVersion       String                        @default("memory-history-index-v3") @db.VarChar(64)
+  branchGeneration      Int
+  sourceRevision        Int
+  activeLeafMessageId   String
+  sourceContentHash     String                        @db.VarChar(128)
+  lastIndexedMessageId  String?
+  status                MemoryHistoryCheckpointStatus @default(PENDING)
+  lastSucceededAt       DateTime?
+  lastErrorCode         String?                       @db.VarChar(64)
   resumeCreatedAtCutoff DateTime?
-  createdAt            DateTime                      @default(now())
-  updatedAt            DateTime                      @default(now()) @updatedAt
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @default(now()) @updatedAt
 
   @@unique([userId, id])
   @@unique([userId, chatId])
@@ -3798,44 +3858,45 @@ model MemoryFact {
 }
 
 model MemoryFactVersion {
-  id                         String                 @id @default(uuid())
-  userId                     String
-  factId                     String
-  displayText                String?
-  normalizedSearchText       String?
-  languageCode               String                 @db.VarChar(35)
-  structuredValue            Json?
-  category                   String                 @db.VarChar(64)
-  modality                   MemoryFactModality
-  sourceMode                 MemoryFactSourceMode
-  state                      MemoryFactVersionState @default(ACTIVE)
-  validFrom                  DateTime?
-  validTo                    DateTime?
-  systemFrom                 DateTime               @default(now())
-  systemTo                   DateTime?
-  rawTemporalExpression      String?                @db.VarChar(512)
-  sourceTimezone             String?                @db.VarChar(64)
-  temporalResolverVersion    String?                @db.VarChar(64)
-  temporalResolutionEvidence Json?
-  confidence                 Float
-  importance                 Float
-  directness                 MemoryDirectness
-  sensitivityClass           MemorySensitivityClass
-  safetyClassificationState  MemorySafetyClassificationState @default(PENDING)
-  safetyClassifierExecutionId String?
-  safetyClassifierProviderId String?                @db.VarChar(128)
-  safetyClassifierModelId    String?                @db.VarChar(256)
-  safetyClassifierPolicyVersion String?             @db.VarChar(64)
-  safetyClassificationReasonCode String?            @db.VarChar(64)
-  safetyClassifiedAt         DateTime?
-  coreEligible               Boolean                @default(false)
-  coreSalience               MemoryCoreSalience     @default(NONE)
-  supersedesVersionId        String?
-  movedFromVersionId         String?
-  createdByEventId           String
-  pipelineVersion            String                 @db.VarChar(64)
-  contentPurgedAt            DateTime?
-  createdAt                  DateTime               @default(now())
+  id                             String                          @id @default(uuid())
+  userId                         String
+  factId                         String
+  displayText                    String?
+  normalizedSearchText           String?
+  languageCode                   String                          @db.VarChar(35)
+  structuredValue                Json?
+  category                       String                          @db.VarChar(64)
+  modality                       MemoryFactModality
+  sourceMode                     MemoryFactSourceMode
+  state                          MemoryFactVersionState          @default(ACTIVE)
+  observedAt                     DateTime?
+  validFrom                      DateTime?
+  validTo                        DateTime?
+  systemFrom                     DateTime                        @default(now())
+  systemTo                       DateTime?
+  rawTemporalExpression          String?                         @db.VarChar(512)
+  sourceTimezone                 String?                         @db.VarChar(64)
+  temporalResolverVersion        String?                         @db.VarChar(64)
+  temporalResolutionEvidence     Json?
+  confidence                     Float
+  importance                     Float
+  directness                     MemoryDirectness
+  sensitivityClass               MemorySensitivityClass
+  safetyClassificationState      MemorySafetyClassificationState @default(PENDING)
+  safetyClassifierExecutionId    String?
+  safetyClassifierProviderId     String?                         @db.VarChar(128)
+  safetyClassifierModelId        String?                         @db.VarChar(256)
+  safetyClassifierPolicyVersion  String?                         @db.VarChar(64)
+  safetyClassificationReasonCode String?                         @db.VarChar(64)
+  safetyClassifiedAt             DateTime?
+  coreEligible                   Boolean                         @default(false)
+  coreSalience                   MemoryCoreSalience              @default(NONE)
+  supersedesVersionId            String?
+  movedFromVersionId             String?
+  createdByEventId               String
+  pipelineVersion                String                          @db.VarChar(64)
+  contentPurgedAt                DateTime?
+  createdAt                      DateTime                        @default(now())
 
   @@unique([userId, id])
   @@unique([userId, factId, id])
@@ -4082,6 +4143,7 @@ model MemoryJob {
   id                       String         @id @default(uuid())
   userId                   String
   chatId                   String?
+  sourceMessageId          String?
   activeLeafMessageId      String?
   branchGeneration         Int?
   sourceRevision           Int?
@@ -4109,6 +4171,7 @@ model MemoryJob {
   @@unique([userId, id, chatId, branchGeneration, sourceRevision, sourceHash], map: "MemoryJob_source_identity_key")
   @@index([userId, state, nextAttemptAt, createdAt])
   @@index([userId, chatId, branchGeneration, sourceRevision])
+  @@index([userId, sourceMessageId])
 }
 
 /// Installation-scoped liveness evidence for the single supported Personal

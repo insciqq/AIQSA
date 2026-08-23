@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  adminKnowledgeAnswerPolicyFixture,
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
 } from "@/tests/support/knowledgeProfile";
@@ -7,6 +8,7 @@ import { decodeAdminKnowledgeResponse } from "./adminKnowledge";
 
 const response = {
   knowledge: {
+    answerPolicy: adminKnowledgeAnswerPolicyFixture(),
     ingestionLimits: {
       maxChunksPerDocument: 10_000,
       maxFileBytes: 25_000_000,

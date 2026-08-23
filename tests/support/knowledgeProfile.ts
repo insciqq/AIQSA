@@ -1,8 +1,24 @@
 import type {
+  AdminKnowledgeSettings,
   AdminKnowledgeOperations,
   AdminKnowledgeProfileDestination,
   AdminKnowledgeProfileSettings
 } from "@/lib/contracts/adminKnowledge";
+
+export function adminKnowledgeAnswerPolicyFixture(
+  overrides: Partial<AdminKnowledgeSettings["answerPolicy"]> = {}
+): AdminKnowledgeSettings["answerPolicy"] {
+  return {
+    fullContextThresholdPercent: 70,
+    maximum: 32,
+    maximumKnowledgeSearches: 12,
+    minimum: 1,
+    updatedAt: "2026-08-18T00:00:00.000Z",
+    updatedBy: null,
+    version: 1,
+    ...overrides
+  };
+}
 
 export function adminKnowledgeOperationsFixture(
   overrides: Partial<AdminKnowledgeOperations> = {}
@@ -68,13 +84,19 @@ export function adminKnowledgeProfileFixture(
     destination: adminKnowledgeDestinationFixture,
     executionAuthority: "installation" as const,
     id: "profile-revision-1",
+    pdfProcessing: {
+      destination: null,
+      mode: "local" as const,
+      parserProfileVersion: 1
+    },
     revisionNumber: 1
   };
   return {
     activeRevision,
     availableDestinations: [adminKnowledgeDestinationFixture],
     egress: {
-      destination: "Local embeddings / Multilingual embed",
+      embeddingDestination: "Local embeddings / Multilingual embed",
+      pdfDestination: null,
       representations: ["document_text_chunks", "search_queries"]
     },
     health: { checkedAt: "2026-08-18T00:00:00.000Z", code: null, state: "ready" },
@@ -85,7 +107,21 @@ export function adminKnowledgeProfileFixture(
       profiledGenerations: 1,
       totalBases: 1
     },
+    pdfProcessingOptions: [
+      { available: true, mode: "local", representation: "local_only" },
+      {
+        available: false,
+        mode: "system_model_direct_pdf",
+        representation: "original_pdf_page_ranges"
+      },
+      {
+        available: false,
+        mode: "system_model_vision",
+        representation: "rendered_pdf_page_images"
+      }
+    ],
     recentRevisions: [activeRevision],
+    systemModelDestination: null,
     updatedAt: "2026-08-18T00:00:00.000Z",
     updatedBy: null,
     version: 1,

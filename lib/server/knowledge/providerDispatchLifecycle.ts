@@ -6,6 +6,7 @@ import type {
   KnowledgeEvidenceDispatchManifestDraft
 } from "./evidenceDispatchManifest";
 import type {
+  KnowledgeEvidenceDispatchBinding,
   KnowledgeProviderAttemptRecovery,
   KnowledgeProviderAttemptUsage,
   StoredKnowledgeEvidenceDispatch,
@@ -132,6 +133,7 @@ export function createKnowledgeProviderDispatchLifecycle(
   return Object.freeze({
     async prepare(input: Readonly<{
       draft: KnowledgeEvidenceDispatchManifestDraft;
+      evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
       modelRunId: string;
       ordinal: number;
       providerBindingKey?: string;
@@ -157,6 +159,7 @@ export function createKnowledgeProviderDispatchLifecycle(
       const reserved = await store.reserve({
         checkpointHash,
         draft: input.draft,
+        ...(input.evidenceBindings ? { evidenceBindings: input.evidenceBindings } : {}),
         estimatedUsage: estimatedUsage(input.requestPreview),
         idempotencyKey,
         leaseExpiresAt: new Date(now.valueOf() + PROVIDER_DISPATCH_LEASE_MS),

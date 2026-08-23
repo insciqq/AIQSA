@@ -664,6 +664,7 @@ async function assertMemoryCandidateSourceAuthority(): Promise<void> {
           memoryRevisionSnapshot: 0,
           pipelineVersion,
           sourceHash,
+          sourceMessageId: userMessage.id,
           sourceRevision: 0,
           state: "SUCCEEDED",
           userId: user.id

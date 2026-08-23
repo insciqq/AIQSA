@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminKnowledgeSettings } from "../../lib/contracts/adminKnowledge";
 import {
+  adminKnowledgeAnswerPolicyFixture,
   adminKnowledgeDestinationFixture,
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
@@ -53,6 +54,7 @@ function knowledgeSettings(): AdminKnowledgeSettings {
     modelDisplayName: "Multilingual production"
   };
   return {
+    answerPolicy: adminKnowledgeAnswerPolicyFixture(),
     ingestionLimits: {
       maxChunksPerDocument: 10_000,
       maxFileBytes: 25_000_000,
@@ -94,6 +96,21 @@ test("administrator activates a content-safe Knowledge processing route", async 
     if (request.method() === "PATCH") {
       const body = request.postDataJSON() as Record<string, unknown>;
       patchBodies.push(body);
+      if (body.action === "update_answer_policy" &&
+        body.expectedVersion === settings.answerPolicy.version &&
+        typeof body.maximumKnowledgeSearches === "number") {
+        settings = {
+          ...settings,
+          answerPolicy: {
+            ...settings.answerPolicy,
+            maximumKnowledgeSearches: body.maximumKnowledgeSearches,
+            updatedAt: "2026-08-18T01:30:00.000Z",
+            version: settings.answerPolicy.version + 1
+          }
+        };
+        await route.fulfill({ contentType: "application/json", json: { knowledge: settings } });
+        return;
+      }
       const destination = settings.profile.availableDestinations.find(
         ({ deploymentId }) => deploymentId === body.deploymentId
       );
@@ -110,6 +127,11 @@ test("administrator activates a content-safe Knowledge processing route", async 
         destination,
         executionAuthority: "installation" as const,
         id: "profile-revision-2",
+        pdfProcessing: {
+          destination: null,
+          mode: "local" as const,
+          parserProfileVersion: 1
+        },
         revisionNumber: 2
       };
       settings = {
@@ -119,7 +141,7 @@ test("administrator activates a content-safe Knowledge processing route", async 
           activeRevision,
           egress: {
             ...settings.profile.egress,
-            destination: `${destination.connectionDisplayName} / ${destination.modelDisplayName}`
+            embeddingDestination: `${destination.connectionDisplayName} / ${destination.modelDisplayName}`
           },
           migration: {
             ...settings.profile.migration,
@@ -146,11 +168,20 @@ test("administrator activates a content-safe Knowledge processing route", async 
   await expect(section.getByRole("heading", { name: "Knowledge processing" })).toBeVisible();
   const route = section.getByTestId("knowledge-profile-route");
   await expect(route).toContainText("Documents");
-  await expect(route).toContainText("Parser & OCR");
+  await expect(route).toContainText("Local");
   await expect(route).toContainText("Local embeddings / Multilingual embed");
-  await expect(section).toContainText("bounded normalized document text");
-  await expect(section.getByRole("heading", { name: "Fixed retrieval" })).toBeVisible();
-  await expect(section.getByRole("button", { name: /Save retrieval policy/u })).toHaveCount(0);
+  await expect(section).toContainText("bounded normalized text");
+  await expect(section.getByRole("heading", { name: "Answer retrieval" })).toBeVisible();
+  const maximumSearches = section.getByRole("spinbutton", {
+    name: /Maximum Knowledge searches per answer/u
+  });
+  await expect(maximumSearches).toHaveValue("12");
+  await maximumSearches.fill("18");
+  await section.getByRole("button", { name: "Save" }).click();
+  await expect(section.getByText(
+    "Answer retrieval settings saved. New answers use the updated limit."
+  )).toBeVisible();
+  await expect(maximumSearches).toHaveValue("18");
   await expect(section.getByRole("combobox", { name: /Visual-analysis destination/u }))
     .toHaveCount(0);
   await expect(section).toContainText("never lists private bases, documents, filenames, passages, or retrieval evidence");
@@ -168,14 +199,24 @@ test("administrator activates a content-safe Knowledge processing route", async 
     "Current snapshots stay online"
   );
   await expect(route).toContainText("Approved provider / Multilingual production");
-  expect(patchBodies).toEqual([{
-    action: "activate_profile",
-    deploymentId: "embedding-model-2",
-    expectedVersion: 1
-  }]);
+  expect(patchBodies).toEqual([
+    {
+      action: "update_answer_policy",
+      expectedVersion: 1,
+      maximumKnowledgeSearches: 18
+    },
+    {
+      action: "activate_profile",
+      deploymentId: "embedding-model-2",
+      expectedVersion: 1,
+      pdfProcessingMode: "local"
+    }
+  ]);
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
   await expect(section.getByTestId("knowledge-profile-route")).toBeVisible();
-  await expectWithinViewport(page, section.getByRole("button", { name: "Refresh" }));
+  const refresh = section.getByRole("button", { name: "Refresh" });
+  await refresh.scrollIntoViewIfNeeded();
+  await expectWithinViewport(page, refresh);
 });

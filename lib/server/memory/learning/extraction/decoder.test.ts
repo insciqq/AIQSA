@@ -18,8 +18,10 @@ function input(text: string): MemoryFactExtractionInput {
     messages: [{
       contentHash: memorySha256(text),
       createdAt: "2026-08-11T09:00:00.000Z",
+      evidenceEligible: true,
       id: "message-1",
       languageCode: "und",
+      role: "user",
       text,
       updatedAt: "2026-08-11T09:00:00.000Z"
     }],
@@ -27,7 +29,9 @@ function input(text: string): MemoryFactExtractionInput {
       activeLeafMessageId: "assistant-1",
       branchGeneration: 2,
       chatId: "chat-1",
+      memoryGenerationSnapshot: 0,
       sourceHash: "a".repeat(64),
+      sourceMessageId: "message-1",
       sourceRevision: 7,
       userId: "user-1"
     },

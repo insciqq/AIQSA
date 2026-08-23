@@ -19,6 +19,13 @@ export {
   type DocumentParserErrorCode
 } from "./errors";
 export {
+  DEFAULT_NATIVE_PDF_TIMEOUT_MS,
+  NATIVE_PDF_MAX_BLOCKS_CEILING,
+  parseNativeTextPdf,
+  type NativePdfClassification,
+  type NativePdfParserOptions
+} from "./nativePdf";
+export {
   resolveDocumentParserRoute,
   type DocumentParserRoute,
   type InlineDocumentFormat

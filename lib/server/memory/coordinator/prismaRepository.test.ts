@@ -23,6 +23,7 @@ function jobClaim(): MemoryJobClaim {
     pipelineVersion: "memory-rebuild-v1",
     recoveredLease: false,
     sourceHash: null,
+    sourceMessageId: null,
     sourceRevision: null,
     stage: null,
     userId: "user-1"
@@ -202,6 +203,7 @@ describe("Prisma memory coordinator repository preflight", () => {
         pipelineVersion: "memory-coordinator-preflight-v1",
         priorState: "QUEUED",
         sourceHash: null,
+        sourceMessageId: null,
         sourceRevision: null,
         stage: null,
         userId: "user-1"

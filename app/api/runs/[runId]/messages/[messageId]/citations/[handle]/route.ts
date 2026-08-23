@@ -5,6 +5,8 @@ import {
   resolveKnowledgeCitationViewer
 } from "@/lib/server/knowledge/citationViewer";
 import { defaultKnowledgeStorage } from "@/lib/server/knowledge/defaultIngestion";
+import { renderKnowledgeCitationPdfPage } from "@/lib/server/knowledge/citationPdfPage";
+import { getKnowledgeExtractionConfig } from "@/lib/server/knowledge/knowledgeExtractionConfig";
 import { prisma } from "@/lib/server/prisma";
 
 export const dynamic = "force-dynamic";
@@ -41,7 +43,8 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
   const search = new URL(request.url).searchParams;
   const assetValues = search.getAll("asset");
   if ([...search.keys()].some((key) => key !== "asset") || assetValues.length > 1 ||
-    (assetValues.length === 1 && assetValues[0] !== "original")) return notAvailable();
+    (assetValues.length === 1 && assetValues[0] !== "original" &&
+      assetValues[0] !== "page")) return notAvailable();
   const params = await context.params;
   const resolved = await prisma.$transaction(
     (tx) => resolveKnowledgeCitationViewer(tx, defaultKnowledgeStorage, {
@@ -68,6 +71,38 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
           "content-disposition": inlineFileName(resolved.original.fileName),
           "content-length": String(body.byteLength),
           "content-type": resolved.original.mimeType
+        }
+      });
+    } catch {
+      return notAvailable();
+    }
+  }
+
+  if (assetValues[0] === "page") {
+    if (!resolved.original || resolved.original.mimeType !== "application/pdf" ||
+      resolved.citation.state !== "available") return notAvailable();
+    const page = resolved.citation.locator.pageStart;
+    const boxes = resolved.citation.locator.boundingBoxes.filter((box) => box.page === page);
+    if (boxes.length < 1) return notAvailable();
+    try {
+      const body = await readKnowledgeViewerOriginal(
+        defaultKnowledgeStorage,
+        resolved.original,
+        request.signal
+      );
+      const highlighted = await renderKnowledgeCitationPdfPage({
+        boxes,
+        bytes: body,
+        maxPages: getKnowledgeExtractionConfig().maxPages,
+        page,
+        signal: request.signal
+      });
+      return new Response(new Uint8Array(highlighted), {
+        headers: {
+          ...privateHeaders,
+          "content-disposition": inlineFileName(`${resolved.original.fileName}-page-${page}.png`),
+          "content-length": String(highlighted.byteLength),
+          "content-type": "image/png"
         }
       });
     } catch {

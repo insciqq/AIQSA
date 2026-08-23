@@ -18,8 +18,10 @@ function input(text: string): MemoryFactExtractionInput {
     messages: [{
       contentHash: memorySha256(text),
       createdAt: "2026-08-21T09:00:00.000Z",
+      evidenceEligible: true,
       id: "current-user-message",
       languageCode: "en",
+      role: "user",
       text,
       updatedAt: "2026-08-21T09:00:00.000Z"
     }],
@@ -27,7 +29,9 @@ function input(text: string): MemoryFactExtractionInput {
       activeLeafMessageId: "assistant-message",
       branchGeneration: 1,
       chatId: "chat-1",
+      memoryGenerationSnapshot: 0,
       sourceHash: "a".repeat(64),
+      sourceMessageId: "current-user-message",
       sourceRevision: 2,
       userId: "user-1"
     },
@@ -85,7 +89,7 @@ describe("Personal Memory v1 extraction decoder", () => {
     }]);
   });
 
-  it("rejects repeated quotes as ambiguous and never widens the source window", () => {
+  it("rejects repeated target quotes and never accepts assistant context as evidence", () => {
     const text = "I prefer concise replies. I prefer concise replies.";
     const plan = decodeMemoryFactExtractionV1(call([candidate()]), input(text));
     expect(plan.candidates).toHaveLength(0);
@@ -95,11 +99,31 @@ describe("Personal Memory v1 extraction decoder", () => {
       ...input("I prefer concise replies."),
       messages: [
         ...input("I prefer concise replies.").messages,
-        { ...input("I prefer concise replies.").messages[0]!, id: "older-user-message" }
+        {
+          ...input("I prefer concise replies.").messages[0]!,
+          evidenceEligible: false,
+          id: "assistant-context",
+          role: "assistant"
+        }
       ]
     } as MemoryFactExtractionInput;
-    expect(decodeMemoryFactExtractionV1(call([candidate()]), twoMessageInput).rejections)
-      .toEqual([{ candidateOrdinal: 0, reasonCode: "REJECT_STALE_SOURCE" }]);
+    expect(decodeMemoryFactExtractionV1(call([candidate()]), twoMessageInput).candidates)
+      .toHaveLength(1);
+
+    const assistantOnlyQuote = {
+      ...input("Nothing durable here."),
+      messages: [
+        ...input("Nothing durable here.").messages,
+        {
+          ...input("I prefer concise replies.").messages[0]!,
+          evidenceEligible: false,
+          id: "assistant-context",
+          role: "assistant"
+        }
+      ]
+    } as MemoryFactExtractionInput;
+    expect(decodeMemoryFactExtractionV1(call([candidate()]), assistantOnlyQuote).candidates)
+      .toEqual([]);
   });
 
   it("accepts an empty strict packet without falling back to the retired decoder", () => {
@@ -120,16 +144,16 @@ describe("Personal Memory v1 extraction decoder", () => {
     }]);
   });
 
-  it("accepts legacy SENSITIVE output as an ordinary fact", () => {
+  it("rejects automatic SENSITIVE output under EXPLICIT_ONLY policy", () => {
     const plan = decodeMemoryFactExtractionV1(
       call([candidate({ sensitivity: "SENSITIVE" })]),
       input("I prefer concise replies.")
     );
 
-    expect(plan.rejections).toEqual([]);
-    expect(plan.candidates).toMatchObject([{
-      category: "preferences",
-      sensitivity: "NORMAL"
+    expect(plan.candidates).toEqual([]);
+    expect(plan.rejections).toEqual([{
+      candidateOrdinal: 0,
+      reasonCode: "REJECT_UNSUPPORTED"
     }]);
   });
 

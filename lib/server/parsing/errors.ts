@@ -1,4 +1,4 @@
-import type { SidecarParserEngine } from "./types";
+import type { DocumentParserEngine } from "./types";
 
 export type DocumentParserErrorCode =
   | "parser_unavailable"
@@ -9,9 +9,9 @@ export type DocumentParserErrorCode =
 
 export class DocumentParserError extends Error {
   readonly code: DocumentParserErrorCode;
-  readonly engine?: SidecarParserEngine;
+  readonly engine?: DocumentParserEngine;
 
-  constructor(code: DocumentParserErrorCode, engine?: SidecarParserEngine) {
+  constructor(code: DocumentParserErrorCode, engine?: DocumentParserEngine) {
     super(code);
     this.name = "DocumentParserError";
     this.code = code;

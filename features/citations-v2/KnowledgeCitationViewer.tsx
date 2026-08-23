@@ -26,6 +26,7 @@ import {
 } from "react";
 import {
   knowledgeCitationOriginalUrl,
+  knowledgeCitationPageUrl,
   knowledgeSourceOriginalUrl,
   loadKnowledgeCitationViewer,
   loadKnowledgeSourceViewer,
@@ -38,6 +39,7 @@ type ViewerRequest =
 
 type LoadedViewer = Readonly<{
   originalUrl: string | null;
+  pageUrl: string | null;
   value: KnowledgeCitationViewer | KnowledgeSourceViewer;
 }>;
 
@@ -75,12 +77,17 @@ async function loadRequest(request: ViewerRequest, signal: AbortSignal): Promise
       originalUrl: value.state === "available" && value.originalKind !== null
         ? knowledgeCitationOriginalUrl(request.reference)
         : null,
+      pageUrl: value.state === "available" && value.originalKind === "pdf" &&
+        value.locator.boundingBoxes.some((box) => box.page === value.locator.pageStart)
+        ? knowledgeCitationPageUrl(request.reference)
+        : null,
       value
     };
   }
   const value = await loadKnowledgeSourceViewer(request.sourceId, signal);
   return {
     originalUrl: value.originalKind !== null ? knowledgeSourceOriginalUrl(request.sourceId) : null,
+    pageUrl: null,
     value
   };
 }
@@ -372,6 +379,7 @@ function WorkbookEvidence({ workbook }: Readonly<{ workbook: KnowledgeViewerWork
 }
 
 function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
+  const [failedHighlightUrl, setFailedHighlightUrl] = useState<string | null>(null);
   if (loaded.value.state === "deleted") {
     return (
       <div className="mx-auto max-w-xl px-5 py-10 sm:px-8">
@@ -390,6 +398,7 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
   const imageUrl = loaded.originalUrl && value.originalKind === "image"
     ? loaded.originalUrl
     : null;
+  const highlightedPageUrl = loaded.pageUrl !== failedHighlightUrl ? loaded.pageUrl : null;
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-12 pt-5 sm:px-7">
       {value.source.statuses.length > 0 ? (
@@ -412,7 +421,16 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
           {value.visual.caption ? (
             <p className="mt-1 text-xs leading-5 text-ink-secondary">{value.visual.caption}</p>
           ) : null}
-          {pdfUrl ? (
+          {highlightedPageUrl ? (
+            // The same-origin asset is authorized by the citation route and rendered privately.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              alt={`Highlighted cited area on page ${value.locator.pageStart}`}
+              className="mt-3 max-h-[min(58vh,42rem)] w-full rounded-control border border-trace-strong bg-app-canvas object-contain"
+              onError={() => setFailedHighlightUrl(loaded.pageUrl)}
+              src={highlightedPageUrl}
+            />
+          ) : pdfUrl ? (
             <iframe
               className="mt-3 h-[min(58vh,42rem)] w-full rounded-control border border-trace-strong bg-app-canvas"
               src={pdfUrl}
@@ -484,11 +502,26 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
               <ExternalLink className="size-3.5" aria-hidden="true" />
             </a>
           </div>
-          <iframe
-            className="mt-2 h-[min(58vh,42rem)] w-full rounded-control border border-trace-strong bg-app-canvas"
-            src={pdfUrl}
-            title={`${value.source.fileName}, page ${value.locator.pageStart}`}
-          />
+          {highlightedPageUrl ? (
+            <>
+              <p className="mt-2 text-[11px] text-ink-muted">
+                Highlighted cited area · page {value.locator.pageStart}
+              </p>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                alt={`Highlighted cited area on page ${value.locator.pageStart}`}
+                className="mt-2 max-h-[min(58vh,42rem)] w-full rounded-control border border-trace-strong bg-app-canvas object-contain"
+                onError={() => setFailedHighlightUrl(loaded.pageUrl)}
+                src={highlightedPageUrl}
+              />
+            </>
+          ) : (
+            <iframe
+              className="mt-2 h-[min(58vh,42rem)] w-full rounded-control border border-trace-strong bg-app-canvas"
+              src={pdfUrl}
+              title={`${value.source.fileName}, page ${value.locator.pageStart}`}
+            />
+          )}
         </section>
       ) : !value.visual && !value.workbook && !loaded.originalUrl ? (
         <p className="mt-5 border-l-2 border-trace-strong pl-3 text-xs leading-5 text-ink-muted">

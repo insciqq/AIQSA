@@ -78,6 +78,8 @@ import {
   groundKnowledgeRunAnswer,
   settleKnowledgeGrounding
 } from "../knowledge/evidenceRepository";
+import { decodeKnowledgeDocumentContext } from "../knowledge/documentContext";
+import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -1304,6 +1306,16 @@ export function createPrismaRunRepository(
                       results: true
                     }
                   },
+                  knowledgeRetrievalSession: {
+                    select: {
+                      degradedFlags: true,
+                      evidenceItems: {
+                        orderBy: { ordinal: "asc" },
+                        select: { handle: true, state: true }
+                      },
+                      groundingResult: { select: { outcome: true } }
+                    }
+                  },
                   searchRuns: {
                     orderBy: {
                       createdAt: "asc"
@@ -1497,6 +1509,88 @@ export function createPrismaRunRepository(
           storageKey: attachment.storageKey
         })
       );
+    },
+    loadKnowledgeFullContextPassages: async (sources) => {
+      if (sources.length < 1) return null;
+      const baseIds = [...new Set(sources.flatMap((source) =>
+        source.authority.knowledgeBaseIds.slice(0, 1)))];
+      const [artifacts, bases] = await Promise.all([
+        prismaClient.knowledgeSourceIndexArtifact.findMany({
+          select: {
+            hierarchicalIndexes: {
+              orderBy: { schemaVersion: "desc" },
+              select: {
+                passageIndexes: {
+                  orderBy: { ordinal: "asc" },
+                  select: {
+                    contentHash: true,
+                    documentContext: true,
+                    headingPath: true,
+                    id: true,
+                    ordinal: true,
+                    page: true,
+                    pageEnd: true,
+                    sectionId: true,
+                    text: true,
+                    tokenCount: true
+                  }
+                },
+                passageCount: true
+              },
+              take: 1,
+              where: { state: "ready" }
+            },
+            id: true,
+            sourceVersionId: true,
+            state: true
+          },
+          where: { id: { in: sources.map((source) => source.sourceArtifactId) } }
+        }),
+        baseIds.length > 0
+          ? prismaClient.knowledgeBase.findMany({
+              select: { id: true, name: true },
+              where: { id: { in: baseIds } }
+            })
+          : []
+      ]);
+      const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+      const baseNameById = new Map(bases.map((base) => [base.id, base.name]));
+      const passages: KnowledgeFullContextPassage[] = [];
+      for (const source of sources) {
+        const artifact = artifactById.get(source.sourceArtifactId);
+        const hierarchy = artifact?.hierarchicalIndexes[0];
+        const baseId = source.authority.knowledgeBaseIds[0];
+        const baseName = baseId ? baseNameById.get(baseId) : "Direct source";
+        if (!artifact || artifact.state !== "ready" ||
+          artifact.sourceVersionId !== source.sourceVersionId || !hierarchy || !baseName ||
+          hierarchy.passageCount !== source.passageCount ||
+          hierarchy.passageIndexes.length !== source.passageCount) return null;
+        for (const passage of hierarchy.passageIndexes) {
+          const documentContext = passage.documentContext === null
+            ? null
+            : decodeKnowledgeDocumentContext(passage.documentContext);
+          if (passage.documentContext !== null && !documentContext) return null;
+          passages.push({
+            baseName,
+            contentHash: passage.contentHash,
+            documentContext,
+            headingPath: [...passage.headingPath],
+            page: passage.page,
+            pageEnd: passage.pageEnd,
+            passageId: passage.id,
+            passageOrdinal: passage.ordinal,
+            sectionId: passage.sectionId,
+            sourceArtifactId: source.sourceArtifactId,
+            sourceId: source.sourceId,
+            sourceOrdinal: source.ordinal,
+            sourceVersionId: source.sourceVersionId,
+            sourceVersionNumber: source.sourceVersionNumber,
+            text: passage.text,
+            tokenCount: passage.tokenCount
+          });
+        }
+      }
+      return passages;
     },
     loadEntitlements: (userId) => loadEntitlementsForUser(userId),
     loadModelPricing: async (provider, modelId) => {

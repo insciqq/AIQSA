@@ -14,6 +14,8 @@ import type {
 import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { KnowledgeFocusedRequestV1 } from "../knowledge/focusedRequest";
 import type { MemoryActionAnswerResult } from "./memoryActionAnswer";
+import type { KnowledgeAnswerPolicySnapshot } from "../knowledge/answerPolicy";
+import type { KnowledgeAnswerRoute } from "../knowledge/fullContext";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -91,6 +93,16 @@ export type NormalizedRunRequest = {
   /** Exact immutable request for the single internal focused Knowledge
    * retrieval operation. It is never exposed as an answer-model tool. */
   knowledgeFocusedRequest?: KnowledgeFocusedRequestV1;
+  /** Exact answer route and policy frozen at acceptance. Full-context evidence
+   * itself lives in the private context plus durable evidence rows. */
+  knowledgeAnswering?: Readonly<{
+    answerPolicy: KnowledgeAnswerPolicySnapshot;
+    approximateDocumentTokens: number;
+    evidenceCount?: number;
+    exactDocumentTokens?: number;
+    route: KnowledgeAnswerRoute;
+    version: 1;
+  }>;
   knowledgePlan: KnowledgePlan;
   /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
    * admission rejects it and execution/recovery terminalize it. */

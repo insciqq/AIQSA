@@ -8,15 +8,25 @@ import {
 } from "../providerRuntime/admission";
 import { ProviderConfigurationError } from "../providers/providerConfiguration";
 import {
+  normalizeProviderExecutionSnapshot,
+  type ProviderExecutionSnapshot
+} from "../providers/runtimeFactory";
+import {
   createKnowledgeVectorSpacePin,
   type KnowledgeVectorSpacePin
 } from "./indexProfile";
 
 export const KNOWLEDGE_INDEX_PROFILE_ID = "installation";
-export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v5";
-export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 3 as const;
+export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v6";
+export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 4 as const;
+export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION = 1 as const;
 
-type KnowledgeProfileRoleOperation = "embeddings";
+export type KnowledgePdfProcessingMode =
+  | "local"
+  | "system_model_direct_pdf"
+  | "system_model_vision";
+
+type KnowledgeProfileRoleOperation = "embeddings" | "pdf_transcription";
 type KnowledgeProfileRoleMode = "disabled" | "external";
 type KnowledgeProfileRoleFallback =
   | "asset_only"
@@ -46,6 +56,10 @@ export type ActiveKnowledgeProfile = Readonly<{
   embeddingConfiguration: Prisma.JsonValue;
   embeddingProviderModelId: string;
   executionAuthority: KnowledgeProfileExecutionAuthority;
+  pdfParserProfileVersion: number;
+  pdfProcessingMode: KnowledgePdfProcessingMode;
+  pdfSystemModelPolicyVersion: number | null;
+  pdfSystemModelSnapshot: ProviderExecutionSnapshot | null;
   pin: KnowledgeVectorSpacePin;
   revisionId: string;
   revisionNumber: number;
@@ -66,9 +80,13 @@ const EMBEDDING_MAX_INPUT_TOKENS = 512 * 1024;
 const EMBEDDING_TIMEOUT_MS = 300_000;
 
 function profileOperationRoles(
-  embeddingProviderModelId: string
+  input: Readonly<{
+    embeddingProviderModelId: string;
+    pdfProcessingMode: KnowledgePdfProcessingMode;
+    pdfSystemModelProviderModelId: string | null;
+  }>
 ): readonly KnowledgeProfileOperationRole[] {
-  return Object.freeze([
+  const roles: KnowledgeProfileOperationRole[] = [
     Object.freeze({
       allowedRepresentations: Object.freeze(["document_text_chunks", "search_queries"]),
       dataProcessingDisclosure: "profile_activation" as const,
@@ -80,32 +98,97 @@ function profileOperationRoles(
       mode: "external" as const,
       operation: "embeddings" as const,
       profileRevision: "owning_revision" as const,
-      providerModelId: embeddingProviderModelId,
+      providerModelId: input.embeddingProviderModelId,
       rawPrivateText: true,
       retention: "provider_policy" as const,
       timeoutMs: EMBEDDING_TIMEOUT_MS
     })
-  ]);
+  ];
+  if (input.pdfProcessingMode !== "local" && input.pdfSystemModelProviderModelId) {
+    roles.push(Object.freeze({
+      allowedRepresentations: Object.freeze([
+        input.pdfProcessingMode === "system_model_direct_pdf"
+          ? "pdf_page_ranges"
+          : "rendered_pdf_page_images"
+      ]),
+      dataProcessingDisclosure: "profile_activation",
+      fallback: "unavailable",
+      logging: "content_free",
+      maxCostMicros: 0,
+      maxInputBytes: 50 * 1024 * 1024,
+      maxInputTokens: 512 * 1024,
+      mode: "external",
+      operation: "pdf_transcription",
+      profileRevision: "owning_revision",
+      providerModelId: input.pdfSystemModelProviderModelId,
+      rawPrivateText: input.pdfProcessingMode === "system_model_direct_pdf",
+      retention: "provider_policy",
+      timeoutMs: 300_000
+    }));
+  }
+  return Object.freeze(roles);
 }
 
 export function knowledgeProfileConfiguration(
-  input: Readonly<{ embeddingProviderModelId: string } & Record<string, unknown>>
+  input: Readonly<{
+    embeddingProviderModelId: string;
+    pdfProcessingMode?: KnowledgePdfProcessingMode;
+    pdfSystemModelProviderModelId?: string | null;
+  } & Record<string, unknown>>
 ): Prisma.InputJsonObject {
+  const pdfProcessingMode = input.pdfProcessingMode ?? "local";
   return {
-    operationRoles: profileOperationRoles(input.embeddingProviderModelId) as unknown as
+    operationRoles: profileOperationRoles({
+      embeddingProviderModelId: input.embeddingProviderModelId,
+      pdfProcessingMode,
+      pdfSystemModelProviderModelId: input.pdfSystemModelProviderModelId ?? null
+    }) as unknown as
       Prisma.InputJsonArray,
+    pdfProcessingMode,
     rolePolicyVersion: KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION,
-    schemaVersion: 5
+    schemaVersion: 6
   };
 }
 
 export function knowledgeProfileEgressPolicy(
-  input: Readonly<{ embeddingProviderModelId: string } & Record<string, unknown>>
+  input: Readonly<{
+    embeddingProviderModelId: string;
+    pdfProcessingMode?: KnowledgePdfProcessingMode;
+    pdfSystemModelProviderModelId?: string | null;
+  } & Record<string, unknown>>
 ): Prisma.InputJsonObject {
+  const pdfProcessingMode = input.pdfProcessingMode ?? "local";
   return {
-    operations: profileOperationRoles(input.embeddingProviderModelId) as unknown as
+    operations: profileOperationRoles({
+      embeddingProviderModelId: input.embeddingProviderModelId,
+      pdfProcessingMode,
+      pdfSystemModelProviderModelId: input.pdfSystemModelProviderModelId ?? null
+    }) as unknown as
       Prisma.InputJsonArray,
     policyVersion: KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION
+  };
+}
+
+function legacyLocalProfileConfiguration(embeddingProviderModelId: string): unknown {
+  return {
+    operationRoles: profileOperationRoles({
+      embeddingProviderModelId,
+      pdfProcessingMode: "local",
+      pdfSystemModelProviderModelId: null
+    }),
+    rolePolicyVersion: 3,
+    schemaVersion: 5
+  };
+}
+
+function legacyLocalEgressPolicy(embeddingProviderModelId: string): unknown {
+  return {
+    operations: profileOperationRoles({
+      embeddingProviderModelId,
+      pdfProcessingMode: "local",
+      pdfSystemModelProviderModelId: null
+    }),
+    policyVersion: "knowledge-profile-egress-v5"
   };
 }
 
@@ -127,16 +210,43 @@ function canonicalJson(value: unknown): string {
 export function isCurrentKnowledgeProfilePolicy(input: Readonly<{
   egressPolicy: unknown;
   embeddingProviderModelId: string;
+  pdfProcessingMode?: KnowledgePdfProcessingMode;
+  pdfSystemModelSnapshot?: unknown;
   profileConfiguration: unknown;
 }>): boolean {
-  return canonicalJson(input.profileConfiguration) === canonicalJson(
+  const pdfProcessingMode = input.pdfProcessingMode ?? "local";
+  let pdfSystemModelProviderModelId: string | null = null;
+  if (pdfProcessingMode !== "local") {
+    try {
+      pdfSystemModelProviderModelId = normalizeProviderExecutionSnapshot(
+        input.pdfSystemModelSnapshot
+      ).providerModelId;
+    } catch {
+      return false;
+    }
+  } else if (input.pdfSystemModelSnapshot !== undefined &&
+    input.pdfSystemModelSnapshot !== null) {
+    return false;
+  }
+  const current = canonicalJson(input.profileConfiguration) === canonicalJson(
     knowledgeProfileConfiguration({
-      embeddingProviderModelId: input.embeddingProviderModelId
+      embeddingProviderModelId: input.embeddingProviderModelId,
+      pdfProcessingMode,
+      pdfSystemModelProviderModelId
     })
   ) && canonicalJson(input.egressPolicy) === canonicalJson(
     knowledgeProfileEgressPolicy({
-      embeddingProviderModelId: input.embeddingProviderModelId
+      embeddingProviderModelId: input.embeddingProviderModelId,
+      pdfProcessingMode,
+      pdfSystemModelProviderModelId
     })
+  );
+  if (current) return true;
+  if (pdfProcessingMode !== "local") return false;
+  return canonicalJson(input.profileConfiguration) === canonicalJson(
+    legacyLocalProfileConfiguration(input.embeddingProviderModelId)
+  ) && canonicalJson(input.egressPolicy) === canonicalJson(
+    legacyLocalEgressPolicy(input.embeddingProviderModelId)
   );
 }
 
@@ -208,6 +318,8 @@ export async function resolveActiveKnowledgeProfile(
     !isCurrentKnowledgeProfilePolicy({
       egressPolicy: revision.egressPolicy,
       embeddingProviderModelId: revision.embeddingProviderModelId,
+      pdfProcessingMode: revision.pdfProcessingMode,
+      pdfSystemModelSnapshot: revision.pdfSystemModelSnapshot,
       profileConfiguration: revision.profileConfiguration
     }) || revision.preflightStatus !== "ready" || revision.preflightErrorCode !== null) {
     return { kind: "unavailable" };
@@ -226,6 +338,12 @@ export async function resolveActiveKnowledgeProfile(
       embeddingConfiguration: revision.embeddingConfiguration,
       embeddingProviderModelId: revision.embeddingProviderModelId,
       executionAuthority: revision.executionAuthority,
+      pdfParserProfileVersion: revision.pdfParserProfileVersion,
+      pdfProcessingMode: revision.pdfProcessingMode,
+      pdfSystemModelPolicyVersion: revision.pdfSystemModelPolicyVersion,
+      pdfSystemModelSnapshot: revision.pdfSystemModelSnapshot === null
+        ? null
+        : normalizeProviderExecutionSnapshot(revision.pdfSystemModelSnapshot),
       pin: resolved.pin,
       revisionId: revision.id,
       revisionNumber: revision.revisionNumber

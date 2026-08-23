@@ -16,6 +16,7 @@ export type MemoryJobDescriptor = Readonly<{
   memoryRevisionSnapshot: number;
   pipelineVersion: string;
   sourceHash: string | null;
+  sourceMessageId: string | null;
   sourceRevision: number | null;
   stage: string | null;
   userId: string;

@@ -21,6 +21,12 @@ import {
   KNOWLEDGE_SCOPE_MAX_SOURCES
 } from "./retrievalTypes";
 import { KNOWLEDGE_INDEX_PROFILE_ID } from "./knowledgeProfile";
+import {
+  DEFAULT_KNOWLEDGE_ANSWER_POLICY,
+  knowledgeAnswerPolicySnapshot,
+  type KnowledgeAnswerPolicySnapshot
+} from "./answerPolicy";
+import type { KnowledgeAnsweringPlan } from "./fullContext";
 
 export type KnowledgeRunAdmissionExclusion = Readonly<{
   count: number;
@@ -107,6 +113,10 @@ export type KnowledgeRunAdmissionAuthorizationSnapshot = Readonly<{
 }>;
 
 export type KnowledgeRunAdmissionPlan = Readonly<{
+  answerPolicy?: KnowledgeAnswerPolicySnapshot;
+  /** Preparation-only materialization. It is excluded from the admission
+   * fingerprint and is persisted through dedicated scope/evidence rows. */
+  answeringPlan?: KnowledgeAnsweringPlan;
   bindings: readonly KnowledgeRunAdmissionBinding[];
   budgetPolicy: KnowledgeBudgetPolicy;
   exclusions: readonly KnowledgeRunAdmissionExclusion[];
@@ -148,7 +158,7 @@ type ProjectKnowledgeSourceBindingStore = Partial<Pick<
 export type KnowledgeRunAdmissionStore = EmbeddingRuntimeStore & Pick<
   PrismaClient,
   "knowledgeBase" | "knowledgeIndexProfile" | "knowledgeSource" | "userGroup"
-> & ProjectKnowledgeSourceBindingStore;
+> & ProjectKnowledgeSourceBindingStore & Partial<Pick<PrismaClient, "knowledgeAnswerPolicy">>;
 
 export type KnowledgeRunSnapshotAuthorizationStore = Pick<
   PrismaClient,
@@ -673,6 +683,18 @@ export async function loadKnowledgeRunAdmissionPlan(
   const decodedKnowledgePlan = decodeKnowledgePlan(input.knowledgePlan);
   if (!decodedKnowledgePlan.ok) throw new KnowledgeRunAdmissionError();
   const knowledgePlan = decodedKnowledgePlan.plan;
+  const answerPolicyRow = client.knowledgeAnswerPolicy
+    ? await client.knowledgeAnswerPolicy.findUnique({
+        select: { maximumKnowledgeSearches: true, version: true },
+        where: { id: "installation" }
+      })
+    : null;
+  const answerPolicy = answerPolicyRow
+    ? knowledgeAnswerPolicySnapshot({
+        maximumKnowledgeSearches: answerPolicyRow.maximumKnowledgeSearches,
+        revision: answerPolicyRow.version
+      })
+    : DEFAULT_KNOWLEDGE_ANSWER_POLICY;
   const user = await client.user.findFirst({
     select: { id: true },
     where: { id: input.userId, status: "active" }
@@ -706,7 +728,8 @@ export async function loadKnowledgeRunAdmissionPlan(
 
   const resolveProfile = async (revision: DirectProfileRevision): Promise<string> => {
     const resolvedBudgetPolicy = knowledgeBudgetPolicyFromProfileConfiguration(
-      revision.profileConfiguration
+      revision.profileConfiguration,
+      answerPolicy.maximumKnowledgeSearches
     );
     const embedding = projectScope
       ? await embeddingRuntime.resolveForProject({
@@ -1133,6 +1156,7 @@ export async function loadKnowledgeRunAdmissionPlan(
   }));
 
   const accepted = {
+    answerPolicy,
     bindings: selectedBindings,
     budgetPolicy: selectedProfileKeys[0]
       ? budgetPoliciesByProfileKey.get(selectedProfileKeys[0])!
@@ -1155,7 +1179,15 @@ export function sameKnowledgeRunAdmissionPlan(
   left: KnowledgeRunAdmissionPlan,
   right: KnowledgeRunAdmissionPlan
 ): boolean {
-  return left.fingerprint === right.fingerprint && canonicalJson(left) === canonicalJson(right);
+  const normalized = (plan: KnowledgeRunAdmissionPlan) => ({
+    ...plan,
+    answerPolicy: plan.answerPolicy ?? DEFAULT_KNOWLEDGE_ANSWER_POLICY,
+    answeringPlan: undefined,
+    fingerprint: undefined
+  });
+  const sameContent = canonicalJson(normalized(left)) === canonicalJson(normalized(right));
+  const legacy = left.answerPolicy === undefined || right.answerPolicy === undefined;
+  return sameContent && (legacy || left.fingerprint === right.fingerprint);
 }
 
 function validKnowledgeAuthorizationSnapshot(

@@ -23,7 +23,9 @@ const source: MemoryFactSourceIdentity = {
   activeLeafMessageId: "assistant-1",
   branchGeneration: 1,
   chatId: "chat-1",
+  memoryGenerationSnapshot: 0,
   sourceHash: "a".repeat(64),
+  sourceMessageId: "message-1",
   sourceRevision: 3,
   userId: "user-1"
 };
@@ -35,8 +37,10 @@ function extractionInput(): MemoryFactExtractionInput {
     messages: [{
       contentHash: memorySha256(text),
       createdAt: "2026-08-11T09:00:00.000Z",
+      evidenceEligible: true,
       id: "message-1",
       languageCode: "en",
+      role: "user",
       text,
       updatedAt: "2026-08-11T09:00:00.000Z"
     }],
@@ -65,6 +69,7 @@ function claim(): MemoryJobClaim {
     pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
     recoveredLease: false,
     sourceHash: source.sourceHash,
+    sourceMessageId: source.sourceMessageId,
     sourceRevision: source.sourceRevision,
     stage: null,
     userId: source.userId
@@ -199,7 +204,7 @@ describe("Memory fact extraction handler", () => {
     const fixture = dependencies();
     const result = await createMemoryFactExtractionHandler(fixture.base)
       .execute(claim(), context());
-    expect(result.stage).toBe("fact_candidates_ready");
+    expect(result.stage).toBe("fact_observations_committed");
     expect(fixture.bind).toHaveBeenCalledTimes(1);
     expect(fixture.start).toHaveBeenCalledTimes(1);
     expect(fixture.run).toHaveBeenCalledTimes(1);
@@ -220,7 +225,7 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.apply).toHaveBeenCalledTimes(1);
   });
 
-  it("isolates invalid evidence after accounting usage and writes no candidate", async () => {
+  it("isolates invalid evidence after accounting usage and writes no observation", async () => {
     const fixture = dependencies({
       provider: {
         run: vi.fn(async () => providerOutput(
@@ -231,7 +236,7 @@ describe("Memory fact extraction handler", () => {
     });
     const result = await createMemoryFactExtractionHandler(fixture.base)
       .execute(claim(), context());
-    expect(result.stage).toBe("fact_candidates_empty");
+    expect(result.stage).toBe("fact_observations_empty");
     expect(fixture.settle).toHaveBeenCalledWith(
       source.userId,
       "binding-1",
@@ -343,7 +348,7 @@ describe("Memory fact extraction handler", () => {
     expect(bindings).toMatchObject([{ id: "binding-1", ordinal: 0, state: "FAILED" }]);
 
     const result = await handler.execute({ ...firstClaim, attemptCount: 2 }, context());
-    expect(result.stage).toBe("fact_candidates_ready");
+    expect(result.stage).toBe("fact_observations_committed");
     expect(bindings).toMatchObject([
       { id: "binding-1", ordinal: 0, state: "FAILED" },
       { id: "binding-2", ordinal: 1, state: "SUCCEEDED" }

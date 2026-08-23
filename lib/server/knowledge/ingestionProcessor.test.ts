@@ -71,6 +71,10 @@ function claim(
       embeddingConfiguration: pin.configuration,
       embeddingProviderModelId: "embedding-1",
       id: "artifact-1",
+      pdfParserProfileVersion: 1,
+      pdfProcessingMode: "local",
+      pdfSystemModelPolicyVersion: null,
+      pdfSystemModelSnapshot: null,
       profileExecutionAuthority: "legacy_user",
       profileRevisionId: null,
       targetDimension: pin.targetDimension,
@@ -197,6 +201,64 @@ describe("Knowledge ingestion processor", () => {
       normalizedTextChecksum: digest(normalized.body),
       pageCount: 1
     }));
+  });
+
+  it("routes only PDFs through the immutable System Model processing pin", async () => {
+    const original = Buffer.from("%PDF-model-route");
+    const storage = createMemoryStorageAdapter();
+    await storage.putObject({
+      body: original,
+      contentType: "application/pdf",
+      storageKey: "original.txt"
+    });
+    const repo = repository();
+    const localParser = { parse: vi.fn() };
+    const modelDocument = parsed();
+    const modelPdfParser = {
+      parse: vi.fn(async () => finalizeParsedDocument({
+        blocks: modelDocument.blocks,
+        engine: "system_model_direct_pdf",
+        mediaType: "application/pdf",
+        pageCount: modelDocument.pageCount,
+        status: "complete"
+      }))
+    };
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      modelPdfParser,
+      parser: localParser,
+      repository: repo,
+      storage
+    });
+
+    await process(claim("parsing", {
+      artifact: {
+        ...claim("parsing").artifact,
+        pdfProcessingMode: "system_model_direct_pdf",
+        pdfSystemModelPolicyVersion: 3,
+        pdfSystemModelSnapshot: { version: 1 },
+        profileExecutionAuthority: "installation",
+        profileRevisionId: "profile-revision-1"
+      },
+      byteSize: original.byteLength,
+      checksum: digest(original),
+      fileName: "document.pdf",
+      mimeType: "application/pdf"
+    }));
+
+    expect(localParser.parse).not.toHaveBeenCalled();
+    expect(modelPdfParser.parse).toHaveBeenCalledWith(expect.objectContaining({
+      artifactId: "artifact-1",
+      bytes: original,
+      mode: "system_model_direct_pdf",
+      profileRevisionId: "profile-revision-1",
+      systemModelPolicyVersion: 3,
+      systemModelSnapshot: { version: 1 }
+    }));
+    expect(repo.completeParsing).toHaveBeenCalledOnce();
+    expect(JSON.parse(storage.objects.get("normalized.json")!.body.toString("utf8")))
+      .toMatchObject({ parser: { engine: "system_model_direct_pdf" } });
   });
 
   it("settles the immutable hierarchical shadow index before advancing chunked work", async () => {

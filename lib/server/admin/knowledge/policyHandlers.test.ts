@@ -46,6 +46,38 @@ describe("administrator Knowledge settings handlers", () => {
     expect(service.rollbackProfile).not.toHaveBeenCalled();
   });
 
+  it("updates the maximum Knowledge search budget with optimistic versioning", async () => {
+    const service = {
+      activateProfile: vi.fn(),
+      list: vi.fn().mockResolvedValue({ answerPolicy: { maximumKnowledgeSearches: 18 } }),
+      rollbackProfile: vi.fn(),
+      updateAnswerPolicy: vi.fn()
+    };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/knowledge", {
+      body: JSON.stringify({
+        action: "update_answer_policy",
+        expectedVersion: 4,
+        maximumKnowledgeSearches: 18
+      }),
+      headers: { "content-type": "application/json" },
+      method: "PATCH"
+    }));
+
+    expect(response.status).toBe(200);
+    expect(service.updateAnswerPolicy).toHaveBeenCalledWith({
+      expectedVersion: 4,
+      maximumKnowledgeSearches: 18,
+      userId: "user-1"
+    });
+    await expect(response.json()).resolves.toEqual({
+      knowledge: { answerPolicy: { maximumKnowledgeSearches: 18 } }
+    });
+  });
+
   it("admits only an embedding profile activation and maps conflicts", async () => {
     const service = {
       activateProfile: vi.fn().mockRejectedValue(
@@ -62,7 +94,8 @@ describe("administrator Knowledge settings handlers", () => {
       body: JSON.stringify({
         action: "activate_profile",
         deploymentId: "embedding-1",
-        expectedVersion: 2
+        expectedVersion: 2,
+        pdfProcessingMode: "local"
       }),
       headers: { "content-type": "application/json" },
       method: "PATCH"
@@ -72,6 +105,7 @@ describe("administrator Knowledge settings handlers", () => {
     expect(service.activateProfile).toHaveBeenCalledWith({
       deploymentId: "embedding-1",
       expectedVersion: 2,
+      pdfProcessingMode: "local",
       userId: "user-1"
     });
 
@@ -82,6 +116,7 @@ describe("administrator Knowledge settings handlers", () => {
           action: "activate_profile",
           deploymentId: "embedding-1",
           expectedVersion: 2,
+          pdfProcessingMode: "local",
           visionDeploymentId: "vision-1"
         }),
         headers: { "content-type": "application/json" },

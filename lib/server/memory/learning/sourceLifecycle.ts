@@ -40,6 +40,34 @@ function shouldExtract(event: MemoryRetainedSourceMutationEvent): boolean {
     event.settlement.assistantMessageId === event.snapshot.activeLeafMessageId;
 }
 
+async function settledDirectUserMessageId(
+  tx: MemoryTransaction,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<string | null> {
+  if (!event.settlement?.assistantMessageId) return null;
+  const run = await tx.modelRun.findFirst({
+    select: { userMessageId: true },
+    where: {
+      assistantMessageId: event.settlement.assistantMessageId,
+      chatId: event.snapshot.id,
+      id: event.settlement.runId,
+      status: "complete",
+      userId: event.snapshot.userId
+    }
+  });
+  if (!run) return null;
+  const message = await tx.message.findFirst({
+    select: { id: true },
+    where: {
+      chatId: event.snapshot.id,
+      id: run.userMessageId,
+      role: "user",
+      status: "complete"
+    }
+  });
+  return message?.id ?? null;
+}
+
 async function reopenSourcePurge(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -123,12 +151,16 @@ export async function applyMemoryLearningSourceMutation(
   // fencing above still run while paused, but no new automatic-learning job
   // may be admitted until the user explicitly resumes Memory.
   if (!settings.useMemoryFacts || !settings.learnAutomatically) return;
+  const sourceMessageId = await settledDirectUserMessageId(tx, event);
+  if (!sourceMessageId) return;
   await enqueueMemoryJob(tx, settings, {
     idempotencyFingerprint: memoryFactExtractionJobFingerprint({
       activeLeafMessageId: event.snapshot.activeLeafMessageId!,
       branchGeneration: event.snapshot.memoryBranchGeneration,
       chatId: event.snapshot.id,
+      memoryGenerationSnapshot: settings.memoryGeneration,
       sourceHash: event.snapshot.sourceHash,
+      sourceMessageId,
       sourceRevision: event.snapshot.memorySourceRevision,
       userId: event.snapshot.userId
     }),
@@ -139,6 +171,7 @@ export async function applyMemoryLearningSourceMutation(
       branchGeneration: event.snapshot.memoryBranchGeneration,
       chatId: event.snapshot.id,
       sourceHash: event.snapshot.sourceHash,
+      sourceMessageId,
       sourceRevision: event.snapshot.memorySourceRevision
     }
   });

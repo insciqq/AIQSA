@@ -75,6 +75,10 @@ export function knowledgeCitationOriginalUrl(reference: KnowledgeCitationReferen
   return `${citationPath(reference)}?asset=original`;
 }
 
+export function knowledgeCitationPageUrl(reference: KnowledgeCitationReference): string {
+  return `${citationPath(reference)}?asset=page`;
+}
+
 export function knowledgeSourceOriginalUrl(sourceId: string): string {
   return `${sourcePath(sourceId)}?asset=original`;
 }

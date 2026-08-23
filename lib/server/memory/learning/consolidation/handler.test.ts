@@ -133,6 +133,7 @@ function claim(kind: "CONSOLIDATE_CANDIDATE" | "VERIFY_CANDIDATE"): MemoryJobCla
       : MEMORY_FACT_VERIFICATION_PIPELINE_VERSION,
     recoveredLease: false,
     sourceHash,
+    sourceMessageId: null,
     sourceRevision: 3,
     stage: null,
     userId: "user-1"

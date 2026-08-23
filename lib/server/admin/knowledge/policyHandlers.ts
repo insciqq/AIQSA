@@ -2,6 +2,7 @@ import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import type { createAdminKnowledgePolicyService } from "./policyService";
 import { AdminKnowledgeProfileServiceError } from "./profileService";
+import { AdminKnowledgeAnswerPolicyServiceError } from "./answerPolicyService";
 
 type Service = ReturnType<typeof createAdminKnowledgePolicyService>;
 
@@ -21,6 +22,11 @@ function boundedId(value: unknown): string | null {
     !/[\u0000-\u0020\u007f]/u.test(normalized) ? normalized : null;
 }
 
+function pdfProcessingMode(value: unknown) {
+  return value === "local" || value === "system_model_direct_pdf" ||
+    value === "system_model_vision" ? value : null;
+}
+
 async function requireAdmin(request: Request, resolveAuth: RequestAuthResolver) {
   const session = await resolveAuth(request);
   if (!session) return { error: Response.json({ error: "unauthorized" }, { status: 401 }), session: null };
@@ -36,6 +42,11 @@ function contentTypeIsJson(request: Request): boolean {
 }
 
 function failure(error: unknown): Response {
+  if (error instanceof AdminKnowledgeAnswerPolicyServiceError) {
+    return Response.json({ error: error.code }, {
+      status: error.code === "knowledge_answer_policy_stale" ? 409 : 400
+    });
+  }
   if (error instanceof AdminKnowledgeProfileServiceError) {
     return Response.json({ error: error.code }, { status: 409 });
   }
@@ -69,8 +80,13 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
       if (bodyError) return bodyError;
       if (record(value) && value.action === "activate_profile") {
         const deploymentId = boundedId(value.deploymentId);
-        if (!allowedKeys(value, ["action", "deploymentId", "expectedVersion"]) ||
-          !deploymentId || !Number.isSafeInteger(value.expectedVersion) ||
+        const mode = pdfProcessingMode(value.pdfProcessingMode);
+        if (!allowedKeys(value, [
+          "action",
+          "deploymentId",
+          "expectedVersion",
+          "pdfProcessingMode"
+        ]) || !deploymentId || !mode || !Number.isSafeInteger(value.expectedVersion) ||
           Number(value.expectedVersion) < 1) {
           return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
         }
@@ -78,6 +94,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
           await input.service.activateProfile({
             deploymentId,
             expectedVersion: Number(value.expectedVersion),
+            pdfProcessingMode: mode,
             userId: auth.session.userId
           });
           return Response.json({ knowledge: await input.service.list() });
@@ -96,6 +113,29 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
           await input.service.rollbackProfile({
             expectedVersion: Number(value.expectedVersion),
             revisionId,
+            userId: auth.session.userId
+          });
+          return Response.json({ knowledge: await input.service.list() });
+        } catch (error) {
+          return failure(error);
+        }
+      }
+      if (record(value) && value.action === "update_answer_policy") {
+        if (!allowedKeys(value, [
+          "action",
+          "expectedVersion",
+          "maximumKnowledgeSearches"
+        ]) || !Number.isSafeInteger(value.expectedVersion) ||
+          Number(value.expectedVersion) < 1 ||
+          !Number.isSafeInteger(value.maximumKnowledgeSearches) ||
+          Number(value.maximumKnowledgeSearches) < 1 ||
+          Number(value.maximumKnowledgeSearches) > 32) {
+          return Response.json({ error: "knowledge_answer_policy_invalid" }, { status: 400 });
+        }
+        try {
+          await input.service.updateAnswerPolicy({
+            expectedVersion: Number(value.expectedVersion),
+            maximumKnowledgeSearches: Number(value.maximumKnowledgeSearches),
             userId: auth.session.userId
           });
           return Response.json({ knowledge: await input.service.list() });

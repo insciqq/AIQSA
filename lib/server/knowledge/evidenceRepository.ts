@@ -373,7 +373,7 @@ function evidenceItem(value: Readonly<{
   sourceVersionNumber: number | null;
   state: string;
   textTruncated: boolean | null;
-}>, maximumOperations: number): KnowledgeEvidencePackageItem | null {
+}>, maximumOperations: number, allowNoProvenance = false): KnowledgeEvidencePackageItem | null {
   if (!Number.isSafeInteger(value.ordinal) || value.ordinal < 1 ||
     value.ordinal > KNOWLEDGE_CITATION_V2_MAX || value.handle !== `K${value.ordinal}` ||
     (value.state !== "available" && value.state !== "deleted") ||
@@ -404,7 +404,7 @@ function evidenceItem(value: Readonly<{
     !value.excerpt || !value.fileName || !value.knowledgeBaseId || value.page === null ||
     !value.passageId || !value.sourceVersionId || value.sourceVersionNumber === null ||
     value.textTruncated === null || decodedLocator === null || boundaries === null ||
-    provenance.length === 0 || !string(value.baseName, 1_024) ||
+    (!allowNoProvenance && provenance.length === 0) || !string(value.baseName, 1_024) ||
     !string(value.documentId, 512) || !string(value.documentVersionId, 512) ||
     !string(value.excerpt, 64 * 1_024) || !string(value.fileName, 1_024) ||
     !string(value.knowledgeBaseId, 512) || !string(value.passageId, 512) ||
@@ -488,6 +488,8 @@ export async function loadKnowledgeEvidencePackage(
     : null;
   const toolLoopIntent = session.originalIntent.kind === "tool_loop_v1" &&
     Object.keys(session.originalIntent).length === 1;
+  const fullContextIntent = session.originalIntent.kind === "full_context_v1" &&
+    Object.keys(session.originalIntent).length === 1;
   const query = focusedRequest?.originalQuery ?? null;
   const readyBases = integer(session.readinessSummary.readyBases);
   const readySources = integer(session.readinessSummary.readySources);
@@ -500,9 +502,14 @@ export async function loadKnowledgeEvidencePackage(
     0
   );
   const items = budgetPolicy
-    ? session.evidenceItems.map((item) => evidenceItem(item, budgetPolicy.maxOperations))
+    ? session.evidenceItems.map((item) => evidenceItem(
+        item,
+        budgetPolicy.maxOperations,
+        fullContextIntent
+      ))
     : [];
-  if ((!query && !toolLoopIntent) || readyBases === null || readySources === null ||
+  if ((!query && !toolLoopIntent && !fullContextIntent) ||
+    readyBases === null || readySources === null ||
     excludedResources === null ||
     !budgetPolicy ||
     operationLinkCount > budgetPolicy.maxOperations * 100 ||
@@ -514,17 +521,20 @@ export async function loadKnowledgeEvidencePackage(
   return {
     citationContract: KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
     coverage: {
-      expectedPassageCount: null,
-      mode: "partial",
+      expectedPassageCount: fullContextIntent ? decodedItems.length : null,
+      mode: fullContextIntent ? "verified_only" : "partial",
       namedTargets: [],
-      // Final-manifest identity is unavailable at this projection boundary.
-      verified: false
+      // Full-corpus admission proves the expected set. The final provider
+      // dispatch is rechecked independently before grounding.
+      verified: fullContextIntent
     },
     degradedFlags: [...session.degradedFlags],
     items: decodedItems,
     originalIntent: toolLoopIntent
       ? { kind: "tool_loop_v1" }
-      : { kind: "focused_v1", query: query! },
+      : fullContextIntent
+        ? { kind: "full_context_v1" }
+        : { kind: "focused_v1", query: query! },
     readiness: { excludedResources, readyBases, readySources },
     runId: session.modelRunId,
     scopeSnapshot: session.scopeSnapshot,
@@ -636,11 +646,13 @@ export function knowledgeEvidencePackageForGroundingDispatch(
 
   const items = evidence.items.filter((item) => includedIds.has(item.id));
   if (items.length !== includedIds.size) return groundingDispatchMismatch();
+  const fullContextVerified = evidence.originalIntent.kind === "full_context_v1" &&
+    dispatch.exclusions.length === 0 && items.length === evidence.items.length;
   return {
     ...evidence,
     coverage: {
       ...evidence.coverage,
-      verified: false
+      verified: fullContextVerified
     },
     groundingDispatch: {
       manifestHash: dispatch.draft.manifestHash,
@@ -743,7 +755,9 @@ export async function groundKnowledgeRunAnswer(
       where: { id: input.runId, userId: input.userId }
     });
     const normalizedRequest = record(run?.normalizedRequest) ? run.normalizedRequest : null;
-    if (normalizedRequest?.knowledgeFocusedRequest !== undefined) {
+    const fullContext = record(normalizedRequest?.knowledgeAnswering) &&
+      normalizedRequest.knowledgeAnswering.route === "full_context_v1";
+    if (normalizedRequest?.knowledgeFocusedRequest !== undefined || fullContext) {
       throw new Error("knowledge_evidence_receipt_invalid");
     }
     return null;

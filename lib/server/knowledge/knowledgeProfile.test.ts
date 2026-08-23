@@ -28,8 +28,9 @@ describe("Knowledge Profile", () => {
 
     expect(configuration).toEqual({
       operationRoles: roles,
+      pdfProcessingMode: "local",
       rolePolicyVersion: KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION,
-      schemaVersion: 5
+      schemaVersion: 6
     });
     expect(roles.map(({ mode, operation }) => ({ mode, operation }))).toEqual([
       { mode: "external", operation: "embeddings" }

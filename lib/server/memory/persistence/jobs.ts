@@ -16,6 +16,7 @@ export type MemoryJobEnqueueInput = Readonly<{
     branchGeneration: number;
     chatId: string;
     sourceHash: string;
+    sourceMessageId?: string;
     sourceRevision: number;
   }>;
 }>;
@@ -33,11 +34,13 @@ function validToken(value: string, maxLength: number): boolean {
 }
 
 const sha256 = /^[a-f0-9]{64}$/u;
+const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v1";
 
 function validSource(input: MemoryJobEnqueueInput["source"]): boolean {
   return input === undefined || (
     validToken(input.activeLeafMessageId, 256) &&
     validToken(input.chatId, 256) &&
+    (input.sourceMessageId === undefined || validToken(input.sourceMessageId, 256)) &&
     sha256.test(input.sourceHash) &&
     Number.isSafeInteger(input.branchGeneration) &&
     input.branchGeneration >= 0 &&
@@ -55,7 +58,10 @@ export async function enqueueMemoryJob(
     !isMemoryCoordinatorJobKind(input.kind) ||
     !validToken(input.idempotencyFingerprint, 128) ||
     !validToken(input.pipelineVersion, 64) ||
-    !validSource(input.source)
+    !validSource(input.source) ||
+    (input.kind === "EXTRACT_FACTS" &&
+      input.pipelineVersion === vNextFactExtractionPipeline &&
+      input.source?.sourceMessageId === undefined)
   ) {
     return memoryPersistenceFailure("memory_input_invalid");
   }
@@ -70,6 +76,7 @@ export async function enqueueMemoryJob(
       memoryRevisionSnapshot: true,
       pipelineVersion: true,
       sourceHash: true,
+      sourceMessageId: true,
       sourceRevision: true,
       state: true
     },
@@ -81,14 +88,20 @@ export async function enqueueMemoryJob(
     }
   });
   if (existing) {
+    const sourceConflict = input.kind === "EXTRACT_FACTS" &&
+      input.pipelineVersion === vNextFactExtractionPipeline
+      ? existing.chatId !== (input.source?.chatId ?? null) ||
+        existing.sourceMessageId !== (input.source?.sourceMessageId ?? null)
+      : existing.chatId !== (input.source?.chatId ?? null) ||
+        existing.activeLeafMessageId !== (input.source?.activeLeafMessageId ?? null) ||
+        existing.branchGeneration !== (input.source?.branchGeneration ?? null) ||
+        existing.sourceRevision !== (input.source?.sourceRevision ?? null) ||
+        existing.sourceHash !== (input.source?.sourceHash ?? null) ||
+        existing.sourceMessageId !== (input.source?.sourceMessageId ?? null);
     if (
       existing.kind !== input.kind ||
       existing.pipelineVersion !== input.pipelineVersion ||
-      existing.chatId !== (input.source?.chatId ?? null) ||
-      existing.activeLeafMessageId !== (input.source?.activeLeafMessageId ?? null) ||
-      existing.branchGeneration !== (input.source?.branchGeneration ?? null) ||
-      existing.sourceRevision !== (input.source?.sourceRevision ?? null) ||
-      existing.sourceHash !== (input.source?.sourceHash ?? null)
+      sourceConflict
     ) {
       return memoryPersistenceFailure("memory_idempotency_conflict");
     }
@@ -115,6 +128,7 @@ export async function enqueueMemoryJob(
             branchGeneration: input.source.branchGeneration,
             chatId: input.source.chatId,
             sourceHash: input.source.sourceHash,
+            sourceMessageId: input.source.sourceMessageId,
             sourceRevision: input.source.sourceRevision
           }
         : {}),

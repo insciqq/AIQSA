@@ -26,7 +26,7 @@ const nextConfig = {
     turbopackFileSystemCacheForDev: false
   },
   output: "standalone",
-  serverExternalPackages: ["unpdf"],
+  serverExternalPackages: ["@napi-rs/canvas", "pdf-lib", "unpdf"],
   async headers() {
     return [
       {

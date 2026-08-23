@@ -75,6 +75,8 @@ import {
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
 import type { KnowledgeEvidenceDispatchManifestDraft } from "../knowledge/evidenceDispatchManifest";
+import type { KnowledgeEvidenceDispatchBinding } from "../knowledge/evidenceDispatchRepository";
+import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
 import type {
   KnowledgeProviderDispatchLifecycle,
   PreparedKnowledgeProviderDispatch
@@ -588,7 +590,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const admittedKnowledgeReady = knowledgeRunAdmissionHasReadySources(
     input.prepared.knowledgeAdmissionPlan
   );
-  const groundedKnowledgeAnswer = normalizedRequest.knowledgeFocusedRequest !== undefined;
+  const fullContextPlan = input.prepared.knowledgeAdmissionPlan?.answeringPlan?.route ===
+    KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT
+    ? input.prepared.knowledgeAdmissionPlan.answeringPlan
+    : null;
+  const groundedKnowledgeAnswer = normalizedRequest.knowledgeFocusedRequest !== undefined ||
+    normalizedRequest.knowledgeAnswering?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
+  const knowledgeCitationAnswer = normalizedRequest.knowledgePlan.mode !== "none";
   const serverExternalToolMode = requestHasServerExternalTools(
     input.prepared.providerRequest
   );
@@ -739,7 +747,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         if (effectiveEvent.type === "token") {
-          if (!includeTokenEvents || groundedKnowledgeAnswer) {
+          if (!includeTokenEvents || knowledgeCitationAnswer) {
             return;
           }
 
@@ -777,6 +785,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function prepareKnowledgeProviderDispatch(inputRequest: Readonly<{
         draft: KnowledgeEvidenceDispatchManifestDraft | null;
+        evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null;
         ordinal: number;
         purpose: "answer";
         request: ProviderRunRequest;
@@ -794,6 +803,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         return input.knowledgeProviderDispatch.prepare({
           draft: inputRequest.draft,
+          ...(inputRequest.evidenceBindings
+            ? { evidenceBindings: inputRequest.evidenceBindings }
+            : {}),
           modelRunId: runId,
           ordinal: inputRequest.ordinal,
           purpose: inputRequest.purpose,
@@ -804,10 +816,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function streamProviderRequest(
         request: ProviderRunRequest,
-        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null
+        dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null,
+        evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null
       ): Promise<ProviderRunResult> {
         const preparedDispatch = await prepareKnowledgeProviderDispatch({
           draft: dispatchDraft,
+          evidenceBindings,
           ordinal: 1,
           purpose: "answer",
           request,
@@ -968,10 +982,47 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest
       ): Promise<Readonly<{
         dispatchDraft: KnowledgeEvidenceDispatchManifestDraft | null;
+        evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null;
         request: ProviderRunRequest;
       }>> {
+        if (normalizedRequest.knowledgeAnswering?.route ===
+          KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT) {
+          if (!fullContextPlan ||
+            normalizedRequest.knowledgeAnswering.evidenceCount !==
+              fullContextPlan.evidenceItems.length ||
+            fullContextPlan.dispatchDraft.items.length !== fullContextPlan.evidenceItems.length) {
+            throw new RunPipelineError(
+              "knowledge_evidence_receipt_invalid",
+              "The accepted full-context Knowledge evidence is unavailable"
+            );
+          }
+          if (!(await currentKnowledgeDispatchAllowed())) {
+            throw new RunPipelineError(
+              "memory_egress_destination_revoked",
+              "Knowledge access changed before answer dispatch"
+            );
+          }
+          const answerRequest: ProviderRunRequest = {
+            ...request,
+            toolChoice: "none",
+            tools: undefined
+          };
+          return {
+            dispatchDraft: fullContextPlan.dispatchDraft,
+            evidenceBindings: fullContextPlan.evidenceItems.map((item) => ({
+              dispatchEvidenceId: item.evidenceId,
+              evidenceItemId: item.id
+            })),
+            request: await requestWithKnowledgeEvidenceMessage(
+              answerRequest,
+              knowledgeEvidenceMessageFromDispatchDraft(fullContextPlan.dispatchDraft)
+            )
+          };
+        }
         const rawFocusedRequest = normalizedRequest.knowledgeFocusedRequest;
-        if (rawFocusedRequest === undefined) return { dispatchDraft: null, request };
+        if (rawFocusedRequest === undefined) {
+          return { dispatchDraft: null, evidenceBindings: null, request };
+        }
         const focusedRequest = decodeKnowledgeFocusedRequest(rawFocusedRequest);
         if (!focusedRequest) {
           throw new RunPipelineError(
@@ -1193,6 +1244,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         return {
           dispatchDraft,
+          evidenceBindings: null,
           request: await requestWithKnowledgeEvidenceMessage(
             answerRequest,
             knowledgeEvidenceMessageFromDispatchDraft(dispatchDraft)
@@ -2139,7 +2191,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ? await runProviderToolLoop(providerRequest)
           : await streamProviderRequest(
               providerRequest,
-              preparedProviderRequest.dispatchDraft
+              preparedProviderRequest.dispatchDraft,
+              preparedProviderRequest.evidenceBindings
             );
         const attributedProviderResult = {
           ...providerResult,
@@ -2173,7 +2226,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           return;
         }
 
-        if (groundedKnowledgeAnswer && finalization.finalText) {
+        if (knowledgeCitationAnswer && finalization.finalText) {
           emitTransient(controller, encoder, {
             data: { delta: finalization.finalText },
             type: "token"

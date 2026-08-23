@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
+import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import {
+  createKnowledgeModelPdfAttemptRepository,
+  KnowledgeModelPdfAttemptError
+} from "./modelPdfAttemptRepository";
 import { createPrismaKnowledgeSourceIngestionRepository } from "./prismaSourceIngestionRepository";
 
 const fingerprint = "a".repeat(64);
@@ -249,6 +254,88 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       claimToken: restarted!.claimToken,
       sourceVersionId: restarted!.sourceVersionId
     };
+    const pdfAttempts = createKnowledgeModelPdfAttemptRepository(prisma);
+    const snapshot: ProviderExecutionSnapshot = {
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://provider.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 30_000
+      },
+      connectionDisplayName: "Connection",
+      connectionId: fixture.connectionId,
+      credentialId: "credential-1",
+      credentialVersionId: "credential-version-1",
+      model: {
+        adapterKind: "openai_responses_native",
+        answerSelectable: true,
+        capabilities: {
+          nativePdfInput: true,
+          nativeSearch: false,
+          pdf: true,
+          reasoning: false,
+          streaming: true,
+          vision: true
+        },
+        defaultParams: {},
+        modelClass: "answer",
+        upstreamModelId: "pdf-transcription-test"
+      },
+      modelDisplayName: "PDF transcription test",
+      providerFamily: "test",
+      providerModelId: fixture.modelId,
+      version: 1
+    };
+    const identity = {
+      artifactId: fixture.artifactId,
+      batchIndex: 0,
+      mode: "system_model_direct_pdf" as const,
+      pageEnd: 2,
+      pageStart: 1,
+      requestDigest: "f".repeat(64),
+      sourceVersionId: fixture.sourceVersionId
+    };
+    const reservation = await pdfAttempts.reserve({ ...identity, now: restartNow });
+    expect(reservation.kind).toBe("dispatch");
+    if (reservation.kind !== "dispatch") throw new Error("expected PDF dispatch");
+    await expect(pdfAttempts.markDispatched({
+      ...identity,
+      attemptId: reservation.attemptId,
+      now: restartNow
+    })).resolves.toBe(true);
+    await expect(pdfAttempts.settle({
+      ...identity,
+      attemptId: reservation.attemptId,
+      now: restartNow,
+      ownerUserId: fixture.ownerUserId,
+      resultText: "<<<AIQSA_PAGE_000001>>>\nrow\tvalue\n<<<AIQSA_END_PAGE_000001>>>",
+      snapshot,
+      usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 0, totalTokens: 14 }
+    })).resolves.toMatchObject({ attemptId: reservation.attemptId });
+    await expect(pdfAttempts.reserve({ ...identity, now: restartNow })).resolves.toMatchObject({
+      kind: "settled"
+    });
+
+    const uncertainIdentity = {
+      ...identity,
+      batchIndex: 1,
+      pageEnd: 3,
+      pageStart: 3,
+      requestDigest: "e".repeat(64)
+    };
+    const uncertain = await pdfAttempts.reserve({ ...uncertainIdentity, now: restartNow });
+    expect(uncertain.kind).toBe("dispatch");
+    if (uncertain.kind !== "dispatch") throw new Error("expected PDF dispatch");
+    await expect(pdfAttempts.markDispatched({
+      ...uncertainIdentity,
+      attemptId: uncertain.attemptId,
+      now: restartNow
+    })).resolves.toBe(true);
+    await expect(pdfAttempts.reserve({
+      ...uncertainIdentity,
+      now: new Date(restartNow.getTime() + 1)
+    })).rejects.toEqual(new KnowledgeModelPdfAttemptError("pdf_processing_ambiguous"));
+
     await expect(restartedRepository.completeParsing({
       ...work,
       normalizedTextByteSize: 64,
@@ -258,6 +345,17 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       pageCount: 1,
       warningCodes: []
     })).resolves.toBe(true);
+    await expect(prisma.knowledgePdfProcessingAttempt.findUniqueOrThrow({
+      select: { resultChecksum: true, resultText: true, state: true },
+      where: { id: reservation.attemptId }
+    })).resolves.toEqual({ resultChecksum: null, resultText: null, state: "settled" });
+    await expect(prisma.usageEvent.count({
+      where: { knowledgePdfProcessingAttemptId: reservation.attemptId }
+    })).resolves.toBe(1);
+    await expect(prisma.knowledgePdfProcessingAttempt.findUniqueOrThrow({
+      select: { state: true },
+      where: { id: uncertain.attemptId }
+    })).resolves.toEqual({ state: "ambiguous" });
     const chunk = {
       contentHash: "d".repeat(64),
       contextPrefix: "",

@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
 import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
+import { createKnowledgeModelPdfParser } from "./modelPdfParser";
 import { createPrismaKnowledgeSourceIngestionRepository } from "./prismaSourceIngestionRepository";
 
 export const defaultKnowledgeIngestionRepository =
@@ -17,6 +18,7 @@ function createDefaultKnowledgeIngestionCoordinator(): KnowledgeIngestionCoordin
   return new KnowledgeIngestionCoordinator({
     process: createKnowledgeIngestionProcessor({
       embeddingRuntime: createPrismaEmbeddingRuntime(prisma),
+      modelPdfParser: createKnowledgeModelPdfParser(prisma),
       repository: defaultKnowledgeIngestionRepository,
       storage: defaultKnowledgeStorage
     }),

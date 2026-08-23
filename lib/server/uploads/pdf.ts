@@ -1,4 +1,5 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
+import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import {
   DEFAULT_PDF_CHUNK_MAX_CHARS,
   DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS,
@@ -9,7 +10,7 @@ import {
   type PdfExtractionConfig
 } from "./pdfConfig";
 
-const UNPDF_MODULE_PATH = require.resolve("unpdf");
+const UNPDF_MODULE_PATH = resolveRuntimeModulePath("unpdf");
 
 export {
   DEFAULT_PDF_CHUNK_MAX_CHARS,

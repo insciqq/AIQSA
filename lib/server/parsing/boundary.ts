@@ -13,10 +13,15 @@ import {
   isDocumentParserError,
   type DocumentParserErrorCode
 } from "./errors";
+import {
+  parseNativeTextPdf,
+  type NativePdfParserOptions
+} from "./nativePdf";
 import { resolveDocumentParserRoute } from "./routing";
 import { parseSpreadsheetDocument } from "./spreadsheet";
 import type {
   DocumentParseInput,
+  DocumentParserEngine,
   DocumentParserEngineAdapter,
   DocumentParserProbe,
   ParsedDocument,
@@ -31,6 +36,8 @@ export type DocumentParserBoundaryOptions = Readonly<{
   config?: DocumentParserConfig;
   fetch?: typeof fetch;
   inlineMaxChars?: number;
+  nativePdfLimits?: Omit<NativePdfParserOptions, "createWorker">;
+  nativePdfParser?: typeof parseNativeTextPdf;
   sidecarFallback?: boolean;
 }>;
 
@@ -107,7 +114,7 @@ function terminalError(errors: DocumentParserError[]): DocumentParserError {
 }
 
 function attemptForError(
-  engine: SidecarParserEngine,
+  engine: DocumentParserEngine,
   error: DocumentParserError
 ): ParsedDocumentParserAttempt {
   return Object.freeze({
@@ -122,6 +129,8 @@ function attemptForError(
 export class DocumentParserBoundary {
   readonly #adapters: Partial<Record<SidecarParserEngine, DocumentParserEngineAdapter>>;
   readonly #inlineMaxChars: number | undefined;
+  readonly #nativePdfLimits: Omit<NativePdfParserOptions, "createWorker"> | undefined;
+  readonly #nativePdfParser: typeof parseNativeTextPdf;
   readonly #sidecarFallback: boolean;
 
   constructor(options: DocumentParserBoundaryOptions = {}) {
@@ -144,6 +153,8 @@ export class DocumentParserBoundary {
       ...options.adapters
     };
     this.#inlineMaxChars = options.inlineMaxChars;
+    this.#nativePdfLimits = options.nativePdfLimits;
+    this.#nativePdfParser = options.nativePdfParser ?? parseNativeTextPdf;
     this.#sidecarFallback = options.sidecarFallback ?? true;
   }
 
@@ -165,6 +176,28 @@ export class DocumentParserBoundary {
     const errors: DocumentParserError[] = [];
     const attempts: ParsedDocumentParserAttempt[] = [];
     const candidates: ParsedDocument[] = [];
+    if (route.mediaType === "application/pdf" && this.#nativePdfLimits) {
+      try {
+        const native = await this.#nativePdfParser({
+          ...input,
+          mimeType: route.mediaType
+        }, this.#nativePdfLimits);
+        if (native.document) return native.document;
+        attempts.push(Object.freeze({
+          engine: "native_pdf",
+          errorCode: null,
+          outcome: "quality_failure"
+        }));
+      } catch (error) {
+        if (input.signal?.aborted) throw abortReason(input.signal);
+        const normalized = isDocumentParserError(error)
+          ? error
+          : new DocumentParserError("parser_unavailable", "native_pdf");
+        if (normalized.code === "parser_output_too_large") throw normalized;
+        errors.push(normalized);
+        attempts.push(attemptForError("native_pdf", normalized));
+      }
+    }
     const engines = this.#sidecarFallback ? route.engines : route.engines.slice(0, 1);
     for (const engine of engines) {
       if (input.signal?.aborted) throw abortReason(input.signal);

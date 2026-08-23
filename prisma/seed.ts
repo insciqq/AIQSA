@@ -312,6 +312,12 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
+  await prisma.knowledgeAnswerPolicy.upsert({
+    create: { id: "installation" },
+    // Local reseeding must not overwrite administrator-owned answer policy.
+    update: {},
+    where: { id: "installation" }
+  });
   await prisma.memoryEgressAdminPolicy.upsert({
     create: { id: "installation" },
     // Local reseeding must not overwrite administrator-owned acceptance.

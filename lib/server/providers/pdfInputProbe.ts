@@ -18,6 +18,8 @@ export const PDF_INPUT_PROBE_MIME_TYPE = "application/pdf";
 export const PDF_INPUT_PROBE_WIDTH = 480;
 export const PDF_INPUT_PROBE_HEIGHT = 240;
 
+const PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS = 512;
+
 const PDF_INPUT_PROBE_PROMPT = [
   "Read the attached image-only PDF.",
   "Return exactly the code shown in the bottom-right table cell.",
@@ -241,9 +243,9 @@ function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
     params: {
       ...input.model.defaultParams,
       background: false,
-      maxOutputTokens: 64,
-      maxTokens: 64,
-      max_output_tokens: 64,
+      maxOutputTokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
+      maxTokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
+      max_output_tokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
       ...(responsesAdapter
         ? { reasoning: { effort: "none", summary: "none" } }
         : {}),
