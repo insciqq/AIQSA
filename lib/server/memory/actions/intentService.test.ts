@@ -24,6 +24,7 @@ const output = {
   queryText: null,
   reasonCode: "save_request",
   recencyRequested: false,
+  retrievalMode: "TARGETED_CURRENT",
   referencedMemoryRef: null,
   replacementStatement: null,
   responsePreference: false,
@@ -31,6 +32,10 @@ const output = {
   sensitivity: "NORMAL",
   statement: "I prefer tea.",
   targetQuery: null,
+  temporalAsOf: null,
+  temporalFrom: null,
+  temporalIntent: "CURRENT",
+  temporalTo: null,
   thisChatOnly: false
 } as const;
 
@@ -52,6 +57,42 @@ describe("MemoryActionIntent service", () => {
     );
     expect(request.systemPrompt).toContain("Put that management lookup in targetQuery");
     expect(request.systemPrompt).toContain("ordinary answer requests: choose NONE");
+    expect(request.systemPrompt).toContain(
+      "targeted question about one specific prior conversation or event"
+    );
+    expect(request.systemPrompt).toContain(
+      "pastChatsUseful true, memoryUseful false, retrievalMode PAST_CHAT_SEARCH"
+    );
+    expect(request.systemPrompt).toContain(
+      "carry, use, or keep a personal fact or preference in future conversations"
+    );
+    expect(request.systemPrompt).toContain(
+      "An inexact or multiply matching target is still UPDATE with HIGH confidence"
+    );
+    expect(request.systemPrompt).toContain(
+      "preserve that quoted statement byte-for-byte in replacementStatement"
+    );
+    expect(request.systemPrompt).toContain(
+      "An inexact or multiply matching target is still FORGET with HIGH confidence"
+    );
+    expect(request.systemPrompt).toContain(
+      "never downgrade it to NONE merely because the server may need target selection"
+    );
+    expect(request.systemPrompt).toContain(
+      "For a pure SAVE, UPDATE, FORGET, LIST, SEARCH, or RESET"
+    );
+    expect(request.systemPrompt).toContain(
+      "memoryUseful false, pastChatsUseful false, applyResponsePreferences false"
+    );
+    expect(request.systemPrompt).toContain(
+      "retrievalMode TARGETED_CURRENT, temporalIntent CURRENT"
+    );
+    expect(request.systemPrompt).toContain(
+      "retrievalMode PAST_CHAT_SEARCH, temporalIntent ANY"
+    );
+    expect(request.systemPrompt).toContain(
+      "Do not use temporalIntent HISTORICAL"
+    );
     expect(request.systemPrompt).toContain("Automatic learning is a separate later stage");
     expect(request.systemPrompt).toContain(
       "responsePreference classifies only the statement or replacementStatement"
@@ -60,7 +101,7 @@ describe("MemoryActionIntent service", () => {
       "applyResponsePreferences means that already-saved response-style preferences"
     );
     expect(request.systemPrompt).toContain(
-      "any of memoryUseful, pastChatsUseful, applyResponsePreferences, or profileRequested"
+      "any action independently requests answer retrieval"
     );
     expect(request.systemPrompt).toContain(
       "profileRequested true only when the user asks for a broad inventory"

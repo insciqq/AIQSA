@@ -6,10 +6,19 @@ import type {
 } from "../coordinator/types";
 import {
   advanceMemoryMutation,
-  lockMemorySettings
+  lockMemorySettings,
+  requireActiveMemoryIndex,
+  type LockedMemorySettings
 } from "../persistence/transaction";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import {
+  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  memoryItemEmbeddingJobFingerprint
+} from "../embedding/contract";
+import { enqueueMemoryJob } from "../persistence/jobs";
+import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { removeUnsupportedMemoryEntityLinks } from "../learning/entities/lifecycle";
 import {
   memoryReclassificationAcceptedOutputHash,
   memoryReclassificationInputHash,
@@ -27,7 +36,8 @@ export type MemoryReclassificationCandidate = Readonly<{
   coreEligible: boolean;
   coreSalience: "HIGH" | "MEDIUM" | "LOW" | "NONE";
   modality: "CONSIDERATION" | "CONSTRAINT" | "EVENT" | "HABIT" |
-    "INTENTION" | "PLAN" | "PREFERENCE" | "STATE" | "WORKFLOW";
+    "INTENTION" | "PATTERN" | "PLAN" | "PREFERENCE" | "STATE" | "WORKFLOW";
+  semanticState: "ACTIVE" | "PENDING_RELATION";
   sourceMode: "EXPLICIT" | "AUTOMATIC";
   systemFrom: Date;
 }>;
@@ -62,7 +72,10 @@ function classifiedState(
 ): "CLASSIFIED" | "UNCERTAIN" | "SECRET_FENCED" | "REJECTED_FENCED" {
   if (sensitivity === "SECRET") return "SECRET_FENCED";
   if (sensitivity === "UNCERTAIN" || subjectScope === "UNCERTAIN") {
-    return "UNCERTAIN";
+    return sourceMode === "AUTOMATIC" ? "REJECTED_FENCED" : "UNCERTAIN";
+  }
+  if (sourceMode === "AUTOMATIC" && sensitivity === "SENSITIVE") {
+    return "REJECTED_FENCED";
   }
   // Automatic learning never has authority to retain relationship or
   // third-party facts, even when a legacy row predates the v1 extractor.
@@ -132,6 +145,130 @@ function safeClassificationResult(
       result.decision.sensitivity === "UNCERTAIN");
 }
 
+type IndexableClassifiedFact = Readonly<{
+  canonicalKey: string;
+  category: string;
+  displayText: string;
+  factId: string;
+  languageCode: string;
+  sensitivityClass: string;
+  sourceMode: string;
+  structuredValue: Prisma.JsonValue;
+  versionId: string;
+}>;
+
+export async function ensureClassifiedSearchEntry(
+  tx: Prisma.TransactionClient,
+  settings: LockedMemorySettings,
+  factVersionId: string,
+  triggerIdentity: string,
+  now: Date
+): Promise<void> {
+  const [row] = await tx.$queryRaw<IndexableClassifiedFact[]>(Prisma.sql`
+    SELECT
+      fact."id" AS "factId", fact."canonicalKey", fact."category",
+      version."id" AS "versionId", version."displayText",
+      version."structuredValue", version."languageCode",
+      version."sensitivityClass"::text AS "sensitivityClass",
+      version."sourceMode"::text AS "sourceMode"
+    FROM "MemoryFactVersion" AS version
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId"
+      AND fact."id" = version."factId"
+      AND fact."currentVersionId" = version."id"
+      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+    INNER JOIN "MemoryScope" AS scope
+      ON scope."userId" = fact."userId"
+      AND scope."id" = fact."scopeId"
+      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = version."userId"
+    WHERE version."userId" = ${settings.userId}
+      AND version."id" = ${factVersionId}
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND version."systemTo" IS NULL
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
+      AND version."safetyClassificationState" =
+        'CLASSIFIED'::"MemorySafetyClassificationState"
+      AND version."contentPurgedAt" IS NULL
+      AND version."displayText" IS NOT NULL
+      AND version."structuredValue" IS NOT NULL
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND ${memoryReusableFactAuthorityPredicate(settings.userId)}
+  `);
+  if (!row) return;
+  const index = await requireActiveMemoryIndex(tx, settings);
+  if (!index) throw new Error("memory_active_generation_invalid");
+  const normalizedSearchText = normalizeMemorySearchText(row.displayText);
+  if (!normalizedSearchText) return;
+  const sources = await tx.memoryEvidence.findMany({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      branchGeneration: true,
+      messageId: true,
+      safeSourceHash: true,
+      sourceProjectionVersion: true,
+      sourceType: true
+    },
+    where: {
+      factVersionId,
+      stance: "SUPPORTS",
+      userId: settings.userId
+    }
+  });
+  let entry = await tx.memorySearchEntry.findFirst({
+    select: { embeddingState: true, id: true },
+    where: {
+      factVersionId,
+      indexGenerationId: index.id,
+      userId: settings.userId
+    }
+  });
+  entry ??= await tx.memorySearchEntry.create({
+    data: {
+      embeddingState: index.indexMode === "HYBRID"
+        ? "PENDING"
+        : "NOT_APPLICABLE",
+      factVersionId,
+      indexGenerationId: index.id,
+      itemType: "FACT_VERSION",
+      languageCode: row.languageCode,
+      normalizedSearchText,
+      safeContentHash: memorySha256({
+        displayText: row.displayText,
+        structuredValue: row.structuredValue
+      }),
+      safetyIdentitySnapshot: memorySha256({
+        sensitivityClass: row.sensitivityClass,
+        sources
+      }),
+      sourceIdentitySnapshot: memorySha256({
+        factId: row.factId,
+        sourceMode: row.sourceMode,
+        sources,
+        versionId: row.versionId
+      }),
+      suppressionIdentitySnapshot: memorySha256({
+        canonicalKey: row.canonicalKey,
+        category: row.category,
+        normalizedValue: normalizedSearchText
+      }),
+      userId: settings.userId
+    },
+    select: { embeddingState: true, id: true }
+  });
+  if (entry.embeddingState === "PENDING") {
+    await enqueueMemoryJob(tx, settings, {
+      idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
+        entry.id,
+        triggerIdentity
+      ),
+      kind: "EMBED_ITEMS",
+      pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+    });
+  }
+}
+
 export function createPrismaMemoryReclassificationRepository(
   client: PrismaClient = prisma
 ): MemoryReclassificationRepository {
@@ -178,22 +315,43 @@ export function createPrismaMemoryReclassificationRepository(
           version."id", version."factId", version."userId", version."displayText",
           version."coreEligible", version."coreSalience"::text AS "coreSalience",
           version."modality"::text AS "modality",
+          version."state"::text AS "semanticState",
           version."sourceMode"::text AS "sourceMode", version."systemFrom"
         FROM "MemoryFactVersion" AS version
         INNER JOIN "MemoryFact" AS fact
           ON fact."userId" = version."userId" AND fact."id" = version."factId"
-          AND fact."currentVersionId" = version."id"
-          AND fact."state" = 'ACTIVE'::"MemoryFactState"
         INNER JOIN "MemoryScope" AS scope
           ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
           AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+        INNER JOIN "UserMemorySettings" AS settings
+          ON settings."userId" = version."userId"
         WHERE version."userId" = ${userId}
-          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND (
+            (
+              version."state" = 'ACTIVE'::"MemoryFactVersionState"
+              AND fact."currentVersionId" = version."id"
+            )
+            OR (
+              version."state" = 'PENDING_RELATION'::"MemoryFactVersionState"
+              AND (
+                (
+                  fact."state" = 'ACTIVE'::"MemoryFactState"
+                  AND fact."currentVersionId" IS NOT NULL
+                  AND fact."currentVersionId" <> version."id"
+                )
+                OR (
+                  fact."state" = 'CONFLICTED'::"MemoryFactState"
+                  AND fact."currentVersionId" IS NULL
+                )
+              )
+            )
+          )
           AND version."safetyClassificationState" =
             'PENDING'::"MemorySafetyClassificationState"
+          AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
           AND version."displayText" IS NOT NULL
           AND ${memoryCanonicalGlobalScopePredicate()}
-          AND ${memoryPersonalFactEvidencePredicate(userId)}
+          AND ${memoryReusableFactAuthorityPredicate(userId)}
         ORDER BY version."createdAt", version."id"
         LIMIT ${limit}
       `);
@@ -208,10 +366,16 @@ export function createPrismaMemoryReclassificationRepository(
         throw new Error("memory_reclassification_disabled");
       }
       let changed = false;
+      const admittedActiveVersions: Array<{
+        id: string;
+        triggerIdentity: string;
+      }> = [];
       for (const plan of plans) {
         const { candidate, result } = plan;
         if (candidate.userId !== userId || !safeToken.test(candidate.id) ||
           !safeToken.test(candidate.factId) ||
+          (candidate.semanticState !== "ACTIVE" &&
+            candidate.semanticState !== "PENDING_RELATION") ||
           !safeClassificationResult(candidate, result)) {
           throw new Error("memory_reclassification_input_invalid");
         }
@@ -220,19 +384,41 @@ export function createPrismaMemoryReclassificationRepository(
           FROM "MemoryFactVersion" AS version
           INNER JOIN "MemoryFact" AS fact
             ON fact."userId" = version."userId" AND fact."id" = version."factId"
-            AND fact."currentVersionId" = version."id"
-            AND fact."state" = 'ACTIVE'::"MemoryFactState"
           INNER JOIN "MemoryScope" AS scope
             ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
             AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+          INNER JOIN "UserMemorySettings" AS settings
+            ON settings."userId" = version."userId"
           WHERE version."userId" = ${userId}
             AND version."id" = ${candidate.id}
             AND version."factId" = ${candidate.factId}
-            AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+            AND version."state" =
+              ${candidate.semanticState}::"MemoryFactVersionState"
+            AND (
+              (
+                version."state" = 'ACTIVE'::"MemoryFactVersionState"
+                AND fact."currentVersionId" = version."id"
+              )
+              OR (
+                version."state" = 'PENDING_RELATION'::"MemoryFactVersionState"
+                AND (
+                  (
+                    fact."state" = 'ACTIVE'::"MemoryFactState"
+                    AND fact."currentVersionId" IS NOT NULL
+                    AND fact."currentVersionId" <> version."id"
+                  )
+                  OR (
+                    fact."state" = 'CONFLICTED'::"MemoryFactState"
+                    AND fact."currentVersionId" IS NULL
+                  )
+                )
+              )
+            )
             AND version."safetyClassificationState" =
               'PENDING'::"MemorySafetyClassificationState"
+            AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
             AND ${memoryCanonicalGlobalScopePredicate()}
-            AND ${memoryPersonalFactEvidencePredicate(userId)}
+            AND ${memoryReusableFactAuthorityPredicate(userId)}
           FOR UPDATE OF version, fact, scope
         `);
         if (!current) continue;
@@ -267,7 +453,14 @@ export function createPrismaMemoryReclassificationRepository(
               "displayText" = NULL,
               "normalizedSearchText" = NULL,
               "structuredValue" = NULL,
+              "occurredAt" = NULL,
+              "expectedAt" = NULL,
+              "expiresAt" = NULL,
+              "validFrom" = NULL,
+              "validTo" = NULL,
               "rawTemporalExpression" = NULL,
+              "sourceTimezone" = NULL,
+              "temporalResolverVersion" = NULL,
               "temporalResolutionEvidence" = NULL,
               "contentPurgedAt" = COALESCE("contentPurgedAt", ${now}),
               "sensitivityClass" = ${canonicalSensitivity === "SECRET"
@@ -287,7 +480,7 @@ export function createPrismaMemoryReclassificationRepository(
             WHERE "userId" = ${userId}
               AND "id" = ${candidate.id}
               AND "factId" = ${candidate.factId}
-              AND "state" = 'ACTIVE'::"MemoryFactVersionState"
+              AND "state" = ${candidate.semanticState}::"MemoryFactVersionState"
               AND "safetyClassificationState" = 'PENDING'::"MemorySafetyClassificationState"
           `);
           if (fenced !== 1) continue;
@@ -300,6 +493,7 @@ export function createPrismaMemoryReclassificationRepository(
           await tx.memoryEvidence.deleteMany({
             where: { factVersionId: candidate.id, userId }
           });
+          await removeUnsupportedMemoryEntityLinks(tx, userId, [candidate.id]);
           await tx.$executeRaw(Prisma.sql`
             UPDATE "MemoryFact"
             SET
@@ -313,11 +507,24 @@ export function createPrismaMemoryReclassificationRepository(
               AND "currentVersionId" = ${candidate.id}
               AND "state" = 'ACTIVE'::"MemoryFactState"
           `);
+          await tx.$executeRaw(Prisma.sql`
+            UPDATE "MemoryFact"
+            SET
+              "forgottenAt" = NULL,
+              "pinned" = FALSE,
+              "state" = 'RETRACTED'::"MemoryFactState",
+              "updatedAt" = ${now}
+            WHERE "userId" = ${userId}
+              AND "id" = ${candidate.factId}
+              AND "currentVersionId" IS NULL
+              AND "state" = 'CONFLICTED'::"MemoryFactState"
+          `);
           changed = true;
           continue;
         }
 
-        const coreEligible = canonicalSensitivity === "NORMAL" &&
+        const pattern = candidate.modality === "PATTERN";
+        const coreEligible = !pattern && canonicalSensitivity === "NORMAL" &&
           candidate.sourceMode === "EXPLICIT" &&
           result.decision.responsePreference;
         const coreSalience = coreEligible
@@ -327,12 +534,16 @@ export function createPrismaMemoryReclassificationRepository(
           : "NONE";
         const classified = await tx.memoryFactVersion.updateMany({
           data: {
-            category: result.decision.responsePreference
+            category: pattern
+              ? "patterns"
+              : result.decision.responsePreference
               ? "preferences"
               : canonicalCategory,
             coreEligible,
             coreSalience,
-            modality: result.decision.responsePreference
+            modality: pattern
+              ? "PATTERN"
+              : result.decision.responsePreference
               ? "PREFERENCE"
               : candidate.modality === "PREFERENCE" ? "STATE" : candidate.modality,
             safetyClassifiedAt: result.classifiedAt ?? now,
@@ -350,13 +561,33 @@ export function createPrismaMemoryReclassificationRepository(
             factId: candidate.factId,
             id: candidate.id,
             safetyClassificationState: "PENDING",
-            state: "ACTIVE",
+            state: candidate.semanticState,
             userId
           }
         });
         if (classified.count !== 1) continue;
         changed = true;
-        if (result.decision.responsePreference) {
+        if (candidate.semanticState === "ACTIVE" && state === "CLASSIFIED") {
+          admittedActiveVersions.push({
+            id: candidate.id,
+            triggerIdentity: result.executionId ?? memorySha256({
+              candidateId: candidate.id,
+              domain: "aiqsa.memory.local-reclassification",
+              policyVersion: result.policyVersion
+            })
+          });
+        }
+        if (pattern) {
+          await tx.memoryFact.updateMany({
+            data: { category: "patterns", updatedAt: now },
+            where: {
+              currentVersionId: candidate.id,
+              id: candidate.factId,
+              state: "ACTIVE",
+              userId
+            }
+          });
+        } else if (result.decision.responsePreference) {
           await tx.memoryFact.updateMany({
             data: { category: "preferences", updatedAt: now },
             where: {
@@ -384,6 +615,15 @@ export function createPrismaMemoryReclassificationRepository(
           settings,
           "FACT_SAFETY_RECLASSIFICATION"
         );
+        for (const admitted of admittedActiveVersions) {
+          await ensureClassifiedSearchEntry(
+            tx,
+            settings,
+            admitted.id,
+            admitted.triggerIdentity,
+            now
+          );
+        }
       }
     }
   });

@@ -109,6 +109,7 @@ export async function loadMemoryRunActions(
           select: {
             contentPurgedAt: true,
             displayText: true,
+            expiresAt: true,
             factId: true,
             id: true,
             safetyClassificationState: true,
@@ -153,6 +154,7 @@ export async function loadMemoryRunActions(
       canonicalScopeIds.has(fact.scopeId) &&
       fact.state === "ACTIVE" && fact.currentVersionId === version.id &&
       version.state === "ACTIVE" && version.contentPurgedAt === null &&
+      (version.expiresAt === null || version.expiresAt > now) &&
       version.safetyClassificationState === "CLASSIFIED" &&
       (version.sensitivityClass === "NORMAL" || version.sensitivityClass === "SENSITIVE") &&
       version.displayText === item.statement

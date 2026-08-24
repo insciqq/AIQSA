@@ -1,5 +1,4 @@
 import {
-  Prisma,
   type MemoryExecutionState,
   type PrismaClient
 } from "@prisma/client";
@@ -9,7 +8,6 @@ import type {
   MemoryJobDescriptor,
   MemoryJobGateDecision
 } from "../../coordinator/types";
-import { enqueueMemoryJob } from "../../persistence/jobs";
 import type { MemoryTransaction } from "../../persistence/transaction";
 import { withLockedMemoryTransaction } from "../../persistence/transaction";
 import {
@@ -23,8 +21,6 @@ import {
   staleMemoryFactVerification
 } from "./apply";
 import {
-  MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
-  memoryFactConsolidationJobFingerprint,
   type MemoryFactConsolidationInput,
   type MemoryFactConsolidationPlan,
   type MemoryFactVerificationInput,
@@ -48,102 +44,12 @@ export type MemoryFactDecisionExecutionBinding = Readonly<{
   state: MemoryExecutionState;
 }>;
 
-type PendingCandidateRow = Readonly<{
-  activeLeafMessageId: string;
-  branchGeneration: number;
-  candidateId: string;
-  chatId: string;
-  sourceHash: string;
-  sourceRevision: number;
-  userId: string;
-}>;
-
 function configuredKeyring(): MemorySuppressionKeyring {
   const configured = loadMemorySuppressionKeyring();
   if (configured.status !== "ready") {
     throw new Error("memory_suppression_keyring_unavailable");
   }
   return configured.keyring;
-}
-
-export async function reconcileMemoryFactCandidateJobs(
-  client: PrismaClient = prisma,
-  options: Readonly<{ limit?: number }> = {}
-): Promise<number> {
-  const limit = Math.max(1, Math.min(options.limit ?? 64, 256));
-  const rows = await client.$queryRaw<PendingCandidateRow[]>(Prisma.sql`
-    SELECT
-      candidate."id" AS "candidateId", candidate."userId", candidate."chatId",
-      candidate."branchGeneration", candidate."sourceRevision",
-      candidate."sourceHash", source_job."activeLeafMessageId"
-    FROM "MemoryCandidate" AS candidate
-    INNER JOIN "MemoryJob" AS source_job
-      ON source_job."userId" = candidate."userId"
-      AND source_job."id" = candidate."jobId"
-      AND source_job."kind" = 'EXTRACT_FACTS'::"MemoryJobKind"
-      AND source_job."state" = 'SUCCEEDED'::"MemoryJobState"
-    LEFT JOIN "MemoryCandidateDecision" AS decision
-      ON decision."userId" = candidate."userId"
-      AND decision."candidateId" = candidate."id"
-    WHERE candidate."state" = 'PENDING'::"MemoryCandidateState"
-      AND candidate."contentPurgedAt" IS NULL
-      AND decision."id" IS NULL
-      AND source_job."activeLeafMessageId" IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "MemoryJob" AS consolidation_job
-        WHERE consolidation_job."userId" = candidate."userId"
-          AND consolidation_job."kind" = 'CONSOLIDATE_CANDIDATE'::"MemoryJobKind"
-          AND consolidation_job."idempotencyFingerprint" LIKE
-            ('consolidate-candidate:' || candidate."id" || ':%')
-      )
-    ORDER BY candidate."createdAt", candidate."id"
-    LIMIT ${limit}
-  `);
-  let created = 0;
-  for (const row of rows) {
-    const result = await withLockedMemoryTransaction(
-      client,
-      row.userId,
-      async (tx, settings) => {
-        if (!settings.useMemoryFacts || !settings.learnAutomatically) return null;
-        const [candidate, decision] = await Promise.all([
-          tx.memoryCandidate.findFirst({
-            select: { id: true, state: true },
-            where: {
-              contentPurgedAt: null,
-              id: row.candidateId,
-              state: "PENDING",
-              userId: row.userId
-            }
-          }),
-          tx.memoryCandidateDecision.findFirst({
-            select: { id: true },
-            where: { candidateId: row.candidateId, userId: row.userId }
-          })
-        ]);
-        if (!candidate || decision) return null;
-        return enqueueMemoryJob(tx, settings, {
-          idempotencyFingerprint: memoryFactConsolidationJobFingerprint({
-            candidateId: row.candidateId,
-            sourceHash: row.sourceHash,
-            sourceRevision: row.sourceRevision
-          }),
-          kind: "CONSOLIDATE_CANDIDATE",
-          pipelineVersion: MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
-          source: {
-            activeLeafMessageId: row.activeLeafMessageId,
-            branchGeneration: row.branchGeneration,
-            chatId: row.chatId,
-            sourceHash: row.sourceHash,
-            sourceRevision: row.sourceRevision
-          }
-        });
-      }
-    );
-    if (result?.created) created += 1;
-  }
-  return created;
 }
 
 export function createPrismaMemoryFactConsolidationRepository(

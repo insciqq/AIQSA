@@ -2415,7 +2415,7 @@ describe("Prisma-backed run repository", () => {
         })
       ])).resolves.toEqual([
         { memoryBranchGeneration: 1, memorySourceRevision: 2 },
-        { memoryGeneration: 1, memoryRevision: 1 },
+        { memoryGeneration: 0, memoryRevision: 1 },
         []
       ]);
     });

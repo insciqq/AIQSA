@@ -255,13 +255,20 @@ export function createMemoryReclassificationHandler(
               throw new Error("memory_reclassification_authority_missing");
             }
             const settings = await lockMemorySettings(tx, claim.userId, true);
-            await deps.authorizeResults(
-              tx,
-              settings,
-              claim.userId,
-              claim.id,
-              executionResults
-            );
+            try {
+              await deps.authorizeResults(
+                tx,
+                settings,
+                claim.userId,
+                claim.id,
+                executionResults
+              );
+            } catch (error) {
+              if (error instanceof MemoryExecutionError) {
+                throw new MemoryCoordinatorError(error.code, false);
+              }
+              throw error;
+            }
           }
           await deps.repository.apply(tx, claim.userId, plans, context.now());
         },

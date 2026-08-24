@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "575ec8439571b497e5feee83eb64571cfefc4caf300ab58c703bf5f6ebffdaf6";
+  "90becd8c5af94c8fc69ad69fab69081a06ab70a8908a8c874bef4bea1a883bcb";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -44,6 +44,8 @@ const KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION =
   "20260822020000_knowledge_tool_coexistence_constraints";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
+const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
+  "20260824014100_memory_vnext_retrieval_cutover";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -4084,6 +4086,101 @@ function runKnowledgeToolCoexistenceMigrationProof(
   );
 }
 
+function runMemoryVNextRetrievalCutoverMigrationProof(
+  database: string,
+  committed: readonly string[],
+): void {
+  const cutoverIndex = committed.indexOf(MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION);
+  assert.ok(cutoverIndex > 0, "Memory vNext retrieval cutover migration is missing");
+  const probeParent = join(repositoryRoot, ".aiqsa");
+  const parentExisted = existsSync(probeParent);
+  mkdirSync(probeParent, { recursive: true, mode: 0o700 });
+  const probeRoot = mkdtempSync(join(probeParent, "memory-vnext-cutover-"));
+  const probeSchema = join(probeRoot, "schema.prisma");
+  const probeMigrations = join(probeRoot, "migrations");
+
+  try {
+    dropDatabase(database);
+    createDatabase(database);
+    cpSync(join(repositoryRoot, "prisma/schema.prisma"), probeSchema);
+    mkdirSync(probeMigrations);
+    for (const migration of committed.slice(0, cutoverIndex)) {
+      cpSync(join(migrationsRoot, migration), join(probeMigrations, migration), {
+        recursive: true,
+      });
+    }
+    const containerSchema = `/app/${probeSchema.slice(repositoryRoot.length + 1)}`;
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+
+    psqlScalar(database, `
+      INSERT INTO "User" (id, "displayName", role, status, "updatedAt")
+      VALUES ('memory-cutover-owner', 'Memory cutover fixture', 'user', 'active',
+        CURRENT_TIMESTAMP);
+      INSERT INTO "MemoryJob" (
+        id, "userId", kind, state, "pipelineVersion", "memoryGenerationSnapshot",
+        "memoryRevisionSnapshot", "idempotencyFingerprint", "updatedAt"
+      ) VALUES
+        (
+          'memory-cutover-consolidation-job', 'memory-cutover-owner',
+          'CONSOLIDATE_CANDIDATE', 'QUEUED', 'memory-fact-consolidation-v2', 0, 0,
+          'memory-cutover-consolidation-fixture', CURRENT_TIMESTAMP
+        ),
+        (
+          'memory-cutover-verification-job', 'memory-cutover-owner',
+          'VERIFY_CANDIDATE', 'RETRYABLE_FAILED', 'memory-fact-verification-v2', 0, 0,
+          'memory-cutover-verification-fixture', CURRENT_TIMESTAMP
+        );
+      SELECT 'memory-cutover-pre-migration-ready';
+    `);
+
+    for (const migration of committed.slice(cutoverIndex)) {
+      cpSync(join(migrationsRoot, migration), join(probeMigrations, migration), {
+        recursive: true,
+      });
+    }
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*)
+        FROM "MemoryJob"
+        WHERE "userId" = 'memory-cutover-owner'
+          AND kind IN ('CONSOLIDATE_CANDIDATE', 'VERIFY_CANDIDATE')
+          AND state = 'TERMINAL_FAILED'
+          AND "completedAt" IS NOT NULL
+          AND "errorCode" = 'memory_job_handler_unavailable'
+          AND num_nonnulls("leaseToken", "leaseExpiresAt", "nextAttemptAt") = 0;
+      `),
+      "2",
+      "Memory cutover left legacy candidate work reclaimable",
+    );
+    assert.equal(
+      psqlScalar(database, `
+        SELECT count(*)
+        FROM pg_class AS relation
+        INNER JOIN pg_index AS index_catalog ON index_catalog.indexrelid = relation.oid
+        WHERE relation.relname IN (
+          'MemoryFactVersion_retrieval_lifecycle_idx',
+          'MemoryFactVersion_retrieval_expiry_idx',
+          'MemoryEvidence_vnext_retrieval_idx'
+        )
+          AND index_catalog.indisvalid
+          AND index_catalog.indisready;
+      `),
+      "3",
+      "Memory cutover retrieval indexes are missing, invalid, or not ready",
+    );
+  } finally {
+    rmSync(probeRoot, { recursive: true, force: true });
+    if (!parentExisted) {
+      try {
+        rmdirSync(probeParent);
+      } catch {
+        // Preserve concurrently created operator-local state.
+      }
+    }
+  }
+}
+
 function main(
   mode: Mode,
   databases: readonly string[],
@@ -4119,6 +4216,7 @@ function main(
   runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
   runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
   runKnowledgeToolCoexistenceMigrationProof(migrations);
+  runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -4134,7 +4232,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Memory vNext legacy-job retirement/retrieval indexes, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

@@ -4,7 +4,20 @@ import type {
   MemorySensitivityClass,
   MemorySourceMode
 } from "../../../contracts/memory";
+import type {
+  MemoryRetrievalMode,
+  MemoryTemporalIntent
+} from "../../../contracts/memoryRetrieval";
 import type { MemoryRetrievalLane } from "./config";
+
+export {
+  MEMORY_RETRIEVAL_MODES,
+  MEMORY_TEMPORAL_INTENTS
+} from "../../../contracts/memoryRetrieval";
+export type {
+  MemoryRetrievalMode,
+  MemoryTemporalIntent
+} from "../../../contracts/memoryRetrieval";
 
 export type MemoryRetrievalItemType = "FACT_VERSION" | "RECALL_CHUNK";
 export type MemoryRetrievalDirectness = "DIRECT" | "INFERRED" | "PARAPHRASED";
@@ -18,6 +31,7 @@ export type MemoryRetrievalHistorySafetyClass =
 export type MemoryRetrievalSourceKind = "EVENT" | "FACT" | "HISTORY";
 
 export type MemoryRetrievalFilters = Readonly<{
+  asOf: Date | null;
   from: Date | null;
   /** Exact owner-validated target for an optional typed scope filter. */
   scopeTargetId: string | null;
@@ -31,6 +45,7 @@ export type MemoryRetrievalPlan = Readonly<{
   applyResponsePreferences: boolean;
   filters: MemoryRetrievalFilters;
   lexicalQuery: string | null;
+  mode: MemoryRetrievalMode;
   normalizedExactQuery: string;
   normalizedQuery: string;
   plannerVersion: string;
@@ -38,16 +53,26 @@ export type MemoryRetrievalPlan = Readonly<{
   profileRequested: boolean;
   queryPresent: boolean;
   recencyRequested: boolean;
+  temporalIntent: MemoryTemporalIntent;
 }>;
 
 export type MemoryRetrievalPlannerInput = Readonly<{
   applyResponsePreferences?: boolean;
   currentUserText: string;
   filters?: Partial<MemoryRetrievalFilters>;
+  mode?: MemoryRetrievalMode;
   now: Date;
   profileRequested?: boolean;
   recencyRequested?: boolean;
+  temporalIntent?: MemoryTemporalIntent;
 }>;
+
+export type MemoryMatchedEntityRole = "MENTION" | "OBJECT" | "SUBJECT";
+export type MemoryRetrievalSourceAuthority =
+  | "DIRECT_AUTOMATIC"
+  | "EXPLICIT"
+  | "PAST_CHAT"
+  | "SYNTHESIS";
 
 export type MemoryCandidateMetadata = Readonly<{
   canonicalKey: string | null;
@@ -59,15 +84,28 @@ export type MemoryCandidateMetadata = Readonly<{
   current: boolean;
   dedupeKey: string;
   directness: MemoryRetrievalDirectness | null;
+  dimensionKey: string | null;
+  entityIds: readonly string[];
+  expectedAt: Date | null;
+  expiresAt: Date | null;
   factId: string | null;
   historical: boolean;
   historySafetyClass: MemoryRetrievalHistorySafetyClass | null;
   importance: number;
+  identityKind: "PROPOSITION" | "SLOT" | null;
   languageCode: string;
+  lastConfirmedAt: Date | null;
+  lastUsedAt: Date | null;
+  lifecycleState: "ACTIVE" | "SUPERSEDED" | null;
+  matchedEntityRole: MemoryMatchedEntityRole | null;
   modality: MemoryModality | null;
+  observedAt: Date | null;
+  occurredAt: Date | null;
   occurredFrom: Date | null;
   occurredTo: Date | null;
   pinned: boolean;
+  predicateKey: string | null;
+  relationDepth: number;
   scopeAffinity: number;
   scopeType: MemoryScopeType | null;
   sensitivityClass: MemorySensitivityClass | null;
@@ -75,8 +113,12 @@ export type MemoryCandidateMetadata = Readonly<{
   sourceChatId: string | null;
   sourceFolderId: string | null;
   sourceMode: MemorySourceMode | null;
+  sourceAuthority: MemoryRetrievalSourceAuthority;
+  subjectKey: string | null;
+  synthesisDepth: number;
   systemFrom: Date | null;
   temperatureClass: MemoryRetrievalTemperatureClass | null;
+  temperatureScore: number;
   validFrom: Date | null;
   validTo: Date | null;
 }>;
@@ -97,8 +139,15 @@ export type MemoryLaneResult = Readonly<{
 }>;
 
 export type MemoryRetrievalFeatureSnapshot = Readonly<{
+  authorityRank: number;
+  decayAdjustedScore?: number;
+  decayAnchor?: "LAST_CONFIRMED" | "LAST_USED" | "OBSERVED" | "OCCURRED" |
+    "SYSTEM_FROM" | null;
+  decayFactor?: number;
+  decayPolicyVersion?: string;
   fusionVersion: string;
   laneCount: number;
+  temporalFit: number;
   tier: "CORE" | "DYNAMIC";
 }>;
 
@@ -120,6 +169,7 @@ export type MemoryCoreCandidate = Readonly<{
 }>;
 
 export const MEMORY_SAFE_PROJECTION_KINDS = [
+  "CHAT_DIGEST_SAFE_TEXT",
   "FACT_DISPLAY_TEXT",
   "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
 ] as const;
@@ -134,7 +184,7 @@ export type MemoryExpandedCandidate = Readonly<{
   projectionKind: MemorySafeProjectionKind;
   safeText: string;
   sourceChatId: string | null;
-  supportingItemId: null;
+  supportingItemId: string | null;
 }>;
 
 export type MemoryPackedItem = Readonly<{
@@ -143,10 +193,10 @@ export type MemoryPackedItem = Readonly<{
   itemId: string;
   itemType: MemoryRetrievalItemType;
   projectionKind: MemorySafeProjectionKind;
-  section: "CORE" | "FACT" | "HISTORY";
+  section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "PATTERN";
   sourceChatId: string | null;
-  supportingItemId: null;
-  temporalReason: "absolute_filter" | "current";
+  supportingItemId: string | null;
+  temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   tier: "CORE" | "DYNAMIC";
 }>;
 

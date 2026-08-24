@@ -3,9 +3,12 @@ import type { MemoryActionFeedback } from "../../../contracts/memoryClient";
 import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
   MEMORY_CONTEXT_TARGET_TOKENS,
+  MEMORY_DECAY_POLICY_VERSION,
   MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR,
+  MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
+  applyMemoryDecay,
   fuseMemoryRetrievalCandidates,
   isEligibleMemoryResponsePreferenceCore,
   packMemoryPersonalContext,
@@ -66,7 +69,7 @@ import {
 } from "./vector";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v6";
+  "memory-run-retrieval-admission-v7";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -387,6 +390,8 @@ function sameRetrievalSnapshot(
 ): boolean {
   return actual.activeGenerationId === expected.activeIndexGenerationId &&
     actual.chatMemoryMode === expected.chatMemoryMode &&
+    actual.decayEnabled === expected.settings.decayEnabled &&
+    actual.decayPolicyVersion === expected.settings.decayPolicyVersion &&
     actual.folderId === expected.folderId &&
     actual.memoryGeneration === expected.memoryGeneration &&
     actual.memoryRevision === expected.memoryRevision &&
@@ -421,7 +426,8 @@ function candidateMap(
 function attemptItems(
   pack: MemoryContextPack,
   core: readonly MemoryCoreCandidate[],
-  dynamic: readonly MemoryRankedCandidate[]
+  dynamic: readonly MemoryRankedCandidate[],
+  plan: MemoryRetrievalPlan
 ): readonly MemoryPreparingItemInput[] {
   const candidates = candidateMap(core, dynamic);
   return pack.items.map((packed): MemoryPreparingItemInput => {
@@ -437,6 +443,10 @@ function attemptItems(
         rrfScore: candidate.rrfScore,
         supportingItemId: packed.supportingItemId,
         temporalReason: packed.temporalReason,
+        historical: candidate.metadata.historical,
+        lifecycleState: candidate.metadata.lifecycleState,
+        retrievalMode: plan.mode,
+        temporalIntent: plan.temporalIntent,
         tier: packed.tier
       },
       finalScore: candidate.finalScore,
@@ -454,16 +464,19 @@ function attemptItems(
 function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknown>> {
   return {
     applyResponsePreferences: plan.applyResponsePreferences,
+    filterAsOf: plan.filters.asOf?.toISOString() ?? null,
     filterFrom: plan.filters.from?.toISOString() ?? null,
     filterScopeTargetId: plan.filters.scopeTargetId,
     filterScopeType: plan.filters.scopeType,
     filterSourceKinds: plan.filters.sourceKinds,
     filterTo: plan.filters.to?.toISOString() ?? null,
     lexicalAvailable: plan.lexicalQuery !== null,
+    mode: plan.mode,
     plannerVersion: plan.plannerVersion,
     profileRequested: plan.profileRequested,
     queryPresent: plan.queryPresent,
-    recencyRequested: plan.recencyRequested
+    recencyRequested: plan.recencyRequested,
+    temporalIntent: plan.temporalIntent
   };
 }
 
@@ -565,18 +578,25 @@ export type MemoryRelevanceCandidate = Readonly<{
   authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
   candidate: MemoryRankedCandidate;
   current: boolean;
+  directness: "DIRECT" | "INFERRED" | "PARAPHRASED" | null;
   handle: string;
+  historical: boolean;
+  lifecycleState: "ACTIVE" | "SUPERSEDED" | null;
   occurredFrom: string | null;
   occurredTo: string | null;
   sensitivityClass: "NORMAL";
   sourceKind: "EVENT" | "FACT" | "HISTORY";
+  temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   text: string;
 }>;
 
 export function memoryRelevanceCandidates(
   ranked: readonly MemoryRankedCandidate[],
   expanded: readonly MemoryExpandedCandidate[],
-  options: Readonly<{ recencyRequested?: boolean }> = {}
+  options: Readonly<{
+    recencyRequested?: boolean;
+    temporalIntent?: MemoryRetrievalPlan["temporalIntent"];
+  }> = {}
 ): readonly MemoryRelevanceCandidate[] {
   const projections = new Map(expanded.map((candidate) => [
     `${candidate.itemType}:${candidate.itemId}`,
@@ -605,12 +625,17 @@ export function memoryRelevanceCandidates(
         : candidate.metadata.sourceMode === "EXPLICIT" ? "SAVED" as const : "LEARNED" as const,
       candidate,
       current: candidate.metadata.current,
+      directness: candidate.metadata.directness,
       handle: "",
+      historical: candidate.metadata.historical,
+      lifecycleState: candidate.metadata.lifecycleState,
       occurredFrom: (projection.occurredFrom ?? candidate.metadata.validFrom ??
         candidate.metadata.systemFrom)?.toISOString() ?? null,
       occurredTo: (projection.occurredTo ?? candidate.metadata.validTo)?.toISOString() ?? null,
       sensitivityClass: "NORMAL" as const,
       sourceKind,
+      temporalReason: (options.temporalIntent ?? "CURRENT").toLocaleLowerCase("und") as
+        MemoryRelevanceCandidate["temporalReason"],
       text: projection.safeText
     }];
   });
@@ -629,7 +654,8 @@ export function memoryRelevanceCandidates(
 
 export function applyMemoryRelevance(
   candidates: readonly MemoryRelevanceCandidate[],
-  result: MemoryRunRerankResult | null
+  result: MemoryRunRerankResult | null,
+  plan?: MemoryRetrievalPlan
 ): readonly MemoryRankedCandidate[] {
   if (!result || result.status !== "READY") return [];
   const byHandle = new Map(candidates.map((entry) => [entry.handle, entry]));
@@ -641,11 +667,24 @@ export function applyMemoryRelevance(
     const reason = `${candidate.selectionReason}+${decision.reasonCode.toLocaleLowerCase("und")}`;
     return [{
       ...candidate,
-      finalScore: decision.relevanceScore,
+      finalScore: decision.relevanceScore * (
+        candidate.metadata.sourceAuthority === "SYNTHESIS"
+          ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
+          : 1
+      ),
       selectionReason: reason.length <= 128 ? reason : "semantic_relevance"
     }];
-  }).sort((left, right) => right.finalScore - left.finalScore ||
-    left.itemId.localeCompare(right.itemId));
+  }).sort((left, right) => {
+    if (plan?.mode === "HISTORICAL_MEMORY") {
+      const leftTime = left.metadata.occurredAt ?? left.metadata.validFrom ??
+        left.metadata.observedAt ?? left.metadata.systemFrom;
+      const rightTime = right.metadata.occurredAt ?? right.metadata.validFrom ??
+        right.metadata.observedAt ?? right.metadata.systemFrom;
+      const chronological = (leftTime?.getTime() ?? 0) - (rightTime?.getTime() ?? 0);
+      if (chronological !== 0) return chronological;
+    }
+    return right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId);
+  });
 }
 
 function degradationFor(
@@ -883,14 +922,36 @@ export function createMemoryRunRetrievalService(
         ...(factsRequested ? ["FACT" as const, "EVENT" as const] : []),
         ...(historyRequested ? ["HISTORY" as const] : [])
       ];
-      const plan = planMemoryRetrieval({
-        applyResponsePreferences: preferencesRequested,
-        currentUserText: control.intent.queryText,
-        filters: { sourceKinds: dynamicSourceKinds },
-        now: input.now,
-        profileRequested: control.intent.profileRequested,
-        recencyRequested: control.intent.recencyRequested
-      });
+      let plan: MemoryRetrievalPlan;
+      try {
+        plan = planMemoryRetrieval({
+          applyResponsePreferences: preferencesRequested,
+          currentUserText: control.intent.queryText,
+          filters: {
+            asOf: control.intent.temporalAsOf
+              ? new Date(control.intent.temporalAsOf)
+              : null,
+            from: control.intent.temporalFrom
+              ? new Date(control.intent.temporalFrom)
+              : null,
+            sourceKinds: dynamicSourceKinds,
+            to: control.intent.temporalTo
+              ? new Date(control.intent.temporalTo)
+              : null
+          },
+          mode: control.intent.retrievalMode,
+          now: input.now,
+          profileRequested: control.intent.profileRequested,
+          recencyRequested: control.intent.recencyRequested,
+          temporalIntent: control.intent.temporalIntent
+        });
+      } catch {
+        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_plan_invalid", null, {
+          ...actionEvidence,
+          controlReason: control.intent.reasonCode,
+          utilityExecutions: [utilityEvidence("MEMORY_CONTROL", control)]
+        });
+      }
       const querySecret = memoryExplicitStatementContainsSecret(plan.normalizedQuery);
       if (querySecret) {
         return emptyAttempt(input.expected, "FAILED_SAFE", "query_secret_blocked", null, {
@@ -1044,7 +1105,10 @@ export function createMemoryRunRetrievalService(
       const relevanceInput = memoryRelevanceCandidates(
         [...eligibleCore.map(({ candidate }) => candidate), ...dynamicFused],
         [...eligibleCore.map(({ expansion }) => expansion), ...expanded],
-        { recencyRequested: plan.recencyRequested }
+        {
+          recencyRequested: plan.recencyRequested,
+          temporalIntent: plan.temporalIntent
+        }
       );
       let relevance: MemoryRunRerankResult | null = null;
       if (relevanceInput.length > 0) {
@@ -1060,7 +1124,9 @@ export function createMemoryRunRetrievalService(
               candidates: relevanceInput.map(({ candidate: _candidate, ...candidate }) => candidate),
               profileRequested: plan.profileRequested,
               query: control.intent.queryText,
+              retrievalMode: plan.mode,
               signal,
+              temporalIntent: plan.temporalIntent,
               userId: input.userId
             }).catch(() => ({ reason: "memory_relevance_unavailable",
               status: "UNAVAILABLE" as const }));
@@ -1074,34 +1140,85 @@ export function createMemoryRunRetrievalService(
           relevance = { reason: "memory_relevance_unavailable", status: "UNAVAILABLE" };
         }
       }
-      const dynamic = applyMemoryRelevance(relevanceInput, relevance);
+      const relevant = applyMemoryRelevance(relevanceInput, relevance, plan);
+      let rejoined: readonly MemoryExpandedCandidate[] = [];
+      if (relevant.length > 0) {
+        try {
+          // The reranker operates on the first safe expansion. Reload its
+          // bounded accepted set so decay and packing see only rows that still
+          // satisfy every authoritative admission fence.
+          rejoined = await abortableRead(
+            repository.expand(local.snapshot, plan, relevant),
+            signal
+          );
+        } catch {
+          if (deadline.expired()) {
+            return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+              { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
+              { result: relevance, role: "MEMORY_RERANK" }
+            ]);
+          }
+          expansionFailed = true;
+        }
+      }
+      const rejoinedByKey = new Map(rejoined.map((candidate) => [
+        `${candidate.itemType}:${candidate.itemId}`,
+        candidate
+      ]));
+      const rejoinedRelevant = relevant.filter((candidate) =>
+        rejoinedByKey.has(`${candidate.itemType}:${candidate.itemId}`));
+      const dynamic = applyMemoryDecay(rejoinedRelevant, {
+        enabled: input.expected.settings.decayEnabled,
+        mode: plan.mode,
+        now: input.now,
+        policyVersion: input.expected.settings.decayPolicyVersion
+      });
       if (deadline.expired()) {
         return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
           { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
           { result: relevance, role: "MEMORY_RERANK" }
         ]);
       }
-      const selectedKeys = new Set(dynamic.map((candidate) => `${candidate.itemType}:${candidate.itemId}`));
-      const selectedCore = eligibleCore.flatMap((entry) => {
-        const selected = dynamic.find((candidate) =>
-          candidate.itemType === entry.candidate.itemType &&
-          candidate.itemId === entry.candidate.itemId);
-        return selected ? [{
+      const decayActive = input.expected.settings.decayEnabled &&
+        input.expected.settings.decayPolicyVersion === MEMORY_DECAY_POLICY_VERSION;
+      const selectedByKey = new Map(dynamic.map((candidate) => [
+        `${candidate.itemType}:${candidate.itemId}`,
+        candidate
+      ]));
+      const selectedKeys = new Set(selectedByKey.keys());
+      const coreByKey = new Map(eligibleCore.map((entry) => [
+        `${entry.candidate.itemType}:${entry.candidate.itemId}`,
+        entry
+      ]));
+      // Disabled/incompatible decay preserves the exact legacy Core order.
+      // When enabled, Core items follow the same post-relevance decay order as
+      // dynamic facts before their own final budget is applied.
+      const orderedCore = decayActive
+        ? dynamic.flatMap((candidate) => {
+            const entry = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
+            return entry ? [entry] : [];
+          })
+        : eligibleCore;
+      const selectedCore = orderedCore.flatMap((entry) => {
+        const key = `${entry.candidate.itemType}:${entry.candidate.itemId}`;
+        const selected = selectedByKey.get(key);
+        const expansion = rejoinedByKey.get(key);
+        return selected && expansion ? [{
           candidate: {
             ...selected,
-            featureSnapshot: entry.candidate.featureSnapshot,
+            featureSnapshot: selected.featureSnapshot,
             laneRanks: entry.candidate.laneRanks,
             metadata: entry.candidate.metadata,
             selectionReason: entry.candidate.selectionReason
           },
-          expansion: entry.expansion
+          expansion
         }] : [];
       });
       const selectedCoreKeys = new Set(selectedCore.map(({ candidate }) =>
         `${candidate.itemType}:${candidate.itemId}`));
       const selectedDynamic = dynamic.filter((candidate) =>
         !selectedCoreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
-      const dynamicExpanded = expanded.filter((candidate) =>
+      const dynamicExpanded = rejoined.filter((candidate) =>
         selectedKeys.has(`${candidate.itemType}:${candidate.itemId}`));
       const degradationCode = expansionFailed
         ? "memory_expansion_unavailable"
@@ -1167,7 +1284,7 @@ export function createMemoryRunRetrievalService(
           querySecret || !plan.queryPresent ? null : plan.normalizedQuery,
           { ...commonEvidence, ...(querySecret ? { queryHash: memorySha256(plan.normalizedQuery) } : {}) });
       }
-      const items = attemptItems(pack, selectedCore, selectedDynamic);
+      const items = attemptItems(pack, selectedCore, selectedDynamic, plan);
       return {
         budgetSnapshot: {
           admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,

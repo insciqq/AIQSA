@@ -5,6 +5,7 @@ import {
   chunkMemoryRecallProjection,
   MemoryHistoryChunkingError
 } from "./chunking";
+import { memoryHistoryChunkId } from "./contract";
 import {
   buildMemorySafeSourceSnapshot,
   type MemoryHistorySourceMessageInput,
@@ -127,6 +128,37 @@ describe("Memory history recall chunking", () => {
         expect(join.safeTextHash).toBe(sourceMessage?.safeTextHash);
       }
     }
+  });
+
+  it("keeps exact chunk identity stable across chat-wide append counters", () => {
+    const firstSnapshot = multiTurnSnapshot(2);
+    const nextSnapshot: MemorySafeSourceSnapshot = {
+      ...firstSnapshot,
+      activeLeafMessageId: "assistant-appended",
+      branchGeneration: firstSnapshot.branchGeneration + 1,
+      sourceContentHash: "c".repeat(64),
+      sourceRevision: firstSnapshot.sourceRevision + 1
+    };
+    const first = chunkMemoryRecallProjection(firstSnapshot)[0];
+    const next = chunkMemoryRecallProjection(nextSnapshot)[0];
+    if (!first || !next) throw new Error("missing stable chunk fixture");
+
+    expect(next.contentHash).toBe(first.contentHash);
+    expect(memoryHistoryChunkId({
+      activeLeafMessageId: firstSnapshot.activeLeafMessageId!,
+      branchGeneration: firstSnapshot.branchGeneration,
+      chatId: firstSnapshot.chatId,
+      sourceHash: firstSnapshot.sourceContentHash,
+      sourceRevision: firstSnapshot.sourceRevision,
+      userId: firstSnapshot.userId
+    }, first)).toBe(memoryHistoryChunkId({
+      activeLeafMessageId: nextSnapshot.activeLeafMessageId!,
+      branchGeneration: nextSnapshot.branchGeneration,
+      chatId: nextSnapshot.chatId,
+      sourceHash: nextSnapshot.sourceContentHash,
+      sourceRevision: nextSnapshot.sourceRevision,
+      userId: nextSnapshot.userId
+    }, next));
   });
 
   it("splits oversized multilingual turns within both character and token bounds", () => {

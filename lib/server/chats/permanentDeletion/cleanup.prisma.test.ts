@@ -190,6 +190,9 @@ async function createSourceChunk(input: Readonly<{
       messageId: input.messageId,
       ordinal: 0,
       role: "user",
+      safeTextHash: memorySha256(text),
+      sourceMessageContentHash: memorySha256(text),
+      sourceMessageUpdatedAt: input.assistantCreatedAt,
       startOffset: 0,
       userId: input.userId
     }

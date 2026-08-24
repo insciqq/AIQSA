@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
+import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import {
   fuseMemoryRetrievalCandidates,
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
@@ -10,11 +12,20 @@ import {
   type MemoryRankedCandidate
 } from "../../../domain/memory/retrieval";
 import { prisma } from "../../prisma";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+} from "../history/contract";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from
+  "../history/sourceProjection";
 import {
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
+  "../learning/extraction/contract";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
 
 const fixtureNow = new Date("2026-08-10T12:00:00.000Z");
@@ -26,13 +37,18 @@ type RetrievalFixture = Readonly<{
   automaticSensitiveFactVersionId: string;
   currentChatId: string;
   enFactVersionId: string;
+  entityFactVersionId: string;
   excludedChunkId: string;
+  expiredFactVersionId: string;
   foreignFactVersionId: string;
   generationId: string;
   historicalFactVersionId: string;
+  invalidDependencyEntityFactVersionId: string;
   legacyAssistantFactVersionId: string;
   legacyChatFactVersionId: string;
   legacyFolderFactVersionId: string;
+  macbookHistoricalFactVersionId: string;
+  mergedMacbookFactVersionId: string;
   otherFolderFactVersionId: string;
   rawSourceText: string;
   ruFactVersionId: string;
@@ -48,6 +64,23 @@ type RetrievalFixture = Readonly<{
 }>;
 
 let fixture: RetrievalFixture;
+
+function queryPlanIndexNames(value: unknown): readonly string[] {
+  const names = new Set<string>();
+  const visit = (candidate: unknown): void => {
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (candidate === null || typeof candidate !== "object") return;
+    for (const [key, nested] of Object.entries(candidate)) {
+      if (key === "Index Name" && typeof nested === "string") names.add(nested);
+      visit(nested);
+    }
+  };
+  visit(value);
+  return [...names].sort();
+}
 
 async function createOwner(prefix: string): Promise<string> {
   const userId = `${prefix}-${suffix}`;
@@ -66,7 +99,7 @@ async function createOwner(prefix: string): Promise<string> {
 async function activateLexicalGeneration(userId: string): Promise<string> {
   const generation = await prisma.memoryIndexGeneration.create({
     data: {
-      chunkingVersion: "memory-history-chunking-v2",
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
       generation: 0,
       indexMode: "LEXICAL_ONLY",
       indexedThroughMemoryRevision: 0,
@@ -97,6 +130,7 @@ async function activateLexicalGeneration(userId: string): Promise<string> {
 }
 
 async function createChatWithLeaf(input: Readonly<{
+  createdAt?: Date;
   folderId?: string;
   memoryMode?: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   sourceRevision?: number;
@@ -117,10 +151,10 @@ async function createChatWithLeaf(input: Readonly<{
     data: {
       chatId: chat.id,
       content: textMessageContent(input.userText),
-      createdAt: new Date("2026-07-15T09:00:00.000Z"),
+      createdAt: input.createdAt ?? new Date("2026-07-15T09:00:00.000Z"),
       role: "user",
       status: "complete",
-      updatedAt: new Date("2026-07-15T09:00:00.000Z")
+      updatedAt: input.createdAt ?? new Date("2026-07-15T09:00:00.000Z")
     }
   });
   await prisma.chat.update({
@@ -136,18 +170,35 @@ async function createCheckpoint(input: Readonly<{
   sourceHash: string;
   userId: string;
 }>): Promise<void> {
-  await prisma.chatMemoryCheckpoint.create({
-    data: {
-      activeLeafMessageId: input.messageId,
-      branchGeneration: 0,
-      chatId: input.chatId,
-      lastIndexedMessageId: input.messageId,
-      lastSucceededAt: fixtureNow,
-      sourceContentHash: input.sourceHash,
-      sourceRevision: 1,
-      status: "READY",
-      userId: input.userId
-    }
+  const message = await prisma.message.findUniqueOrThrow({
+    select: { createdAt: true, updatedAt: true },
+    where: { id: input.messageId }
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.chatMemoryCheckpoint.create({
+      data: {
+        activeLeafMessageId: input.messageId,
+        branchGeneration: 0,
+        chatId: input.chatId,
+        lastIndexedMessageId: input.messageId,
+        lastSucceededAt: fixtureNow,
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        sourceContentHash: input.sourceHash,
+        sourceRevision: 1,
+        status: "READY",
+        userId: input.userId
+      }
+    });
+    await tx.chatMemoryCheckpointMessage.create({
+      data: {
+        chatId: input.chatId,
+        messageId: input.messageId,
+        ordinal: 0,
+        sourceMessageCreatedAt: message.createdAt,
+        sourceMessageUpdatedAt: message.updatedAt,
+        userId: input.userId
+      }
+    });
   });
 }
 
@@ -263,10 +314,13 @@ async function createClassifiedSafety(input: Readonly<{
 }
 
 async function createFact(input: Readonly<{
+  category?: string;
   canonicalKey: string;
   coreEligible?: boolean;
   displayText: string;
+  expiresAt?: Date;
   generationId: string;
+  holdUntilExpired?: boolean;
   languageCode: string;
   scopeAssistantId?: string;
   scopeChatId?: string;
@@ -327,8 +381,16 @@ async function createFact(input: Readonly<{
             data: { scopeType: "GLOBAL_USER", userId: input.userId }
           });
   const normalized = normalizeMemorySearchText(input.displayText);
+  const structuredValue = { statement: input.displayText };
   const factId = randomUUID();
   const versionId = randomUUID();
+  const sourceText = input.source
+    ? textFromContentBlocks((await prisma.message.findUniqueOrThrow({
+        select: { content: true },
+        where: { id: input.source.messageId }
+      })).content as { blocks?: unknown[] })
+    : null;
+  const sourceHash = sourceText === null ? null : memorySha256(sourceText);
   const classifiedSafety = await createClassifiedSafety({
     source: input.source,
     sourceMode,
@@ -338,7 +400,7 @@ async function createFact(input: Readonly<{
     await tx.memoryFact.create({
       data: {
         canonicalKey: input.canonicalKey,
-        category: "preferences",
+        category: input.category ?? "preferences",
         currentVersionId: versionId,
         id: factId,
         scopeId: scope.id,
@@ -348,12 +410,13 @@ async function createFact(input: Readonly<{
     });
     await tx.memoryFactVersion.create({
       data: {
-        category: "preferences",
+        category: input.category ?? "preferences",
         confidence: 1,
         coreEligible: input.coreEligible ?? false,
         createdByEventId: event.id,
         directness: "DIRECT",
         displayText: input.displayText,
+        expiresAt: input.expiresAt,
         factId,
         id: versionId,
         importance: 0.9,
@@ -365,7 +428,7 @@ async function createFact(input: Readonly<{
         sensitivityClass: input.sensitivityClass ?? "NORMAL",
         sourceMode,
         state: "ACTIVE",
-        structuredValue: { statement: input.displayText },
+        structuredValue,
         userId: input.userId
       }
     });
@@ -386,14 +449,24 @@ async function createFact(input: Readonly<{
         : {
             branchGeneration: input.source!.branchGeneration,
             chatId: input.source!.chatId,
+            evidenceFingerprint: memorySha256({
+              endOffset: sourceText!.length,
+              messageId: input.source!.messageId,
+              sourceHash,
+              startOffset: 0,
+              version: 1
+            }),
             factVersionId: versionId,
             messageId: input.source!.messageId,
             observedAt: fixtureNow,
-            safeExcerpt: input.displayText,
-            safeSourceHash: memorySha256(input.displayText),
+            safeExcerpt: sourceText!,
+            safeSourceHash: sourceHash!,
             safetyClass: input.sensitivityClass ?? "NORMAL",
-            sourceProjectionVersion: "memory-retrieval-test-v1",
+            sourceEndOffset: sourceText!.length,
+            sourceMessageContentHash: sourceHash!,
+            sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
             sourceRole: "user",
+            sourceStartOffset: 0,
             sourceType: "MESSAGE",
             stance: "SUPPORTS",
             userId: input.userId
@@ -406,7 +479,7 @@ async function createFact(input: Readonly<{
         indexGenerationId: input.generationId,
         itemType: "FACT_VERSION",
         languageCode: input.languageCode,
-        safeContentHash: memorySha256({ displayText: input.displayText }),
+        safeContentHash: memorySha256({ displayText: input.displayText, structuredValue }),
         normalizedSearchText: normalized,
         safetyIdentitySnapshot: memorySha256({ sensitivity: input.sensitivityClass ?? "NORMAL" }),
         sourceIdentitySnapshot: memorySha256({ sourceMode, versionId }),
@@ -417,8 +490,75 @@ async function createFact(input: Readonly<{
         userId: input.userId
       }
     });
+    if (input.holdUntilExpired && input.expiresAt) {
+      const remaining = input.expiresAt.getTime() - Date.now();
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining + 50));
+      }
+    }
   });
   return versionId;
+}
+
+async function createEntityLink(input: Readonly<{
+  alias: string;
+  displayName: string;
+  factVersionId: string;
+  userId: string;
+}>): Promise<string> {
+  const evidence = await prisma.memoryEvidence.findFirstOrThrow({
+    select: { id: true },
+    where: { factVersionId: input.factVersionId, userId: input.userId }
+  });
+  const entityId = randomUUID();
+  const aliasId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryEntity.create({
+      data: {
+        canonicalKey: `entity:v2:device:${memorySha256({
+          displayName: input.displayName,
+          entityId
+        }).slice(0, 48)}`,
+        displayName: input.displayName,
+        entityType: "DEVICE",
+        id: entityId,
+        languageCode: "und",
+        userId: input.userId
+      }
+    });
+    await tx.memoryEntityAlias.create({
+      data: {
+        confidence: 1,
+        displayAlias: input.alias,
+        entityId,
+        id: aliasId,
+        languageCode: "und",
+        normalizedAlias: normalizeMemorySearchText(input.alias),
+        sourceKind: "AUTOMATIC_EVIDENCE",
+        userId: input.userId
+      }
+    });
+    await tx.memoryEntityAliasSupport.create({
+      data: {
+        aliasId,
+        evidenceId: evidence.id,
+        id: randomUUID(),
+        supportFingerprint: memorySha256({ aliasId, evidenceId: evidence.id }),
+        supportKind: "EVIDENCE",
+        userId: input.userId
+      }
+    });
+    await tx.memoryFactVersionEntity.create({
+      data: {
+        confidence: 1,
+        entityId,
+        factVersionId: input.factVersionId,
+        role: "SUBJECT",
+        userId: input.userId
+      }
+    });
+  });
+  return entityId;
 }
 
 async function createHistoricalFactVersion(input: Readonly<{
@@ -444,6 +584,7 @@ async function createHistoricalFactVersion(input: Readonly<{
   });
   const versionId = randomUUID();
   const normalizedSearchText = normalizeMemorySearchText(input.displayText);
+  const structuredValue = { statement: input.displayText };
   const classifiedSafety = await createClassifiedSafety({
     sourceMode: "EXPLICIT",
     userId: input.userId
@@ -468,7 +609,7 @@ async function createHistoricalFactVersion(input: Readonly<{
         sensitivityClass: "NORMAL",
         sourceMode: "EXPLICIT",
         state: "SUPERSEDED",
-        structuredValue: { statement: input.displayText },
+        structuredValue,
         systemFrom: input.validFrom,
         systemTo: input.validTo,
         temporalResolverVersion: "memory-temporal-resolver-v1",
@@ -499,7 +640,7 @@ async function createHistoricalFactVersion(input: Readonly<{
         itemType: "FACT_VERSION",
         languageCode: "en",
         normalizedSearchText,
-        safeContentHash: memorySha256({ displayText: input.displayText }),
+        safeContentHash: memorySha256({ displayText: input.displayText, structuredValue }),
         safetyIdentitySnapshot: memorySha256({ sensitivity: "NORMAL" }),
         sourceIdentitySnapshot: memorySha256({ sourceMode: "EXPLICIT", versionId }),
         suppressionIdentitySnapshot: memorySha256({
@@ -508,6 +649,10 @@ async function createHistoricalFactVersion(input: Readonly<{
         }),
         userId: input.userId
       }
+    });
+    await tx.memoryFactVersion.update({
+      data: { supersedesVersionId: versionId },
+      where: { id: input.currentVersionId }
     });
   });
   return versionId;
@@ -519,43 +664,60 @@ async function createChunk(input: Readonly<{
   chunkOrdinal?: number;
   generationId: string;
   messageId: string;
-  safetyClass?: "HIGHLY_SENSITIVE" | "NORMAL" | "SENSITIVE";
+  occurredAt?: Date;
+  safetyClass?: "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
   safeText: string;
   state?: "ACTIVE" | "INVALIDATED";
   suppressionSnapshot: string;
   userId: string;
 }>): Promise<string> {
-  const contentHash = memorySha256({ chatId: input.chatId, safeText: input.safeText });
-  const chunk = await prisma.memoryRecallChunk.create({
-    data: {
-      branchGeneration: input.branchGeneration ?? 0,
-      chatId: input.chatId,
-      chunkOrdinal: input.chunkOrdinal ?? 0,
-      chunkingVersion: "memory-history-chunking-v2",
-      contentHash,
-      languageCode: "ru",
-      normalizedSafeSearchText: normalizeMemorySearchText(input.safeText),
-      occurredFrom: new Date("2026-07-15T09:00:00.000Z"),
-      occurredTo: new Date("2026-07-15T09:05:00.000Z"),
-      redactionState: "NOT_NEEDED",
-      safeProjectedText: input.safeText,
-      safetyClass: input.safetyClass ?? "NORMAL",
-      sourceProjectionVersion: "memory-history-source-projection-v2",
-      sourceRevisionAtCreation: 1,
-      state: input.state ?? "ACTIVE",
-      invalidatedAt: input.state === "INVALIDATED" ? fixtureNow : null,
-      userId: input.userId
-    }
+  const message = await prisma.message.findUniqueOrThrow({
+    select: { content: true, updatedAt: true },
+    where: { id: input.messageId }
   });
-  await prisma.memoryRecallChunkMessage.create({
-    data: {
-      chatId: input.chatId,
-      chunkId: chunk.id,
-      messageId: input.messageId,
-      ordinal: 0,
-      role: "user",
-      userId: input.userId
-    }
+  const sourceText = textFromContentBlocks(message.content as { blocks?: unknown[] });
+  const contentHash = memorySha256({ chatId: input.chatId, safeText: input.safeText });
+  const secretTainted = input.safetyClass === "SECRET_TAINTED";
+  const state = input.state ?? (secretTainted ? "SUPPRESSED" : "ACTIVE");
+  const occurredAt = input.occurredAt ?? new Date("2026-07-15T09:00:00.000Z");
+  const chunkId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryRecallChunk.create({
+      data: {
+        branchGeneration: input.branchGeneration ?? 0,
+        chatId: input.chatId,
+        chunkOrdinal: input.chunkOrdinal ?? 0,
+        chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+        contentHash,
+        id: chunkId,
+        languageCode: "ru",
+        normalizedSafeSearchText: normalizeMemorySearchText(input.safeText),
+        occurredFrom: occurredAt,
+        occurredTo: new Date(occurredAt.getTime() + 5 * 60_000),
+        redactionReasonCodes: secretTainted ? ["secret_tainted"] : [],
+        redactionState: secretTainted ? "EXCLUDED" : "NOT_NEEDED",
+        safeProjectedText: input.safeText,
+        safetyClass: input.safetyClass ?? "NORMAL",
+        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+        sourceRevisionAtCreation: 1,
+        state,
+        invalidatedAt: state === "INVALIDATED" ? fixtureNow : null,
+        userId: input.userId
+      }
+    });
+    await tx.memoryRecallChunkMessage.create({
+      data: {
+        chatId: input.chatId,
+        chunkId,
+        messageId: input.messageId,
+        ordinal: 0,
+        role: "user",
+        safeTextHash: memorySha256(input.safeText),
+        sourceMessageContentHash: memorySha256(sourceText),
+        sourceMessageUpdatedAt: message.updatedAt,
+        userId: input.userId
+      }
+    });
   });
   await prisma.memorySearchEntry.create({
     data: {
@@ -563,16 +725,123 @@ async function createChunk(input: Readonly<{
       indexGenerationId: input.generationId,
       itemType: "RECALL_CHUNK",
       languageCode: "ru",
-      recallChunkId: chunk.id,
+      recallChunkId: chunkId,
       safeContentHash: contentHash,
       normalizedSearchText: normalizeMemorySearchText(input.safeText),
       safetyIdentitySnapshot: memorySha256({ safety: input.safetyClass ?? "NORMAL" }),
-      sourceIdentitySnapshot: memorySha256({ branch: input.branchGeneration ?? 0, chunkId: chunk.id }),
+      sourceIdentitySnapshot: memorySha256({
+        branch: input.branchGeneration ?? 0,
+        chunkId
+      }),
       suppressionIdentitySnapshot: input.suppressionSnapshot,
       userId: input.userId
     }
   });
-  return chunk.id;
+  return chunkId;
+}
+
+async function createDigestHistoryChat(input: Readonly<{
+  digestText: string;
+  generationId: string;
+  occurredAt: Date;
+  safeChunkText: string;
+  title: string;
+  userId: string;
+}>): Promise<Readonly<{
+  chatId: string;
+  chunkId: string;
+  digestId: string;
+  digestText: string;
+}>> {
+  const source = await createChatWithLeaf({
+    createdAt: input.occurredAt,
+    title: input.title,
+    userId: input.userId,
+    userText: `${input.title} source message`
+  });
+  const sourceHash = memorySha256({
+    chatId: source.chatId,
+    messageId: source.messageId,
+    version: 1
+  });
+  await createCheckpoint({
+    chatId: source.chatId,
+    messageId: source.messageId,
+    sourceHash,
+    userId: input.userId
+  });
+  const chunkId = await createChunk({
+    chatId: source.chatId,
+    generationId: input.generationId,
+    messageId: source.messageId,
+    occurredAt: input.occurredAt,
+    safeText: input.safeChunkText,
+    suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
+    userId: input.userId
+  });
+  const message = await prisma.message.findUniqueOrThrow({
+    select: { content: true, updatedAt: true },
+    where: { id: source.messageId }
+  });
+  const digestId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.chatMemoryDigest.create({
+      data: {
+        activeLeafMessageId: source.messageId,
+        anchorChunkId: chunkId,
+        branchGeneration: 0,
+        chatId: source.chatId,
+        contentHash: memorySha256({ digestText: input.digestText, version: 1 }),
+        decisions: [`Decision from ${input.title}`],
+        id: digestId,
+        languageCode: "en",
+        normalizedSafeSearchText: normalizeMemorySearchText(input.digestText),
+        occurredFrom: input.occurredAt,
+        occurredTo: new Date(input.occurredAt.getTime() + 5 * 60_000),
+        openLoops: [`Open loop from ${input.title}`],
+        pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+        redactionState: "NOT_NEEDED",
+        safeDigestText: input.digestText,
+        safetyClass: "NORMAL",
+        safetyPolicyVersion: "memory-chat-digest-policy-test",
+        sourceContentHash: sourceHash,
+        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+        sourceRevisionAtCreation: 1,
+        state: "ACTIVE",
+        summary: input.digestText,
+        topics: ["Deployment"],
+        userId: input.userId
+      }
+    });
+    await tx.chatMemoryDigestChunk.create({
+      data: {
+        chatId: source.chatId,
+        chunkId,
+        digestId,
+        ordinal: 0,
+        userId: input.userId
+      }
+    });
+    await tx.chatMemoryDigestMessage.create({
+      data: {
+        chatId: source.chatId,
+        digestId,
+        messageId: source.messageId,
+        ordinal: 0,
+        sourceMessageContentHash: memorySha256(
+          textFromContentBlocks(message.content as { blocks?: unknown[] })
+        ),
+        sourceMessageUpdatedAt: message.updatedAt,
+        userId: input.userId
+      }
+    });
+  });
+  return {
+    chatId: source.chatId,
+    chunkId,
+    digestId,
+    digestText: input.digestText
+  };
 }
 
 
@@ -675,7 +944,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       generationId,
       messageId: source.messageId,
       safeText: "Secret-tainted PostgreSQL migration source.",
-      safetyClass: "HIGHLY_SENSITIVE",
+      safetyClass: "SECRET_TAINTED",
       suppressionSnapshot,
       userId
     });
@@ -688,6 +957,22 @@ describe("local Memory retrieval on PostgreSQL", () => {
       displayText: "My preferred editor is Neovim.",
       generationId,
       languageCode: "en",
+      userId
+    });
+    const expiredFactVersionId = await createFact({
+      canonicalKey: "profile.expired_editor",
+      coreEligible: true,
+      displayText: "The user reserved an expired MacBook.",
+      expiresAt: new Date(Date.now() + 300),
+      generationId,
+      holdUntilExpired: true,
+      languageCode: "en",
+      userId
+    });
+    await createEntityLink({
+      alias: "expiredbook",
+      displayName: "ExpiredBook",
+      factVersionId: expiredFactVersionId,
       userId
     });
     const historicalFactVersionId = await createHistoricalFactVersion({
@@ -704,6 +989,106 @@ describe("local Memory retrieval on PostgreSQL", () => {
       generationId,
       languageCode: "ru",
       userId
+    });
+    const entityFactVersionId = await createFact({
+      canonicalKey: "device.order_confirmation",
+      category: "other",
+      displayText: "The user owns a MacBook Air.",
+      generationId,
+      languageCode: "en",
+      userId
+    });
+    await createEntityLink({
+      alias: "макбук",
+      displayName: "MacBook Air",
+      factVersionId: entityFactVersionId,
+      userId
+    });
+    const macbookHistoricalFactVersionId = await createHistoricalFactVersion({
+      currentVersionId: entityFactVersionId,
+      displayText: "The user ordered a MacBook Air in July 2025.",
+      generationId,
+      userId,
+      validFrom: new Date("2025-07-01T00:00:00.000Z"),
+      validTo: new Date("2025-08-01T00:00:00.000Z")
+    });
+    const mergedMacbookFactVersionId = await createFact({
+      canonicalKey: "device.duplicate_macbook",
+      category: "other",
+      displayText: "The user owns a duplicate MacBook representation.",
+      generationId,
+      languageCode: "en",
+      userId
+    });
+    const mergedVersion = await prisma.memoryFactVersion.findUniqueOrThrow({
+      select: { factId: true, systemFrom: true },
+      where: { id: mergedMacbookFactVersionId }
+    });
+    const targetFactId = (await prisma.memoryFactVersion.findUniqueOrThrow({
+      select: { factId: true },
+      where: { id: entityFactVersionId }
+    })).factId;
+    await prisma.$transaction(async (tx) => {
+      await tx.memoryFactVersion.update({
+        data: {
+          mergedIntoVersionId: entityFactVersionId,
+          state: "MERGED",
+          systemTo: new Date(mergedVersion.systemFrom.getTime() + 1)
+        },
+        where: { id: mergedMacbookFactVersionId }
+      });
+      await tx.memoryFact.update({
+        data: {
+          currentVersionId: null,
+          movedToFactId: targetFactId,
+          state: "RETRACTED"
+        },
+        where: { id: mergedVersion.factId }
+      });
+    });
+    const dependencySource = await createChatWithLeaf({
+      title: "Dependency source",
+      userId,
+      userText: "I am considering a GhostBook."
+    });
+    const invalidDependencyEntityFactVersionId = await createFact({
+      canonicalKey: "device.dependency_invalid",
+      category: "other",
+      displayText: "The dependent device order is confirmed.",
+      generationId,
+      languageCode: "en",
+      userId
+    });
+    await createEntityLink({
+      alias: "ghostbook",
+      displayName: "GhostBook",
+      factVersionId: invalidDependencyEntityFactVersionId,
+      userId
+    });
+    await prisma.memoryFactVersionSourceDependency.create({
+      data: {
+        dependencyKind: "COREFERENCE_ANTECEDENT",
+        id: randomUUID(),
+        sourceMessageContentHash: memorySha256("I am considering a GhostBook."),
+        sourceMessageId: dependencySource.messageId,
+        sourceMessageUpdatedAt: new Date("2026-07-15T09:00:00.000Z"),
+        sourceProjectionVersion: "memory-fact-source-projection-v4",
+        targetFactVersionId: invalidDependencyEntityFactVersionId,
+        userId
+      }
+    });
+    const replacement = await prisma.message.create({
+      data: {
+        chatId: dependencySource.chatId,
+        content: textMessageContent("Replacement branch."),
+        createdAt: new Date("2026-07-15T09:01:00.000Z"),
+        role: "user",
+        status: "complete"
+      }
+    });
+    await prisma.chat.update({
+      data: { activeLeafMessageId: replacement.id },
+      where: { id: dependencySource.chatId }
     });
     const otherFolderFactVersionId = await createFact({
       canonicalKey: "workflow.editor",
@@ -759,13 +1144,33 @@ describe("local Memory retrieval on PostgreSQL", () => {
       sourceMode: "AUTOMATIC",
       userId
     });
+    const staleSourceMessage = await prisma.message.create({
+      data: {
+        chatId: source.chatId,
+        content: textMessageContent("Source removed from the retained branch."),
+        createdAt: new Date("2026-07-15T09:00:01.000Z"),
+        role: "user",
+        status: "complete",
+        updatedAt: new Date("2026-07-15T09:00:01.000Z")
+      }
+    });
     const staleAutomaticFactVersionId = await createFact({
       canonicalKey: "profile.stale_editor",
       displayText: "My preferred editor is stale-branch Emacs.",
       generationId,
       languageCode: "en",
-      source: { branchGeneration: 1, chatId: source.chatId, messageId: source.messageId },
+      source: {
+        branchGeneration: 0,
+        chatId: source.chatId,
+        messageId: staleSourceMessage.id
+      },
       sourceMode: "AUTOMATIC",
+      userId
+    });
+    await createEntityLink({
+      alias: "stalebook",
+      displayName: "StaleBook",
+      factVersionId: staleAutomaticFactVersionId,
       userId
     });
     const foreignFactVersionId = await createFact({
@@ -780,13 +1185,18 @@ describe("local Memory retrieval on PostgreSQL", () => {
       automaticSensitiveFactVersionId,
       currentChatId: current.chatId,
       enFactVersionId,
+      entityFactVersionId,
       excludedChunkId,
+      expiredFactVersionId,
       foreignFactVersionId,
       generationId,
       historicalFactVersionId,
+      invalidDependencyEntityFactVersionId,
       legacyAssistantFactVersionId,
       legacyChatFactVersionId,
       legacyFolderFactVersionId,
+      macbookHistoricalFactVersionId,
+      mergedMacbookFactVersionId,
       otherFolderFactVersionId,
       rawSourceText,
       ruFactVersionId,
@@ -843,6 +1253,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(allEnIds).toContain(fixture.sensitiveFactVersionId);
     expect(allEnIds).toContain(fixture.automaticSensitiveFactVersionId);
     expect(allEnIds).not.toContain(fixture.staleAutomaticFactVersionId);
+    expect(allEnIds).not.toContain(fixture.expiredFactVersionId);
 
     const ruQuery = "предпочтительный редактор";
     const ruResult = await repository.retrieve({
@@ -885,6 +1296,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     ]));
     for (const excludedId of [
       fixture.foreignFactVersionId,
+      fixture.expiredFactVersionId,
       fixture.historicalFactVersionId,
       fixture.legacyAssistantFactVersionId,
       fixture.legacyChatFactVersionId,
@@ -906,6 +1318,132 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
     expect(ranked.map(({ itemId }) => itemId)).toEqual(ids);
     expect(ranked.every(({ itemType }) => itemType === "FACT_VERSION")).toBe(true);
+  });
+
+  it("uses several bounded chat digests for overview while targeted search returns exact chunks", async () => {
+    const userId = await createOwner("memory-history-overview");
+    try {
+      const generationId = await activateLexicalGeneration(userId);
+      const current = await createChatWithLeaf({
+        sourceRevision: 0,
+        title: "Current overview request",
+        userId,
+        userText: "Summarize our deployment discussions."
+      });
+      const histories = await Promise.all([
+        createDigestHistoryChat({
+          digestText: "Summary: The cedar deployment chat selected a blue-green rollout.",
+          generationId,
+          occurredAt: new Date("2026-07-10T09:00:00.000Z"),
+          safeChunkText: "User:\nThe cedar deployment needs a blue-green rollout.",
+          title: "Cedar deployment",
+          userId
+        }),
+        createDigestHistoryChat({
+          digestText: "Summary: The birch deployment chat left the launch date open.",
+          generationId,
+          occurredAt: new Date("2026-07-11T09:00:00.000Z"),
+          safeChunkText: "User:\nThe birch deployment launch date remains open.",
+          title: "Birch deployment",
+          userId
+        }),
+        createDigestHistoryChat({
+          digestText: "Summary: The maple deployment chat assigned the rollback owner.",
+          generationId,
+          occurredAt: new Date("2026-07-12T09:00:00.000Z"),
+          safeChunkText: "User:\nThe maple deployment rollback owner is assigned.",
+          title: "Maple deployment",
+          userId
+        })
+      ]);
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const overviewPlan = planMemoryRetrieval({
+        currentUserText: "Give me an overview of our deployment chats.",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "HISTORY_OVERVIEW",
+        now: fixtureNow,
+        temporalIntent: "ANY"
+      });
+      const overview = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan: overviewPlan,
+        userId
+      });
+      expect(overview.laneResults.map(({ lane }) => lane)).toEqual([
+        "HISTORY_RECALL_FTS_SIMPLE",
+        "HISTORY_RECALL_RECENT"
+      ]);
+      const overviewRanked = fuseMemoryRetrievalCandidates(
+        overviewPlan,
+        overview.laneResults,
+        fixtureNow
+      );
+      expect(new Set(overviewRanked.map(({ itemId }) => itemId))).toEqual(
+        new Set(histories.map(({ chunkId }) => chunkId))
+      );
+      const overviewExpanded = await repository.expand(
+        overview.snapshot,
+        overviewPlan,
+        overviewRanked
+      );
+      expect(overviewExpanded).toHaveLength(3);
+      expect(overviewExpanded.every(({ projectionKind }) =>
+        projectionKind === "CHAT_DIGEST_SAFE_TEXT")).toBe(true);
+      expect(new Set(overviewExpanded.map(({ supportingItemId }) => supportingItemId)))
+        .toEqual(new Set(histories.map(({ digestId }) => digestId)));
+      const overviewPack = packMemoryPersonalContext({
+        expanded: overviewExpanded,
+        plan: overviewPlan,
+        ranked: overviewRanked
+      });
+      expect(overviewPack.items).toHaveLength(3);
+      expect(new Set(overviewPack.items.map(({ sourceChatId }) => sourceChatId)))
+        .toEqual(new Set(histories.map(({ chatId }) => chatId)));
+      for (const history of histories) {
+        expect(overviewPack.text).toContain(history.digestText);
+      }
+
+      const targetedPlan = planMemoryRetrieval({
+        currentUserText: "deployment",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: fixtureNow,
+        temporalIntent: "ANY"
+      });
+      const targeted = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan: targetedPlan,
+        userId
+      });
+      const targetedRanked = fuseMemoryRetrievalCandidates(
+        targetedPlan,
+        targeted.laneResults,
+        fixtureNow
+      );
+      const targetedExpanded = await repository.expand(
+        targeted.snapshot,
+        targetedPlan,
+        targetedRanked
+      );
+      expect(new Set(targetedExpanded.map(({ itemId }) => itemId))).toEqual(
+        new Set(histories.map(({ chunkId }) => chunkId))
+      );
+      expect(targetedExpanded.every(({ projectionKind, supportingItemId }) =>
+        projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
+        supportingItemId === null)).toBe(true);
+      for (const history of histories) {
+        expect(targetedExpanded.map(({ safeText }) => safeText)).not.toContain(
+          history.digestText
+        );
+      }
+    } finally {
+      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
   });
 
   it("keeps matching legacy folder, assistant, and chat facts dormant", async () => {
@@ -972,6 +1510,174 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.text).toContain("Neovim");
   });
 
+  it("retrieves the current MacBook pointer or its genuine history by explicit mode", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const currentPlan = planMemoryRetrieval({
+      currentUserText: "MacBook",
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      mode: "TARGETED_CURRENT",
+      now: fixtureNow,
+      temporalIntent: "CURRENT"
+    });
+    const current = await repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan: currentPlan,
+      userId: fixture.userId
+    });
+    const currentIds = current.laneResults.flatMap(({ candidates }) =>
+      candidates.map(({ itemId }) => itemId));
+    expect(currentIds).toContain(fixture.entityFactVersionId);
+    expect(currentIds).not.toContain(fixture.macbookHistoricalFactVersionId);
+    expect(currentIds).not.toContain(fixture.mergedMacbookFactVersionId);
+    expect(currentIds).not.toContain(fixture.expiredFactVersionId);
+
+    const historicalPlan = planMemoryRetrieval({
+      currentUserText: "MacBook",
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      mode: "HISTORICAL_MEMORY",
+      now: fixtureNow,
+      temporalIntent: "HISTORICAL"
+    });
+    const historical = await repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan: historicalPlan,
+      userId: fixture.userId
+    });
+    const ranked = fuseMemoryRetrievalCandidates(
+      historicalPlan,
+      historical.laneResults,
+      fixtureNow
+    );
+    expect(ranked).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        itemId: fixture.entityFactVersionId,
+        metadata: expect.objectContaining({ current: true, lifecycleState: "ACTIVE" })
+      }),
+      expect.objectContaining({
+        itemId: fixture.macbookHistoricalFactVersionId,
+        metadata: expect.objectContaining({
+          historical: true,
+          lifecycleState: "SUPERSEDED"
+        })
+      })
+    ]));
+    expect(ranked.map(({ itemId }) => itemId)).not.toContain(
+      fixture.mergedMacbookFactVersionId
+    );
+    expect(ranked.map(({ itemId }) => itemId)).not.toContain(
+      fixture.expiredFactVersionId
+    );
+    const expanded = await repository.expand(
+      historical.snapshot,
+      historicalPlan,
+      ranked
+    );
+    const pack = packMemoryPersonalContext({ expanded, plan: historicalPlan, ranked });
+    expect(pack.text).toContain("Current user facts:");
+    expect(pack.text).toContain("Historical user memory:");
+    expect(pack.text).toContain("[2025-07-01] The user ordered a MacBook Air");
+    expect(pack.text).not.toContain("duplicate MacBook representation");
+    expect(pack.text).not.toContain("expired MacBook");
+  });
+
+  it("uses bounded pointer, FTS, entity, lifecycle, and expiry query plans", async () => {
+    const entityLink = await prisma.memoryFactVersionEntity.findFirstOrThrow({
+      select: { entityId: true },
+      where: { factVersionId: fixture.entityFactVersionId, userId: fixture.userId }
+    });
+    const plans = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(Prisma.sql`SET LOCAL enable_seqscan = off`);
+      // Stabilize the qualification around the indexes that satisfy each
+      // bounded ORDER BY directly. Otherwise full-suite statistics can make
+      // PostgreSQL prefer a different owner index plus an in-memory sort.
+      await tx.$executeRaw(Prisma.sql`SET LOCAL enable_sort = off`);
+      const pointer = await tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT fact."currentVersionId"
+        FROM "MemoryFact" AS fact
+        WHERE fact."userId" = ${fixture.userId}
+          AND fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND fact."currentVersionId" IS NOT NULL
+        ORDER BY fact."currentVersionId"
+        LIMIT 25
+      `);
+      const fts = await tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT entry."id"
+        FROM "MemorySearchEntry" AS entry
+        WHERE entry."searchVectorSimple" @@ plainto_tsquery('simple', 'macbook')
+      `);
+      const entity = await tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT link."factVersionId"
+        FROM "MemoryFactVersionEntity" AS link
+        WHERE link."userId" = ${fixture.userId}
+          AND link."entityId" = ${entityLink.entityId}
+          AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
+        ORDER BY link."factVersionId"
+        LIMIT 50
+      `);
+      const history = await tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT version."id"
+        FROM "MemoryFactVersion" AS version
+        WHERE version."userId" = ${fixture.userId}
+          AND version."contentPurgedAt" IS NULL
+          AND version."state" IN (
+            'ACTIVE'::"MemoryFactVersionState",
+            'SUPERSEDED'::"MemoryFactVersionState"
+          )
+        ORDER BY version."state", version."systemTo", version."systemFrom", version."id"
+        LIMIT 100
+      `);
+      const expiry = await tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT version."id"
+        FROM "MemoryFactVersion" AS version
+        WHERE version."userId" = ${fixture.userId}
+          AND version."contentPurgedAt" IS NULL
+          AND version."expiresAt" IS NOT NULL
+          AND version."expiresAt" <= ${fixtureNow}
+        ORDER BY version."expiresAt", version."id"
+        LIMIT 100
+      `);
+      return { entity, expiry, fts, history, pointer };
+    });
+    const indexes = Object.fromEntries(Object.entries(plans).map(([kind, plan]) => [
+      kind,
+      queryPlanIndexNames(plan)
+    ]));
+    const planEvidence = JSON.stringify(indexes);
+    expect(indexes.pointer.some((name) =>
+      name === "MemoryFact_active_owner_scope_idx" ||
+      name === "MemoryFact_userId_currentVersionId_idx"
+    ), planEvidence).toBe(true);
+    expect(indexes.fts, planEvidence).toContain("MemorySearchEntry_simple_gin_idx");
+    expect(indexes.entity).toContain(
+      "MemoryFactVersionEntity_userId_entityId_role_factVersionId_idx"
+    );
+    expect(indexes.history).toContain("MemoryFactVersion_retrieval_lifecycle_idx");
+    expect(indexes.expiry).toContain("MemoryFactVersion_retrieval_expiry_idx");
+    const evidence = Object.freeze({
+      explainedPlanKinds: Object.keys(plans).sort(),
+      indexBackedPlanKinds: Object.values(indexes).filter((names) => names.length > 0).length,
+      sanitizedAggregatesOnly: true,
+      version: "memory-vnext-retrieval-query-plans-v1"
+    });
+    expect(evidence).toMatchObject({
+      explainedPlanKinds: ["entity", "expiry", "fts", "history", "pointer"],
+      indexBackedPlanKinds: 5,
+      sanitizedAggregatesOnly: true
+    });
+    expect(JSON.stringify(evidence)).not.toContain(fixture.userId);
+    expect(JSON.stringify(evidence)).not.toContain(fixture.rawSourceText);
+    console.info("memory_vnext_retrieval_query_plans", evidence);
+  });
+
   it("retrieves only safe chunks", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const query = "миграции PostgreSQL";
@@ -1004,6 +1710,34 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.approxTokens).toBeLessThanOrEqual(MEMORY_CONTEXT_HARD_CAP_TOKENS);
     expect(pack.text).not.toContain(fixture.rawSourceText);
     expect(pack.items.length).toBeLessThanOrEqual(12);
+  });
+
+  it("uses exact supported entities without a category or embedding gate and reapplies authority fences", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const retrieve = (query: string) => repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan: planMemoryRetrieval({ currentUserText: query, now: fixtureNow }),
+      userId: fixture.userId
+    });
+    const valid = await retrieve("макбук");
+    const entityLane = valid.laneResults.find(({ lane }) => lane === "FACT_ENTITY");
+    expect(entityLane?.candidates.map(({ itemId }) => itemId)).toContain(
+      fixture.entityFactVersionId
+    );
+    expect(entityLane?.candidates.find(({ itemId }) =>
+      itemId === fixture.entityFactVersionId)?.metadata.category).toBe("other");
+
+    for (const [query, excludedId] of [
+      ["ghostbook", fixture.invalidDependencyEntityFactVersionId],
+      ["expiredbook", fixture.expiredFactVersionId],
+      ["stalebook", fixture.staleAutomaticFactVersionId]
+    ] as const) {
+      const result = await retrieve(query);
+      expect(result.laneResults.flatMap(({ candidates }) => candidates)
+        .map(({ itemId }) => itemId)).not.toContain(excludedId);
+    }
   });
 
   it("does not add an unconditional recency lane for alias or unrelated queries", async () => {

@@ -72,6 +72,7 @@ export function memorySettingsFixture(
       administratorSetupRequired: false,
       automaticLearning: true,
       automaticLearningAvailable: true,
+      decayAvailable: true,
       explicitMemory: true,
       historyRecall: true,
       managementAvailable: true,
@@ -79,6 +80,7 @@ export function memorySettingsFixture(
       pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
       retrievalAvailable: true,
+      synthesisAvailable: true,
       temporaryChats: true
     },
     egress: {
@@ -99,6 +101,7 @@ export function memorySettingsFixture(
       totalChats: 0
     },
     settings: {
+      decayEnabled: false,
       embeddingDeployment: {
         connectionDisplayName: "Local",
         id: "embedding-model-1",
@@ -111,6 +114,7 @@ export function memorySettingsFixture(
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 12,
+      synthesisEnabled: false,
       updatedAt: "2026-08-10T08:00:00.000Z",
       useMemoryFacts: false
     }
@@ -142,17 +146,21 @@ export function memoryConsumerSettingsFixture(
   const base: MemoryConsumerSettingsResponse = {
     capabilities: {
       automaticLearningAvailable: true,
+      decayAvailable: true,
       managementAvailable: true,
       naturalLanguageActionsAvailable: true,
       permanentChatDeletion: false,
       pastChatIndexingAvailable: true,
       retrievalAvailable: true,
+      synthesisAvailable: true,
       temporaryChats: true
     },
     resetState: "IDLE",
     settings: {
+      decayEnabled: false,
       learnAutomatically: false,
       referenceChatHistory: false,
+      synthesisEnabled: false,
       useMemoryFacts: false
     },
     status: "PAUSED"

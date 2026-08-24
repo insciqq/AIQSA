@@ -17,6 +17,7 @@ const candidate: MemoryReclassificationCandidate = {
   factId: "fact-1",
   id: "version-1",
   modality: "PREFERENCE",
+  semanticState: "ACTIVE",
   sourceMode: "EXPLICIT",
   systemFrom: new Date("2026-01-01T00:00:00.000Z"),
   userId: "user-1"
@@ -58,6 +59,7 @@ function job() {
     sourceMessageId: null,
     sourceRevision: null,
     stage: null,
+    targetFactVersionId: null,
     userId: "user-1"
   };
 }

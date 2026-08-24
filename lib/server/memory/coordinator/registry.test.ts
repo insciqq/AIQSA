@@ -15,9 +15,10 @@ function handler(kind: (typeof MEMORY_COORDINATOR_JOB_KINDS)[number]) {
 }
 
 describe("Memory coordinator registry", () => {
-  it("caps active provider-learning stages at two total attempts", () => {
+  it("caps only active provider-learning stages at two total attempts", () => {
     expect(memoryCoordinatorJobMaxAttempts("EXTRACT_FACTS", 3)).toBe(2);
-    expect(memoryCoordinatorJobMaxAttempts("CONSOLIDATE_CANDIDATE", 3)).toBe(2);
+    expect(memoryCoordinatorJobMaxAttempts("RESOLVE_FACT_RELATIONS", 3)).toBe(2);
+    expect(memoryCoordinatorJobMaxAttempts("CONSOLIDATE_CANDIDATE", 3)).toBe(3);
     expect(memoryCoordinatorJobMaxAttempts("EMBED_ITEMS", 3)).toBe(3);
   });
 
@@ -29,9 +30,10 @@ describe("Memory coordinator registry", () => {
       extra: [],
       missing: expect.arrayContaining([
         "EXTRACT_FACTS",
-        "CONSOLIDATE_CANDIDATE",
         "EMBED_ITEMS",
-        "REBUILD_INDEX"
+        "REBUILD_INDEX",
+        "RECLASSIFY_FACTS",
+        "RESOLVE_FACT_RELATIONS"
       ]),
       ok: false
     });
@@ -51,6 +53,11 @@ describe("Memory coordinator registry", () => {
       missing: [],
       ok: true
     });
+    expect(() => registry.registerJob({
+      execute: vi.fn(),
+      kind: "CONSOLIDATE_CANDIDATE",
+      preflight: vi.fn(async () => ({ status: "READY" as const }))
+    })).toThrow("memory_job_kind_undeclared");
     expect(() => registry.registerJob({
       execute: vi.fn(),
       kind: "RECONCILE_BRANCH",

@@ -136,6 +136,7 @@ type GenerationConfiguration = Readonly<{
   embeddingProviderModelId: string | null;
   id: string;
   indexMode: MemoryIndexMode;
+  indexedThroughMemoryRevision: number;
   languageProfile: string;
   normalizationVersion: string;
   retrievalPipelineVersion: string;
@@ -162,6 +163,30 @@ export type MemoryRebuildAdmissionResult =
         | "memory_revision_conflict"
         | "settings_revision_conflict";
     }>;
+
+export type MemoryRetrievalCutoverInventory = Readonly<{
+  activeGenerationId: string | null;
+  activeIndexMode: MemoryIndexMode | null;
+  activePipelineVersion: string | null;
+  compatibleAutomaticFactVersions: number;
+  compatibleExplicitFactVersions: number;
+  compatibleHistoryChunks: number;
+  eligibleIdentityFingerprint: string;
+  eligibleItems: number;
+  incompatibleAutomaticFactVersions: number;
+  memoryRevision: number;
+  ready: boolean;
+  settingsRevision: number;
+}>;
+
+export type MemoryGenerationRollbackResult = Readonly<{
+  activeGenerationId: string | null;
+  kind:
+    | "generation_incompatible"
+    | "memory_revision_conflict"
+    | "ok"
+    | "settings_revision_conflict";
+}>;
 
 const nonterminalJobStates: readonly MemoryJobState[] = [
   "CLAIMED",
@@ -267,18 +292,30 @@ async function eligibleFacts(
     INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = fact."userId"
       AND version."factId" = fact."id"
-      AND version."id" = fact."currentVersionId"
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND version."systemTo" IS NULL
+      AND (
+        (version."id" = fact."currentVersionId"
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."systemTo" IS NULL)
+        OR
+        (version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
+          AND version."systemTo" IS NOT NULL)
+      )
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
     WHERE fact."userId" = ${settings.userId}
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND (
+        fact."state" = 'ACTIVE'::"MemoryFactState"
+        OR (fact."state" = 'RETRACTED'::"MemoryFactState"
+          AND fact."movedToFactId" IS NOT NULL)
+      )
       AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryPersonalFactEvidencePredicate(settings.userId)}
-    ORDER BY version."id"
+      AND ${memoryPersonalFactEvidencePredicate(settings.userId, { exactVNext: true })}
+    ORDER BY fact."id",
+      COALESCE(version."occurredAt", version."validFrom", version."observedAt", version."systemFrom"),
+      version."systemFrom", version."id"
   `);
   if (rows.length === 0) return [];
   const automaticIds = rows
@@ -290,7 +327,8 @@ async function eligibleFacts(
   const personalEvidence = await loadPersonalMemoryEvidenceSnapshots(
     tx,
     settings.userId,
-    automaticIds
+    automaticIds,
+    { exactVNext: true }
   );
   const explicitEvidence = explicitIds.length === 0
     ? []
@@ -330,6 +368,7 @@ async function eligibleFacts(
         sourceProjectionVersion: item.sourceProjectionVersion,
         sourceType: item.sourceType
       }));
+    if (row.sourceMode === "AUTOMATIC" && sources.length === 0) return [];
     return [{
       itemId: row.versionId,
       itemType: "FACT_VERSION" as const,
@@ -391,7 +430,10 @@ async function eligibleChunks(
         'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-      AND ${memoryHistoryChunkSourceAuthorityPredicate()}
+      AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        chat: "chat",
+        checkpoint: "checkpoint"
+      })}
       AND NOT EXISTS (
         SELECT 1 FROM "MemorySuppression" AS suppression
         LEFT JOIN "MemoryRecallChunkMessage" AS source_message
@@ -505,6 +547,141 @@ async function existingGenerationEntries(
     const itemId = exactItemId({ ...row, itemType: row.itemType });
     return itemId ? [{ ...row, itemId, itemType }] : [];
   });
+}
+
+function generationEntriesMatch(
+  generation: GenerationConfiguration,
+  existing: readonly ExistingEntry[],
+  items: readonly SearchIdentity[]
+): boolean {
+  if (existing.length !== items.length) return false;
+  const expected = new Map(items.map((item) => [itemKey(item.itemType, item.itemId), item]));
+  const seen = new Set<string>();
+  for (const entry of existing) {
+    const key = itemKey(entry.itemType, entry.itemId);
+    const item = expected.get(key);
+    if (
+      !item || seen.has(key) || !sameIdentity(entry, item) ||
+      generation.indexMode === "LEXICAL_ONLY" &&
+        entry.embeddingState !== "NOT_APPLICABLE" ||
+      generation.indexMode === "HYBRID" && entry.embeddingState !== "READY"
+    ) return false;
+    seen.add(key);
+  }
+  return seen.size === items.length;
+}
+
+function eligibleIdentityFingerprint(items: readonly SearchIdentity[]): string {
+  return memorySha256(items.map((item) => ({
+    itemId: item.itemId,
+    itemType: item.itemType,
+    languageCode: item.languageCode,
+    normalizedSearchText: item.normalizedSearchText,
+    safeContentHash: item.safeContentHash,
+    safetyIdentitySnapshot: item.safetyIdentitySnapshot,
+    sourceIdentitySnapshot: item.sourceIdentitySnapshot,
+    suppressionIdentitySnapshot: item.suppressionIdentitySnapshot
+  })));
+}
+
+async function potentiallyCompatibleAutomaticFactCount(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings
+): Promise<number> {
+  if (!settings.useMemoryFacts) return 0;
+  const [row] = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    SELECT COUNT(*)::integer AS count
+    FROM "MemoryFactVersion" AS version
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId" AND fact."id" = version."factId"
+    INNER JOIN "MemoryScope" AS scope
+      ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    WHERE version."userId" = ${settings.userId}
+      AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+      AND (
+        (version."id" = fact."currentVersionId"
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."systemTo" IS NULL
+          AND fact."state" = 'ACTIVE'::"MemoryFactState")
+        OR
+        (version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
+          AND version."systemTo" IS NOT NULL
+          AND (fact."state" = 'ACTIVE'::"MemoryFactState"
+            OR (fact."state" = 'RETRACTED'::"MemoryFactState"
+              AND fact."movedToFactId" IS NOT NULL)))
+      )
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
+      AND version."safetyClassificationState" =
+        'CLASSIFIED'::"MemorySafetyClassificationState"
+      AND version."contentPurgedAt" IS NULL
+      AND version."displayText" IS NOT NULL
+      AND version."structuredValue" IS NOT NULL
+      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+      AND ${memoryCanonicalGlobalScopePredicate()}
+      AND ${memoryPersonalFactEvidencePredicate(settings.userId)}
+  `);
+  return Number.isSafeInteger(row?.count) ? row.count : 0;
+}
+
+async function cutoverInventoryWith(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  now: Date
+): Promise<MemoryRetrievalCutoverInventory> {
+  const items = await enumerateEligibleItems(tx, settings, now);
+  const factIds = items
+    .filter((item) => item.itemType === "FACT_VERSION")
+    .map((item) => item.itemId);
+  const sourceCounts = factIds.length === 0
+    ? []
+    : await tx.memoryFactVersion.groupBy({
+        _count: { _all: true },
+        by: ["sourceMode"],
+        where: { id: { in: factIds }, userId: settings.userId }
+      });
+  const countFor = (sourceMode: "AUTOMATIC" | "EXPLICIT") =>
+    sourceCounts.find((row) => row.sourceMode === sourceMode)?._count._all ?? 0;
+  const active = settings.activeIndexGenerationId
+    ? await tx.memoryIndexGeneration.findFirst({
+        where: {
+          id: settings.activeIndexGenerationId,
+          state: "ACTIVE",
+          userId: settings.userId
+        }
+      }) as GenerationConfiguration | null
+    : null;
+  const existing = active
+    ? await existingGenerationEntries(tx, settings.userId, active.id)
+    : [];
+  const embeddingCompatible = active !== null &&
+    await targetEmbeddingConfigurationIsCurrent(tx, settings, active);
+  const runtimeCompatible = active !== null &&
+    active.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    active.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
+    active.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
+    active.retrievalPipelineVersion === (active.indexMode === "HYBRID"
+      ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+      : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION) &&
+    embeddingCompatible;
+  return {
+    activeGenerationId: active?.id ?? null,
+    activeIndexMode: active?.indexMode ?? null,
+    activePipelineVersion: active?.retrievalPipelineVersion ?? null,
+    compatibleAutomaticFactVersions: countFor("AUTOMATIC"),
+    compatibleExplicitFactVersions: countFor("EXPLICIT"),
+    compatibleHistoryChunks: items.filter((item) => item.itemType === "RECALL_CHUNK").length,
+    eligibleIdentityFingerprint: eligibleIdentityFingerprint(items),
+    eligibleItems: items.length,
+    incompatibleAutomaticFactVersions: Math.max(
+      0,
+      await potentiallyCompatibleAutomaticFactCount(tx, settings) - countFor("AUTOMATIC")
+    ),
+    memoryRevision: settings.memoryRevision,
+    ready: runtimeCompatible &&
+      active.indexedThroughMemoryRevision === settings.memoryRevision &&
+      generationEntriesMatch(active, existing, items),
+    settingsRevision: settings.settingsRevision
+  };
 }
 
 function targetData(item: SearchIdentity, userId: string, generationId: string) {
@@ -725,30 +902,6 @@ function sameEmbeddingPin(
     left.vectorSpaceFingerprint === right.vectorSpaceFingerprint;
 }
 
-async function purgeRetainedSupersededSearch(
-  tx: MemoryTransaction,
-  userId: string
-): Promise<void> {
-  await tx.$executeRaw(Prisma.sql`
-    DELETE FROM "MemorySearchEntry" AS entry
-    USING "MemoryIndexGeneration" AS generation
-    WHERE entry."userId" = ${userId}
-      AND generation."userId" = entry."userId"
-      AND generation."id" = entry."indexGenerationId"
-      AND generation."state" = 'SUPERSEDED'::"MemoryIndexGenerationState"
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemoryRetrievalAttempt" AS attempt
-        WHERE attempt."userId" = generation."userId"
-          AND attempt."indexGenerationIdSnapshot" = generation."id"
-          AND attempt."state" IN (
-            'PENDING'::"MemoryRetrievalAttemptState",
-            'EXECUTING'::"MemoryRetrievalAttemptState",
-            'READY'::"MemoryRetrievalAttemptState"
-          )
-      )
-  `);
-}
-
 async function failShadowGeneration(
   tx: MemoryTransaction,
   userId: string,
@@ -884,7 +1037,6 @@ async function applyShadowCatchUp(
     throw new Error("memory_rebuild_activation_fence_failed");
   }
   settings.activeIndexGenerationId = target.id;
-  await purgeRetainedSupersededSearch(tx, claim.userId);
 }
 
 function configurationData(
@@ -1018,6 +1170,98 @@ export function createPrismaMemoryRebuildRepository(
   }
 
   return Object.freeze({
+    inventory(
+      userId: string,
+      now = new Date()
+    ): Promise<MemoryRetrievalCutoverInventory> {
+      return withLockedMemoryTransaction(client, userId, (tx, settings) =>
+        cutoverInventoryWith(tx, settings, now));
+    },
+
+    async rollbackGeneration(
+      userId: string,
+      targetGenerationId: string,
+      input: Readonly<{
+        expectedMemoryRevision: number;
+        expectedSettingsRevision: number;
+        now?: Date;
+      }>
+    ): Promise<MemoryGenerationRollbackResult> {
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        if (settings.settingsRevision !== input.expectedSettingsRevision) {
+          return { activeGenerationId: null, kind: "settings_revision_conflict" } as const;
+        }
+        if (settings.memoryRevision !== input.expectedMemoryRevision) {
+          return { activeGenerationId: null, kind: "memory_revision_conflict" } as const;
+        }
+        const active = settings.activeIndexGenerationId
+          ? await tx.memoryIndexGeneration.findFirst({
+              where: {
+                id: settings.activeIndexGenerationId,
+                state: "ACTIVE",
+                userId
+              }
+            }) as GenerationConfiguration | null
+          : null;
+        const target = await tx.memoryIndexGeneration.findFirst({
+          where: { id: targetGenerationId, state: "SUPERSEDED", userId }
+        }) as GenerationConfiguration | null;
+        const expectedPipeline = target?.indexMode === "HYBRID"
+          ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+          : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION;
+        if (
+          !active || !target || active.id === target.id ||
+          target.languageProfile !== MEMORY_LEXICAL_LANGUAGE_PROFILE ||
+          target.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
+          target.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
+          target.retrievalPipelineVersion !== expectedPipeline ||
+          !await targetEmbeddingConfigurationIsCurrent(tx, settings, target)
+        ) {
+          return {
+            activeGenerationId: settings.activeIndexGenerationId,
+            kind: "generation_incompatible"
+          } as const;
+        }
+        const items = await enumerateEligibleItems(tx, settings, input.now ?? new Date());
+        const entries = await existingGenerationEntries(tx, userId, target.id);
+        if (!generationEntriesMatch(target, entries, items)) {
+          return {
+            activeGenerationId: settings.activeIndexGenerationId,
+            kind: "generation_incompatible"
+          } as const;
+        }
+        const now = input.now ?? new Date();
+        await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
+        const superseded = await tx.memoryIndexGeneration.updateMany({
+          data: { state: "SUPERSEDED", supersededAt: now },
+          where: { id: active.id, state: "ACTIVE", userId }
+        });
+        const activated = await tx.memoryIndexGeneration.updateMany({
+          data: {
+            activatedAt: now,
+            indexedThroughMemoryRevision: settings.memoryRevision,
+            state: "ACTIVE",
+            supersededAt: null
+          },
+          where: { id: target.id, state: "SUPERSEDED", userId }
+        });
+        const selected = await tx.userMemorySettings.updateMany({
+          data: { activeIndexGenerationId: target.id },
+          where: {
+            activeIndexGenerationId: active.id,
+            memoryGeneration: settings.memoryGeneration,
+            memoryRevision: settings.memoryRevision,
+            userId
+          }
+        });
+        if (superseded.count !== 1 || activated.count !== 1 || selected.count !== 1) {
+          throw new Error("memory_rebuild_rollback_fence_failed");
+        }
+        settings.activeIndexGenerationId = target.id;
+        return { activeGenerationId: target.id, kind: "ok" } as const;
+      });
+    },
+
     async admit(
       userId: string,
       input: MemoryRebuildAdmissionInput

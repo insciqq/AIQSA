@@ -38,12 +38,13 @@ describe("Memory retrieval lane scheduler", () => {
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(allocation).toEqual({
       FACT_EXACT: 4,
-      FACT_FTS_SIMPLE: 7,
+      FACT_ENTITY: 5,
+      FACT_FTS_SIMPLE: 5,
       FACT_RECENT: 2,
-      FACT_VECTOR: 7,
+      FACT_VECTOR: 5,
       HISTORY_RECALL_EXACT: 2,
       HISTORY_RECALL_FTS_SIMPLE: 3,
-      HISTORY_RECALL_RECENT: 2,
+      HISTORY_RECALL_RECENT: 1,
       HISTORY_RECALL_VECTOR: 3
     });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))

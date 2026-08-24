@@ -3,7 +3,8 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-index-v3";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v1";
+export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v1";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
@@ -25,15 +26,54 @@ export type MemoryHistoryIndexSourceIdentity = Readonly<{
   userId: string;
 }>;
 
-export type MemoryHistoryPreparedChunk = MemoryRecallChunkProjection & Readonly<{
+export type MemoryHistoryPreparedChunk = Omit<
+  MemoryRecallChunkProjection,
+  "redactionState" | "safetyClass"
+> & Readonly<{
   id: string;
+  publicationState: "ACTIVE" | "SUPPRESSED";
+  redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
+  safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
+}>;
+
+export type MemoryHistoryCheckpointMessage = Readonly<{
+  createdAt: string;
+  messageId: string;
+  ordinal: number;
+  sourceMessageUpdatedAt: string;
+}>;
+
+export type MemoryHistoryDigestPlan = Readonly<{
+  anchorChunkId: string;
+  contentHash: string;
+  decisions: readonly string[];
+  id: string;
+  languageCode: string;
+  occurredFrom: string;
+  occurredTo: string;
+  openLoops: readonly string[];
+  safeDigestText: string;
+  sourceChunkIds: readonly string[];
+  sourceMessageIds: readonly string[];
+  summary: string;
+  topics: readonly string[];
 }>;
 
 export type MemoryHistoryIndexPlan = Readonly<{
   classificationPolicyVersion: string | null;
+  checkpointMessages: readonly MemoryHistoryCheckpointMessage[];
   chunks: readonly MemoryHistoryPreparedChunk[];
+  digest: MemoryHistoryDigestPlan | null;
+  digestPolicyVersion: string | null;
+  incremental: Readonly<{
+    commonPathMessageCount: number;
+    mode: "APPEND" | "DIVERGENCE" | "FULL_REBUILD" | "UNCHANGED";
+    rebuildFromMessageOrdinal: number;
+  }>;
   preparedResultHash: string;
+  rebuiltChunkIds: readonly string[];
   resultHash: string;
+  reusedChunkIds: readonly string[];
   source: MemoryHistoryIndexSourceIdentity;
   suppressionIdentitySnapshot: string;
 }>;
@@ -106,14 +146,27 @@ export function memoryHistoryChunkId(
   chunk: MemoryRecallChunkProjection
 ): string {
   return memorySha256({
-    branchGeneration: source.branchGeneration,
     chatId: source.chatId,
     chunkContentHash: chunk.contentHash,
     chunkingVersion: chunk.chunkingVersion,
     domain: "aiqsa.memory.recall-chunk",
-    ordinal: chunk.ordinal,
-    sourceHash: source.sourceHash,
     sourceProjectionVersion: chunk.sourceProjectionVersion,
+    userId: source.userId
+  });
+}
+
+export function memoryHistoryDigestId(
+  source: MemoryHistoryIndexSourceIdentity,
+  contentHash: string
+): string {
+  return memorySha256({
+    activeLeafMessageId: source.activeLeafMessageId,
+    branchGeneration: source.branchGeneration,
+    chatId: source.chatId,
+    contentHash,
+    domain: "aiqsa.memory.chat-digest",
+    pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+    sourceHash: source.sourceHash,
     sourceRevision: source.sourceRevision,
     userId: source.userId
   });
@@ -123,7 +176,15 @@ export function memoryHistoryIndexResultHash(
   source: MemoryHistoryIndexSourceIdentity,
   chunks: readonly MemoryHistoryPreparedChunk[],
   suppressionIdentitySnapshot: string,
-  classificationPolicyVersion: string | null = null
+  classificationPolicyVersion: string | null = null,
+  options: Readonly<{
+    checkpointMessages?: readonly MemoryHistoryCheckpointMessage[];
+    digest?: MemoryHistoryDigestPlan | null;
+    digestPolicyVersion?: string | null;
+    incremental?: MemoryHistoryIndexPlan["incremental"];
+    rebuiltChunkIds?: readonly string[];
+    reusedChunkIds?: readonly string[];
+  }> = {}
 ): string {
   return memorySha256({
     chunks: chunks.map((chunk) => ({
@@ -134,10 +195,17 @@ export function memoryHistoryIndexResultHash(
       redactionReasonCodes: chunk.redactionReasonCodes,
       redactionState: chunk.redactionState,
       safetyClass: chunk.safetyClass,
-      sourceAssistantId: chunk.sourceAssistantId
+      sourceAssistantId: chunk.sourceAssistantId,
+      publicationState: chunk.publicationState
     })),
     classificationPolicyVersion,
+    checkpointMessages: options.checkpointMessages ?? [],
+    digest: options.digest ?? null,
+    digestPolicyVersion: options.digestPolicyVersion ?? null,
+    incremental: options.incremental ?? null,
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+    rebuiltChunkIds: options.rebuiltChunkIds ?? [],
+    reusedChunkIds: options.reusedChunkIds ?? [],
     source,
     suppressionIdentitySnapshot
   });

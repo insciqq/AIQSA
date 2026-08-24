@@ -65,16 +65,29 @@ export async function loadAccountMemoryOwnedCounts(
         OR settings."acceptedUtilityEgressFingerprint" IS NOT NULL
         OR settings."acceptedUtilityPolicyVersion" IS NOT NULL
         OR settings."acceptedUtilityEgressAt" IS NOT NULL
+        OR settings."decayEnabled" = TRUE
+        OR settings."decayPolicyVersion" IS NOT NULL
+        OR settings."synthesisEnabled" = TRUE
+        OR settings."synthesisEnabledAt" IS NOT NULL
+        OR settings."synthesisPolicyVersion" IS NOT NULL
+        OR settings."lastSynthesisAt" IS NOT NULL
       GROUP BY settings."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryScope" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryCheckpoint" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryCheckpointMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryRecallChunk" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryRecallChunkMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryDigest" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryDigestChunk" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryDigestMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryCandidate" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryCandidateMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryCandidateDecision" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryFact" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryFactVersion" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryFactVersionRelation" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemorySynthesisExecution" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryAuxiliarySemanticCall" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryEvidence" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryEvent" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryFeedback" row INNER JOIN requested USING ("userId") GROUP BY row."userId"

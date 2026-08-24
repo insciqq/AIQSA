@@ -22,6 +22,8 @@ export type LockedMemorySettings = {
   acceptedUtilityEgressFingerprint: string | null;
   acceptedUtilityPolicyVersion: string | null;
   activeIndexGenerationId: string | null;
+  decayEnabled: boolean;
+  decayPolicyVersion: string | null;
   embeddingProviderModelId: string | null;
   learnAutomatically: boolean;
   memoryConsentRevision: number;
@@ -30,6 +32,10 @@ export type LockedMemorySettings = {
   referenceChatHistory: boolean;
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY";
   settingsRevision: number;
+  synthesisEnabled: boolean;
+  synthesisEnabledAt: Date | null;
+  synthesisPolicyVersion: string | null;
+  lastSynthesisAt: Date | null;
   useMemoryFacts: boolean;
   userId: string;
 };
@@ -116,6 +122,8 @@ export async function lockMemorySettings(
       settings."memoryGeneration",
       settings."memoryRevision",
       settings."activeIndexGenerationId",
+      settings."decayEnabled",
+      settings."decayPolicyVersion",
       settings."embeddingProviderModelId",
       settings."sensitiveAutomaticPolicy",
       settings."memoryConsentRevision",
@@ -123,6 +131,10 @@ export async function lockMemorySettings(
       settings."acceptedUtilityEgressFingerprint",
       settings."acceptedUtilityPolicyVersion",
       settings."acceptedUtilityEgressAt",
+      settings."synthesisEnabled",
+      settings."synthesisEnabledAt",
+      settings."synthesisPolicyVersion",
+      settings."lastSynthesisAt",
       owner."status" AS "ownerStatus"
     FROM "UserMemorySettings" AS settings
     INNER JOIN "User" AS owner ON owner."id" = settings."userId"

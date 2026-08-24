@@ -37,9 +37,12 @@ import {
   type MemorySourceSnapshot
 } from "../sourceState";
 import {
-  chunkMemoryRecallProjection
+  chunkMemoryRecallProjection,
+  MEMORY_HISTORY_CHUNKING_VERSION,
+  type MemoryRecallChunkMessageJoin
 } from "./chunking";
 import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryChunkId,
   memoryHistoryIndexClaimIsValid,
@@ -48,8 +51,10 @@ import {
   type MemoryHistoryIndexSourceIdentity,
   type MemoryHistoryPreparedChunk
 } from "./contract";
+import { planMemoryHistoryIncrementalUpdate } from "./incremental";
 import {
   buildMemorySafeSourceSnapshot,
+  MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
   type MemoryHistorySourceMessageInput,
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
@@ -84,6 +89,7 @@ type CurrentChunkRow = Readonly<{
   sourceProjectionVersion: string;
   sourceRevisionAtCreation: number;
   state: MemoryHistoryItemState;
+  messageJoins: readonly MemoryRecallChunkMessageJoin[];
 }>;
 
 type ExpectedSearchEntry = Readonly<{
@@ -313,6 +319,91 @@ async function loadHistoryAdmission(
   };
 }
 
+async function loadIncrementalHistoryState(
+  tx: MemoryTransaction,
+  source: MemorySourceSnapshot
+): Promise<Readonly<{
+  chunks: readonly CurrentChunkRow[];
+  checkpointPipelineVersion: string | null;
+  messages: readonly Readonly<{
+    messageId: string;
+    sourceMessageUpdatedAt: string;
+  }>[];
+}>> {
+  const [checkpoint, rows, messageRows] = await Promise.all([
+    tx.chatMemoryCheckpoint.findUnique({
+      select: { pipelineVersion: true },
+      where: { userId_chatId: { chatId: source.id, userId: source.userId } }
+    }),
+    tx.memoryRecallChunk.findMany({
+      orderBy: [{ chunkOrdinal: "asc" }, { id: "asc" }],
+      where: {
+        chatId: source.id,
+        chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: source.userId
+      }
+    }),
+    tx.chatMemoryCheckpointMessage.findMany({
+      orderBy: { ordinal: "asc" },
+      select: { messageId: true, sourceMessageUpdatedAt: true },
+      where: { chatId: source.id, userId: source.userId }
+    })
+  ]);
+  const chunkIds = rows.map((row) => row.id);
+  const joins = chunkIds.length === 0
+    ? []
+    : await tx.memoryRecallChunkMessage.findMany({
+        orderBy: [{ chunkId: "asc" }, { ordinal: "asc" }],
+        where: { chunkId: { in: chunkIds }, userId: source.userId }
+      });
+  const joinsByChunk = new Map<string, MemoryRecallChunkMessageJoin[]>();
+  for (const join of joins) {
+    const values = joinsByChunk.get(join.chunkId) ?? [];
+    values.push({
+      endOffset: join.endOffset ?? 0,
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as "assistant" | "user",
+      safeTextHash: join.safeTextHash,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      startOffset: join.startOffset ?? 0
+    });
+    joinsByChunk.set(join.chunkId, values);
+  }
+  return Object.freeze({
+    checkpointPipelineVersion: checkpoint?.pipelineVersion ?? null,
+    chunks: Object.freeze(rows.flatMap((row): CurrentChunkRow[] => {
+      const messageJoins = joinsByChunk.get(row.id) ?? [];
+      return messageJoins.length === 0 ? [] : [{ ...row, messageJoins }];
+    })),
+    messages: Object.freeze(messageRows.map((message) => ({
+      messageId: message.messageId,
+      sourceMessageUpdatedAt: message.sourceMessageUpdatedAt.toISOString()
+    })))
+  });
+}
+
+function chunkProjectionMatchesStored(
+  stored: CurrentChunkRow,
+  projected: MemoryHistoryPreparedChunk
+): boolean {
+  return stored.id === projected.id &&
+    stored.chunkOrdinal === projected.ordinal &&
+    stored.chunkingVersion === projected.chunkingVersion &&
+    stored.contentHash === projected.contentHash &&
+    stored.languageCode === projected.languageCode &&
+    stored.normalizedSafeSearchText === projected.normalizedSafeSearchText &&
+    stored.occurredFrom.toISOString() === projected.occurredFrom &&
+    stored.occurredTo.toISOString() === projected.occurredTo &&
+    stored.safeProjectedText === projected.safeProjectedText &&
+    stored.sourceAssistantId === projected.sourceAssistantId &&
+    stored.sourceFolderId === projected.folderId &&
+    stored.sourceProjectionVersion === projected.sourceProjectionVersion;
+}
+
 async function prepareWith(
   tx: MemoryTransaction,
   job: MemoryJobDescriptor,
@@ -470,24 +561,90 @@ async function prepareWith(
     sourceRevision: source.memorySourceRevision,
     userId: source.userId
   };
-  const chunks = chunkMemoryRecallProjection(safeSnapshot, undefined, {
+  const projectedChunks = chunkMemoryRecallProjection(safeSnapshot, undefined, {
     excludedMessageIds: admission.excludedMessageIds,
     sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
   }).map((chunk): MemoryHistoryPreparedChunk => ({
     ...chunk,
-    id: memoryHistoryChunkId(sourceIdentity, chunk)
+    id: memoryHistoryChunkId(sourceIdentity, chunk),
+    publicationState: "ACTIVE"
   }));
+  const checkpointMessages = source.messages.map((message, ordinal) => ({
+    createdAt: message.createdAt.toISOString(),
+    messageId: message.id,
+    ordinal,
+    sourceMessageUpdatedAt: message.updatedAt.toISOString()
+  }));
+  const previous = await loadIncrementalHistoryState(tx, source);
+  const incremental = planMemoryHistoryIncrementalUpdate({
+    currentMessages: checkpointMessages,
+    nextChunks: projectedChunks,
+    previousChunks: previous.checkpointPipelineVersion ===
+        MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+      ? previous.chunks.map((chunk) => ({
+          id: chunk.id,
+          messageJoins: chunk.messageJoins,
+          ordinal: chunk.chunkOrdinal
+        }))
+      : [],
+    previousMessages: previous.checkpointPipelineVersion ===
+        MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+      ? previous.messages
+      : []
+  });
+  const storedById = new Map(previous.chunks.map((chunk) => [chunk.id, chunk]));
+  const reusable = new Set(incremental.reusedChunkIds.filter((id) => {
+    const projected = projectedChunks.find((chunk) => chunk.id === id);
+    const stored = storedById.get(id);
+    return Boolean(projected && stored && chunkProjectionMatchesStored(stored, projected));
+  }));
+  const chunks = projectedChunks.map((chunk): MemoryHistoryPreparedChunk => {
+    const stored = reusable.has(chunk.id) ? storedById.get(chunk.id) : null;
+    return stored
+      ? {
+          ...chunk,
+          publicationState: stored.state === "SUPPRESSED" ? "SUPPRESSED" : "ACTIVE",
+          redactionReasonCodes: [...stored.redactionReasonCodes],
+          redactionState: stored.redactionState,
+          safetyClass: stored.safetyClass
+        }
+      : chunk;
+  });
+  const reusedChunkIds = chunks.flatMap((chunk) =>
+    reusable.has(chunk.id) ? [chunk.id] : []);
+  const rebuiltChunkIds = chunks.flatMap((chunk) =>
+    reusable.has(chunk.id) ? [] : [chunk.id]);
+  const incrementalSnapshot = {
+    commonPathMessageCount: incremental.commonPathMessageCount,
+    mode: incremental.mode,
+    rebuildFromMessageOrdinal: incremental.rebuildFromMessageOrdinal
+  } as const;
   const resultHash = memoryHistoryIndexResultHash(
     sourceIdentity,
     chunks,
-    admission.suppressionIdentitySnapshot
+    admission.suppressionIdentitySnapshot,
+    null,
+    {
+      checkpointMessages,
+      digest: null,
+      digestPolicyVersion: null,
+      incremental: incrementalSnapshot,
+      rebuiltChunkIds,
+      reusedChunkIds
+    }
   );
   return {
     plan: {
       classificationPolicyVersion: null,
+      checkpointMessages,
       chunks,
+      digest: null,
+      digestPolicyVersion: null,
+      incremental: incrementalSnapshot,
       preparedResultHash: resultHash,
+      rebuiltChunkIds,
       resultHash,
+      reusedChunkIds,
       source: sourceIdentity,
       suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
     }
@@ -510,12 +667,10 @@ function expectedSearchEntry(
       safetyClass: chunk.safetyClass
     }),
     sourceIdentitySnapshot: memorySha256({
-      branchGeneration: chunk.branchGeneration,
       chatId: chunk.chatId,
       contentHash: chunk.contentHash,
       messageJoins: chunk.messageJoins,
-      sourceHash: plan.source.sourceHash,
-      sourceRevision: chunk.sourceRevision,
+      sourceProjectionVersion: chunk.sourceProjectionVersion,
       userId: chunk.userId
     }),
     suppressionIdentitySnapshot: plan.suppressionIdentitySnapshot
@@ -524,7 +679,6 @@ function expectedSearchEntry(
 
 function chunkMatches(left: CurrentChunkRow, right: MemoryHistoryPreparedChunk): boolean {
   return left.id === right.id &&
-    left.branchGeneration === right.branchGeneration &&
     left.chunkOrdinal === right.ordinal &&
     left.chunkingVersion === right.chunkingVersion &&
     left.contentHash === right.contentHash &&
@@ -539,8 +693,7 @@ function chunkMatches(left: CurrentChunkRow, right: MemoryHistoryPreparedChunk):
     left.sourceAssistantId === right.sourceAssistantId &&
     left.sourceFolderId === right.folderId &&
     left.sourceProjectionVersion === right.sourceProjectionVersion &&
-    left.sourceRevisionAtCreation === right.sourceRevision &&
-    left.state === "ACTIVE";
+    left.state === right.publicationState;
 }
 
 function embeddingStateMatchesIndex(
@@ -576,86 +729,122 @@ async function planAlreadyApplied(
     checkpoint.lastIndexedMessageId !== plan.source.activeLeafMessageId
   ) return false;
 
-  const chunks = await tx.memoryRecallChunk.findMany({
+  const checkpointMessages = await tx.chatMemoryCheckpointMessage.findMany({
+    orderBy: { ordinal: "asc" },
+    where: { chatId: plan.source.chatId, userId: plan.source.userId }
+  });
+  if (
+    checkpointMessages.length !== plan.checkpointMessages.length ||
+    plan.checkpointMessages.some((expected, index) => {
+      const current = checkpointMessages[index];
+      return !current || current.messageId !== expected.messageId ||
+        current.ordinal !== expected.ordinal ||
+        current.sourceMessageCreatedAt.toISOString() !== expected.createdAt ||
+        current.sourceMessageUpdatedAt.toISOString() !== expected.sourceMessageUpdatedAt;
+    })
+  ) return false;
+
+  const chunkRows = await tx.memoryRecallChunk.findMany({
     where: {
       chatId: plan.source.chatId,
-      state: "ACTIVE",
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
       userId: plan.source.userId
     }
   });
+  const chunkIds = plan.chunks.map((chunk) => chunk.id);
+  const joins = chunkIds.length === 0 ? [] :
+    await tx.memoryRecallChunkMessage.findMany({
+      orderBy: [{ chunkId: "asc" }, { ordinal: "asc" }],
+      where: { chunkId: { in: chunkIds }, userId: plan.source.userId }
+    });
+  const joinsByChunk = new Map<string, MemoryRecallChunkMessageJoin[]>();
+  for (const join of joins) {
+    const current = joinsByChunk.get(join.chunkId) ?? [];
+    current.push({
+      endOffset: join.endOffset ?? 0,
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as "assistant" | "user",
+      safeTextHash: join.safeTextHash,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      startOffset: join.startOffset ?? 0
+    });
+    joinsByChunk.set(join.chunkId, current);
+  }
+  const chunks: CurrentChunkRow[] = chunkRows.map((chunk) => ({
+    ...chunk,
+    messageJoins: joinsByChunk.get(chunk.id) ?? []
+  }));
   if (
     chunks.length !== plan.chunks.length ||
     plan.chunks.some((chunk) => {
       const current = chunks.find((candidate) => candidate.id === chunk.id);
-      return !current || !chunkMatches(current, chunk);
-    })
-  ) return false;
-  if (plan.chunks.length === 0) return true;
-
-  const activeIndex = await requireActiveMemoryIndex(tx, settings);
-  if (!activeIndex) return false;
-  const chunkIds = plan.chunks.map((chunk) => chunk.id);
-  const joins = await tx.memoryRecallChunkMessage.findMany({
-    orderBy: [{ chunkId: "asc" }, { ordinal: "asc" }],
-    where: { chunkId: { in: chunkIds }, userId: plan.source.userId }
-  });
-  const expectedJoins = plan.chunks.flatMap((chunk) =>
-    chunk.messageJoins.map((join) => ({
-      chatId: chunk.chatId,
-      chunkId: chunk.id,
-      endOffset: join.endOffset,
-      messageId: join.messageId,
-      ordinal: join.ordinal,
-      role: join.role,
-      startOffset: join.startOffset,
-      userId: chunk.userId
-    }))).sort((left, right) =>
-      left.chunkId.localeCompare(right.chunkId) || left.ordinal - right.ordinal);
-  if (
-    joins.length !== expectedJoins.length ||
-    expectedJoins.some((expected, index) => {
-      const current = joins[index];
-      return !current ||
-        current.chatId !== expected.chatId ||
-        current.chunkId !== expected.chunkId ||
-        current.endOffset !== expected.endOffset ||
-        current.messageId !== expected.messageId ||
-        current.ordinal !== expected.ordinal ||
-        current.role !== expected.role ||
-        current.startOffset !== expected.startOffset ||
-        current.userId !== expected.userId;
+      return !current || !chunkMatches(current, chunk) ||
+        current.messageJoins.length !== chunk.messageJoins.length ||
+        chunk.messageJoins.some((expected, index) =>
+          JSON.stringify(expected) !== JSON.stringify(current.messageJoins[index]));
     })
   ) return false;
 
-  const entries = await tx.memorySearchEntry.findMany({
-    where: {
-      indexGenerationId: activeIndex.id,
-      itemType: "RECALL_CHUNK",
-      recallChunkId: { in: chunkIds },
-      userId: plan.source.userId
-    }
+  const activePlanChunks = plan.chunks.filter((chunk) =>
+    chunk.publicationState === "ACTIVE");
+  if (activePlanChunks.length > 0) {
+    const activeIndex = await requireActiveMemoryIndex(tx, settings);
+    if (!activeIndex) return false;
+    const entries = await tx.memorySearchEntry.findMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        itemType: "RECALL_CHUNK",
+        recallChunkId: { in: activePlanChunks.map((chunk) => chunk.id) },
+        userId: plan.source.userId
+      }
+    });
+    if (entries.length !== activePlanChunks.length ||
+      activePlanChunks.some((chunk) => {
+        const entry = entries.find((candidate) => candidate.recallChunkId === chunk.id);
+        const expected = expectedSearchEntry(plan, chunk);
+        return !entry ||
+          !embeddingStateMatchesIndex(activeIndex.indexMode, entry.embeddingState) ||
+          entry.languageCode !== expected.languageCode ||
+          entry.safeContentHash !== expected.safeContentHash ||
+          entry.normalizedSearchText !== expected.normalizedSearchText ||
+          entry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
+          entry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
+          entry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
+      })) return false;
+  }
+  const activeDigest = await tx.chatMemoryDigest.findFirst({
+    where: { chatId: plan.source.chatId, state: "ACTIVE", userId: plan.source.userId }
   });
-  if (entries.length !== plan.chunks.length) return false;
-  return plan.chunks.every((chunk) => {
-    const entry = entries.find((candidate) => candidate.recallChunkId === chunk.id);
-    const expected = expectedSearchEntry(plan, chunk);
-    return Boolean(entry) &&
-      embeddingStateMatchesIndex(activeIndex.indexMode, entry!.embeddingState) &&
-      entry!.languageCode === expected.languageCode &&
-      entry!.safeContentHash === expected.safeContentHash &&
-      entry!.normalizedSearchText === expected.normalizedSearchText &&
-      entry!.safetyIdentitySnapshot === expected.safetyIdentitySnapshot &&
-      entry!.sourceIdentitySnapshot === expected.sourceIdentitySnapshot &&
-      entry!.suppressionIdentitySnapshot === expected.suppressionIdentitySnapshot;
-  });
+  if (plan.digest === null) return activeDigest === null;
+  if (!activeDigest || activeDigest.id !== plan.digest.id ||
+    activeDigest.contentHash !== plan.digest.contentHash ||
+    activeDigest.safeDigestText !== plan.digest.safeDigestText ||
+    activeDigest.sourceContentHash !== plan.source.sourceHash ||
+    activeDigest.activeLeafMessageId !== plan.source.activeLeafMessageId) return false;
+  const [digestChunks, digestMessages] = await Promise.all([
+    tx.chatMemoryDigestChunk.findMany({
+      orderBy: { ordinal: "asc" }, where: { digestId: plan.digest.id }
+    }),
+    tx.chatMemoryDigestMessage.findMany({
+      orderBy: { ordinal: "asc" }, where: { digestId: plan.digest.id }
+    })
+  ]);
+  return digestChunks.map(({ chunkId }) => chunkId).join("\u0000") ===
+      plan.digest.sourceChunkIds.join("\u0000") &&
+    digestMessages.map(({ messageId }) => messageId).join("\u0000") ===
+      plan.digest.sourceMessageIds.join("\u0000");
 }
 
 async function persistChunk(
   tx: MemoryTransaction,
-  activeIndex: MemoryActiveIndex,
+  activeIndex: MemoryActiveIndex | null,
   plan: MemoryHistoryIndexPlan,
   chunk: MemoryHistoryPreparedChunk
-): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>> {
+): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }> | null> {
   await tx.memoryRecallChunk.upsert({
     create: {
       branchGeneration: chunk.branchGeneration,
@@ -676,11 +865,10 @@ async function persistChunk(
       sourceFolderId: chunk.folderId,
       sourceProjectionVersion: chunk.sourceProjectionVersion,
       sourceRevisionAtCreation: chunk.sourceRevision,
-      state: "ACTIVE",
+      state: chunk.publicationState,
       userId: chunk.userId
     },
     update: {
-      branchGeneration: chunk.branchGeneration,
       chunkOrdinal: chunk.ordinal,
       chunkingVersion: chunk.chunkingVersion,
       contentHash: chunk.contentHash,
@@ -696,8 +884,7 @@ async function persistChunk(
       sourceAssistantId: chunk.sourceAssistantId,
       sourceFolderId: chunk.folderId,
       sourceProjectionVersion: chunk.sourceProjectionVersion,
-      sourceRevisionAtCreation: chunk.sourceRevision,
-      state: "ACTIVE"
+      state: chunk.publicationState
     },
     where: { id: chunk.id }
   });
@@ -712,18 +899,54 @@ async function persistChunk(
       messageId: join.messageId,
       ordinal: join.ordinal,
       role: join.role,
+      safeTextHash: join.safeTextHash,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: new Date(join.sourceMessageUpdatedAt),
       startOffset: join.startOffset,
       userId: chunk.userId
     }))
   });
-  await tx.memorySearchEntry.deleteMany({
+  if (chunk.publicationState === "SUPPRESSED") {
+    await tx.memorySearchEntry.deleteMany({
+      where: { recallChunkId: chunk.id, userId: chunk.userId }
+    });
+    return null;
+  }
+  if (!activeIndex) {
+    throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
+  }
+  const existing = await tx.memorySearchEntry.findFirst({
+    orderBy: { id: "asc" },
     where: {
       indexGenerationId: activeIndex.id,
+      itemType: "RECALL_CHUNK",
       recallChunkId: chunk.id,
       userId: chunk.userId
     }
   });
   const expected = expectedSearchEntry(plan, chunk);
+  if (existing) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        id: { not: existing.id },
+        indexGenerationId: activeIndex.id,
+        recallChunkId: chunk.id,
+        userId: chunk.userId
+      }
+    });
+    return tx.memorySearchEntry.update({
+      data: {
+        languageCode: expected.languageCode,
+        normalizedSearchText: expected.normalizedSearchText,
+        safeContentHash: expected.safeContentHash,
+        safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+        sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+        suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot
+      },
+      select: { embeddingState: true, id: true },
+      where: { id: existing.id }
+    });
+  }
   return tx.memorySearchEntry.create({
     data: {
       embeddingState: activeIndex.indexMode === "LEXICAL_ONLY"
@@ -761,6 +984,125 @@ async function enqueueChunkEmbedding(
   });
 }
 
+async function persistDigest(
+  tx: MemoryTransaction,
+  plan: MemoryHistoryIndexPlan,
+  now: Date
+): Promise<void> {
+  const current = await tx.chatMemoryDigest.findMany({
+    select: { id: true },
+    where: {
+      chatId: plan.source.chatId,
+      state: "ACTIVE",
+      userId: plan.source.userId
+    }
+  });
+  const staleIds = current.flatMap(({ id }) =>
+    id === plan.digest?.id ? [] : [id]);
+  if (staleIds.length > 0) {
+    await tx.chatMemoryDigest.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: { id: { in: staleIds }, userId: plan.source.userId }
+    });
+  }
+  const digest = plan.digest;
+  if (!digest) return;
+  if (!plan.digestPolicyVersion) {
+    throw new MemoryCoordinatorError("memory_chat_digest_invalid", false);
+  }
+  const anchor = plan.chunks.find((chunk) => chunk.id === digest.anchorChunkId);
+  if (!anchor || anchor.publicationState !== "ACTIVE") {
+    throw new MemoryCoordinatorError("memory_chat_digest_invalid", false);
+  }
+  await tx.chatMemoryDigest.upsert({
+    create: {
+      activeLeafMessageId: plan.source.activeLeafMessageId,
+      anchorChunkId: digest.anchorChunkId,
+      branchGeneration: plan.source.branchGeneration,
+      chatId: plan.source.chatId,
+      contentHash: digest.contentHash,
+      decisions: [...digest.decisions],
+      id: digest.id,
+      languageCode: digest.languageCode,
+      normalizedSafeSearchText: normalizeMemorySearchText(digest.safeDigestText),
+      occurredFrom: new Date(digest.occurredFrom),
+      occurredTo: new Date(digest.occurredTo),
+      openLoops: [...digest.openLoops],
+      pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+      redactionState: "NOT_NEEDED",
+      safeDigestText: digest.safeDigestText,
+      safetyClass: "NORMAL",
+      safetyPolicyVersion: plan.digestPolicyVersion,
+      sourceAssistantId: anchor.sourceAssistantId,
+      sourceContentHash: plan.source.sourceHash,
+      sourceFolderId: anchor.folderId,
+      sourceProjectionVersion: anchor.sourceProjectionVersion,
+      sourceRevisionAtCreation: plan.source.sourceRevision,
+      state: "ACTIVE",
+      summary: digest.summary,
+      topics: [...digest.topics],
+      userId: plan.source.userId
+    },
+    update: {
+      activeLeafMessageId: plan.source.activeLeafMessageId,
+      anchorChunkId: digest.anchorChunkId,
+      branchGeneration: plan.source.branchGeneration,
+      contentHash: digest.contentHash,
+      decisions: [...digest.decisions],
+      invalidatedAt: null,
+      languageCode: digest.languageCode,
+      normalizedSafeSearchText: normalizeMemorySearchText(digest.safeDigestText),
+      occurredFrom: new Date(digest.occurredFrom),
+      occurredTo: new Date(digest.occurredTo),
+      openLoops: [...digest.openLoops],
+      redactionState: "NOT_NEEDED",
+      safeDigestText: digest.safeDigestText,
+      safetyClass: "NORMAL",
+      safetyPolicyVersion: plan.digestPolicyVersion,
+      sourceAssistantId: anchor.sourceAssistantId,
+      sourceContentHash: plan.source.sourceHash,
+      sourceFolderId: anchor.folderId,
+      sourceRevisionAtCreation: plan.source.sourceRevision,
+      state: "ACTIVE",
+      summary: digest.summary,
+      topics: [...digest.topics]
+    },
+    where: { id: digest.id }
+  });
+  await Promise.all([
+    tx.chatMemoryDigestChunk.deleteMany({ where: { digestId: digest.id } }),
+    tx.chatMemoryDigestMessage.deleteMany({ where: { digestId: digest.id } })
+  ]);
+  await tx.chatMemoryDigestChunk.createMany({
+    data: digest.sourceChunkIds.map((chunkId, ordinal) => ({
+      chatId: plan.source.chatId,
+      chunkId,
+      digestId: digest.id,
+      ordinal,
+      userId: plan.source.userId
+    }))
+  });
+  const messageIdentities = new Map(plan.chunks.flatMap((chunk) =>
+    chunk.messageJoins.map((join) => [join.messageId, join] as const)));
+  await tx.chatMemoryDigestMessage.createMany({
+    data: digest.sourceMessageIds.map((messageId, ordinal) => {
+      const identity = messageIdentities.get(messageId);
+      if (!identity) {
+        throw new MemoryCoordinatorError("memory_chat_digest_invalid", false);
+      }
+      return {
+        chatId: plan.source.chatId,
+        digestId: digest.id,
+        messageId,
+        ordinal,
+        sourceMessageContentHash: identity.sourceMessageContentHash,
+        sourceMessageUpdatedAt: new Date(identity.sourceMessageUpdatedAt),
+        userId: plan.source.userId
+      };
+    })
+  });
+}
+
 async function applyPlan(
   tx: MemoryTransaction,
   claim: MemoryJobClaim,
@@ -776,11 +1118,20 @@ async function applyPlan(
     plan.source.sourceHash !== claim.sourceHash ||
     plan.source.sourceRevision !== claim.sourceRevision ||
     plan.source.userId !== claim.userId ||
+    plan.digestPolicyVersion === null ||
     memoryHistoryIndexResultHash(
       plan.source,
       plan.chunks,
       plan.suppressionIdentitySnapshot,
-      plan.classificationPolicyVersion
+      plan.classificationPolicyVersion,
+      {
+        checkpointMessages: plan.checkpointMessages,
+        digest: plan.digest,
+        digestPolicyVersion: plan.digestPolicyVersion,
+        incremental: plan.incremental,
+        rebuiltChunkIds: plan.rebuiltChunkIds,
+        reusedChunkIds: plan.reusedChunkIds
+      }
     ) !== plan.resultHash
   ) {
     throw new MemoryCoordinatorError("memory_history_plan_invalid", false);
@@ -799,13 +1150,10 @@ async function applyPlan(
   ) {
     throw new MemoryCoordinatorError("memory_source_stale", false);
   }
-  const currentPrepared = await prepareWith(tx, claim, now);
-  if (
-    "decision" in currentPrepared ||
-    currentPrepared.plan.resultHash !== plan.preparedResultHash
-  ) {
-    throw new MemoryCoordinatorError("memory_history_plan_stale", true);
-  }
+  // A retried coordinator commit may replay the exact accepted plan after its
+  // first transaction committed. Check that durable state before regenerating
+  // a raw incremental plan, whose APPEND/FULL_REBUILD mode correctly changes
+  // to UNCHANGED once the checkpoint has advanced.
   if (await planAlreadyApplied(tx, settings, plan)) {
     const pendingEntries = await tx.memorySearchEntry.findMany({
       select: { embeddingState: true, id: true },
@@ -813,7 +1161,10 @@ async function applyPlan(
         embeddingState: "PENDING",
         indexGenerationId: settings.activeIndexGenerationId!,
         itemType: "RECALL_CHUNK",
-        recallChunkId: { in: plan.chunks.map((chunk) => chunk.id) },
+        recallChunkId: {
+          in: plan.chunks.flatMap((chunk) =>
+            chunk.publicationState === "ACTIVE" ? [chunk.id] : [])
+        },
         userId: plan.source.userId
       }
     });
@@ -822,46 +1173,92 @@ async function applyPlan(
     }
     return;
   }
-
-  const activeChunks = await tx.memoryRecallChunk.findMany({
-    select: { id: true },
+  const currentPrepared = await prepareWith(tx, claim, now);
+  if (
+    "decision" in currentPrepared ||
+    currentPrepared.plan.resultHash !== plan.preparedResultHash
+  ) {
+    throw new MemoryCoordinatorError("memory_history_plan_stale", true);
+  }
+  const currentChunks = await tx.memoryRecallChunk.findMany({
+    select: { id: true, state: true },
     where: {
       chatId: claim.chatId,
-      state: "ACTIVE",
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
       userId: claim.userId
     }
   });
-  const visibilityChanged = activeChunks.length > 0 || plan.chunks.length > 0;
+  const currentDigest = await tx.chatMemoryDigest.findFirst({
+    select: { contentHash: true, id: true },
+    where: { chatId: claim.chatId, state: "ACTIVE", userId: claim.userId }
+  });
+  const currentVisible = currentChunks.flatMap((chunk) =>
+    chunk.state === "ACTIVE" ? [chunk.id] : []).sort();
+  const nextVisible = plan.chunks.flatMap((chunk) =>
+    chunk.publicationState === "ACTIVE" ? [chunk.id] : []).sort();
+  const visibilityChanged = currentVisible.join("\u0000") !== nextVisible.join("\u0000") ||
+    (currentDigest?.id ?? null) !== (plan.digest?.id ?? null) ||
+    (currentDigest?.contentHash ?? null) !== (plan.digest?.contentHash ?? null);
   let activeIndex: MemoryActiveIndex | null = null;
   if (visibilityChanged) {
     await advanceMemoryMutation(tx, settings, "CHUNK_VISIBILITY_CHANGE");
+  }
+  if (nextVisible.length > 0) {
     activeIndex = await requireActiveMemoryIndex(tx, settings);
     if (!activeIndex) {
       throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
     }
   }
-  if (activeChunks.length > 0) {
-    const ids = activeChunks.map((chunk) => chunk.id);
+  const desiredIds = new Set(plan.chunks.map((chunk) => chunk.id));
+  const staleIds = currentChunks.flatMap((chunk) =>
+    desiredIds.has(chunk.id) ? [] : [chunk.id]);
+  if (staleIds.length > 0) {
     await tx.memorySearchEntry.deleteMany({
-      where: { recallChunkId: { in: ids }, userId: claim.userId }
+      where: { recallChunkId: { in: staleIds }, userId: claim.userId }
     });
     await tx.memoryRecallChunk.updateMany({
       data: { invalidatedAt: now, state: "INVALIDATED" },
-      where: { id: { in: ids }, state: "ACTIVE", userId: claim.userId }
+      where: {
+        id: { in: staleIds },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: claim.userId
+      }
     });
   }
-  if (plan.chunks.length > 0 && !activeIndex) {
-    throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
-  }
+  const retainedEntries = plan.chunks.length === 0
+    ? []
+    : await tx.memorySearchEntry.findMany({
+        where: {
+          itemType: "RECALL_CHUNK",
+          recallChunkId: { in: plan.chunks.map((chunk) => chunk.id) },
+          userId: claim.userId
+        }
+      });
+  const rebuilt = new Set(plan.rebuiltChunkIds);
   for (const chunk of plan.chunks) {
-    const entry = await persistChunk(tx, activeIndex!, plan, chunk);
-    await enqueueChunkEmbedding(
-      tx,
-      settings,
-      entry,
-      plan.resultHash
-    );
+    const expected = expectedSearchEntry(plan, chunk);
+    const retainedEntry = activeIndex
+      ? retainedEntries.find((entry) =>
+          entry.indexGenerationId === activeIndex.id &&
+          entry.recallChunkId === chunk.id)
+      : null;
+    const searchArtifactNeedsRepair = chunk.publicationState === "SUPPRESSED"
+      ? retainedEntries.some((entry) => entry.recallChunkId === chunk.id)
+      : !retainedEntry ||
+        !embeddingStateMatchesIndex(activeIndex!.indexMode, retainedEntry.embeddingState) ||
+        retainedEntry.languageCode !== expected.languageCode ||
+        retainedEntry.safeContentHash !== expected.safeContentHash ||
+        retainedEntry.normalizedSearchText !== expected.normalizedSearchText ||
+        retainedEntry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
+        retainedEntry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
+        retainedEntry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
+    if (!rebuilt.has(chunk.id) && !searchArtifactNeedsRepair) continue;
+    const entry = await persistChunk(tx, activeIndex, plan, chunk);
+    if (entry) {
+      await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
+    }
   }
+  await persistDigest(tx, plan, now);
   await tx.chatMemoryCheckpoint.upsert({
     create: {
       activeLeafMessageId: plan.source.activeLeafMessageId,
@@ -893,6 +1290,21 @@ async function applyPlan(
       }
     }
   });
+  await tx.chatMemoryCheckpointMessage.deleteMany({
+    where: { chatId: plan.source.chatId, userId: plan.source.userId }
+  });
+  if (plan.checkpointMessages.length > 0) {
+    await tx.chatMemoryCheckpointMessage.createMany({
+      data: plan.checkpointMessages.map((message) => ({
+        chatId: plan.source.chatId,
+        messageId: message.messageId,
+        ordinal: message.ordinal,
+        sourceMessageCreatedAt: new Date(message.createdAt),
+        sourceMessageUpdatedAt: new Date(message.sourceMessageUpdatedAt),
+        userId: plan.source.userId
+      }))
+    });
+  }
 }
 
 export function createPrismaMemoryHistoryIndexRepository(

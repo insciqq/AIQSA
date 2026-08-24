@@ -17,6 +17,7 @@ import {
   type PrismaMemoryExecutionService
 } from "../../execution";
 import { memoryExecutionSha256 } from "../../execution/canonical";
+import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import { withLockedMemoryTransaction } from "../../persistence/transaction";
 import {
   MEMORY_FACT_EXTRACTION_VERSIONS,
@@ -123,12 +124,15 @@ async function recoverPriorExecution(
   }
   const succeeded = bindings.find((binding) => binding.state === "SUCCEEDED");
   if (succeeded?.acceptedOutputHash) {
+    const applied = await deps.repository.applied(job, succeeded.id);
     return terminalResult(
       job,
       input,
-      await deps.repository.applied(job, succeeded.id)
+      applied === "APPLIED"
         ? "fact_observations_committed"
-        : "fact_result_unavailable",
+        : applied === "EMPTY"
+          ? "fact_observations_empty"
+          : "fact_result_unavailable",
       succeeded.acceptedOutputHash
     );
   }
@@ -214,6 +218,17 @@ export function createMemoryFactExtractionHandler(
       const input = prepared.input;
       if (input.messages.length === 0) {
         return terminalResult(job, input, "fact_empty_safe_source");
+      }
+      // This fence deliberately precedes binding recovery and provider
+      // authority work: recognizable raw credentials must never be included
+      // in a model request merely to ask whether they are credentials.
+      if (input.messages.some((message) =>
+        message.evidenceEligible &&
+        memoryExplicitStatementContainsSecret(message.text)) ||
+        input.contextRefs.some((context) =>
+          memoryExplicitStatementContainsSecret(context.text) ||
+          context.aliases.some(memoryExplicitStatementContainsSecret))) {
+        return terminalResult(job, input, "fact_secret_source_fenced");
       }
       const recovered = await recoverPriorExecution(deps, job, input);
       if (recovered) return recovered;
@@ -316,15 +331,15 @@ export function createMemoryFactExtractionHandler(
         if (applied === "STALE") {
           return terminalResult(job, input, "fact_apply_stale", plan.outputHash);
         }
+        return {
+          acceptedResultHash: plan.outputHash,
+          stage: applied === "APPLIED"
+            ? "fact_observations_committed"
+            : "fact_observations_empty"
+        };
       } catch {
         return terminalResult(job, input, "fact_apply_rejected", plan.outputHash);
       }
-      return {
-        acceptedResultHash: plan.outputHash,
-        stage: plan.candidates.length > 0
-          ? "fact_observations_committed"
-          : "fact_observations_empty"
-      };
     }
   });
 }

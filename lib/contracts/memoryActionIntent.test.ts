@@ -22,6 +22,7 @@ function intent(overrides: Record<string, unknown> = {}) {
     queryText: null,
     reasonCode: "none",
     recencyRequested: false,
+    retrievalMode: "TARGETED_CURRENT",
     referencedMemoryRef: null,
     replacementStatement: null,
     responsePreference: false,
@@ -29,6 +30,10 @@ function intent(overrides: Record<string, unknown> = {}) {
     sensitivity: "NORMAL",
     statement: null,
     targetQuery: null,
+    temporalAsOf: null,
+    temporalFrom: null,
+    temporalIntent: "CURRENT",
+    temporalTo: null,
     thisChatOnly: false,
     ...overrides
   };
@@ -89,7 +94,8 @@ describe("MemoryActionIntent strict contract", () => {
       action: "NONE",
       memoryUseful: true,
       profileRequested: true,
-      queryText: "current Saved and learned facts about the user"
+      queryText: "current Saved and learned facts about the user",
+      retrievalMode: "CURRENT_PROFILE"
     }))).toMatchObject({
       ok: true,
       value: { memoryUseful: true, profileRequested: true, recencyRequested: false }
@@ -99,25 +105,29 @@ describe("MemoryActionIntent strict contract", () => {
       {
         memoryUseful: false,
         profileRequested: true,
-        queryText: "current Saved and learned facts about the user"
+        queryText: "current Saved and learned facts about the user",
+        retrievalMode: "CURRENT_PROFILE"
       },
       {
         action: "SAVE",
         memoryUseful: true,
         profileRequested: true,
         queryText: "current Saved and learned facts about the user",
+        retrievalMode: "CURRENT_PROFILE",
         statement: "The user prefers tea."
       },
       {
         memoryUseful: true,
         profileRequested: true,
         queryText: "current Saved and learned facts about the user",
-        recencyRequested: true
+        recencyRequested: true,
+        retrievalMode: "CURRENT_PROFILE"
       },
       {
         memoryUseful: true,
         profileRequested: true,
-        queryText: null
+        queryText: null,
+        retrievalMode: "CURRENT_PROFILE"
       }
     ]) {
       expect(decodeMemoryActionIntent(intent(invalid))).toMatchObject({ ok: false });
@@ -159,7 +169,7 @@ describe("MemoryActionIntent strict contract", () => {
   it("requires a retrieval query for ordinary NONE answer plans", () => {
     for (const retrieval of [
       { memoryUseful: true },
-      { pastChatsUseful: true },
+      { pastChatsUseful: true, retrievalMode: "PAST_CHAT_SEARCH" },
       { applyResponsePreferences: true }
     ]) {
       expect(decodeMemoryActionIntent(intent({
@@ -170,6 +180,102 @@ describe("MemoryActionIntent strict contract", () => {
       expect(decodeMemoryActionIntent(intent({ action: "NONE", ...retrieval })))
         .toMatchObject({ ok: false });
     }
+  });
+
+  it("keeps prior-chat lookup time semantics aligned with retrieval planning", () => {
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "the codename chosen for the aquarium launch",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    }))).toMatchObject({ ok: true });
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "the codename chosen for the aquarium launch",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "HISTORICAL"
+    }))).toMatchObject({
+      ok: true,
+      value: { retrievalMode: "PAST_CHAT_SEARCH", temporalIntent: "ANY" }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "overview of recent conversations",
+      recencyRequested: true,
+      retrievalMode: "HISTORY_OVERVIEW",
+      temporalIntent: "ANY"
+    }))).toMatchObject({
+      ok: true,
+      value: { recencyRequested: true, retrievalMode: "PAST_CHAT_SEARCH" }
+    });
+  });
+
+  it("safely normalizes only contradictory read-only routing fields", () => {
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: true,
+      queryText: "the user's current name",
+      retrievalMode: "CURRENT_PROFILE",
+      temporalIntent: "ANY"
+    }))).toMatchObject({
+      ok: true,
+      value: {
+        memoryUseful: true,
+        profileRequested: false,
+        retrievalMode: "TARGETED_CURRENT",
+        temporalIntent: "CURRENT"
+      }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "SAVE",
+      confidenceBand: "HIGH",
+      memoryUseful: true,
+      queryText: "the user's preference",
+      reasonCode: "save_request",
+      retrievalMode: "CURRENT_PROFILE",
+      statement: "I prefer concise replies.",
+      temporalIntent: "ANY"
+    }))).toMatchObject({
+      ok: true,
+      value: {
+        action: "SAVE",
+        confidenceBand: "HIGH",
+        retrievalMode: "TARGETED_CURRENT",
+        statement: "I prefer concise replies.",
+        temporalIntent: "CURRENT"
+      }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "SAVE",
+      memoryUseful: true,
+      queryText: null,
+      retrievalMode: "CURRENT_PROFILE",
+      statement: "I prefer concise replies.",
+      temporalIntent: "ANY"
+    }))).toMatchObject({
+      ok: true,
+      value: {
+        action: "SAVE",
+        memoryUseful: false,
+        queryText: null,
+        retrievalMode: "TARGETED_CURRENT",
+        statement: "I prefer concise replies.",
+        temporalIntent: "CURRENT"
+      }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: true,
+      queryText: null,
+      retrievalMode: "CURRENT_PROFILE",
+      temporalIntent: "ANY"
+    }))).toMatchObject({ ok: false });
   });
 
   it("limits ambiguous destructive target selection to one extra call", () => {

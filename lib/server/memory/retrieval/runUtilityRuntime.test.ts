@@ -8,6 +8,16 @@ import {
 } from "./runUtilityRuntime";
 
 const KEY = Buffer.alloc(32, 29);
+const currentFactRerankCandidate = Object.freeze({
+  directness: "DIRECT" as const,
+  historical: false,
+  lifecycleState: "ACTIVE" as const,
+  temporalReason: "current" as const
+});
+const targetedCurrentRerank = Object.freeze({
+  retrievalMode: "TARGETED_CURRENT" as const,
+  temporalIntent: "CURRENT" as const
+});
 
 function snapshot(
   adapterKind: "openai_chat_completions_compatible" |
@@ -137,6 +147,9 @@ describe("Memory run utility provider runtime", () => {
         expect(JSON.stringify(body)).toContain(
           "SAVED outranks LEARNED, and LEARNED outranks PAST_CHAT"
         );
+        expect(JSON.stringify(body)).toContain(
+          "A different detail about the same project or event is NOT_RELEVANT"
+        );
         expect(JSON.stringify(body)).toContain('\\"profile_requested\\":false');
         expect(JSON.stringify(body)).not.toContain("SENSITIVE");
         expect(body).toMatchObject(adapterKind === "openrouter_chat_completions"
@@ -184,7 +197,9 @@ describe("Memory run utility provider runtime", () => {
       await expect(provider.run(
         memoryRunUtilityProviderEvidence(accepted),
         {
+          ...targetedCurrentRerank,
           candidates: [{
+            ...currentFactRerankCandidate,
             authorityLevel: "SAVED",
             current: true,
             handle: "c0",
@@ -248,7 +263,9 @@ describe("Memory run utility provider runtime", () => {
       "openai_responses_compatible"
     ));
     const input = {
+      ...targetedCurrentRerank,
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED" as const,
         current: true,
         handle: "c0",
@@ -269,12 +286,14 @@ describe("Memory run utility provider runtime", () => {
     );
     await provider.run(
       evidence,
-      { ...input, profileRequested: true },
+      { ...input, profileRequested: true, retrievalMode: "CURRENT_PROFILE" },
       new AbortController().signal
     );
 
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0]).toContain('\\"profile_requested\\":false');
+    expect(requestBodies[0]).toContain("Cross-language paraphrases count as direct relevance");
+    expect(requestBodies[0]).toContain("Как меня зовут?");
     expect(requestBodies[1]).toContain('\\"profile_requested\\":true');
     expect(requestBodies[1]).not.toBe(requestBodies[0]);
   });
@@ -302,6 +321,7 @@ describe("Memory run utility provider runtime", () => {
     await expect(provider.run(
       evidence,
       {
+        ...targetedCurrentRerank,
         candidates: [],
         profileRequested: false,
         query: "query",
@@ -324,6 +344,7 @@ describe("Memory run utility provider runtime", () => {
     await expect(provider.run(
       memoryRunUtilityProviderEvidence(snapshot("openai_chat_completions_compatible")),
       {
+        ...targetedCurrentRerank,
         candidates: [],
         profileRequested: false,
         query: "query",

@@ -45,7 +45,13 @@ export async function ensureLocalDevProfileDefaultCredentials(
     select: {
       credentials: {
         orderBy: { id: "asc" },
-        select: { id: true },
+        select: {
+          id: true,
+          userAssignments: {
+            select: { userId: true },
+            take: 1
+          }
+        },
         where: {
           activeVersion: { is: { revokedAt: null } },
           enabled: true
@@ -65,11 +71,15 @@ export async function ensureLocalDevProfileDefaultCredentials(
     ) {
       continue;
     }
-    if (connection.credentials.length !== 1) {
+    const assigned = connection.credentials.filter(
+      (credential) => (credential.userAssignments?.length ?? 0) > 0
+    );
+    const candidates = assigned.length === 1 ? assigned : connection.credentials;
+    if (candidates.length !== 1) {
       throw new Error("local_dev_profile_default_credential_ambiguous");
     }
     await prisma.providerConnection.update({
-      data: { defaultCredentialId: connection.credentials[0]!.id },
+      data: { defaultCredentialId: candidates[0]!.id },
       where: { id: connection.id }
     });
   }

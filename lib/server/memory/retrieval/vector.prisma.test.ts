@@ -4,6 +4,12 @@ import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import {
+  MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
+} from "../history/sourceProjection";
+import { memorySha256 } from "../persistence/lexical";
 import {
   MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS,
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
@@ -26,6 +32,9 @@ type HistoryFixture = Readonly<{
   chatId: string;
   generationId: string;
   profile: MemoryVectorProfile;
+  sourceMessageContentHash: string;
+  sourceMessageId: string;
+  sourceMessageUpdatedAt: Date;
   userId: string;
 }>;
 
@@ -116,22 +125,35 @@ async function createHistoryFixture(
     data: { activeLeafMessageId: leaf.id },
     where: { id: chat.id }
   });
-  await prisma.chatMemoryCheckpoint.create({
-    data: {
-      activeLeafMessageId: leaf.id,
-      branchGeneration: 0,
-      chatId: chat.id,
-      lastIndexedMessageId: leaf.id,
-      lastSucceededAt: now,
-      sourceContentHash: "a".repeat(64),
-      sourceRevision: 1,
-      status: "READY",
-      userId
-    }
+  await prisma.$transaction(async (tx) => {
+    await tx.chatMemoryCheckpoint.create({
+      data: {
+        activeLeafMessageId: leaf.id,
+        branchGeneration: 0,
+        chatId: chat.id,
+        lastIndexedMessageId: leaf.id,
+        lastSucceededAt: now,
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        sourceContentHash: "a".repeat(64),
+        sourceRevision: 1,
+        status: "READY",
+        userId
+      }
+    });
+    await tx.chatMemoryCheckpointMessage.create({
+      data: {
+        chatId: chat.id,
+        messageId: leaf.id,
+        ordinal: 0,
+        sourceMessageCreatedAt: leaf.createdAt,
+        sourceMessageUpdatedAt: leaf.updatedAt,
+        userId
+      }
+    });
   });
   const generation = await prisma.memoryIndexGeneration.create({
     data: {
-      chunkingVersion: "memory-history-chunking-v2",
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
       embeddingConfigurationFingerprint: configurationFingerprint,
       embeddingConnectionId: connectionId,
       embeddingDimension: 1_024,
@@ -176,6 +198,9 @@ async function createHistoryFixture(
       retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
       vectorSpaceFingerprint
     },
+    sourceMessageContentHash: memorySha256(leaf.content),
+    sourceMessageId: leaf.id,
+    sourceMessageUpdatedAt: leaf.updatedAt,
     userId
   };
 }
@@ -186,34 +211,60 @@ async function insertReadyChunks(
   count: number,
   divisor: number
 ): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
-    INSERT INTO "MemoryRecallChunk" (
-      "id", "userId", "chatId", "branchGeneration",
-      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
-      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
-      "occurredFrom", "occurredTo", "state", "chunkingVersion",
-      "sourceProjectionVersion", "safetyClass", "redactionState"
-    )
-    SELECT
-      ${prefix} || '-chunk-' || n,
-      ${fixture.userId},
-      ${fixture.chatId},
-      0,
-      1,
-      n,
-      repeat(md5(${prefix} || '-chunk-' || n), 2),
-      'Safe vector fixture ' || n,
-      'safe vector fixture ' || n,
-      'en',
-      ${now} - interval '1 day',
-      ${now},
-      'ACTIVE'::"MemoryHistoryItemState",
-      'memory-history-chunking-v2',
-      'memory-history-source-projection-v2',
-      'NORMAL'::"MemoryDerivedSafetyClass",
-      'NOT_NEEDED'::"MemoryRedactionState"
-    FROM generate_series(1, ${count}) AS n
-  `);
+  await prisma.$transaction(async (tx) => {
+    // This qualification corpus intentionally exceeds the production
+    // chunker's bounded output. Per-row deferred source guards would rescan
+    // the whole synthetic chat quadratically, so load these already-exact
+    // rows with triggers disabled only for this transaction. Source-authority
+    // predicates are still exercised by every production retrieval query.
+    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = replica");
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "MemoryRecallChunk" (
+        "id", "userId", "chatId", "branchGeneration",
+        "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+        "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+        "occurredFrom", "occurredTo", "state", "chunkingVersion",
+        "sourceProjectionVersion", "safetyClass", "redactionState"
+      )
+      SELECT
+        ${prefix} || '-chunk-' || n,
+        ${fixture.userId},
+        ${fixture.chatId},
+        0,
+        1,
+        n,
+        repeat(md5(${prefix} || '-chunk-' || n), 2),
+        'Safe vector fixture ' || n,
+        'safe vector fixture ' || n,
+        'en',
+        ${now} - interval '1 day',
+        ${now},
+        'ACTIVE'::"MemoryHistoryItemState",
+        ${MEMORY_HISTORY_CHUNKING_VERSION},
+        ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION},
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'NOT_NEEDED'::"MemoryRedactionState"
+      FROM generate_series(1, ${count}) AS n
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "MemoryRecallChunkMessage" (
+        "userId", "chunkId", "chatId", "messageId", "ordinal", "role",
+        "safeTextHash", "sourceMessageContentHash", "sourceMessageUpdatedAt"
+      )
+      SELECT
+        ${fixture.userId},
+        ${prefix} || '-chunk-' || n,
+        ${fixture.chatId},
+        ${fixture.sourceMessageId},
+        0,
+        'user',
+        repeat(md5('safe vector fixture ' || n), 2),
+        ${fixture.sourceMessageContentHash},
+        ${fixture.sourceMessageUpdatedAt}
+      FROM generate_series(1, ${count}) AS n
+    `);
+    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = origin");
+  }, { timeout: 30_000 });
   await prisma.$executeRaw(Prisma.sql`
     INSERT INTO "MemorySearchEntry" (
       "id", "userId", "indexGenerationId", "itemType", "recallChunkId",
@@ -254,6 +305,8 @@ function searchInput(
       allowedHistorySafety: ["NORMAL", "SENSITIVE"],
       assistantId: null,
       chatId: fixture.chatId,
+      factMode: "CURRENT",
+      factTemporalAsOf: null,
       folderId: null,
       occurredFrom: null,
       occurredTo: null,
@@ -360,15 +413,19 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       10_000_000
     );
 
+    const latestGeneration = await prisma.memoryIndexGeneration.aggregate({
+      _max: { generation: true },
+      where: { userId: annFixture.userId }
+    });
     const incompatible = await prisma.memoryIndexGeneration.create({
       data: {
         activatedAt: now,
-        chunkingVersion: "memory-history-chunking-v2",
+        chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
         embeddingConfigurationFingerprint: "1".repeat(64),
         embeddingConnectionId: connectionId,
         embeddingDimension: 1_536,
         embeddingProviderModelId: modelId,
-        generation: 1,
+        generation: (latestGeneration._max.generation ?? -1) + 1,
         indexMode: "HYBRID",
         indexedThroughMemoryRevision: 0,
         languageProfile: "RU_EN_MULTILINGUAL_V1",
@@ -542,7 +599,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
     const repository = createPrismaMemoryVectorRepository(prisma);
     await repository.search(searchInput(annFixture));
     await repository.search(searchInput(exactFixture));
-    const sampleCount = 12;
+    const sampleCount = 20;
     const annLatenciesMs: number[] = [];
     const exactLatenciesMs: number[] = [];
     let qualifiedAnnResult: Awaited<ReturnType<typeof repository.search>> | null = null;

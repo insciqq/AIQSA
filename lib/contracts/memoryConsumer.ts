@@ -77,17 +77,21 @@ function decode<T>(
 const memoryConsumerSettingsResponseSchema = z.strictObject({
   capabilities: z.strictObject({
     automaticLearningAvailable: z.boolean(),
+    decayAvailable: z.boolean(),
     managementAvailable: z.boolean(),
     naturalLanguageActionsAvailable: z.boolean(),
     permanentChatDeletion: z.boolean(),
     pastChatIndexingAvailable: z.boolean(),
     retrievalAvailable: z.boolean(),
+    synthesisAvailable: z.boolean(),
     temporaryChats: z.boolean()
   }),
   resetState: z.enum(MEMORY_CONSUMER_RESET_STATES),
   settings: z.strictObject({
+    decayEnabled: z.boolean(),
     learnAutomatically: z.boolean(),
     referenceChatHistory: z.boolean(),
+    synthesisEnabled: z.boolean(),
     useMemoryFacts: z.boolean()
   }),
   status: z.enum(MEMORY_CONSUMER_STATUSES)
@@ -104,8 +108,10 @@ export function decodeMemoryConsumerSettingsResponse(
 }
 
 const memoryConsumerSettingsPatchSchema = z.strictObject({
+  decayEnabled: z.boolean().optional(),
   learnAutomatically: z.boolean().optional(),
   referenceChatHistory: z.boolean().optional(),
+  synthesisEnabled: z.boolean().optional(),
   useMemoryFacts: z.boolean().optional()
 }).refine((value) => Object.keys(value).length > 0, "empty settings patch");
 

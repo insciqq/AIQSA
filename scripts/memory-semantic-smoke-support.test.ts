@@ -66,18 +66,22 @@ function consumerSettings(
   return {
     capabilities: {
       automaticLearningAvailable: true,
+      decayAvailable: true,
       managementAvailable: true,
       naturalLanguageActionsAvailable: true,
       pastChatIndexingAvailable: true,
       permanentChatDeletion: true,
       retrievalAvailable: true,
+      synthesisAvailable: true,
       temporaryChats: true,
       ...overrides.capabilities
     },
     resetState: overrides.resetState ?? "IDLE",
     settings: {
+      decayEnabled: false,
       learnAutomatically: true,
       referenceChatHistory: true,
+      synthesisEnabled: false,
       useMemoryFacts: true,
       ...overrides.settings
     },
@@ -348,6 +352,68 @@ describe("Memory semantic smoke support", () => {
     });
   });
 
+  it("waits for a source-bound automatic fact in the active ready vector generation", async () => {
+    const client = {
+      memoryEvidence: {
+        findMany: vi.fn().mockResolvedValue([{ factVersionId: "private-version" }])
+      },
+      memoryFact: {
+        findMany: vi.fn().mockResolvedValue([{ currentVersionId: "private-version" }])
+      },
+      memoryFactVersion: {
+        findMany: vi.fn().mockResolvedValue([{ id: "private-version" }])
+      },
+      memorySearchEntry: {
+        count: vi.fn().mockResolvedValue(1)
+      },
+      userMemorySettings: {
+        findUnique: vi.fn().mockResolvedValue({
+          activeIndexGenerationId: "private-generation"
+        })
+      }
+    } as unknown as PrismaClient;
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+    const notBefore = new Date("2026-08-21T10:00:00.000Z");
+
+    await expect(verifier.sourceBackedFactEmbeddingReadyCount({
+      chatId: "private-source-chat",
+      messageId: "private-source-message",
+      notBefore,
+      userId: "private-owner"
+    })).resolves.toBe(1);
+    expect(client.memorySearchEntry.count).toHaveBeenCalledWith({
+      where: {
+        embeddingState: "READY",
+        factVersionId: { in: ["private-version"] },
+        indexGenerationId: "private-generation",
+        itemType: "FACT_VERSION",
+        userId: "private-owner"
+      }
+    });
+  });
+
+  it("counts only current explicit facts with ready active-generation embeddings", async () => {
+    const client = {
+      $queryRaw: vi.fn().mockResolvedValue([{ count: 2 }]),
+      userMemorySettings: {
+        findUnique: vi.fn().mockResolvedValue({
+          activeIndexGenerationId: "private-generation"
+        })
+      }
+    } as unknown as PrismaClient;
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    await expect(verifier.readyExplicitFactEmbeddingCount({
+      query: "private marker",
+      userId: "private-owner"
+    })).resolves.toBe(2);
+    expect(client.userMemorySettings.findUnique).toHaveBeenCalledWith({
+      select: { activeIndexGenerationId: true },
+      where: { userId: "private-owner" }
+    });
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
+  });
+
   it("proves vector recall only through the current exact source chunk", async () => {
     const client = {
       chat: {
@@ -415,7 +481,7 @@ describe("Memory semantic smoke support", () => {
     });
   });
 
-  it("requires valid strict/control and rerank snapshots plus owner-bound mutation absence", async () => {
+  it("accepts strict retry-ancestor evidence only beside a consumed attempt", async () => {
     const strictControl = strictExecutionSnapshot("MEMORY_CONTROL");
     const rerank = strictExecutionSnapshot("MEMORY_RERANK");
     const client = {
@@ -427,7 +493,15 @@ describe("Memory semantic smoke support", () => {
       memoryMutationAuthorization: { count: vi.fn().mockResolvedValue(0) },
       memoryOperationReceipt: { count: vi.fn().mockResolvedValue(0) },
       memoryRetrievalAttempt: {
-        findMany: vi.fn().mockResolvedValue([{ id: "private-attempt" }])
+        findMany: vi.fn().mockResolvedValue([
+          { errorCode: null, id: "private-attempt", state: "CONSUMED" },
+          {
+            errorCode: "memory_admission_settings_changed",
+            id: "private-retry-ancestor",
+            state: "STALE"
+          },
+          { errorCode: "memory_admission_dag_changed", id: "private-stale", state: "STALE" }
+        ])
       }
     } as unknown as PrismaClient;
     const verifier = createPrismaMemorySemanticSmokeVerifier(client);
@@ -451,7 +525,7 @@ describe("Memory semantic smoke support", () => {
       select: { secretFreeExecutionSnapshot: true },
       where: {
         logicalRole: "MEMORY_CONTROL",
-        retrievalAttemptId: { in: ["private-attempt"] },
+        retrievalAttemptId: { in: ["private-attempt", "private-retry-ancestor"] },
         state: "SUCCEEDED",
         userId: "private-owner"
       }
@@ -460,7 +534,7 @@ describe("Memory semantic smoke support", () => {
       select: { secretFreeExecutionSnapshot: true },
       where: {
         logicalRole: "MEMORY_RERANK",
-        retrievalAttemptId: { in: ["private-attempt"] },
+        retrievalAttemptId: { in: ["private-attempt", "private-retry-ancestor"] },
         state: "SUCCEEDED",
         userId: "private-owner"
       }
@@ -468,6 +542,35 @@ describe("Memory semantic smoke support", () => {
     expect(client.memoryMutationAuthorization.count).toHaveBeenCalledWith({
       where: { modelRunId: "private-run", userId: "private-owner" }
     });
+    expect(client.memoryRetrievalAttempt.findMany).toHaveBeenCalledWith({
+      select: { errorCode: true, id: true, state: true },
+      where: {
+        modelRunId: "private-run",
+        state: { in: ["CONSUMED", "STALE"] },
+        userId: "private-owner"
+      }
+    });
+  });
+
+  it("does not treat a stale-only run as successful provider evidence", async () => {
+    const client = {
+      memoryExecutionBinding: { findMany: vi.fn() },
+      memoryRetrievalAttempt: {
+        findMany: vi.fn().mockResolvedValue([{
+          errorCode: "memory_admission_settings_changed",
+          id: "private-retry-ancestor",
+          state: "STALE"
+        }])
+      }
+    } as unknown as PrismaClient;
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    await expect(verifier.successfulRetrievalExecutionCount({
+      modelRunId: "private-run",
+      role: "MEMORY_CONTROL",
+      userId: "private-owner"
+    })).resolves.toBe(0);
+    expect(client.memoryExecutionBinding.findMany).not.toHaveBeenCalled();
   });
 
   it("detects any exact source-backed fact evidence before claiming secret rejection", async () => {
@@ -495,6 +598,42 @@ describe("Memory semantic smoke support", () => {
     });
   });
 
+  it("treats only the latest unrecoverable source execution as terminally unsuccessful", async () => {
+    const client = {
+      memoryExecutionBinding: {
+        findMany: vi.fn().mockResolvedValue([
+          { memoryJobId: "job-ok", ordinal: 0, state: "SUCCEEDED" },
+          { memoryJobId: "job-unknown", ordinal: 0, state: "OUTCOME_UNKNOWN" },
+          { memoryJobId: "job-retried", ordinal: 0, state: "FAILED" },
+          { memoryJobId: "job-retried", ordinal: 1, state: "SUCCEEDED" }
+        ])
+      },
+      memoryJob: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "job-ok",
+            kind: "EXTRACT_FACTS",
+            stage: "fact_observations_empty",
+            state: "SUCCEEDED"
+          },
+          { id: "job-unknown", kind: "INDEX_HISTORY", stage: null, state: "SUCCEEDED" },
+          { id: "job-retried", kind: "INDEX_HISTORY", stage: null, state: "SUCCEEDED" }
+        ])
+      }
+    } as unknown as PrismaClient;
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    await expect(verifier.sourceJobStateCounts({
+      chatId: "private-source-chat",
+      userId: "private-owner"
+    })).resolves.toEqual({
+      active: 0,
+      successfulEmptyExtraction: true,
+      total: 3,
+      unsuccessfulTerminal: 1
+    });
+  });
+
   it("keeps the scenario manifest and retired control-plane APIs out of the smoke", () => {
     const source = readFileSync(
       join(process.cwd(), "scripts/smoke-memory-semantic-retrieval.ts"),
@@ -515,6 +654,16 @@ describe("Memory semantic smoke support", () => {
     expect(source.match(/await commitMemoryTargetSelection\(/gu)).toHaveLength(2);
     expect(source).toContain('secretAction.operation !== "SAVE"');
     expect(source).toContain('secretAction.status !== "REJECTED"');
+    expect(source).toContain("memory_smoke_expected_fact_missing");
+    const learnedFactLoop = source.slice(
+      source.indexOf("async function waitForLearnedFact("),
+      source.indexOf("async function waitForIndexedHistorySource(")
+    );
+    expect(learnedFactLoop).toContain("jobs.active === 0 && jobs.total > 0");
+    expect(learnedFactLoop).toContain("sourceBackedFactVersionCount");
+    expect(learnedFactLoop).toContain("sourceBackedFactEmbeddingReadyCount");
+    expect(source).toContain("readyExplicitFactEmbeddingCount");
+    expect(source).toContain("This named format is a stable long-term preference");
     expect(source.match(/await sourceRun\(/gu)).toHaveLength(12);
     expect(source).toContain("const MAX_CHAT_RUNS = 12;");
     const main = source.slice(source.indexOf("async function main(): Promise<void>"));

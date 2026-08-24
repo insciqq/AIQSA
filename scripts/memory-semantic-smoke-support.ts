@@ -17,6 +17,7 @@ import { parseMemoryExecutionSnapshot } from "../lib/server/memory/execution/sna
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../lib/server/memory/history/chunking";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../lib/server/memory/history/sourceProjection";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../lib/server/memory/learning/extraction/contract";
+import { normalizeMemorySearchText } from "../lib/server/memory/persistence/lexical";
 import { loadProviderAdmissionPlan } from "../lib/server/providerRuntime/admission";
 
 export const MEMORY_SEMANTIC_SMOKE_PREFLIGHT_CODES = [
@@ -580,6 +581,66 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       });
     },
 
+    async sourceBackedFactEmbeddingReadyCount(source: SourceIdentity): Promise<number> {
+      const [versionIds, settings] = await Promise.all([
+        currentAutomaticFactVersionIds(client, source),
+        client.userMemorySettings.findUnique({
+          select: { activeIndexGenerationId: true },
+          where: { userId: source.userId }
+        })
+      ]);
+      if (versionIds.length === 0 || !settings?.activeIndexGenerationId) return 0;
+      return client.memorySearchEntry.count({
+        where: {
+          embeddingState: "READY",
+          factVersionId: { in: versionIds },
+          indexGenerationId: settings.activeIndexGenerationId,
+          itemType: "FACT_VERSION",
+          userId: source.userId
+        }
+      });
+    },
+
+    async readyExplicitFactEmbeddingCount(input: Readonly<{
+      query: string;
+      userId: string;
+    }>): Promise<number> {
+      const normalizedQuery = normalizeMemorySearchText(input.query);
+      if (!normalizedQuery) return 0;
+      const settings = await client.userMemorySettings.findUnique({
+        select: { activeIndexGenerationId: true },
+        where: { userId: input.userId }
+      });
+      if (!settings?.activeIndexGenerationId) return 0;
+      const rows = await client.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+        SELECT COUNT(*)::integer AS "count"
+        FROM "MemoryFact" AS fact
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = fact."userId"
+         AND version."factId" = fact."id"
+         AND version."id" = fact."currentVersionId"
+        INNER JOIN "MemoryScope" AS scope
+          ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+        INNER JOIN "MemorySearchEntry" AS search
+          ON search."userId" = version."userId"
+         AND search."factVersionId" = version."id"
+         AND search."indexGenerationId" = ${settings.activeIndexGenerationId}
+        WHERE fact."userId" = ${input.userId}
+          AND fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+          AND version."safetyClassificationState" =
+            'CLASSIFIED'::"MemorySafetyClassificationState"
+          AND version."contentPurgedAt" IS NULL
+          AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+          AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+          AND search."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
+          AND search."embeddingState" = 'READY'::"MemoryEmbeddingState"
+          AND strpos(search."normalizedSearchText", ${normalizedQuery}) > 0
+      `);
+      return rows[0]?.count ?? 0;
+    },
+
     async recalledAutomaticFactCount(
       source: SourceIdentity & Readonly<{ recallModelRunId: string }>
     ): Promise<number> {
@@ -613,34 +674,62 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
 
     async sourceJobStateCounts(
       input: Readonly<{ chatId: string; userId: string }>
-    ): Promise<Readonly<{ active: number; total: number; unsuccessfulTerminal: number }>> {
-      const [active, total, unsuccessfulTerminal] = await Promise.all([
-        client.memoryJob.count({
-          where: {
-            chatId: input.chatId,
-            state: {
-              in: [
-                "QUEUED",
-                "WAITING_FOR_EGRESS_CONSENT",
-                "CLAIMED",
-                "RETRYABLE_FAILED"
-              ]
-            },
-            userId: input.userId
-          }
-        }),
-        client.memoryJob.count({
-          where: { chatId: input.chatId, userId: input.userId }
-        }),
-        client.memoryJob.count({
-          where: {
-            chatId: input.chatId,
-            state: { in: ["TERMINAL_FAILED", "STALE", "CANCELLED"] },
-            userId: input.userId
-          }
-        })
+    ): Promise<Readonly<{
+      active: number;
+      successfulEmptyExtraction: boolean;
+      total: number;
+      unsuccessfulTerminal: number;
+    }>> {
+      const jobs = await client.memoryJob.findMany({
+        select: { id: true, kind: true, stage: true, state: true },
+        where: { chatId: input.chatId, userId: input.userId }
+      });
+      if (jobs.length === 0) {
+        return {
+          active: 0,
+          successfulEmptyExtraction: false,
+          total: 0,
+          unsuccessfulTerminal: 0
+        };
+      }
+      const bindings = await client.memoryExecutionBinding.findMany({
+        select: { memoryJobId: true, ordinal: true, state: true },
+        where: {
+          memoryJobId: { in: jobs.map(({ id }) => id) },
+          userId: input.userId
+        }
+      });
+      const latestBindingByJob = new Map<string, typeof bindings[number]>();
+      for (const binding of bindings) {
+        if (!binding.memoryJobId) continue;
+        const prior = latestBindingByJob.get(binding.memoryJobId);
+        if (!prior || binding.ordinal > prior.ordinal) {
+          latestBindingByJob.set(binding.memoryJobId, binding);
+        }
+      }
+      const activeStates = new Set([
+        "QUEUED",
+        "WAITING_FOR_EGRESS_CONSENT",
+        "CLAIMED",
+        "RETRYABLE_FAILED"
       ]);
-      return { active, total, unsuccessfulTerminal };
+      const unsuccessfulJobIds = new Set(jobs
+        .filter(({ state }) => ["TERMINAL_FAILED", "STALE", "CANCELLED"].includes(state))
+        .map(({ id }) => id));
+      for (const [jobId, binding] of latestBindingByJob) {
+        if (binding.state === "FAILED" || binding.state === "OUTCOME_UNKNOWN") {
+          unsuccessfulJobIds.add(jobId);
+        }
+      }
+      return {
+        active: jobs.filter(({ state }) => activeStates.has(state)).length,
+        successfulEmptyExtraction: jobs.some((job) =>
+          job.kind === "EXTRACT_FACTS" &&
+          job.stage === "fact_observations_empty" &&
+          job.state === "SUCCEEDED"),
+        total: jobs.length,
+        unsuccessfulTerminal: unsuccessfulJobIds.size
+      };
     },
 
     async successfulSourceExecutionCount(
@@ -670,17 +759,29 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       }>
     ): Promise<number> {
       const attempts = await client.memoryRetrievalAttempt.findMany({
-        select: { id: true },
+        select: { errorCode: true, id: true, state: true },
         where: {
           modelRunId: input.modelRunId,
-          state: "CONSUMED",
+          state: { in: ["CONSUMED", "STALE"] },
           userId: input.userId
         }
       });
-      if (attempts.length === 0) return 0;
+      // A settings/revision drift retry can legitimately consume attempt 1
+      // while the strict control execution remains attached to attempt 0.
+      // Count that exact retry ancestor only when this run also has a consumed
+      // attempt; a stale-only or otherwise abandoned run is not smoke evidence.
+      if (!attempts.some(({ state }) => state === "CONSUMED")) return 0;
+      const evidenceAttemptIds = attempts.flatMap((attempt) =>
+        attempt.state === "CONSUMED" || (
+          attempt.state === "STALE" &&
+          attempt.errorCode === "memory_admission_settings_changed"
+        )
+          ? [attempt.id]
+          : []
+      );
       return successfulExecutionBindingCount({
         logicalRole: input.role,
-        retrievalAttemptIds: attempts.map(({ id }) => id),
+        retrievalAttemptIds: evidenceAttemptIds,
         userId: input.userId
       });
     },

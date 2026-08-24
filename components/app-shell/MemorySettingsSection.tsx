@@ -304,6 +304,28 @@ function MemorySettings({
             value={data.settings.learnAutomatically}
             onChange={(value) => updateGate("learnAutomatically", value)}
           />
+          <GateRow
+            busy={busy}
+            controlAvailable={data.capabilities.managementAvailable}
+            description={t("settings.synthesisDescription")}
+            featureAvailable={data.capabilities.synthesisAvailable}
+            label={t("settings.synthesisLabel")}
+            name="synthesisEnabled"
+            pausedByMaster={!data.settings.useMemoryFacts}
+            value={data.settings.synthesisEnabled}
+            onChange={(value) => updateGate("synthesisEnabled", value)}
+          />
+          <GateRow
+            busy={busy}
+            controlAvailable={data.capabilities.managementAvailable}
+            description={t("settings.decayDescription")}
+            featureAvailable={data.capabilities.decayAvailable}
+            label={t("settings.decayLabel")}
+            name="decayEnabled"
+            pausedByMaster={!data.settings.useMemoryFacts}
+            value={data.settings.decayEnabled}
+            onChange={(value) => updateGate("decayEnabled", value)}
+          />
         </div>
       </section>
 

@@ -30,6 +30,7 @@ describe("automatic-learning source admission", () => {
   it("rechecks generated candidate text immediately before persistence", () => {
     const candidate = {
       displayText: "The user prefers concise replies.",
+      entities: [],
       evidence: [{
         endOffset: 48,
         messageId: "user",
@@ -49,6 +50,7 @@ describe("automatic-learning source admission", () => {
   it("recursively rejects a secret present only in model-derived structured values", () => {
     const candidate = {
       displayText: "The user prefers concise replies.",
+      entities: [],
       evidence: [{
         endOffset: 25,
         messageId: "user",

@@ -31,6 +31,7 @@ function jobClaim(input: Partial<MemoryJobClaim> = {}): MemoryJobClaim {
     sourceMessageId: null,
     sourceRevision: null,
     stage: null,
+    targetFactVersionId: null,
     userId: "user-1",
     ...input
   };
@@ -420,8 +421,8 @@ describe("Memory coordinator", () => {
   it.each([
     ["EXTRACT_FACTS", 1, "retry"],
     ["EXTRACT_FACTS", 2, "terminal"],
-    ["CONSOLIDATE_CANDIDATE", 1, "retry"],
-    ["CONSOLIDATE_CANDIDATE", 2, "terminal"]
+    ["RESOLVE_FACT_RELATIONS", 1, "retry"],
+    ["RESOLVE_FACT_RELATIONS", 2, "terminal"]
   ] as const)(
     "uses the two-attempt provider-learning ceiling for %s attempt %s",
     async (kind, attemptCount, expected) => {

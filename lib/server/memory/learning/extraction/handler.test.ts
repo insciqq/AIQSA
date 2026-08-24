@@ -9,6 +9,7 @@ import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionInputHash,
   memoryFactExtractionJobFingerprint,
+  type MemoryFactExtractionPlan,
   type MemoryFactExtractionInput,
   type MemoryFactSourceIdentity
 } from "./contract";
@@ -30,9 +31,9 @@ const source: MemoryFactSourceIdentity = {
   userId: "user-1"
 };
 
-function extractionInput(): MemoryFactExtractionInput {
-  const text = "I prefer tea.";
+function extractionInput(text = "I prefer tea."): MemoryFactExtractionInput {
   const withoutHash: Omit<MemoryFactExtractionInput, "inputHash"> = {
+    contextRefs: [],
     folderId: null,
     messages: [{
       contentHash: memorySha256(text),
@@ -72,6 +73,7 @@ function claim(): MemoryJobClaim {
     sourceMessageId: source.sourceMessageId,
     sourceRevision: source.sourceRevision,
     stage: null,
+    targetFactVersionId: null,
     userId: source.userId
   };
 }
@@ -84,17 +86,47 @@ function providerOutput(
     providerResponseId: "response-1",
     toolCalls: [{
       arguments: {
-        candidates: [{
-          category: "preferences",
+        observations: [{
           confidence_band: "HIGH",
           correction: false,
+          dependency_refs: [],
+          entities: [],
           future_useful: true,
+          identity: {
+            dimension_key: "topic:tea",
+            mode: "SLOT",
+            predicate_key: "preference",
+            subject: {
+              canonical_label: null,
+              entity_type: "PERSON_SELF",
+              qualifiers: { brand: null, model: null }
+            }
+          },
+          memory_type: "PREFERENCE",
           quote,
           reason_code: "durable_preference",
-          response_preference: "tea",
           sensitivity: "NORMAL",
           statement: displayText,
-          temporary: false
+          temporal: {
+            expected_at: null,
+            expires_at: null,
+            occurred_at: null,
+            raw_expression: null,
+            valid_from: null,
+            valid_to: null
+          },
+          temporary: false,
+          value: {
+            frequency: null,
+            kind: null,
+            limit: null,
+            place: null,
+            role: null,
+            schedule: null,
+            state: null,
+            strength: "normal",
+            value: "tea"
+          }
         }]
       },
       id: "call-1",
@@ -130,7 +162,12 @@ function dependencies(
   }));
   const settle = vi.fn(async () => ({ state: "SUCCEEDED" }));
   const run = vi.fn(async () => providerOutput());
-  const apply = vi.fn(async () => "APPLIED" as const);
+  const apply = vi.fn(async (
+    _tx: unknown,
+    _settings: unknown,
+    _claim: unknown,
+    plan: MemoryFactExtractionPlan
+  ) => plan.candidates.length > 0 ? "APPLIED" as const : "EMPTY" as const);
   const base = {
     execution: {
       admission: { bind, start },
@@ -147,7 +184,7 @@ function dependencies(
     probeAuthority: vi.fn(async () => undefined),
     provider: { run },
     repository: {
-      applied: vi.fn(async () => false),
+      applied: vi.fn(async () => null),
       apply,
       bindings: vi.fn(async () => []),
       preflight: vi.fn(async () => ({ status: "READY" as const })),
@@ -245,6 +282,49 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.apply).toHaveBeenCalledOnce();
   });
 
+  it("reports an accepted proposal as empty when conservative apply writes nothing", async () => {
+    const fixture = dependencies();
+    fixture.apply.mockResolvedValueOnce("EMPTY");
+    const result = await createMemoryFactExtractionHandler(fixture.base)
+      .execute(claim(), context());
+    expect(result.stage).toBe("fact_observations_empty");
+    expect(fixture.settle).toHaveBeenCalledWith(
+      source.userId,
+      "binding-1",
+      expect.objectContaining({ state: "SUCCEEDED" })
+    );
+  });
+
+  it("terminalizes a structurally invalid provider packet without applying content", async () => {
+    const valid = providerOutput();
+    const fixture = dependencies({
+      provider: {
+        run: vi.fn(async () => ({
+          ...valid,
+          toolCalls: [{
+            arguments: { observations: "invalid" },
+            id: "invalid-call",
+            name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+          }]
+        }))
+      }
+    });
+
+    await expect(createMemoryFactExtractionHandler(fixture.base)
+      .execute(claim(), context())).resolves.toMatchObject({
+      stage: "fact_output_rejected"
+    });
+    expect(fixture.settle).toHaveBeenCalledWith(
+      source.userId,
+      "binding-1",
+      expect.objectContaining({
+        errorCode: "memory_fact_output_invalid",
+        state: "FAILED"
+      })
+    );
+    expect(fixture.apply).not.toHaveBeenCalled();
+  });
+
   it("never replays a recovered RUNNING provider call", async () => {
     const fixture = dependencies();
     const handler = createMemoryFactExtractionHandler({
@@ -269,6 +349,49 @@ describe("Memory fact extraction handler", () => {
       "old-binding",
       expect.objectContaining({ state: "OUTCOME_UNKNOWN" })
     );
+    expect(fixture.run).not.toHaveBeenCalled();
+  });
+
+  it("recovers an authorized zero-write apply as an empty extraction", async () => {
+    const fixture = dependencies();
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        applied: vi.fn(async () => "EMPTY" as const),
+        bindings: vi.fn(async () => [{
+          acceptedOutputHash: "d".repeat(64),
+          id: "old-binding",
+          inputHash: fixture.input.inputHash,
+          ordinal: 0,
+          secretFreeExecutionSnapshot: {},
+          state: "SUCCEEDED" as const
+        }])
+      }
+    });
+    await expect(handler.execute(claim(), context())).resolves.toMatchObject({
+      stage: "fact_observations_empty"
+    });
+    expect(fixture.run).not.toHaveBeenCalled();
+  });
+
+  it("fences a recognizable secret before binding or provider egress", async () => {
+    const fixture = dependencies();
+    const secretInput = extractionInput(
+      "My API key is sk-abcdefghijklmnopqrstuvwxyz123456."
+    );
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        prepare: vi.fn(async () => ({ input: secretInput }))
+      }
+    });
+
+    await expect(handler.execute(claim(), context())).resolves.toMatchObject({
+      stage: "fact_secret_source_fenced"
+    });
+    expect(fixture.bind).not.toHaveBeenCalled();
     expect(fixture.run).not.toHaveBeenCalled();
   });
 

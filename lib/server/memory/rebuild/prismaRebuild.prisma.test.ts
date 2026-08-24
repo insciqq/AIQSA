@@ -9,6 +9,7 @@ import type {
   MemoryDeletionClaim,
   MemoryJobClaim
 } from "../coordinator/types";
+import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
 import {
@@ -46,7 +47,10 @@ import {
 } from "../persistence/authorizations";
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import {
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
@@ -651,6 +655,7 @@ async function claimRebuildJob(jobId: string, now: Date): Promise<MemoryJobClaim
     sourceMessageId: claimed.sourceMessageId,
     sourceRevision: claimed.sourceRevision,
     stage: claimed.stage,
+    targetFactVersionId: claimed.targetFactVersionId,
     userId: claimed.userId
   };
 }
@@ -857,39 +862,44 @@ async function createHistoryDerivative(input: Readonly<{
 
   const chunkId = randomUUID();
   const contentHash = memorySha256(text);
-  await prisma.memoryRecallChunk.create({
-    data: {
-      branchGeneration: 0,
-      chatId: chat.id,
-      chunkOrdinal: 0,
-      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
-      contentHash,
-      createdAt: assistantAt,
-      id: chunkId,
-      languageCode: "en",
-      normalizedSafeSearchText: normalizeMemorySearchText(text),
-      occurredFrom: input.createdAt,
-      occurredTo: assistantAt,
-      redactionReasonCodes: [],
-      redactionState: "NOT_NEEDED",
-      safeProjectedText: text,
-      safetyClass: "NORMAL",
-      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-      sourceRevisionAtCreation: input.sourceRevision,
-      userId: input.userId
-    }
-  });
-  await prisma.memoryRecallChunkMessage.create({
-    data: {
-      chatId: chat.id,
-      chunkId,
-      endOffset: text.length,
-      messageId: userMessage.id,
-      ordinal: 0,
-      role: "user",
-      startOffset: 0,
-      userId: input.userId
-    }
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryRecallChunk.create({
+      data: {
+        branchGeneration: 0,
+        chatId: chat.id,
+        chunkOrdinal: 0,
+        chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+        contentHash,
+        createdAt: assistantAt,
+        id: chunkId,
+        languageCode: "en",
+        normalizedSafeSearchText: normalizeMemorySearchText(text),
+        occurredFrom: input.createdAt,
+        occurredTo: assistantAt,
+        redactionReasonCodes: [],
+        redactionState: "NOT_NEEDED",
+        safeProjectedText: text,
+        safetyClass: "NORMAL",
+        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+        sourceRevisionAtCreation: input.sourceRevision,
+        userId: input.userId
+      }
+    });
+    await tx.memoryRecallChunkMessage.create({
+      data: {
+        chatId: chat.id,
+        chunkId,
+        endOffset: text.length,
+        messageId: userMessage.id,
+        ordinal: 0,
+        role: "user",
+        safeTextHash: memorySha256(text),
+        sourceMessageContentHash: memorySha256(userMessage.content),
+        sourceMessageUpdatedAt: userMessage.updatedAt,
+        startOffset: 0,
+        userId: input.userId
+      }
+    });
   });
   await prisma.memorySearchEntry.create({
     data: {
@@ -1381,6 +1391,120 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
+  it("cuts over content-free identities idempotently and rolls back an exact generation", async () => {
+    const userId = await createOwner("cutover-rollback");
+    const { explicit } = services();
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    const cutover = createPrismaMemoryRetrievalCutoverRepository(prisma);
+    const statement = "I prefer immutable, content-free cutover evidence.";
+    try {
+      const initialSettings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const now = new Date();
+      const legacyGeneration = await prisma.$transaction(async (tx) => {
+        const generation = await tx.memoryIndexGeneration.create({
+          data: {
+            activatedAt: now,
+            chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+            generation: 0,
+            indexMode: "LEXICAL_ONLY",
+            indexedThroughMemoryRevision: initialSettings.memoryRevision,
+            languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+            normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+            readyAt: now,
+            retrievalPipelineVersion: "memory-personal-retrieval-v3-lexical",
+            state: "ACTIVE",
+            targetMemoryRevision: initialSettings.memoryRevision,
+            userId
+          }
+        });
+        await tx.userMemorySettings.update({
+          data: { activeIndexGenerationId: generation.id },
+          where: { userId }
+        });
+        return generation;
+      });
+      await saveExplicit(explicit, userId, statement, "cutover-explicit");
+
+      const before = await cutover.inventory(userId);
+      expect(before).toMatchObject({
+        activeGenerationId: legacyGeneration.id,
+        activePipelineVersion: "memory-personal-retrieval-v3-lexical",
+        compatibleExplicitFactVersions: 1,
+        eligibleItems: 1,
+        ready: false
+      });
+      expect(before.eligibleIdentityFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+      expect(JSON.stringify(before)).not.toContain(statement);
+
+      const admitted = await cutover.ensure(userId);
+      expect(admitted).toMatchObject({ kind: "queued", jobId: expect.any(String) });
+      if (!admitted.jobId) throw new Error("cutover_job_missing");
+      await expect(cutover.ensure(userId)).resolves.toMatchObject({
+        jobId: admitted.jobId,
+        kind: "in_progress"
+      });
+      await processRebuildJob(admitted.jobId, rebuild);
+
+      const current = await cutover.inventory(userId);
+      expect(current).toMatchObject({
+        activePipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+        compatibleExplicitFactVersions: 1,
+        eligibleItems: 1,
+        ready: true
+      });
+      expect(current.activeGenerationId).not.toBe(legacyGeneration.id);
+      await expect(cutover.ensure(userId)).resolves.toMatchObject({
+        generationId: current.activeGenerationId,
+        jobId: null,
+        kind: "already_current"
+      });
+
+      const firstCurrentGenerationId = current.activeGenerationId;
+      if (!firstCurrentGenerationId) throw new Error("cutover_generation_missing");
+      const beforeSecond = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const second = await rebuild.admit(userId, {
+        expectedMemoryRevision: beforeSecond.memoryRevision,
+        expectedSettingsRevision: beforeSecond.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: "cutover-second-generation" }
+      });
+      if (second.kind !== "ok") throw new Error(second.kind);
+      await processRebuildJob(second.jobId, rebuild);
+
+      const beforeRollback = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      expect(beforeRollback.activeIndexGenerationId).not.toBe(firstCurrentGenerationId);
+      await expect(cutover.rollback(userId, firstCurrentGenerationId, {
+        expectedMemoryRevision: beforeRollback.memoryRevision,
+        expectedSettingsRevision: beforeRollback.settingsRevision
+      })).resolves.toEqual({
+        activeGenerationId: firstCurrentGenerationId,
+        kind: "ok"
+      });
+      const afterRollback = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      expect(afterRollback).toMatchObject({
+        activeIndexGenerationId: firstCurrentGenerationId,
+        memoryGeneration: beforeRollback.memoryGeneration + 1,
+        memoryRevision: beforeRollback.memoryRevision + 1
+      });
+      await expect(cutover.inventory(userId)).resolves.toMatchObject({
+        activeGenerationId: firstCurrentGenerationId,
+        eligibleItems: 1,
+        ready: true
+      });
+      expect(JSON.stringify({ admitted, before, current })).not.toContain(statement);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("keeps a legacy-scoped fact out of a rebuilt search generation", async () => {
     const userId = await createOwner("legacy-scope");
     const { explicit } = services();
@@ -1428,6 +1552,63 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
 
       expect(factVersionIds).toContain(retained.memory.currentVersionId);
       expect(factVersionIds).not.toContain(legacy.versionId);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("does not resurrect an elapsed active fact into a rebuilt generation", async () => {
+    const userId = await createOwner("expired-fact");
+    const { explicit } = services();
+    const repository = createPrismaMemoryRebuildRepository(prisma);
+    try {
+      const retained = await saveExplicit(
+        explicit,
+        userId,
+        "I prefer retained rebuild facts.",
+        "expired-rebuild-retained"
+      );
+      const expiring = await saveExplicit(
+        explicit,
+        userId,
+        "I prefer an expiring rebuild fact.",
+        "expired-rebuild-target"
+      );
+      const expiresAt = new Date(Date.now() + 1_000);
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFactVersion.update({
+          data: { expiresAt },
+          where: { id: expiring.memory.currentVersionId! }
+        });
+        const remaining = expiresAt.getTime() - Date.now();
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining + 50));
+        }
+      });
+
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await repository.admit(userId, {
+        expectedMemoryRevision: settings.memoryRevision,
+        expectedSettingsRevision: settings.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: "expired-fact-rebuild" }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      const job = await prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      });
+      const identity = parseMemoryRebuildJobFingerprint(job.idempotencyFingerprint);
+      if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+      await processRebuildJob(admitted.jobId, repository);
+
+      const factVersionIds = (await prisma.memorySearchEntry.findMany({
+        select: { factVersionId: true },
+        where: { indexGenerationId: identity.generationId, userId }
+      })).flatMap(({ factVersionId }) => factVersionId ? [factVersionId] : []);
+      expect(factVersionIds).toContain(retained.memory.currentVersionId);
+      expect(factVersionIds).not.toContain(expiring.memory.currentVersionId);
     } finally {
       await cleanupOwner(userId);
     }
@@ -1583,11 +1764,17 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         .toBe(true);
       await expect(prisma.memorySearchEntry.count({
         where: { indexGenerationId: source.id, userId }
-      })).resolves.toBe(0);
+      })).resolves.toBe(3);
       await expect(repository.status(userId, admitted.jobId)).resolves.toMatchObject({
         completedUnits: 3,
         state: "SUCCEEDED",
         totalUnits: 3
+      });
+      await expect(repository.inventory(userId)).resolves.toMatchObject({
+        activeGenerationId: identity.generationId,
+        activeIndexMode: "HYBRID",
+        eligibleItems: 3,
+        ready: true
       });
     } finally {
       await cleanupOwner(userId);

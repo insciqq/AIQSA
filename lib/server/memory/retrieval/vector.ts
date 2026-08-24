@@ -9,14 +9,14 @@ import { prisma } from "../../prisma";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
-  "memory-vector-retrieval-v1";
+  "memory-personal-retrieval-v4-vector";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v5-unified-storable-safety";
+  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v7-bounded-strategy-corpus";
 export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
   1024: 0.55,
   1536: 0.55
@@ -72,6 +72,8 @@ export type MemoryVectorEligibility = Readonly<{
   >[];
   assistantId: string | null;
   chatId: string | null;
+  factMode: "CURRENT" | "HISTORICAL";
+  factTemporalAsOf: Date | null;
   folderId: string | null;
   occurredFrom: Date | null;
   occurredTo: Date | null;
@@ -100,6 +102,11 @@ export type MemoryVectorHit = Readonly<{
 
 export type MemoryVectorLaneEvidence = Readonly<{
   candidateCount: number;
+  /**
+   * Bounded indexed-corpus upper bound used only to select exact versus HNSW;
+   * threshold + 1 means "more". Candidate scan and rejoin enforce the full
+   * current source/safety/lifecycle authority.
+   */
   eligibleCount: number;
   exactFallbackUsed: boolean;
   itemType: CurrentMemorySearchItemType;
@@ -132,6 +139,7 @@ export type MemoryVectorLaneExecutor = Readonly<{
     strategy: MemoryVectorStrategy,
     limit: number
   ): Promise<readonly MemoryVectorCandidate[]>;
+  /** Returns the bounded indexed-corpus upper bound used for strategy choice. */
   eligibleCount(
     input: MemoryVectorSearchInput,
     itemType: CurrentMemorySearchItemType
@@ -268,6 +276,10 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
     !boundedToken(input.eligibility.sourceFolderId) ||
     !validDate(input.eligibility.occurredFrom) ||
     !validDate(input.eligibility.occurredTo) ||
+    !validDate(input.eligibility.factTemporalAsOf) ||
+    !["CURRENT", "HISTORICAL"].includes(input.eligibility.factMode) ||
+    Boolean(input.eligibility.factTemporalAsOf &&
+      (input.eligibility.occurredFrom || input.eligibility.occurredTo)) ||
     Boolean(
       input.eligibility.occurredFrom && input.eligibility.occurredTo &&
       input.eligibility.occurredFrom > input.eligibility.occurredTo
@@ -425,6 +437,38 @@ function chunkConversationFeedbackPredicate(input: MemoryVectorSearchInput): Pri
 
 function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   const allowed = valuesSql(input.eligibility.allowedFactSensitivity);
+  const temporalStart = Prisma.sql`COALESCE(
+    version."occurredAt", version."validFrom", version."observedAt", version."systemFrom"
+  )`;
+  const temporalEnd = Prisma.sql`COALESCE(version."validTo", version."systemTo")`;
+  const lifecycle = input.eligibility.factMode === "HISTORICAL"
+    ? Prisma.sql`(
+        (version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."systemTo" IS NULL
+          AND fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND fact."currentVersionId" = version."id")
+        OR
+        (version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
+          AND version."systemTo" IS NOT NULL
+          AND (fact."state" = 'ACTIVE'::"MemoryFactState"
+            OR (fact."state" = 'RETRACTED'::"MemoryFactState"
+              AND fact."movedToFactId" IS NOT NULL)))
+      )`
+    : Prisma.sql`version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        AND version."systemTo" IS NULL
+        AND fact."state" = 'ACTIVE'::"MemoryFactState"
+        AND fact."currentVersionId" = version."id"`;
+  const from = input.eligibility.occurredFrom
+    ? Prisma.sql`COALESCE(${temporalEnd}, ${temporalStart}) >=
+        ${input.eligibility.occurredFrom}`
+    : Prisma.sql`TRUE`;
+  const to = input.eligibility.occurredTo
+    ? Prisma.sql`${temporalStart} < ${input.eligibility.occurredTo}`
+    : Prisma.sql`TRUE`;
+  const asOf = input.eligibility.factTemporalAsOf
+    ? Prisma.sql`${temporalStart} <= ${input.eligibility.factTemporalAsOf}
+        AND (${temporalEnd} IS NULL OR ${temporalEnd} > ${input.eligibility.factTemporalAsOf})`
+    : Prisma.sql`TRUE`;
   return {
     itemId: Prisma.sql`entry."factVersionId"`,
     joins: commonJoins(),
@@ -445,14 +489,13 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           AND scope."id" = fact."scopeId"
         WHERE fact_settings."userId" = entry."userId"
           AND fact_settings."useMemoryFacts" = TRUE
-          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-          AND version."systemTo" IS NULL
+          AND ${lifecycle}
+          AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
           AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
           AND version."contentPurgedAt" IS NULL
           AND version."sensitivityClass"::text IN (${allowed})
-          AND fact."state" = 'ACTIVE'::"MemoryFactState"
-          AND fact."currentVersionId" = version."id"
           AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+          AND ${from} AND ${to} AND ${asOf}
           AND ${factConversationFeedbackPredicate(input)}
           AND NOT EXISTS (
             SELECT 1
@@ -464,8 +507,9 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
                 OR fact_suppression."expiresAt" > CURRENT_TIMESTAMP
               )
           )
-          AND ${memoryPersonalFactEvidencePredicate(
-            Prisma.sql`entry."userId"`
+          AND ${memoryReusableFactAuthorityPredicate(
+            Prisma.sql`entry."userId"`,
+            { settings: Prisma.sql`fact_settings` }
           )}
           AND ${memoryCanonicalGlobalScopePredicate()}
       )`
@@ -493,7 +537,10 @@ function chunkEligibilityPredicates(
     Prisma.sql`checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"`,
     Prisma.sql`checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"`,
     Prisma.sql`checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}`,
-    memoryHistoryChunkSourceAuthorityPredicate(),
+    memoryHistoryChunkSourceAuthorityPredicate({
+      chat: "source_chat",
+      checkpoint: "checkpoint"
+    }),
     chunkConversationFeedbackPredicate(input),
     Prisma.sql`NOT EXISTS (
       SELECT 1 FROM "MemorySuppression" AS suppression
@@ -573,30 +620,6 @@ function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   };
 }
 
-function chunkCountEligibility(input: MemoryVectorSearchInput): EligibilitySql {
-  return {
-    itemId: Prisma.sql`entry."recallChunkId"`,
-    joins: Prisma.sql`
-      INNER JOIN "UserMemorySettings" AS history_settings
-        ON history_settings."userId" = entry."userId"
-      INNER JOIN "MemoryRecallChunk" AS chunk
-        ON chunk."userId" = entry."userId"
-        AND chunk."id" = entry."recallChunkId"
-      INNER JOIN "Chat" AS source_chat
-        ON source_chat."userId" = chunk."userId"
-        AND source_chat."id" = chunk."chatId"
-      INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
-        ON checkpoint."userId" = chunk."userId"
-        AND checkpoint."chatId" = chunk."chatId"
-    `,
-    predicates: [
-      ...commonPredicates(input),
-      Prisma.sql`entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"`,
-      ...chunkEligibilityPredicates(input)
-    ]
-  };
-}
-
 function eligibilitySql(
   input: MemoryVectorSearchInput,
   itemType: CurrentMemorySearchItemType
@@ -608,14 +631,24 @@ function eligibilitySql(
 }
 
 export function memoryVectorEligibleCountSql(input: MemoryVectorSqlInput): Prisma.Sql {
-  const eligible = input.itemType === "RECALL_CHUNK"
-    ? chunkCountEligibility(input.input)
-    : eligibilitySql(input.input, input.itemType);
+  // Strategy selection needs a conservative upper bound, not a second full
+  // authoritative scan. Counting the current generation's READY index rows
+  // can only choose HNSW earlier when stale rows exist; candidate scan and the
+  // authoritative rejoin still apply every source/safety/lifecycle fence. A
+  // full eligible count here doubled the hot-path work for HNSW requests.
   return Prisma.sql`
     SELECT count(*)::integer AS "count"
-    FROM "MemorySearchEntry" AS entry
-    ${eligible.joins}
-    WHERE ${Prisma.join(eligible.predicates, " AND ")}
+    FROM (
+      SELECT 1
+      FROM "MemorySearchEntry" AS entry
+      WHERE entry."userId" = ${input.input.userId}
+        AND entry."indexGenerationId" = ${input.input.profile.generationId}
+        AND entry."itemType" = ${input.itemType}::"MemorySearchItemType"
+        AND entry."embeddingState" = 'READY'::"MemoryEmbeddingState"
+        AND entry."embedding" IS NOT NULL
+        AND entry."embeddingDimension" = ${input.input.profile.dimension}
+      LIMIT ${MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1}
+    ) AS bounded_eligible
   `;
 }
 

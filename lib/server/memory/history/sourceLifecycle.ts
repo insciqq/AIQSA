@@ -69,12 +69,62 @@ function retainsVisibleHistoryWhilePaused(
   );
 }
 
-async function invalidateVisibleHistory(
+async function invalidateAffectedHistory(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent,
   now: Date
-): Promise<number> {
-  const chunks = await tx.memoryRecallChunk.findMany({
+): Promise<Readonly<{ chunks: number; digest: number }>> {
+  const invalidateAll = event.snapshot.memoryMode !== "NORMAL" ||
+    event.snapshot.activeLeafMessageId === null ||
+    event.previous.folderId !== event.snapshot.folderId ||
+    event.mutations.includes("SOURCE_HARD_DELETE") ||
+    event.mutations.includes("SOURCE_EXCLUDE");
+  const chunks = invalidateAll
+    ? await tx.memoryRecallChunk.findMany({
+        select: { id: true },
+        where: {
+          chatId: event.snapshot.id,
+          state: { in: ["ACTIVE", "SUPPRESSED"] },
+          userId: event.snapshot.userId
+        }
+      })
+    : await tx.$queryRaw<Array<{ id: string }>>`
+        WITH RECURSIVE active_path AS (
+          SELECT message."id", message."parentMessageId"
+          FROM "Message" AS message
+          WHERE message."chatId" = ${event.snapshot.id}
+            AND message."id" = ${event.snapshot.activeLeafMessageId}
+          UNION ALL
+          SELECT parent."id", parent."parentMessageId"
+          FROM active_path AS child
+          INNER JOIN "Message" AS parent
+            ON parent."chatId" = ${event.snapshot.id}
+            AND parent."id" = child."parentMessageId"
+        )
+        SELECT DISTINCT chunk."id"
+        FROM "MemoryRecallChunk" AS chunk
+        INNER JOIN "MemoryRecallChunkMessage" AS source_map
+          ON source_map."userId" = chunk."userId"
+          AND source_map."chatId" = chunk."chatId"
+          AND source_map."chunkId" = chunk."id"
+        LEFT JOIN "Message" AS source_message
+          ON source_message."chatId" = source_map."chatId"
+          AND source_message."id" = source_map."messageId"
+        LEFT JOIN active_path ON active_path."id" = source_map."messageId"
+        WHERE chunk."userId" = ${event.snapshot.userId}
+          AND chunk."chatId" = ${event.snapshot.id}
+          AND chunk."state" IN (
+            'ACTIVE'::"MemoryHistoryItemState",
+            'SUPPRESSED'::"MemoryHistoryItemState"
+          )
+          AND (
+            active_path."id" IS NULL
+            OR source_message."id" IS NULL
+            OR source_message."updatedAt" <> source_map."sourceMessageUpdatedAt"
+          )
+        ORDER BY chunk."id"
+      `;
+  const activeDigest = await tx.chatMemoryDigest.findFirst({
     select: { id: true },
     where: {
       chatId: event.snapshot.id,
@@ -82,7 +132,15 @@ async function invalidateVisibleHistory(
       userId: event.snapshot.userId
     }
   });
-  if (chunks.length === 0) return 0;
+  if (activeDigest) {
+    await tx.chatMemoryDigest.update({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: { id: activeDigest.id }
+    });
+  }
+  if (chunks.length === 0) {
+    return { chunks: 0, digest: Number(activeDigest !== null) };
+  }
 
   await tx.memorySearchEntry.deleteMany({
     where: {
@@ -94,11 +152,11 @@ async function invalidateVisibleHistory(
     data: { invalidatedAt: now, state: "INVALIDATED" },
     where: {
       id: { in: chunks.map((chunk) => chunk.id) },
-      state: "ACTIVE",
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
       userId: event.snapshot.userId
     }
   });
-  return chunks.length;
+  return { chunks: chunks.length, digest: Number(activeDigest !== null) };
 }
 
 async function settleVisibleMutationCounter(
@@ -178,8 +236,6 @@ async function updateExistingCheckpoint(
       lastErrorCode: event.snapshot.memoryMode === "NORMAL"
         ? null
         : "memory_source_ineligible",
-      lastIndexedMessageId: null,
-      lastSucceededAt: null,
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
@@ -210,8 +266,6 @@ async function ensurePendingCheckpoint(
       activeLeafMessageId,
       branchGeneration: event.snapshot.memoryBranchGeneration,
       lastErrorCode: null,
-      lastIndexedMessageId: null,
-      lastSucceededAt: null,
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
@@ -247,10 +301,12 @@ export async function applyMemoryHistorySourceMutation(
     // append follows the ordinary invalidation/reindex path below.
     if (!retainsVisibleHistoryWhilePaused(settings, event)) {
       const now = new Date();
-      const invalidated = await invalidateVisibleHistory(tx, event, now);
-      if (invalidated > 0) {
+      const invalidated = await invalidateAffectedHistory(tx, event, now);
+      if (invalidated.chunks > 0 || invalidated.digest > 0) {
         await settleVisibleMutationCounter(tx, settings, event);
-        if (!permanentDelete) {
+        if (!permanentDelete && (
+          invalidated.chunks > 0 || event.snapshot.memoryMode !== "NORMAL"
+        )) {
           const deletion = await enqueueMemoryDeletion(tx, settings, {
             operation: "SOURCE_PURGE",
             targetId: event.snapshot.id,

@@ -2,53 +2,51 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { MemoryJobClaim } from "../coordinator/types";
 import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint
-} from "../embedding/contract";
-import type {
-  MemoryExtractedCandidate,
-  MemoryFactExtractionInput,
-  MemoryFactExtractionPlan
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_TEMPORAL_RESOLVER_VERSION,
+  memoryFactEvidenceFingerprint,
+  memoryFactNormalizedValue,
+  memoryFactObservationFingerprint,
+  type MemoryExtractedCandidate,
+  type MemoryFactExtractionInput,
+  type MemoryFactExtractionPlan
 } from "../learning/extraction/contract";
-import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION } from "../learning/extraction/contract";
-import { enqueueMemoryJob } from "../persistence/jobs";
-import {
-  memorySha256,
-  normalizeMemorySearchText
-} from "../persistence/lexical";
+import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
 import {
   advanceMemoryMutation,
-  requireActiveMemoryIndex,
   type LockedMemorySettings,
-  type MemoryActiveIndex,
   type MemoryTransaction
 } from "../persistence/transaction";
+import {
+  memoryFactDependenciesAreValid,
+  persistMemoryFactDependencies
+} from "../learning/dependencies/repository";
+import { persistMemoryCandidateEntities } from "../learning/entities/repository";
 
-type ActiveFact = Readonly<{
+type LockedFact = Readonly<{
   currentVersionId: string | null;
   id: string;
   lastConfirmedAt: Date | null;
+  movedToFactId: string | null;
   state: string;
 }>;
 
-type ActiveVersion = Readonly<{
+type StoredVersion = Readonly<{
   displayText: string | null;
+  expectedAt: Date | null;
+  expiresAt: Date | null;
   id: string;
+  occurredAt: Date | null;
   sourceMode: "AUTOMATIC" | "EXPLICIT";
   state: string;
   structuredValue: Prisma.JsonValue | null;
+  validFrom: Date | null;
+  validTo: Date | null;
 }>;
 
-type ExtractionSafety = Readonly<{
-  safetyClassificationReasonCode: "automatic_extraction";
-  safetyClassificationState: "CLASSIFIED";
-  safetyClassifiedAt: Date;
-  safetyClassifierExecutionId: string;
-  safetyClassifierModelId: string;
-  safetyClassifierPolicyVersion: string;
-  safetyClassifierProviderId: string;
-}>;
+type ExactEvidence = ReturnType<typeof exactEvidence>[number];
 
 export type MemoryVNextCommitResult = Readonly<{
   attachedEvidence: number;
@@ -65,9 +63,7 @@ function exactEvidence(
     eligible[0].role === "user"
     ? eligible[0]
     : null;
-  if (!message) {
-    throw new Error("memory_vnext_source_message_invalid");
-  }
+  if (!message) throw new Error("memory_vnext_source_message_invalid");
   return candidate.evidence.map((evidence) => {
     const quote = message.text.slice(evidence.startOffset, evidence.endOffset);
     if (
@@ -84,6 +80,8 @@ function exactEvidence(
       branchGeneration: input.source.branchGeneration,
       chatId: input.source.chatId,
       endOffset: evidence.endOffset,
+      evidenceFingerprint: memoryFactEvidenceFingerprint(input, candidate, evidence),
+      ingestionFingerprint: memoryFactObservationFingerprint(input, candidate, evidence),
       messageId: message.id,
       observedAt: new Date(message.createdAt),
       quote,
@@ -93,68 +91,24 @@ function exactEvidence(
   });
 }
 
-async function extractionSafety(
-  tx: MemoryTransaction,
-  userId: string,
-  bindingId: string
-): Promise<ExtractionSafety> {
-  const binding = await tx.memoryExecutionBinding.findFirst({
-    select: {
-      completedAt: true,
-      policyVersion: true,
-      providerId: true,
-      providerModelId: true
-    },
-    where: {
-      id: bindingId,
-      logicalRole: "MEMORY_FACT_EXTRACT",
-      ownerType: "JOB",
-      state: "SUCCEEDED",
-      userId
-    }
-  });
-  if (!binding?.completedAt || !binding.providerId || !binding.policyVersion) {
-    throw new Error("memory_vnext_extraction_provenance_invalid");
-  }
-  const usage = await tx.usageEvent.findUnique({
-    select: { provider: true, providerModelId: true },
-    where: { memoryExecutionBindingId: bindingId }
-  });
-  const providerModelId = binding.providerModelId ?? usage?.providerModelId;
-  if (!usage || usage.provider !== binding.providerId || !providerModelId ||
-    (binding.providerModelId !== null &&
-      usage.providerModelId !== binding.providerModelId)) {
-    throw new Error("memory_vnext_extraction_provenance_invalid");
-  }
-  return {
-    safetyClassificationReasonCode: "automatic_extraction",
-    safetyClassificationState: "CLASSIFIED",
-    safetyClassifiedAt: binding.completedAt,
-    safetyClassifierExecutionId: bindingId,
-    safetyClassifierModelId: providerModelId,
-    safetyClassifierPolicyVersion: binding.policyVersion,
-    safetyClassifierProviderId: binding.providerId
-  };
-}
-
 function eventId(
   claim: MemoryJobClaim,
   candidate: MemoryExtractedCandidate,
-  operation: "PROMOTE" | "REINFORCE"
+  operation: "AUTO_PROPOSE" | "PROMOTE" | "REINFORCE"
 ): string {
   return memorySha256({
     candidateId: candidate.id,
     domain: "aiqsa.memory.vnext.event",
     jobId: claim.id,
     operation,
-    version: 1
+    version: 2
   });
 }
 
-function versionId(candidate: MemoryExtractedCandidate): string {
+function versionId(ingestionFingerprint: string): string {
   return memorySha256({
-    candidateId: candidate.id,
     domain: "aiqsa.memory.vnext.version",
+    ingestionFingerprint,
     version: 1
   });
 }
@@ -166,7 +120,7 @@ async function createEvent(
   factId: string,
   factVersionId: string,
   bindingId: string,
-  operation: "PROMOTE" | "REINFORCE"
+  operation: "AUTO_PROPOSE" | "PROMOTE" | "REINFORCE"
 ): Promise<string> {
   const id = eventId(claim, candidate, operation);
   await tx.memoryEvent.create({
@@ -177,9 +131,11 @@ async function createEvent(
       id,
       metadata: {
         extractionExecutionId: bindingId,
+        identityKind: candidate.identityKind,
+        identityVersion: candidate.identityVersion,
         ingestionJobId: claim.id,
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-        schemaVersion: "memory-vnext-observation-event-v1"
+        schemaVersion: "memory-vnext-observation-event-v2"
       },
       operation,
       sourceChatId: claim.chatId,
@@ -190,89 +146,45 @@ async function createEvent(
   return id;
 }
 
-function searchEntryData(
-  index: MemoryActiveIndex,
-  userId: string,
-  factVersionId: string,
-  candidate: MemoryExtractedCandidate,
-  input: MemoryFactExtractionInput
-) {
-  const normalizedSearchText = normalizeMemorySearchText(candidate.displayText);
-  return {
-    embeddingState: index.indexMode === "HYBRID"
-      ? "PENDING" as const
-      : "NOT_APPLICABLE" as const,
-    factVersionId,
-    indexGenerationId: index.id,
-    itemType: "FACT_VERSION" as const,
-    languageCode: candidate.languageCode,
-    normalizedSearchText,
-    safeContentHash: memorySha256({
-      displayText: candidate.displayText,
-      structuredValue: candidate.proposedValue
-    }),
-    safetyIdentitySnapshot: memorySha256({
-      safetyClass: "NORMAL",
-      secretTaintedSourceWindow: false
-    }),
-    sourceIdentitySnapshot: memorySha256({
-      messageId: input.source.sourceMessageId,
-      sourceProjectionHash: input.sourceProjectionHash,
-      sourceProjectionVersion: input.sourceProjectionVersion
-    }),
-    suppressionIdentitySnapshot: memorySha256({
-      canonicalKey: candidate.canonicalKey,
-      normalizedValue: normalizedSearchText
-    }),
-    userId
-  };
-}
-
-async function ensureSearchEntry(
+async function createExpirationEvent(
   tx: MemoryTransaction,
-  settings: LockedMemorySettings,
+  claim: MemoryJobClaim,
+  factId: string,
   factVersionId: string,
-  candidate: MemoryExtractedCandidate,
-  input: MemoryFactExtractionInput,
-  triggerId: string
+  now: Date
 ): Promise<void> {
-  const index = await requireActiveMemoryIndex(tx, settings);
-  if (!index) throw new Error("memory_active_generation_invalid");
-  let entry = await tx.memorySearchEntry.findFirst({
-    select: { embeddingState: true, id: true },
-    where: {
+  await tx.memoryEvent.create({
+    data: {
+      actorType: "SYSTEM",
+      factId,
       factVersionId,
-      indexGenerationId: index.id,
-      userId: settings.userId
+      id: memorySha256({
+        domain: "aiqsa.memory.vnext.expiration-event",
+        factVersionId,
+        version: 1
+      }),
+      metadata: {
+        expiredAt: now.toISOString(),
+        reasonCode: "explicit_ttl_elapsed",
+        schemaVersion: "memory-vnext-expiration-event-v1"
+      },
+      operation: "EXPIRE",
+      sourceChatId: claim.chatId,
+      sourceGeneration: claim.branchGeneration,
+      userId: claim.userId
     }
   });
-  entry ??= await tx.memorySearchEntry.create({
-    data: searchEntryData(
-      index,
-      settings.userId,
-      factVersionId,
-      candidate,
-      input
-    ),
-    select: { embeddingState: true, id: true }
-  });
-  if (entry.embeddingState === "PENDING") {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(entry.id, triggerId),
-      kind: "EMBED_ITEMS",
-      pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
-    });
-  }
 }
 
-async function activeFact(
+async function lockedFact(
   tx: MemoryTransaction,
   userId: string,
   scopeId: string,
   canonicalKey: string
-): Promise<ActiveFact | null> {
-  const rows = await tx.$queryRaw<ActiveFact[]>(Prisma.sql`
-    SELECT "id", "currentVersionId", "lastConfirmedAt", "state"::text AS "state"
+): Promise<LockedFact | null> {
+  const rows = await tx.$queryRaw<LockedFact[]>(Prisma.sql`
+    SELECT "id", "currentVersionId", "lastConfirmedAt", "movedToFactId",
+      "state"::text AS "state"
     FROM "MemoryFact"
     WHERE "userId" = ${userId}
       AND "scopeId" = ${scopeId}
@@ -280,6 +192,454 @@ async function activeFact(
     FOR UPDATE
   `);
   return rows[0] ?? null;
+}
+
+function normalizedStoredValue(version: StoredVersion) {
+  return {
+    expectedAt: version.expectedAt?.toISOString() ?? null,
+    expiresAt: version.expiresAt?.toISOString() ?? null,
+    occurredAt: version.occurredAt?.toISOString() ?? null,
+    structuredValue: version.structuredValue,
+    validFrom: version.validFrom?.toISOString() ?? null,
+    validTo: version.validTo?.toISOString() ?? null
+  };
+}
+
+function sameValue(
+  version: StoredVersion,
+  candidate: MemoryExtractedCandidate
+): boolean {
+  return memorySha256(normalizedStoredValue(version)) ===
+    memorySha256(memoryFactNormalizedValue(candidate));
+}
+
+async function attachEvidence(
+  tx: MemoryTransaction,
+  userId: string,
+  factVersionId: string,
+  input: MemoryFactExtractionInput,
+  evidence: ExactEvidence
+): Promise<string> {
+  const id = memorySha256({
+    domain: "aiqsa.memory.evidence-row",
+    evidenceFingerprint: evidence.evidenceFingerprint,
+    userId,
+    version: 1
+  });
+  await tx.memoryEvidence.create({
+    data: {
+      branchGeneration: evidence.branchGeneration,
+      chatId: evidence.chatId,
+      evidenceFingerprint: evidence.evidenceFingerprint,
+      factVersionId,
+      id,
+      messageId: evidence.messageId,
+      observedAt: evidence.observedAt,
+      safeExcerpt: evidence.quote,
+      safeSourceHash: evidence.sourceTextHash,
+      safetyClass: "NORMAL",
+      sourceEndOffset: evidence.endOffset,
+      sourceMessageContentHash: evidence.sourceTextHash,
+      sourceProjectionVersion: input.sourceProjectionVersion,
+      sourceRole: "user",
+      sourceStartOffset: evidence.startOffset,
+      sourceType: "MESSAGE",
+      stance: "SUPPORTS",
+      userId
+    }
+  });
+  return id;
+}
+
+async function insertVersion(
+  tx: MemoryTransaction,
+  input: Readonly<{
+    candidate: MemoryExtractedCandidate;
+    createdByEventId: string;
+    evidence: ExactEvidence;
+    factId: string;
+    id: string;
+    inputTimeZone: string;
+    now: Date;
+    state: "ACTIVE" | "PENDING_RELATION";
+    userId: string;
+  }>
+): Promise<void> {
+  const candidate = input.candidate;
+  await tx.memoryFactVersion.create({
+    data: {
+      category: candidate.category,
+      confidence: candidate.confidence,
+      coreEligible: false,
+      coreSalience: "NONE",
+      createdByEventId: input.createdByEventId,
+      directness: "DIRECT",
+      displayText: candidate.displayText,
+      expectedAt: candidate.expectedAt ? new Date(candidate.expectedAt) : null,
+      expiresAt: candidate.expiresAt ? new Date(candidate.expiresAt) : null,
+      factId: input.factId,
+      id: input.id,
+      importance: candidate.importance,
+      ingestionFingerprint: input.evidence.ingestionFingerprint,
+      languageCode: candidate.languageCode,
+      modality: candidate.modality,
+      normalizedSearchText: normalizeMemorySearchText(candidate.displayText),
+      observedAt: input.evidence.observedAt,
+      occurredAt: candidate.occurredAt ? new Date(candidate.occurredAt) : null,
+      pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+      rawTemporalExpression: candidate.rawTemporalExpression,
+      safetyClassificationState: "PENDING",
+      sensitivityClass: "NORMAL",
+      sourceMode: "AUTOMATIC",
+      sourceTimezone: input.inputTimeZone,
+      state: input.state,
+      structuredValue: candidate.proposedValue === null
+        ? Prisma.JsonNull
+        : candidate.proposedValue as Prisma.InputJsonValue,
+      systemFrom: input.now,
+      temporalResolutionEvidence: candidate.temporalResolutionEvidence === null
+        ? Prisma.DbNull
+        : candidate.temporalResolutionEvidence as Prisma.InputJsonValue,
+      temporalResolverVersion: MEMORY_FACT_TEMPORAL_RESOLVER_VERSION,
+      userId: input.userId,
+      validFrom: candidate.validFrom ? new Date(candidate.validFrom) : null,
+      validTo: candidate.validTo ? new Date(candidate.validTo) : null
+    }
+  });
+}
+
+async function currentVersion(
+  tx: MemoryTransaction,
+  userId: string,
+  factId: string,
+  currentVersionId: string
+): Promise<StoredVersion | null> {
+  return tx.memoryFactVersion.findFirst({
+    select: {
+      displayText: true,
+      expectedAt: true,
+      expiresAt: true,
+      id: true,
+      occurredAt: true,
+      sourceMode: true,
+      state: true,
+      structuredValue: true,
+      validFrom: true,
+      validTo: true
+    },
+    where: { factId, id: currentVersionId, userId }
+  }) as Promise<StoredVersion | null>;
+}
+
+async function matchingPendingVersion(
+  tx: MemoryTransaction,
+  userId: string,
+  factId: string,
+  candidate: MemoryExtractedCandidate
+): Promise<StoredVersion | null> {
+  const pending = await tx.memoryFactVersion.findMany({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      displayText: true,
+      expectedAt: true,
+      expiresAt: true,
+      id: true,
+      occurredAt: true,
+      sourceMode: true,
+      state: true,
+      structuredValue: true,
+      validFrom: true,
+      validTo: true
+    },
+    where: { factId, state: "PENDING_RELATION", userId }
+  }) as StoredVersion[];
+  return pending.find((version) => sameValue(version, candidate)) ?? null;
+}
+
+async function materializeExpiredCurrent(
+  tx: MemoryTransaction,
+  claim: MemoryJobClaim,
+  fact: LockedFact,
+  version: StoredVersion,
+  now: Date
+): Promise<boolean> {
+  if (version.expiresAt === null || version.expiresAt > now) return false;
+  const closedAt = new Date(Math.max(
+    now.getTime(),
+    version.expiresAt.getTime(),
+    1
+  ));
+  const expired = await tx.memoryFactVersion.updateMany({
+    data: { state: "EXPIRED", systemTo: closedAt },
+    where: {
+      factId: fact.id,
+      id: version.id,
+      state: "ACTIVE",
+      userId: claim.userId
+    }
+  });
+  if (expired.count !== 1) return false;
+  await tx.memorySearchEntry.deleteMany({
+    where: { factVersionId: version.id, userId: claim.userId }
+  });
+  await tx.memoryFact.update({
+    data: {
+      currentVersionId: null,
+      state: "EXPIRED",
+      updatedAt: now
+    },
+    where: { id: fact.id }
+  });
+  await createExpirationEvent(tx, claim, fact.id, version.id, now);
+  return true;
+}
+
+async function createFirstOrReactivatedVersion(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  claim: MemoryJobClaim,
+  plan: MemoryFactExtractionPlan,
+  candidate: MemoryExtractedCandidate,
+  evidence: ExactEvidence,
+  bindingId: string,
+  now: Date,
+  scopeId: string,
+  existingFact: LockedFact | null
+): Promise<MemoryVNextCommitResult> {
+  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
+  const factId = existingFact?.id ?? randomUUID();
+  const factVersionId = versionId(evidence.ingestionFingerprint);
+  if (!existingFact) {
+    await tx.memoryFact.create({
+      data: {
+        canonicalKey: candidate.canonicalKey,
+        category: candidate.category,
+        currentVersionId: factVersionId,
+        dimensionKey: candidate.dimensionKey,
+        id: factId,
+        identityKind: candidate.identityKind,
+        identityVersion: candidate.identityVersion,
+        lastConfirmedAt: evidence.observedAt,
+        predicateKey: candidate.predicateKey,
+        scopeId,
+        state: "ACTIVE",
+        subjectKey: candidate.subjectKey,
+        userId: settings.userId
+      }
+    });
+  } else {
+    await tx.memoryFact.update({
+      data: {
+        category: candidate.category,
+        currentVersionId: factVersionId,
+        forgottenAt: null,
+        lastConfirmedAt: evidence.observedAt,
+        state: "ACTIVE",
+        updatedAt: now
+      },
+      where: { id: factId }
+    });
+  }
+  const promotionEventId = await createEvent(
+    tx,
+    claim,
+    candidate,
+    factId,
+    factVersionId,
+    bindingId,
+    "PROMOTE"
+  );
+  await insertVersion(tx, {
+    candidate,
+    createdByEventId: promotionEventId,
+    evidence,
+    factId,
+    id: factVersionId,
+    inputTimeZone: plan.input.timeZone,
+    now,
+    state: "ACTIVE",
+    userId: settings.userId
+  });
+  const evidenceId = await attachEvidence(
+    tx,
+    settings.userId,
+    factVersionId,
+    plan.input,
+    evidence
+  );
+  await persistMemoryFactDependencies(
+    tx,
+    settings.userId,
+    factVersionId,
+    candidate.dependencies
+  );
+  await persistMemoryCandidateEntities(tx, {
+    candidate,
+    evidenceId,
+    factVersionId,
+    userId: settings.userId
+  });
+  return { attachedEvidence: 1, createdVersions: 1 };
+}
+
+async function correctionTargetVersionId(
+  tx: MemoryTransaction,
+  userId: string,
+  candidate: MemoryExtractedCandidate
+): Promise<string | null> {
+  const correction = candidate.dependencies.find(({ dependencyKind }) =>
+    dependencyKind === "CORRECTION_TARGET");
+  if (!correction) return null;
+  if (correction.source.factVersionId !== null) {
+    const targets = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT version."id"
+      FROM "MemoryFactVersion" AS version
+      INNER JOIN "MemoryFact" AS fact
+        ON fact."userId" = version."userId"
+        AND fact."id" = version."factId"
+        AND fact."state" = 'ACTIVE'::"MemoryFactState"
+        AND fact."currentVersionId" = version."id"
+      WHERE version."userId" = ${userId}
+        AND version."id" = ${correction.source.factVersionId}
+        AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        AND version."systemTo" IS NULL
+    `);
+    return targets[0]?.id ?? null;
+  }
+  if (correction.source.messageId === null) return null;
+  const targets = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT DISTINCT version."id"
+    FROM "MemoryEvidence" AS evidence
+    INNER JOIN "MemoryFactVersion" AS version
+      ON version."userId" = evidence."userId"
+      AND version."id" = evidence."factVersionId"
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND version."systemTo" IS NULL
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId"
+      AND fact."id" = version."factId"
+      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND fact."currentVersionId" = version."id"
+    WHERE evidence."userId" = ${userId}
+      AND evidence."messageId" = ${correction.source.messageId}
+      AND evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
+      AND fact."predicateKey" IS NOT DISTINCT FROM ${candidate.predicateKey}
+    ORDER BY version."id"
+    LIMIT 2
+  `);
+  return targets.length === 1 ? targets[0]!.id : null;
+}
+
+async function createCrossFactRelationVersion(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  claim: MemoryJobClaim,
+  plan: MemoryFactExtractionPlan,
+  candidate: MemoryExtractedCandidate,
+  evidence: ExactEvidence,
+  bindingId: string,
+  now: Date,
+  scopeId: string
+): Promise<MemoryVNextCommitResult> {
+  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
+  const factId = randomUUID();
+  const factVersionId = versionId(evidence.ingestionFingerprint);
+  await tx.memoryFact.create({
+    data: {
+      canonicalKey: candidate.canonicalKey,
+      category: candidate.category,
+      currentVersionId: null,
+      dimensionKey: candidate.dimensionKey,
+      id: factId,
+      identityKind: candidate.identityKind,
+      identityVersion: candidate.identityVersion,
+      lastConfirmedAt: evidence.observedAt,
+      predicateKey: candidate.predicateKey,
+      scopeId,
+      state: "CONFLICTED",
+      subjectKey: candidate.subjectKey,
+      userId: settings.userId
+    }
+  });
+  const proposalEventId = await createEvent(
+    tx,
+    claim,
+    candidate,
+    factId,
+    factVersionId,
+    bindingId,
+    "AUTO_PROPOSE"
+  );
+  await insertVersion(tx, {
+    candidate,
+    createdByEventId: proposalEventId,
+    evidence,
+    factId,
+    id: factVersionId,
+    inputTimeZone: plan.input.timeZone,
+    now,
+    state: "PENDING_RELATION",
+    userId: settings.userId
+  });
+  const evidenceId = await attachEvidence(
+    tx,
+    settings.userId,
+    factVersionId,
+    plan.input,
+    evidence
+  );
+  await persistMemoryFactDependencies(
+    tx,
+    settings.userId,
+    factVersionId,
+    candidate.dependencies
+  );
+  await persistMemoryCandidateEntities(tx, {
+    candidate,
+    evidenceId,
+    factVersionId,
+    userId: settings.userId
+  });
+  return { attachedEvidence: 1, createdVersions: 1 };
+}
+
+async function relatedContextTargetVersionId(
+  tx: MemoryTransaction,
+  userId: string,
+  candidate: MemoryExtractedCandidate,
+  now: Date
+): Promise<string | null> {
+  const entityIds = [...new Set(candidate.entities
+    .filter(({ contextEntityId, role }) => role === "SUBJECT" &&
+      contextEntityId !== null)
+    .map(({ contextEntityId }) => contextEntityId!))];
+  if (entityIds.length === 0 || candidate.predicateKey === null) return null;
+  const targets = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT DISTINCT version."id"
+    FROM "MemoryFactVersionEntity" AS link
+    INNER JOIN "MemoryFactVersion" AS version
+      ON version."userId" = link."userId"
+      AND version."id" = link."factVersionId"
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND version."systemTo" IS NULL
+      AND version."safetyClassificationState" =
+        'CLASSIFIED'::"MemorySafetyClassificationState"
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId"
+      AND fact."id" = version."factId"
+      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND fact."currentVersionId" = version."id"
+      AND fact."predicateKey" IS NOT DISTINCT FROM ${candidate.predicateKey}
+      AND fact."dimensionKey" IS NOT DISTINCT FROM ${candidate.dimensionKey}
+    WHERE link."userId" = ${userId}
+      AND link."entityId" IN (${Prisma.join(entityIds)})
+      AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
+      AND ${memoryPersonalFactEvidencePredicate(userId)}
+    ORDER BY version."id"
+    LIMIT 2
+  `);
+  return targets.length === 1 ? targets[0]!.id : null;
 }
 
 async function createObservation(
@@ -296,81 +656,128 @@ async function createObservation(
     return { attachedEvidence: 0, createdVersions: 0 };
   }
   const evidence = exactEvidence(plan.input, candidate);
-  if (evidence.length !== 1) {
-    throw new Error("memory_vnext_evidence_invalid");
+  if (evidence.length !== 1) throw new Error("memory_vnext_evidence_invalid");
+  if (candidate.expiresAt !== null && new Date(candidate.expiresAt) <= now) {
+    return { attachedEvidence: 0, createdVersions: 0 };
   }
+  const proposedVersionId = versionId(evidence[0]!.ingestionFingerprint);
+  if (!await memoryFactDependenciesAreValid(
+    tx,
+    settings.userId,
+    proposedVersionId,
+    candidate.dependencies
+  )) {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
+  const replay = await tx.memoryEvidence.findFirst({
+    select: { id: true },
+    where: {
+      evidenceFingerprint: evidence[0]!.evidenceFingerprint,
+      userId: settings.userId
+    }
+  });
+  if (replay) return { attachedEvidence: 0, createdVersions: 0 };
+
   const scope = await ensureGlobalMemoryScope(tx, settings);
-  const fact = await activeFact(
+  const fact = await lockedFact(
     tx,
     settings.userId,
     scope.id,
     candidate.canonicalKey
   );
-  if (fact) {
-    if (fact.state !== "ACTIVE" || fact.currentVersionId === null) {
-      return { attachedEvidence: 0, createdVersions: 0 };
+  if (!fact) {
+    const correctionTarget = await correctionTargetVersionId(
+      tx,
+      settings.userId,
+      candidate
+    );
+    const contextTarget = correctionTarget ?? await relatedContextTargetVersionId(
+      tx,
+      settings.userId,
+      candidate,
+      now
+    );
+    if (contextTarget !== null && candidate.identityKind === "SLOT") {
+      return createCrossFactRelationVersion(
+        tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+        scope.id
+      );
     }
-    const version = await tx.memoryFactVersion.findFirst({
-      select: {
-        displayText: true,
-        id: true,
-        sourceMode: true,
-        state: true,
-        structuredValue: true
-      },
-      where: {
-        factId: fact.id,
-        id: fact.currentVersionId,
-        userId: settings.userId
-      }
-    }) as ActiveVersion | null;
-    if (!version || version.state !== "ACTIVE" ||
-      version.sourceMode !== "AUTOMATIC" || version.displayText === null ||
-      version.structuredValue === null ||
-      normalizeMemorySearchText(version.displayText) !==
-        normalizeMemorySearchText(candidate.displayText)) {
-      return { attachedEvidence: 0, createdVersions: 0 };
-    }
-    const existing = await tx.memoryEvidence.findFirst({
-      select: { id: true },
-      where: {
-        chatId: plan.input.source.chatId,
-        factVersionId: version.id,
-        messageId: plan.input.source.sourceMessageId,
-        sourceProjectionVersion: plan.input.sourceProjectionVersion,
-        sourceType: "MESSAGE",
-        stance: "SUPPORTS",
-        userId: settings.userId
-      }
-    });
-    if (existing) return { attachedEvidence: 0, createdVersions: 0 };
+    return createFirstOrReactivatedVersion(
+      tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+      scope.id, null
+    );
+  }
+  if (fact.state === "FORGOTTEN" || fact.state === "ORPHANED" ||
+    fact.state === "CONFLICTED" || fact.movedToFactId !== null) {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
 
+  // Source invalidation retracts the old immutable version and clears the
+  // pointer. A later independent direct-user observation may establish a new
+  // version of the same logical identity; it must never revive the old row or
+  // bypass explicit forget/orphan/move states fenced above.
+  if (fact.state === "RETRACTED") {
+    if (fact.currentVersionId !== null) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    return createFirstOrReactivatedVersion(
+      tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+      scope.id, fact
+    );
+  }
+
+  let active: StoredVersion | null = null;
+  let expiredCurrent = false;
+  if (fact.currentVersionId !== null) {
+    active = await currentVersion(
+      tx,
+      settings.userId,
+      fact.id,
+      fact.currentVersionId
+    );
+    if (!active || active.state !== "ACTIVE" || active.displayText === null ||
+      active.structuredValue === null) {
+      throw new Error("memory_vnext_current_version_invalid");
+    }
+    if (await materializeExpiredCurrent(tx, claim, fact, active, now)) {
+      expiredCurrent = true;
+      active = null;
+    }
+  }
+  if (active === null) {
+    if (!expiredCurrent && fact.state !== "EXPIRED") {
+      throw new Error("memory_vnext_fact_pointer_invalid");
+    }
+    return createFirstOrReactivatedVersion(
+      tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+      scope.id, fact
+    );
+  }
+
+  if (sameValue(active, candidate)) {
     await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
-    const reinforcementEventId = await createEvent(
+    await createEvent(
       tx,
       claim,
       candidate,
       fact.id,
-      version.id,
+      active.id,
       bindingId,
       "REINFORCE"
     );
-    await tx.memoryEvidence.create({
-      data: {
-        branchGeneration: evidence[0]!.branchGeneration,
-        chatId: evidence[0]!.chatId,
-        factVersionId: version.id,
-        messageId: evidence[0]!.messageId,
-        observedAt: evidence[0]!.observedAt,
-        safeExcerpt: evidence[0]!.quote,
-        safeSourceHash: evidence[0]!.sourceTextHash,
-        safetyClass: "NORMAL",
-        sourceProjectionVersion: plan.input.sourceProjectionVersion,
-        sourceRole: "user",
-        sourceType: "MESSAGE",
-        stance: "SUPPORTS",
-        userId: settings.userId
-      }
+    const evidenceId = await attachEvidence(
+      tx,
+      settings.userId,
+      active.id,
+      plan.input,
+      evidence[0]!
+    );
+    await persistMemoryCandidateEntities(tx, {
+      candidate,
+      evidenceId,
+      factVersionId: active.id,
+      userId: settings.userId
     });
     await tx.memoryFact.update({
       data: {
@@ -381,103 +788,85 @@ async function createObservation(
       },
       where: { id: fact.id }
     });
-    await ensureSearchEntry(
-      tx,
-      settings,
-      version.id,
-      candidate,
-      plan.input,
-      reinforcementEventId
-    );
     return { attachedEvidence: 1, createdVersions: 0 };
   }
 
+  if (candidate.identityKind !== "SLOT") {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
+  const pending = await matchingPendingVersion(
+    tx,
+    settings.userId,
+    fact.id,
+    candidate
+  );
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
-  const factId = randomUUID();
-  const factVersionId = versionId(candidate);
-  await tx.memoryFact.create({
-    data: {
-      canonicalKey: candidate.canonicalKey,
-      category: candidate.category,
-      currentVersionId: factVersionId,
-      id: factId,
-      lastConfirmedAt: evidence[0]!.observedAt,
-      scopeId: scope.id,
-      state: "ACTIVE",
+  if (pending) {
+    await createEvent(
+      tx,
+      claim,
+      candidate,
+      fact.id,
+      pending.id,
+      bindingId,
+      "REINFORCE"
+    );
+    const evidenceId = await attachEvidence(
+      tx,
+      settings.userId,
+      pending.id,
+      plan.input,
+      evidence[0]!
+    );
+    await persistMemoryCandidateEntities(tx, {
+      candidate,
+      evidenceId,
+      factVersionId: pending.id,
       userId: settings.userId
-    }
-  });
-  const promotionEventId = await createEvent(
+    });
+    return { attachedEvidence: 1, createdVersions: 0 };
+  }
+
+  const pendingVersionId = versionId(evidence[0]!.ingestionFingerprint);
+  const proposalEventId = await createEvent(
     tx,
     claim,
     candidate,
-    factId,
-    factVersionId,
+    fact.id,
+    pendingVersionId,
     bindingId,
-    "PROMOTE"
+    "AUTO_PROPOSE"
   );
-  const safety = await extractionSafety(tx, settings.userId, bindingId);
-  await tx.memoryFactVersion.create({
-    data: {
-      ...safety,
-      category: candidate.category,
-      confidence: candidate.confidence,
-      coreEligible: candidate.coreEligible,
-      coreSalience: candidate.coreSalience,
-      createdByEventId: promotionEventId,
-      directness: "DIRECT",
-      displayText: candidate.displayText,
-      factId,
-      id: factVersionId,
-      importance: candidate.importance,
-      languageCode: candidate.languageCode,
-      modality: candidate.modality,
-      normalizedSearchText: normalizeMemorySearchText(candidate.displayText),
-      observedAt: evidence[0]!.observedAt,
-      pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-      rawTemporalExpression: candidate.rawTemporalExpression,
-      sensitivityClass: "NORMAL",
-      sourceMode: "AUTOMATIC",
-      sourceTimezone: plan.input.timeZone,
-      state: "ACTIVE",
-      structuredValue: candidate.proposedValue === null
-        ? Prisma.JsonNull
-        : candidate.proposedValue as Prisma.InputJsonValue,
-      systemFrom: now,
-      temporalResolutionEvidence: candidate.temporalResolutionEvidence === null
-        ? Prisma.DbNull
-        : candidate.temporalResolutionEvidence as Prisma.InputJsonValue,
-      temporalResolverVersion: null,
-      userId: settings.userId,
-      validFrom: candidate.validFrom ? new Date(candidate.validFrom) : null,
-      validTo: candidate.validTo ? new Date(candidate.validTo) : null
-    }
-  });
-  await tx.memoryEvidence.create({
-    data: {
-      branchGeneration: evidence[0]!.branchGeneration,
-      chatId: evidence[0]!.chatId,
-      factVersionId,
-      messageId: evidence[0]!.messageId,
-      observedAt: evidence[0]!.observedAt,
-      safeExcerpt: evidence[0]!.quote,
-      safeSourceHash: evidence[0]!.sourceTextHash,
-      safetyClass: "NORMAL",
-      sourceProjectionVersion: plan.input.sourceProjectionVersion,
-      sourceRole: "user",
-      sourceType: "MESSAGE",
-      stance: "SUPPORTS",
-      userId: settings.userId
-    }
-  });
-  await ensureSearchEntry(
-    tx,
-    settings,
-    factVersionId,
+  await insertVersion(tx, {
     candidate,
+    createdByEventId: proposalEventId,
+    evidence: evidence[0]!,
+    factId: fact.id,
+    id: pendingVersionId,
+    inputTimeZone: plan.input.timeZone,
+    now,
+    state: "PENDING_RELATION",
+    userId: settings.userId
+  });
+  const evidenceId = await attachEvidence(
+    tx,
+    settings.userId,
+    pendingVersionId,
     plan.input,
-    promotionEventId
+    evidence[0]!
   );
+  await persistMemoryFactDependencies(
+    tx,
+    settings.userId,
+    pendingVersionId,
+    candidate.dependencies
+  );
+  await persistMemoryCandidateEntities(tx, {
+    candidate,
+    evidenceId,
+    factVersionId: pendingVersionId,
+    userId: settings.userId
+  });
   return { attachedEvidence: 1, createdVersions: 1 };
 }
 

@@ -46,6 +46,7 @@
     "smoke:openai": "tsx scripts/smoke-openai-responses.ts",
     "smoke:gemini": "tsx scripts/smoke-gemini-interactions.ts",
     "smoke:memory-semantic": "tsx scripts/smoke-memory-semantic-retrieval.ts",
+    "smoke:memory-synthesis-provider": "tsx scripts/smoke-memory-synthesis-provider.ts",
     "smoke:openrouter": "tsx scripts/smoke-openrouter-perplexity.ts",
     "smoke:nginx-upload-envelope": "node scripts/smoke-nginx-upload-envelope.mjs",
     "smoke:parsers": "tsx scripts/smoke-parser-sidecars.ts",

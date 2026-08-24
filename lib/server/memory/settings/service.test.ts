@@ -24,6 +24,8 @@ function settings(
     acceptedUtilityEgressFingerprint: "a".repeat(64),
     acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
     activeIndexGenerationId: "generation-1",
+    decayEnabled: false,
+    decayPolicyVersion: null,
     embeddingProviderModelId: "embedding-1",
     learnAutomatically: false,
     memoryConsentRevision: 2,
@@ -32,6 +34,10 @@ function settings(
     referenceChatHistory: true,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 4,
+    synthesisEnabled: false,
+    synthesisEnabledAt: null,
+    synthesisPolicyVersion: null,
+    lastSynthesisAt: null,
     updatedAt: NOW,
     useMemoryFacts: true,
     userId: "user-1",
@@ -155,6 +161,7 @@ describe("Memory settings service", () => {
       administratorSetupRequired: false,
       automaticLearning: true,
       automaticLearningAvailable: true,
+      decayAvailable: true,
       explicitMemory: true,
       historyRecall: true,
       managementAvailable: true,
@@ -162,6 +169,7 @@ describe("Memory settings service", () => {
       pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
       retrievalAvailable: true,
+      synthesisAvailable: true,
       temporaryChats: true
     });
   });
@@ -254,6 +262,7 @@ describe("Memory settings service", () => {
         totalChats: 0
       },
       settings: {
+        decayEnabled: false,
         embeddingDeployment: {
           connectionDisplayName: "Embedding provider",
           id: "embedding-1",
@@ -266,6 +275,7 @@ describe("Memory settings service", () => {
         referenceChatHistory: true,
         sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
         settingsRevision: 4,
+        synthesisEnabled: false,
         updatedAt: NOW.toISOString(),
         useMemoryFacts: true
       }

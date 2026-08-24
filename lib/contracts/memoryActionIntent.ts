@@ -1,9 +1,13 @@
 import { z } from "zod";
+import {
+  MEMORY_RETRIEVAL_MODES,
+  MEMORY_TEMPORAL_INTENTS
+} from "./memoryRetrieval";
 
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v2" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v5" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -99,9 +103,10 @@ function strictText(maxLength: number) {
 }
 
 const nullableText = (maxLength: number) => strictText(maxLength).nullable();
+const nullableTimestamp = z.string().datetime({ offset: true }).max(64).nullable();
 const categoryText = z.enum(MEMORY_ACTION_INTENT_CATEGORIES).nullable();
 
-const memoryActionIntentSchema = z.strictObject({
+const memoryActionIntentWireSchema = z.strictObject({
   action: z.enum(MEMORY_ACTION_INTENT_ACTIONS),
   applyResponsePreferences: z.boolean(),
   category: categoryText,
@@ -113,6 +118,7 @@ const memoryActionIntentSchema = z.strictObject({
   queryText: nullableText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH),
   reasonCode: z.enum(MEMORY_ACTION_INTENT_REASON_CODES),
   recencyRequested: z.boolean(),
+  retrievalMode: z.enum(MEMORY_RETRIEVAL_MODES),
   referencedMemoryRef: nullableText(MEMORY_ACTION_INTENT_MAX_REF_LENGTH),
   replacementStatement: nullableText(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH),
   responsePreference: z.boolean(),
@@ -120,8 +126,14 @@ const memoryActionIntentSchema = z.strictObject({
   sensitivity: z.enum(MEMORY_ACTION_INTENT_SENSITIVITIES),
   statement: nullableText(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH),
   targetQuery: nullableText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH),
+  temporalAsOf: nullableTimestamp,
+  temporalFrom: nullableTimestamp,
+  temporalIntent: z.enum(MEMORY_TEMPORAL_INTENTS),
+  temporalTo: nullableTimestamp,
   thisChatOnly: z.boolean()
-}).superRefine((value, context) => {
+});
+
+const memoryActionIntentSchema = memoryActionIntentWireSchema.superRefine((value, context) => {
   if (value.action === "SAVE" && value.statement === null) {
     context.addIssue({ code: "custom", message: "SAVE requires statement" });
   }
@@ -141,19 +153,56 @@ const memoryActionIntentSchema = z.strictObject({
       message: "LIST and SEARCH cannot request answer retrieval"
     });
   }
-  if (value.action === "NONE" && dynamicRetrievalRequested && value.queryText === null) {
+  if (dynamicRetrievalRequested && value.queryText === null) {
     context.addIssue({
       code: "custom",
-      message: "NONE answer retrieval requires queryText"
+      message: "answer retrieval requires queryText"
     });
   }
   if (value.profileRequested && (
-    value.action !== "NONE" || !value.memoryUseful || value.recencyRequested
+    value.action !== "NONE" || !value.memoryUseful || value.recencyRequested ||
+    value.retrievalMode !== "CURRENT_PROFILE" || value.pastChatsUseful
   )) {
     context.addIssue({
       code: "custom",
       message: "profile inventory requires a non-recency NONE answer retrieval"
     });
+  }
+  if (!value.profileRequested && value.retrievalMode === "CURRENT_PROFILE") {
+    context.addIssue({ code: "custom", message: "current profile mode requires profile" });
+  }
+  if (value.retrievalMode === "HISTORICAL_MEMORY" && (
+    !value.memoryUseful || value.pastChatsUseful || value.temporalIntent === "CURRENT"
+  )) {
+    context.addIssue({ code: "custom", message: "historical mode requires fact history" });
+  }
+  if ((value.retrievalMode === "PAST_CHAT_SEARCH" ||
+      value.retrievalMode === "HISTORY_OVERVIEW") &&
+      (!value.pastChatsUseful || value.memoryUseful)) {
+    context.addIssue({ code: "custom", message: "chat modes require past chats" });
+  }
+  if (value.retrievalMode === "PAST_CHAT_SEARCH" &&
+    value.temporalIntent === "HISTORICAL") {
+    context.addIssue({
+      code: "custom",
+      message: "past chat search cannot request historical fact states"
+    });
+  }
+  if (value.retrievalMode === "HISTORY_OVERVIEW" && value.recencyRequested) {
+    context.addIssue({ code: "custom", message: "history overview cannot request recency" });
+  }
+  if ((value.retrievalMode === "CURRENT_PROFILE" ||
+      value.retrievalMode === "TARGETED_CURRENT") && value.temporalIntent !== "CURRENT") {
+    context.addIssue({ code: "custom", message: "current mode requires current time" });
+  }
+  const timestampShape = value.temporalIntent === "AS_OF"
+    ? value.temporalAsOf !== null && value.temporalFrom === null && value.temporalTo === null
+    : value.temporalIntent === "BETWEEN"
+      ? value.temporalAsOf === null && (value.temporalFrom !== null || value.temporalTo !== null)
+      : value.temporalAsOf === null && value.temporalFrom === null && value.temporalTo === null;
+  if (!timestampShape || value.temporalFrom !== null && value.temporalTo !== null &&
+    new Date(value.temporalFrom) >= new Date(value.temporalTo)) {
+    context.addIssue({ code: "custom", message: "temporal request is invalid" });
   }
   if (value.responsePreference && value.category !== "preferences" && !(
     value.sensitivity === "SENSITIVE" && value.category === "sensitive"
@@ -209,6 +258,7 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     },
     reasonCode: { enum: [...MEMORY_ACTION_INTENT_REASON_CODES], type: "string" },
     recencyRequested: { type: "boolean" },
+    retrievalMode: { enum: [...MEMORY_RETRIEVAL_MODES], type: "string" },
     referencedMemoryRef: {
       maxLength: MEMORY_ACTION_INTENT_MAX_REF_LENGTH,
       minLength: 1,
@@ -232,6 +282,14 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       minLength: 1,
       type: ["string", "null"]
     },
+    temporalAsOf: { format: "date-time", maxLength: 64, type: ["string", "null"] },
+    temporalFrom: { format: "date-time", maxLength: 64, type: ["string", "null"] },
+    temporalIntent: {
+      description: "Use ANY for a targeted prior-chat or event lookup; HISTORICAL is reserved for earlier states of personal facts.",
+      enum: [...MEMORY_TEMPORAL_INTENTS],
+      type: "string"
+    },
+    temporalTo: { format: "date-time", maxLength: 64, type: ["string", "null"] },
     thisChatOnly: { type: "boolean" }
   },
   required: [
@@ -246,6 +304,7 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "queryText",
     "reasonCode",
     "recencyRequested",
+    "retrievalMode",
     "referencedMemoryRef",
     "replacementStatement",
     "responsePreference",
@@ -253,6 +312,10 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "sensitivity",
     "statement",
     "targetQuery",
+    "temporalAsOf",
+    "temporalFrom",
+    "temporalIntent",
+    "temporalTo",
     "thisChatOnly"
   ],
   type: "object"
@@ -268,8 +331,103 @@ export type MemoryActionIntentDecodeResult =
   | Readonly<{ ok: true; value: MemoryActionIntent }>
   | Readonly<{ code: "memory_action_intent_invalid"; ok: false }>;
 
+type MemoryActionIntentWire = z.infer<typeof memoryActionIntentWireSchema>;
+
+function validTemporalShape(value: MemoryActionIntentWire): boolean {
+  if (value.temporalIntent === "AS_OF") {
+    return value.temporalAsOf !== null && value.temporalFrom === null &&
+      value.temporalTo === null;
+  }
+  if (value.temporalIntent === "BETWEEN") {
+    return value.temporalAsOf === null &&
+      (value.temporalFrom !== null || value.temporalTo !== null) &&
+      !(value.temporalFrom !== null && value.temporalTo !== null &&
+        new Date(value.temporalFrom) >= new Date(value.temporalTo));
+  }
+  return value.temporalAsOf === null && value.temporalFrom === null &&
+    value.temporalTo === null;
+}
+
+function currentRouting(
+  value: MemoryActionIntentWire,
+  retrievalMode: "CURRENT_PROFILE" | "TARGETED_CURRENT"
+): MemoryActionIntentWire {
+  return {
+    ...value,
+    retrievalMode,
+    temporalAsOf: null,
+    temporalFrom: null,
+    temporalIntent: "CURRENT",
+    temporalTo: null
+  };
+}
+
+/**
+ * Strict-output providers guarantee the wire shape, but cannot express every
+ * cross-field refinement in their portable JSON-Schema subset. Repair only
+ * read-only routing fields, and only from already-affirmative retrieval flags.
+ * Mutation, confidence, sensitivity, statement, target, and query fields are
+ * never inferred here, so this fallback cannot mint new mutation authority.
+ */
+function normalizeSafeMemoryRouting(
+  value: MemoryActionIntentWire
+): MemoryActionIntentWire {
+  if (value.action === "LIST" || value.action === "SEARCH") return value;
+  if (value.action !== "NONE" && value.queryText === null) {
+    return currentRouting({
+      ...value,
+      applyResponsePreferences: false,
+      memoryUseful: false,
+      pastChatsUseful: false,
+      profileRequested: false,
+      recencyRequested: false
+    }, "TARGETED_CURRENT");
+  }
+  if (value.profileRequested) {
+    return value.action === "NONE" && value.memoryUseful && !value.pastChatsUseful &&
+      !value.recencyRequested
+      ? currentRouting(value, "CURRENT_PROFILE")
+      : value;
+  }
+
+  const facts = value.memoryUseful;
+  const history = value.pastChatsUseful;
+  const preferences = value.applyResponsePreferences;
+  if (!facts && history) {
+    const overview = value.retrievalMode === "HISTORY_OVERVIEW" &&
+      !value.recencyRequested;
+    if (!validTemporalShape(value) || value.temporalIntent === "HISTORICAL") {
+      return {
+        ...value,
+        retrievalMode: overview ? "HISTORY_OVERVIEW" : "PAST_CHAT_SEARCH",
+        temporalAsOf: null,
+        temporalFrom: null,
+        temporalIntent: "ANY",
+        temporalTo: null
+      };
+    }
+    return {
+      ...value,
+      retrievalMode: overview ? "HISTORY_OVERVIEW" : "PAST_CHAT_SEARCH"
+    };
+  }
+  if (facts && !history && value.retrievalMode === "HISTORICAL_MEMORY" &&
+    value.temporalIntent !== "CURRENT" && validTemporalShape(value)) {
+    return value;
+  }
+  if (facts || history || preferences) {
+    return currentRouting(value, "TARGETED_CURRENT");
+  }
+  return currentRouting(value, "TARGETED_CURRENT");
+}
+
 export function decodeMemoryActionIntent(value: unknown): MemoryActionIntentDecodeResult {
-  const result = memoryActionIntentSchema.safeParse(value);
+  const wire = memoryActionIntentWireSchema.safeParse(value);
+  if (!wire.success) return { code: "memory_action_intent_invalid", ok: false };
+  const direct = memoryActionIntentSchema.safeParse(wire.data);
+  const result = direct.success
+    ? direct
+    : memoryActionIntentSchema.safeParse(normalizeSafeMemoryRouting(wire.data));
   if (!result.success) return { code: "memory_action_intent_invalid", ok: false };
   const intent = result.data;
   const ordinaryCategoryHint = intent.categoryHint === "sensitive"

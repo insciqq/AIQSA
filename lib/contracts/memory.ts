@@ -66,8 +66,10 @@ export type MemoryFactState = (typeof MEMORY_FACT_STATES)[number];
 
 export const MEMORY_FACT_VERSION_STATES = [
   "ACTIVE",
+  "PENDING_RELATION",
   "CONFLICTING",
   "ORPHANED",
+  "MERGED",
   "SUPERSEDED",
   "EXPIRED",
   "RETRACTED",
@@ -98,7 +100,8 @@ export const MEMORY_MODALITIES = [
   "PLAN",
   "EVENT",
   "HABIT",
-  "WORKFLOW"
+  "WORKFLOW",
+  "PATTERN"
 ] as const;
 export type MemoryModality = (typeof MEMORY_MODALITIES)[number];
 
@@ -260,19 +263,23 @@ export function decodeMemoryScopeSelection(
 }
 
 const memorySettingsPatchSchema = z.strictObject({
+  decayEnabled: z.boolean().optional(),
   embeddingDeploymentId: idSchema.nullable().optional(),
   expectedMemoryRevision: safeInteger.optional(),
   expectedSettingsRevision: safeInteger,
   learnAutomatically: z.boolean().optional(),
   referenceChatHistory: z.boolean().optional(),
   sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY").optional(),
+  synthesisEnabled: z.boolean().optional(),
   useMemoryFacts: z.boolean().optional()
 }).superRefine((value, context) => {
   const mutationKeys = [
+    "decayEnabled",
     "embeddingDeploymentId",
     "learnAutomatically",
     "referenceChatHistory",
     "sensitiveAutomaticPolicy",
+    "synthesisEnabled",
     "useMemoryFacts"
   ] as const;
   const changed = mutationKeys.filter((key) => Object.hasOwn(value, key));
@@ -567,6 +574,7 @@ const memorySettingsResponseSchema = z.strictObject({
     administratorSetupRequired: z.boolean(),
     automaticLearning: z.boolean(),
     automaticLearningAvailable: z.boolean(),
+    decayAvailable: z.boolean(),
     explicitMemory: z.boolean(),
     historyRecall: z.boolean(),
     managementAvailable: z.boolean(),
@@ -574,6 +582,7 @@ const memorySettingsResponseSchema = z.strictObject({
     permanentChatDeletion: z.boolean(),
     pastChatIndexingAvailable: z.boolean(),
     retrievalAvailable: z.boolean(),
+    synthesisAvailable: z.boolean(),
     temporaryChats: z.boolean()
   }),
   egress: z.strictObject({
@@ -594,6 +603,7 @@ const memorySettingsResponseSchema = z.strictObject({
     totalChats: safeInteger
   }),
   settings: z.strictObject({
+    decayEnabled: z.boolean(),
     embeddingDeployment: z.strictObject({
       connectionDisplayName: safeText(128),
       id: idSchema,
@@ -606,6 +616,7 @@ const memorySettingsResponseSchema = z.strictObject({
     referenceChatHistory: z.boolean(),
     sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY"),
     settingsRevision: safeInteger,
+    synthesisEnabled: z.boolean(),
     updatedAt: isoTimestampSchema,
     useMemoryFacts: z.boolean()
   })
@@ -792,6 +803,7 @@ const memoryLifecycleHistoryItemSchema = z.strictObject({
     "AUTO_PROPOSE",
     "PROMOTE",
     "REINFORCE",
+    "MERGE",
     "EDIT",
     "SUPERSEDE",
     "CONFLICT",
@@ -799,6 +811,7 @@ const memoryLifecycleHistoryItemSchema = z.strictObject({
     "RETRACT",
     "FORGET",
     "SOURCE_INVALIDATE",
+    "SYNTHESIZE",
     "SCOPE_CHANGE",
     "PIN",
     "UNPIN",

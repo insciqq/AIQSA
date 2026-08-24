@@ -18,6 +18,8 @@ import {
   resolveCurrentMemoryUtilityPolicy,
   type ResolvedMemoryUtilityPolicy
 } from "../execution/policy";
+import { MEMORY_SYNTHESIS_POLICY_VERSION } from "../synthesis/policy";
+import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import { memoryPersistenceFailure } from "./errors";
 import {
   advanceMemoryMutation,
@@ -31,6 +33,8 @@ export type MemorySettingsPersistenceSnapshot = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
   acceptedUtilityPolicyVersion: string | null;
   activeIndexGenerationId: string | null;
+  decayEnabled: boolean;
+  decayPolicyVersion: string | null;
   embeddingProviderModelId: string | null;
   learnAutomatically: boolean;
   memoryConsentRevision: number;
@@ -39,6 +43,10 @@ export type MemorySettingsPersistenceSnapshot = Readonly<{
   referenceChatHistory: boolean;
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY";
   settingsRevision: number;
+  synthesisEnabled: boolean;
+  synthesisEnabledAt: Date | null;
+  synthesisPolicyVersion: string | null;
+  lastSynthesisAt: Date | null;
   updatedAt: Date;
   useMemoryFacts: boolean;
   userId: string;
@@ -49,6 +57,8 @@ const settingsSelect = {
   acceptedUtilityEgressFingerprint: true,
   acceptedUtilityPolicyVersion: true,
   activeIndexGenerationId: true,
+  decayEnabled: true,
+  decayPolicyVersion: true,
   embeddingProviderModelId: true,
   learnAutomatically: true,
   memoryConsentRevision: true,
@@ -57,6 +67,10 @@ const settingsSelect = {
   referenceChatHistory: true,
   sensitiveAutomaticPolicy: true,
   settingsRevision: true,
+  synthesisEnabled: true,
+  synthesisEnabledAt: true,
+  synthesisPolicyVersion: true,
+  lastSynthesisAt: true,
   updatedAt: true,
   useMemoryFacts: true,
   userId: true
@@ -137,10 +151,12 @@ async function cancelPausedJobs(
 }
 
 const visibleKeys = [
+  "decayEnabled",
   "embeddingDeploymentId",
   "learnAutomatically",
   "referenceChatHistory",
   "sensitiveAutomaticPolicy",
+  "synthesisEnabled",
   "useMemoryFacts"
 ] as const;
 
@@ -157,6 +173,8 @@ function visiblePatchChanges(
   patch: MemorySettingsPatch
 ): boolean {
   return (
+    (owns(patch, "decayEnabled") &&
+      patch.decayEnabled !== settings.decayEnabled) ||
     (owns(patch, "embeddingDeploymentId") &&
       patch.embeddingDeploymentId !== settings.embeddingProviderModelId) ||
     (owns(patch, "learnAutomatically") &&
@@ -165,6 +183,8 @@ function visiblePatchChanges(
       patch.referenceChatHistory !== settings.referenceChatHistory) ||
     (owns(patch, "sensitiveAutomaticPolicy") &&
       patch.sensitiveAutomaticPolicy !== settings.sensitiveAutomaticPolicy) ||
+    (owns(patch, "synthesisEnabled") &&
+      patch.synthesisEnabled !== settings.synthesisEnabled) ||
     (owns(patch, "useMemoryFacts") && patch.useMemoryFacts !== settings.useMemoryFacts)
   );
 }
@@ -335,6 +355,10 @@ export function createPrismaMemorySettingsRepository(
           settings.learnAutomatically && patch.learnAutomatically === false;
         const learningResume = owns(patch, "learnAutomatically") &&
           !settings.learnAutomatically && patch.learnAutomatically === true;
+        const synthesisEnable = owns(patch, "synthesisEnabled") &&
+          !settings.synthesisEnabled && patch.synthesisEnabled === true;
+        const synthesisDisable = owns(patch, "synthesisEnabled") &&
+          settings.synthesisEnabled && patch.synthesisEnabled === false;
         if (masterPause) {
           // Unlike a subordinate preference change, pausing the master must
           // invalidate every already-admitted source/job snapshot.  Keep the
@@ -344,9 +368,16 @@ export function createPrismaMemorySettingsRepository(
         } else if (visiblePatchChanges(settings, patch)) {
           await advanceMemoryMutation(tx, settings, "MEMORY_VISIBLE_SETTING_CHANGE");
         }
+        const cutoff = now();
         const data: Prisma.UserMemorySettingsUpdateManyMutationInput = {
           settingsRevision: { increment: 1 }
         };
+        if (owns(patch, "decayEnabled")) {
+          data.decayEnabled = patch.decayEnabled;
+          if (patch.decayEnabled) {
+            data.decayPolicyVersion = MEMORY_DECAY_POLICY_VERSION;
+          }
+        }
         if (owns(patch, "embeddingDeploymentId")) {
           data.embeddingProviderModelId = patch.embeddingDeploymentId;
         }
@@ -357,6 +388,13 @@ export function createPrismaMemorySettingsRepository(
         if (owns(patch, "sensitiveAutomaticPolicy")) {
           data.sensitiveAutomaticPolicy = patch.sensitiveAutomaticPolicy;
         }
+        if (owns(patch, "synthesisEnabled")) {
+          data.synthesisEnabled = patch.synthesisEnabled;
+          if (patch.synthesisEnabled) {
+            data.synthesisEnabledAt = settings.synthesisEnabledAt ?? cutoff;
+            data.synthesisPolicyVersion = MEMORY_SYNTHESIS_POLICY_VERSION;
+          }
+        }
         if (owns(patch, "useMemoryFacts")) data.useMemoryFacts = patch.useMemoryFacts;
 
         const updated = await tx.userMemorySettings.updateMany({
@@ -364,7 +402,6 @@ export function createPrismaMemorySettingsRepository(
           where: { settingsRevision: patch.expectedSettingsRevision, userId }
         });
         if (updated.count !== 1) return memoryPersistenceFailure("memory_settings_conflict");
-        const cutoff = now();
         if (masterPause) {
           // A pause cutoff is deliberately non-destructive. It is closed at
           // resume and admission treats only its [pause, resume] interval as
@@ -432,12 +469,34 @@ export function createPrismaMemorySettingsRepository(
         if (learningResume) {
           await closePauseAdmissionCutoff(tx, userId, "AUTOMATIC_LEARNING", cutoff);
         }
+        if (synthesisDisable) {
+          await cancelPausedJobs(
+            tx,
+            userId,
+            ["SYNTHESIZE_MEMORIES"],
+            "memory_synthesis_disabled",
+            cutoff
+          );
+        }
         settings.settingsRevision += 1;
+        if (owns(patch, "decayEnabled")) {
+          settings.decayEnabled = patch.decayEnabled!;
+          if (patch.decayEnabled) {
+            settings.decayPolicyVersion = MEMORY_DECAY_POLICY_VERSION;
+          }
+        }
         if (owns(patch, "referenceChatHistory")) {
           settings.referenceChatHistory = patch.referenceChatHistory!;
         }
         if (owns(patch, "useMemoryFacts")) {
           settings.useMemoryFacts = patch.useMemoryFacts!;
+        }
+        if (owns(patch, "synthesisEnabled")) {
+          settings.synthesisEnabled = patch.synthesisEnabled!;
+          if (synthesisEnable) {
+            settings.synthesisEnabledAt ??= cutoff;
+            settings.synthesisPolicyVersion = MEMORY_SYNTHESIS_POLICY_VERSION;
+          }
         }
         return persistedSettings(tx, userId);
       });

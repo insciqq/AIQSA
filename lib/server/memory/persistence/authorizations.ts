@@ -285,8 +285,6 @@ type ControlMutationLifecycleRow = Readonly<{
   chatSourceRevision: number;
   memoryGeneration: number;
   memoryGenerationSnapshot: number;
-  memoryRevision: number;
-  retrievalRevisionSnapshot: number;
   runStatus: string;
   runUserMessageId: string;
   useMemoryFacts: boolean;
@@ -402,8 +400,6 @@ async function requireCurrentControlMutationLifecycle(
       chat."memorySourceRevision" AS "chatSourceRevision",
       settings."memoryGeneration",
       attempt."memoryGenerationSnapshot",
-      settings."memoryRevision",
-      attempt."retrievalRevisionSnapshot",
       run."status"::text AS "runStatus",
       run."userMessageId" AS "runUserMessageId",
       settings."useMemoryFacts"
@@ -439,6 +435,10 @@ async function requireCurrentControlMutationLifecycle(
   const lifecycle = current
     ? decodeMemoryActionLifecycleSnapshot(current.budgetSnapshot)
     : null;
+  // An unrelated fact, history, or index settlement may advance memoryRevision
+  // while the strict control call is in flight. Generation/settings and the
+  // exact source/branch remain the global fences; target mutations are also
+  // revalidated against their exact current version below.
   if (
     rows.length !== 1 || !current || !lifecycle || !evidence ||
     evidence.mutationHash !== controlMutationHash(row) ||
@@ -449,7 +449,6 @@ async function requireCurrentControlMutationLifecycle(
     current.attemptState !== "EXECUTING" || current.runStatus !== "preparing" ||
     !current.useMemoryFacts ||
     current.memoryGeneration !== current.memoryGenerationSnapshot ||
-    current.memoryRevision !== current.retrievalRevisionSnapshot ||
     current.chatProjectId !== null || current.chatMemoryMode !== "NORMAL" ||
     current.runUserMessageId !== current.admittedUserMessageId ||
     current.chatActiveLeafMessageId !== current.admittedAssistantLeafMessageId ||

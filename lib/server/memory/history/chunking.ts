@@ -12,10 +12,10 @@ import {
 } from "./sourceProjection";
 import { projectMemoryHistorySafeText } from "./safety";
 
-// v2 introduces explicit speaker labels in the provider-safe projection.  The
-// version is part of chunk identity, so old role-less chunks cannot be mixed
-// with the new representation in one active generation.
-export const MEMORY_HISTORY_CHUNKING_VERSION = "memory-history-chunking-v2";
+// v3 makes chunk identity independent of the chat-wide branch/source counters.
+// Exact message identities and normalized projected content keep unchanged
+// prefix chunks stable across appends while the source map still fences edits.
+export const MEMORY_HISTORY_CHUNKING_VERSION = "memory-history-chunking-v3";
 
 export type MemoryHistoryChunkingOptions = Readonly<{
   maxApproxTokens: number;
@@ -47,6 +47,8 @@ export type MemoryRecallChunkMessageJoin = Readonly<{
   ordinal: number;
   role: "assistant" | "user";
   safeTextHash: string;
+  sourceMessageContentHash: string;
+  sourceMessageUpdatedAt: string;
   startOffset: number;
 }>;
 
@@ -184,6 +186,8 @@ function renderPieces(pieces: readonly Piece[]): RenderedPieces {
         ordinal: joins.length,
         role: piece.message.role,
         safeTextHash: piece.message.safeTextHash,
+        sourceMessageContentHash: piece.message.contentHash,
+        sourceMessageUpdatedAt: piece.message.updatedAt,
         startOffset: piece.startOffset
       });
     }
@@ -480,17 +484,19 @@ export function chunkMemoryRecallProjection(
       fail("memory_history_chunk_limit_invalid");
     }
     const contentHash = memorySha256({
-      branchGeneration: snapshot.branchGeneration,
-      chatId: snapshot.chatId,
       chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
-      messageJoins: rendered.messageJoins,
-      ordinal,
-      safeProjectedText: rendered.text,
-      sourceContentHash: snapshot.sourceContentHash,
+      normalizedProjectedContent: normalizeMemorySearchText(rendered.text),
+      orderedMessageIds: rendered.messageJoins.map((join) => join.messageId),
+      sourceRanges: rendered.messageJoins.map((join) => ({
+        endOffset: join.endOffset,
+        messageId: join.messageId,
+        safeTextHash: join.safeTextHash,
+        sourceMessageContentHash: join.sourceMessageContentHash,
+        sourceMessageUpdatedAt: join.sourceMessageUpdatedAt,
+        startOffset: join.startOffset
+      })),
       sourceProjectionVersion: snapshot.projectionVersion,
-      sourceRevision: snapshot.sourceRevision,
-      turnGroupIds: rendered.turnGroupIds,
-      userId: snapshot.userId
+      turnGroupIds: rendered.turnGroupIds
     });
     return {
       approxTokens: rendered.approxTokens,

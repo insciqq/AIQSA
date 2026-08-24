@@ -30,6 +30,11 @@ import {
   type MemoryHistoryIndexPlan
 } from "./contract";
 import {
+  createPrismaMemoryChatDigestGenerator,
+  MEMORY_CHAT_DIGEST_VERSIONS,
+  type MemoryChatDigestGenerator
+} from "./digest";
+import {
   createPrismaMemoryHistoryIndexRepository,
   type MemoryHistoryIndexRepository
 } from "./repository";
@@ -46,6 +51,7 @@ export type MemoryHistoryIndexHandlerDependencies = Readonly<{
     }>[]
   ) => Promise<void>;
   classifier: MemoryHistorySafetyClassifier;
+  digestGenerator?: MemoryChatDigestGenerator;
   probeAuthority?: (userId: string) => Promise<void>;
   repository: MemoryHistoryIndexRepository;
 }>;
@@ -69,10 +75,11 @@ export function applyMemoryHistoryClassifications(
   plan: MemoryHistoryIndexPlan,
   classification: MemoryHistoryClassificationResult
 ): MemoryHistoryIndexPlan {
+  const rebuilt = new Set(plan.rebuiltChunkIds);
   if (
     !classification.policyVersion ||
     classification.policyVersion.length > 256 ||
-    classification.decisions.length !== plan.chunks.length
+    classification.decisions.length !== rebuilt.size
   ) {
     throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
   }
@@ -80,17 +87,38 @@ export function applyMemoryHistoryClassifications(
     [decision.chunkId, decision.sensitivity] as const));
   if (
     decisions.size !== classification.decisions.length ||
-    plan.chunks.some((chunk) => !decisions.has(chunk.id))
+    plan.chunks.some((chunk) => rebuilt.has(chunk.id) && !decisions.has(chunk.id)) ||
+    classification.decisions.some((decision) => !rebuilt.has(decision.chunkId))
   ) {
     throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
   }
-  const chunks = plan.chunks.flatMap((chunk) => {
+  const chunks = plan.chunks.map((chunk) => {
+    if (!rebuilt.has(chunk.id)) return chunk;
     const sensitivity = decisions.get(chunk.id);
-    if (sensitivity === "SECRET" || sensitivity === "UNCERTAIN") return [];
+    if (sensitivity === "SECRET" || sensitivity === "UNCERTAIN") {
+      return {
+        ...chunk,
+        publicationState: "SUPPRESSED" as const,
+        redactionReasonCodes: [
+          ...new Set([
+            ...chunk.redactionReasonCodes,
+            sensitivity === "SECRET"
+              ? "semantic_secret"
+              : "semantic_safety_uncertain"
+          ])
+        ].sort(),
+        redactionState: "EXCLUDED" as const,
+        safetyClass: "SECRET_TAINTED" as const
+      };
+    }
     if (sensitivity !== "NORMAL" && sensitivity !== "SENSITIVE") {
       throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
     }
-    return [{ ...chunk, safetyClass: "NORMAL" as const }];
+    return {
+      ...chunk,
+      publicationState: "ACTIVE" as const,
+      safetyClass: "NORMAL" as const
+    };
   });
   return {
     ...plan,
@@ -101,7 +129,57 @@ export function applyMemoryHistoryClassifications(
       plan.source,
       chunks,
       plan.suppressionIdentitySnapshot,
-      classification.policyVersion
+      classification.policyVersion,
+      {
+        checkpointMessages: plan.checkpointMessages,
+        digest: null,
+        digestPolicyVersion: null,
+        incremental: plan.incremental,
+        rebuiltChunkIds: plan.rebuiltChunkIds,
+        reusedChunkIds: plan.reusedChunkIds
+      }
+    )
+  };
+}
+
+function attachMemoryChatDigest(
+  plan: MemoryHistoryIndexPlan,
+  generated: Awaited<ReturnType<MemoryChatDigestGenerator["generate"]>>,
+  safety: MemoryHistoryClassificationResult | null
+): MemoryHistoryIndexPlan {
+  if (!generated.policyVersion || generated.policyVersion.length > 256) {
+    throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
+  }
+  let digest = generated.digest;
+  let digestPolicyVersion = generated.policyVersion;
+  if (digest) {
+    if (!safety || safety.decisions.length !== 1 ||
+      safety.decisions[0]?.chunkId !== digest.id) {
+      throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
+    }
+    digestPolicyVersion = `${generated.policyVersion}:${safety.policyVersion}`;
+    if (safety.decisions[0].sensitivity === "SECRET" ||
+      safety.decisions[0].sensitivity === "UNCERTAIN") digest = null;
+  } else if (safety !== null) {
+    throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
+  }
+  return {
+    ...plan,
+    digest,
+    digestPolicyVersion,
+    resultHash: memoryHistoryIndexResultHash(
+      plan.source,
+      plan.chunks,
+      plan.suppressionIdentitySnapshot,
+      plan.classificationPolicyVersion,
+      {
+        checkpointMessages: plan.checkpointMessages,
+        digest,
+        digestPolicyVersion,
+        incremental: plan.incremental,
+        rebuiltChunkIds: plan.rebuiltChunkIds,
+        reusedChunkIds: plan.reusedChunkIds
+      }
     )
   };
 }
@@ -156,14 +234,41 @@ export function createMemoryHistoryIndexHandler(
       let plan: MemoryHistoryIndexPlan;
       try {
         const classification = await dependencies.classifier.classify(
-          prepared.plan.chunks,
+          prepared.plan.chunks.filter((chunk) =>
+            prepared.plan.rebuiltChunkIds.includes(chunk.id)),
           {
             execution: { jobId: claim.id, userId: claim.userId },
             signal: context.signal
           }
         );
         plan = applyMemoryHistoryClassifications(prepared.plan, classification);
-        const executionResults = classification.executions ?? [];
+        let executionResults = [...(classification.executions ?? [])];
+        if (dependencies.digestGenerator) {
+          await context.setStage("digest_generation");
+          const generated = await dependencies.digestGenerator.generate(
+            plan.source,
+            plan.chunks,
+            { jobId: claim.id, signal: context.signal, userId: claim.userId }
+          );
+          executionResults.push(...generated.executions);
+          const digestSafety = generated.digest
+            ? await dependencies.classifier.classify([{
+                id: generated.digest.id,
+                safeProjectedText: generated.digest.safeDigestText
+              }], {
+                execution: { jobId: claim.id, userId: claim.userId },
+                signal: context.signal
+              })
+            : null;
+          if (digestSafety) executionResults.push(...(digestSafety.executions ?? []));
+          plan = attachMemoryChatDigest(plan, generated, digestSafety);
+        } else {
+          plan = attachMemoryChatDigest(plan, {
+            digest: null,
+            executions: [],
+            policyVersion: "memory-chat-digest-disabled"
+          }, null);
+        }
         await context.setStage("lexical_apply");
         return {
           acceptedResultHash: plan.resultHash,
@@ -211,6 +316,7 @@ export function createPrismaMemoryHistoryIndexHandler(
   classifier?: MemoryHistorySafetyClassifier,
   options: Readonly<{
     authority?: MemoryExecutionAuthorityDependencies;
+    digestGenerator?: MemoryChatDigestGenerator;
     structuredProvider?: MemoryStructuredOutputProvider;
   }> = {}
 ): MemoryJobHandler {
@@ -237,18 +343,37 @@ export function createPrismaMemoryHistoryIndexHandler(
           results
         );
       },
-      probeAuthority: (userId: string) => probeMemoryStructuredOutputAuthority({
-        authority,
-        client,
-        role: "MEMORY_HISTORY_CLASSIFY",
-        userId,
-        versions: MEMORY_HISTORY_CLASSIFICATION_VERSIONS
-      })
+      probeAuthority: async (userId: string) => {
+        await probeMemoryStructuredOutputAuthority({
+          authority,
+          client,
+          role: "MEMORY_HISTORY_CLASSIFY",
+          userId,
+          versions: MEMORY_HISTORY_CLASSIFICATION_VERSIONS
+        });
+        await probeMemoryStructuredOutputAuthority({
+          authority,
+          client,
+          role: "MEMORY_HISTORY_CLASSIFY",
+          userId,
+          versions: MEMORY_CHAT_DIGEST_VERSIONS
+        });
+      }
     } : {}),
     classifier: classifier ?? createPrismaMemoryHistorySafetyClassifier(client, {
       authority,
       provider: options.structuredProvider
     }),
+    ...(options.digestGenerator
+      ? { digestGenerator: options.digestGenerator }
+      : governed
+        ? {
+            digestGenerator: createPrismaMemoryChatDigestGenerator(client, {
+              authority,
+              provider: options.structuredProvider
+            })
+          }
+        : {}),
     repository: createPrismaMemoryHistoryIndexRepository(client)
   });
 }

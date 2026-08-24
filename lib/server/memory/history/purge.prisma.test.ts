@@ -3,7 +3,13 @@ import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
+import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+} from "./contract";
 import { purgeMemoryHistorySelection } from "./purge";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
 describe("Prisma Memory history purge", () => {
   afterAll(async () => {
@@ -92,6 +98,9 @@ describe("Prisma Memory history purge", () => {
           messageId: userMessage.id,
           ordinal: 0,
           role: "user",
+          safeTextHash: memorySha256(safeText),
+          sourceMessageContentHash: memorySha256(safeText),
+          sourceMessageUpdatedAt: userMessage.updatedAt,
           userId
         }
       });
@@ -188,6 +197,174 @@ describe("Prisma Memory history purge", () => {
       await expect(prisma.memoryRecallChunk.count({
         where: { id: chunk.id }
       })).resolves.toBe(0);
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
+  it("purges an invalidated tail and digest without deleting a stable v3 prefix", async () => {
+    const suffix = randomUUID();
+    const userId = `memory-history-tail-purge-${suffix}`;
+    try {
+      await prisma.user.create({
+        data: {
+          displayName: "Memory stable tail purge fixture",
+          email: `memory-history-tail-purge-${suffix}@example.test`,
+          id: userId,
+          status: "active"
+        }
+      });
+      const chat = await prisma.chat.create({
+        data: {
+          memorySourceRevision: 2,
+          title: "Stable prefix purge fixture",
+          userId
+        }
+      });
+      const message = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("The stable deployment decision."),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: message.id },
+        where: { id: chat.id }
+      });
+      const sourceHash = memorySha256({ chatId: chat.id, revision: 2 });
+      await prisma.$transaction(async (tx) => {
+        await tx.chatMemoryCheckpoint.create({
+          data: {
+            activeLeafMessageId: message.id,
+            branchGeneration: 0,
+            chatId: chat.id,
+            lastIndexedMessageId: message.id,
+            lastSucceededAt: new Date(),
+            pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+            sourceContentHash: sourceHash,
+            sourceRevision: 2,
+            status: "READY",
+            userId
+          }
+        });
+        await tx.chatMemoryCheckpointMessage.create({
+          data: {
+            chatId: chat.id,
+            messageId: message.id,
+            ordinal: 0,
+            sourceMessageCreatedAt: message.createdAt,
+            sourceMessageUpdatedAt: message.updatedAt,
+            userId
+          }
+        });
+      });
+      const stableText = "User:\nThe stable deployment decision.";
+      const invalidatedText = "Assistant:\nThe changed deployment tail.";
+      const stableChunkId = randomUUID();
+      const invalidatedChunkId = randomUUID();
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.create({
+          data: {
+            branchGeneration: 0,
+            chatId: chat.id,
+            chunkOrdinal: 0,
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+            contentHash: memorySha256(stableText),
+            id: stableChunkId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(stableText),
+            occurredFrom: message.createdAt,
+            occurredTo: message.createdAt,
+            redactionState: "NOT_NEEDED",
+            safeProjectedText: stableText,
+            safetyClass: "NORMAL",
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+            sourceRevisionAtCreation: 1,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryRecallChunkMessage.create({
+          data: {
+            chatId: chat.id,
+            chunkId: stableChunkId,
+            messageId: message.id,
+            ordinal: 0,
+            role: "user",
+            safeTextHash: memorySha256(stableText),
+            sourceMessageContentHash: memorySha256("The stable deployment decision."),
+            sourceMessageUpdatedAt: message.updatedAt,
+            userId
+          }
+        });
+      });
+      await prisma.memoryRecallChunk.create({
+        data: {
+          branchGeneration: 0,
+          chatId: chat.id,
+          chunkOrdinal: 1,
+          chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+          contentHash: memorySha256(invalidatedText),
+          id: invalidatedChunkId,
+          invalidatedAt: new Date(),
+          languageCode: "en",
+          normalizedSafeSearchText: normalizeMemorySearchText(invalidatedText),
+          occurredFrom: message.createdAt,
+          occurredTo: message.createdAt,
+          redactionState: "NOT_NEEDED",
+          safeProjectedText: invalidatedText,
+          safetyClass: "NORMAL",
+          sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+          sourceRevisionAtCreation: 1,
+          state: "INVALIDATED",
+          userId
+        }
+      });
+      const digestId = randomUUID();
+      await prisma.chatMemoryDigest.create({
+        data: {
+          activeLeafMessageId: message.id,
+          anchorChunkId: stableChunkId,
+          branchGeneration: 0,
+          chatId: chat.id,
+          contentHash: memorySha256("invalidated digest"),
+          id: digestId,
+          invalidatedAt: new Date(),
+          languageCode: "en",
+          normalizedSafeSearchText: "invalidated digest",
+          occurredFrom: message.createdAt,
+          occurredTo: message.createdAt,
+          pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+          redactionState: "NOT_NEEDED",
+          safeDigestText: "Summary: Invalidated deployment digest.",
+          safetyClass: "NORMAL",
+          safetyPolicyVersion: "memory-chat-digest-policy-test",
+          sourceContentHash: memorySha256({ chatId: chat.id, revision: 1 }),
+          sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+          sourceRevisionAtCreation: 1,
+          state: "INVALIDATED",
+          summary: "Invalidated deployment digest.",
+          userId
+        }
+      });
+
+      await prisma.$transaction((tx) => purgeMemoryHistorySelection(
+        tx,
+        userId,
+        { chatId: chat.id, kind: "SOURCE" }
+      ));
+
+      await expect(prisma.memoryRecallChunk.findUnique({
+        where: { id: stableChunkId }
+      })).resolves.toMatchObject({ state: "ACTIVE" });
+      await expect(prisma.memoryRecallChunk.findUnique({
+        where: { id: invalidatedChunkId }
+      })).resolves.toBeNull();
+      await expect(prisma.chatMemoryDigest.findUnique({
+        where: { id: digestId }
+      })).resolves.toBeNull();
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });
     }

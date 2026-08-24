@@ -27,7 +27,7 @@ import {
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
   type MemoryFactExtractionInput
 } from "../extraction/contract";
-import { decodeMemoryFactExtraction } from "../extraction/decoder";
+import { decodeMemoryFactExtractionV1 } from "../extraction/decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "../extraction/prompt";
 import { createPrismaMemoryFactExtractionRepository } from "../extraction/repository";
 import {
@@ -35,6 +35,7 @@ import {
   MEMORY_FACT_CONSOLIDATION_POLICY_VERSION,
   MEMORY_FACT_CONSOLIDATION_PROMPT_VERSION,
   MEMORY_FACT_CONSOLIDATION_SCHEMA_VERSION,
+  memoryFactConsolidationJobFingerprint,
   type MemoryFactConsolidationInput,
   type MemoryFactConsolidationOperation,
   type MemoryFactConsolidationPlan
@@ -44,10 +45,7 @@ import {
   decodeMemoryFactConsolidation
 } from "./decoder";
 import { MEMORY_FACT_CONSOLIDATION_TOOL_NAME } from "./prompt";
-import {
-  createPrismaMemoryFactConsolidationRepository,
-  reconcileMemoryFactCandidateJobs
-} from "./repository";
+import { createPrismaMemoryFactConsolidationRepository } from "./repository";
 
 const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 151));
 const keyring = MemorySuppressionKeyring.parse(
@@ -209,6 +207,7 @@ async function claimJob(jobId: string): Promise<MemoryJobClaim> {
     sourceMessageId: claimed.sourceMessageId,
     sourceRevision: claimed.sourceRevision,
     stage: claimed.stage,
+    targetFactVersionId: claimed.targetFactVersionId,
     userId: claimed.userId
   };
 }
@@ -297,7 +296,7 @@ async function createCandidate(input: Readonly<{
   const prepared = await extractionRepository().prepare(claim);
   if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
   const extractionInput: MemoryFactExtractionInput = prepared.input;
-  const plan = decodeMemoryFactExtraction([{
+  const plan = decodeMemoryFactExtractionV1([{
     arguments: {
       candidates: [{
         category: "preferences",
@@ -315,6 +314,43 @@ async function createCandidate(input: Readonly<{
     id: `extract-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
   }], extractionInput);
+  const extractedCandidate = plan.candidates[0];
+  if (!extractedCandidate) throw new Error("memory_candidate_fixture_missing");
+  const legacyCandidateId = memorySha256({
+    candidate: {
+      category: extractedCandidate.category,
+      confidence: extractedCandidate.confidence,
+      coreEligible: extractedCandidate.coreEligible,
+      coreSalience: extractedCandidate.coreSalience,
+      directness: extractedCandidate.directness,
+      displayText: extractedCandidate.displayText,
+      evidence: extractedCandidate.evidence.map((evidence) => ({
+        endOffset: evidence.endOffset,
+        messageId: evidence.messageId,
+        sourceTextHash: evidence.sourceTextHash,
+        startOffset: evidence.startOffset
+      })),
+      importance: extractedCandidate.importance,
+      languageCode: extractedCandidate.languageCode,
+      modality: extractedCandidate.modality,
+      negated: extractedCandidate.negated,
+      proposedValue: extractedCandidate.proposedValue,
+      rawTemporalExpression: extractedCandidate.rawTemporalExpression,
+      reasonCode: null,
+      scope: extractedCandidate.scope,
+      sensitivity: extractedCandidate.sensitivity,
+      state: "PENDING",
+      temporalResolutionEvidence: extractedCandidate.temporalResolutionEvidence,
+      validFrom: extractedCandidate.validFrom,
+      validTo: extractedCandidate.validTo
+    },
+    domain: "aiqsa.memory.fact-candidate",
+    source: {
+      chatId: extractionInput.source.chatId,
+      userId: extractionInput.source.userId
+    },
+    version: 1
+  });
   const bindingId = await createSucceededBinding({
     inputHash: extractionInput.inputHash,
     jobId: claim.id,
@@ -329,8 +365,7 @@ async function createCandidate(input: Readonly<{
   const committed = await coordinator.commitJobSuccess({
     acceptedResultHash: plan.outputHash,
     apply: async (tx, exactClaim) => {
-      const candidate = plan.candidates[0];
-      if (!candidate) throw new Error("memory_candidate_fixture_missing");
+      const candidate = extractedCandidate;
       if (
         exactClaim.branchGeneration === null || exactClaim.chatId === null ||
         exactClaim.sourceHash === null || exactClaim.sourceRevision === null
@@ -346,7 +381,7 @@ async function createCandidate(input: Readonly<{
           chatId: sourceChatId,
           confidence: candidate.confidence,
           createdByExecutionId: bindingId,
-          id: candidate.id,
+          id: legacyCandidateId,
           importance: candidate.importance,
           jobId: exactClaim.id,
           languageCode: candidate.languageCode,
@@ -387,7 +422,7 @@ async function createCandidate(input: Readonly<{
       });
       await tx.memoryCandidateMessage.createMany({
         data: candidate.evidence.map((evidence, ordinal) => ({
-          candidateId: candidate.id,
+          candidateId: legacyCandidateId,
           chatId: sourceChatId,
           endOffset: evidence.endOffset,
           messageId: evidence.messageId,
@@ -404,7 +439,7 @@ async function createCandidate(input: Readonly<{
   });
   if (!committed) throw new Error("memory_candidate_commit_failed");
   return {
-    candidateId: plan.candidates[0]!.id,
+    candidateId: legacyCandidateId,
     chatId: turn.chat.id,
     extractionJobId: claim.id,
     messageId: turn.userMessage.id,
@@ -484,19 +519,55 @@ async function prepareConsolidation(candidate: CandidateFixture): Promise<Readon
   claim: MemoryJobClaim;
   input: MemoryFactConsolidationInput;
 }>> {
-  await reconcileMemoryFactCandidateJobs(prisma);
-  const job = await prisma.memoryJob.findFirstOrThrow({
-    where: {
-      idempotencyFingerprint: { startsWith: `consolidate-candidate:${candidate.candidateId}:` },
-      kind: "CONSOLIDATE_CANDIDATE",
-      state: "QUEUED",
-      userId: candidate.userId
-    }
-  });
+  const job = await enqueueLegacyConsolidationFixture(candidate);
   const claim = await claimJob(job.id);
   const prepared = await consolidationRepository().prepareConsolidation(claim);
   if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
   return { claim, input: prepared.input };
+}
+
+async function enqueueLegacyConsolidationFixture(candidate: CandidateFixture) {
+  const [source, sourceJob, settings] = await Promise.all([
+    prisma.memoryCandidate.findUniqueOrThrow({
+      select: {
+        branchGeneration: true,
+        chatId: true,
+        sourceHash: true,
+        sourceRevision: true
+      },
+      where: { id: candidate.candidateId }
+    }),
+    prisma.memoryJob.findUniqueOrThrow({
+      select: { activeLeafMessageId: true },
+      where: { id: candidate.extractionJobId }
+    }),
+    prisma.userMemorySettings.findUniqueOrThrow({
+      select: { memoryGeneration: true, memoryRevision: true },
+      where: { userId: candidate.userId }
+    })
+  ]);
+  if (!sourceJob.activeLeafMessageId) {
+    throw new Error("memory_consolidation_fixture_leaf_missing");
+  }
+  return prisma.memoryJob.create({
+    data: {
+      activeLeafMessageId: sourceJob.activeLeafMessageId,
+      branchGeneration: source.branchGeneration,
+      chatId: source.chatId,
+      idempotencyFingerprint: memoryFactConsolidationJobFingerprint({
+        candidateId: candidate.candidateId,
+        sourceHash: source.sourceHash,
+        sourceRevision: source.sourceRevision
+      }),
+      kind: "CONSOLIDATE_CANDIDATE",
+      memoryGenerationSnapshot: settings.memoryGeneration,
+      memoryRevisionSnapshot: settings.memoryRevision,
+      pipelineVersion: MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
+      sourceHash: source.sourceHash,
+      sourceRevision: source.sourceRevision,
+      userId: candidate.userId
+    }
+  });
 }
 
 function consolidationPlan(
@@ -664,49 +735,6 @@ describe("Prisma Memory fact consolidation", () => {
     await prisma.$disconnect();
   });
 
-  it("does not let an already-enqueued candidate starve later consolidation work", async () => {
-    const userId = await createOwner("reconcile-starvation");
-    try {
-      const first = await createCandidate({
-        createdAt: new Date("2026-08-11T06:00:00.000Z"),
-        structuredValue: { drink: "tea" },
-        text: "I prefer tea.",
-        userId
-      });
-      await expect(reconcileMemoryFactCandidateJobs(prisma, { limit: 1 }))
-        .resolves.toBe(1);
-
-      const second = await createCandidate({
-        createdAt: new Date("2026-08-11T06:01:00.000Z"),
-        structuredValue: { drink: "coffee" },
-        text: "I prefer coffee.",
-        userId
-      });
-      await expect(reconcileMemoryFactCandidateJobs(prisma, { limit: 1 }))
-        .resolves.toBe(1);
-      await expect(prisma.memoryJob.count({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `consolidate-candidate:${second.candidateId}:`
-          },
-          kind: "CONSOLIDATE_CANDIDATE",
-          userId
-        }
-      })).resolves.toBe(1);
-      await expect(prisma.memoryJob.count({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `consolidate-candidate:${first.candidateId}:`
-          },
-          kind: "CONSOLIDATE_CANDIDATE",
-          userId
-        }
-      })).resolves.toBe(1);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
   it.each(["AUTOMATIC_FACTS", "ALL_REUSABLE"] as const)(
     "rejects delayed candidate consolidation across a %s cutoff",
     async (barrierKind) => {
@@ -732,17 +760,7 @@ describe("Prisma Memory fact consolidation", () => {
         }
       });
 
-      await expect(reconcileMemoryFactCandidateJobs(prisma)).resolves.toBe(1);
-      const job = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `consolidate-candidate:${candidate.candidateId}:`
-          },
-          kind: "CONSOLIDATE_CANDIDATE",
-          state: "QUEUED",
-          userId
-        }
-      });
+      const job = await enqueueLegacyConsolidationFixture(candidate);
       const claim = await claimJob(job.id);
       await expect(consolidationRepository().prepareConsolidation(claim))
         .resolves.toEqual({
@@ -757,7 +775,7 @@ describe("Prisma Memory fact consolidation", () => {
     }
   });
 
-  it("retains A, rejects a delayed B-during plan at commit, admits C, and rebuilds only A/C", async () => {
+  it("retains legacy A/C, rejects delayed B, and excludes all three from the vNext index", async () => {
     const userId = await createOwner("learn-pause-abc");
     const pausedAt = new Date("2026-08-21T10:12:00.000Z");
     const resumedAt = new Date("2026-08-21T10:20:00.000Z");
@@ -797,11 +815,11 @@ describe("Prisma Memory fact consolidation", () => {
       const bPrepared = await extractionRepository().prepare(bClaim);
       if ("decision" in bPrepared) throw new Error(bPrepared.decision.errorCode);
       expect(bPrepared.input.messages.map(({ id }) => id))
-        .toEqual([turnB.userMessage.id, turnB.assistantMessage.id]);
+        .toEqual([turnB.userMessage.id]);
       expect(bPrepared.input.messages
         .filter(({ evidenceEligible }) => evidenceEligible)
         .map(({ id }) => id)).toEqual([turnB.userMessage.id]);
-      const bPlan = decodeMemoryFactExtraction([{
+      const bPlan = decodeMemoryFactExtractionV1([{
         arguments: {
           candidates: [{
             category: "preferences",
@@ -927,10 +945,7 @@ describe("Prisma Memory fact consolidation", () => {
           userId
         }
       })).flatMap(({ factVersionId }) => factVersionId ? [factVersionId] : []);
-      expect(rebuiltFactVersionIds.sort()).toEqual([
-        factA.currentVersionId!,
-        factC.currentVersionId!
-      ].sort());
+      expect(rebuiltFactVersionIds).toEqual([]);
       await expect(prisma.memoryFactVersion.count({
         where: {
           displayText: { contains: "B-during" },
@@ -957,17 +972,7 @@ describe("Prisma Memory fact consolidation", () => {
         userId
       });
       const legacy = await cloneCandidateIntoLegacyFolder(canonical, folder.id);
-      await reconcileMemoryFactCandidateJobs(prisma);
-      const job = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `consolidate-candidate:${legacy.candidateId}:`
-          },
-          kind: "CONSOLIDATE_CANDIDATE",
-          state: "QUEUED",
-          userId
-        }
-      });
+      const job = await enqueueLegacyConsolidationFixture(legacy);
       const claim = await claimJob(job.id);
 
       await expect(consolidationRepository().prepareConsolidation(claim))
@@ -1196,7 +1201,7 @@ describe("Prisma Memory fact consolidation", () => {
         scope: { targetId: null, type: "GLOBAL_USER" }
       });
       expect(prepared.input.relatedFacts[0]!.canonicalKey)
-        .toMatch(/^prop\.v1\.[a-f0-9]{64}$/u);
+        .toMatch(/^prop:v1:[a-f0-9]{64}$/u);
       expect(prepared.input.relatedFacts[0]!.canonicalKey)
         .not.toBe(prepared.input.candidate.canonicalKey);
       expect(prepared.input.relatedFacts[0]?.versions).toHaveLength(1);
@@ -1292,7 +1297,7 @@ describe("Prisma Memory fact consolidation", () => {
 
       await mutateSource(userId, reinforcement.chatId, {
         mutations: ["BRANCH_PATH_CHANGE"],
-        patch: {}
+        patch: { activeLeafMessageId: null }
       });
 
       await expect(prisma.memoryFact.findUniqueOrThrow({
@@ -1428,7 +1433,7 @@ describe("Prisma Memory fact consolidation", () => {
 
       await mutateSource(userId, coffee.chatId, {
         mutations: ["BRANCH_PATH_CHANGE"],
-        patch: {}
+        patch: { activeLeafMessageId: null }
       });
       await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
         .resolves.toMatchObject({ currentVersionId: teaVersionId, state: "ACTIVE" });
@@ -1441,7 +1446,7 @@ describe("Prisma Memory fact consolidation", () => {
 
       await mutateSource(userId, tea.chatId, {
         mutations: ["BRANCH_PATH_CHANGE"],
-        patch: {}
+        patch: { activeLeafMessageId: null }
       });
       await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
         .resolves.toMatchObject({ currentVersionId: null, state: "RETRACTED" });

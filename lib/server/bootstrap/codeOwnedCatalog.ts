@@ -12,6 +12,7 @@ import {
   searchDraftHash
 } from "@/lib/server/search/configuration";
 import { searchValidationFingerprint } from "@/lib/server/search/probeBinding";
+import { supportsPdfInputAdapter } from "@/lib/server/providers/pdfInputEvidence";
 
 type CodeOwnedCatalogClient = Pick<
   Prisma.TransactionClient,
@@ -87,7 +88,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function providerModelDraftConfig(model: (typeof defaultProviderModels)[number]) {
+export function codeOwnedProviderModelDraftConfig(
+  model: (typeof defaultProviderModels)[number]
+) {
   const adapterKind = {
     anthropic: "anthropic_messages",
     fake: "fake",
@@ -95,6 +98,9 @@ function providerModelDraftConfig(model: (typeof defaultProviderModels)[number])
     openai: "openai_responses_native",
     openrouter: "openrouter_chat_completions"
   }[model.provider];
+  if (!adapterKind) {
+    throw new Error("provider_model_adapter_kind_missing");
+  }
   const routeProvider = isRecord(model.defaultParams.provider)
     ? model.defaultParams.provider
     : {};
@@ -109,6 +115,7 @@ function providerModelDraftConfig(model: (typeof defaultProviderModels)[number])
     answerSelectable: true,
     capabilities: {
       ...model.capabilities,
+      nativePdfInput: supportsPdfInputAdapter(adapterKind),
       contextWindow: model.contextWindow
     },
     defaultParams: model.defaultParams,
@@ -200,7 +207,7 @@ async function synchronizeModels(
       fail(options, `Missing provider template identity: ${templateKey}.`);
     }
     const active = localSeed && model.provider === "fake";
-    const draftConfig = providerModelDraftConfig(model);
+    const draftConfig = codeOwnedProviderModelDraftConfig(model);
     const row = await client.providerModel.upsert({
       create: {
         activeConfig: active ? json(draftConfig) : undefined,

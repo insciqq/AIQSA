@@ -34,6 +34,7 @@ export type MemoryActionTargetSearchService = Readonly<{
   }>): Promise<MemoryActionTargetSearchResult>;
   semantic(input: Readonly<{
     attemptId: string;
+    fallbackText?: string;
     query: string;
     signal: AbortSignal;
     userId: string;
@@ -83,6 +84,7 @@ function eligibilityPredicates(userId: string): readonly Prisma.Sql[] {
     Prisma.sql`fact."currentVersionId" = version."id"`,
     Prisma.sql`version."state" = 'ACTIVE'::"MemoryFactVersionState"`,
     Prisma.sql`version."systemTo" IS NULL`,
+    Prisma.sql`(version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)`,
     Prisma.sql`version."contentPurgedAt" IS NULL`,
     Prisma.sql`version."displayText" IS NOT NULL`,
     Prisma.sql`version."structuredValue" IS NOT NULL`,
@@ -197,6 +199,48 @@ function fusedTargets(
     .map(({ target }) => target);
 }
 
+function semanticTokens(value: string): ReadonlySet<string> {
+  return new Set(normalizeMemorySearchText(value)
+    .split(/[^\p{L}\p{N}]+/gu)
+    .filter((token) => [...token].length >= 3));
+}
+
+function localFallbackTargets(
+  memories: readonly MemorySummary[],
+  fallbackText: string | undefined
+): readonly MemoryActionTarget[] {
+  if (!fallbackText || memoryExplicitStatementContainsSecret(fallbackText)) return [];
+  const requested = semanticTokens(fallbackText);
+  if (requested.size === 0) return [];
+  const scored = memories.flatMap((summary) => {
+    const target = eligibleSemanticTarget(summary);
+    if (!target) return [];
+    const shared = [...semanticTokens(target.statement)].filter((token) =>
+      requested.has(token));
+    const strong = shared.length >= 2 || shared.some((token) => [...token].length >= 8);
+    return strong ? [{ score: shared.length, target }] : [];
+  }).sort((left, right) => right.score - left.score ||
+    left.target.factId.localeCompare(right.target.factId));
+  const strongest = scored[0]?.score;
+  return strongest === undefined
+    ? []
+    : scored.filter(({ score }) => score === strongest)
+      .slice(0, MEMORY_ACTION_TARGET_MAX_CANDIDATES)
+      .map(({ target }) => target);
+}
+
+function mergeTargetCandidates(
+  primary: readonly MemoryActionTarget[],
+  supplemental: readonly MemoryActionTarget[]
+): readonly MemoryActionTarget[] {
+  const merged = new Map<string, MemoryActionTarget>();
+  for (const target of [...primary, ...supplemental]) {
+    const key = `${target.factId}:${target.versionId}`;
+    if (!merged.has(key)) merged.set(key, target);
+  }
+  return [...merged.values()].slice(0, MEMORY_ACTION_TARGET_MAX_CANDIDATES);
+}
+
 export function createMemoryActionTargetSearchService(input: Readonly<{
   explicitService: ExplicitMemoryService;
   repository: MemoryActionTargetRepository;
@@ -252,6 +296,8 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
               allowedHistorySafety: ["NORMAL"],
               assistantId: null,
               chatId: null,
+              factMode: "CURRENT",
+              factTemporalAsOf: null,
               folderId: null,
               occurredFrom: null,
               occurredTo: null,
@@ -300,9 +346,25 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
           const target = eligibleSemanticTarget(summary);
           return target ? [target] : [];
         });
+        const fused = fusedTargets(lexicalTargets, scoredVectorTargets);
+        if (fused.length > 1 || !request.fallbackText) {
+          return { status: "READY", targets: fused };
+        }
+        const fallback = await input.explicitService.list(request.userId, {
+          pageSize: 20,
+          scope: { type: "GLOBAL_USER" },
+          state: "ACTIVE"
+        });
         return {
           status: "READY",
-          targets: fusedTargets(lexicalTargets, scoredVectorTargets)
+          // One semantic winner is not enough to prove uniqueness when the
+          // exact user command locally matches several Saved Memories. Keep
+          // every strongest tied target so the strict selector can ask for a
+          // choice instead of silently applying a destructive mutation.
+          targets: mergeTargetCandidates(
+            fused,
+            localFallbackTargets(fallback.memories, request.fallbackText)
+          )
         };
       } catch {
         return { reason: "memory_action_semantic_target_unavailable", status: "UNAVAILABLE" };

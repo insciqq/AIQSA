@@ -33,6 +33,7 @@ function settingsResponse() {
       administratorSetupRequired: false,
       automaticLearning: true,
       automaticLearningAvailable: true,
+      decayAvailable: true,
       explicitMemory: true,
       historyRecall: true,
       managementAvailable: true,
@@ -40,6 +41,7 @@ function settingsResponse() {
       pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
       retrievalAvailable: true,
+      synthesisAvailable: true,
       temporaryChats: true
     },
     egress: {
@@ -60,6 +62,7 @@ function settingsResponse() {
       totalChats: 9
     },
     settings: {
+      decayEnabled: false,
       embeddingDeployment: {
         connectionDisplayName: "Provider",
         id: "embedding-1",
@@ -72,6 +75,7 @@ function settingsResponse() {
       referenceChatHistory: true,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 12,
+      synthesisEnabled: false,
       updatedAt: now,
       useMemoryFacts: true
     }

@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryClientRefService } from "../actions/clientRef";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
-import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+} from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import { createMemorySourceActionService } from "./actionService";
 
@@ -26,6 +29,9 @@ function setup() {
       })),
     chat: { findFirst: vi.fn() },
     chatMemoryCheckpoint: { findUnique: vi.fn() },
+    chatMemoryCheckpointMessage: { findMany: vi.fn(async () => []) },
+    chatMemoryDigest: { findFirst: vi.fn() },
+    chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
     memoryFact: { findFirst: vi.fn(async () => ({
       currentVersionId: "version-1",
       scopeId: "scope-1",
@@ -33,6 +39,7 @@ function setup() {
     })) },
     memoryFactVersion: { findFirst: vi.fn(async () => ({
       contentPurgedAt: null,
+      expiresAt: null,
       id: "version-1",
       safetyClassificationState: "CLASSIFIED",
       sensitivityClass: "NORMAL",
@@ -155,6 +162,7 @@ describe("Memory source actions", () => {
     }, now);
     client.memoryFactVersion.findFirst.mockResolvedValue({
       contentPurgedAt: null,
+      expiresAt: null,
       id: "version-1",
       safetyClassificationState: "CLASSIFIED",
       sensitivityClass: "NORMAL",
@@ -194,6 +202,22 @@ describe("Memory source actions", () => {
       href: expect.stringContaining("/api/me/memory/source-actions/open?memoryRef="),
       status: "READY"
     });
+
+    client.$queryRaw.mockReset().mockResolvedValueOnce([{ id: "version-1" }]);
+    client.memoryFactVersion.findFirst.mockResolvedValueOnce({
+      contentPurgedAt: null,
+      expiresAt: new Date(now.getTime() - 1),
+      id: "version-1",
+      safetyClassificationState: "CLASSIFIED",
+      sensitivityClass: "NORMAL",
+      sourceMode: "AUTOMATIC",
+      state: "ACTIVE"
+    } as never);
+    await expect(service.execute("user-1", {
+      action: "OPEN_SOURCE",
+      memoryRef: learnedRef,
+      requestNonce: "request-expired"
+    }, now)).rejects.toMatchObject({ code: "memory_version_stale" });
 
     client.$queryRaw.mockReset().mockResolvedValueOnce([]);
     await expect(service.execute("user-1", {
@@ -263,6 +287,7 @@ describe("Memory source actions", () => {
       })) },
       memoryFactVersion: { findFirst: vi.fn(async () => ({
         contentPurgedAt: null,
+        expiresAt: null,
         id: "version-1",
         safetyClassificationState: "CLASSIFIED",
         sensitivityClass: "NORMAL",
@@ -434,30 +459,48 @@ describe("Memory source actions", () => {
     const historyClient = {
       ...client,
       chat: { findFirst: vi.fn(async () => ({
+        activeLeafMessageId: "source-message-1",
         id: "source-chat-1",
         memoryBranchGeneration: 4,
         memoryMode: "NORMAL",
         memorySourceRevision: 8
       })) },
       chatMemoryCheckpoint: { findUnique: vi.fn(async () => ({
-        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+        activeLeafMessageId: "source-message-1",
+        branchGeneration: 4,
+        lastIndexedMessageId: "source-message-1",
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        sourceContentHash: "s".repeat(64),
+        sourceRevision: 8,
+        status: "READY"
       })) },
+      chatMemoryCheckpointMessage: { findMany: vi.fn(async () => [{
+        messageId: "source-message-1",
+        sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
+      }]) },
       memoryRecallChunk: { findFirst: vi.fn(async () => ({
         branchGeneration: 4,
         chatId: "source-chat-1",
         chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
         contentHash: "c".repeat(64),
+        redactionState: "NOT_NEEDED",
+        safetyClass: "NORMAL",
         sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
         sourceRevisionAtCreation: 8,
         state: "ACTIVE"
       })) },
       memoryRecallChunkMessage: { findMany: vi.fn(async () => [{
         chatId: "source-chat-1",
-        messageId: "source-message-1"
+        messageId: "source-message-1",
+        sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
       }]) },
-      message: { findMany: vi.fn(async () => [{ id: "source-message-1" }]) },
+      message: { findMany: vi.fn(async () => [{
+        id: "source-message-1",
+        updatedAt: new Date("2026-08-21T04:00:00.000Z")
+      }]) },
       modelRunMemoryItem: { findFirst: vi.fn(async () => ({
         factVersionId: null,
+        featureSnapshot: { projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT" },
         id: "item-history-1",
         itemType: "RECALL_CHUNK",
         recallChunkId: "chunk-1",
@@ -554,19 +597,163 @@ describe("Memory source actions", () => {
     });
 
     historyClient.chatMemoryCheckpoint.findUnique.mockResolvedValueOnce({
-      pipelineVersion: "memory-history-index-stale"
+      activeLeafMessageId: "source-message-1",
+      branchGeneration: 4,
+      lastIndexedMessageId: "source-message-1",
+      pipelineVersion: "memory-history-index-stale",
+      sourceContentHash: "s".repeat(64),
+      sourceRevision: 8,
+      status: "READY"
     });
     await expect(historyService.resolveOpenSource("user-1", ref, now)).rejects.toMatchObject({
       code: "memory_not_found"
     });
 
     historyClient.chat.findFirst.mockResolvedValueOnce({
+      activeLeafMessageId: "source-message-1",
       id: "source-chat-1",
       memoryBranchGeneration: 4,
       memoryMode: "EXCLUDED",
       memorySourceRevision: 9
     });
     await expect(historyService.resolveOpenSource("user-1", ref, now)).rejects.toMatchObject({
+      code: "memory_not_found"
+    });
+  });
+
+  it("revalidates a digest source while targeting its stable anchor chunk", async () => {
+    const { client } = setup();
+    const updatedAt = new Date("2026-08-21T04:00:00.000Z");
+    const key = randomBytes(32);
+    const refs = createMemoryClientRefService({ encryptionKey: () => key });
+    client.modelRunMemoryItem.findFirst.mockResolvedValue({
+      factVersionId: null,
+      featureSnapshot: {
+        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+        supportingItemId: "digest-1"
+      },
+      id: "item-digest-1",
+      itemType: "RECALL_CHUNK",
+      recallChunkId: "chunk-anchor",
+      sourceBranchGenerationSnapshot: 4,
+      sourceChatIdSnapshot: "source-chat-1",
+      sourceContentHashSnapshot: "c".repeat(64),
+      sourceMessageIdsSnapshot: ["source-message-0", "source-message-1"],
+      sourceRevisionSnapshot: 3
+    } as never);
+    client.chat.findFirst.mockResolvedValue({
+      activeLeafMessageId: "source-message-1",
+      id: "source-chat-1",
+      memoryBranchGeneration: 5,
+      memoryMode: "NORMAL",
+      memorySourceRevision: 4
+    } as never);
+    client.chatMemoryCheckpoint.findUnique.mockResolvedValue({
+      activeLeafMessageId: "source-message-1",
+      branchGeneration: 5,
+      lastIndexedMessageId: "source-message-1",
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+      sourceContentHash: "s".repeat(64),
+      sourceRevision: 4,
+      status: "READY"
+    } as never);
+    client.chatMemoryCheckpointMessage.findMany.mockResolvedValue([
+      { messageId: "source-message-0", sourceMessageUpdatedAt: updatedAt },
+      { messageId: "source-message-1", sourceMessageUpdatedAt: updatedAt }
+    ] as never);
+    client.memoryRecallChunk.findFirst.mockResolvedValue({
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+      contentHash: "c".repeat(64),
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 3,
+      state: "ACTIVE"
+    } as never);
+    client.memoryRecallChunkMessage.findMany.mockResolvedValue([{
+      chatId: "source-chat-1",
+      messageId: "source-message-1",
+      sourceMessageUpdatedAt: updatedAt
+    }] as never);
+    client.message.findMany.mockResolvedValue([
+      { id: "source-message-0", updatedAt },
+      { id: "source-message-1", updatedAt }
+    ] as never);
+    client.chatMemoryDigest.findFirst.mockResolvedValue({
+      activeLeafMessageId: "source-message-1",
+      anchorChunkId: "chunk-anchor",
+      branchGeneration: 5,
+      chatId: "source-chat-1",
+      id: "digest-1",
+      pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceContentHash: "s".repeat(64),
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 4,
+      state: "ACTIVE"
+    } as never);
+    client.chatMemoryDigestMessage.findMany.mockResolvedValue([
+      {
+        chatId: "source-chat-1",
+        messageId: "source-message-0",
+        sourceMessageUpdatedAt: updatedAt
+      },
+      {
+        chatId: "source-chat-1",
+        messageId: "source-message-1",
+        sourceMessageUpdatedAt: updatedAt
+      }
+    ] as never);
+    const suppress = vi.fn(async () => undefined);
+    const service = createMemorySourceActionService({
+      authorizationRepository: { mint: vi.fn() },
+      client: client as never,
+      clientRefs: refs,
+      explicitService: {} as never,
+      lifecycleService: {} as never,
+      recallMutationRepository: { suppress }
+    });
+    const ref = refs.mint("user-1", {
+      allowedOperations: ["FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+      originatingRunId: "run-1",
+      target: {
+        exactItemId: "chunk-anchor",
+        factId: null,
+        factVersionId: null,
+        itemType: "RECALL_CHUNK",
+        recallChunkId: "chunk-anchor",
+        sourceChatId: "source-chat-1",
+        sourceMessageIds: ["source-message-1"]
+      }
+    }, now);
+
+    await expect(service.resolveOpenSource("user-1", ref, now)).resolves.toEqual({
+      chatId: "source-chat-1",
+      messageId: "source-message-1"
+    });
+    await expect(service.execute("user-1", {
+      action: "FORGET",
+      memoryRef: ref,
+      requestNonce: "digest-forget"
+    }, now)).resolves.toEqual({ status: "COMMITTED" });
+    expect(suppress).toHaveBeenCalledWith("user-1", {
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      chunkId: "chunk-anchor",
+      contentHash: "c".repeat(64),
+      messageIds: ["source-message-1"],
+      requestNonce: "digest-forget",
+      sourceRevision: 3
+    });
+
+    client.message.findMany.mockResolvedValueOnce([
+      { id: "source-message-0", updatedAt: new Date("2026-08-21T04:01:00.000Z") },
+      { id: "source-message-1", updatedAt }
+    ] as never);
+    await expect(service.resolveOpenSource("user-1", ref, now)).rejects.toMatchObject({
       code: "memory_not_found"
     });
   });

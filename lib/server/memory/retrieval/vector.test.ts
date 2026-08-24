@@ -5,6 +5,7 @@ import {
   MEMORY_HNSW_OVERFETCH_MULTIPLIER,
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   memoryVectorCandidateSql,
+  memoryVectorEligibleCountSql,
   searchMemoryVectorLanes,
   type MemoryVectorHit,
   type MemoryVectorLaneExecutor,
@@ -30,6 +31,8 @@ function input(overrides: Partial<MemoryVectorSearchInput> = {}): MemoryVectorSe
       allowedHistorySafety: ["NORMAL", "SENSITIVE"],
       assistantId: null,
       chatId: "chat-1",
+      factMode: "CURRENT",
+      factTemporalAsOf: null,
       folderId: "folder-1",
       occurredFrom: null,
       occurredTo: null,
@@ -87,6 +90,22 @@ describe("Memory vector lane orchestration", () => {
     expect(factSql).toContain('scope."targetIdSnapshot" IS NULL');
     expect(factSql).toContain('scope."targetDisplaySnapshot" IS NULL');
     expect(factSql).not.toMatch(/scope\."scopeType" = '(?:FOLDER|ASSISTANT|CHAT)'/u);
+  });
+
+  it("bounds the conservative strategy corpus without duplicating authority scans", () => {
+    const count = memoryVectorEligibleCountSql({
+      input: input(),
+      itemType: "RECALL_CHUNK"
+    });
+    const sql = count.strings.join("?");
+
+    expect(sql).toContain("AS bounded_eligible");
+    expect(count.values).toContain(MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1);
+    expect(sql).toContain('entry."indexGenerationId" =');
+    expect(sql).toContain('entry."embeddingDimension" =');
+    expect(sql).not.toContain("authority_source_map");
+    expect(sql).not.toContain("MemoryFactVersion");
+    expect(sql).not.toContain("MemoryRecallChunk");
   });
 
   it("uses bounded HNSW overfetch and exact fallback after authoritative underfill", async () => {

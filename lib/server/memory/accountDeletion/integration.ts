@@ -75,6 +75,8 @@ async function fenceAndAdmit(
       acceptedUtilityEgressFingerprint: null,
       acceptedUtilityPolicyVersion: null,
       activeIndexGenerationId: null,
+      decayEnabled: false,
+      decayPolicyVersion: null,
       embeddingProviderModelId: null,
       learnAutomatically: false,
       memoryConsentRevision: { increment: 1 },
@@ -82,6 +84,10 @@ async function fenceAndAdmit(
       memoryRevision: { increment: 1 },
       referenceChatHistory: false,
       settingsRevision: { increment: 1 },
+      synthesisEnabled: false,
+      synthesisEnabledAt: null,
+      synthesisPolicyVersion: null,
+      lastSynthesisAt: null,
       useMemoryFacts: false
     },
     where: { userId }

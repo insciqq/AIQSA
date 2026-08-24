@@ -47,7 +47,8 @@ function claim(): MemoryJobClaim {
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
     recoveredLease: false,
     sourceMessageId: null,
-    stage: null
+    stage: null,
+    targetFactVersionId: null
   };
 }
 
@@ -68,6 +69,7 @@ function chunk(id: string, ordinal: number): MemoryHistoryIndexPlan["chunks"][nu
     occurredTo: "2026-08-10T10:01:00.000Z",
     ordinal,
     overlapFromPreviousTurnGroupIds: [],
+    publicationState: "ACTIVE",
     providerSafeText: text,
     redactionReasonCodes: [],
     redactionState: "NOT_NEEDED",
@@ -84,16 +86,31 @@ function chunk(id: string, ordinal: number): MemoryHistoryIndexPlan["chunks"][nu
 
 function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndexPlan {
   const suppressionIdentitySnapshot = "b".repeat(64);
+  const checkpointMessages: MemoryHistoryIndexPlan["checkpointMessages"] = [];
+  const rebuiltChunkIds = chunks.map(({ id }) => id);
+  const incremental = {
+    commonPathMessageCount: 0,
+    mode: "FULL_REBUILD" as const,
+    rebuildFromMessageOrdinal: 0
+  };
   const resultHash = memoryHistoryIndexResultHash(
     source,
     chunks,
-    suppressionIdentitySnapshot
+    suppressionIdentitySnapshot,
+    null,
+    { checkpointMessages, incremental, rebuiltChunkIds }
   );
   return {
     classificationPolicyVersion: null,
+    checkpointMessages,
     chunks,
+    digest: null,
+    digestPolicyVersion: null,
+    incremental,
     preparedResultHash: resultHash,
+    rebuiltChunkIds,
     resultHash,
+    reusedChunkIds: [],
     source,
     suppressionIdentitySnapshot
   };
@@ -117,7 +134,7 @@ function context() {
 }
 
 describe("Memory INDEX_HISTORY handler", () => {
-  it("drops secret or uncertain chunks and canonicalizes legacy sensitive output", () => {
+  it("suppresses secret chunks and canonicalizes legacy sensitive output", () => {
     const current = plan([chunk("chunk-sensitive", 0), chunk("chunk-secret", 1)]);
     const classified = applyMemoryHistoryClassifications(current, {
       decisions: [
@@ -127,10 +144,15 @@ describe("Memory INDEX_HISTORY handler", () => {
       policyVersion: "memory-history-safety-policy-test"
     });
 
-    expect(classified.chunks).toMatchObject([{
-      id: "chunk-sensitive",
-      safetyClass: "NORMAL"
-    }]);
+    expect(classified.chunks).toMatchObject([
+      { id: "chunk-sensitive", publicationState: "ACTIVE", safetyClass: "NORMAL" },
+      {
+        id: "chunk-secret",
+        publicationState: "SUPPRESSED",
+        redactionState: "EXCLUDED",
+        safetyClass: "SECRET_TAINTED"
+      }
+    ]);
     expect(classified.preparedResultHash).toBe(current.resultHash);
     expect(classified.resultHash).not.toBe(current.resultHash);
   });
@@ -224,6 +246,135 @@ describe("Memory INDEX_HISTORY handler", () => {
         classificationPolicyVersion: "memory-history-safety-policy-test",
         preparedResultHash: currentPlan.resultHash,
         resultHash: result.acceptedResultHash
+      }),
+      new Date("2026-08-10T12:00:00.000Z")
+    );
+  });
+
+  it("classifies only the rebuilt tail and safety-checks the bounded digest", async () => {
+    const currentClaim = claim();
+    const basePlan = plan([chunk("chunk-stable", 0), chunk("chunk-tail", 1)]);
+    const incremental = {
+      commonPathMessageCount: 4,
+      mode: "APPEND" as const,
+      rebuildFromMessageOrdinal: 2
+    };
+    const rawResultHash = memoryHistoryIndexResultHash(
+      source,
+      basePlan.chunks,
+      basePlan.suppressionIdentitySnapshot,
+      null,
+      {
+        checkpointMessages: basePlan.checkpointMessages,
+        incremental,
+        rebuiltChunkIds: ["chunk-tail"],
+        reusedChunkIds: ["chunk-stable"]
+      }
+    );
+    const currentPlan: MemoryHistoryIndexPlan = {
+      ...basePlan,
+      incremental,
+      preparedResultHash: rawResultHash,
+      rebuiltChunkIds: ["chunk-tail"],
+      resultHash: rawResultHash,
+      reusedChunkIds: ["chunk-stable"]
+    };
+    const digest = {
+      anchorChunkId: "chunk-tail",
+      contentHash: "d".repeat(64),
+      decisions: ["Use cedar deployment"],
+      id: "digest-1",
+      languageCode: "en",
+      occurredFrom: "2026-08-10T10:00:00.000Z",
+      occurredTo: "2026-08-10T10:01:00.000Z",
+      openLoops: ["Confirm rollout"],
+      safeDigestText: "Summary: Deployment options were compared.",
+      sourceChunkIds: ["chunk-stable", "chunk-tail"],
+      sourceMessageIds: ["user-1", "assistant-1"],
+      summary: "Deployment options were compared.",
+      topics: ["Deployment"]
+    } as const;
+    const classifier = {
+      classify: vi.fn()
+        .mockResolvedValueOnce({
+          decisions: [{ chunkId: "chunk-tail", sensitivity: "NORMAL" }],
+          executions: [{
+            acceptedOutputHash: "a".repeat(64),
+            bindingId: "tail-classification"
+          }],
+          policyVersion: "memory-history-safety-policy-test"
+        })
+        .mockResolvedValueOnce({
+          decisions: [{ chunkId: digest.id, sensitivity: "NORMAL" }],
+          executions: [{
+            acceptedOutputHash: "b".repeat(64),
+            bindingId: "digest-classification"
+          }],
+          policyVersion: "memory-history-digest-safety-test"
+        })
+    };
+    const digestGenerator = {
+      generate: vi.fn(async () => ({
+        digest,
+        executions: [{
+          acceptedOutputHash: "c".repeat(64),
+          bindingId: "digest-generation"
+        }],
+        policyVersion: "memory-chat-digest-policy-test"
+      }))
+    };
+    const apply = vi.fn(async () => undefined);
+    const authorizeResults = vi.fn(async () => undefined);
+    const handler = createMemoryHistoryIndexHandler({
+      authorizeResults,
+      classifier,
+      digestGenerator,
+      repository: {
+        apply,
+        preflight: vi.fn(async () => ({ status: "READY" as const })),
+        prepare: vi.fn(async () => ({ plan: currentPlan }))
+      } as unknown as MemoryHistoryIndexRepository
+    });
+    const result = await handler.execute(currentClaim, context());
+
+    expect(classifier.classify.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ id: "chunk-tail" })
+    ]);
+    expect(classifier.classify.mock.calls[1]?.[0]).toEqual([{
+      id: "digest-1",
+      safeProjectedText: digest.safeDigestText
+    }]);
+    expect(digestGenerator.generate).toHaveBeenCalledWith(
+      source,
+      expect.arrayContaining([
+        expect.objectContaining({ id: "chunk-stable" }),
+        expect.objectContaining({ id: "chunk-tail" })
+      ]),
+      expect.objectContaining({ jobId: currentClaim.id, userId: source.userId })
+    );
+    await result.apply?.({
+      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
+    } as never, currentClaim);
+    expect(authorizeResults).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      source.userId,
+      currentClaim.id,
+      expect.arrayContaining([
+        expect.objectContaining({ bindingId: "tail-classification" }),
+        expect.objectContaining({ bindingId: "digest-generation" }),
+        expect.objectContaining({ bindingId: "digest-classification" })
+      ])
+    );
+    expect(apply).toHaveBeenCalledWith(
+      expect.anything(),
+      currentClaim,
+      expect.objectContaining({
+        digest,
+        digestPolicyVersion:
+          "memory-chat-digest-policy-test:memory-history-digest-safety-test",
+        rebuiltChunkIds: ["chunk-tail"],
+        reusedChunkIds: ["chunk-stable"]
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );

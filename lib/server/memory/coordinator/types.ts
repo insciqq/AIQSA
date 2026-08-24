@@ -19,6 +19,7 @@ export type MemoryJobDescriptor = Readonly<{
   sourceMessageId: string | null;
   sourceRevision: number | null;
   stage: string | null;
+  targetFactVersionId: string | null;
   userId: string;
 }>;
 

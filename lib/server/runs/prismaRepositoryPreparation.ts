@@ -59,6 +59,8 @@ import {
   scheduleTemporaryChatDeletion,
   temporaryRetentionDeadline
 } from "../memory/temporaryRetention";
+import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
+import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
 import {
   decodeMemoryActionFeedback,
   decodeMemoryInitialChatMode,
@@ -195,15 +197,21 @@ const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
   acceptedUtilityEgressFingerprint: null,
   acceptedUtilityPolicyVersion: null,
   activeIndexGenerationId: null,
+  decayEnabled: false,
+  decayPolicyVersion: null,
   embeddingProviderModelId: null,
   learnAutomatically: false,
   memoryConsentRevision: 0,
   memoryGeneration: 0,
   memoryRevision: 0,
   referenceChatHistory: false,
-  schemaVersion: 1,
+  schemaVersion: 2,
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
   settingsRevision: 0,
+  synthesisEnabled: false,
+  synthesisEnabledAt: null,
+  synthesisPolicyVersion: null,
+  lastSynthesisAt: null,
   useMemoryFacts: false,
   userId: "temporary"
 });
@@ -235,6 +243,8 @@ async function loadPreparingSettings(
       acceptedUtilityEgressFingerprint: true,
       acceptedUtilityPolicyVersion: true,
       activeIndexGenerationId: true,
+      decayEnabled: true,
+      decayPolicyVersion: true,
       embeddingProviderModelId: true,
       learnAutomatically: true,
       memoryConsentRevision: true,
@@ -243,6 +253,10 @@ async function loadPreparingSettings(
       referenceChatHistory: true,
       sensitiveAutomaticPolicy: true,
       settingsRevision: true,
+      synthesisEnabled: true,
+      synthesisEnabledAt: true,
+      synthesisPolicyVersion: true,
+      lastSynthesisAt: true,
       useMemoryFacts: true,
       userId: true
     },
@@ -2359,8 +2373,8 @@ async function committedMutationOwnsRevisionAdvance(
     receiptGeneration === currentSettings.memoryGeneration &&
     typeof receiptRevision === "number" &&
     Number.isSafeInteger(receiptRevision) &&
-    receiptRevision === attempt.retrievalRevisionSnapshot + 1 &&
-    receiptRevision === currentSettings.memoryRevision
+    receiptRevision > attempt.retrievalRevisionSnapshot &&
+    receiptRevision <= currentSettings.memoryRevision
   );
 }
 
@@ -2377,14 +2391,16 @@ export async function finalizePreparingRunWithClient(
   memoryExecutionAuthority: MemoryExecutionAuthorityDependencies
 ): Promise<boolean> {
   const now = new Date();
-  return repeatableReadTransaction(prismaClient, async (tx) => {
+  const finalized = await repeatableReadTransaction(prismaClient, async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     let attempt = await lockPreparingAttempt(tx, {
       attemptId: input.attemptId,
       runId: input.runId,
       userId: input.userId
     });
-    if (!run || run.status !== "preparing" || !attempt) return false;
+    if (!run || run.status !== "preparing" || !attempt) {
+      return { decayTouch: false, finalized: false };
+    }
     const failedSafeFallback = input.failedSafeFallback ??
       (input.deadlineFallbackBudget !== undefined
         ? {
@@ -2393,7 +2409,9 @@ export async function finalizePreparingRunWithClient(
           }
         : null);
     if (failedSafeFallback) {
-      if (!["PENDING", "EXECUTING", "READY"].includes(attempt.state)) return false;
+      if (!["PENDING", "EXECUTING", "READY"].includes(attempt.state)) {
+        return { decayTouch: false, finalized: false };
+      }
       const lifecycleSnapshot = decodeMemoryActionLifecycleSnapshot(
         attempt.budgetSnapshot
       );
@@ -2463,7 +2481,7 @@ export async function finalizePreparingRunWithClient(
         utilityEgressMode: executionEvidence.utilityEgressMode
       };
     } else if (attempt.state !== "READY") {
-      return false;
+      return { decayTouch: false, finalized: false };
     }
     if (attempt.expiresAt <= now) {
       throw new MemoryPreparingRunConflictError("memory_preparing_attempt_expired", false);
@@ -2722,7 +2740,7 @@ export async function finalizePreparingRunWithClient(
         },
         where: { id: run.id }
       });
-      return true;
+      return { decayTouch: false, finalized: true };
     }
 
     if (!failedSafeFallback && !currentSettings) {
@@ -2820,8 +2838,20 @@ export async function finalizePreparingRunWithClient(
       },
       where: { id: run.id }
     });
-    return true;
+    return {
+      decayTouch: settingsSnapshot.decayEnabled &&
+        settingsSnapshot.decayPolicyVersion === MEMORY_DECAY_POLICY_VERSION &&
+        items.some((item) => item.itemType === "FACT_VERSION"),
+      finalized: true
+    };
   }, { deadlineAtMs: input.deadlineAtMs });
+  if (finalized.decayTouch) {
+    scheduleMemoryDecayTouch(prismaClient, {
+      retrievalAttemptId: input.attemptId,
+      userId: input.userId
+    });
+  }
+  return finalized.finalized;
 }
 
 export async function retryPreparingRunAttemptWithClient(
@@ -2981,11 +3011,19 @@ async function settlePreparingAttemptExecutions(
       const state = uncertain
         ? "OUTCOME_UNKNOWN" as const
         : input.cancelled ? "CANCELLED" as const : "FAILED" as const;
+      // Database defaults retain sub-millisecond precision that a Prisma Date
+      // cannot round-trip. Move at least one millisecond past every stored
+      // lower bound so the terminal timestamp remains monotonic.
+      const terminalAt = new Date(Math.max(
+        input.now.getTime(),
+        binding.createdAt.getTime() + 1,
+        (binding.startedAt?.getTime() ?? 0) + 1
+      ));
       const updated = await tx.memoryExecutionBinding.updateMany({
         data: {
           acceptedOutputHash: null,
           cachedInputTokens: null,
-          completedAt: input.now,
+          completedAt: terminalAt,
           errorCode: uncertain
             ? "memory_preparing_execution_uncertain"
             : input.cancelled
@@ -2997,8 +3035,8 @@ async function settlePreparingAttemptExecutions(
           providerResponseId: null,
           reasoningTokens: null,
           recoverableUntil: uncertain
-            ? new Date(input.now.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS)
-            : input.now,
+            ? new Date(terminalAt.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS)
+            : terminalAt,
           state,
           totalTokens: null,
           usageCompleteness: "UNAVAILABLE"
@@ -3167,7 +3205,7 @@ export async function recoverPreparingRunWithClient(
   input: Readonly<{ now: Date; runId: string; userId: string }>,
   memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunRecoveryResult> {
-  return prismaClient.$transaction(async (tx) => {
+  const recovered = await prismaClient.$transaction(async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     if (!run) return "not_preparing";
     if (run.status !== "preparing") {
@@ -3198,6 +3236,13 @@ export async function recoverPreparingRunWithClient(
     }, memorySourceHooks);
     return settled ? "settled" : "not_preparing";
   });
+  if (recovered === "finalized") {
+    scheduleMemoryDecayTouch(prismaClient, {
+      modelRunId: input.runId,
+      userId: input.userId
+    });
+  }
+  return recovered;
 }
 
 export async function createDormantPreparingRun(

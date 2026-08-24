@@ -60,6 +60,12 @@ type SourceRun = Readonly<{
   userMessage: ChatMessageWire;
 }>;
 
+type AutomaticFactSource = Readonly<{
+  chatId: string;
+  messageId: string;
+  notBefore: Date;
+}>;
+
 class SmokeFailure extends Error {
   readonly code: string | null;
   readonly stage: SmokeStage;
@@ -493,12 +499,47 @@ async function waitForLearnedFact(source: SourceRun, notBefore: Date): Promise<v
       notBefore,
       userId: authenticatedUserId
     });
-    if (count < 1) return null;
-    const recentProjection = (await allConsumerMemories()).some((item) =>
-      item.provenance === "LEARNED" &&
-      Date.parse(item.updatedAt) >= notBefore.getTime() - 60_000
-    );
-    return recentProjection ? true : null;
+    if (count < 1) {
+      const jobs = await verifier.sourceJobStateCounts({
+        chatId: source.chat.id,
+        userId: authenticatedUserId
+      });
+      if (jobs.unsuccessfulTerminal > 0) {
+        fail("automatic_learning", "memory_smoke_source_job_failed");
+      }
+      if (jobs.active === 0 && jobs.total > 0) {
+        const strictExtractions = await verifier.successfulSourceExecutionCount({
+          chatId: source.chat.id,
+          role: "MEMORY_FACT_EXTRACT",
+          userId: authenticatedUserId
+        });
+        if (strictExtractions > 0) {
+          const sourceBacked = await verifier.sourceBackedFactVersionCount({
+            chatId: source.chat.id,
+            messageId: source.userMessage.id,
+            notBefore,
+            userId: authenticatedUserId
+          });
+          if (jobs.successfulEmptyExtraction || sourceBacked === 0) {
+            fail("automatic_learning", "memory_smoke_expected_fact_missing");
+          }
+        }
+      }
+      return null;
+    }
+    const [recentProjection, embeddingReady] = await Promise.all([
+      allConsumerMemories().then((memories) => memories.some((item) =>
+        item.provenance === "LEARNED" &&
+        Date.parse(item.updatedAt) >= notBefore.getTime() - 60_000
+      )),
+      verifier.sourceBackedFactEmbeddingReadyCount({
+        chatId: source.chat.id,
+        messageId: source.userMessage.id,
+        notBefore,
+        userId: authenticatedUserId
+      })
+    ]);
+    return recentProjection && embeddingReady > 0 ? true : null;
   });
 }
 
@@ -607,17 +648,34 @@ async function assertStrictControlSucceeded(source: SourceRun): Promise<void> {
 
 async function waitForAmbiguityTargets(marker: string): Promise<MemoryConsumerItem[]> {
   return poll("automatic_learning", async () => {
-    const candidates = (await searchConsumerMemories(`${marker} reporting format`))
-      .filter((item) => item.provenance === "SAVED" && item.statement.includes(marker));
-    return candidates.length >= 2 ? candidates : null;
+    const [candidates, readyEmbeddings] = await Promise.all([
+      searchConsumerMemories(`${marker} reporting format`).then((memories) =>
+        memories.filter((item) =>
+          item.provenance === "SAVED" && item.statement.includes(marker)
+        )),
+      verifier.readyExplicitFactEmbeddingCount({
+        query: marker,
+        userId: authenticatedUserId
+      })
+    ]);
+    return candidates.length >= 2 && readyEmbeddings >= 2 ? candidates : null;
   });
 }
 
 async function cleanupSmokeState(
   marker: string,
-  explicitStatements: ReadonlySet<string>
+  explicitStatements: ReadonlySet<string>,
+  automaticFactSources: readonly AutomaticFactSource[]
 ): Promise<number> {
   for (const chat of createdSmokeChats) await excludeChatFromMemory(chat.id);
+
+  for (const source of automaticFactSources) {
+    const remaining = await verifier.currentAutomaticFactCount({
+      ...source,
+      userId: authenticatedUserId
+    });
+    if (remaining > 0) fail("automatic_learning", "memory_smoke_cleanup_failed");
+  }
 
   const items = await allConsumerMemories();
   const owned = items.filter((item) =>
@@ -680,6 +738,7 @@ async function main(): Promise<void> {
     .join("");
   const scenarios = createMemorySemanticSmokeScenarioLedger();
   const explicitStatements = new Set<string>();
+  const automaticFactSources: AutomaticFactSource[] = [];
   let scenarioEvidence: Readonly<{
     automaticFactsSourceBound: number;
     automaticRecallAnswers: number;
@@ -711,16 +770,21 @@ async function main(): Promise<void> {
     const identityStartedAt = new Date();
     const identitySource = await sourceRun(
       `Memory smoke identity ${marker}`,
-      `Меня зовут Небула-${marker}. Это моё постоянное имя, а не временный псевдоним.`,
+      "Меня зовут Алина. Это моё постоянное имя во всех разговорах.",
       answer
     );
     await waitForLearnedFact(identitySource, identityStartedAt);
+    automaticFactSources.push({
+      chatId: identitySource.chat.id,
+      messageId: identitySource.userMessage.id,
+      notBefore: identityStartedAt
+    });
     const identityRecall = await sourceRun(
       `Memory smoke identity recall ${marker}`,
-      `Как меня зовут? Для проверки используй контекст ${marker}.`,
+      "Как меня зовут? Используй мою сохранённую Personal Memory, если она содержит имя.",
       answer
     );
-    const identityRecalled = /небула/iu.test(
+    const identityRecalled = /алин/iu.test(
       textFromContent(identityRecall.assistant.content)
     );
     const identitySourceBound = await verifier.recalledAutomaticFactCount({
@@ -738,18 +802,25 @@ async function main(): Promise<void> {
     const preferenceStartedAt = new Date();
     const preferenceSource = await sourceRun(
       `Memory smoke preference ${marker}`,
-      `I prefer ${marker}-concise answers.`,
+      `I always prefer concise answers in a response format called ${marker}-grid. This named format is a stable long-term preference in every conversation.`,
       answer
     );
     await waitForLearnedFact(preferenceSource, preferenceStartedAt);
+    automaticFactSources.push({
+      chatId: preferenceSource.chat.id,
+      messageId: preferenceSource.userMessage.id,
+      notBefore: preferenceStartedAt
+    });
     const preferenceRecall = await sourceRun(
       `Memory smoke preference recall ${marker}`,
-      `Which response style do I prefer for ${marker}?`,
+      `Which ${marker}-grid response format do I consistently prefer?`,
       answer
     );
-    const preferenceRecalled = /(крат|лаконич|коротк|concise|brief)/iu.test(
-      textFromContent(preferenceRecall.assistant.content)
-    );
+    const preferenceAnswer = textFromContent(preferenceRecall.assistant.content);
+    const preferenceRecalled = preferenceAnswer.toLocaleLowerCase().includes(marker) &&
+      /(крат|лаконич|коротк|сетк|пункт|concise|brief|bullet|grid)/iu.test(
+        preferenceAnswer
+      );
     const preferenceSourceBound = await verifier.recalledAutomaticFactCount({
       chatId: preferenceSource.chat.id,
       messageId: preferenceSource.userMessage.id,
@@ -830,7 +901,7 @@ async function main(): Promise<void> {
     }
     const update = await sourceRun(
       `Memory smoke ambiguous update ${marker}`,
-      `I now want the ${marker} reporting format to use visual summaries across the board.`,
+      `Change one of my saved ${marker} reporting-format preferences, but I am not specifying whether weekly or monthly. Use this exact replacement statement: "My ${marker} reporting-format preference is visual summaries."`,
       answer
     );
     const updateAction = requiredMemoryAction(update, "UPDATE", "AMBIGUOUS");
@@ -838,7 +909,8 @@ async function main(): Promise<void> {
     const updateCandidates = (updateAction.candidates ?? []).filter((candidate) =>
       candidate.provenance === "SAVED" && candidate.statement.includes(marker));
     const selectedUpdate = updateCandidates[0];
-    if (updateCandidates.length < 2 || !selectedUpdate || !updateAction.statement?.includes(marker)) {
+    if (updateCandidates.length < 2 || !selectedUpdate ||
+      !updateAction.statement?.trim() || !updateAction.statement.includes(marker)) {
       fail("answer_recall", "memory_smoke_update_selection_failed");
     }
     explicitStatements.add(updateAction.statement);
@@ -847,11 +919,11 @@ async function main(): Promise<void> {
       memoryRef: selectedUpdate.memoryRef,
       statement: updateAction.statement
     });
-    const updatedTargetVisible = (await allConsumerMemories()).some((item) =>
-      item.provenance === "SAVED" && item.statement === updateAction.statement);
-    if (!updatedTargetVisible) {
-      fail("answer_recall", "memory_smoke_update_selection_failed");
-    }
+    await poll("automatic_learning", async () =>
+      (await allConsumerMemories()).some((item) =>
+        item.provenance === "SAVED" && item.statement === updateAction.statement)
+        ? true
+        : null);
     scenarios.complete("update_target_selection");
 
     const postUpdateTargets = await waitForAmbiguityTargets(marker);
@@ -860,7 +932,7 @@ async function main(): Promise<void> {
     }
     const forget = await sourceRun(
       `Memory smoke ambiguous forget ${marker}`,
-      `The ${marker} reporting-format preferences should no longer follow me into future conversations.`,
+      `Forget one of my saved ${marker} reporting-format preferences so it no longer follows me into future conversations.`,
       answer
     );
     const forgetAction = requiredMemoryAction(forget, "FORGET", "AMBIGUOUS");
@@ -875,11 +947,11 @@ async function main(): Promise<void> {
       action: "FORGET",
       memoryRef: selectedForget.memoryRef
     });
-    const forgottenTargetVisible = (await allConsumerMemories()).some((item) =>
-      item.provenance === "SAVED" && item.statement === selectedForget.statement);
-    if (forgottenTargetVisible) {
-      fail("answer_recall", "memory_smoke_forget_selection_failed");
-    }
+    await poll("automatic_learning", async () =>
+      (await allConsumerMemories()).some((item) =>
+        item.provenance === "SAVED" && item.statement === selectedForget.statement)
+        ? null
+        : true);
     scenarios.complete("forget_target_selection");
 
     const secretStartedAt = new Date();
@@ -921,7 +993,11 @@ async function main(): Promise<void> {
   let cleanedMemoryItems = 0;
   let cleanupError: unknown = null;
   try {
-    cleanedMemoryItems = await cleanupSmokeState(marker, explicitStatements);
+    cleanedMemoryItems = await cleanupSmokeState(
+      marker,
+      explicitStatements,
+      automaticFactSources
+    );
   } catch (error) {
     cleanupError = error;
   }

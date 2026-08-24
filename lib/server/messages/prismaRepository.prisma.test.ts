@@ -585,7 +585,7 @@ describe("Prisma-backed message branch repository", () => {
         })
       ])).resolves.toEqual([
         { memoryBranchGeneration: 1, memorySourceRevision: 1 },
-        { memoryGeneration: 1, memoryRevision: 1 }
+        { memoryGeneration: 0, memoryRevision: 1 }
       ]);
     });
   });
@@ -1318,7 +1318,7 @@ describe("Prisma-backed message branch repository", () => {
           where: { chatId: sourceChat.id, userId }
         })
       ])).resolves.toEqual([
-        { memoryGeneration: 1, memoryRevision: 1 },
+        { memoryGeneration: 0, memoryRevision: 1 },
         []
       ]);
       await expect(

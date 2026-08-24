@@ -1,8 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
 import { memorySha256 } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { MEMORY_RECLASSIFICATION_PIPELINE_VERSION } from "./classifier";
 
 type PendingOwner = Readonly<{
@@ -34,8 +34,6 @@ export async function reconcileMemoryFactReclassificationJobs(
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
-      AND fact."currentVersionId" = version."id"
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
@@ -45,12 +43,32 @@ export async function reconcileMemoryFactReclassificationJobs(
       ON owner_user."id" = version."userId"
     WHERE settings."useMemoryFacts" = TRUE
       AND owner_user."status" = 'active'::"UserStatus"
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND (
+        (
+          version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND fact."currentVersionId" = version."id"
+        )
+        OR (
+          version."state" = 'PENDING_RELATION'::"MemoryFactVersionState"
+          AND (
+            (
+              fact."state" = 'ACTIVE'::"MemoryFactState"
+              AND fact."currentVersionId" IS NOT NULL
+              AND fact."currentVersionId" <> version."id"
+            )
+            OR (
+              fact."state" = 'CONFLICTED'::"MemoryFactState"
+              AND fact."currentVersionId" IS NULL
+            )
+          )
+        )
+      )
       AND version."safetyClassificationState" =
         'PENDING'::"MemorySafetyClassificationState"
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."displayText" IS NOT NULL
       AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryPersonalFactEvidencePredicate(Prisma.sql`version."userId"`)}
+      AND ${memoryReusableFactAuthorityPredicate(Prisma.sql`version."userId"`)}
     GROUP BY version."userId", settings."memoryGeneration", settings."memoryRevision"
   `);
   if (owners.length === 0) return 0;

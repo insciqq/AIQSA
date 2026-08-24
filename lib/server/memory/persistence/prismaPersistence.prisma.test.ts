@@ -10,6 +10,7 @@ import {
   type MemoryActionIntent
 } from "../../../contracts/memoryActionIntent";
 import { textMessageContent } from "../../../domain/content";
+import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy,
@@ -293,6 +294,7 @@ async function createControlAuthorizedSave(
     queryText: null,
     reasonCode: "save_request",
     recencyRequested: false,
+    retrievalMode: "TARGETED_CURRENT",
     referencedMemoryRef: null,
     replacementStatement: null,
     responsePreference: true,
@@ -300,6 +302,10 @@ async function createControlAuthorizedSave(
     sensitivity: "NORMAL",
     statement,
     targetQuery: null,
+    temporalAsOf: null,
+    temporalFrom: null,
+    temporalIntent: "CURRENT",
+    temporalTo: null,
     thisChatOnly: false
   } as const;
   const controlIntent = options.controlIntent ?? defaultControlIntent;
@@ -539,6 +545,68 @@ describe("Prisma Memory persistence", () => {
         indexedThroughMemoryRevision: 1,
         state: "ACTIVE",
         targetMemoryRevision: 1
+      });
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("persists reversible versioned decay opt-in without resetting its policy", async () => {
+    const userId = await createActiveUser("settings-decay");
+    const repository = createPrismaMemorySettingsRepository(prisma);
+    try {
+      await expect(repository.get(userId)).resolves.toMatchObject({
+        decayEnabled: false,
+        decayPolicyVersion: null,
+        memoryRevision: 0,
+        settingsRevision: 0
+      });
+      const enabled = await repository.patch(userId, {
+        decayEnabled: true,
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0
+      });
+      expect(enabled).toMatchObject({
+        decayEnabled: true,
+        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        memoryRevision: 1,
+        settingsRevision: 1
+      });
+      const disabled = await repository.patch(userId, {
+        decayEnabled: false,
+        expectedMemoryRevision: enabled.memoryRevision,
+        expectedSettingsRevision: enabled.settingsRevision
+      });
+      expect(disabled).toMatchObject({
+        decayEnabled: false,
+        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        memoryRevision: 2,
+        settingsRevision: 2
+      });
+      const reenabled = await repository.patch(userId, {
+        decayEnabled: true,
+        expectedMemoryRevision: disabled.memoryRevision,
+        expectedSettingsRevision: disabled.settingsRevision
+      });
+      expect(reenabled).toMatchObject({
+        decayEnabled: true,
+        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        memoryRevision: 3,
+        settingsRevision: 3
+      });
+      await expect(prisma.userMemorySettings.update({
+        data: { decayPolicyVersion: null },
+        where: { userId }
+      })).rejects.toThrow(/UserMemorySettings_decay_shape_check/u);
+      await expect(repository.patch(userId, {
+        decayEnabled: true,
+        expectedMemoryRevision: reenabled.memoryRevision,
+        expectedSettingsRevision: reenabled.settingsRevision
+      })).resolves.toMatchObject({
+        decayEnabled: true,
+        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        memoryRevision: reenabled.memoryRevision,
+        settingsRevision: reenabled.settingsRevision + 1
       });
     } finally {
       await cleanupUser(userId);
@@ -814,6 +882,71 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
+  it("keeps a control-backed save valid across an unrelated Memory revision advance", async () => {
+    const userId = await createActiveUser("control-unrelated-revision");
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const admitted = await createControlAuthorizedSave(
+        userId,
+        "unrelated-revision"
+      );
+      cleanupProvider = admitted.cleanupProvider;
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      await createTestMemoryFactRepository().save(userId, saveInput(
+        scope.id,
+        `unrelated-revision-${randomUUID()}`,
+        factValue(
+          `profile.unrelated.${randomUUID()}`,
+          "An unrelated Memory write completed.",
+          "unrelated"
+        )
+      ));
+
+      const value: MemoryFactValueInput = {
+        ...factValue(
+          `control.unrelated-revision.${randomUUID()}`,
+          admitted.controlIntent.statement!,
+          "concise"
+        ),
+        category: "preferences",
+        modality: "PREFERENCE",
+        safetyClassification: {
+          executionId: admitted.binding.id,
+          intent: admitted.controlIntent,
+          kind: "CONTROL"
+        }
+      };
+      const saved = await createPrismaMemoryFactRepository(
+        suppressionKeyring,
+        prisma
+      ).save(userId, {
+        ...saveInput(
+          scope.id,
+          `control-unrelated-revision-${randomUUID()}`,
+          value
+        ),
+        authorization: {
+          action: "SAVE",
+          authorizationId: admitted.authorization.id,
+          authorizedPayloadHash: admitted.authorizedPayloadHash
+        },
+        modelRunId: admitted.run.id,
+        requestId: admitted.authorization.requestId
+      });
+
+      expect(saved).toMatchObject({ outcome: "CREATED", replayed: false });
+      await expect(prisma.memoryMutationAuthorization.findUniqueOrThrow({
+        where: { id: admitted.authorization.id }
+      })).resolves.toMatchObject({ consumedAt: expect.any(Date) });
+      await expect(prisma.memoryOperationReceipt.count({
+        where: { modelRunId: admitted.run.id, operation: "SAVE", userId }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupUser(userId);
+      await cleanupProvider?.();
+    }
+  });
+
   it("binds fact safety to the exact ordinal-zero control decision", async () => {
     const userId = await createActiveUser("control-safety-receipt");
     let cleanupProvider: (() => Promise<void>) | undefined;
@@ -934,6 +1067,7 @@ describe("Prisma Memory persistence", () => {
         queryText: null,
         reasonCode: "save_request",
         recencyRequested: false,
+        retrievalMode: "TARGETED_CURRENT",
         referencedMemoryRef: null,
         replacementStatement: null,
         responsePreference: false,
@@ -941,6 +1075,10 @@ describe("Prisma Memory persistence", () => {
         sensitivity: "SENSITIVE",
         statement: "I prefer concise answers.",
         targetQuery: null,
+        temporalAsOf: null,
+        temporalFrom: null,
+        temporalIntent: "CURRENT",
+        temporalTo: null,
         thisChatOnly: false
       } as const;
       const decoded = decodeMemoryActionIntent(legacyIntent);
@@ -1018,6 +1156,7 @@ describe("Prisma Memory persistence", () => {
         queryText: null,
         reasonCode: "forget_request",
         recencyRequested: false,
+        retrievalMode: "TARGETED_CURRENT",
         referencedMemoryRef: null,
         replacementStatement: null,
         responsePreference: false,
@@ -1025,6 +1164,10 @@ describe("Prisma Memory persistence", () => {
         sensitivity: "NORMAL",
         statement: null,
         targetQuery: "the concise answer preference",
+        temporalAsOf: null,
+        temporalFrom: null,
+        temporalIntent: "CURRENT",
+        temporalTo: null,
         thisChatOnly: false
       };
       const firstPayload = memoryTargetAuthorizationPayloadHash({

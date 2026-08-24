@@ -504,6 +504,15 @@ async function cleanup(input: Readonly<{
       data: { activeIndexGenerationId: null },
       where: { id: { in: [...input.baseIds] } }
     });
+    await tx.knowledgeIndexGeneration.updateMany({
+      data: {
+        sourceBaseVersion: null,
+        sourceIndexGenerationId: null,
+        targetContentRevision: null,
+        targetSourceRevision: null
+      },
+      where: { knowledgeBaseId: { in: [...input.baseIds] } }
+    });
     await tx.knowledgeIndexGeneration.deleteMany({
       where: { knowledgeBaseId: { in: [...input.baseIds] } }
     });
@@ -1666,6 +1675,48 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       data: { name: "Disposable Base", ownerUserId },
       select: { id: true }
     });
+    const generationNow = new Date();
+    const activeGeneration = await prisma.knowledgeIndexGeneration.create({
+      data: {
+        activatedAt: generationNow,
+        chunkingProfileVersion: 1,
+        embeddingConfiguration: {},
+        embeddingProviderModelId: h2Fixture.modelId,
+        indexedContentRevision: 0,
+        knowledgeBaseId: base.id,
+        profileRevisionId: h2Fixture.profileRevisionId,
+        readyAt: generationNow,
+        status: "active",
+        targetDimension: 1_024,
+        vectorSpaceFingerprint: "d".repeat(64)
+      },
+      select: { id: true }
+    });
+    await prisma.knowledgeBase.update({
+      data: { activeIndexGenerationId: activeGeneration.id },
+      where: { id: base.id }
+    });
+    const baseReindexState = await prisma.knowledgeBase.findUniqueOrThrow({
+      select: { contentRevision: true, sourceRevision: true, version: true },
+      where: { id: base.id }
+    });
+    await prisma.knowledgeIndexGeneration.create({
+      data: {
+        chunkingProfileVersion: 1,
+        embeddingConfiguration: {},
+        embeddingProviderModelId: h2Fixture.modelId,
+        indexedContentRevision: 0,
+        knowledgeBaseId: base.id,
+        profileRevisionId: h2Fixture.profileRevisionId,
+        sourceBaseVersion: baseReindexState.version,
+        sourceIndexGenerationId: activeGeneration.id,
+        status: "building",
+        targetContentRevision: baseReindexState.contentRevision,
+        targetDimension: 1_024,
+        targetSourceRevision: baseReindexState.sourceRevision,
+        vectorSpaceFingerprint: "d".repeat(64)
+      }
+    });
     const retainedBase = await prisma.knowledgeBase.create({
       data: { name: "Retained Base", ownerUserId },
       select: { id: true }
@@ -2152,6 +2203,9 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       ].sort());
       await expect(prisma.knowledgeBase.findUnique({ where: { id: base.id } }))
         .resolves.toBeNull();
+      await expect(prisma.knowledgeIndexGeneration.count({
+        where: { knowledgeBaseId: base.id }
+      })).resolves.toBe(0);
       await expect(prisma.knowledgeUploadBatch.count({
         where: { knowledgeBaseId: base.id }
       })).resolves.toBe(0);

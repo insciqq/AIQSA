@@ -1,11 +1,14 @@
 import type {
   MemoryRetrievalFilters,
+  MemoryRetrievalMode,
   MemoryRetrievalPlan,
   MemoryRetrievalPlannerInput,
-  MemoryRetrievalSourceKind
+  MemoryRetrievalSourceKind,
+  MemoryTemporalIntent
 } from "./contracts";
+import { MEMORY_RETRIEVAL_MODES, MEMORY_TEMPORAL_INTENTS } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v7";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v8";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 
 const sourceKinds = new Set<MemoryRetrievalSourceKind>(["EVENT", "FACT", "HISTORY"]);
@@ -32,13 +35,15 @@ function filtersFor(
   input: MemoryRetrievalPlannerInput,
   applyResponsePreferences: boolean
 ): MemoryRetrievalFilters {
+  const asOf = input.filters?.asOf ?? null;
   const from = input.filters?.from ?? null;
   const to = input.filters?.to ?? null;
   const scopeType = input.filters?.scopeType ?? null;
   const scopeTargetId = input.filters?.scopeTargetId ?? null;
   const requestedKinds = input.filters?.sourceKinds ?? ["EVENT", "FACT", "HISTORY"];
   if (
-    !validDate(from) || !validDate(to) ||
+    !validDate(asOf) || !validDate(from) || !validDate(to) ||
+    (asOf !== null && (from !== null || to !== null)) ||
     (from !== null && to !== null && from >= to) ||
     (scopeType !== null && !scopeTypes.has(scopeType)) ||
     (scopeTargetId !== null && !opaqueTargetPattern.test(scopeTargetId)) ||
@@ -49,7 +54,63 @@ function filtersFor(
     new Set(requestedKinds).size !== requestedKinds.length ||
     requestedKinds.some((kind) => !sourceKinds.has(kind))
   ) throw new Error("memory_retrieval_filter_invalid");
-  return { from, scopeTargetId, scopeType, sourceKinds: [...requestedKinds], to };
+  return { asOf, from, scopeTargetId, scopeType, sourceKinds: [...requestedKinds], to };
+}
+
+function inferredMode(
+  input: MemoryRetrievalPlannerInput,
+  filters: MemoryRetrievalFilters,
+  profileRequested: boolean
+): MemoryRetrievalMode {
+  if (input.mode) return input.mode;
+  if (profileRequested) return "CURRENT_PROFILE";
+  const facts = filters.sourceKinds.includes("FACT") || filters.sourceKinds.includes("EVENT");
+  return !facts && filters.sourceKinds.includes("HISTORY")
+    ? "PAST_CHAT_SEARCH"
+    : "TARGETED_CURRENT";
+}
+
+function inferredTemporalIntent(
+  input: MemoryRetrievalPlannerInput,
+  filters: MemoryRetrievalFilters,
+  mode: MemoryRetrievalMode
+): MemoryTemporalIntent {
+  if (input.temporalIntent) return input.temporalIntent;
+  if (filters.asOf) return "AS_OF";
+  if (filters.from || filters.to) return "BETWEEN";
+  return mode === "HISTORICAL_MEMORY" ? "HISTORICAL" : "CURRENT";
+}
+
+function validModeContract(
+  mode: MemoryRetrievalMode,
+  temporalIntent: MemoryTemporalIntent,
+  filters: MemoryRetrievalFilters,
+  profileRequested: boolean,
+  recencyRequested: boolean
+): boolean {
+  const facts = filters.sourceKinds.includes("FACT") || filters.sourceKinds.includes("EVENT");
+  const history = filters.sourceKinds.includes("HISTORY");
+  const temporalShape = temporalIntent === "AS_OF"
+    ? filters.asOf !== null && filters.from === null && filters.to === null
+    : temporalIntent === "BETWEEN"
+      ? filters.asOf === null && (filters.from !== null || filters.to !== null)
+      : filters.asOf === null && filters.from === null && filters.to === null;
+  if (!temporalShape) return false;
+  if (mode === "CURRENT_PROFILE") {
+    return profileRequested && facts && !history && !recencyRequested &&
+      temporalIntent === "CURRENT";
+  }
+  if (profileRequested) return false;
+  if (mode === "TARGETED_CURRENT") {
+    return (facts || filters.sourceKinds.length === 0) && temporalIntent === "CURRENT";
+  }
+  if (mode === "HISTORICAL_MEMORY") {
+    return facts && !history && temporalIntent !== "CURRENT";
+  }
+  if (mode === "PAST_CHAT_SEARCH") {
+    return !facts && history && temporalIntent !== "HISTORICAL";
+  }
+  return mode === "HISTORY_OVERVIEW" && !facts && history && !recencyRequested;
 }
 
 /**
@@ -79,15 +140,31 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     throw new Error("memory_retrieval_plan_invalid");
   }
   const normalizedQuery = boundedUnicode(input.currentUserText);
+  const filters = filtersFor(input, applyResponsePreferences);
+  const mode = inferredMode(input, filters, profileRequested);
+  const temporalIntent = inferredTemporalIntent(input, filters, mode);
+  if (
+    !MEMORY_RETRIEVAL_MODES.includes(mode) ||
+    !MEMORY_TEMPORAL_INTENTS.includes(temporalIntent) ||
+    !validModeContract(
+      mode,
+      temporalIntent,
+      filters,
+      profileRequested,
+      input.recencyRequested === true
+    )
+  ) throw new Error("memory_retrieval_plan_invalid");
   return {
     applyResponsePreferences,
-    filters: filtersFor(input, applyResponsePreferences),
+    filters,
     lexicalQuery: lexicalQuery(normalizedQuery),
+    mode,
     normalizedExactQuery: normalizedQuery.toLocaleLowerCase("und"),
     normalizedQuery,
     plannerVersion: MEMORY_RETRIEVAL_PLANNER_VERSION,
     profileRequested,
     queryPresent: normalizedQuery.length > 0,
-    recencyRequested: input.recencyRequested === true
+    recencyRequested: input.recencyRequested === true,
+    temporalIntent
   };
 }

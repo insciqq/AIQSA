@@ -388,6 +388,7 @@ async function lockTargetFact(
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
       AND ${memoryCanonicalGlobalScopePredicate()}
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."safetyClassificationState" =
         'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL

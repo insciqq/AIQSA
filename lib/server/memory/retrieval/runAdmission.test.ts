@@ -8,6 +8,10 @@ import type {
   MemoryRankedCandidate,
   MemoryRetrievalPlan
 } from "../../../domain/memory/retrieval";
+import {
+  MEMORY_DECAY_POLICY_VERSION,
+  planMemoryRetrieval
+} from "../../../domain/memory/retrieval";
 import type { NormalizedRunRequest } from "../../providers/types";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../../providers/memoryActionAnswer";
 import type { MemoryPreparingSettingsSnapshot } from "../../runs/preparingRun";
@@ -25,16 +29,25 @@ import type { MemoryRunUtilityService } from "./runUtilities";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } from "./vector";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
+const currentControlContract = Object.freeze({
+  retrievalMode: "TARGETED_CURRENT" as const,
+  temporalAsOf: null,
+  temporalFrom: null,
+  temporalIntent: "CURRENT" as const,
+  temporalTo: null
+});
 
 function settings(activeIndexGenerationId: string | null): MemoryPreparingSettingsSnapshot {
   return {
     acceptedUtilityEgressFingerprint: null,
     acceptedUtilityPolicyVersion: null,
     activeIndexGenerationId,
+    decayEnabled: false,
+    decayPolicyVersion: null,
     learnAutomatically: true,
     memoryConsentRevision: 0,
     referenceChatHistory: true,
-    schemaVersion: 1,
+    schemaVersion: 2,
     settingsRevision: 3,
     useMemoryFacts: true
   };
@@ -70,15 +83,22 @@ function metadata(id: string, history = false): MemoryCandidateMetadata {
     canonicalKey: null, category: history ? null : "memory", confidence: 0,
     conflict: false, coreEligible: !history, coreSalience: history ? "NONE" : "HIGH",
     current: true, dedupeKey: id, directness: history ? null : "DIRECT",
+    dimensionKey: null, entityIds: [], expectedAt: null, expiresAt: null,
     factId: history ? null : id, historical: false,
     historySafetyClass: history ? "NORMAL" : null, importance: 0, languageCode: "und",
-    modality: history ? null : "PREFERENCE", occurredFrom: history ? now : null,
+    identityKind: history ? null : "PROPOSITION",
+    lastConfirmedAt: null, lastUsedAt: null,
+    lifecycleState: history ? null : "ACTIVE", matchedEntityRole: null,
+    modality: history ? null : "PREFERENCE", observedAt: null, occurredAt: null,
+    occurredFrom: history ? now : null,
     occurredTo: history ? new Date(now.getTime() + 60_000) : null,
-    pinned: false, scopeAffinity: 0,
+    pinned: false, predicateKey: null, relationDepth: 0, scopeAffinity: 0,
     scopeType: history ? null : "GLOBAL_USER", sensitivityClass: history ? null : "NORMAL",
     sourceAssistantId: null, sourceChatId: history ? "chat-source" : null,
     sourceFolderId: null, sourceMode: history ? null : "EXPLICIT", systemFrom: now,
-    temperatureClass: null, validFrom: null, validTo: null
+    sourceAuthority: history ? "PAST_CHAT" : "EXPLICIT", subjectKey: null,
+    synthesisDepth: 0, temperatureClass: null, temperatureScore: 0,
+    validFrom: null, validTo: null
   };
 }
 
@@ -121,7 +141,10 @@ function rankedHistory(
 ): MemoryRankedCandidate {
   return {
     entryId: `entry-${id}`,
-    featureSnapshot: { fusionVersion: "rrf", laneCount: 1, tier: "DYNAMIC" },
+    featureSnapshot: {
+      authorityRank: 0, fusionVersion: "rrf", laneCount: 1,
+      temporalFit: 1, tier: "DYNAMIC"
+    },
     finalScore: 0.2,
     itemId: id,
     itemType: "RECALL_CHUNK",
@@ -148,7 +171,10 @@ function expandedHistory(id: string): MemoryExpandedCandidate {
 function core(id = "core-version"): MemoryCoreCandidate {
   const candidate: MemoryRankedCandidate = {
     entryId: null,
-    featureSnapshot: { fusionVersion: "rrf", laneCount: 0, tier: "CORE" },
+    featureSnapshot: {
+      authorityRank: 3, fusionVersion: "rrf", laneCount: 0,
+      temporalFit: 1, tier: "CORE"
+    },
     finalScore: 0, itemId: id, itemType: "FACT_VERSION", laneRanks: {},
     metadata: metadata(id), rrfScore: 0, selectionReason: "core.high"
   };
@@ -175,6 +201,7 @@ function snapshot(activeIndexGenerationId: string | null) {
   return {
     activeGenerationId: activeIndexGenerationId, assistantId: null, chatId: "chat-current",
     chatMemoryMode: "NORMAL" as const, folderId: null,
+    decayEnabled: false, decayPolicyVersion: null,
     historySuppressionIdentitySnapshot: "a".repeat(64),
     indexMode: activeIndexGenerationId ? "HYBRID" as const : null,
     memoryGeneration: 2, memoryRevision: 4,
@@ -188,10 +215,15 @@ function repository(options: Readonly<{
   activeIndexGenerationId?: string | null;
   candidates?: readonly MemoryLaneCandidate[];
   core?: readonly MemoryCoreCandidate[];
+  decayEnabled?: boolean;
 }> = {}) {
   const activeIndexGenerationId = options.activeIndexGenerationId === undefined
     ? "generation-1" : options.activeIndexGenerationId;
-  const state = snapshot(activeIndexGenerationId);
+  const state = {
+    ...snapshot(activeIndexGenerationId),
+    decayEnabled: options.decayEnabled ?? false,
+    decayPolicyVersion: options.decayEnabled ? MEMORY_DECAY_POLICY_VERSION : null
+  };
   const candidates = options.candidates ?? [];
   const retrieve = vi.fn(async (_input: { plan: MemoryRetrievalPlan; vector?: unknown }) => ({
     core: options.core ?? [],
@@ -200,14 +232,40 @@ function repository(options: Readonly<{
     snapshot: state, vectorEvidence: [],
     vectorState: activeIndexGenerationId ? "READY" as const : "NOT_CONFIGURED" as const
   }));
+  const coreByKey = new Map((options.core ?? []).map((entry) => [
+    `${entry.candidate.itemType}:${entry.candidate.itemId}`,
+    entry.expansion
+  ]));
   const value = {
-    expand: vi.fn(async () => candidates.map((candidate) => ({
-      itemId: candidate.itemId, itemType: "RECALL_CHUNK" as const,
-      occurredFrom: now, occurredTo: new Date(now.getTime() + 60_000),
-      projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT" as const,
-      safeText: `relevant text ${candidate.itemId}`, sourceChatId: "chat-source",
-      supportingItemId: null
-    }))),
+    expand: vi.fn(async (
+      _snapshot: unknown,
+      _plan: MemoryRetrievalPlan,
+      ranked: readonly MemoryRankedCandidate[]
+    ) => ranked.map((candidate): MemoryExpandedCandidate => {
+      const coreExpansion = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
+      if (coreExpansion) return coreExpansion;
+      return candidate.itemType === "RECALL_CHUNK"
+        ? {
+            itemId: candidate.itemId,
+            itemType: "RECALL_CHUNK",
+            occurredFrom: now,
+            occurredTo: new Date(now.getTime() + 60_000),
+            projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+            safeText: `relevant text ${candidate.itemId}`,
+            sourceChatId: "chat-source",
+            supportingItemId: null
+          }
+        : {
+            itemId: candidate.itemId,
+            itemType: "FACT_VERSION",
+            occurredFrom: null,
+            occurredTo: null,
+            projectionKind: "FACT_DISPLAY_TEXT",
+            safeText: `relevant text ${candidate.itemId}`,
+            sourceChatId: null,
+            supportingItemId: null
+          };
+    })),
     retrieve,
     snapshot: vi.fn(async () => state)
   } as unknown as PrismaLocalMemoryRetrievalRepository;
@@ -266,6 +324,7 @@ function retrievalOptions(
           queryText: input.context.currentUserMessage,
           reasonCode: "none" as const,
           recencyRequested,
+          retrievalMode: "TARGETED_CURRENT" as const,
           referencedMemoryRef: null,
           replacementStatement: null,
           responsePreference: false,
@@ -273,6 +332,10 @@ function retrievalOptions(
           sensitivity: "NORMAL" as const,
           statement: null,
           targetQuery: null,
+          temporalAsOf: null,
+          temporalFrom: null,
+          temporalIntent: "CURRENT" as const,
+          temporalTo: null,
           thisChatOnly: false
         },
         status: "READY" as const
@@ -304,6 +367,7 @@ function intentOptions(overrides: Record<string, unknown>) {
           queryText: input.context.currentUserMessage,
           reasonCode: "none" as const,
           recencyRequested: false,
+          retrievalMode: "TARGETED_CURRENT" as const,
           referencedMemoryRef: null,
           replacementStatement: null,
           responsePreference: false,
@@ -311,6 +375,10 @@ function intentOptions(overrides: Record<string, unknown>) {
           sensitivity: "NORMAL" as const,
           statement: null,
           targetQuery: null,
+          temporalAsOf: null,
+          temporalFrom: null,
+          temporalIntent: "CURRENT" as const,
+          temporalTo: null,
           thisChatOnly: false,
           ...overrides
         },
@@ -703,12 +771,61 @@ describe("Personal Memory v1 run admission", () => {
     ]);
   });
 
+  it("orders accepted historical fact states chronologically after reranking", () => {
+    const current = core("current-macbook").candidate;
+    const previousBase = core("ordered-macbook").candidate;
+    const previous: MemoryRankedCandidate = {
+      ...previousBase,
+      metadata: {
+        ...previousBase.metadata,
+        current: false,
+        historical: true,
+        lifecycleState: "SUPERSEDED",
+        systemFrom: new Date("2025-07-01T00:00:00.000Z"),
+        validFrom: new Date("2025-07-01T00:00:00.000Z"),
+        validTo: new Date("2025-08-01T00:00:00.000Z")
+      }
+    };
+    const plan = planMemoryRetrieval({
+      currentUserText: "How did my MacBook ownership change?",
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      mode: "HISTORICAL_MEMORY",
+      now,
+      temporalIntent: "HISTORICAL"
+    });
+    const candidates = memoryRelevanceCandidates(
+      [current, previous],
+      [
+        core("current-macbook").expansion,
+        core("ordered-macbook").expansion
+      ],
+      { temporalIntent: "HISTORICAL" }
+    );
+    const accepted = applyMemoryRelevance(candidates, {
+      bindingId: "binding-historical",
+      decisions: candidates.map((candidate, index) => ({
+        applicable: true,
+        current: true,
+        handle: candidate.handle,
+        reasonCode: "DIRECT_RELEVANCE" as const,
+        relevanceScore: index === 0 ? 0.99 : 0.7
+      })),
+      status: "READY"
+    }, plan);
+
+    expect(accepted.map(({ itemId }) => itemId)).toEqual([
+      "ordered-macbook",
+      "current-macbook"
+    ]);
+  });
+
   it("does not replay a resolved Memory action across a preparing retry", async () => {
     const local = repository({});
     const control = {
       decide: vi.fn(async () => ({
         bindingId: "binding-control",
         intent: {
+          ...currentControlContract,
           action: "SAVE" as const,
           applyResponsePreferences: false,
           category: "preferences" as const,
@@ -827,6 +944,7 @@ describe("Personal Memory v1 run admission", () => {
       decide: vi.fn(async () => ({
         bindingId: "binding-control",
         intent: {
+          ...currentControlContract,
           action: "UPDATE" as const,
           applyResponsePreferences: false,
           category: "about_you" as const,
@@ -879,6 +997,7 @@ describe("Personal Memory v1 run admission", () => {
       decide: vi.fn(async () => ({
         bindingId: "binding-control",
         intent: {
+          ...currentControlContract,
           action: "SAVE" as const,
           applyResponsePreferences: false,
           category: "preferences" as const,
@@ -924,6 +1043,7 @@ describe("Personal Memory v1 run admission", () => {
       decide: vi.fn(async () => ({
         bindingId: "binding-control",
         intent: {
+          ...currentControlContract,
           action: "SAVE" as const,
           applyResponsePreferences: false,
           category: "preferences" as const,
@@ -1104,7 +1224,7 @@ describe("Personal Memory v1 run admission", () => {
           intent: { action: "NONE", queryText: "What is my name?" },
           sourceAttemptId: "attempt-1",
           sourceBindingId: "binding-control",
-          version: 2
+          version: 4
         },
         utilityEgressMode: "CONSENTED_EXTERNAL"
       },
@@ -1161,7 +1281,8 @@ describe("Personal Memory v1 run admission", () => {
     const local = repository({ candidates: [laneCandidate("past-chat")] });
     const options = intentOptions({
       memoryUseful: false,
-      pastChatsUseful: true
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH"
     });
     const result = await createMemoryRunRetrievalService(local.value, options)
       .retrieve(runInput("What did we discuss?"));
@@ -1177,6 +1298,28 @@ describe("Personal Memory v1 run admission", () => {
     }));
     expect(options.utilities.embedQuery).toHaveBeenCalledOnce();
     expect(options.utilities.rerank).toHaveBeenCalledOnce();
+  });
+
+  it("fails safe instead of throwing when a control decision violates planner semantics", async () => {
+    const local = repository({ candidates: [laneCandidate("past-chat")] });
+    const options = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "HISTORICAL"
+    });
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("What codename did I choose for that event?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: { reason: "memory_plan_invalid" },
+      items: [],
+      outcome: "FAILED_SAFE",
+      querySnapshot: null
+    });
+    expect(local.retrieve).not.toHaveBeenCalled();
+    expect(options.utilities.embedQuery).not.toHaveBeenCalled();
+    expect(options.utilities.rerank).not.toHaveBeenCalled();
   });
 
   it("admits only the narrow response-preference lane when dynamic Memory is vetoed", async () => {
@@ -1209,7 +1352,12 @@ describe("Personal Memory v1 run admission", () => {
         filters: expect.objectContaining({ sourceKinds: [] })
       })
     }));
-    expect(local.value.expand).not.toHaveBeenCalled();
+    expect(local.value.expand).toHaveBeenCalledOnce();
+    expect(local.value.expand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      [expect.objectContaining({ itemId: "response-preference" })]
+    );
     expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
       candidates: [expect.objectContaining({
         authorityLevel: "SAVED",
@@ -1275,6 +1423,229 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.items?.[0]?.selectionReason).toContain("direct_relevance");
   });
 
+  it("applies opt-in decay after relevance while preserving baseline scores and items", async () => {
+    const candidates = [
+      {
+        ...factLaneCandidate("old-high-score", 0.99),
+        metadata: {
+          ...factLaneCandidate("old-high-score", 0.99).metadata,
+          observedAt: new Date("2020-01-01T00:00:00.000Z"),
+          sourceAuthority: "DIRECT_AUTOMATIC" as const,
+          sourceMode: "AUTOMATIC" as const,
+          systemFrom: new Date("2020-01-01T00:00:00.000Z")
+        }
+      },
+      {
+        ...factLaneCandidate("recently-used", 0.8),
+        metadata: {
+          ...factLaneCandidate("recently-used", 0.8).metadata,
+          lastUsedAt: new Date(now.getTime() - 3_600_000),
+          sourceAuthority: "DIRECT_AUTOMATIC" as const,
+          sourceMode: "AUTOMATIC" as const,
+          temperatureScore: 1
+        }
+      }
+    ];
+    const run = async (enabled: boolean) => {
+      const state = {
+        ...snapshot("generation-1"),
+        decayEnabled: enabled,
+        decayPolicyVersion: enabled ? MEMORY_DECAY_POLICY_VERSION : null
+      };
+      const local = {
+        expand: vi.fn(async () => candidates.map((candidate) => ({
+          itemId: candidate.itemId,
+          itemType: "FACT_VERSION" as const,
+          occurredFrom: null,
+          occurredTo: null,
+          projectionKind: "FACT_DISPLAY_TEXT" as const,
+          safeText: `fact ${candidate.itemId}`,
+          sourceChatId: null,
+          supportingItemId: null
+        }))),
+        retrieve: vi.fn(async () => ({
+          core: [],
+          laneResults: [{ candidates, lane: "FACT_VECTOR" as const }],
+          lexicalFailures: [],
+          lexicalState: "READY" as const,
+          snapshot: state,
+          vectorEvidence: [],
+          vectorState: "READY" as const
+        })),
+        snapshot: vi.fn(async () => state)
+      } as unknown as PrismaLocalMemoryRetrievalRepository;
+      const options = retrievalOptions(["c0", "c1"]);
+      vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
+        bindingId: "binding-relevance",
+        decisions: input.candidates.map((candidate) => ({
+          applicable: true,
+          current: true,
+          handle: candidate.handle,
+          reasonCode: "DIRECT_RELEVANCE" as const,
+          relevanceScore: candidate.handle === "c0" ? 0.95 : 0.7
+        })),
+        status: "READY"
+      }));
+      const base = runInput("Which saved fact is useful?");
+      return createMemoryRunRetrievalService(local, options).retrieve({
+        ...base,
+        expected: {
+          ...base.expected,
+          settings: {
+            ...base.expected.settings,
+            decayEnabled: enabled,
+            decayPolicyVersion: enabled ? MEMORY_DECAY_POLICY_VERSION : null
+          }
+        }
+      });
+    };
+
+    const baseline = await run(false);
+    const decayed = await run(true);
+    expect(baseline.items?.map((item) =>
+      "factVersionId" in item ? item.factVersionId : null)).toEqual([
+      "old-high-score",
+      "recently-used"
+    ]);
+    expect(decayed.items?.map((item) =>
+      "factVersionId" in item ? item.factVersionId : null)).toEqual([
+      "recently-used",
+      "old-high-score"
+    ]);
+    expect(decayed.items?.map(({ finalScore }) => finalScore)).toEqual([0.7, 0.95]);
+    expect(decayed.items?.[0]?.featureSnapshot).toMatchObject({
+      decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION
+    });
+    expect(decayed.items).toHaveLength(baseline.items?.length ?? 0);
+  });
+
+  it("rejoins the accepted reranker set before decay and never packs a stale candidate", async () => {
+    const candidates = [
+      factLaneCandidate("still-authoritative", 0.8),
+      factLaneCandidate("invalidated-after-rerank", 0.9)
+    ];
+    const state = {
+      ...snapshot("generation-1"),
+      decayEnabled: true,
+      decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION
+    };
+    const expansion = (candidate: MemoryRankedCandidate): MemoryExpandedCandidate => ({
+      itemId: candidate.itemId,
+      itemType: "FACT_VERSION",
+      occurredFrom: null,
+      occurredTo: null,
+      projectionKind: "FACT_DISPLAY_TEXT",
+      safeText: `fact ${candidate.itemId}`,
+      sourceChatId: null,
+      supportingItemId: null
+    });
+    const expand = vi.fn(async (
+      _snapshot: unknown,
+      _plan: MemoryRetrievalPlan,
+      ranked: readonly MemoryRankedCandidate[]
+    ) => expand.mock.calls.length === 1
+      ? ranked.map(expansion)
+      : ranked.filter(({ itemId }) => itemId === "still-authoritative").map(expansion));
+    const local = {
+      expand,
+      retrieve: vi.fn(async () => ({
+        core: [],
+        laneResults: [{ candidates, lane: "FACT_VECTOR" as const }],
+        lexicalFailures: [],
+        lexicalState: "READY" as const,
+        snapshot: state,
+        vectorEvidence: [],
+        vectorState: "READY" as const
+      })),
+      snapshot: vi.fn(async () => state)
+    } as unknown as PrismaLocalMemoryRetrievalRepository;
+    const options = retrievalOptions(["c0", "c1"]);
+    const base = runInput("Which saved fact is useful?");
+
+    const result = await createMemoryRunRetrievalService(local, options).retrieve({
+      ...base,
+      expected: {
+        ...base.expected,
+        settings: {
+          ...base.expected.settings,
+          decayEnabled: true,
+          decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION
+        }
+      }
+    });
+
+    expect(expand).toHaveBeenCalledTimes(2);
+    expect(result.items).toEqual([
+      expect.objectContaining({ factVersionId: "still-authoritative" })
+    ]);
+    expect(result.items?.[0]?.featureSnapshot).toMatchObject({
+      decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION
+    });
+  });
+
+  it("applies enabled decay order to admitted Core preferences without changing disabled order", async () => {
+    const oldBase = responsePreferenceCore("core-old");
+    const usedBase = responsePreferenceCore("core-used");
+    const coreCandidates = [
+      {
+        ...oldBase,
+        candidate: {
+          ...oldBase.candidate,
+          metadata: {
+            ...oldBase.candidate.metadata,
+            observedAt: new Date("2020-01-01T00:00:00.000Z"),
+            systemFrom: new Date("2020-01-01T00:00:00.000Z")
+          }
+        }
+      },
+      {
+        ...usedBase,
+        candidate: {
+          ...usedBase.candidate,
+          metadata: {
+            ...usedBase.candidate.metadata,
+            lastUsedAt: new Date(now.getTime() - 3_600_000),
+            temperatureScore: 1
+          }
+        }
+      }
+    ];
+    const run = async (enabled: boolean) => {
+      const local = repository({ core: coreCandidates, decayEnabled: enabled });
+      const options = retrievalOptions(["c0", "c1"]);
+      vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
+        bindingId: "binding-core-relevance",
+        decisions: input.candidates.map((candidate) => ({
+          applicable: true,
+          current: true,
+          handle: candidate.handle,
+          reasonCode: "DIRECT_RELEVANCE" as const,
+          relevanceScore: candidate.handle === "c0" ? 0.95 : 0.7
+        })),
+        status: "READY"
+      }));
+      const base = runInput("How should you respond?");
+      return createMemoryRunRetrievalService(local.value, options).retrieve({
+        ...base,
+        expected: {
+          ...base.expected,
+          settings: {
+            ...base.expected.settings,
+            decayEnabled: enabled,
+            decayPolicyVersion: enabled ? MEMORY_DECAY_POLICY_VERSION : null
+          }
+        }
+      });
+    };
+
+    const baseline = await run(false);
+    const decayed = await run(true);
+    const ids = (items: typeof baseline.items) => items?.map((item) =>
+      "factVersionId" in item ? item.factVersionId : null);
+    expect(ids(baseline.items)).toEqual(["core-old", "core-used"]);
+    expect(ids(decayed.items)).toEqual(["core-used", "core-old"]);
+  });
+
   it.each(["HYBRID", "LEXICAL_ONLY"] as const)(
     "answers a broad profile from current facts on a usable %s index without query embedding",
     async (indexMode) => {
@@ -1320,8 +1691,9 @@ describe("Personal Memory v1 run admission", () => {
       } as unknown as PrismaLocalMemoryRetrievalRepository;
       const options = intentOptions({
         memoryUseful: true,
-        pastChatsUseful: true,
-        profileRequested: true
+        pastChatsUseful: false,
+        profileRequested: true,
+        retrievalMode: "CURRENT_PROFILE"
       });
       vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
         bindingId: "binding-relevance",
@@ -1370,8 +1742,9 @@ describe("Personal Memory v1 run admission", () => {
     const local = repository({ activeIndexGenerationId: null });
     const options = intentOptions({
       memoryUseful: true,
-      pastChatsUseful: true,
-      profileRequested: true
+      pastChatsUseful: false,
+      profileRequested: true,
+      retrievalMode: "CURRENT_PROFILE"
     });
 
     const result = await createMemoryRunRetrievalService(local.value, options)
@@ -1411,8 +1784,9 @@ describe("Personal Memory v1 run admission", () => {
     } as unknown as PrismaLocalMemoryRetrievalRepository;
     const options = intentOptions({
       memoryUseful: true,
-      pastChatsUseful: true,
-      profileRequested: true
+      pastChatsUseful: false,
+      profileRequested: true,
+      retrievalMode: "CURRENT_PROFILE"
     });
 
     const result = await createMemoryRunRetrievalService(local, options)

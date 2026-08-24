@@ -27,9 +27,16 @@ describe("Memory settings store", () => {
     vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       bodies.push(body);
-      const key = ["useMemoryFacts", "referenceChatHistory", "learnAutomatically"].find(
+      const key = [
+        "useMemoryFacts",
+        "referenceChatHistory",
+        "learnAutomatically",
+        "synthesisEnabled",
+        "decayEnabled"
+      ].find(
         (candidate) => typeof body[candidate] === "boolean"
-      ) as "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts";
+      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
+        "useMemoryFacts";
       server = memoryConsumerSettingsFixture({
         settings: { ...server.settings, [key]: body[key] as boolean },
         status: key === "useMemoryFacts" && body[key] === true ? "ON" : server.status
@@ -41,16 +48,22 @@ describe("Memory settings store", () => {
     await updateMemoryGate("useMemoryFacts", true);
     await updateMemoryGate("referenceChatHistory", true);
     await updateMemoryGate("learnAutomatically", true);
+    await updateMemoryGate("synthesisEnabled", true);
+    await updateMemoryGate("decayEnabled", true);
 
     expect(useMemorySettingsStore.getState().data?.settings).toEqual({
+      decayEnabled: true,
       learnAutomatically: true,
       referenceChatHistory: true,
+      synthesisEnabled: true,
       useMemoryFacts: true
     });
     expect(bodies).toEqual([
       { useMemoryFacts: true },
       { referenceChatHistory: true },
-      { learnAutomatically: true }
+      { learnAutomatically: true },
+      { synthesisEnabled: true },
+      { decayEnabled: true }
     ]);
     expect(JSON.stringify(bodies)).not.toMatch(/revision|generation|fingerprint|deployment/iu);
   });

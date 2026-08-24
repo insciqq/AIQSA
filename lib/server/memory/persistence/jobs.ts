@@ -11,6 +11,7 @@ export type MemoryJobEnqueueInput = Readonly<{
   kind: MemoryJobKind;
   nextAttemptAt?: Date | null;
   pipelineVersion: string;
+  targetFactVersionId?: string;
   source?: Readonly<{
     activeLeafMessageId: string;
     branchGeneration: number;
@@ -34,7 +35,8 @@ function validToken(value: string, maxLength: number): boolean {
 }
 
 const sha256 = /^[a-f0-9]{64}$/u;
-const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v1";
+const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v2";
+const relationPipeline = "memory-fact-relation-v2";
 
 function validSource(input: MemoryJobEnqueueInput["source"]): boolean {
   return input === undefined || (
@@ -61,7 +63,15 @@ export async function enqueueMemoryJob(
     !validSource(input.source) ||
     (input.kind === "EXTRACT_FACTS" &&
       input.pipelineVersion === vNextFactExtractionPipeline &&
-      input.source?.sourceMessageId === undefined)
+      input.source?.sourceMessageId === undefined) ||
+    (input.kind === "RESOLVE_FACT_RELATIONS" && (
+      input.pipelineVersion !== relationPipeline ||
+      input.targetFactVersionId === undefined ||
+      !validToken(input.targetFactVersionId, 256) ||
+      input.source?.sourceMessageId === undefined
+    )) ||
+    (input.kind !== "RESOLVE_FACT_RELATIONS" &&
+      input.targetFactVersionId !== undefined)
   ) {
     return memoryPersistenceFailure("memory_input_invalid");
   }
@@ -78,7 +88,8 @@ export async function enqueueMemoryJob(
       sourceHash: true,
       sourceMessageId: true,
       sourceRevision: true,
-      state: true
+      state: true,
+      targetFactVersionId: true
     },
     where: {
       userId_idempotencyFingerprint: {
@@ -101,6 +112,7 @@ export async function enqueueMemoryJob(
     if (
       existing.kind !== input.kind ||
       existing.pipelineVersion !== input.pipelineVersion ||
+      existing.targetFactVersionId !== (input.targetFactVersionId ?? null) ||
       sourceConflict
     ) {
       return memoryPersistenceFailure("memory_idempotency_conflict");
@@ -122,6 +134,7 @@ export async function enqueueMemoryJob(
       memoryRevisionSnapshot: settings.memoryRevision,
       nextAttemptAt: input.nextAttemptAt,
       pipelineVersion: input.pipelineVersion,
+      targetFactVersionId: input.targetFactVersionId,
       ...(input.source
         ? {
             activeLeafMessageId: input.source.activeLeafMessageId,

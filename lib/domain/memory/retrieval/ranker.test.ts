@@ -17,12 +17,18 @@ function metadata(id: string): MemoryCandidateMetadata {
   return {
     canonicalKey: null, category: "memory", confidence: 0, conflict: false,
     coreEligible: false, coreSalience: "NONE", current: true, dedupeKey: id,
-    directness: "DIRECT", factId: id, historical: false, historySafetyClass: null,
-    importance: 0, languageCode: "und", modality: "PREFERENCE", occurredFrom: null,
+    directness: "DIRECT", dimensionKey: null, entityIds: [], expectedAt: null,
+    expiresAt: null, factId: id, historical: false, historySafetyClass: null,
+    importance: 0, identityKind: "PROPOSITION", languageCode: "und",
+    lastConfirmedAt: null, lastUsedAt: null,
+    lifecycleState: "ACTIVE", matchedEntityRole: null, modality: "PREFERENCE",
+    observedAt: null, occurredAt: null, occurredFrom: null,
     occurredTo: null, pinned: false, scopeAffinity: 0, scopeType: "GLOBAL_USER",
-    sensitivityClass: "NORMAL", sourceAssistantId: null, sourceChatId: null,
-    sourceFolderId: null, sourceMode: "AUTOMATIC", systemFrom: now,
-    temperatureClass: null, validFrom: null, validTo: null
+    predicateKey: null, relationDepth: 0, sensitivityClass: "NORMAL",
+    sourceAssistantId: null, sourceChatId: null, sourceFolderId: null,
+    sourceMode: "AUTOMATIC", sourceAuthority: "DIRECT_AUTOMATIC", subjectKey: null,
+    synthesisDepth: 0, systemFrom: now,
+    temperatureClass: null, temperatureScore: 0, validFrom: null, validTo: null
   };
 }
 
@@ -41,6 +47,57 @@ describe("relative-rank Memory fusion", () => {
     ], now);
     expect(first.map(({ itemId }) => itemId)).toEqual(["a", "b"]);
     expect(first[0]?.finalScore).toBe(first[0]?.rrfScore);
+  });
+
+  it("uses versioned lane weights and authority only as deterministic tie-breakers", () => {
+    const weighted = fuseMemoryRetrievalCandidates(plan, [{
+      lane: "FACT_ENTITY",
+      candidates: [candidate("entity", "FACT_ENTITY", -1)]
+    }, {
+      lane: "FACT_VECTOR",
+      candidates: [candidate("vector", "FACT_VECTOR", 1_000_000)]
+    }], now);
+    expect(weighted.map(({ itemId }) => itemId)).toEqual(["entity", "vector"]);
+    expect(weighted[0]!.rrfScore).toBeCloseTo(1.2 / 61);
+    expect(weighted[1]!.rrfScore).toBeCloseTo(1 / 61);
+
+    const explicit = candidate("explicit", "FACT_FTS_SIMPLE", 0);
+    const tied = fuseMemoryRetrievalCandidates(plan, [{
+      lane: "FACT_FTS_SIMPLE",
+      candidates: [{
+        ...explicit,
+        metadata: {
+          ...explicit.metadata,
+          sourceAuthority: "EXPLICIT",
+          sourceMode: "EXPLICIT"
+        }
+      }]
+    }, {
+      lane: "FACT_VECTOR",
+      candidates: [candidate("automatic", "FACT_VECTOR", 999)]
+    }], now);
+    expect(tied.map(({ itemId }) => itemId)).toEqual(["explicit", "automatic"]);
+    expect(tied[0]!.rrfScore).toBe(tied[1]!.rrfScore);
+  });
+
+  it("demotes inferred synthesis below equally ranked direct facts", () => {
+    const synthesized = candidate("pattern", "FACT_FTS_SIMPLE", 1);
+    const ranked = fuseMemoryRetrievalCandidates(plan, [{
+      lane: "FACT_FTS_SIMPLE",
+      candidates: [{
+        ...synthesized,
+        metadata: {
+          ...synthesized.metadata,
+          directness: "INFERRED",
+          modality: "PATTERN",
+          sourceAuthority: "SYNTHESIS",
+          synthesisDepth: 1
+        }
+      }, candidate("direct", "FACT_FTS_SIMPLE", 0.9)]
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual(["direct", "pattern"]);
+    expect(ranked[1]!.finalScore).toBeCloseTo(ranked[1]!.rrfScore * 0.5);
   });
 
   it("deduplicates a logical fact after fusion", () => {

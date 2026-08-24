@@ -330,6 +330,11 @@ async function summariesByIds(
         AND candidate."safetyClassificationState" =
           'CLASSIFIED'::"MemorySafetyClassificationState"
         AND (
+          fact."state" <> 'ACTIVE'::"MemoryFactState"
+          OR candidate."expiresAt" IS NULL
+          OR candidate."expiresAt" > CURRENT_TIMESTAMP
+        )
+        AND (
           (fact."currentVersionId" IS NOT NULL AND candidate."id" = fact."currentVersionId")
           OR (
             fact."currentVersionId" IS NULL
@@ -733,6 +738,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             id: fact.currentVersionId,
             state: "ACTIVE",
             safetyClassificationState: "CLASSIFIED",
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
             userId
           }
         })
@@ -901,6 +907,11 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             AND candidate."factId" = fact."id"
             AND candidate."safetyClassificationState" =
               'CLASSIFIED'::"MemorySafetyClassificationState"
+            AND (
+              fact."state" <> 'ACTIVE'::"MemoryFactState"
+              OR candidate."expiresAt" IS NULL
+              OR candidate."expiresAt" > CURRENT_TIMESTAMP
+            )
             AND (fact."currentVersionId" IS NULL OR candidate."id" = fact."currentVersionId")
           ORDER BY candidate."systemFrom" DESC, candidate."id" DESC
           LIMIT 1
@@ -1044,6 +1055,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             'CLASSIFIED'::"MemorySafetyClassificationState"
           AND version."id" = fact."currentVersionId"
           AND version."state" = 'ACTIVE'
+          AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
         INNER JOIN "UserMemorySettings" AS settings
           ON settings."userId" = fact."userId"
         INNER JOIN "MemoryIndexGeneration" AS generation

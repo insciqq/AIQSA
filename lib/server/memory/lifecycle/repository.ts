@@ -874,6 +874,15 @@ async function applyAllReusableDeletionFence(
       userId: settings.userId
     }
   });
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemorySynthesisExecution"
+    SET
+      "acceptedOutput" = NULL,
+      "sourceBindings" = NULL,
+      "appliedAt" = GREATEST("createdAt", ${now})
+    WHERE "userId" = ${settings.userId}
+      AND "appliedAt" IS NULL
+  `);
 
   await tx.memoryIndexGeneration.updateMany({
     data: { state: "SUPERSEDED", supersededAt: now },
@@ -896,9 +905,15 @@ async function applyAllReusableDeletionFence(
   const fenced = await tx.userMemorySettings.updateMany({
     data: {
       activeIndexGenerationId: null,
+      decayEnabled: false,
+      decayPolicyVersion: null,
       learnAutomatically: false,
       referenceChatHistory: false,
       settingsRevision,
+      synthesisEnabled: false,
+      synthesisEnabledAt: null,
+      synthesisPolicyVersion: null,
+      lastSynthesisAt: null,
       useMemoryFacts: false
     },
     where: {
@@ -912,9 +927,15 @@ async function applyAllReusableDeletionFence(
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
   settings.activeIndexGenerationId = null;
+  settings.decayEnabled = false;
+  settings.decayPolicyVersion = null;
   settings.learnAutomatically = false;
   settings.referenceChatHistory = false;
   settings.settingsRevision = settingsRevision;
+  settings.synthesisEnabled = false;
+  settings.synthesisEnabledAt = null;
+  settings.synthesisPolicyVersion = null;
+  settings.lastSynthesisAt = null;
   settings.useMemoryFacts = false;
   return affectedFacts;
 }

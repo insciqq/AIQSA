@@ -29,6 +29,7 @@ import {
   loadMemorySuppressionKeyring,
   type MemorySuppressionKeyring
 } from "../../suppressionKeyring";
+import { loadMemorySourceSnapshot } from "../../sourceState";
 import {
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
@@ -42,6 +43,7 @@ import {
   type MemoryFactSourceIdentity
 } from "./contract";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
+import { loadMemoryFactContextRefs } from "../dependencies/context";
 
 type PrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -91,6 +93,11 @@ export function memoryAutomaticCandidateContainsSecret(
     candidate.quote,
     candidate.rawTemporalExpression,
     candidate.responsePreference,
+    ...candidate.entities.flatMap((entity) => [
+      entity.canonicalLabel,
+      entity.mention,
+      ...entity.aliases
+    ]),
     ...candidate.evidence.map((evidence) => evidence.quote)
   ];
   return values.some((value) => modelValueContainsSecret(value)) ||
@@ -110,6 +117,7 @@ type MemoryFactSourceMessage = Readonly<{
 }>;
 
 type MemoryFactBoundSource = Readonly<{
+  activePathMessageIds: readonly string[];
   chat: Readonly<{
     folderId: string | null;
     id: string;
@@ -134,48 +142,38 @@ async function loadBoundSource(
   job: MemoryJobDescriptor
 ): Promise<MemoryFactBoundSource | null> {
   if (job.chatId === null || job.sourceMessageId === null) return null;
-  const [chat, message] = await Promise.all([
-    tx.chat.findFirst({
-      select: { folderId: true, id: true, userId: true },
-      where: {
-        id: job.chatId,
-        memoryMode: "NORMAL",
-        permanentDeletionAt: null,
-        projectId: null,
-        userId: job.userId
-      }
-    }),
-    tx.message.findFirst({
-      select: sourceMessageSelect,
-      where: {
-        chatId: job.chatId,
-        id: job.sourceMessageId,
-        role: "user",
-        status: "complete"
-      }
-    })
-  ]);
-  if (!chat?.userId || !message) return null;
-  return {
-    chat: { folderId: chat.folderId, id: chat.id, userId: chat.userId },
-    message
-  };
-}
-
-async function loadContextMessage(
-  tx: MemoryTransaction,
-  chatId: string,
-  id: string
-): Promise<MemoryFactSourceMessage | null> {
-  return tx.message.findFirst({
+  const snapshot = await loadMemorySourceSnapshot(tx, {
+    chatId: job.chatId,
+    // The settings lock is the semantic-write linearization point. Avoid the
+    // inverse chat->settings lock order used by source mutations while still
+    // revalidating the complete active path in this transaction snapshot.
+    lock: "NONE",
+    personalOnly: true,
+    userId: job.userId
+  });
+  if (
+    !snapshot || snapshot.memoryMode !== "NORMAL" ||
+    !snapshot.messages.some(({ id }) => id === job.sourceMessageId)
+  ) return null;
+  const message = await tx.message.findFirst({
     select: sourceMessageSelect,
     where: {
-      chatId,
-      id,
-      role: { in: ["assistant", "user"] },
+      chatId: job.chatId,
+      id: job.sourceMessageId,
+      role: "user",
       status: "complete"
     }
   });
+  if (!message) return null;
+  return {
+    activePathMessageIds: snapshot.messages.map(({ id }) => id),
+    chat: {
+      folderId: snapshot.folderId,
+      id: snapshot.id,
+      userId: snapshot.userId
+    },
+    message
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -363,22 +361,14 @@ async function loadBoundContext(
   source: MemoryFactBoundSource
 ): Promise<Readonly<{
   activeLeafMessageId: string;
+  contextRefs: MemoryFactExtractionInput["contextRefs"];
   messages: readonly MemoryHistorySourceMessageInput[];
   timeZone: string;
 }>> {
-  const before: MemoryFactSourceMessage[] = [];
-  let cursor = source.message.parentMessageId;
-  const precedingLimit = Math.max(0, MEMORY_FACT_MAX_INPUT_MESSAGES - 2);
-  for (let index = 0; cursor !== null && index < precedingLimit; index += 1) {
-    const message = await loadContextMessage(tx, source.chat.id, cursor);
-    if (!message) break;
-    before.push(message);
-    cursor = message.parentMessageId;
-  }
-  before.reverse();
-
   const activeRun = await tx.modelRun.findFirst({
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    // The first completed run bound to the admitted leaf owns the temporal
+    // snapshot. A later recovery/replay row must not rewrite extraction input.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       assistantId: true,
       assistantMessageId: true,
@@ -395,74 +385,26 @@ async function loadBoundContext(
       userMessageId: source.message.id
     }
   });
-  const after = activeRun?.assistantMessageId
-    ? await tx.message.findFirst({
-        select: sourceMessageSelect,
-        where: {
-          chatId: source.chat.id,
-          id: activeRun.assistantMessageId,
-          parentMessageId: source.message.id,
-          role: "assistant",
-          status: "complete"
-        }
-      })
-    : null;
-  const rows = [...before, source.message, ...(after ? [after] : [])];
-  const assistantIds = rows.flatMap((message) =>
-    message.role === "assistant" ? [message.id] : []);
-  const runs = assistantIds.length === 0
-    ? []
-    : await tx.modelRun.findMany({
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: {
-          assistantId: true,
-          assistantMessageId: true,
-          id: true,
-          status: true,
-          userMessageId: true
-        },
-        where: {
-          assistantMessageId: { in: assistantIds },
-          chatId: source.chat.id,
-          status: "complete",
-          userId: source.chat.userId
-        }
-      });
-  const runsByAssistantMessage = new Map(runs.flatMap((run) =>
-    run.assistantMessageId ? [[run.assistantMessageId, run] as const] : []));
-  const messages = rows.map((message, index): MemoryHistorySourceMessageInput => {
-    const parentMessageId = index === 0 ? null : rows[index - 1]!.id;
-    if (message.role === "user") {
-      return {
-        ...message,
-        parentMessageId,
-        provenance: {
-          assistantId: null,
-          complete: true,
-          influencedByMessageIds: [],
-          modelRunId: null,
-          origin: "DIRECT_USER",
-          taintSources: []
-        }
-      };
+  const messages: readonly MemoryHistorySourceMessageInput[] = [{
+    ...source.message,
+    parentMessageId: null,
+    provenance: {
+      assistantId: null,
+      complete: true,
+      influencedByMessageIds: [],
+      modelRunId: null,
+      origin: "DIRECT_USER",
+      taintSources: []
     }
-    const run = runsByAssistantMessage.get(message.id);
-    const validRun = run?.userMessageId === parentMessageId ? run : null;
-    return {
-      ...message,
-      parentMessageId,
-      provenance: {
-        assistantId: validRun?.assistantId ?? null,
-        complete: validRun?.status === "complete",
-        influencedByMessageIds: validRun ? [validRun.userMessageId] : [],
-        modelRunId: validRun?.id ?? null,
-        origin: "VISIBLE_ASSISTANT",
-        taintSources: []
-      }
-    };
+  }];
+  const contextRefs = await loadMemoryFactContextRefs(tx, {
+    activePathMessageIds: source.activePathMessageIds,
+    sourceMessageId: source.message.id,
+    userId: source.chat.userId
   });
   return {
-    activeLeafMessageId: after?.id ?? source.message.id,
+    activeLeafMessageId: source.message.id,
+    contextRefs,
     messages,
     timeZone: runTimeZone(activeRun?.normalizedRequest ?? null)
   };
@@ -555,6 +497,7 @@ async function prepareWith(
   }
   const sourceProjectionHash = memorySha256({
     baseProjectionHash: safeSnapshot.snapshotHash,
+    contextRefs: context.contextRefs,
     messages: selected,
     projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
@@ -570,6 +513,7 @@ async function prepareWith(
     userId: source.chat.userId
   };
   const withoutInputHash: Omit<MemoryFactExtractionInput, "inputHash"> = {
+    contextRefs: context.contextRefs,
     folderId: source.chat.folderId,
     messages: selected,
     source: sourceIdentity,
@@ -621,14 +565,14 @@ async function applyPlan(
   bindingId: string,
   keyring: MemorySuppressionKeyring,
   now: Date
-): Promise<"APPLIED" | "STALE"> {
+): Promise<"APPLIED" | "EMPTY" | "STALE"> {
   if (
     !memoryFactExtractionClaimIsValid(claim) ||
     plan.input.source.userId !== claim.userId ||
     memoryFactExtractionOutputHash(plan.input, plan.candidates) !== plan.outputHash
   ) throw new MemoryCoordinatorError("memory_fact_plan_invalid", false);
-  const liveLease = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT "id"
+  const liveLease = await tx.$queryRaw<Array<{ id: string; stage: string | null }>>(Prisma.sql`
+    SELECT "id", "stage"
     FROM "MemoryJob"
     WHERE "id" = ${claim.id}
       AND "userId" = ${claim.userId}
@@ -638,6 +582,8 @@ async function applyPlan(
     FOR UPDATE
   `);
   if (!liveLease[0]) return "STALE";
+  if (liveLease[0].stage === "fact_observations_applied") return "APPLIED";
+  if (liveLease[0].stage === "fact_observations_empty_applied") return "EMPTY";
   if (!settings.useMemoryFacts || !settings.learnAutomatically ||
     settings.memoryGeneration !== claim.memoryGenerationSnapshot) return "STALE";
   const current = await prepareWith(tx, claim, now);
@@ -657,7 +603,7 @@ async function applyPlan(
     }
   }
 
-  await commitMemoryVNextExtractionPlan(
+  const committed = await commitMemoryVNextExtractionPlan(
     tx,
     settings,
     claim,
@@ -665,8 +611,13 @@ async function applyPlan(
     bindingId,
     now
   );
+  const applied = committed.attachedEvidence > 0 || committed.createdVersions > 0;
   await tx.memoryJob.updateMany({
-    data: { stage: "fact_observations_applied" },
+    data: {
+      stage: applied
+        ? "fact_observations_applied"
+        : "fact_observations_empty_applied"
+    },
     where: {
       id: claim.id,
       leaseToken: claim.claimToken,
@@ -674,7 +625,7 @@ async function applyPlan(
       userId: claim.userId
     }
   });
-  return "APPLIED";
+  return applied ? "APPLIED" : "EMPTY";
 }
 
 export function createPrismaMemoryFactExtractionRepository(
@@ -701,12 +652,19 @@ export function createPrismaMemoryFactExtractionRepository(
     ) {
       return applyPlan(tx, settings, claim, plan, bindingId, keyring(), now);
     },
-    async applied(job: MemoryJobDescriptor, _bindingId: string): Promise<boolean> {
+    async applied(
+      job: MemoryJobDescriptor,
+      _bindingId: string
+    ): Promise<"APPLIED" | "EMPTY" | null> {
       const marker = await client.memoryJob.findFirst({
         select: { stage: true },
         where: { id: job.id, userId: job.userId }
       });
-      return marker?.stage === "fact_observations_applied";
+      return marker?.stage === "fact_observations_applied"
+        ? "APPLIED"
+        : marker?.stage === "fact_observations_empty_applied"
+          ? "EMPTY"
+          : null;
     },
     bindings(userId: string, memoryJobId: string): Promise<MemoryFactExecutionBinding[]> {
       return client.memoryExecutionBinding.findMany({

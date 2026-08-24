@@ -1523,7 +1523,12 @@ async function purgeBase(
     where: { id: claim.targetId }
   });
   await tx.knowledgeIndexGeneration.updateMany({
-    data: { sourceIndexGenerationId: null },
+    data: {
+      sourceBaseVersion: null,
+      sourceIndexGenerationId: null,
+      targetContentRevision: null,
+      targetSourceRevision: null
+    },
     where: { knowledgeBaseId: claim.targetId }
   });
   await tx.knowledgeIndexGeneration.deleteMany({ where: { knowledgeBaseId: claim.targetId } });

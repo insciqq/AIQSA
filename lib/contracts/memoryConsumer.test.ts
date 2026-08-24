@@ -28,17 +28,21 @@ describe("Memory consumer contracts", () => {
     const safe = {
       capabilities: {
         automaticLearningAvailable: true,
+        decayAvailable: true,
         managementAvailable: true,
         naturalLanguageActionsAvailable: true,
         permanentChatDeletion: true,
         pastChatIndexingAvailable: true,
         retrievalAvailable: true,
+        synthesisAvailable: true,
         temporaryChats: true
       },
       resetState: "IDLE",
       settings: {
+        decayEnabled: false,
         learnAutomatically: true,
         referenceChatHistory: true,
+        synthesisEnabled: false,
         useMemoryFacts: true
       },
       status: "ON"

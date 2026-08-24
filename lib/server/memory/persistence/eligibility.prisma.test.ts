@@ -12,6 +12,8 @@ import { prisma } from "../../prisma";
 import { createMemoryClientRefService } from "../actions/clientRef";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
+import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
+  "../learning/extraction/contract";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
@@ -217,6 +219,8 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           status: "complete"
         }
       });
+      const sourceText = "I keep project notes in a cedar notebook.";
+      const sourceMessageContentHash = memorySha256(sourceText);
       await prisma.chat.update({
         data: { activeLeafMessageId: sourceMessage.id },
         where: { id: sourceChat.id }
@@ -225,19 +229,31 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
         chatId: sourceChat.id,
         messageId: sourceMessage.id
       });
-      await prisma.chatMemoryCheckpoint.create({
-        data: {
-          activeLeafMessageId: sourceMessage.id,
-          branchGeneration: 0,
-          chatId: sourceChat.id,
-          lastIndexedMessageId: sourceMessage.id,
-          lastSucceededAt: fixtureNow,
-          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
-          sourceContentHash,
-          sourceRevision: 1,
-          status: "READY",
-          userId
-        }
+      await prisma.$transaction(async (tx) => {
+        await tx.chatMemoryCheckpoint.create({
+          data: {
+            activeLeafMessageId: sourceMessage.id,
+            branchGeneration: 0,
+            chatId: sourceChat.id,
+            lastIndexedMessageId: sourceMessage.id,
+            lastSucceededAt: fixtureNow,
+            pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+            sourceContentHash,
+            sourceRevision: 1,
+            status: "READY",
+            userId
+          }
+        });
+        await tx.chatMemoryCheckpointMessage.create({
+          data: {
+            chatId: sourceChat.id,
+            messageId: sourceMessage.id,
+            ordinal: 0,
+            sourceMessageCreatedAt: sourceMessage.createdAt,
+            sourceMessageUpdatedAt: sourceMessage.updatedAt,
+            userId
+          }
+        });
       });
 
       const classifierExecutionId = await createClassifierReceipt(userId);
@@ -299,14 +315,24 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           data: {
             branchGeneration: 0,
             chatId: sourceChat.id,
+            evidenceFingerprint: memorySha256({
+              endOffset: sourceText.length,
+              messageId: sourceMessage.id,
+              sourceMessageContentHash,
+              startOffset: 0,
+              version: 1
+            }),
             factVersionId,
             messageId: sourceMessage.id,
             observedAt: fixtureNow,
-            safeExcerpt: factStatement,
-            safeSourceHash: memorySha256(factStatement),
+            safeExcerpt: sourceText,
+            safeSourceHash: sourceMessageContentHash,
             safetyClass: "NORMAL",
-            sourceProjectionVersion: "data-002-learning-v1",
+            sourceEndOffset: sourceText.length,
+            sourceMessageContentHash,
+            sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
             sourceRole: "user",
+            sourceStartOffset: 0,
             sourceType: "MESSAGE",
             stance: "SUPPORTS",
             userId
@@ -317,36 +343,41 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
       const chunkId = randomUUID();
       const chunkText = "User: I keep project notes in a cedar notebook.";
       const chunkHash = memorySha256(chunkText);
-      await prisma.memoryRecallChunk.create({
-        data: {
-          branchGeneration: 0,
-          chatId: sourceChat.id,
-          chunkOrdinal: 0,
-          chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
-          contentHash: chunkHash,
-          id: chunkId,
-          languageCode: "en",
-          normalizedSafeSearchText: normalizeMemorySearchText(chunkText),
-          occurredFrom: new Date(fixtureNow.getTime() - 60_000),
-          occurredTo: fixtureNow,
-          redactionState: "NOT_NEEDED",
-          safeProjectedText: chunkText,
-          safetyClass: "NORMAL",
-          sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-          sourceRevisionAtCreation: 1,
-          state: "ACTIVE",
-          userId
-        }
-      });
-      await prisma.memoryRecallChunkMessage.create({
-        data: {
-          chatId: sourceChat.id,
-          chunkId,
-          messageId: sourceMessage.id,
-          ordinal: 0,
-          role: "user",
-          userId
-        }
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.create({
+          data: {
+            branchGeneration: 0,
+            chatId: sourceChat.id,
+            chunkOrdinal: 0,
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+            contentHash: chunkHash,
+            id: chunkId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(chunkText),
+            occurredFrom: new Date(fixtureNow.getTime() - 60_000),
+            occurredTo: fixtureNow,
+            redactionState: "NOT_NEEDED",
+            safeProjectedText: chunkText,
+            safetyClass: "NORMAL",
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+            sourceRevisionAtCreation: 1,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryRecallChunkMessage.create({
+          data: {
+            chatId: sourceChat.id,
+            chunkId,
+            messageId: sourceMessage.id,
+            ordinal: 0,
+            role: "user",
+            safeTextHash: memorySha256(chunkText),
+            sourceMessageContentHash: memorySha256(sourceMessage.content),
+            sourceMessageUpdatedAt: sourceMessage.updatedAt,
+            userId
+          }
+        });
       });
 
       const factEntryId = randomUUID();
@@ -467,6 +498,8 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           allowedHistorySafety: ["NORMAL"],
           assistantId: null,
           chatId: consumerChat.id,
+          factMode: "CURRENT",
+          factTemporalAsOf: null,
           folderId: null,
           occurredFrom: null,
           occurredTo: null,
@@ -869,6 +902,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
         sourceMessageId: job.sourceMessageId,
         sourceRevision: job.sourceRevision,
         stage: job.stage,
+        targetFactVersionId: job.targetFactVersionId,
         userId
       };
       await prisma.$transaction((tx) => rebuild.applyJob(tx, claim, fixtureNow));

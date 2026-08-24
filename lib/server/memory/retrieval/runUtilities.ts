@@ -41,7 +41,7 @@ import {
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v8";
+  "memory-multilingual-relevance-v9";
 export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
@@ -54,8 +54,8 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v8",
-  promptVersion: "memory-relevance-prompt-v6",
+  policyVersion: "memory-relevance-policy-v9",
+  promptVersion: "memory-relevance-prompt-v9",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
     maxCandidates: 30,
@@ -64,9 +64,10 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     maxTotalCharacters: 32_000,
     completePerCandidateDecisions: true,
     profileInventoryPostcondition: true,
-    version: 8
+    lifecycleTemporalModes: true,
+    version: 9
   }),
-  schemaVersion: "memory-relevance-result-v4"
+  schemaVersion: "memory-relevance-result-v5"
 });
 
 export type MemoryRunUtilityUnavailable = Readonly<{
@@ -144,15 +145,22 @@ export type MemoryRunUtilityService = Readonly<{
     candidates: readonly Readonly<{
       authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
       current: boolean;
+      directness: "DIRECT" | "INFERRED" | "PARAPHRASED" | null;
       handle: string;
+      historical: boolean;
+      lifecycleState: "ACTIVE" | "SUPERSEDED" | null;
       occurredFrom: string | null;
       occurredTo: string | null;
       sensitivityClass: "NORMAL";
       sourceKind: "EVENT" | "FACT" | "HISTORY";
+      temporalReason: "any" | "as_of" | "between" | "current" | "historical";
       text: string;
     }>[];
     profileRequested: boolean;
     query: string;
+    retrievalMode: "CURRENT_PROFILE" | "HISTORICAL_MEMORY" | "HISTORY_OVERVIEW" |
+      "PAST_CHAT_SEARCH" | "TARGETED_CURRENT";
+    temporalIntent: "ANY" | "AS_OF" | "BETWEEN" | "CURRENT" | "HISTORICAL";
   }>): Promise<MemoryRunRerankResult>;
 }>;
 
@@ -666,6 +674,10 @@ export function createMemoryRunUtilityService(
       if (
         !validSafeQuery(input.query) ||
         typeof input.profileRequested !== "boolean" ||
+        !["CURRENT_PROFILE", "TARGETED_CURRENT", "HISTORICAL_MEMORY",
+          "PAST_CHAT_SEARCH", "HISTORY_OVERVIEW"].includes(input.retrievalMode) ||
+        !["CURRENT", "HISTORICAL", "AS_OF", "BETWEEN", "ANY"]
+          .includes(input.temporalIntent) ||
         input.candidates.length < 1 ||
         input.candidates.length > 30 ||
         totalCharacters > 32_000 ||
@@ -675,7 +687,8 @@ export function createMemoryRunUtilityService(
           candidate.text.length < 1 ||
           candidate.text.length > 4_000 ||
           candidate.text.includes("\u0000") ||
-          memoryExplicitStatementContainsSecret(candidate.text)
+          memoryExplicitStatementContainsSecret(candidate.text) ||
+          candidate.current === candidate.historical
         ) || input.profileRequested && input.candidates.some((candidate) =>
           !candidate.current || candidate.sourceKind === "HISTORY")
       ) return unavailable("memory_utility_input_blocked");
@@ -683,17 +696,23 @@ export function createMemoryRunUtilityService(
         candidates: input.candidates.map((candidate) => ({
           authorityLevel: candidate.authorityLevel,
           current: candidate.current,
+          directness: candidate.directness,
           handle: candidate.handle,
+          historical: candidate.historical,
+          lifecycleState: candidate.lifecycleState,
           occurredFrom: candidate.occurredFrom,
           occurredTo: candidate.occurredTo,
           sensitivityClass: candidate.sensitivityClass,
           sourceKind: candidate.sourceKind,
+          temporalReason: candidate.temporalReason,
           textHash: memorySha256(candidate.text)
         })),
         domain: "aiqsa.memory.relevance-input",
         profileRequested: input.profileRequested,
         queryHash: memorySha256(input.query),
-        version: 5
+        retrievalMode: input.retrievalMode,
+        temporalIntent: input.temporalIntent,
+        version: 6
       });
       let result = await runTextUtility(
         deps,
@@ -702,7 +721,9 @@ export function createMemoryRunUtilityService(
           candidates: input.candidates,
           profileRequested: input.profileRequested,
           query: input.query,
-          role: "MEMORY_RERANK"
+          retrievalMode: input.retrievalMode,
+          role: "MEMORY_RERANK",
+          temporalIntent: input.temporalIntent
         },
         "MEMORY_RERANK",
         2,
@@ -728,7 +749,9 @@ export function createMemoryRunUtilityService(
             candidates: input.candidates,
             profileRequested: input.profileRequested,
             query: input.query,
-            role: "MEMORY_RERANK"
+            retrievalMode: input.retrievalMode,
+            role: "MEMORY_RERANK",
+            temporalIntent: input.temporalIntent
           },
           "MEMORY_RERANK",
           3,
