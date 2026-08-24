@@ -16,6 +16,7 @@ import {
   allReusableLedgerContributor,
   allReusableWorkContributor
 } from "./allReusable";
+import { pruneUnreferencedMemoryEntities } from "../learning/entities/lifecycle";
 
 function countFrom(rows: readonly Readonly<{ count: number }>[]): number {
   const count = rows[0]?.count;
@@ -512,17 +513,63 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
 const evidenceContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
-      SELECT COUNT(*)::integer AS "count"
-      FROM "MemoryEvidence" AS evidence
-      INNER JOIN "MemoryFactVersion" AS version
-        ON version."userId" = evidence."userId"
-        AND version."id" = evidence."factVersionId"
-      WHERE ${memoryPurgeVersionCondition(target)}
+      SELECT ((
+        SELECT COUNT(*)
+        FROM "MemoryEvidence" AS evidence
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = evidence."userId"
+          AND version."id" = evidence."factVersionId"
+        WHERE ${memoryPurgeVersionCondition(target)}
+      ) + (
+        SELECT COUNT(*)
+        FROM "MemoryFactVersionEntity" AS link
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = link."userId"
+          AND version."id" = link."factVersionId"
+        WHERE ${memoryPurgeVersionCondition(target)}
+      ) + (
+        SELECT COUNT(*)
+        FROM "MemoryEntityAliasSupport" AS support
+        LEFT JOIN "MemoryEvidence" AS support_evidence
+          ON support_evidence."userId" = support."userId"
+          AND support_evidence."id" = support."evidenceId"
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = support."userId"
+          AND version."id" = COALESCE(
+            support."factVersionId",
+            support_evidence."factVersionId"
+          )
+        WHERE ${memoryPurgeVersionCondition(target)}
+      ))::integer AS "count"
     `);
     return countFrom(rows);
   },
   id: "fact-evidence",
   async purge(tx, target) {
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "MemoryEntityAliasSupport" AS support
+      WHERE EXISTS (
+        SELECT 1
+        FROM "MemoryFactVersion" AS version
+        LEFT JOIN "MemoryEvidence" AS support_evidence
+          ON support_evidence."userId" = version."userId"
+          AND support_evidence."factVersionId" = version."id"
+          AND support_evidence."id" = support."evidenceId"
+        WHERE version."userId" = support."userId"
+          AND (
+            support."factVersionId" = version."id"
+            OR support_evidence."id" IS NOT NULL
+          )
+          AND ${memoryPurgeVersionCondition(target)}
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "MemoryFactVersionEntity" AS link
+      USING "MemoryFactVersion" AS version
+      WHERE version."userId" = link."userId"
+        AND version."id" = link."factVersionId"
+        AND ${memoryPurgeVersionCondition(target)}
+    `);
     await tx.$executeRaw(Prisma.sql`
       DELETE FROM "MemoryEvidence" AS evidence
       USING "MemoryFactVersion" AS version
@@ -530,6 +577,7 @@ const evidenceContributor: MemoryDeletionContributor = Object.freeze({
         AND version."id" = evidence."factVersionId"
         AND ${memoryPurgeVersionCondition(target)}
     `);
+    await pruneUnreferencedMemoryEntities(tx, target.userId);
   },
   version: "v1"
 });

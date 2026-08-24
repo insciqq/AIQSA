@@ -231,7 +231,12 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
       where: { id: fixture.baseId }
     });
     await tx.knowledgeIndexGeneration.updateMany({
-      data: { sourceIndexGenerationId: null },
+      data: {
+        sourceBaseVersion: null,
+        sourceIndexGenerationId: null,
+        targetContentRevision: null,
+        targetSourceRevision: null
+      },
       where: { knowledgeBaseId: fixture.baseId }
     });
     await tx.knowledgeIndexGeneration.deleteMany({

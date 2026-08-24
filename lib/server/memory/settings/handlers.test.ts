@@ -19,6 +19,7 @@ const response: MemorySettingsResponse = {
     administratorSetupRequired: true,
     automaticLearning: false,
     automaticLearningAvailable: false,
+    decayAvailable: false,
     explicitMemory: false,
     historyRecall: false,
     managementAvailable: false,
@@ -26,6 +27,7 @@ const response: MemorySettingsResponse = {
     pastChatIndexingAvailable: false,
     permanentChatDeletion: false,
     retrievalAvailable: false,
+    synthesisAvailable: false,
     temporaryChats: false
   },
   egress: {
@@ -46,6 +48,7 @@ const response: MemorySettingsResponse = {
     totalChats: 0
   },
   settings: {
+    decayEnabled: false,
     embeddingDeployment: null,
     learnAutomatically: false,
     memoryConsentRevision: 0,
@@ -54,6 +57,7 @@ const response: MemorySettingsResponse = {
     referenceChatHistory: false,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 0,
+    synthesisEnabled: false,
     updatedAt: "2026-08-10T12:00:00.000Z",
     useMemoryFacts: false
   }
@@ -139,6 +143,17 @@ describe("Memory settings handlers", () => {
       expectedMemoryRevision: 0,
       expectedSettingsRevision: 0,
       useMemoryFacts: true
+    });
+    const decay = await handler(patchRequest({
+      decayEnabled: true,
+      expectedMemoryRevision: 1,
+      expectedSettingsRevision: 1
+    }));
+    expect(decay.status).toBe(200);
+    expect(settingsService.patch).toHaveBeenLastCalledWith("user-1", {
+      decayEnabled: true,
+      expectedMemoryRevision: 1,
+      expectedSettingsRevision: 1
     });
 
     const consent = {

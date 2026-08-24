@@ -25,7 +25,9 @@ const profile = {
 function dependencies() {
   const summary = memorySummaryFixture();
   const explicitService = {
-    get: vi.fn(async () => memoryDetailFixture(summary)),
+    get: vi.fn(async (_userId: string, _factId: string) =>
+      memoryDetailFixture(summary)),
+    list: vi.fn(async () => memoryListFixture([])),
     search: vi.fn(async () => memoryListFixture([]))
   };
   const repository = {
@@ -83,6 +85,103 @@ describe("Memory action target search", () => {
       "user-1",
       ["memory-version-1"]
     );
+  });
+
+  it("returns strongest tied owned targets from a bounded local zero-hit fallback", async () => {
+    const deps = dependencies();
+    const weekly = memorySummaryFixture({
+      currentVersionId: "memory-version-weekly",
+      displayText: "My private-marker weekly reporting format is concise.",
+      id: "memory-fact-weekly"
+    });
+    const monthly = memorySummaryFixture({
+      currentVersionId: "memory-version-monthly",
+      displayText: "My private-marker monthly reporting format is detailed.",
+      id: "memory-fact-monthly"
+    });
+    deps.vectorRepository.search.mockResolvedValue({
+      hits: [],
+      lanes: [],
+      profile,
+      status: "READY"
+    });
+    deps.explicitService.list.mockResolvedValue(memoryListFixture([
+      weekly,
+      monthly,
+      memorySummaryFixture({
+        currentVersionId: "memory-version-unrelated",
+        displayText: "I prefer tea.",
+        id: "memory-fact-unrelated"
+      })
+    ]));
+
+    await expect(createMemoryActionTargetSearchService(deps as never).semantic({
+      attemptId: "attempt-1",
+      fallbackText:
+        "Change my saved private-marker reporting-format preference to visual summaries.",
+      query: "visual summaries",
+      signal: new AbortController().signal,
+      userId: "user-1"
+    })).resolves.toMatchObject({
+      status: "READY",
+      targets: [
+        { factId: "memory-fact-monthly" },
+        { factId: "memory-fact-weekly" }
+      ]
+    });
+    expect(deps.explicitService.list).toHaveBeenCalledWith("user-1", {
+      pageSize: 20,
+      scope: { type: "GLOBAL_USER" },
+      state: "ACTIVE"
+    });
+  });
+
+  it("supplements one semantic winner when the exact command has tied local targets", async () => {
+    const deps = dependencies();
+    const weekly = memorySummaryFixture({
+      currentVersionId: "memory-version-weekly",
+      displayText: "My private-marker weekly reporting format is concise.",
+      id: "memory-fact-weekly"
+    });
+    const monthly = memorySummaryFixture({
+      currentVersionId: "memory-version-monthly",
+      displayText: "My private-marker monthly reporting format is detailed.",
+      id: "memory-fact-monthly"
+    });
+    deps.vectorRepository.search.mockResolvedValue({
+      hits: [{
+        distance: 0.1,
+        entryId: "entry-weekly",
+        itemId: weekly.currentVersionId!,
+        itemType: "FACT_VERSION",
+        score: 0.9
+      }],
+      lanes: [],
+      profile,
+      status: "READY"
+    });
+    deps.repository.byActiveGenerationVersionIds.mockResolvedValue([{
+      factId: weekly.id,
+      versionId: weekly.currentVersionId!
+    }]);
+    deps.explicitService.get.mockImplementation(async (_userId, factId) =>
+      memoryDetailFixture(factId === weekly.id ? weekly : monthly));
+    deps.explicitService.list.mockResolvedValue(memoryListFixture([weekly, monthly]));
+
+    await expect(createMemoryActionTargetSearchService(deps as never).semantic({
+      attemptId: "attempt-1",
+      fallbackText:
+        "Change one private-marker reporting-format preference without saying weekly or monthly.",
+      query: "reporting-format preference",
+      signal: new AbortController().signal,
+      userId: "user-1"
+    })).resolves.toMatchObject({
+      status: "READY",
+      targets: [
+        { factId: "memory-fact-weekly" },
+        { factId: "memory-fact-monthly" }
+      ]
+    });
   });
 
   it("treats learned legacy sensitive targets like normal targets", async () => {

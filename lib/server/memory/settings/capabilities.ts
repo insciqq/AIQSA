@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import type { MemorySettingsResponse } from "../../../contracts/memory";
 import {
   memoryVectorSpaceFingerprint,
@@ -107,6 +108,7 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
   const extractionAvailable = strictRoleAvailable("MEMORY_FACT_EXTRACT");
   const consolidationAvailable = strictRoleAvailable("MEMORY_CONSOLIDATE");
   const rerankerAvailable = strictRoleAvailable("MEMORY_RERANK");
+  const synthesisTargetAvailable = strictRoleAvailable("MEMORY_SYNTHESIZE");
   const statementClassifierAvailable = strictRoleAvailable("MEMORY_STATEMENT_CLASSIFY");
   const historyClassifierAvailable = strictRoleAvailable("MEMORY_HISTORY_CLASSIFY");
   const documentEmbeddingAvailable = embeddingRoleAvailable("MEMORY_DOCUMENT_EMBED");
@@ -121,7 +123,9 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
     (!input.settings.learnAutomatically ||
       extractionAvailable && consolidationAvailable && documentEmbeddingAvailable) &&
     (!input.settings.referenceChatHistory ||
-      historyClassifierAvailable && documentEmbeddingAvailable)
+      historyClassifierAvailable && documentEmbeddingAvailable) &&
+    (!input.settings.synthesisEnabled ||
+      synthesisTargetAvailable && input.operations.workerAvailable)
   );
   const naturalLanguageActionsAvailable = masterOn && controlAvailable &&
     statementClassifierAvailable;
@@ -134,11 +138,17 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
   const pastChatIndexingAvailable = masterOn && input.settings.referenceChatHistory &&
     historyClassifierAvailable && documentEmbeddingAvailable &&
     input.operations.retrievalIndexAvailable && input.operations.workerAvailable;
+  const synthesisAvailable = masterOn && input.settings.synthesisEnabled &&
+    synthesisTargetAvailable && input.operations.workerAvailable;
+  const decayAvailable = masterOn && input.settings.decayEnabled &&
+    input.settings.decayPolicyVersion === MEMORY_DECAY_POLICY_VERSION &&
+    retrievalAvailable;
 
   return Object.freeze({
     administratorSetupRequired,
     automaticLearning: automaticLearningAvailable,
     automaticLearningAvailable,
+    decayAvailable,
     explicitMemory: managementAvailable,
     historyRecall: pastChatIndexingAvailable,
     managementAvailable,
@@ -146,6 +156,7 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
     pastChatIndexingAvailable,
     permanentChatDeletion: input.base.permanentChatDeletion,
     retrievalAvailable,
+    synthesisAvailable,
     temporaryChats: input.base.temporaryChats
   });
 }

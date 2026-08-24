@@ -200,10 +200,34 @@ export const allReusableLedgerContributor: MemoryDeletionContributor = Object.fr
           )
       )
       UPDATE "MemoryFactVersion" AS version
-      SET "movedFromVersionId" = NULL, "supersedesVersionId" = NULL
+      SET
+        "state" = CASE
+          WHEN version."mergedIntoVersionId" IS NOT NULL
+            AND (
+              version."id" IN (SELECT "id" FROM deletable_versions)
+              OR version."mergedIntoVersionId" IN (
+                SELECT "id" FROM deletable_versions
+              )
+            )
+          THEN 'ORPHANED'::"MemoryFactVersionState"
+          ELSE version."state"
+        END,
+        "mergedIntoVersionId" = CASE
+          WHEN version."id" IN (SELECT "id" FROM deletable_versions)
+            OR version."mergedIntoVersionId" IN (
+              SELECT "id" FROM deletable_versions
+            )
+          THEN NULL
+          ELSE version."mergedIntoVersionId"
+        END,
+        "movedFromVersionId" = NULL,
+        "supersedesVersionId" = NULL
       WHERE version."userId" = ${target.userId}
         AND (
           version."id" IN (SELECT "id" FROM deletable_versions)
+          OR version."mergedIntoVersionId" IN (
+            SELECT "id" FROM deletable_versions
+          )
           OR version."movedFromVersionId" IN (SELECT "id" FROM deletable_versions)
           OR version."supersedesVersionId" IN (SELECT "id" FROM deletable_versions)
         )
@@ -231,6 +255,111 @@ export const allReusableLedgerContributor: MemoryDeletionContributor = Object.fr
         "sourceGeneration" = NULL
       WHERE event."userId" = ${target.userId}
         AND event."factId" IN (SELECT "id" FROM deletable_facts)
+    `);
+    // A retained version must not become independently admissible merely
+    // because physical purge removes its required antecedent edge. Fence the
+    // retained target first, then release the source-version RESTRICT edge.
+    await tx.$executeRaw(Prisma.sql`
+      WITH deletable_versions AS MATERIALIZED (
+        SELECT version."id"
+        FROM "MemoryFactVersion" AS version
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId" AND fact."id" = version."factId"
+        WHERE fact."userId" = ${target.userId}
+          AND fact."createdAt" <= ${barrier.createdAt}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemoryFactVersion" AS future_version
+            WHERE future_version."userId" = fact."userId"
+              AND future_version."factId" = fact."id"
+              AND future_version."createdAt" > ${barrier.createdAt}
+          )
+      ), dependent_targets AS MATERIALIZED (
+        SELECT DISTINCT dependency."targetFactVersionId"
+        FROM "MemoryFactVersionSourceDependency" AS dependency
+        WHERE dependency."userId" = ${target.userId}
+          AND dependency."sourceFactVersionId" IN (
+            SELECT "id" FROM deletable_versions
+          )
+          AND dependency."targetFactVersionId" NOT IN (
+            SELECT "id" FROM deletable_versions
+          )
+      )
+      UPDATE "MemoryFact" AS fact
+      SET
+        "currentVersionId" = NULL,
+        "state" = 'ORPHANED'::"MemoryFactState",
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE fact."userId" = ${target.userId}
+        AND fact."state" = 'ACTIVE'::"MemoryFactState"
+        AND fact."currentVersionId" IN (
+          SELECT "targetFactVersionId" FROM dependent_targets
+        )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      WITH deletable_versions AS MATERIALIZED (
+        SELECT version."id"
+        FROM "MemoryFactVersion" AS version
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId" AND fact."id" = version."factId"
+        WHERE fact."userId" = ${target.userId}
+          AND fact."createdAt" <= ${barrier.createdAt}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemoryFactVersion" AS future_version
+            WHERE future_version."userId" = fact."userId"
+              AND future_version."factId" = fact."id"
+              AND future_version."createdAt" > ${barrier.createdAt}
+          )
+      ), dependent_targets AS MATERIALIZED (
+        SELECT DISTINCT dependency."targetFactVersionId"
+        FROM "MemoryFactVersionSourceDependency" AS dependency
+        WHERE dependency."userId" = ${target.userId}
+          AND dependency."sourceFactVersionId" IN (
+            SELECT "id" FROM deletable_versions
+          )
+          AND dependency."targetFactVersionId" NOT IN (
+            SELECT "id" FROM deletable_versions
+          )
+      )
+      UPDATE "MemoryFactVersion" AS version
+      SET
+        "state" = 'ORPHANED'::"MemoryFactVersionState",
+        "systemTo" = COALESCE(
+          version."systemTo",
+          GREATEST(version."systemFrom" + INTERVAL '1 millisecond', CURRENT_TIMESTAMP)
+        )
+      WHERE version."userId" = ${target.userId}
+        AND version."id" IN (
+          SELECT "targetFactVersionId" FROM dependent_targets
+        )
+        AND version."state" IN (
+          'ACTIVE'::"MemoryFactVersionState",
+          'PENDING_RELATION'::"MemoryFactVersionState",
+          'CONFLICTING'::"MemoryFactVersionState"
+        )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      WITH deletable_versions AS MATERIALIZED (
+        SELECT version."id"
+        FROM "MemoryFactVersion" AS version
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId" AND fact."id" = version."factId"
+        WHERE fact."userId" = ${target.userId}
+          AND fact."createdAt" <= ${barrier.createdAt}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemoryFactVersion" AS future_version
+            WHERE future_version."userId" = fact."userId"
+              AND future_version."factId" = fact."id"
+              AND future_version."createdAt" > ${barrier.createdAt}
+          )
+      )
+      DELETE FROM "MemoryFactVersionSourceDependency" AS dependency
+      WHERE dependency."userId" = ${target.userId}
+        AND dependency."sourceFactVersionId" IN (
+          SELECT "id" FROM deletable_versions
+        )
     `);
     await tx.$executeRaw(Prisma.sql`
       DELETE FROM "MemoryFact" AS fact

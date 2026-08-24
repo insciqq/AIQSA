@@ -54,6 +54,8 @@ describe("language-agnostic Memory retrieval planning", () => {
       .toMatchObject({ profileRequested: false });
     expect(planMemoryRetrieval({
       currentUserText: broadLookingText,
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      mode: "CURRENT_PROFILE",
       now,
       profileRequested: true
     })).toMatchObject({
@@ -106,15 +108,18 @@ describe("language-agnostic Memory retrieval planning", () => {
         from,
         scopeTargetId: "chat-1",
         scopeType: "CHAT",
-        sourceKinds: ["EVENT", "HISTORY"],
+        sourceKinds: ["EVENT", "FACT"],
         to
       },
-      now
+      mode: "HISTORICAL_MEMORY",
+      now,
+      temporalIntent: "BETWEEN"
     }).filters).toEqual({
+      asOf: null,
       from,
       scopeTargetId: "chat-1",
       scopeType: "CHAT",
-      sourceKinds: ["EVENT", "HISTORY"],
+      sourceKinds: ["EVENT", "FACT"],
       to
     });
     expect(() => planMemoryRetrieval({
@@ -122,5 +127,59 @@ describe("language-agnostic Memory retrieval planning", () => {
       filters: { from: to, to: from },
       now
     })).toThrow("memory_retrieval_filter_invalid");
+  });
+
+  it("validates every explicit retrieval mode against source and temporal intent", () => {
+    const facts = { sourceKinds: ["FACT", "EVENT"] as const };
+    const history = { sourceKinds: ["HISTORY"] as const };
+    expect(planMemoryRetrieval({
+      currentUserText: "profile",
+      filters: facts,
+      mode: "CURRENT_PROFILE",
+      now,
+      profileRequested: true,
+      temporalIntent: "CURRENT"
+    }).mode).toBe("CURRENT_PROFILE");
+    expect(planMemoryRetrieval({
+      currentUserText: "current fact",
+      filters: facts,
+      mode: "TARGETED_CURRENT",
+      now,
+      temporalIntent: "CURRENT"
+    }).mode).toBe("TARGETED_CURRENT");
+    expect(planMemoryRetrieval({
+      currentUserText: "past fact",
+      filters: facts,
+      mode: "HISTORICAL_MEMORY",
+      now,
+      temporalIntent: "HISTORICAL"
+    }).mode).toBe("HISTORICAL_MEMORY");
+    expect(planMemoryRetrieval({
+      currentUserText: "past chat",
+      filters: history,
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    }).mode).toBe("PAST_CHAT_SEARCH");
+    expect(planMemoryRetrieval({
+      currentUserText: "history overview",
+      filters: history,
+      mode: "HISTORY_OVERVIEW",
+      now,
+      temporalIntent: "ANY"
+    }).mode).toBe("HISTORY_OVERVIEW");
+
+    for (const invalid of [
+      { filters: history, mode: "TARGETED_CURRENT", temporalIntent: "CURRENT" },
+      { filters: facts, mode: "PAST_CHAT_SEARCH", temporalIntent: "ANY" },
+      { filters: history, mode: "HISTORICAL_MEMORY", temporalIntent: "HISTORICAL" },
+      { filters: facts, mode: "TARGETED_CURRENT", temporalIntent: "HISTORICAL" }
+    ] as const) {
+      expect(() => planMemoryRetrieval({
+        currentUserText: "invalid cross-mode request",
+        ...invalid,
+        now
+      })).toThrow("memory_retrieval_plan_invalid");
+    }
   });
 });

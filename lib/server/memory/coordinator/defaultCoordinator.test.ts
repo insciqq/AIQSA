@@ -19,7 +19,7 @@ describe("default Memory coordinator composition", () => {
     }
   });
 
-  it("runs only candidate reconciliation in the periodic pass", async () => {
+  it("runs cutover reconciliation in the periodic pass", async () => {
     const order: string[] = [];
     let active = 0;
     let maximumActive = 0;
@@ -33,13 +33,13 @@ describe("default Memory coordinator composition", () => {
     };
 
     await reconcileDefaultMemoryWork({
-      candidates: step("candidates")
+      cutover: step("cutover")
     });
 
     expect(maximumActive).toBe(1);
     expect(order).toEqual([
-      "candidates:start",
-      "candidates:end"
+      "cutover:start",
+      "cutover:end"
     ]);
   });
 });

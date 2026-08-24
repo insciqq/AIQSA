@@ -2253,6 +2253,9 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
             messageId: sourceMessage.id,
             ordinal: 0,
             role: "user",
+            safeTextHash: memorySha256(statement),
+            sourceMessageContentHash: memorySha256(statement),
+            sourceMessageUpdatedAt: sourceMessage.updatedAt,
             startOffset: 0,
             userId
           }

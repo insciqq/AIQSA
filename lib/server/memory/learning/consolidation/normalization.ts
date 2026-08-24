@@ -21,6 +21,7 @@ import {
   type MemoryTransaction
 } from "../../persistence/transaction";
 import type { MemoryRetainedSourceMutationEvent } from "../../sourceState";
+import { removeUnsupportedMemoryEntityLinks } from "../entities/lifecycle";
 
 type FactRow = Readonly<{
   canonicalKey: string;
@@ -35,6 +36,7 @@ type VersionRow = Readonly<{
   displayText: string | null;
   factId: string;
   id: string;
+  ingestionFingerprint: string | null;
   languageCode: string;
   modality:
     | "CONSIDERATION"
@@ -52,7 +54,10 @@ type VersionRow = Readonly<{
     | "ACTIVE"
     | "CONFLICTING"
     | "EXPIRED"
+    | "FORGOTTEN"
+    | "MERGED"
     | "ORPHANED"
+    | "PENDING_RELATION"
     | "RETRACTED"
     | "SUPERSEDED";
   structuredValue: Prisma.JsonValue | null;
@@ -83,10 +88,13 @@ function invalidationPredicate(event: MemoryRetainedSourceMutationEvent): Prisma
   const branches: Prisma.Sql[] = [];
   if (fullSourceInvalidation) branches.push(Prisma.sql`TRUE`);
   if (branchChanged) {
-    branches.push(Prisma.sql`
-      evidence."branchGeneration" IS DISTINCT FROM
-        ${event.snapshot.memoryBranchGeneration}
-    `);
+    const retainedMessageIds = event.snapshot.messages.map(({ id }) => id);
+    branches.push(retainedMessageIds.length === 0
+      ? Prisma.sql`TRUE`
+      : Prisma.sql`
+          evidence."messageId" IS NULL
+          OR evidence."messageId" NOT IN (${Prisma.join(retainedMessageIds)})
+        `);
   }
   if (folderChanged && event.previous.folderId) {
     branches.push(Prisma.sql`
@@ -166,6 +174,7 @@ async function versionsAndSupport(
       displayText: true,
       factId: true,
       id: true,
+      ingestionFingerprint: true,
       languageCode: true,
       modality: true,
       sensitivityClass: true,
@@ -406,7 +415,9 @@ async function normalizeFact(
   }
 
   const unresolved = versions.filter((version) =>
-    version.state === "CONFLICTING" && support.has(version.id));
+    version.state === "CONFLICTING" &&
+    version.ingestionFingerprint === null &&
+    support.has(version.id));
   if (fact.state === "CONFLICTED") {
     if (unresolved.length === 0) {
       await tx.memoryFact.updateMany({
@@ -530,6 +541,11 @@ export async function normalizeMemoryFactsForSourceMutation(
   await tx.memoryEvidence.deleteMany({
     where: { id: { in: affected.evidenceIds }, userId: settings.userId }
   });
+  await removeUnsupportedMemoryEntityLinks(
+    tx,
+    settings.userId,
+    affected.versionIds
+  );
   const state = await versionsAndSupport(
     tx,
     settings.userId,

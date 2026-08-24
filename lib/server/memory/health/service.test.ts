@@ -21,6 +21,7 @@ function settings(
     administratorSetupRequired: false,
       automaticLearning: input.automaticLearning ?? true,
       automaticLearningAvailable: input.automaticLearning ?? true,
+      decayAvailable: true,
       explicitMemory: true,
       historyRecall: true,
       managementAvailable: true,
@@ -28,6 +29,7 @@ function settings(
       pastChatIndexingAvailable: true,
       permanentChatDeletion: true,
       retrievalAvailable: true,
+      synthesisAvailable: true,
       temporaryChats: true
     },
     egress: {
@@ -48,6 +50,7 @@ function settings(
       totalChats: input.historyState === "INDEXING" ? 5 : 5
     },
     settings: {
+      decayEnabled: false,
       embeddingDeployment: {
         connectionDisplayName: "Embedding",
         id: "embedding-1",
@@ -60,6 +63,7 @@ function settings(
       referenceChatHistory,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 1,
+      synthesisEnabled: false,
       updatedAt: "2026-08-12T08:00:00.000Z",
       useMemoryFacts: true,
       ...overrides

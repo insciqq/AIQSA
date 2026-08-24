@@ -21,6 +21,7 @@ export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
     administratorSetupRequired: false,
     automaticLearning: true,
     automaticLearningAvailable: true,
+    decayAvailable: true,
     explicitMemory: true,
     historyRecall: true,
     managementAvailable: true,
@@ -28,6 +29,7 @@ export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
     pastChatIndexingAvailable: true,
     permanentChatDeletion: false,
     retrievalAvailable: true,
+    synthesisAvailable: true,
     temporaryChats: true
   });
 
@@ -162,6 +164,7 @@ function responseProjection(
     },
     historyIndexing,
     settings: {
+      decayEnabled: settings.decayEnabled,
       embeddingDeployment: embedding
         ? {
             connectionDisplayName: boundedLabel(
@@ -179,6 +182,7 @@ function responseProjection(
       referenceChatHistory: settings.referenceChatHistory,
       sensitiveAutomaticPolicy: settings.sensitiveAutomaticPolicy,
       settingsRevision: settings.settingsRevision,
+      synthesisEnabled: settings.synthesisEnabled,
       updatedAt: settings.updatedAt.toISOString(),
       useMemoryFacts: settings.useMemoryFacts
     }
@@ -267,7 +271,7 @@ export function createMemorySettingsService(input: Readonly<{
       // forward work only while the master is already on.  A combined master
       // resume patch must not trigger a retroactive backfill.
       if (
-        patch.referenceChatHistory === true &&
+        (patch.referenceChatHistory === true || patch.synthesisEnabled === true) &&
         patch.useMemoryFacts !== true &&
         settings.useMemoryFacts
       ) kick();

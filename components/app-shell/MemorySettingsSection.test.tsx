@@ -32,11 +32,13 @@ describe("MemorySettingsSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders only the three consumer toggles and hides control-plane details", async () => {
+  it("renders only the five consumer toggles and hides control-plane details", async () => {
     const server = memoryConsumerSettingsFixture({
       settings: {
+        decayEnabled: true,
         learnAutomatically: true,
         referenceChatHistory: true,
+        synthesisEnabled: true,
         useMemoryFacts: true
       },
       status: "ON"
@@ -49,10 +51,12 @@ describe("MemorySettingsSection", () => {
     render(<MemorySettingsSection {...sectionProps} />);
 
     expect(await screen.findByRole("heading", { name: "Memory" })).toBeVisible();
-    expect(screen.getAllByRole("switch")).toHaveLength(3);
+    expect(screen.getAllByRole("switch")).toHaveLength(5);
     expect(screen.getByRole("switch", { name: "Memory" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "Search past chats" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "Learn automatically" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "Discover patterns" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "Prioritize useful memories" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByText("Temporary Chat does not use or create memory.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Manage memory" })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: "Reset personal memory" })).not.toBeInTheDocument();
@@ -98,14 +102,18 @@ describe("MemorySettingsSection", () => {
     const server = memoryConsumerSettingsFixture({
       capabilities: {
         automaticLearningAvailable: false,
+        decayAvailable: false,
         managementAvailable: true,
         naturalLanguageActionsAvailable: false,
         pastChatIndexingAvailable: false,
-        retrievalAvailable: false
+        retrievalAvailable: false,
+        synthesisAvailable: false
       },
       settings: {
+        decayEnabled: true,
         learnAutomatically: true,
         referenceChatHistory: true,
+        synthesisEnabled: true,
         useMemoryFacts: true
       },
       status: "UNAVAILABLE"
@@ -122,7 +130,7 @@ describe("MemorySettingsSection", () => {
     render(<MemorySettingsSection {...sectionProps} />);
 
     expect(await screen.findByRole("switch", { name: "Memory" })).toBeEnabled();
-    expect(screen.getAllByText("Temporarily unavailable")).toHaveLength(4);
+    expect(screen.getAllByText("Temporarily unavailable")).toHaveLength(6);
     expect(screen.getByRole("button", { name: "Manage memory" })).toBeEnabled();
     fireEvent.click(screen.getByRole("switch", { name: "Memory" }));
     await waitFor(() => expect(bodies).toHaveLength(1));
@@ -130,10 +138,16 @@ describe("MemorySettingsSection", () => {
     await waitFor(() => expect(bodies).toHaveLength(2));
     fireEvent.click(screen.getByRole("switch", { name: "Learn automatically" }));
     await waitFor(() => expect(bodies).toHaveLength(3));
+    fireEvent.click(screen.getByRole("switch", { name: "Discover patterns" }));
+    await waitFor(() => expect(bodies).toHaveLength(4));
+    fireEvent.click(screen.getByRole("switch", { name: "Prioritize useful memories" }));
+    await waitFor(() => expect(bodies).toHaveLength(5));
     expect(bodies).toEqual(expect.arrayContaining([
       expect.objectContaining({ useMemoryFacts: false }),
       expect.objectContaining({ referenceChatHistory: false }),
-      expect.objectContaining({ learnAutomatically: false })
+      expect.objectContaining({ learnAutomatically: false }),
+      expect.objectContaining({ synthesisEnabled: false }),
+      expect.objectContaining({ decayEnabled: false })
     ]));
   });
 
@@ -141,7 +155,9 @@ describe("MemorySettingsSection", () => {
     ["naturalLanguageActionsAvailable", "Memory"],
     ["retrievalAvailable", "Memory"],
     ["automaticLearningAvailable", "Learn automatically"],
-    ["pastChatIndexingAvailable", "Search past chats"]
+    ["pastChatIndexingAvailable", "Search past chats"],
+    ["synthesisAvailable", "Discover patterns"],
+    ["decayAvailable", "Prioritize useful memories"]
   ] as const)("shows a feature-specific unavailable state for %s", async (
     capability,
     label
@@ -149,8 +165,10 @@ describe("MemorySettingsSection", () => {
     const server = memoryConsumerSettingsFixture({
       capabilities: { [capability]: false },
       settings: {
+        decayEnabled: true,
         learnAutomatically: true,
         referenceChatHistory: true,
+        synthesisEnabled: true,
         useMemoryFacts: true
       },
       status: "UNAVAILABLE"

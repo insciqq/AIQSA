@@ -2,30 +2,34 @@ import type { MemoryJobDescriptor } from "../../coordinator/types";
 import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTextLanguage } from "../../history/language";
+import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
 
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
-  "memory-fact-extraction-vnext-v1";
+  "memory-fact-extraction-vnext-v2";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-personal-v2-policy";
+  "memory-fact-extraction-policy-v5";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-personal-v2-prompt";
+  "memory-fact-extraction-prompt-v11";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-personal-v1-schema";
+  "memory-fact-extraction-schema-v4";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
-  "memory-fact-temporal-conservative-v1";
+  MEMORY_TEMPORAL_RESOLVER_VERSION;
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
-  "memory-fact-source-projection-v2";
+  "memory-fact-source-projection-v4";
 export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 
-// Two preceding turns, the immutable target, and its optional completed
-// assistant response are enough for bounded coreference without widening the
-// direct-user evidence boundary.
-export const MEMORY_FACT_MAX_INPUT_MESSAGES = 6;
+// Context-dependent interpretation is disabled until every accepted
+// dependency can be persisted and revalidated. The provider therefore sees
+// exactly one immutable direct-user target message.
+export const MEMORY_FACT_MAX_INPUT_MESSAGES = 1;
 export const MEMORY_FACT_MAX_INPUT_CHARACTERS = 16_000;
+export const MEMORY_FACT_MAX_CONTEXT_MESSAGES = 6;
+export const MEMORY_FACT_MAX_CONTEXT_CHARACTERS = 8_000;
+export const MEMORY_FACT_MAX_CONTEXT_REFS = 8;
 /** Public output cap: no more than four candidates can be accepted per turn. */
 export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = 4;
 /** Strict public and wire bound: a target message yields zero to four rows. */
-export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 4;
+export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 8;
 export const MEMORY_FACT_MAX_ACCEPTED_CANDIDATES = MEMORY_FACT_MAX_OUTPUT_CANDIDATES;
 export const MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE = 1;
 
@@ -69,10 +73,13 @@ export const MEMORY_FACT_EXTRACTION_RETRIEVAL_CONFIG_FINGERPRINT =
     evidenceMode: "exact-direct-user-spans",
     maxAcceptedCandidates: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
     maxCandidates: MEMORY_FACT_MAX_PACKET_CANDIDATES,
+    maxContextCharacters: MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
+    maxContextMessages: MEMORY_FACT_MAX_CONTEXT_MESSAGES,
+    maxContextRefs: MEMORY_FACT_MAX_CONTEXT_REFS,
     maxEvidencePerCandidate: MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE,
     maxInputCharacters: MEMORY_FACT_MAX_INPUT_CHARACTERS,
     maxInputMessages: MEMORY_FACT_MAX_INPUT_MESSAGES,
-    version: 1
+    version: 2
   });
 
 export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
@@ -107,7 +114,36 @@ export type MemoryFactInputMessage = Readonly<{
   updatedAt: string;
 }>;
 
+export type MemoryFactContextRef = Readonly<{
+  aliases: readonly string[];
+  displayName: string | null;
+  entityType: string | null;
+  identitySubjectKey: string | null;
+  /** Internal owner-scoped identity; never included in the provider payload. */
+  entityId: string | null;
+  kind: "FACT_VERSION" | "MESSAGE";
+  ref: string;
+  source: Readonly<
+    | {
+        contentHash: string;
+        factVersionId: null;
+        messageId: string;
+        messageUpdatedAt: string;
+        projectionVersion: string;
+      }
+    | {
+        contentHash: null;
+        factVersionId: string;
+        messageId: null;
+        messageUpdatedAt: null;
+        projectionVersion: null;
+      }
+  >;
+  text: string;
+}>;
+
 export type MemoryFactExtractionInput = Readonly<{
+  contextRefs: readonly MemoryFactContextRef[];
   folderId: string | null;
   inputHash: string;
   messages: readonly MemoryFactInputMessage[];
@@ -132,6 +168,27 @@ export type MemoryFactCandidateEvidence = Readonly<{
   startOffset: number;
 }>;
 
+export type MemoryFactCandidateDependency = Readonly<{
+  dependencyKind:
+    | "COREFERENCE_ANTECEDENT"
+    | "CORRECTION_TARGET"
+    | "TEMPORAL_CONTEXT"
+    | "RELATION_CONTEXT";
+  ref: string;
+  source: MemoryFactContextRef["source"];
+}>;
+
+export type MemoryFactCandidateEntity = Readonly<{
+  aliases: readonly string[];
+  canonicalLabel: string;
+  contextEntityId: string | null;
+  contextRef: string | null;
+  entityType: string;
+  mention: string;
+  qualifiers: Readonly<Record<string, string | null>>;
+  role: "SUBJECT" | "OBJECT" | "MENTION";
+}>;
+
 export type MemoryExtractedCandidate = Readonly<{
   /** v1 semantic fields returned by the strict System Model. */
   category: string;
@@ -145,13 +202,20 @@ export type MemoryExtractedCandidate = Readonly<{
 
   /** Existing persistence projection (server-owned, never model supplied). */
   canonicalKey: string;
+  dimensionKey: string | null;
   coreEligible: boolean;
   coreSalience: "HIGH" | "LOW" | "MEDIUM" | "NONE";
   confidence: number;
   directness: "DIRECT" | "PARAPHRASED";
   displayText: string;
+  dependencies: readonly MemoryFactCandidateDependency[];
+  entities: readonly MemoryFactCandidateEntity[];
   evidence: readonly MemoryFactCandidateEvidence[];
+  expectedAt: string | null;
+  expiresAt: string | null;
   id: string;
+  identityKind: "PROPOSITION" | "SLOT";
+  identityVersion: "proposition-v1" | "slot-v2";
   importance: number;
   languageCode: MemoryTextLanguage;
   modality:
@@ -165,12 +229,24 @@ export type MemoryExtractedCandidate = Readonly<{
     | "STATE"
     | "WORKFLOW";
   negated: false;
+  occurredAt: string | null;
+  predicateKey:
+    | "constraint"
+    | "employment_status"
+    | "goal_status"
+    | "preference"
+    | "product_status"
+    | "project_status"
+    | "residence"
+    | "routine"
+    | null;
   proposedValue: unknown;
   rawTemporalExpression: string | null;
   reasonCode: null;
   scope: MemoryFactCandidateScope;
   sensitivity: "NORMAL";
   state: "PENDING";
+  subjectKey: string | null;
   temporalResolutionEvidence: Readonly<Record<string, unknown>> | null;
   validFrom: string | null;
   validTo: string | null;
@@ -289,6 +365,69 @@ export function memoryFactCandidateId(
       chatId: input.source.chatId,
       userId: input.source.userId
     },
+    version: 1
+  });
+}
+
+function memoryFactSemanticTarget(candidate: MemoryExtractedCandidate) {
+  return {
+    canonicalKey: candidate.canonicalKey,
+    normalizedValue: memoryFactNormalizedValue(candidate)
+  };
+}
+
+export function memoryFactNormalizedValue(candidate: MemoryExtractedCandidate) {
+  return {
+    expectedAt: candidate.expectedAt,
+    expiresAt: candidate.expiresAt,
+    occurredAt: candidate.occurredAt,
+    structuredValue: candidate.proposedValue,
+    validFrom: candidate.validFrom,
+    validTo: candidate.validTo
+  };
+}
+
+/** Stable semantic-apply identity. Offsets are JavaScript string offsets and
+ * therefore match the product's UTF-16 wire contract. */
+export function memoryFactObservationFingerprint(
+  input: MemoryFactExtractionInput,
+  candidate: MemoryExtractedCandidate,
+  evidence: MemoryFactCandidateEvidence
+): string {
+  return memorySha256({
+    canonicalKey: candidate.canonicalKey,
+    dependencies: candidate.dependencies.map((dependency) => ({
+      dependencyKind: dependency.dependencyKind,
+      source: dependency.source
+    })),
+    domain: "aiqsa.memory.observation",
+    evidenceEnd: evidence.endOffset,
+    evidenceStart: evidence.startOffset,
+    normalizedValue: memoryFactNormalizedValue(candidate),
+    pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+    sourceMessageContentHash: evidence.sourceTextHash,
+    sourceMessageId: evidence.messageId,
+    userId: input.source.userId,
+    version: 1
+  });
+}
+
+/** Stable exact-support identity, deliberately distinct from semantic apply
+ * identity so replay and reinforcement remain independently auditable. */
+export function memoryFactEvidenceFingerprint(
+  input: MemoryFactExtractionInput,
+  candidate: MemoryExtractedCandidate,
+  evidence: MemoryFactCandidateEvidence
+): string {
+  return memorySha256({
+    domain: "aiqsa.memory.evidence",
+    evidenceEnd: evidence.endOffset,
+    evidenceStart: evidence.startOffset,
+    sourceMessageContentHash: evidence.sourceTextHash,
+    sourceMessageId: evidence.messageId,
+    stance: "SUPPORTS",
+    targetSemanticIdentity: memoryFactSemanticTarget(candidate),
+    userId: input.source.userId,
     version: 1
   });
 }

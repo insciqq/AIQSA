@@ -5,14 +5,29 @@ import {
   memoryChunkSourceSafetyPredicate,
   memoryFactScopePredicate
 } from "../memory/retrieval/localRepository";
-import { memoryPersonalFactEvidencePredicate } from "../memory/persistence/eligibility";
+import {
+  memoryExactMessageEvidenceIsCurrent,
+  memoryPersonalEvidenceRowPredicate,
+  memoryPersonalFactEvidencePredicate
+} from "../memory/persistence/eligibility";
 import {
   memoryChunkConversationFeedbackPredicate,
   memoryFactConversationFeedbackPredicate
 } from "../memory/persistence/feedback";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../memory/history/chunking";
-import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../memory/history/contract";
+import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+} from "../memory/history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../memory/history/sourceProjection";
+import { memoryHistoryChunkSourceAuthorityPredicate } from
+  "../memory/persistence/pauseIntervals";
+import {
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+  memorySha256
+} from "../memory/persistence/lexical";
+import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
+  "../memory/retrieval/vector";
 import {
   MemoryPreparingRunConflictError,
   memoryPreparingHash,
@@ -59,11 +74,18 @@ type FactAuthorityRow = Readonly<{
   createdByEventId: string;
   currentVersionId: string | null;
   displayText: string;
+  expectedAt: Date | null;
+  expiresAt: Date | null;
   factCanonicalKey: string;
   factCategory: string;
   factId: string;
   factState: string;
+  identityKind: string | null;
   languageCode: string;
+  mergedIntoVersionId: string | null;
+  movedFromVersionId: string | null;
+  observedAt: Date | null;
+  occurredAt: Date | null;
   pinned: boolean;
   scopeAssistantId: string | null;
   scopeChatId: string | null;
@@ -72,10 +94,13 @@ type FactAuthorityRow = Readonly<{
   scopeState: string;
   scopeTargetIdSnapshot: string | null;
   scopeType: string;
+  searchSafeContentHash: string | null;
   sensitivityClass: string;
   sourceMode: string;
   systemFrom: Date;
   systemTo: Date | null;
+  supersedesVersionId: string | null;
+  structuredValue: Prisma.JsonValue;
   validFrom: Date | null;
   validTo: Date | null;
   versionState: string;
@@ -84,8 +109,33 @@ type FactAuthorityRow = Readonly<{
 type FactMessageEvidenceRow = Readonly<{
   branchGeneration: number;
   chatId: string;
+  content: Prisma.JsonValue;
+  endOffset: number;
   evidenceId: string;
+  evidenceFingerprint: string;
   messageId: string;
+  safeExcerpt: string;
+  safeSourceHash: string;
+  sourceMessageContentHash: string;
+  sourceProjectionVersion: string;
+  startOffset: number;
+}>;
+
+type FactEntityRootRow = Readonly<{
+  cycle: boolean;
+  entityId: string;
+  role: string;
+  rootId: string | null;
+}>;
+
+type FactDependencyRow = Readonly<{
+  dependencyKind: string;
+  id: string;
+  sourceFactVersionId: string | null;
+  sourceMessageContentHash: string | null;
+  sourceMessageId: string | null;
+  sourceMessageUpdatedAt: Date | null;
+  sourceProjectionVersion: string | null;
 }>;
 
 type HistoryAuthorityRow = Readonly<{
@@ -100,6 +150,14 @@ type HistoryAuthorityRow = Readonly<{
   sourceFolderId: string | null;
   sourceRevision: number;
   state: string;
+}>;
+
+type DigestAuthorityRow = HistoryAuthorityRow & Readonly<{
+  digestContentHash: string;
+  digestId: string;
+  digestPipelineVersion: string;
+  digestSafetyPolicyVersion: string;
+  digestText: string;
 }>;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -137,6 +195,7 @@ function itemProjection(input: MemoryPreparingItemInput): Readonly<{
     ? input.supportingItemId
     : feature?.supportingItemId;
   if (
+    kind !== "CHAT_DIGEST_SAFE_TEXT" &&
     kind !== "FACT_DISPLAY_TEXT" &&
     kind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
   ) {
@@ -173,6 +232,97 @@ function commonResolved(
   };
 }
 
+type FactRetrievalContract = Readonly<{
+  historical: boolean;
+  mode: "CURRENT_PROFILE" | "HISTORICAL_MEMORY" | "HISTORY_OVERVIEW" |
+    "PAST_CHAT_SEARCH" | "TARGETED_CURRENT";
+}>;
+
+function factRetrievalContract(
+  feature: Record<string, unknown> | null,
+  core: boolean
+): FactRetrievalContract {
+  const mode = feature?.retrievalMode;
+  const historical = feature?.historical;
+  if (
+    (mode !== "CURRENT_PROFILE" && mode !== "TARGETED_CURRENT" &&
+      mode !== "HISTORICAL_MEMORY" && mode !== "PAST_CHAT_SEARCH" &&
+      mode !== "HISTORY_OVERVIEW") ||
+    typeof historical !== "boolean" ||
+    core && historical ||
+    !core && mode === "HISTORY_OVERVIEW" ||
+    historical && mode !== "HISTORICAL_MEMORY"
+  ) throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+  return { historical, mode };
+}
+
+function exactEvidenceValid(row: FactMessageEvidenceRow): boolean {
+  return memoryExactMessageEvidenceIsCurrent({
+    content: row.content,
+    evidenceFingerprint: row.evidenceFingerprint,
+    safeExcerpt: row.safeExcerpt,
+    safeSourceHash: row.safeSourceHash,
+    sourceEndOffset: row.endOffset,
+    sourceMessageContentHash: row.sourceMessageContentHash,
+    sourceProjectionVersion: row.sourceProjectionVersion,
+    sourceStartOffset: row.startOffset
+  });
+}
+
+async function factEntityRoots(
+  tx: PreparingItemTransaction,
+  userId: string,
+  factVersionId: string
+): Promise<readonly FactEntityRootRow[]> {
+  const rows = await tx.$queryRaw<FactEntityRootRow[]>(Prisma.sql`
+    WITH RECURSIVE roots AS (
+      SELECT link."entityId" AS "originId", link."entityId", link."role"::text AS role,
+        entity."mergedIntoId", ARRAY[entity."id"]::text[] AS visited, FALSE AS cycle
+      FROM "MemoryFactVersionEntity" AS link
+      INNER JOIN "MemoryEntity" AS entity
+        ON entity."userId" = link."userId" AND entity."id" = link."entityId"
+      WHERE link."userId" = ${userId} AND link."factVersionId" = ${factVersionId}
+
+      UNION ALL
+
+      SELECT roots."originId", entity."id", roots.role, entity."mergedIntoId",
+        roots.visited || entity."id", entity."id" = ANY(roots.visited)
+      FROM roots
+      INNER JOIN "MemoryEntity" AS entity
+        ON entity."userId" = ${userId} AND entity."id" = roots."mergedIntoId"
+      WHERE NOT roots.cycle
+    )
+    SELECT "originId" AS "entityId", role,
+      MAX("entityId") FILTER (WHERE "mergedIntoId" IS NULL AND NOT cycle) AS "rootId",
+      BOOL_OR(cycle) AS cycle
+    FROM roots
+    GROUP BY "originId", role
+    ORDER BY "originId", role
+  `);
+  if (rows.some((row) => row.cycle || row.rootId === null)) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+  }
+  return rows;
+}
+
+async function factDependencies(
+  tx: PreparingItemTransaction,
+  userId: string,
+  factVersionId: string
+): Promise<readonly FactDependencyRow[]> {
+  return tx.$queryRaw<FactDependencyRow[]>(Prisma.sql`
+    SELECT dependency."dependencyKind"::text AS "dependencyKind",
+      dependency."id", dependency."sourceFactVersionId",
+      dependency."sourceMessageContentHash", dependency."sourceMessageId",
+      dependency."sourceMessageUpdatedAt", dependency."sourceProjectionVersion"
+    FROM "MemoryFactVersionSourceDependency" AS dependency
+    WHERE dependency."userId" = ${userId}
+      AND dependency."targetFactVersionId" = ${factVersionId}
+    ORDER BY dependency."dependencyKind", dependency."id"
+    FOR SHARE OF dependency
+  `);
+}
+
 async function resolveFact(
   tx: PreparingItemTransaction,
   authority: PreparingMemoryItemAuthority,
@@ -184,6 +334,7 @@ async function resolveFact(
   }
   const feature = record(input.featureSnapshot);
   const core = feature?.tier === "CORE";
+  const retrieval = factRetrievalContract(feature, core);
   if (!core && !authority.indexGenerationId) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
@@ -202,7 +353,16 @@ async function resolveFact(
           ON generation."userId" = settings."userId"
           AND generation."id" = settings."activeIndexGenerationId"
           AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
-        LEFT JOIN "MemorySearchEntry" AS entry
+          AND (
+            (generation."indexMode" = 'HYBRID'::"MemoryIndexMode"
+              AND generation."retrievalPipelineVersion" =
+                ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION})
+            OR
+            (generation."indexMode" = 'LEXICAL_ONLY'::"MemoryIndexMode"
+              AND generation."retrievalPipelineVersion" =
+                ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION})
+          )
+        INNER JOIN "MemorySearchEntry" AS entry
           ON entry."userId" = version."userId"
           AND entry."indexGenerationId" = generation."id"
           AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
@@ -215,42 +375,53 @@ async function resolveFact(
         OR version."coreEligible"
       )`
     : Prisma.sql`entry."id" IS NOT NULL`;
-  const terminalCompatibility = core
-    ? Prisma.sql`FALSE`
-    : Prisma.sql`(
-        version."state" IN (
-          'SUPERSEDED'::"MemoryFactVersionState",
-          'EXPIRED'::"MemoryFactVersionState",
-          'CONFLICTING'::"MemoryFactVersionState"
+  const lifecycleAuthority = retrieval.historical
+    ? Prisma.sql`
+        version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
+        AND version."systemTo" IS NOT NULL
+        AND (
+          fact."state" = 'ACTIVE'::"MemoryFactState"
+          OR (fact."state" = 'RETRACTED'::"MemoryFactState"
+            AND fact."movedToFactId" IS NOT NULL)
         )
-        AND fact."state" IN (
-          'ACTIVE'::"MemoryFactState",
-          'CONFLICTED'::"MemoryFactState",
-          'EXPIRED'::"MemoryFactState"
-        )
-        AND (fact."currentVersionId" IS NULL OR fact."currentVersionId" <> version."id")
-      )`;
+      `
+    : Prisma.sql`
+        version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        AND version."systemTo" IS NULL
+        AND fact."state" = 'ACTIVE'::"MemoryFactState"
+        AND fact."currentVersionId" = version."id"
+      `;
   const lockTargets = core
     ? Prisma.sql`version, fact, scope, settings`
-    : Prisma.sql`version, fact, scope, settings, generation`;
+    : Prisma.sql`version, fact, scope, settings, generation, entry`;
+  const searchSafeContentHash = core
+    ? Prisma.sql`NULL::text AS "searchSafeContentHash"`
+    : Prisma.sql`entry."safeContentHash" AS "searchSafeContentHash"`;
   const [row] = await tx.$queryRaw<FactAuthorityRow[]>(Prisma.sql`
     SELECT
       version."coreEligible", version."coreSalience"::text AS "coreSalience",
       version."createdByEventId",
       version."displayText",
+      version."expectedAt", version."expiresAt",
       version."languageCode",
+      version."mergedIntoVersionId", version."movedFromVersionId",
+      version."observedAt", version."occurredAt",
       version."sensitivityClass"::text AS "sensitivityClass",
       version."sourceMode"::text AS "sourceMode",
       version."state"::text AS "versionState",
+      version."supersedesVersionId",
+      version."structuredValue",
       version."systemFrom", version."systemTo", version."validFrom", version."validTo",
       fact."canonicalKey" AS "factCanonicalKey",
       fact."category" AS "factCategory", fact."currentVersionId",
+      fact."identityKind"::text AS "identityKind",
       fact."id" AS "factId", fact."pinned", fact."state"::text AS "factState",
       scope."assistantId" AS "scopeAssistantId", scope."chatId" AS "scopeChatId",
       scope."folderId" AS "scopeFolderId", scope."id" AS "scopeId",
       scope."state"::text AS "scopeState",
       scope."targetIdSnapshot" AS "scopeTargetIdSnapshot",
-      scope."scopeType"::text AS "scopeType"
+      scope."scopeType"::text AS "scopeType",
+      ${searchSafeContentHash}
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
@@ -263,6 +434,8 @@ async function resolveFact(
         'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
+      AND version."structuredValue" IS NOT NULL
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."sourceMode" IN (
         'EXPLICIT'::"MemoryFactSourceMode",
         'AUTOMATIC'::"MemoryFactSourceMode"
@@ -274,83 +447,71 @@ async function resolveFact(
         folderId: authority.folderId,
         userId: authority.userId
       })}
-      AND ${memoryPersonalFactEvidencePredicate(authority.userId)}
+      AND ${memoryPersonalFactEvidencePredicate(authority.userId, { exactVNext: true })}
       AND ${memoryFactConversationFeedbackPredicate(
         authority.userId,
         authority.chatId
       )}
       AND ${memoryActiveSuppressionPredicate(authority.userId)}
-      AND (
-        (
-          version."state" = 'ACTIVE'::"MemoryFactVersionState"
-          AND version."systemTo" IS NULL
-          AND fact."state" = 'ACTIVE'::"MemoryFactState"
-          AND fact."currentVersionId" = version."id"
-          AND ${currentAuthority}
-        )
-        OR ${terminalCompatibility}
-      )
+      AND ${lifecycleAuthority}
+      AND ${currentAuthority}
       AND version."sensitivityClass" IN (
         'NORMAL'::"MemorySensitivityClass",
         'SENSITIVE'::"MemorySensitivityClass"
       )
     FOR SHARE OF ${lockTargets}
   `);
-  if (!row || !exactTextContainsProjection(input.exactSafeText, row.displayText)) {
+  if (
+    !row || !exactTextContainsProjection(input.exactSafeText, row.displayText) ||
+    !core && row.searchSafeContentHash !== memorySha256({
+      displayText: row.displayText,
+      structuredValue: row.structuredValue
+    })
+  ) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
   const messageEvidence = row.sourceMode === "AUTOMATIC"
     ? await tx.$queryRaw<FactMessageEvidenceRow[]>(Prisma.sql`
         SELECT
           support."branchGeneration", support."chatId",
-          support."id" AS "evidenceId", support."messageId"
+          evidence_message."content", support."sourceEndOffset" AS "endOffset",
+          support."id" AS "evidenceId", support."evidenceFingerprint",
+          support."messageId", support."safeExcerpt", support."safeSourceHash",
+          support."sourceMessageContentHash", support."sourceProjectionVersion",
+          support."sourceStartOffset" AS "startOffset"
         FROM "MemoryEvidence" AS support
         INNER JOIN "Chat" AS evidence_chat
           ON evidence_chat."userId" = support."userId"
           AND evidence_chat."id" = support."chatId"
           AND evidence_chat."projectId" IS NULL
           AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-          AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
         INNER JOIN "Message" AS evidence_message
           ON evidence_message."chatId" = support."chatId"
           AND evidence_message."id" = support."messageId"
           AND evidence_message."role" = 'user'
         WHERE support."userId" = ${authority.userId}
           AND support."factVersionId" = ${input.factVersionId}
-          AND support."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-          AND support."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
-          AND support."sourceRole" = 'user'
-          AND NOT EXISTS (
-            SELECT 1 FROM "MemorySuppression" AS source_suppression
-            WHERE source_suppression."userId" = support."userId"
-              AND source_suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-              AND source_suppression."sourceChatId" = support."chatId"
-              AND source_suppression."sourceMessageId" = support."messageId"
-              AND (source_suppression."sourceBranchGeneration" IS NULL
-                OR source_suppression."sourceBranchGeneration" = support."branchGeneration")
-              AND (source_suppression."expiresAt" IS NULL
-                OR source_suppression."expiresAt" > CURRENT_TIMESTAMP)
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "MemorySourceBarrier" AS source_barrier
-            WHERE source_barrier."userId" = support."userId"
-              AND source_barrier."kind" IN (
-                'AUTOMATIC_FACTS'::"MemorySourceBarrierKind",
-                'ALL_REUSABLE'::"MemorySourceBarrierKind"
-              )
-              AND evidence_message."createdAt" <= source_barrier."sourceCreatedAtCutoff"
-          )
+          AND ${memoryPersonalEvidenceRowPredicate(
+            authority.userId,
+            Prisma.sql`support."factVersionId"`,
+            { exactVNext: true }
+          )}
+          AND support."evidenceFingerprint" IS NOT NULL
+          AND support."sourceStartOffset" IS NOT NULL
+          AND support."sourceEndOffset" IS NOT NULL
+          AND support."sourceMessageContentHash" IS NOT NULL
         ORDER BY support."createdAt", support."id"
         LIMIT 50
         FOR SHARE OF support, evidence_chat, evidence_message
       `)
     : [];
-  const primaryEvidence = messageEvidence[0] ?? null;
+  const exactMessageEvidence = messageEvidence.filter(exactEvidenceValid);
+  const primaryEvidence = exactMessageEvidence[0] ?? null;
   if (row.sourceMode === "AUTOMATIC" && !primaryEvidence) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
   const sourceMessageIds = primaryEvidence
-    ? messageEvidence.flatMap((evidence) =>
+    ? exactMessageEvidence.flatMap((evidence) =>
         evidence.chatId === primaryEvidence.chatId &&
           evidence.branchGeneration === primaryEvidence.branchGeneration
           ? [evidence.messageId]
@@ -359,27 +520,53 @@ async function resolveFact(
   const sourceSnapshot = {
     createdByEventId: row.createdByEventId,
     evidenceIds: primaryEvidence
-      ? messageEvidence.flatMap((evidence) =>
+      ? exactMessageEvidence.flatMap((evidence) =>
           evidence.chatId === primaryEvidence.chatId &&
             evidence.branchGeneration === primaryEvidence.branchGeneration
-            ? [evidence.evidenceId]
+            ? [{
+                endOffset: evidence.endOffset,
+                evidenceFingerprint: evidence.evidenceFingerprint,
+                evidenceId: evidence.evidenceId,
+                sourceMessageContentHash: evidence.sourceMessageContentHash,
+                sourceProjectionVersion: evidence.sourceProjectionVersion,
+                startOffset: evidence.startOffset
+              }]
             : [])
       : [],
     projectedTextHash: memoryPreparingTextHash(compactProjection(row.displayText)),
     projectionKind: projection.kind,
-    schemaVersion: 2,
+    schemaVersion: 3,
     sourceMode: row.sourceMode
   };
+  const entityRoots = await factEntityRoots(
+    tx,
+    authority.userId,
+    input.factVersionId
+  );
+  const dependencySnapshot = await factDependencies(
+    tx,
+    authority.userId,
+    input.factVersionId
+  );
   const versionSnapshot = {
     currentVersionId: row.currentVersionId,
     coreEligible: row.coreEligible,
     coreSalience: row.coreSalience,
+    dependencySnapshot,
     factCanonicalKey: row.factCanonicalKey,
     factCategory: row.factCategory,
     factId: row.factId,
     factState: row.factState,
     factVersionId: input.factVersionId,
     languageCode: row.languageCode,
+    entityRoots,
+    expectedAt: iso(row.expectedAt),
+    expiresAt: iso(row.expiresAt),
+    identityKind: row.identityKind,
+    mergedIntoVersionId: row.mergedIntoVersionId,
+    movedFromVersionId: row.movedFromVersionId,
+    observedAt: iso(row.observedAt),
+    occurredAt: iso(row.occurredAt),
     pinned: row.pinned,
     scopeAssistantId: row.scopeAssistantId,
     scopeChatId: row.scopeChatId,
@@ -388,10 +575,11 @@ async function resolveFact(
     scopeState: row.scopeState,
     scopeTargetIdSnapshot: row.scopeTargetIdSnapshot,
     scopeType: row.scopeType,
-    schemaVersion: 2,
+    schemaVersion: 3,
     sensitivityClass: row.sensitivityClass,
     systemFrom: iso(row.systemFrom),
     systemTo: iso(row.systemTo),
+    supersedesVersionId: row.supersedesVersionId,
     validFrom: iso(row.validFrom),
     validTo: iso(row.validTo),
     versionState: row.versionState
@@ -455,14 +643,14 @@ async function resolveChunkRow(
       AND chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND source_chat."memoryBranchGeneration" = chunk."branchGeneration"
-      AND source_chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
-      AND checkpoint."branchGeneration" = chunk."branchGeneration"
-      AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
       AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        chat: "source_chat",
+        checkpoint: "checkpoint"
+      })}
       AND ${memoryChunkConversationFeedbackPredicate(
         authority.userId,
         authority.chatId
@@ -489,6 +677,132 @@ async function chunkMessageIds(
     where: { chunkId, userId }
   });
   if (rows.length === 0 || rows.length > 50) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+  }
+  return rows.map(({ messageId }) => messageId);
+}
+
+async function resolveDigestRow(
+  tx: PreparingItemTransaction,
+  authority: PreparingMemoryItemAuthority,
+  digestId: string,
+  anchorChunkId: string
+): Promise<DigestAuthorityRow | null> {
+  if (!authority.indexGenerationId) return null;
+  const [row] = await tx.$queryRaw<DigestAuthorityRow[]>(Prisma.sql`
+    SELECT
+      chunk."branchGeneration", chunk."chatId", chunk."contentHash",
+      digest."contentHash" AS "digestContentHash", digest."id" AS "digestId",
+      digest."pipelineVersion" AS "digestPipelineVersion",
+      digest."safetyPolicyVersion" AS "digestSafetyPolicyVersion",
+      digest."safeDigestText" AS "digestText", digest."languageCode",
+      digest."redactionState"::text AS "redactionState",
+      digest."safeDigestText" AS "safeText",
+      digest."safetyClass"::text AS "safetyClass",
+      digest."sourceAssistantId", digest."sourceFolderId",
+      chunk."sourceRevisionAtCreation" AS "sourceRevision",
+      digest."state"::text AS "state"
+    FROM "ChatMemoryDigest" AS digest
+    INNER JOIN "MemoryRecallChunk" AS chunk
+      ON chunk."userId" = digest."userId" AND chunk."chatId" = digest."chatId"
+      AND chunk."id" = digest."anchorChunkId"
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = digest."userId"
+      AND settings."useMemoryFacts" = TRUE
+      AND settings."referenceChatHistory" = TRUE
+      AND settings."activeIndexGenerationId" = ${authority.indexGenerationId}
+    INNER JOIN "MemoryIndexGeneration" AS generation
+      ON generation."userId" = settings."userId"
+      AND generation."id" = settings."activeIndexGenerationId"
+      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+    INNER JOIN "Chat" AS source_chat
+      ON source_chat."userId" = digest."userId" AND source_chat."id" = digest."chatId"
+      AND source_chat."projectId" IS NULL
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = digest."userId" AND checkpoint."chatId" = digest."chatId"
+    WHERE digest."userId" = ${authority.userId}
+      AND digest."id" = ${digestId}
+      AND digest."anchorChunkId" = ${anchorChunkId}
+      AND digest."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND digest."pipelineVersion" = ${MEMORY_CHAT_DIGEST_PIPELINE_VERSION}
+      AND digest."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND digest."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND digest."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND digest."branchGeneration" = checkpoint."branchGeneration"
+      AND digest."sourceRevisionAtCreation" = checkpoint."sourceRevision"
+      AND digest."activeLeafMessageId" = checkpoint."activeLeafMessageId"
+      AND digest."sourceContentHash" = checkpoint."sourceContentHash"
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND chunk."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        chat: "source_chat",
+        checkpoint: "checkpoint"
+      })}
+      AND ${memoryChunkConversationFeedbackPredicate(
+        authority.userId,
+        authority.chatId
+      )}
+      AND ${memoryChunkSourceSafetyPredicate()}
+      AND EXISTS (
+        SELECT 1 FROM "ChatMemoryDigestChunk" AS digest_anchor
+        WHERE digest_anchor."digestId" = digest."id"
+          AND digest_anchor."chunkId" = digest."anchorChunkId"
+      )
+      AND EXISTS (
+        SELECT 1 FROM "ChatMemoryDigestMessage" AS digest_source_message
+        WHERE digest_source_message."digestId" = digest."id"
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "ChatMemoryDigestChunk" AS digest_source
+        LEFT JOIN "MemoryRecallChunk" AS source_chunk
+          ON source_chunk."userId" = digest_source."userId"
+          AND source_chunk."chatId" = digest_source."chatId"
+          AND source_chunk."id" = digest_source."chunkId"
+        WHERE digest_source."digestId" = digest."id"
+          AND (source_chunk."id" IS NULL
+            OR source_chunk."state" <> 'ACTIVE'::"MemoryHistoryItemState"
+            OR source_chunk."chunkingVersion" <> ${MEMORY_HISTORY_CHUNKING_VERSION}
+            OR source_chunk."sourceProjectionVersion" <>
+              ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+            OR source_chunk."safetyClass" NOT IN (
+              'NORMAL'::"MemoryDerivedSafetyClass",
+              'SENSITIVE'::"MemoryDerivedSafetyClass"
+            )
+            OR source_chunk."redactionState" = 'EXCLUDED'::"MemoryRedactionState")
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "ChatMemoryDigestMessage" AS digest_source_message
+        LEFT JOIN "ChatMemoryCheckpointMessage" AS current_source_message
+          ON current_source_message."userId" = digest_source_message."userId"
+          AND current_source_message."chatId" = digest_source_message."chatId"
+          AND current_source_message."messageId" = digest_source_message."messageId"
+        WHERE digest_source_message."digestId" = digest."id"
+          AND (current_source_message."messageId" IS NULL
+            OR current_source_message."sourceMessageUpdatedAt" <>
+              digest_source_message."sourceMessageUpdatedAt")
+      )
+    FOR SHARE OF digest, chunk, settings, generation, source_chat, checkpoint
+  `);
+  return row ?? null;
+}
+
+async function digestMessageIds(
+  tx: PreparingItemTransaction,
+  userId: string,
+  digestId: string
+): Promise<string[]> {
+  const rows = await tx.chatMemoryDigestMessage.findMany({
+    orderBy: { ordinal: "asc" },
+    select: { messageId: true },
+    take: 513,
+    where: { digestId, userId }
+  });
+  if (rows.length === 0 || rows.length > 512) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
   return rows.map(({ messageId }) => messageId);
@@ -530,8 +844,65 @@ async function resolveChunk(
   input: MemoryPreparingItemInput & Readonly<{ recallChunkId: string }>
 ): Promise<ResolvedPreparingMemoryItem> {
   const projection = itemProjection(input);
+  const feature = record(input.featureSnapshot);
+  const retrievalMode = feature?.retrievalMode;
+  if (projection.kind === "CHAT_DIGEST_SAFE_TEXT") {
+    if (projection.supportingItemId === null || retrievalMode !== "HISTORY_OVERVIEW") {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    }
+    const row = await resolveDigestRow(
+      tx,
+      authority,
+      projection.supportingItemId,
+      input.recallChunkId
+    );
+    if (!row || !exactTextContainsProjection(input.exactSafeText, row.digestText)) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+    }
+    const sourceMessageIds = await digestMessageIds(
+      tx,
+      authority.userId,
+      row.digestId
+    );
+    const snapshots = historySnapshots(
+      row,
+      projection.kind,
+      sourceMessageIds,
+      row.digestId
+    );
+    return {
+      ...commonResolved(input, projection.kind),
+      ...snapshots,
+      exactItemId: input.recallChunkId,
+      factVersionId: null,
+      featureSnapshot: {
+        ...commonResolved(input, projection.kind).featureSnapshot,
+        supportingItemId: row.digestId
+      },
+      itemStateAtAdmission: row.state,
+      itemType: "RECALL_CHUNK",
+      recallChunkId: input.recallChunkId,
+      sourceBranchGenerationSnapshot: row.branchGeneration,
+      sourceChatIdSnapshot: row.chatId,
+      sourceContentHashSnapshot: row.contentHash,
+      sourceMessageIdsSnapshot: sourceMessageIds,
+      sourceRevisionSnapshot: row.sourceRevision,
+      sourceSnapshot: {
+        ...snapshots.sourceSnapshot,
+        digestContentHash: row.digestContentHash,
+        digestId: row.digestId,
+        schemaVersion: 3
+      },
+      versionSnapshot: {
+        ...snapshots.versionSnapshot,
+        digestPipelineVersion: row.digestPipelineVersion,
+        digestSafetyPolicyVersion: row.digestSafetyPolicyVersion,
+        schemaVersion: 3
+      }
+    };
+  }
   if (projection.kind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" ||
-    projection.supportingItemId !== null) {
+    projection.supportingItemId !== null || retrievalMode === "HISTORY_OVERVIEW") {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
   const row = await resolveChunkRow(tx, authority, input.recallChunkId);

@@ -28,6 +28,7 @@ function client(
     canonicalScope?: boolean;
     currentVersionId?: string;
     displayText?: string | null;
+    expiresAt?: Date | null;
     factState?: string;
     personalRun?: boolean;
     versionState?: string;
@@ -46,6 +47,7 @@ function client(
       displayText: overrides.displayText === undefined
         ? "Prefers exact current text."
         : overrides.displayText,
+      expiresAt: overrides.expiresAt ?? null,
       factId: "fact-1",
       id: "version-1",
       safetyClassificationState: "CLASSIFIED",
@@ -89,7 +91,7 @@ describe("Memory run action projection", () => {
     });
   });
 
-  it("omits saved text after the fact is forgotten, superseded, purged, or mismatched", async () => {
+  it("omits saved text after the fact is forgotten, superseded, expired, purged, or mismatched", async () => {
     const ref = memoryRef();
     const attempt = {
       budgetSnapshot: {
@@ -105,6 +107,7 @@ describe("Memory run action projection", () => {
     for (const database of [
       client([attempt], { factState: "FORGOTTEN" }),
       client([attempt], { currentVersionId: "version-2" }),
+      client([attempt], { expiresAt: new Date(now.getTime() - 1) }),
       client([attempt], { displayText: null }),
       client([attempt], { displayText: "Different private text." })
     ]) {
@@ -334,6 +337,7 @@ describe("Memory run action projection", () => {
     database.memoryFactVersion.findMany.mockResolvedValueOnce([{
       contentPurgedAt: null,
       displayText: "Prefers exact current text.",
+      expiresAt: null,
       factId: "fact-1",
       id: "version-1",
       safetyClassificationState: "CLASSIFIED",
@@ -342,6 +346,7 @@ describe("Memory run action projection", () => {
     }, {
       contentPurgedAt: null,
       displayText: "Second current statement.",
+      expiresAt: null,
       factId: "fact-2",
       id: "version-2",
       safetyClassificationState: "CLASSIFIED",

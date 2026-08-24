@@ -208,6 +208,11 @@ enum MemoryFactState {
   FORGOTTEN
 }
 
+enum MemoryFactIdentityKind {
+  SLOT
+  PROPOSITION
+}
+
 enum MemoryCandidateState {
   PENDING
   DEFERRED
@@ -248,12 +253,22 @@ enum MemoryCoreSalience {
 
 enum MemoryFactVersionState {
   ACTIVE
+  PENDING_RELATION
   CONFLICTING
   ORPHANED
+  MERGED
   SUPERSEDED
   EXPIRED
   RETRACTED
   FORGOTTEN
+}
+
+enum MemoryFactVersionRelationKind {
+  DUPLICATE_OF
+  ENRICHES
+  MERGED_INTO
+  SYNTHESIZED_FROM
+  MOVED_FROM
 }
 
 enum MemoryFactModality {
@@ -266,6 +281,7 @@ enum MemoryFactModality {
   EVENT
   HABIT
   WORKFLOW
+  PATTERN
 }
 
 enum MemoryFactSourceMode {
@@ -287,10 +303,9 @@ enum MemorySensitivityClass {
 }
 
 /// Safety classification is a separate admission fence from the semantic
-/// sensitivity value.  Existing rows are migrated to PENDING and cannot be
-/// retrieved, embedded, or rebuilt until a strict system-model decision is
-/// recorded.  New rows use the CLASSIFIED default and are written through the
-/// current Memory persistence boundary.
+/// sensitivity value. Pending rows cannot be retrieved, embedded, or rebuilt
+/// until an independently governed decision is recorded; explicit and legacy
+/// write boundaries set their completed classification fields deliberately.
 enum MemorySafetyClassificationState {
   PENDING
   CLASSIFIED
@@ -309,6 +324,29 @@ enum MemoryEvidenceSourceType {
   EXPLICIT_ACTION
 }
 
+enum MemorySourceDependencyKind {
+  COREFERENCE_ANTECEDENT
+  CORRECTION_TARGET
+  TEMPORAL_CONTEXT
+  RELATION_CONTEXT
+}
+
+enum MemoryEntityState {
+  ACTIVE
+  MERGED
+}
+
+enum MemoryEntityAliasSupportKind {
+  EVIDENCE
+  FACT_VERSION
+}
+
+enum MemoryEntityLinkRole {
+  SUBJECT
+  OBJECT
+  MENTION
+}
+
 enum MemoryActorType {
   USER
   SYSTEM
@@ -320,6 +358,7 @@ enum MemoryEventOperation {
   AUTO_PROPOSE
   PROMOTE
   REINFORCE
+  MERGE
   EDIT
   SUPERSEDE
   CONFLICT
@@ -333,6 +372,7 @@ enum MemoryEventOperation {
   USER_FEEDBACK
   INDEX_SWITCH
   REBUILD
+  SYNTHESIZE
 }
 
 enum MemoryFeedbackType {
@@ -380,6 +420,8 @@ enum MemoryJobKind {
   RECONCILE_SOURCE
   REBUILD_INDEX
   RECLASSIFY_FACTS
+  RESOLVE_FACT_RELATIONS
+  SYNTHESIZE_MEMORIES
 }
 
 enum MemoryJobState {
@@ -3637,11 +3679,18 @@ model UserMemorySettings {
   acceptedUtilityEgressFingerprint String?                        @db.VarChar(128)
   acceptedUtilityPolicyVersion     String?                        @db.VarChar(64)
   acceptedUtilityEgressAt          DateTime?
+  synthesisEnabled                 Boolean                        @default(false)
+  synthesisEnabledAt               DateTime?
+  synthesisPolicyVersion           String?                        @db.VarChar(64)
+  lastSynthesisAt                  DateTime?
+  decayEnabled                     Boolean                        @default(false)
+  decayPolicyVersion               String?                        @db.VarChar(64)
   createdAt                        DateTime                       @default(now())
   updatedAt                        DateTime                       @default(now()) @updatedAt
 
   @@index([activeIndexGenerationId])
   @@index([embeddingProviderModelId])
+  @@index([synthesisEnabled, lastSynthesisAt, userId])
 }
 
 model MemoryScope {
@@ -3669,7 +3718,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-index-v3") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v1") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String
@@ -3687,6 +3736,19 @@ model ChatMemoryCheckpoint {
   @@index([userId, status, updatedAt])
   @@index([chatId, activeLeafMessageId])
   @@index([chatId, lastIndexedMessageId])
+}
+
+model ChatMemoryCheckpointMessage {
+  userId                 String
+  chatId                 String
+  messageId              String
+  ordinal                Int
+  sourceMessageCreatedAt DateTime
+  sourceMessageUpdatedAt DateTime
+
+  @@id([userId, chatId, messageId])
+  @@unique([userId, chatId, ordinal])
+  @@index([chatId, messageId])
 }
 
 model MemoryRecallChunk {
@@ -3724,17 +3786,85 @@ model MemoryRecallChunk {
 }
 
 model MemoryRecallChunkMessage {
-  userId      String
-  chunkId     String
-  chatId      String
-  messageId   String
-  ordinal     Int
-  role        String @db.VarChar(32)
-  startOffset Int?
-  endOffset   Int?
+  userId                   String
+  chunkId                  String
+  chatId                   String
+  messageId                String
+  ordinal                  Int
+  role                     String   @db.VarChar(32)
+  safeTextHash             String   @db.VarChar(128)
+  sourceMessageContentHash String   @db.VarChar(128)
+  sourceMessageUpdatedAt   DateTime
+  startOffset              Int?
+  endOffset                Int?
 
   @@id([chunkId, messageId])
   @@unique([chunkId, ordinal])
+  @@index([userId, chatId, messageId])
+}
+
+model ChatMemoryDigest {
+  id                       String                   @id
+  userId                   String
+  chatId                   String
+  anchorChunkId            String
+  sourceFolderId           String?
+  sourceAssistantId        String?
+  branchGeneration         Int
+  sourceRevisionAtCreation Int
+  activeLeafMessageId      String
+  sourceContentHash        String                   @db.VarChar(128)
+  contentHash              String                   @db.VarChar(128)
+  summary                  String                   @db.VarChar(2000)
+  topics                   String[]                 @default([])
+  decisions                String[]                 @default([])
+  openLoops                String[]                 @default([])
+  safeDigestText           String
+  normalizedSafeSearchText String
+  languageCode             String                   @db.VarChar(35)
+  occurredFrom             DateTime
+  occurredTo               DateTime
+  safetyClass              MemoryDerivedSafetyClass
+  redactionState           MemoryRedactionState
+  state                    MemoryHistoryItemState   @default(ACTIVE)
+  pipelineVersion          String                   @db.VarChar(64)
+  sourceProjectionVersion  String                   @db.VarChar(64)
+  safetyPolicyVersion      String                   @db.VarChar(256)
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @default(now()) @updatedAt
+  invalidatedAt            DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@index([userId, chatId, state, updatedAt])
+  @@index([userId, occurredTo, id])
+  @@index([userId, sourceFolderId, state])
+  @@index([userId, sourceAssistantId, state])
+}
+
+model ChatMemoryDigestChunk {
+  userId   String
+  chatId   String
+  digestId String
+  chunkId  String
+  ordinal  Int
+
+  @@id([digestId, chunkId])
+  @@unique([digestId, ordinal])
+  @@index([userId, chatId, chunkId])
+}
+
+model ChatMemoryDigestMessage {
+  userId                   String
+  chatId                   String
+  digestId                 String
+  messageId                String
+  ordinal                  Int
+  sourceMessageContentHash String   @db.VarChar(128)
+  sourceMessageUpdatedAt   DateTime
+
+  @@id([digestId, messageId])
+  @@unique([digestId, ordinal])
   @@index([userId, chatId, messageId])
 }
 
@@ -3832,22 +3962,27 @@ model MemoryCandidateDecision {
 }
 
 model MemoryFact {
-  id               String                 @id @default(uuid())
+  id               String                  @id @default(uuid())
   userId           String
   scopeId          String
-  canonicalKey     String                 @db.VarChar(256)
-  category         String                 @db.VarChar(64)
-  state            MemoryFactState        @default(ACTIVE)
-  pinned           Boolean                @default(false)
+  canonicalKey     String                  @db.VarChar(256)
+  identityKind     MemoryFactIdentityKind?
+  identityVersion  String?                 @db.VarChar(64)
+  subjectKey       String?                 @db.VarChar(256)
+  predicateKey     String?                 @db.VarChar(64)
+  dimensionKey     String?                 @db.VarChar(256)
+  category         String                  @db.VarChar(64)
+  state            MemoryFactState         @default(ACTIVE)
+  pinned           Boolean                 @default(false)
   currentVersionId String?
   movedToFactId    String?
-  temperatureClass MemoryTemperatureClass @default(WARM)
-  temperatureScore Float                  @default(0)
+  temperatureClass MemoryTemperatureClass  @default(WARM)
+  temperatureScore Float                   @default(0)
   lastUsedAt       DateTime?
   lastConfirmedAt  DateTime?
-  createdAt        DateTime               @default(now())
+  createdAt        DateTime                @default(now())
   forgottenAt      DateTime?
-  updatedAt        DateTime               @default(now()) @updatedAt
+  updatedAt        DateTime                @default(now()) @updatedAt
 
   @@unique([userId, id])
   @@unique([userId, scopeId, canonicalKey])
@@ -3869,7 +4004,11 @@ model MemoryFactVersion {
   modality                       MemoryFactModality
   sourceMode                     MemoryFactSourceMode
   state                          MemoryFactVersionState          @default(ACTIVE)
+  ingestionFingerprint           String?                         @db.VarChar(128)
   observedAt                     DateTime?
+  occurredAt                     DateTime?
+  expectedAt                     DateTime?
+  expiresAt                      DateTime?
   validFrom                      DateTime?
   validTo                        DateTime?
   systemFrom                     DateTime                        @default(now())
@@ -3892,44 +4031,212 @@ model MemoryFactVersion {
   coreEligible                   Boolean                         @default(false)
   coreSalience                   MemoryCoreSalience              @default(NONE)
   supersedesVersionId            String?
+  mergedIntoVersionId            String?
   movedFromVersionId             String?
+  relationResolutionVersion      String?                         @db.VarChar(64)
+  relationSnapshotHash           String?                         @db.VarChar(128)
+  relationResolvedAt             DateTime?
   createdByEventId               String
   pipelineVersion                String                          @db.VarChar(64)
+  synthesisDepth                 Int                             @default(0)
+  synthesisGeneration            Int?
+  synthesisSourceSetFingerprint  String?                         @db.VarChar(128)
   contentPurgedAt                DateTime?
   createdAt                      DateTime                        @default(now())
 
   @@unique([userId, id])
   @@unique([userId, factId, id])
   @@index([userId, factId, state])
+  @@index([userId, occurredAt])
+  @@index([userId, expectedAt])
+  @@index([userId, expiresAt])
   @@index([userId, supersedesVersionId])
+  @@index([userId, mergedIntoVersionId])
   @@index([userId, movedFromVersionId])
   @@index([userId, createdByEventId])
   @@index([userId, safetyClassificationState, state])
   @@index([userId, safetyClassifierExecutionId])
+  @@index([userId, state, observedAt])
+  @@index([modality, state, userId])
+  @@index([userId, modality, synthesisGeneration, state])
+  @@index([userId, synthesisSourceSetFingerprint])
+}
+
+model MemoryFactVersionRelation {
+  id                    String                        @id @default(uuid())
+  userId                String
+  sourceVersionId       String
+  targetVersionId       String
+  kind                  MemoryFactVersionRelationKind
+  confidence            Float
+  reasonCode            String                        @db.VarChar(64)
+  pipelineVersion       String                        @db.VarChar(64)
+  executionId           String?
+  sourceEligibilityHash String?                       @db.VarChar(128)
+  createdAt             DateTime                      @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, sourceVersionId, targetVersionId, kind])
+  @@index([userId, sourceVersionId, kind])
+  @@index([userId, targetVersionId, kind])
+}
+
+/// Recovery-only staging for the single governed Dream synthesis call. The
+/// decoded provider output and opaque source bindings are cleared atomically
+/// after semantic apply; immutable pattern versions and relations then own the
+/// durable result.
+model MemorySynthesisExecution {
+  id                   String    @id @default(uuid())
+  userId               String
+  memoryJobId          String
+  executionBindingId   String
+  inputHash            String    @db.VarChar(128)
+  acceptedOutputHash   String    @db.VarChar(128)
+  sourceSetFingerprint String    @db.VarChar(128)
+  sourceSnapshotHash   String    @db.VarChar(128)
+  acceptedOutput       Json?
+  sourceBindings       Json?
+  createdAt            DateTime  @default(now())
+  appliedAt            DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, memoryJobId])
+  @@unique([userId, executionBindingId])
+  @@index([userId, appliedAt, createdAt])
+}
+
+/// Durable, owner-scoped reservation for the single optional semantic call
+/// shared by all ambiguity resolution originating from one source message.
+/// The result contains only the strict decoded decision and execution receipt
+/// metadata; source text is never copied here.
+model MemoryAuxiliarySemanticCall {
+  id                 String    @id
+  userId             String
+  sourceMessageId    String
+  ownerJobId         String
+  purpose            String    @db.VarChar(64)
+  inputHash          String?   @db.VarChar(128)
+  acceptedOutputHash String?   @db.VarChar(128)
+  executionId        String?
+  result             Json?
+  createdAt          DateTime  @default(now())
+  completedAt        DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, sourceMessageId])
+  @@unique([userId, ownerJobId])
+  @@index([userId, purpose, createdAt])
 }
 
 model MemoryEvidence {
-  id                      String                   @id @default(uuid())
-  userId                  String
-  factVersionId           String
-  stance                  MemoryEvidenceStance
-  sourceType              MemoryEvidenceSourceType
-  chatId                  String?
-  messageId               String?
-  memoryEventId           String?
-  branchGeneration        Int?
-  sourceRole              String?                  @db.VarChar(32)
-  safeExcerpt             String
-  safeSourceHash          String                   @db.VarChar(128)
-  sourceProjectionVersion String                   @db.VarChar(64)
-  safetyClass             MemorySensitivityClass
-  observedAt              DateTime
-  createdAt               DateTime                 @default(now())
+  id                       String                   @id @default(uuid())
+  userId                   String
+  factVersionId            String
+  stance                   MemoryEvidenceStance
+  sourceType               MemoryEvidenceSourceType
+  chatId                   String?
+  messageId                String?
+  memoryEventId            String?
+  branchGeneration         Int?
+  sourceRole               String?                  @db.VarChar(32)
+  sourceStartOffset        Int?
+  sourceEndOffset          Int?
+  sourceMessageContentHash String?                  @db.VarChar(128)
+  evidenceFingerprint      String?                  @db.VarChar(128)
+  safeExcerpt              String
+  safeSourceHash           String                   @db.VarChar(128)
+  sourceProjectionVersion  String                   @db.VarChar(64)
+  safetyClass              MemorySensitivityClass
+  observedAt               DateTime
+  createdAt                DateTime                 @default(now())
 
   @@unique([userId, id])
   @@index([userId, factVersionId, stance])
   @@index([userId, chatId, messageId])
   @@index([userId, memoryEventId])
+}
+
+model MemoryFactVersionSourceDependency {
+  id                       String                     @id @default(uuid())
+  userId                   String
+  targetFactVersionId      String
+  dependencyKind           MemorySourceDependencyKind
+  sourceMessageId          String?
+  sourceMessageContentHash String?                    @db.VarChar(128)
+  sourceMessageUpdatedAt   DateTime?
+  sourceFactVersionId      String?
+  sourceProjectionVersion  String?                    @db.VarChar(64)
+  createdAt                DateTime                   @default(now())
+
+  @@unique([userId, id])
+  @@index([userId, targetFactVersionId, dependencyKind])
+  @@index([userId, sourceMessageId])
+  @@index([userId, sourceFactVersionId])
+}
+
+model MemoryEntity {
+  id           String            @id @default(uuid())
+  userId       String
+  canonicalKey String            @db.VarChar(256)
+  entityType   String            @db.VarChar(64)
+  displayName  String            @db.VarChar(256)
+  state        MemoryEntityState @default(ACTIVE)
+  mergedIntoId String?
+  languageCode String?           @db.VarChar(35)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@unique([userId, canonicalKey])
+  @@index([userId, entityType, state])
+  @@index([userId, mergedIntoId])
+}
+
+model MemoryEntityAlias {
+  id              String   @id @default(uuid())
+  userId          String
+  entityId        String
+  normalizedAlias String   @db.VarChar(256)
+  displayAlias    String   @db.VarChar(256)
+  languageCode    String?  @db.VarChar(35)
+  sourceKind      String   @db.VarChar(32)
+  confidence      Float
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, entityId, normalizedAlias])
+  @@index([userId, normalizedAlias])
+}
+
+model MemoryEntityAliasSupport {
+  id                 String                       @id @default(uuid())
+  userId             String
+  aliasId            String
+  supportKind        MemoryEntityAliasSupportKind
+  factVersionId      String?
+  evidenceId         String?
+  supportFingerprint String                       @db.VarChar(128)
+  createdAt          DateTime                     @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, supportFingerprint])
+  @@index([userId, aliasId])
+  @@index([userId, factVersionId])
+  @@index([userId, evidenceId])
+}
+
+model MemoryFactVersionEntity {
+  userId            String
+  factVersionId     String
+  entityId          String
+  role              MemoryEntityLinkRole
+  mentionText       String?              @db.VarChar(256)
+  normalizedMention String?              @db.VarChar(256)
+  confidence        Float
+  createdAt         DateTime             @default(now())
+
+  @@id([factVersionId, entityId, role])
+  @@index([userId, entityId, role, factVersionId])
 }
 
 model MemoryEvent {
@@ -4144,6 +4451,7 @@ model MemoryJob {
   userId                   String
   chatId                   String?
   sourceMessageId          String?
+  targetFactVersionId      String?
   activeLeafMessageId      String?
   branchGeneration         Int?
   sourceRevision           Int?
@@ -4172,6 +4480,8 @@ model MemoryJob {
   @@index([userId, state, nextAttemptAt, createdAt])
   @@index([userId, chatId, branchGeneration, sourceRevision])
   @@index([userId, sourceMessageId])
+  @@index([userId, sourceMessageId, kind, pipelineVersion])
+  @@index([userId, targetFactVersionId, kind, state])
 }
 
 /// Installation-scoped liveness evidence for the single supported Personal
@@ -4383,10 +4693,13 @@ model ModelRunMemoryItem {
   featureSnapshot                Json                 @default("{}")
   finalScore                     Float
   selectionReason                String               @db.VarChar(128)
+  decayTouchedAt                 DateTime?
+  decayTouchPolicyVersion        String?               @db.VarChar(64)
   createdAt                      DateTime             @default(now())
 
   @@unique([userId, id])
   @@unique([userId, bindingId, ordinal])
+  @@unique([userId, bindingId, factVersionId], map: "ModelRunMemoryItem_binding_fact_version_key")
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
 }

@@ -33,6 +33,24 @@ function repository(
     admit: vi.fn(async () => ({ jobId: "job-1", kind: "ok" as const })),
     applyJob: vi.fn(async () => undefined),
     cancel: vi.fn(async () => status),
+    inventory: vi.fn(async () => ({
+      activeGenerationId: null,
+      activeIndexMode: null,
+      activePipelineVersion: null,
+      compatibleAutomaticFactVersions: 0,
+      compatibleExplicitFactVersions: 0,
+      compatibleHistoryChunks: 0,
+      eligibleIdentityFingerprint: "a".repeat(64),
+      eligibleItems: 0,
+      incompatibleAutomaticFactVersions: 0,
+      memoryRevision: 0,
+      ready: false,
+      settingsRevision: 0
+    })),
+    rollbackGeneration: vi.fn(async () => ({
+      activeGenerationId: null,
+      kind: "generation_incompatible" as const
+    })),
     status: vi.fn(async () => status),
     wakeShadow: vi.fn(async () => 1),
     ...overrides

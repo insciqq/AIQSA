@@ -29,6 +29,8 @@ function settings(
     acceptedUtilityEgressFingerprint: "a".repeat(64),
     acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
     activeIndexGenerationId: "generation-1",
+    decayEnabled: false,
+    decayPolicyVersion: null,
     embeddingProviderModelId: "embedding-model",
     learnAutomatically: true,
     memoryConsentRevision: 1,
@@ -37,6 +39,10 @@ function settings(
     referenceChatHistory: true,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 1,
+    synthesisEnabled: false,
+    synthesisEnabledAt: null,
+    synthesisPolicyVersion: null,
+    lastSynthesisAt: null,
     updatedAt: NOW,
     useMemoryFacts: true,
     userId: "user-1",
@@ -134,6 +140,7 @@ function policy(
     "MEMORY_FACT_EXTRACT",
     "MEMORY_CONSOLIDATE",
     "MEMORY_RERANK",
+    "MEMORY_SYNTHESIZE",
     "MEMORY_DOCUMENT_EMBED",
     "MEMORY_QUERY_EMBED"
   ] as const) {
@@ -249,6 +256,64 @@ describe("Memory capability projection", () => {
     expect(derive({ omitted: [role] }).automaticLearningAvailable).toBe(false);
   });
 
+  it("gates opt-in synthesis on its exact strict role, consent, and worker", () => {
+    const enabled = { synthesisEnabled: true } as const;
+    expect(derive({ settings: enabled })).toMatchObject({
+      administratorSetupRequired: false,
+      synthesisAvailable: true
+    });
+    expect(derive({
+      omitted: ["MEMORY_SYNTHESIZE"],
+      settings: enabled
+    })).toMatchObject({
+      administratorSetupRequired: true,
+      synthesisAvailable: false
+    });
+    expect(derive({
+      operations: { workerAvailable: false },
+      settings: enabled
+    })).toMatchObject({
+      administratorSetupRequired: true,
+      synthesisAvailable: false
+    });
+    expect(derive({ settings: {
+      ...enabled,
+      acceptedUtilityEgressAt: null,
+      acceptedUtilityEgressFingerprint: null,
+      acceptedUtilityPolicyVersion: null
+    } })).toMatchObject({
+      administratorSetupRequired: true,
+      synthesisAvailable: false
+    });
+  });
+
+  it("gates opt-in decay only on the admitted retrieval capability", () => {
+    expect(derive()).toMatchObject({ decayAvailable: false });
+    const enabled = {
+      decayEnabled: true,
+      decayPolicyVersion: "memory-decay-v1"
+    } as const;
+    expect(derive({ settings: enabled })).toMatchObject({
+      decayAvailable: true,
+      retrievalAvailable: true
+    });
+    expect(derive({ settings: {
+      decayEnabled: true,
+      decayPolicyVersion: "memory-decay-future"
+    } })).toMatchObject({ decayAvailable: false, retrievalAvailable: true });
+    expect(derive({
+      omitted: ["MEMORY_RERANK"],
+      settings: enabled
+    })).toMatchObject({ decayAvailable: false, retrievalAvailable: false });
+    expect(derive({
+      operations: { workerAvailable: false },
+      settings: enabled
+    })).toMatchObject({ decayAvailable: true, retrievalAvailable: true });
+    expect(derive({
+      settings: { ...enabled, useMemoryFacts: false }
+    })).toMatchObject({ decayAvailable: false, retrievalAvailable: false });
+  });
+
   it("projects ADMIN consent per exact execution role and destination", () => {
     const allRoles = [
       "MEMORY_CONTROL",
@@ -257,6 +322,7 @@ describe("Memory capability projection", () => {
       "MEMORY_FACT_EXTRACT",
       "MEMORY_CONSOLIDATE",
       "MEMORY_RERANK",
+      "MEMORY_SYNTHESIZE",
       "MEMORY_DOCUMENT_EMBED",
       "MEMORY_QUERY_EMBED"
     ] as const satisfies readonly MemoryExecutionRole[];
@@ -327,6 +393,19 @@ describe("Memory capability projection", () => {
       naturalLanguageActionsAvailable: true,
       pastChatIndexingAvailable: true,
       retrievalAvailable: false
+    });
+    expect(derive({
+      adminAcceptedRoles: allRoles,
+      consentMode: "ADMIN",
+      settings: { synthesisEnabled: true }
+    })).toMatchObject({ synthesisAvailable: true });
+    expect(derive({
+      adminAcceptedRoles: allRoles.filter((role) => role !== "MEMORY_SYNTHESIZE"),
+      consentMode: "ADMIN",
+      settings: { synthesisEnabled: true }
+    })).toMatchObject({
+      administratorSetupRequired: true,
+      synthesisAvailable: false
     });
   });
 

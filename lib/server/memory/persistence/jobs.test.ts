@@ -7,6 +7,8 @@ const settings = {
   acceptedUtilityEgressFingerprint: null,
   acceptedUtilityPolicyVersion: null,
   activeIndexGenerationId: null,
+  decayEnabled: false,
+  decayPolicyVersion: null,
   embeddingProviderModelId: null,
   learnAutomatically: true,
   memoryConsentRevision: 0,
@@ -15,6 +17,10 @@ const settings = {
   referenceChatHistory: true,
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
   settingsRevision: 0,
+  synthesisEnabled: false,
+  synthesisEnabledAt: null,
+  synthesisPolicyVersion: null,
+  lastSynthesisAt: null,
   useMemoryFacts: true,
   userId: "user-1"
 } satisfies LockedMemorySettings;
@@ -46,7 +52,7 @@ describe("Memory job enqueue boundary", () => {
     await expect(enqueueMemoryJob(tx, settings, {
       idempotencyFingerprint: "extract-fingerprint",
       kind: "EXTRACT_FACTS",
-      pipelineVersion: "memory-fact-extraction-vnext-v1",
+      pipelineVersion: "memory-fact-extraction-vnext-v2",
       source: {
         activeLeafMessageId: "assistant-1",
         branchGeneration: 0,
@@ -90,11 +96,12 @@ describe("Memory job enqueue boundary", () => {
         kind: "EXTRACT_FACTS",
         memoryGenerationSnapshot: 0,
         memoryRevisionSnapshot: 0,
-        pipelineVersion: "memory-fact-extraction-vnext-v1",
+        pipelineVersion: "memory-fact-extraction-vnext-v2",
         sourceHash: "a".repeat(64),
         sourceMessageId: "user-message-1",
         sourceRevision: 1,
-        state: "QUEUED"
+        state: "QUEUED",
+        targetFactVersionId: null
       })
     };
     const tx = { memoryJob } as unknown as MemoryTransaction;
@@ -102,7 +109,7 @@ describe("Memory job enqueue boundary", () => {
     await expect(enqueueMemoryJob(tx, settings, {
       idempotencyFingerprint: "extract-fingerprint",
       kind: "EXTRACT_FACTS",
-      pipelineVersion: "memory-fact-extraction-vnext-v1",
+      pipelineVersion: "memory-fact-extraction-vnext-v2",
       source: {
         activeLeafMessageId: "assistant-later-audit",
         branchGeneration: 3,

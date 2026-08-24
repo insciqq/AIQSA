@@ -13,6 +13,11 @@ export type MemoryDestructiveSourceBarrierSnapshot = Readonly<{
   sourceCreatedAtCutoff: Date;
 }>;
 
+type JoinedHistorySourceAliases = Readonly<{
+  chat: "chat" | "source_chat";
+  checkpoint: "checkpoint";
+}>;
+
 export function memorySourceIsInsidePause(
   sourceCreatedAt: Date,
   intervals: readonly MemoryPauseIntervalSnapshot[]
@@ -54,13 +59,92 @@ export function memoryAutomaticEvidencePausePredicate(
 }
 
 /**
- * An ACTIVE history chunk may intentionally trail the chat only while the
- * current settled leaf belongs to a master/Search pause. All ordinary source
- * changes still require an exact checkpoint/source identity.
+ * Stable chunks carry creation counters only for audit/frozen receipts. Their
+ * reusable authority is the READY current checkpoint plus an exact source map
+ * whose immutable message identities still lie on the retained active DAG.
+ * A checkpoint may trail only while the current leaf is inside a pause.
  *
  * Callers expose the candidate history row as `chunk`.
  */
-export function memoryHistoryChunkSourceAuthorityPredicate(): Prisma.Sql {
+export function memoryHistoryChunkSourceAuthorityPredicate(
+  aliases?: JoinedHistorySourceAliases
+): Prisma.Sql {
+  const chat = Prisma.raw(`"${aliases?.chat ?? "retained_source_chat"}"`);
+  const checkpoint = Prisma.raw(
+    `"${aliases?.checkpoint ?? "retained_checkpoint"}"`
+  );
+  const authority = Prisma.sql`
+    ${chat}."userId" = chunk."userId"
+    AND ${chat}."id" = chunk."chatId"
+    AND ${chat}."projectId" IS NULL
+    AND ${chat}."memoryMode" = 'NORMAL'::"MemoryChatMode"
+    AND ${checkpoint}."userId" = ${chat}."userId"
+    AND ${checkpoint}."chatId" = ${chat}."id"
+    AND ${checkpoint}."branchGeneration" = ${chat}."memoryBranchGeneration"
+    AND ${checkpoint}."lastIndexedMessageId" = ${checkpoint}."activeLeafMessageId"
+    AND ${checkpoint}."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+    AND EXISTS (
+      SELECT 1 FROM "MemoryRecallChunkMessage" AS authority_source_map
+      WHERE authority_source_map."userId" = chunk."userId"
+        AND authority_source_map."chatId" = chunk."chatId"
+        AND authority_source_map."chunkId" = chunk."id"
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM "MemoryRecallChunkMessage" AS authority_source_map
+      LEFT JOIN "Message" AS authority_source_message
+        ON authority_source_message."chatId" = authority_source_map."chatId"
+        AND authority_source_message."id" = authority_source_map."messageId"
+      WHERE authority_source_map."userId" = chunk."userId"
+        AND authority_source_map."chatId" = chunk."chatId"
+        AND authority_source_map."chunkId" = chunk."id"
+        AND (
+          authority_source_message."id" IS NULL
+          OR authority_source_message."updatedAt" <>
+            authority_source_map."sourceMessageUpdatedAt"
+          OR NOT EXISTS (
+            WITH RECURSIVE active_path AS (
+              SELECT message."id", message."parentMessageId"
+              FROM "Message" AS message
+              WHERE message."chatId" = ${chat}."id"
+                AND message."id" = ${chat}."activeLeafMessageId"
+              UNION ALL
+              SELECT parent."id", parent."parentMessageId"
+              FROM active_path AS child
+              INNER JOIN "Message" AS parent
+                ON parent."chatId" = ${chat}."id"
+                AND parent."id" = child."parentMessageId"
+            )
+            SELECT 1 FROM active_path
+            WHERE active_path."id" = authority_source_map."messageId"
+          )
+        )
+    )
+    AND (
+      (
+        ${checkpoint}."sourceRevision" = ${chat}."memorySourceRevision"
+        AND ${checkpoint}."activeLeafMessageId" = ${chat}."activeLeafMessageId"
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM "Message" AS paused_leaf
+        INNER JOIN "MemoryPauseInterval" AS pause_interval
+          ON pause_interval."userId" = ${chat}."userId"
+          AND pause_interval."scope" IN (
+            'MASTER'::"MemoryPauseScope",
+            'SEARCH_HISTORY'::"MemoryPauseScope"
+          )
+          AND paused_leaf."createdAt" >= pause_interval."pausedAt"
+          AND (
+            pause_interval."resumedAt" IS NULL
+            OR paused_leaf."createdAt" <= pause_interval."resumedAt"
+          )
+        WHERE paused_leaf."chatId" = ${chat}."id"
+          AND paused_leaf."id" = ${chat}."activeLeafMessageId"
+      )
+    )
+  `;
+  if (aliases) return authority;
   return Prisma.sql`
     EXISTS (
       SELECT 1
@@ -68,41 +152,7 @@ export function memoryHistoryChunkSourceAuthorityPredicate(): Prisma.Sql {
       INNER JOIN "ChatMemoryCheckpoint" AS retained_checkpoint
         ON retained_checkpoint."userId" = retained_source_chat."userId"
         AND retained_checkpoint."chatId" = retained_source_chat."id"
-      WHERE retained_source_chat."userId" = chunk."userId"
-        AND retained_source_chat."id" = chunk."chatId"
-        AND retained_source_chat."projectId" IS NULL
-        AND retained_source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-        AND retained_source_chat."memoryBranchGeneration" = chunk."branchGeneration"
-        AND retained_checkpoint."branchGeneration" = chunk."branchGeneration"
-        AND retained_checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
-        AND retained_checkpoint."lastIndexedMessageId" =
-          retained_checkpoint."activeLeafMessageId"
-        AND retained_checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-        AND (
-          (
-            retained_source_chat."memorySourceRevision" =
-              chunk."sourceRevisionAtCreation"
-            AND retained_checkpoint."activeLeafMessageId" =
-              retained_source_chat."activeLeafMessageId"
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM "Message" AS paused_leaf
-            INNER JOIN "MemoryPauseInterval" AS pause_interval
-              ON pause_interval."userId" = retained_source_chat."userId"
-              AND pause_interval."scope" IN (
-                'MASTER'::"MemoryPauseScope",
-                'SEARCH_HISTORY'::"MemoryPauseScope"
-              )
-              AND paused_leaf."createdAt" >= pause_interval."pausedAt"
-              AND (
-                pause_interval."resumedAt" IS NULL
-                OR paused_leaf."createdAt" <= pause_interval."resumedAt"
-              )
-            WHERE paused_leaf."chatId" = retained_source_chat."id"
-              AND paused_leaf."id" = retained_source_chat."activeLeafMessageId"
-          )
-        )
+      WHERE ${authority}
     )
   `;
 }

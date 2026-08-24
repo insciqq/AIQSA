@@ -223,7 +223,10 @@ function consumerStatus(
     response.settings.learnAutomatically &&
       !response.capabilities.automaticLearningAvailable ||
     response.settings.referenceChatHistory &&
-      !response.capabilities.pastChatIndexingAvailable
+      !response.capabilities.pastChatIndexingAvailable ||
+    response.settings.synthesisEnabled &&
+      !response.capabilities.synthesisAvailable ||
+    response.settings.decayEnabled && !response.capabilities.decayAvailable
   ) return "UNAVAILABLE";
   if (response.settings.referenceChatHistory &&
     response.historyIndexing.state === "INDEXING") return "PREPARING";
@@ -237,17 +240,21 @@ function projectSettings(
   const candidate: MemoryConsumerSettingsResponse = {
     capabilities: {
       automaticLearningAvailable: response.capabilities.automaticLearningAvailable,
+      decayAvailable: response.capabilities.decayAvailable,
       managementAvailable: response.capabilities.managementAvailable,
       naturalLanguageActionsAvailable: response.capabilities.naturalLanguageActionsAvailable,
       permanentChatDeletion: response.capabilities.permanentChatDeletion,
       pastChatIndexingAvailable: response.capabilities.pastChatIndexingAvailable,
       retrievalAvailable: response.capabilities.retrievalAvailable,
+      synthesisAvailable: response.capabilities.synthesisAvailable,
       temporaryChats: response.capabilities.temporaryChats
     },
     resetState: resetState(reset),
     settings: {
+      decayEnabled: response.settings.decayEnabled,
       learnAutomatically: response.settings.learnAutomatically,
       referenceChatHistory: response.settings.referenceChatHistory,
+      synthesisEnabled: response.settings.synthesisEnabled,
       useMemoryFacts: response.settings.useMemoryFacts
     },
     status: consumerStatus(response)

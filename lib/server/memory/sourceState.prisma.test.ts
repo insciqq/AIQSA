@@ -154,7 +154,7 @@ describe("Memory source-state persistence", () => {
       });
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
-      })).resolves.toMatchObject({ memoryGeneration: 1, memoryRevision: 1 });
+      })).resolves.toMatchObject({ memoryGeneration: 0, memoryRevision: 1 });
 
       const scopeHook = vi.fn(async () => undefined);
       const moved = await mutateSource(userId, chat.id, {
@@ -174,7 +174,7 @@ describe("Memory source-state persistence", () => {
       }));
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
-      })).resolves.toMatchObject({ memoryGeneration: 1, memoryRevision: 2 });
+      })).resolves.toMatchObject({ memoryGeneration: 0, memoryRevision: 2 });
 
       const archived = await mutateSource(userId, chat.id, {
         mutations: ["CHAT_ARCHIVE_OR_RESTORE"],
@@ -223,7 +223,7 @@ describe("Memory source-state persistence", () => {
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         select: { memoryGeneration: true, memoryRevision: true },
         where: { userId }
-      })).resolves.toEqual({ memoryGeneration: 2, memoryRevision: 4 });
+      })).resolves.toEqual({ memoryGeneration: 1, memoryRevision: 4 });
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });
     }

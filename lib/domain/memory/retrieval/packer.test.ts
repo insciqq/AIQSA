@@ -20,20 +20,35 @@ const profilePlan = planMemoryRetrieval({
   now,
   profileRequested: true
 });
+const historicalPlan = planMemoryRetrieval({
+  currentUserText: "how did my editor preference change",
+  filters: { sourceKinds: ["FACT", "EVENT"] },
+  mode: "HISTORICAL_MEMORY",
+  now,
+  temporalIntent: "HISTORICAL"
+});
 
 function metadata(id: string, history = false): MemoryCandidateMetadata {
   return {
     canonicalKey: null, category: history ? null : "preferences", confidence: 0,
     conflict: false,
     coreEligible: !history, coreSalience: history ? "NONE" : "HIGH", current: true,
-    dedupeKey: id, directness: history ? null : "DIRECT", factId: history ? null : id,
+    dedupeKey: id, directness: history ? null : "DIRECT", dimensionKey: null,
+    entityIds: [], expectedAt: null, expiresAt: null, factId: history ? null : id,
     historical: false, historySafetyClass: history ? "NORMAL" : null, importance: 0,
-    languageCode: "und", modality: history ? null : "PREFERENCE", occurredFrom: null,
+    identityKind: history ? null : "PROPOSITION", languageCode: "und",
+    lastConfirmedAt: null, lastUsedAt: null,
+    lifecycleState: history ? null : "ACTIVE", matchedEntityRole: null,
+    modality: history ? null : "PREFERENCE", observedAt: null, occurredAt: null,
+    occurredFrom: null,
     occurredTo: null, pinned: false, scopeAffinity: 0, scopeType: history ? null : "GLOBAL_USER",
+    predicateKey: null, relationDepth: 0,
     sensitivityClass: history ? null : "NORMAL", sourceAssistantId: null,
     sourceChatId: history ? "chat-source" : null, sourceFolderId: null,
-    sourceMode: history ? null : "EXPLICIT", systemFrom: now,
-    temperatureClass: null, validFrom: null, validTo: null
+    sourceMode: history ? null : "EXPLICIT",
+    sourceAuthority: history ? "PAST_CHAT" : "EXPLICIT", subjectKey: null,
+    synthesisDepth: 0, systemFrom: now,
+    temperatureClass: null, temperatureScore: 0, validFrom: null, validTo: null
   };
 }
 
@@ -41,7 +56,13 @@ function ranked(id: string, history = false, tier: "CORE" | "DYNAMIC" = "DYNAMIC
 MemoryRankedCandidate {
   return {
     entryId: tier === "CORE" ? null : `entry-${id}`,
-    featureSnapshot: { fusionVersion: "rrf", laneCount: tier === "CORE" ? 0 : 1, tier },
+    featureSnapshot: {
+      authorityRank: history ? 0 : 3,
+      fusionVersion: "rrf",
+      laneCount: tier === "CORE" ? 0 : 1,
+      temporalFit: 1,
+      tier
+    },
     finalScore: tier === "CORE" ? 0 : 0.1, itemId: id,
     itemType: history ? "RECALL_CHUNK" : "FACT_VERSION",
     laneRanks: tier === "CORE" ? {} : history ? { HISTORY_RECALL_VECTOR: 1 } : { FACT_VECTOR: 1 },
@@ -75,6 +96,30 @@ describe("Personal Memory context pack", () => {
     expect(pack.items.map(({ tier }) => tier)).toEqual(["CORE", "DYNAMIC", "DYNAMIC"]);
     expect(pack.text).toContain("Response preferences");
     expect(pack.text).toContain("Relevant prior conversations");
+    expect(pack.text).toContain("answer that fact directly");
+    expect(pack.packerVersion).toBe("memory-context-packer-v6");
+  });
+
+  it("labels depth-one synthesis in a separate inferred-pattern section", () => {
+    const pattern = ranked("pattern");
+    const pack = packMemoryPersonalContext({
+      expanded: [expansion("pattern", false, "User tends to follow a repeatable workflow")],
+      plan,
+      ranked: [{
+        ...pattern,
+        metadata: {
+          ...pattern.metadata,
+          directness: "INFERRED",
+          modality: "PATTERN",
+          sourceAuthority: "SYNTHESIS",
+          sourceMode: "AUTOMATIC",
+          synthesisDepth: 1
+        }
+      }]
+    });
+
+    expect(pack.items).toMatchObject([{ itemId: "pattern", section: "PATTERN" }]);
+    expect(pack.text).toContain("Inferred patterns:");
   });
 
   it("accepts a reranked response preference while preserving its Core contract", () => {
@@ -233,5 +278,38 @@ describe("Personal Memory context pack", () => {
       "Prefer the current user message and current active chat context on conflict."
     );
     expect(pack.text).not.toContain("bounded profile inventory");
+  });
+
+  it("separates current and dated superseded facts in a historical pack", () => {
+    const current = ranked("current");
+    const previousBase = ranked("previous");
+    const previous: MemoryRankedCandidate = {
+      ...previousBase,
+      metadata: {
+        ...previousBase.metadata,
+        current: false,
+        historical: true,
+        lifecycleState: "SUPERSEDED",
+        systemFrom: new Date("2025-07-01T00:00:00.000Z"),
+        validFrom: new Date("2025-07-01T00:00:00.000Z"),
+        validTo: new Date("2025-08-01T00:00:00.000Z")
+      }
+    };
+    const pack = packMemoryPersonalContext({
+      expanded: [
+        expansion("current", false, "The user uses Neovim."),
+        expansion("previous", false, "The user used Vim.")
+      ],
+      plan: historicalPlan,
+      ranked: [previous, current]
+    });
+
+    expect(pack.items).toMatchObject([
+      { itemId: "previous", section: "HISTORICAL_FACT", temporalReason: "historical" },
+      { itemId: "current", section: "FACT", temporalReason: "historical" }
+    ]);
+    expect(pack.text).toContain("Current user facts:");
+    expect(pack.text).toContain("Historical user memory:");
+    expect(pack.text).toContain("[2025-07-01] The user used Vim.");
   });
 });

@@ -151,7 +151,7 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
     await tx.knowledgeSourceIndexArtifact.deleteMany({
-      where: { id: fixture.artifactId }
+      where: { sourceVersionId: fixture.sourceVersionId }
     });
     await tx.knowledgeBaseSource.deleteMany({
       where: { knowledgeBaseId: fixture.baseId, sourceId: fixture.sourceId }
@@ -160,8 +160,21 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
       data: { activeIndexGenerationId: null },
       where: { id: fixture.baseId }
     });
+    // A concurrently running disposable worker may legitimately create a
+    // shadow generation for this fixture-owned Base. Detach the self-relation
+    // and remove only generations owned by that Base so cleanup stays
+    // order-independent without touching another fixture.
+    await tx.knowledgeIndexGeneration.updateMany({
+      data: {
+        sourceBaseVersion: null,
+        sourceIndexGenerationId: null,
+        targetContentRevision: null,
+        targetSourceRevision: null
+      },
+      where: { knowledgeBaseId: fixture.baseId }
+    });
     await tx.knowledgeIndexGeneration.deleteMany({
-      where: { id: fixture.generationId }
+      where: { knowledgeBaseId: fixture.baseId }
     });
     await tx.knowledgeBase.deleteMany({ where: { id: fixture.baseId } });
     await tx.knowledgeSource.updateMany({
@@ -177,7 +190,10 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
 }
 
 describe("Prisma Knowledge Source ingestion claims", () => {
-  const now = new Date("2026-08-19T00:00:00.000Z");
+  // Keep the fixture invisible to an ordinary dev worker sharing the
+  // disposable database. The repository under test receives this explicit
+  // clock, so only the test workers can make the artifact due.
+  const now = new Date("2097-03-01T00:00:00.000Z");
   let fixture: Fixture;
 
   beforeAll(async () => {

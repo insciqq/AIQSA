@@ -5,6 +5,7 @@ import type {
   MemoryDeletionHandler
 } from "../coordinator/types";
 import { detachExpiredMemoryExecutionBindings } from "../execution/lifecycle";
+import { pruneUnreferencedMemoryEntities } from "../learning/entities/lifecycle";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
 import {
   parseAccountMemoryDeletionClaim,
@@ -49,18 +50,22 @@ async function assertFence(
 ): Promise<void> {
   const [row] = await tx.$queryRaw<Array<{
     activeIndexGenerationId: string | null;
+    decayEnabled: boolean;
     embeddingProviderModelId: string | null;
     learnAutomatically: boolean;
     ownerStatus: string;
     referenceChatHistory: boolean;
+    synthesisEnabled: boolean;
     useMemoryFacts: boolean;
   }>>(Prisma.sql`
     SELECT
       settings."activeIndexGenerationId",
+      settings."decayEnabled",
       settings."embeddingProviderModelId",
       settings."learnAutomatically",
       owner."status"::text AS "ownerStatus",
       settings."referenceChatHistory",
+      settings."synthesisEnabled",
       settings."useMemoryFacts"
     FROM "UserMemorySettings" AS settings
     INNER JOIN "User" AS owner ON owner."id" = settings."userId"
@@ -70,9 +75,11 @@ async function assertFence(
   if (
     !row ||
     row.ownerStatus === "active" ||
+    row.decayEnabled ||
     row.useMemoryFacts ||
     row.referenceChatHistory ||
     row.learnAutomatically ||
+    row.synthesisEnabled ||
     row.activeIndexGenerationId !== null ||
     row.embeddingProviderModelId !== null
   ) {
@@ -163,17 +170,29 @@ async function purgeReusableAndPrivateMemory(
   const userId = claim.userId;
 
   await purgeMemoryFeedbackAccount(tx, userId);
+  await tx.memorySynthesisExecution.deleteMany({ where: { userId } });
   await tx.memoryCandidate.deleteMany({ where: { userId } });
   await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
   await tx.memoryOperationReceipt.deleteMany({ where: { userId } });
+  await tx.memoryAuxiliarySemanticCall.deleteMany({ where: { userId } });
+  await tx.memoryFactVersionRelation.deleteMany({ where: { userId } });
+  await tx.memoryFactVersionSourceDependency.deleteMany({ where: { userId } });
+  await tx.memoryEntityAliasSupport.deleteMany({ where: { userId } });
+  await tx.memoryFactVersionEntity.deleteMany({ where: { userId } });
+  await tx.memoryEntityAlias.deleteMany({ where: { userId } });
+  await pruneUnreferencedMemoryEntities(tx, userId);
   await tx.memoryEvidence.deleteMany({ where: { userId } });
   await tx.memoryRetrievalAttemptItem.deleteMany({ where: { userId } });
   await tx.memorySearchEntry.deleteMany({ where: { userId } });
   await tx.memorySuppression.deleteMany({ where: { userId } });
   await tx.memoryPauseInterval.deleteMany({ where: { userId } });
   await tx.memorySourceBarrier.deleteMany({ where: { userId } });
+  await tx.chatMemoryDigestChunk.deleteMany({ where: { userId } });
+  await tx.chatMemoryDigestMessage.deleteMany({ where: { userId } });
+  await tx.chatMemoryDigest.deleteMany({ where: { userId } });
   await tx.memoryRecallChunkMessage.deleteMany({ where: { userId } });
   await tx.memoryRecallChunk.deleteMany({ where: { userId } });
+  await tx.chatMemoryCheckpointMessage.deleteMany({ where: { userId } });
   await tx.chatMemoryCheckpoint.deleteMany({ where: { userId } });
 
   // Prisma may validate a deferred event/version edge at a statement
@@ -242,10 +261,16 @@ async function purgeReusableAndPrivateMemory(
       acceptedUtilityEgressFingerprint: null,
       acceptedUtilityPolicyVersion: null,
       activeIndexGenerationId: null,
+      decayEnabled: false,
+      decayPolicyVersion: null,
       embeddingProviderModelId: null,
       learnAutomatically: false,
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
+      synthesisEnabled: false,
+      synthesisEnabledAt: null,
+      synthesisPolicyVersion: null,
+      lastSynthesisAt: null,
       useMemoryFacts: false,
       updatedAt: now
     },
@@ -269,8 +294,14 @@ export async function inspectAccountMemoryDeletionResiduals(
       WHERE settings."userId" = ${input.userId}
         AND NOT (
           settings."useMemoryFacts" = FALSE
+          AND settings."decayEnabled" = FALSE
+          AND settings."decayPolicyVersion" IS NULL
           AND settings."referenceChatHistory" = FALSE
           AND settings."learnAutomatically" = FALSE
+          AND settings."synthesisEnabled" = FALSE
+          AND settings."synthesisEnabledAt" IS NULL
+          AND settings."synthesisPolicyVersion" IS NULL
+          AND settings."lastSynthesisAt" IS NULL
           AND settings."activeIndexGenerationId" IS NULL
           AND settings."embeddingProviderModelId" IS NULL
           AND settings."acceptedUtilityEgressFingerprint" IS NULL
@@ -282,14 +313,26 @@ export async function inspectAccountMemoryDeletionResiduals(
         FROM "UserMemorySettings" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'scopes', COUNT(*)::integer FROM "MemoryScope" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'checkpoints', COUNT(*)::integer FROM "ChatMemoryCheckpoint" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'checkpoint-messages', COUNT(*)::integer FROM "ChatMemoryCheckpointMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'chunks', COUNT(*)::integer FROM "MemoryRecallChunk" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'chunk-messages', COUNT(*)::integer FROM "MemoryRecallChunkMessage" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'digests', COUNT(*)::integer FROM "ChatMemoryDigest" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'digest-chunks', COUNT(*)::integer FROM "ChatMemoryDigestChunk" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'digest-messages', COUNT(*)::integer FROM "ChatMemoryDigestMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidates', COUNT(*)::integer FROM "MemoryCandidate" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-messages', COUNT(*)::integer FROM "MemoryCandidateMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-decisions', COUNT(*)::integer FROM "MemoryCandidateDecision" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'facts', COUNT(*)::integer FROM "MemoryFact" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'versions', COUNT(*)::integer FROM "MemoryFactVersion" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'version-relations', COUNT(*)::integer FROM "MemoryFactVersionRelation" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'synthesis-executions', COUNT(*)::integer FROM "MemorySynthesisExecution" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'auxiliary-semantic-calls', COUNT(*)::integer FROM "MemoryAuxiliarySemanticCall" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer FROM "MemoryEvidence" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'source-dependencies', COUNT(*)::integer FROM "MemoryFactVersionSourceDependency" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'entities', COUNT(*)::integer FROM "MemoryEntity" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'entity-aliases', COUNT(*)::integer FROM "MemoryEntityAlias" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'entity-alias-supports', COUNT(*)::integer FROM "MemoryEntityAliasSupport" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'fact-entities', COUNT(*)::integer FROM "MemoryFactVersionEntity" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'events', COUNT(*)::integer FROM "MemoryEvent" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'feedback', COUNT(*)::integer FROM "MemoryFeedback" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'suppressions', COUNT(*)::integer FROM "MemorySuppression" WHERE "userId" = ${input.userId}

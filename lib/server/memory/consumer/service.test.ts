@@ -88,17 +88,21 @@ describe("Memory consumer service", () => {
     expect(settings).toEqual({
       capabilities: {
         automaticLearningAvailable: true,
+        decayAvailable: true,
         managementAvailable: true,
         naturalLanguageActionsAvailable: true,
         permanentChatDeletion: false,
         pastChatIndexingAvailable: true,
         retrievalAvailable: true,
+        synthesisAvailable: true,
         temporaryChats: true
       },
       resetState: "IDLE",
       settings: {
+        decayEnabled: false,
         learnAutomatically: true,
         referenceChatHistory: true,
+        synthesisEnabled: false,
         useMemoryFacts: true
       },
       status: "ON"
@@ -117,6 +121,36 @@ describe("Memory consumer service", () => {
     expect(browserJson).not.toMatch(
       /internal-|memoryRevision|settingsRevision|generation|deployment|fingerprint|score|hash/iu
     );
+  });
+
+  it("keeps decay policy authority server-side while projecting its safe toggle", async () => {
+    const deps = dependencies();
+    deps.settingsService.patch.mockResolvedValue(memorySettingsFixture({
+      settings: {
+        decayEnabled: true,
+        learnAutomatically: true,
+        referenceChatHistory: true,
+        useMemoryFacts: true
+      }
+    }));
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+
+    await expect(service.patchSettings("user-1", { decayEnabled: true }))
+      .resolves.toMatchObject({ settings: { decayEnabled: true } });
+    expect(deps.settingsService.patch).toHaveBeenCalledWith("user-1", {
+      decayEnabled: true,
+      expectedMemoryRevision: 8,
+      expectedSettingsRevision: 12
+    });
+    expect(JSON.stringify(await service.settings("user-1")))
+      .not.toMatch(/decayPolicyVersion|memoryRevision|settingsRevision/iu);
   });
 
   it("applies category and provenance before repository pagination", async () => {

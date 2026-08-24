@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import {
   MEMORY_ACTION_INTENT_JSON_SCHEMA,
   MEMORY_ACTION_INTENT_NAME,
+  MEMORY_ACTION_INTENT_SCHEMA_VERSION,
   decodeMemoryActionIntent,
   type MemoryActionIntent
 } from "../../../contracts/memoryActionIntent";
@@ -31,18 +32,18 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v5";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v8";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v5",
-  promptVersion: "memory-control-prompt-v5",
+  policyVersion: "memory-control-policy-v8",
+  promptVersion: "memory-control-prompt-v11",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 2
+    version: 5
   }),
-  schemaVersion: "memory-action-intent-v2"
+  schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
 
 export type MemoryControlResult =
@@ -174,7 +175,7 @@ function decodeProviderResult(result: MemoryLearningProviderResult): MemoryActio
 }
 
 export function memoryControlIntentHash(intent: MemoryActionIntent): string {
-  return memoryExecutionSha256({ intent, version: 2 });
+  return memoryExecutionSha256({ intent, version: 4 });
 }
 
 export function memoryControlInputHash(context: MemoryActionIntentContext): string {
@@ -197,7 +198,7 @@ export function memoryControlAcceptedOutputHash(
   return memoryExecutionSha256({ inputHash, intentHash, version: 3 });
 }
 
-export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 2 as const;
+export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 4 as const;
 
 export type MemoryReadOnlyControlReuseProof = Readonly<{
   acceptedOutputHash: string;

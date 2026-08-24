@@ -11,10 +11,11 @@ import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 export const MEMORY_COORDINATOR_JOB_KINDS = Object.freeze([
   "INDEX_HISTORY",
   "EXTRACT_FACTS",
-  "CONSOLIDATE_CANDIDATE",
   "EMBED_ITEMS",
   "REBUILD_INDEX",
-  "RECLASSIFY_FACTS"
+  "RECLASSIFY_FACTS",
+  "RESOLVE_FACT_RELATIONS",
+  "SYNTHESIZE_MEMORIES"
 ] as const satisfies readonly MemoryJobKind[]);
 
 export type MemoryCoordinatorJobKind =
@@ -24,6 +25,7 @@ export type MemoryCoordinatorJobKind =
  * the v1 worker.  Legacy rows are terminalised by the repository rather than
  * being left in a queue that the worker cannot service. */
 export const MEMORY_COORDINATOR_ORPHANED_JOB_KINDS = Object.freeze([
+  "CONSOLIDATE_CANDIDATE",
   "RECONCILE_BRANCH",
   "RECONCILE_SOURCE",
   // Retired before the v1 worker manifest; existing rows are terminalised
@@ -38,11 +40,6 @@ type MemoryCoordinatorJobManifestEntry = Readonly<{
 }>;
 
 export const MEMORY_COORDINATOR_JOB_MANIFEST = Object.freeze({
-  CONSOLIDATE_CANDIDATE: Object.freeze({
-    leaseRequired: true,
-    maxAttempts: 2,
-    retryable: true
-  }),
   EMBED_ITEMS: Object.freeze({
     leaseRequired: true,
     retryable: true
@@ -63,6 +60,16 @@ export const MEMORY_COORDINATOR_JOB_MANIFEST = Object.freeze({
   RECLASSIFY_FACTS: Object.freeze({
     leaseRequired: true,
     retryable: true
+  }),
+  RESOLVE_FACT_RELATIONS: Object.freeze({
+    leaseRequired: true,
+    maxAttempts: 2,
+    retryable: true
+  }),
+  SYNTHESIZE_MEMORIES: Object.freeze({
+    leaseRequired: true,
+    maxAttempts: 1,
+    retryable: false
   })
 } satisfies Record<MemoryCoordinatorJobKind, MemoryCoordinatorJobManifestEntry>);
 

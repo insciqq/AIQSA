@@ -354,8 +354,16 @@ async function auditCleanup(
           AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'checkpoints', COUNT(*)::integer
         FROM "ChatMemoryCheckpoint" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
+      UNION ALL SELECT 'checkpoint-messages', COUNT(*)::integer
+        FROM "ChatMemoryCheckpointMessage" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'chunks', COUNT(*)::integer
         FROM "MemoryRecallChunk" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
+      UNION ALL SELECT 'digests', COUNT(*)::integer
+        FROM "ChatMemoryDigest" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
+      UNION ALL SELECT 'digest-chunks', COUNT(*)::integer
+        FROM "ChatMemoryDigestChunk" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
+      UNION ALL SELECT 'digest-messages', COUNT(*)::integer
+        FROM "ChatMemoryDigestMessage" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'candidates', COUNT(*)::integer
         FROM "MemoryCandidate" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer
@@ -505,6 +513,15 @@ async function applyAggregateDeletion(
       where: { id: { in: [...ids.candidateIds] }, userId: claim.userId }
     });
   }
+  await tx.chatMemoryDigestChunk.deleteMany({
+    where: { chatId: claim.targetId, userId: claim.userId }
+  });
+  await tx.chatMemoryDigestMessage.deleteMany({
+    where: { chatId: claim.targetId, userId: claim.userId }
+  });
+  await tx.chatMemoryDigest.deleteMany({
+    where: { chatId: claim.targetId, userId: claim.userId }
+  });
   if (ids.chunkIds.length > 0) {
     await tx.memoryRecallChunkMessage.deleteMany({
       where: { chunkId: { in: [...ids.chunkIds] }, userId: claim.userId }
@@ -513,6 +530,9 @@ async function applyAggregateDeletion(
       where: { id: { in: [...ids.chunkIds] }, userId: claim.userId }
     });
   }
+  await tx.chatMemoryCheckpointMessage.deleteMany({
+    where: { chatId: claim.targetId, userId: claim.userId }
+  });
   await tx.chatMemoryCheckpoint.deleteMany({
     where: { chatId: claim.targetId, userId: claim.userId }
   });

@@ -15,17 +15,22 @@ import {
 import { createS3StorageAdapter } from "../../uploads/storage";
 import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
+import { probeMemoryStructuredOutputAuthority } from "../execution";
 import { createPrismaMemoryRebuildHandler } from "../rebuild/handler";
 import { memoryHistoryClearDeletionHandler } from "../history/purge";
 import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
-import { createPrismaMemoryFactConsolidationHandler } from "../learning/consolidation/handler";
-import { reconcileMemoryFactCandidateJobs } from "../learning/consolidation/repository";
 import { createPrismaMemoryReclassificationHandler } from "../reclassification/handler";
 import { reconcileMemoryFactReclassificationJobs } from "../reclassification/reconcile";
+import { createPrismaMemoryRelationHandler } from "../learning/relations/handler";
+import { reconcileMemoryFactRelationJobs } from "../learning/relations/reconcile";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 import { ensureDefaultMemoryDeletionComposition } from "../deletionComposition";
 import { defaultMemoryWorkerHeartbeat } from "./workerHeartbeat";
 import { preflightPrismaMemoryProviderBindings } from "./providerPreflight";
+import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
+import { createPrismaMemorySynthesisHandler } from "../synthesis/handler";
+import { reconcileMemorySynthesisWork } from "../synthesis/reconcile";
+import { MEMORY_SYNTHESIS_VERSIONS } from "../synthesis/provider";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -39,24 +44,43 @@ export const defaultMemoryCoordinatorRepository =
   createPrismaMemoryCoordinatorRepository(prisma);
 
 type DefaultMemoryReconciliationWork = Readonly<{
-  candidates: () => Promise<unknown>;
+  cutover?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
+  relations?: () => Promise<unknown>;
+  synthesis?: () => Promise<unknown>;
 }>;
 
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
-    candidates: () => reconcileMemoryFactCandidateJobs(prisma),
-    reclassification: () => reconcileMemoryFactReclassificationJobs(prisma)
+    cutover: () => createPrismaMemoryRetrievalCutoverRepository(prisma).reconcile(),
+    reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
+    relations: () => reconcileMemoryFactRelationJobs(prisma),
+    synthesis: () => reconcileMemorySynthesisWork(
+      prisma,
+      new Date(),
+      async (userId) => {
+        await probeMemoryStructuredOutputAuthority({
+          authority: defaultMemoryExecutionAuthority,
+          client: prisma,
+          role: "MEMORY_SYNTHESIZE",
+          userId,
+          versions: MEMORY_SYNTHESIS_VERSIONS
+        });
+        return true;
+      }
+    )
   });
 
 export async function reconcileDefaultMemoryWork(
   work: DefaultMemoryReconciliationWork = defaultMemoryReconciliationWork
 ): Promise<void> {
-  // Candidate reconciliation is the only periodic discovery path.  History
-  // backfill is an explicit rebuild action; running it here would replay
-  // chats written while Search past chats was OFF after a later resume.
-  await work.candidates();
+  // Cutover reconciliation inventories content-free identities and admits a
+  // durable shadow rebuild. It must never replay source content from this
+  // periodic maintenance pass.
+  await work.cutover?.();
   await work.reclassification?.();
+  await work.relations?.();
+  await work.synthesis?.();
 }
 
 // Provider-backed work validates current destination, credential, transport,
@@ -74,13 +98,11 @@ const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );
-const defaultFactConsolidationHandler = createPrismaMemoryFactConsolidationHandler(
-  defaultMemoryExecutionAuthority,
-  prisma
-);
 const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 const defaultMemoryReclassificationHandler =
   createPrismaMemoryReclassificationHandler(prisma);
+const defaultMemoryRelationHandler = createPrismaMemoryRelationHandler(prisma);
+const defaultMemorySynthesisHandler = createPrismaMemorySynthesisHandler(prisma);
 
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;
@@ -153,16 +175,20 @@ export function ensureDefaultMemoryHandlersRegistered(): void {
     "memory_default_fact_extraction_handler_conflict"
   );
   ensureJobHandlerRegistered(
-    defaultFactConsolidationHandler,
-    "memory_default_fact_consolidation_handler_conflict"
-  );
-  ensureJobHandlerRegistered(
     defaultMemoryRebuildHandler,
     "memory_default_rebuild_handler_conflict"
   );
   ensureJobHandlerRegistered(
     defaultMemoryReclassificationHandler,
     "memory_default_reclassification_handler_conflict"
+  );
+  ensureJobHandlerRegistered(
+    defaultMemoryRelationHandler,
+    "memory_default_relation_handler_conflict"
+  );
+  ensureJobHandlerRegistered(
+    defaultMemorySynthesisHandler,
+    "memory_default_synthesis_handler_conflict"
   );
 }
 

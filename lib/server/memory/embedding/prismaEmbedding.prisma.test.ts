@@ -20,6 +20,11 @@ import {
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import {
+  MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
+} from "../history/sourceProjection";
 import { createPrismaMemoryMutationAuthorizationRepository } from
   "../persistence/authorizations";
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
@@ -610,6 +615,41 @@ describe("Prisma explicit Memory vector enrichment", () => {
     }
   });
 
+  it("rejects an elapsed fact at the embedding target rejoin", async () => {
+    const fixture = await createFixture();
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    try {
+      const saved = await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer an embedding target that expires immediately.",
+        "embedding-expired-target"
+      );
+      const versionId = saved.memory.currentVersionId!;
+      const entry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: versionId }
+      });
+      const expiresAt = new Date(Date.now() + 300);
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFactVersion.update({
+          data: { expiresAt },
+          where: { id: versionId }
+        });
+        const remaining = expiresAt.getTime() - Date.now();
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining + 50));
+        }
+      });
+
+      await expect(prisma.memorySearchEntry.count({ where: { id: entry.id } }))
+        .resolves.toBe(1);
+      await expect(createPrismaMemoryItemEmbeddingRepository(prisma)
+        .loadTarget(fixture.userId, entry.id)).resolves.toBeNull();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("keeps lexical recall available across consent, outage, rotation, and Forget races", async () => {
     const fixture = await createFixture();
     const { explicit, lifecycle, readRepository } = memoryServices(
@@ -951,26 +991,37 @@ describe("Prisma explicit Memory vector enrichment", () => {
         data: { activeLeafMessageId: leaf.id },
         where: { id: chat.id }
       });
-      await prisma.chatMemoryCheckpoint.create({
-        data: {
-          activeLeafMessageId: leaf.id,
-          branchGeneration: 0,
-          chatId: chat.id,
-          lastIndexedMessageId: leaf.id,
-          lastSucceededAt: INITIAL_NOW,
-          sourceContentHash: sourceHash,
-          sourceRevision: 1,
-          status: "READY",
-          userId: fixture.userId
-        }
-      });
       await prisma.$transaction(async (tx) => {
+        await tx.chatMemoryCheckpoint.create({
+          data: {
+            activeLeafMessageId: leaf.id,
+            branchGeneration: 0,
+            chatId: chat.id,
+            lastIndexedMessageId: leaf.id,
+            lastSucceededAt: INITIAL_NOW,
+            pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+            sourceContentHash: sourceHash,
+            sourceRevision: 1,
+            status: "READY",
+            userId: fixture.userId
+          }
+        });
+        await tx.chatMemoryCheckpointMessage.create({
+          data: {
+            chatId: chat.id,
+            messageId: leaf.id,
+            ordinal: 0,
+            sourceMessageCreatedAt: leaf.createdAt,
+            sourceMessageUpdatedAt: leaf.updatedAt,
+            userId: fixture.userId
+          }
+        });
         await tx.memoryRecallChunk.create({
           data: {
             branchGeneration: 0,
             chatId: chat.id,
             chunkOrdinal: 0,
-            chunkingVersion: "memory-history-chunking-v2",
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
             contentHash: memorySha256(chunkText),
             id: chunkId,
             languageCode: "en",
@@ -980,7 +1031,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             redactionState: "NOT_NEEDED",
             safeProjectedText: chunkText,
             safetyClass: "NORMAL",
-            sourceProjectionVersion: "memory-history-source-projection-v2",
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
             sourceRevisionAtCreation: 1,
             userId: fixture.userId
           }
@@ -990,7 +1041,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             branchGeneration: 0,
             chatId: chat.id,
             chunkOrdinal: 1,
-            chunkingVersion: "memory-history-chunking-v2",
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
             contentHash: memorySha256(failingChunkText),
             id: failingChunkId,
             languageCode: "en",
@@ -1000,10 +1051,36 @@ describe("Prisma explicit Memory vector enrichment", () => {
             redactionState: "NOT_NEEDED",
             safeProjectedText: failingChunkText,
             safetyClass: "NORMAL",
-            sourceProjectionVersion: "memory-history-source-projection-v2",
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
             sourceRevisionAtCreation: 1,
             userId: fixture.userId
           }
+        });
+        await tx.memoryRecallChunkMessage.createMany({
+          data: [
+            {
+              chatId: chat.id,
+              chunkId,
+              messageId: leaf.id,
+              ordinal: 0,
+              role: "user",
+              safeTextHash: memorySha256(chunkText),
+              sourceMessageContentHash: memorySha256(leaf.content),
+              sourceMessageUpdatedAt: leaf.updatedAt,
+              userId: fixture.userId
+            },
+            {
+              chatId: chat.id,
+              chunkId: failingChunkId,
+              messageId: leaf.id,
+              ordinal: 0,
+              role: "user",
+              safeTextHash: memorySha256(failingChunkText),
+              sourceMessageContentHash: memorySha256(leaf.content),
+              sourceMessageUpdatedAt: leaf.updatedAt,
+              userId: fixture.userId
+            }
+          ]
         });
         await tx.memorySearchEntry.createMany({
           data: [

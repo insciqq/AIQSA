@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
@@ -14,6 +14,11 @@ import {
 } from "../sourceState";
 import { createPrismaMemoryHistoryIndexHandler } from "./handler";
 import type { MemoryHistorySafetyClassifier } from "./classifier";
+import {
+  decodeMemoryChatDigest,
+  materializeMemoryChatDigest,
+  type MemoryChatDigestGenerator
+} from "./digest";
 import { memorySha256 } from "../persistence/lexical";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
@@ -172,6 +177,7 @@ async function claimHistoryJob(userId: string): Promise<MemoryJobClaim> {
     sourceMessageId: claimed.sourceMessageId,
     sourceRevision: claimed.sourceRevision,
     stage: claimed.stage,
+    targetFactVersionId: claimed.targetFactVersionId,
     userId: claimed.userId
   };
 }
@@ -195,9 +201,19 @@ const normalHistoryClassifier: MemoryHistorySafetyClassifier = {
   })
 };
 
-async function processHistoryJob(userId: string) {
+async function processHistoryJob(
+  userId: string,
+  options: Readonly<{
+    classifier?: MemoryHistorySafetyClassifier;
+    digestGenerator?: MemoryChatDigestGenerator;
+  }> = {}
+) {
   const claim = await claimHistoryJob(userId);
-  const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+  const handler = createPrismaMemoryHistoryIndexHandler(
+    prisma,
+    options.classifier ?? normalHistoryClassifier,
+    options.digestGenerator ? { digestGenerator: options.digestGenerator } : {}
+  );
   await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
   const now = new Date();
   const result = await handler.execute(claim, executionContext(now));
@@ -211,6 +227,32 @@ async function processHistoryJob(userId: string) {
   })).resolves.toBe(true);
   return { claim, result };
 }
+
+const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
+  async generate(source, chunks) {
+    if (chunks.length === 0) {
+      return {
+        digest: null,
+        executions: [],
+        policyVersion: "memory-chat-digest-policy-test"
+      };
+    }
+    return {
+      digest: materializeMemoryChatDigest({
+        chunks,
+        content: decodeMemoryChatDigest({
+          decisions: ["Keep the selected deployment approach."],
+          open_loops: ["Confirm the rollout date."],
+          summary: "The chat selected a deployment approach.",
+          topics: ["Deployment"]
+        }),
+        source
+      }),
+      executions: [],
+      policyVersion: "memory-chat-digest-policy-test"
+    };
+  }
+});
 
 async function seedHistoryBackfill(userId: string) {
   return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
@@ -955,9 +997,21 @@ describe("Memory lexical history index persistence", () => {
       });
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "ACTIVE", userId }
-      })).resolves.toBe(0);
+      })).resolves.toBe(1);
       await expect(prisma.memorySearchEntry.count({ where: { userId } }))
-        .resolves.toBe(0);
+        .resolves.toBe(1);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ status: "PENDING" });
+      const hiddenWhilePending = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT chunk."id"
+        FROM "MemoryRecallChunk" AS chunk
+        WHERE chunk."userId" = ${userId}
+          AND chunk."chatId" = ${chat.id}
+          AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+          AND ${memoryHistoryChunkSourceAuthorityPredicate()}
+      `);
+      expect(hiddenWhilePending).toEqual([]);
       await mutateSource(userId, chat.id, {
         mutations: ["TERMINAL_SETTLEMENT"],
         terminalSettlement: {
@@ -975,6 +1029,209 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "INVALIDATED", userId }
       })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("preserves stable prefix chunks and classifies only the overlap tail on append", async () => {
+    const userId = await createOwner("memory-history-incremental-append");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Incremental append history", userId }
+      });
+      let parentMessageId: string | null = null;
+      let finalTurn: Awaited<ReturnType<typeof createTurn>> | null = null;
+      for (let ordinal = 0; ordinal < 9; ordinal += 1) {
+        finalTurn = await createTurn({
+          assistantText: `Assistant retained turn ${ordinal}.`,
+          chatId: chat.id,
+          createdAt: new Date(Date.UTC(2026, 7, 12, 10, ordinal * 2)),
+          parentMessageId,
+          userId,
+          userText: `User retained turn ${ordinal}.`
+        });
+        parentMessageId = finalTurn.assistantMessage.id;
+        await mutateSource(userId, chat.id, {
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId: finalTurn.assistantMessage.id }
+        });
+      }
+      if (!finalTurn) throw new Error("missing incremental fixture");
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: finalTurn.assistantMessage.id,
+          runId: finalTurn.run.id,
+          status: "complete"
+        }
+      });
+      const initialClassify = vi.fn(normalHistoryClassifier.classify);
+      await processHistoryJob(userId, {
+        classifier: { classify: initialClassify }
+      });
+      expect(initialClassify.mock.calls[0]?.[0]).toHaveLength(2);
+      const initialChunks = await prisma.memoryRecallChunk.findMany({
+        orderBy: { chunkOrdinal: "asc" },
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(initialChunks).toHaveLength(2);
+      const stableChunk = initialChunks[0]!;
+      const stableEntry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { recallChunkId: stableChunk.id, userId }
+      });
+
+      const appended = await createTurn({
+        assistantText: "Assistant retained turn 9.",
+        chatId: chat.id,
+        createdAt: new Date(Date.UTC(2026, 7, 12, 10, 18)),
+        parentMessageId,
+        userId,
+        userText: "User retained turn 9."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: appended.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: appended.assistantMessage.id,
+          runId: appended.run.id,
+          status: "complete"
+        }
+      });
+      const appendClassify = vi.fn(normalHistoryClassifier.classify);
+      await processHistoryJob(userId, {
+        classifier: { classify: appendClassify }
+      });
+
+      expect(appendClassify).toHaveBeenCalledTimes(1);
+      expect(appendClassify.mock.calls[0]?.[0]).toHaveLength(1);
+      const currentChunks = await prisma.memoryRecallChunk.findMany({
+        orderBy: { chunkOrdinal: "asc" },
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(currentChunks).toHaveLength(2);
+      expect(currentChunks[0]).toMatchObject({
+        createdAt: stableChunk.createdAt,
+        id: stableChunk.id,
+        safeProjectedText: stableChunk.safeProjectedText
+      });
+      await expect(prisma.memorySearchEntry.findFirstOrThrow({
+        where: { recallChunkId: stableChunk.id, userId }
+      })).resolves.toMatchObject({ id: stableEntry.id });
+      await expect(prisma.memoryRecallChunk.count({
+        where: { chatId: chat.id, state: "INVALIDATED", userId }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("persists one retry-idempotent source-bound digest and replaces it after append", async () => {
+    const userId = await createOwner("memory-history-digest");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Digest history", userId }
+      });
+      const first = await createTurn({
+        assistantText: "Cedar was selected for deployment.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-13T10:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Compare the cedar and birch deployment options."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: first.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: first.assistantMessage.id,
+          runId: first.run.id,
+          status: "complete"
+        }
+      });
+      const processed = await processHistoryJob(userId, {
+        digestGenerator: deterministicDigestGenerator
+      });
+      const digest = await prisma.chatMemoryDigest.findFirstOrThrow({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(digest).toMatchObject({
+        activeLeafMessageId: first.assistantMessage.id,
+        pipelineVersion: "memory-chat-digest-v1",
+        redactionState: "NOT_NEEDED",
+        safetyClass: "NORMAL",
+        safeDigestText: expect.stringContaining("Summary:")
+      });
+      await expect(prisma.chatMemoryDigestChunk.count({
+        where: { digestId: digest.id, userId }
+      })).resolves.toBe(1);
+      await expect(prisma.chatMemoryDigestMessage.count({
+        where: { digestId: digest.id, userId }
+      })).resolves.toBe(2);
+      const firstDigestMessage = await prisma.chatMemoryDigestMessage.findFirstOrThrow({
+        orderBy: { ordinal: "asc" },
+        where: { digestId: digest.id, userId }
+      });
+      await expect(prisma.$transaction((tx) =>
+        tx.chatMemoryDigestMessage.delete({
+          where: {
+            digestId_messageId: {
+              digestId: digest.id,
+              messageId: firstDigestMessage.messageId
+            }
+          }
+        }))).rejects.toThrow();
+
+      await prisma.$transaction(async (tx) => {
+        await processed.result.apply?.(tx, processed.claim);
+      });
+      await expect(prisma.chatMemoryDigest.count({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      })).resolves.toBe(1);
+
+      const appended = await createTurn({
+        assistantText: "The rollout date remains open.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-13T10:05:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: "We still need to confirm the rollout date."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: appended.assistantMessage.id }
+      });
+      await expect(prisma.chatMemoryDigest.findUniqueOrThrow({
+        where: { id: digest.id }
+      })).resolves.toMatchObject({ state: "INVALIDATED" });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: appended.assistantMessage.id,
+          runId: appended.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId, {
+        digestGenerator: deterministicDigestGenerator
+      });
+      const current = await prisma.chatMemoryDigest.findFirstOrThrow({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(current.id).not.toBe(digest.id);
+      expect(current.activeLeafMessageId).toBe(appended.assistantMessage.id);
+      await expect(prisma.chatMemoryDigest.count({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      })).resolves.toBe(1);
+      await expect(prisma.chatMemoryDigestMessage.count({
+        where: { digestId: current.id, userId }
+      })).resolves.toBe(4);
     } finally {
       await cleanupOwner(userId);
     }
@@ -1020,6 +1277,13 @@ describe("Memory lexical history index persistence", () => {
           userId
         }
       })).resolves.toBe(1);
+      await expect(prisma.$transaction((tx) =>
+        tx.memoryRecallChunkMessage.deleteMany({
+          where: { chunkId: chunks[0]!.id, userId }
+        }))).rejects.toThrow();
+      await expect(prisma.memoryRecallChunkMessage.count({
+        where: { chunkId: chunks[0]!.id, userId }
+      })).resolves.toBe(2);
     } finally {
       await cleanupOwner(userId);
     }

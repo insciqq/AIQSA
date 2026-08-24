@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
+import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import {
@@ -10,6 +11,9 @@ import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
+import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
+  "../learning/extraction/contract";
+import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { applyMemoryScopeTargetDeletion } from "../scopeLifecycle";
@@ -320,6 +324,59 @@ async function createPendingFact(
     ...await createPendingVersion(userId, scopeId, label, sourceMode),
     userId
   };
+}
+
+async function attachAutomaticEvidence(input: Readonly<{
+  factVersionId: string;
+  userId: string;
+}>): Promise<void> {
+  const sourceText = "I prefer tea";
+  const chat = await prisma.chat.create({
+    data: {
+      title: "Memory reclassification automatic evidence",
+      userId: input.userId
+    }
+  });
+  const message = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: textMessageContent(sourceText),
+      role: "user",
+      status: "complete"
+    }
+  });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: message.id },
+    where: { id: chat.id }
+  });
+  const sourceMessageContentHash = memorySha256(sourceText);
+  await prisma.memoryEvidence.create({
+    data: {
+      branchGeneration: 0,
+      chatId: chat.id,
+      evidenceFingerprint: memorySha256({
+        endOffset: sourceText.length,
+        messageId: message.id,
+        sourceMessageContentHash,
+        startOffset: 0,
+        version: 1
+      }),
+      factVersionId: input.factVersionId,
+      messageId: message.id,
+      observedAt: message.createdAt,
+      safeExcerpt: sourceText,
+      safeSourceHash: sourceMessageContentHash,
+      safetyClass: "NORMAL",
+      sourceEndOffset: sourceText.length,
+      sourceMessageContentHash,
+      sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+      sourceRole: "user",
+      sourceStartOffset: 0,
+      sourceType: "MESSAGE",
+      stance: "SUPPORTS",
+      userId: input.userId
+    }
+  });
 }
 
 function result(
@@ -635,6 +692,9 @@ describe("Prisma Memory safety reclassification", () => {
       await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
         where: { id: wake.activeGenerationId }
       })).resolves.toMatchObject({ indexedThroughMemoryRevision: 1 });
+      await expect(prisma.memorySearchEntry.count({
+        where: { factVersionId: normal.versionId, userId: normal.userId }
+      })).resolves.toBe(1);
       await expect(prisma.memoryJob.findUniqueOrThrow({
         where: { id: wake.rebuildJobId }
       })).resolves.toMatchObject({
@@ -741,6 +801,115 @@ describe("Prisma Memory safety reclassification", () => {
       })).resolves.toMatchObject({ category: "about_you", state: "ACTIVE" });
     } finally {
       await prisma.user.delete({ where: { id: fact.userId } });
+    }
+  });
+
+  it("indexes a normal automatic fact only after independent classification", async () => {
+    const fact = await createPendingFact("automatic-normal", "AUTOMATIC");
+    const repository = createPrismaMemoryReclassificationRepository(prisma);
+    const now = new Date("2026-08-21T08:18:00.000Z");
+    try {
+      await attachAutomaticEvidence({
+        factVersionId: fact.versionId,
+        userId: fact.userId
+      });
+      await createShadowWakeFixture(fact.userId);
+      await expect(prisma.memorySearchEntry.count({ where: { userId: fact.userId } }))
+        .resolves.toBe(0);
+      const [candidate] = await repository.pending(fact.userId);
+      if (!candidate) throw new Error("memory_reclassification_candidate_missing");
+      const executionId = await createReclassificationExecution(fact.userId, now);
+
+      await prisma.$transaction((tx) => repository.apply(tx, fact.userId, [{
+        candidate,
+        result: governedResult(candidate, "NORMAL", executionId, {
+          category: "about_you",
+          responsePreference: false
+        })
+      }], now));
+
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: fact.versionId }
+      })).resolves.toMatchObject({
+        coreEligible: false,
+        safetyClassificationState: "CLASSIFIED",
+        sourceMode: "AUTOMATIC",
+        state: "ACTIVE"
+      });
+      await expect(prisma.memorySearchEntry.count({
+        where: { factVersionId: fact.versionId, userId: fact.userId }
+      })).resolves.toBe(1);
+    } finally {
+      await prisma.user.delete({ where: { id: fact.userId } });
+    }
+  });
+
+  it("fences automatic SENSITIVE and UNCERTAIN results under EXPLICIT_ONLY", async () => {
+    const sensitive = await createPendingFact("automatic-sensitive", "AUTOMATIC");
+    const uncertain = await createPendingFact("automatic-uncertain", "AUTOMATIC");
+    const repository = createPrismaMemoryReclassificationRepository(prisma);
+    const now = new Date("2026-08-21T08:20:00.000Z");
+    try {
+      await Promise.all([
+        attachAutomaticEvidence({
+          factVersionId: sensitive.versionId,
+          userId: sensitive.userId
+        }),
+        attachAutomaticEvidence({
+          factVersionId: uncertain.versionId,
+          userId: uncertain.userId
+        })
+      ]);
+      const [sensitiveCandidate] = await repository.pending(sensitive.userId);
+      const [uncertainCandidate] = await repository.pending(uncertain.userId);
+      if (!sensitiveCandidate || !uncertainCandidate) {
+        throw new Error("memory_reclassification_candidate_missing");
+      }
+      const [sensitiveExecutionId, uncertainExecutionId] = await Promise.all([
+        createReclassificationExecution(sensitive.userId, now),
+        createReclassificationExecution(uncertain.userId, now)
+      ]);
+      await prisma.$transaction((tx) => repository.apply(tx, sensitive.userId, [{
+        candidate: sensitiveCandidate,
+        result: governedResult(sensitiveCandidate, "SENSITIVE", sensitiveExecutionId, {
+          category: "sensitive",
+          reasonCode: "private_personal",
+          responsePreference: false,
+          storageDecision: "ALLOW",
+          subjectScope: "USER"
+        })
+      }], now));
+      await prisma.$transaction((tx) => repository.apply(tx, uncertain.userId, [{
+        candidate: uncertainCandidate,
+        result: governedResult(uncertainCandidate, "UNCERTAIN", uncertainExecutionId, {
+          category: "other",
+          reasonCode: "uncertain",
+          responsePreference: false,
+          storageDecision: "REJECT_UNSUITABLE",
+          subjectScope: "UNCERTAIN"
+        })
+      }], now));
+
+      for (const fact of [sensitive, uncertain]) {
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+          where: { id: fact.versionId }
+        })).resolves.toMatchObject({
+          contentPurgedAt: now,
+          displayText: null,
+          safetyClassificationState: "REJECTED_FENCED",
+          state: "RETRACTED",
+          structuredValue: null
+        });
+        await expect(prisma.memoryFact.findUniqueOrThrow({
+          where: { id: fact.factId }
+        })).resolves.toMatchObject({
+          currentVersionId: null,
+          state: "RETRACTED"
+        });
+      }
+    } finally {
+      await prisma.user.delete({ where: { id: sensitive.userId } });
+      await prisma.user.delete({ where: { id: uncertain.userId } });
     }
   });
 
@@ -1160,6 +1329,7 @@ describe("Prisma Memory safety reclassification", () => {
             factId: fact.factId,
             id: fact.versionId,
             modality: version.modality,
+            semanticState: "ACTIVE",
             sourceMode: version.sourceMode,
             systemFrom: version.systemFrom,
             userId

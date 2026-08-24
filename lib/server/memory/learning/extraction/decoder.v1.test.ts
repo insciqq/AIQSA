@@ -14,6 +14,7 @@ import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 
 function input(text: string): MemoryFactExtractionInput {
   const withoutHash: Omit<MemoryFactExtractionInput, "inputHash"> = {
+    contextRefs: [],
     folderId: null,
     messages: [{
       contentHash: memorySha256(text),
@@ -127,7 +128,11 @@ describe("Personal Memory v1 extraction decoder", () => {
   });
 
   it("accepts an empty strict packet without falling back to the retired decoder", () => {
-    const plan = decodeMemoryFactExtraction(call([]), input("Nothing durable here."));
+    const plan = decodeMemoryFactExtraction([{
+      arguments: { observations: [] },
+      id: "call-1",
+      name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+    }], input("Nothing durable here."));
     expect(plan.candidates).toEqual([]);
     expect(plan.rejections).toEqual([]);
   });

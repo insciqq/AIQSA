@@ -95,6 +95,8 @@ function createMemoryFactNeighborhoodResolver(
           allowedHistorySafety: ["NORMAL"],
           assistantId: scope.type === "ASSISTANT" ? scope.targetId : null,
           chatId: scope.type === "CHAT" ? scope.targetId : null,
+          factMode: "CURRENT",
+          factTemporalAsOf: null,
           folderId: scope.type === "FOLDER" ? scope.targetId : null,
           occurredFrom: null,
           occurredTo: null,

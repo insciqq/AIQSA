@@ -26,6 +26,7 @@ function descriptor(input: Readonly<{
     sourceMessageId: null,
     sourceRevision: null,
     stage: null,
+    targetFactVersionId: null,
     userId: "user-1"
   };
 }

@@ -1,27 +1,116 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { textFromContentBlocks } from "../../../domain/modelRunEvents";
+import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
+  "../learning/extraction/contract";
+import { projectMemoryHistorySafeText } from "../history/safety";
+import { memorySha256 } from "./lexical";
 import { memoryAutomaticEvidencePausePredicate } from "./pauseIntervals";
+import { memoryFactDependenciesPredicate } from "../learning/dependencies/repository";
 
 export type PersonalMemoryEvidenceSnapshot = Readonly<{
   branchGeneration: number;
   chatId: string;
+  evidenceFingerprint: string | null;
   factVersionId: string;
   id: string;
   messageId: string;
   observedAt: Date;
   safeSourceHash: string;
+  sourceMessageContentHash: string | null;
   sourceProjectionVersion: string;
 }>;
 
+type PersonalMemoryEvidenceQueryRow = PersonalMemoryEvidenceSnapshot & Readonly<{
+  content: Prisma.JsonValue;
+  safeExcerpt: string;
+  sourceEndOffset: number | null;
+  sourceStartOffset: number | null;
+}>;
+
+export function memoryExactMessageEvidenceIsCurrent(input: Readonly<{
+  content: Prisma.JsonValue;
+  evidenceFingerprint: string | null;
+  safeExcerpt: string;
+  safeSourceHash: string;
+  sourceEndOffset: number | null;
+  sourceMessageContentHash: string | null;
+  sourceProjectionVersion: string;
+  sourceStartOffset: number | null;
+}>): boolean {
+  if (
+    input.sourceProjectionVersion !== MEMORY_FACT_SOURCE_PROJECTION_VERSION ||
+    input.evidenceFingerprint === null ||
+    !/^[a-f0-9]{64}$/u.test(input.evidenceFingerprint) ||
+    input.sourceMessageContentHash === null ||
+    !/^[a-f0-9]{64}$/u.test(input.sourceMessageContentHash) ||
+    input.safeSourceHash !== input.sourceMessageContentHash ||
+    !Number.isSafeInteger(input.sourceStartOffset) ||
+    !Number.isSafeInteger(input.sourceEndOffset) ||
+    input.sourceStartOffset === null || input.sourceEndOffset === null ||
+    input.sourceStartOffset < 0 || input.sourceEndOffset <= input.sourceStartOffset
+  ) return false;
+  const projected = projectMemoryHistorySafeText(
+    textFromContentBlocks(input.content as { blocks?: unknown[] })
+  );
+  return projected.eligible && projected.safeText !== null &&
+    memorySha256(projected.safeText) === input.sourceMessageContentHash &&
+    projected.safeText.slice(input.sourceStartOffset, input.sourceEndOffset) ===
+      input.safeExcerpt;
+}
+
 function personalEvidenceWhere(
   userId: string | Prisma.Sql,
-  factVersionId: Prisma.Sql
+  factVersionId: Prisma.Sql,
+  exactVNext = false
 ): Prisma.Sql {
+  const exact = exactVNext
+    ? Prisma.sql`
+        AND support."evidenceFingerprint" IS NOT NULL
+        AND support."sourceStartOffset" IS NOT NULL
+        AND support."sourceEndOffset" IS NOT NULL
+        AND support."sourceMessageContentHash" IS NOT NULL
+        AND support."safeSourceHash" = support."sourceMessageContentHash"
+        AND support."sourceProjectionVersion" =
+          ${MEMORY_FACT_SOURCE_PROJECTION_VERSION}
+      `
+    : Prisma.empty;
   return Prisma.sql`
     support."userId" = ${userId}
     AND support."factVersionId" = ${factVersionId}
     AND support."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
     AND support."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
     AND support."sourceRole" = 'user'
+    ${exact}
+    AND evidence_message."status" = 'complete'::"MessageStatus"
+    AND EXISTS (
+      WITH RECURSIVE active_path AS (
+        SELECT
+          leaf."id",
+          leaf."parentMessageId",
+          ARRAY[leaf."id"]::text[] AS visited,
+          FALSE AS cycle
+        FROM "Message" AS leaf
+        WHERE leaf."chatId" = evidence_chat."id"
+          AND leaf."id" = evidence_chat."activeLeafMessageId"
+
+        UNION ALL
+
+        SELECT
+          parent."id",
+          parent."parentMessageId",
+          child.visited || parent."id",
+          parent."id" = ANY(child.visited)
+        FROM active_path AS child
+        INNER JOIN "Message" AS parent
+          ON parent."chatId" = evidence_chat."id"
+          AND parent."id" = child."parentMessageId"
+        WHERE NOT child.cycle
+      )
+      SELECT 1
+      FROM active_path
+      WHERE active_path."id" = support."messageId"
+        AND NOT active_path.cycle
+    )
     AND NOT EXISTS (
       SELECT 1 FROM "MemorySuppression" AS source_suppression
       WHERE source_suppression."userId" = support."userId"
@@ -47,6 +136,19 @@ function personalEvidenceWhere(
   `;
 }
 
+/**
+ * Canonical row-level authority for an automatic fact's exact Message
+ * evidence. Callers expose `support`, `evidence_chat`, and `evidence_message`
+ * with the joins used by this module.
+ */
+export function memoryPersonalEvidenceRowPredicate(
+  userId: string | Prisma.Sql,
+  factVersionId: Prisma.Sql = Prisma.sql`version."id"`,
+  options: Readonly<{ exactVNext?: boolean }> = {}
+): Prisma.Sql {
+  return personalEvidenceWhere(userId, factVersionId, options.exactVNext === true);
+}
+
 function personalEvidenceJoins(): Prisma.Sql {
   return Prisma.sql`
     FROM "MemoryEvidence" AS support
@@ -56,7 +158,6 @@ function personalEvidenceJoins(): Prisma.Sql {
       AND evidence_chat."projectId" IS NULL
       AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND evidence_chat."permanentDeletionAt" IS NULL
-      AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
     INNER JOIN "Message" AS evidence_message
       ON evidence_message."chatId" = support."chatId"
       AND evidence_message."id" = support."messageId"
@@ -66,12 +167,13 @@ function personalEvidenceJoins(): Prisma.Sql {
 
 export function memoryPersonalEvidenceCount(
   userId: string | Prisma.Sql,
-  factVersionId: Prisma.Sql = Prisma.sql`version."id"`
+  factVersionId: Prisma.Sql = Prisma.sql`version."id"`,
+  options: Readonly<{ exactVNext?: boolean }> = {}
 ): Prisma.Sql {
   return Prisma.sql`(
     SELECT COUNT(*)::integer
     ${personalEvidenceJoins()}
-    WHERE ${personalEvidenceWhere(userId, factVersionId)}
+    WHERE ${personalEvidenceWhere(userId, factVersionId, options.exactVNext === true)}
   )`;
 }
 
@@ -95,6 +197,7 @@ export function memoryPersonalEvidenceLatestAt(
 export function memoryPersonalFactEvidencePredicate(
   userId: string | Prisma.Sql,
   input: Readonly<{
+    exactVNext?: boolean;
     factVersionId?: Prisma.Sql;
     sourceMode?: Prisma.Sql;
   }> = {}
@@ -102,8 +205,13 @@ export function memoryPersonalFactEvidencePredicate(
   const factVersionId = input.factVersionId ?? Prisma.sql`version."id"`;
   const sourceMode = input.sourceMode ?? Prisma.sql`version."sourceMode"`;
   return Prisma.sql`(
-    ${sourceMode} = 'EXPLICIT'::"MemoryFactSourceMode"
-    OR ${memoryPersonalEvidenceCount(userId, factVersionId)} > 0
+    (
+      ${sourceMode} = 'EXPLICIT'::"MemoryFactSourceMode"
+      OR ${memoryPersonalEvidenceCount(userId, factVersionId, {
+        exactVNext: input.exactVNext
+      })} > 0
+    )
+    AND ${memoryFactDependenciesPredicate(userId, factVersionId)}
   )`;
 }
 
@@ -159,23 +267,45 @@ export async function loadPersonalEligibleFactVersionIds(
 export async function loadPersonalMemoryEvidenceSnapshots(
   client: Pick<PrismaClient, "$queryRaw">,
   userId: string,
-  factVersionIds: readonly string[]
+  factVersionIds: readonly string[],
+  options: Readonly<{ exactVNext?: boolean }> = {}
 ): Promise<readonly PersonalMemoryEvidenceSnapshot[]> {
   const ids = [...new Set(factVersionIds.filter(Boolean))];
   if (ids.length === 0) return [];
-  return client.$queryRaw<PersonalMemoryEvidenceSnapshot[]>(Prisma.sql`
+  const rows = await client.$queryRaw<PersonalMemoryEvidenceQueryRow[]>(Prisma.sql`
     SELECT
       support."branchGeneration",
       support."chatId",
+      evidence_message."content",
+      support."evidenceFingerprint",
       support."factVersionId",
       support."id",
       support."messageId",
       support."observedAt",
+      support."safeExcerpt",
       support."safeSourceHash",
-      support."sourceProjectionVersion"
+      support."sourceEndOffset",
+      support."sourceMessageContentHash",
+      support."sourceProjectionVersion",
+      support."sourceStartOffset"
     ${personalEvidenceJoins()}
     WHERE support."factVersionId" IN (${Prisma.join(ids)})
-      AND ${personalEvidenceWhere(userId, Prisma.sql`support."factVersionId"`)}
+      AND ${personalEvidenceWhere(
+        userId,
+        Prisma.sql`support."factVersionId"`,
+        options.exactVNext === true
+      )}
     ORDER BY support."factVersionId", support."createdAt", support."id"
   `);
+  return rows.flatMap((row) => {
+    if (options.exactVNext && !memoryExactMessageEvidenceIsCurrent(row)) return [];
+    const {
+      content: _content,
+      safeExcerpt: _safeExcerpt,
+      sourceEndOffset: _sourceEndOffset,
+      sourceStartOffset: _sourceStartOffset,
+      ...snapshot
+    } = row;
+    return [snapshot];
+  });
 }

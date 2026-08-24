@@ -191,22 +191,31 @@ async function loadFactTarget(
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId"
       AND fact."id" = version."factId"
-      AND fact."currentVersionId" = version."id"
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId"
       AND scope."id" = fact."scopeId"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
     WHERE version."userId" = ${row.userId}
       AND version."id" = ${row.factVersionId}
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND version."systemTo" IS NULL
+      AND (
+        (version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."systemTo" IS NULL
+          AND fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND fact."currentVersionId" = version."id")
+        OR
+        (version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
+          AND version."systemTo" IS NOT NULL
+          AND (fact."state" = 'ACTIVE'::"MemoryFactState"
+            OR (fact."state" = 'RETRACTED'::"MemoryFactState"
+              AND fact."movedToFactId" IS NOT NULL)))
+      )
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
       AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryPersonalFactEvidencePredicate(row.userId)}
+      AND ${memoryPersonalFactEvidencePredicate(row.userId, { exactVNext: true })}
     LIMIT 1
   `);
   const current = rows[0];
@@ -271,7 +280,10 @@ async function loadRecallChunkTarget(
         'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-      AND ${memoryHistoryChunkSourceAuthorityPredicate()}
+      AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        chat: "chat",
+        checkpoint: "checkpoint"
+      })}
       AND NOT EXISTS (
         SELECT 1 FROM "MemorySuppression" AS suppression
         LEFT JOIN "MemoryRecallChunkMessage" AS source_message

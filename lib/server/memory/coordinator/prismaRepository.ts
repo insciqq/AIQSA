@@ -8,6 +8,7 @@ import {
 import { prisma } from "../../prisma";
 import { isMemoryCoordinatorErrorCode, MemoryCoordinatorError } from "./errors";
 import { memorySourceJobSnapshotMatches } from "../sourceState";
+import { lockMemorySettings } from "../persistence/transaction";
 import type {
   MemoryDeletionApply,
   MemoryDeletionClaim,
@@ -376,6 +377,7 @@ async function claimJobFromCandidate(
       WHERE job."id" = candidate."id"
       RETURNING
         job."id", job."userId", job."chatId", job."sourceMessageId",
+        job."targetFactVersionId",
         job."activeLeafMessageId",
         job."branchGeneration", job."sourceRevision", job."sourceHash",
         job."kind"::text AS "kind", job."stage", job."attemptCount",
@@ -427,10 +429,14 @@ async function commitJobSuccessWithAuthority(
   tx: Prisma.TransactionClient,
   input: CommitJobTransitionInput
 ): Promise<boolean> {
+  if (input.claim.kind === "RESOLVE_FACT_RELATIONS") {
+    await lockMemorySettings(tx, input.claim.userId, true);
+  }
   const sourceMatches = await memorySourceJobSnapshotMatches(
     tx,
     input.claim,
-    input.claim.kind === "RECLASSIFY_FACTS"
+    input.claim.kind === "RECLASSIFY_FACTS" ||
+      input.claim.kind === "SYNTHESIZE_MEMORIES"
       ? { memoryRevisionSnapshot: input.claim.memoryRevisionSnapshot }
       : undefined
   );
@@ -862,6 +868,7 @@ export function createPrismaMemoryCoordinatorRepository(
       return client.$queryRaw<WaitingJobRow[]>(Prisma.sql`
         SELECT
           job."id", job."userId", job."chatId", job."sourceMessageId",
+          job."targetFactVersionId",
           job."activeLeafMessageId",
           job."branchGeneration", job."sourceRevision", job."sourceHash",
           job."kind"::text AS "kind", job."stage", job."attemptCount",

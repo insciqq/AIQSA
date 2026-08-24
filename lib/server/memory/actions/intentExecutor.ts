@@ -280,6 +280,7 @@ async function resolveTarget(
   }
   const semantic = await search.semantic({
     attemptId: input.attemptId,
+    fallbackText: input.currentUserText,
     query,
     signal: input.signal,
     userId: input.userId

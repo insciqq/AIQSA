@@ -28,10 +28,12 @@ export type MemoryPreparingSettingsSnapshot = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
   acceptedUtilityPolicyVersion: string | null;
   activeIndexGenerationId: string | null;
+  decayEnabled: boolean;
+  decayPolicyVersion: string | null;
   learnAutomatically: boolean;
   memoryConsentRevision: number;
   referenceChatHistory: boolean;
-  schemaVersion: 1;
+  schemaVersion: 2;
   settingsRevision: number;
   useMemoryFacts: boolean;
 }>;
@@ -207,6 +209,8 @@ export function memoryPreparingSettingsSnapshot(value: Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
   acceptedUtilityPolicyVersion: string | null;
   activeIndexGenerationId: string | null;
+  decayEnabled: boolean;
+  decayPolicyVersion: string | null;
   learnAutomatically: boolean;
   memoryConsentRevision: number;
   referenceChatHistory: boolean;
@@ -217,10 +221,12 @@ export function memoryPreparingSettingsSnapshot(value: Readonly<{
     acceptedUtilityEgressFingerprint: value.acceptedUtilityEgressFingerprint,
     acceptedUtilityPolicyVersion: value.acceptedUtilityPolicyVersion,
     activeIndexGenerationId: value.activeIndexGenerationId,
+    decayEnabled: value.decayEnabled,
+    decayPolicyVersion: value.decayPolicyVersion,
     learnAutomatically: value.learnAutomatically,
     memoryConsentRevision: value.memoryConsentRevision,
     referenceChatHistory: value.referenceChatHistory,
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     settingsRevision: value.settingsRevision,
     useMemoryFacts: value.useMemoryFacts
   });
@@ -229,7 +235,7 @@ export function memoryPreparingSettingsSnapshot(value: Readonly<{
 export function decodeMemoryPreparingSettingsSnapshot(
   value: unknown
 ): MemoryPreparingSettingsSnapshot | null {
-  if (!isRecord(value) || value.schemaVersion !== 1) return null;
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return null;
   const nullableString = (entry: unknown) => entry === null || typeof entry === "string";
   if (
     typeof value.useMemoryFacts !== "boolean" ||
@@ -243,9 +249,21 @@ export function decodeMemoryPreparingSettingsSnapshot(
     value.settingsRevision < 0 ||
     !nullableString(value.activeIndexGenerationId) ||
     !nullableString(value.acceptedUtilityEgressFingerprint) ||
-    !nullableString(value.acceptedUtilityPolicyVersion)
+    !nullableString(value.acceptedUtilityPolicyVersion) ||
+    (value.schemaVersion === 2 && (
+      typeof value.decayEnabled !== "boolean" ||
+      !nullableString(value.decayPolicyVersion)
+    ))
   ) {
     return null;
+  }
+  if (value.schemaVersion === 1) {
+    return Object.freeze({
+      ...value,
+      decayEnabled: false,
+      decayPolicyVersion: null,
+      schemaVersion: 2 as const
+    }) as MemoryPreparingSettingsSnapshot;
   }
   return value as MemoryPreparingSettingsSnapshot;
 }
@@ -256,6 +274,8 @@ export function sameMemoryPreparingSettings(
   options: Readonly<{ requireUtilityEgressMatch?: boolean }> = {}
 ): boolean {
   return left.activeIndexGenerationId === right.activeIndexGenerationId &&
+    left.decayEnabled === right.decayEnabled &&
+    left.decayPolicyVersion === right.decayPolicyVersion &&
     left.learnAutomatically === right.learnAutomatically &&
     left.referenceChatHistory === right.referenceChatHistory &&
     left.useMemoryFacts === right.useMemoryFacts &&
@@ -330,6 +350,7 @@ export function validateMemoryPreparingAttemptResult(
       item.finalScore > 1 ||
       seenItems.has(identity) ||
       (item.projectionKind !== undefined &&
+        item.projectionKind !== "CHAT_DIGEST_SAFE_TEXT" &&
         item.projectionKind !== "FACT_DISPLAY_TEXT" &&
         item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT") ||
       (item.supportingItemId !== undefined && item.supportingItemId !== null &&

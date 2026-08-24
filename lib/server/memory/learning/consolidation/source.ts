@@ -570,6 +570,10 @@ async function loadRelatedFacts(
       AND fact."category" = ${candidate.category}
       AND current_version."state" = 'ACTIVE'::"MemoryFactVersionState"
       AND current_version."systemTo" IS NULL
+      AND (
+        current_version."expiresAt" IS NULL
+        OR current_version."expiresAt" > CURRENT_TIMESTAMP
+      )
       AND current_version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND current_version."contentPurgedAt" IS NULL
       AND ${memoryCanonicalGlobalScopePredicate()}

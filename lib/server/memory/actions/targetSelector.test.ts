@@ -2,6 +2,7 @@ import { memorySummaryFixture } from "@/tests/support/memoryFixtures";
 import { describe, expect, it, vi } from "vitest";
 import {
   MEMORY_TARGET_SELECTION_NAME,
+  MEMORY_TARGET_SELECTION_SYSTEM_PROMPT,
   createMemoryTargetSelector,
   decodeMemoryTargetSelection,
   memoryTargetCandidateMapHash,
@@ -85,6 +86,14 @@ const request = {
 };
 
 describe("Memory target selector", () => {
+  it("requires broad or under-specified multi-target commands to remain ambiguous", () => {
+    expect(MEMORY_TARGET_SELECTION_SYSTEM_PROMPT).toContain("across the board");
+    expect(MEMORY_TARGET_SELECTION_SYSTEM_PROMPT).toContain("one of");
+    expect(MEMORY_TARGET_SELECTION_SYSTEM_PROMPT).toContain(
+      "never expands one mutation to multiple targets"
+    );
+  });
+
   it("accepts only a HIGH-confidence handle from the supplied candidate set", () => {
     const handles = new Set(["c0", "c1"]);
     expect(decodeMemoryTargetSelection({

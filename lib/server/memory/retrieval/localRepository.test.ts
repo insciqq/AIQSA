@@ -41,7 +41,7 @@ function mockClient(
     const sql = query.strings?.join("?") ?? "";
     if (sql.includes('owner."status"')) return [row];
     laneSql.push(sql);
-    if (options.failLaneQueries === true && sql.includes('"MemorySearchEntry"')) {
+    if (options.failLaneQueries === true) {
       throw new Error("fts unavailable");
     }
     return [];
@@ -91,7 +91,9 @@ describe("local Memory retrieval repository", () => {
     expect(sql).not.toContain("'HIGHLY_SENSITIVE'::\"MemorySensitivityClass\"");
     expect(sql).not.toContain("'SECRET'::\"MemorySensitivityClass\"");
     expect(sql).toContain('version."sourceMode" = \'EXPLICIT\'');
-    expect(sql).toContain('source_chat."memoryBranchGeneration" = chunk."branchGeneration"');
+    expect(sql).toContain('"checkpoint"."branchGeneration" = "source_chat"."memoryBranchGeneration"');
+    expect(sql).toContain('FROM "MemoryRecallChunkMessage" AS authority_source_map');
+    expect(sql).toContain('authority_source_message."updatedAt" <>');
     expect(sql).toContain('source_chat."projectId" IS NULL');
     expect(sql).toContain('chunk."chunkingVersion" =');
     expect(sql).toContain('chunk."sourceProjectionVersion" =');
@@ -124,7 +126,7 @@ describe("local Memory retrieval repository", () => {
         userId: "user-1"
       });
       expect(result.laneResults.map(({ lane }) => lane)).toEqual([
-        "FACT_EXACT", "FACT_FTS_SIMPLE"
+        "FACT_EXACT", "FACT_ENTITY", "FACT_FTS_SIMPLE"
       ]);
       expect(mocked.laneSql.length).toBeGreaterThan(0);
     }
@@ -157,6 +159,39 @@ describe("local Memory retrieval repository", () => {
     expect(pinnedOrder).toBeGreaterThan(explicitOrder);
     expect(sql).toContain('eligible."importance" DESC');
     expect(sql).toContain('eligible."confidence" DESC');
+  });
+
+  it("uses only bounded source-bound digests for a broad history overview", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "Give me an overview of our past deployment chats.",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "HISTORY_OVERVIEW",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual([
+      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_RECENT"
+    ]);
+    expect(mocked.laneSql).toHaveLength(2);
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain('FROM "ChatMemoryDigest" AS digest');
+    expect(sql).toContain('FROM "ChatMemoryDigestChunk" AS digest_anchor');
+    expect(sql).toContain('FROM "ChatMemoryDigestMessage" AS digest_source_message');
+    expect(sql).toContain('digest."normalizedSafeSearchText"');
+    expect(sql).not.toContain('digest."safeDigestText"');
+    expect(sql).not.toContain('entry."normalizedSearchText"');
+    expect(sql).not.toContain('chunk."safeProjectedText"');
+    expect(sql).not.toContain('message."content"');
   });
 
   it("loads query-independent response preferences only when the plan admits them", async () => {

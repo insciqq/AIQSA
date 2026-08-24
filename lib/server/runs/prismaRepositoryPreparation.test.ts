@@ -6,18 +6,34 @@ import {
   validMemoryRerankRetrySettlement,
   validMemoryRetrievalExecutionSequence
 } from "./prismaRepositoryPreparation";
-import { createMemoryPreparingBaseSnapshot } from "./preparingRun";
+import {
+  createMemoryPreparingBaseSnapshot,
+  decodeMemoryPreparingSettingsSnapshot
+} from "./preparingRun";
 
 const settingsSnapshot = Object.freeze({
   acceptedUtilityEgressFingerprint: null,
   acceptedUtilityPolicyVersion: null,
   activeIndexGenerationId: null,
+  decayEnabled: false,
+  decayPolicyVersion: null,
   learnAutomatically: false,
   memoryConsentRevision: 0,
   referenceChatHistory: false,
-  schemaVersion: 1 as const,
+  schemaVersion: 2 as const,
   settingsRevision: 0,
   useMemoryFacts: false
+});
+
+describe("Memory preparing settings compatibility", () => {
+  it("normalizes an accepted v1 snapshot to decay-disabled v2", () => {
+    const { decayEnabled: _enabled, decayPolicyVersion: _policy, ...legacy } =
+      settingsSnapshot;
+    expect(decodeMemoryPreparingSettingsSnapshot({
+      ...legacy,
+      schemaVersion: 1
+    })).toEqual(settingsSnapshot);
+  });
 });
 
 function input(chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY") {

@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryClientRefService } from "../actions/clientRef";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
-import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+} from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import { loadMemoryRunSources } from "./runProjection";
 
@@ -13,6 +16,9 @@ function client() {
       .mockResolvedValueOnce([]),
     chat: { findMany: vi.fn(async () => []) },
     chatMemoryCheckpoint: { findMany: vi.fn(async () => []) },
+    chatMemoryCheckpointMessage: { findMany: vi.fn(async () => []) },
+    chatMemoryDigest: { findMany: vi.fn(async () => []) },
+    chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
     memoryFact: { findMany: vi.fn(async () => [{
       currentVersionId: "private-version-1",
       id: "private-fact-1",
@@ -62,6 +68,7 @@ function historyClient(overrides: Readonly<{
   return {
     $queryRaw: vi.fn(async () => []),
     chat: { findMany: vi.fn(async () => [{
+      activeLeafMessageId: "source-message-1",
       id: "source-chat-1",
       memoryBranchGeneration: 4,
       memoryMode: "NORMAL",
@@ -71,9 +78,22 @@ function historyClient(overrides: Readonly<{
       title: "Archived source"
     }]) },
     chatMemoryCheckpoint: { findMany: vi.fn(async () => [{
+      activeLeafMessageId: "source-message-1",
+      branchGeneration: 4,
       chatId: "source-chat-1",
-      pipelineVersion: overrides.pipelineVersion ?? MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+      lastIndexedMessageId: "source-message-1",
+      pipelineVersion: overrides.pipelineVersion ?? MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+      sourceContentHash: "s".repeat(64),
+      sourceRevision: 3,
+      status: "READY"
     }]) },
+    chatMemoryCheckpointMessage: { findMany: vi.fn(async () => [{
+      chatId: "source-chat-1",
+      messageId: "source-message-1",
+      sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
+    }]) },
+    chatMemoryDigest: { findMany: vi.fn(async () => []) },
+    chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
     memoryFact: { findMany: vi.fn(async () => []) },
     memoryFactVersion: { findMany: vi.fn(async () => []) },
     memoryScope: { findMany: vi.fn(async () => []) },
@@ -94,7 +114,8 @@ function historyClient(overrides: Readonly<{
     memoryRecallChunkMessage: { findMany: vi.fn(async () => [{
       chatId: "source-chat-1",
       chunkId: "private-chunk-1",
-      messageId: "source-message-1"
+      messageId: "source-message-1",
+      sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
     memorySuppression: { findMany: vi.fn(async (): Promise<Array<{
       sourceBranchGeneration: number | null;
@@ -103,7 +124,8 @@ function historyClient(overrides: Readonly<{
     }>> => []) },
     message: { findMany: vi.fn(async () => [{
       chatId: "source-chat-1",
-      id: "source-message-1"
+      id: "source-message-1",
+      updatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
     modelRun: { findMany: vi.fn(async () => [{ id: "run-1" }]) },
     modelRunMemoryBinding: {
@@ -112,6 +134,7 @@ function historyClient(overrides: Readonly<{
     modelRunMemoryItem: { findMany: vi.fn(async () => [{
       bindingId: "binding-1",
       factVersionId: null,
+      featureSnapshot: { projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT" },
       includedText: "The previous chat chose cedar deployment.",
       itemType: "RECALL_CHUNK",
       recallChunkId: "private-chunk-1",
@@ -188,6 +211,88 @@ describe("answer Memory source projection", () => {
 
     expect(sources.get("run-1")).toBeUndefined();
     expect(mint).not.toHaveBeenCalled();
+  });
+
+  it("projects an overview digest through its exact current anchor source", async () => {
+    const database = historyClient();
+    const updatedAt = new Date("2026-08-21T04:00:00.000Z");
+    database.modelRunMemoryItem.findMany.mockResolvedValueOnce([{
+      bindingId: "binding-1",
+      factVersionId: null,
+      featureSnapshot: {
+        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+        supportingItemId: "digest-1"
+      },
+      includedText: "Summary: The chat selected cedar deployment.",
+      itemType: "RECALL_CHUNK",
+      recallChunkId: "private-chunk-1",
+      sourceBranchGenerationSnapshot: 4,
+      sourceChatIdSnapshot: "source-chat-1",
+      sourceContentHashSnapshot: "c".repeat(64),
+      sourceMessageIdsSnapshot: ["source-message-0", "source-message-1"],
+      sourceRevisionSnapshot: 3
+    }] as never);
+    database.message.findMany.mockResolvedValueOnce([
+      { chatId: "source-chat-1", id: "source-message-0", updatedAt },
+      { chatId: "source-chat-1", id: "source-message-1", updatedAt }
+    ] as never);
+    database.chatMemoryCheckpointMessage.findMany.mockResolvedValueOnce([
+      { chatId: "source-chat-1", messageId: "source-message-0", sourceMessageUpdatedAt: updatedAt },
+      { chatId: "source-chat-1", messageId: "source-message-1", sourceMessageUpdatedAt: updatedAt }
+    ] as never);
+    database.chatMemoryDigest.findMany.mockResolvedValueOnce([{
+      activeLeafMessageId: "source-message-1",
+      anchorChunkId: "private-chunk-1",
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      contentHash: "d".repeat(64),
+      id: "digest-1",
+      occurredTo: new Date("2026-08-21T04:05:00.000Z"),
+      pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceContentHash: "s".repeat(64),
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 3,
+      state: "ACTIVE"
+    }] as never);
+    database.chatMemoryDigestMessage.findMany.mockResolvedValueOnce([
+      {
+        chatId: "source-chat-1",
+        digestId: "digest-1",
+        messageId: "source-message-0",
+        sourceMessageUpdatedAt: updatedAt
+      },
+      {
+        chatId: "source-chat-1",
+        digestId: "digest-1",
+        messageId: "source-message-1",
+        sourceMessageUpdatedAt: updatedAt
+      }
+    ] as never);
+    const key = randomBytes(32);
+    const refs = createMemoryClientRefService({ encryptionKey: () => key });
+
+    const sources = await loadMemoryRunSources(database as never, {
+      clientRefs: refs,
+      runIds: ["run-1"],
+      userId: "user-1"
+    });
+    const projected = sources.get("run-1")?.[0];
+    expect(projected).toMatchObject({
+      date: "2026-08-21T04:05:00.000Z",
+      sourceType: "PAST_CHAT",
+      text: "Summary: The chat selected cedar deployment."
+    });
+    if (!projected?.memoryRef) throw new Error("missing digest source fixture");
+    expect(refs.resolve("user-1", projected.memoryRef, "OPEN_SOURCE", new Date()))
+      .toMatchObject({
+        target: {
+          exactItemId: "private-chunk-1",
+          sourceChatId: "source-chat-1",
+          sourceMessageIds: ["source-message-1"]
+        }
+      });
   });
 
   it("never returns receipt text after the exact fact version is no longer current", async () => {
@@ -296,6 +401,7 @@ describe("answer Memory source projection", () => {
       sourceRevisionSnapshot: null
     }] as never);
     database.chat.findMany.mockResolvedValueOnce([{
+      activeLeafMessageId: "source-message-1",
       id: "source-chat-1",
       memoryBranchGeneration: 4,
       memoryMode: "NORMAL",
@@ -306,7 +412,8 @@ describe("answer Memory source projection", () => {
     }] as never);
     database.message.findMany.mockResolvedValueOnce([{
       chatId: "source-chat-1",
-      id: "source-message-1"
+      id: "source-message-1",
+      updatedAt: new Date("2026-08-21T04:00:00.000Z")
     }] as never);
 
     const sources = await loadMemoryRunSources(database as never, {

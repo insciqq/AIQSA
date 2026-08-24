@@ -15,7 +15,8 @@ import {
 } from "./persistence/transaction";
 
 export const MEMORY_SOURCE_PROJECTION_VERSION = "memory-source-v1";
-const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v1";
+const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v2";
+const vNextFactRelationPipeline = "memory-fact-relation-v2";
 
 const MAX_COUNTER = 2_147_483_647;
 
@@ -580,25 +581,23 @@ export async function memorySourceJobSnapshotMatches(
   `);
   if (settings[0]?.memoryGeneration !== job.memoryGenerationSnapshot) return false;
   if (
-    job.kind === "EXTRACT_FACTS" &&
-    job.pipelineVersion === vNextFactExtractionPipeline
+    (job.kind === "EXTRACT_FACTS" &&
+      job.pipelineVersion === vNextFactExtractionPipeline) ||
+    (job.kind === "RESOLVE_FACT_RELATIONS" &&
+      job.pipelineVersion === vNextFactRelationPipeline)
   ) {
     if (job.sourceMessageId === null) return false;
-    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT message."id"
-      FROM "Message" AS message
-      INNER JOIN "Chat" AS chat ON chat."id" = message."chatId"
-      WHERE message."id" = ${job.sourceMessageId}
-        AND message."chatId" = ${job.chatId}
-        AND message."role" = 'user'
-        AND message."status" = 'complete'::"MessageStatus"
-        AND chat."userId" = ${job.userId}
-        AND chat."projectId" IS NULL
-        AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-        AND chat."permanentDeletionAt" IS NULL
-      FOR SHARE OF message, chat
-    `);
-    return rows.length === 1;
+    const snapshot = await loadMemorySourceSnapshot(tx, {
+      chatId: job.chatId,
+      lock: "NONE",
+      personalOnly: true,
+      userId: job.userId
+    });
+    return Boolean(
+      snapshot &&
+      snapshot.memoryMode === "NORMAL" &&
+      snapshot.messages.some(({ id }) => id === job.sourceMessageId)
+    );
   }
   if (
     job.activeLeafMessageId === null ||

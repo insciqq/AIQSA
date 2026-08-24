@@ -11,8 +11,10 @@ import { create } from "zustand";
 
 export type MemorySettingsLoadState = "error" | "idle" | "loading" | "ready";
 export type MemorySettingsMutation =
+  | "decayEnabled"
   | "learnAutomatically"
   | "referenceChatHistory"
+  | "synthesisEnabled"
   | "useMemoryFacts";
 
 type MemorySettingsStore = {
@@ -125,7 +127,8 @@ export function activateMemorySettings(accountId: string): void {
 }
 
 export async function updateMemoryGate(
-  key: "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts",
+  key: "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
+    "useMemoryFacts",
   value: boolean
 ): Promise<MemoryConsumerSettingsResponse> {
   return mutation(key, () => {

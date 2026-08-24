@@ -40,6 +40,7 @@ export const MEMORY_COUNTER_MUTATIONS = [
   "ASSISTANT_ACCESS_CHANGE",
   "SCOPE_TARGET_DELETE",
   "FACT_SAFETY_RECLASSIFICATION",
+  "SYNTHESIS_PATTERN_CHANGE",
   "MEMORY_VISIBLE_SETTING_CHANGE",
   "MEMORY_MASTER_PAUSE",
   "MEMORY_UI_LOCALE_CHANGE",
@@ -90,7 +91,11 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
     BRANCH_PATH_CHANGE: Object.freeze({
       branchGeneration: true,
       check: "ACTIVE_LEAF_BRANCH_ITEMS",
-      memoryGeneration: true,
+      // Branch-local source identity is fenced by branch/source counters and
+      // active-path membership. Advancing the global destructive generation
+      // here would incorrectly stale an exact user-message job when assistant
+      // regeneration or another retained branch still contains that source.
+      memoryGeneration: false,
       memoryRevision: true,
       sourceRevision: true
     }),
@@ -123,6 +128,13 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       sourceRevision: false
     }),
     FACT_SAFETY_RECLASSIFICATION: Object.freeze({
+      branchGeneration: false,
+      check: "VERSION_CURRENT_POINTER",
+      memoryGeneration: false,
+      memoryRevision: true,
+      sourceRevision: false
+    }),
+    SYNTHESIS_PATTERN_CHANGE: Object.freeze({
       branchGeneration: false,
       check: "VERSION_CURRENT_POINTER",
       memoryGeneration: false,

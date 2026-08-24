@@ -4,6 +4,8 @@ import {
   createPatchMemoryConsumerSettingsHandler
 } from "@/lib/server/memory/consumer/handlers";
 
+// This route is the client-safe consumer projection; legacy settings objects
+// never cross the browser boundary directly.
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";

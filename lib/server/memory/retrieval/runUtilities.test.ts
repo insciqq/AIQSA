@@ -27,6 +27,20 @@ const profile: MemoryVectorProfile = Object.freeze({
   vectorSpaceFingerprint: "b".repeat(64)
 });
 
+const currentFactRerankCandidate = Object.freeze({
+  directness: "DIRECT" as const,
+  historical: false,
+  lifecycleState: "ACTIVE" as const,
+  temporalReason: "current" as const
+});
+
+const currentHistoryRerankCandidate = Object.freeze({
+  directness: null,
+  historical: false,
+  lifecycleState: null,
+  temporalReason: "current" as const
+});
+
 function snapshot(
   role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
 ): MemorySecretFreeExecutionSnapshot {
@@ -143,7 +157,9 @@ function execution(log: string[]) {
 function baseInput() {
   return {
     attemptId: "attempt-1",
+    retrievalMode: "TARGETED_CURRENT" as const,
     signal: new AbortController().signal,
+    temporalIntent: "CURRENT" as const,
     userId: "user-1"
   };
 }
@@ -334,6 +350,7 @@ describe("Memory run utility execution", () => {
     const result = await service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -402,6 +419,7 @@ describe("Memory run utility execution", () => {
     const input = {
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED" as const,
         current: true,
         handle: "c0",
@@ -420,7 +438,8 @@ describe("Memory run utility execution", () => {
     })).resolves.toMatchObject({ status: "READY" });
     await expect(service.rerank({
       ...input,
-      profileRequested: true
+      profileRequested: true,
+      retrievalMode: "CURRENT_PROFILE"
     })).resolves.toMatchObject({ status: "READY" });
 
     const ordinaryHash = bound.admission.bind.mock.calls[0]?.[1].inputHash;
@@ -485,6 +504,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -494,6 +514,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user's name is Nebula."
       }, {
+        ...currentFactRerankCandidate,
         authorityLevel: "LEARNED",
         current: true,
         handle: "c1",
@@ -504,6 +525,7 @@ describe("Memory run utility execution", () => {
         text: "The user lives in Rostov."
       }],
       profileRequested: true,
+      retrievalMode: "CURRENT_PROFILE",
       query: "What do you know about me?"
     })).resolves.toMatchObject({
       reason: "memory_run_utility_output_invalid",
@@ -562,6 +584,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -571,6 +594,7 @@ describe("Memory run utility execution", () => {
         sourceKind: "FACT",
         text: "The user's name is Nebula."
       }, {
+        ...currentFactRerankCandidate,
         authorityLevel: "LEARNED",
         current: true,
         handle: "c1",
@@ -581,6 +605,7 @@ describe("Memory run utility execution", () => {
         text: "The user lives in Rostov."
       }],
       profileRequested: true,
+      retrievalMode: "CURRENT_PROFILE",
       query: "What do you know about me?"
     })).resolves.toEqual({
       bindingId: "binding-MEMORY_RERANK",
@@ -619,6 +644,7 @@ describe("Memory run utility execution", () => {
     const uncertain = await service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentHistoryRerankCandidate,
         authorityLevel: "PAST_CHAT",
         current: true,
         handle: "c0",
@@ -644,6 +670,7 @@ describe("Memory run utility execution", () => {
     const blocked = await service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentHistoryRerankCandidate,
         authorityLevel: "PAST_CHAT",
         current: true,
         handle: "c0",
@@ -676,6 +703,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: Array.from({ length: 31 }, (_, index) => ({
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED" as const,
         current: true,
         handle: `c${index}`,
@@ -741,6 +769,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -849,6 +878,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -955,6 +985,7 @@ describe("Memory run utility execution", () => {
       await expect(service.rerank({
         ...baseInput(),
         candidates: [{
+          ...currentFactRerankCandidate,
           authorityLevel: "SAVED",
           current: true,
           handle: "c0",
@@ -1024,6 +1055,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -1068,6 +1100,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",
@@ -1135,6 +1168,7 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       candidates: [{
+        ...currentFactRerankCandidate,
         authorityLevel: "SAVED",
         current: true,
         handle: "c0",

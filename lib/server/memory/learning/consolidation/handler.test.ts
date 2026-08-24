@@ -136,6 +136,7 @@ function claim(kind: "CONSOLIDATE_CANDIDATE" | "VERIFY_CANDIDATE"): MemoryJobCla
     sourceMessageId: null,
     sourceRevision: 3,
     stage: null,
+    targetFactVersionId: null,
     userId: "user-1"
   };
 }

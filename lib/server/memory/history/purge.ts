@@ -12,6 +12,8 @@ import {
   purgeMemoryFeedbackHistoryClear,
   purgeMemoryFeedbackInvalidSource
 } from "../review/purge";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
   "memory-history-clear-v1";
@@ -31,6 +33,7 @@ type HistoryPurgeSelection =
 type HistoryTargetIds = Readonly<{
   candidateIds: readonly string[];
   chunkIds: readonly string[];
+  digestIds: readonly string[];
 }>;
 
 export type MemoryHistoryPurgeProgress = Readonly<{
@@ -96,9 +99,24 @@ async function targetIds(
         )
       ORDER BY chunk."id"
     `);
+    const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT DISTINCT digest."id"
+      FROM "ChatMemoryDigest" AS digest
+      LEFT JOIN "ChatMemoryDigestMessage" AS source_map
+        ON source_map."userId" = digest."userId"
+        AND source_map."digestId" = digest."id"
+      LEFT JOIN "Message" AS message
+        ON message."chatId" = source_map."chatId"
+        AND message."id" = source_map."messageId"
+      WHERE digest."userId" = ${userId}
+        AND (digest."createdAt" <= ${barrier.createdAt}
+          OR message."createdAt" <= ${barrier.sourceCreatedAtCutoff})
+      ORDER BY digest."id"
+    `);
     return {
       candidateIds: [],
-      chunkIds: chunks.map(({ id }) => id)
+      chunkIds: chunks.map(({ id }) => id),
+      digestIds: digests.map(({ id }) => id)
     };
   }
   if (selection.kind === "SOURCE") {
@@ -113,8 +131,57 @@ async function targetIds(
           chunk."state" <> 'ACTIVE'::"MemoryHistoryItemState"
           OR chat."id" IS NULL
           OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
-          OR chat."memoryBranchGeneration" <> chunk."branchGeneration"
-          OR chat."memorySourceRevision" <> chunk."sourceRevisionAtCreation"
+          OR (
+            chunk."chunkingVersion" <> ${MEMORY_HISTORY_CHUNKING_VERSION}
+            AND (
+              chat."memoryBranchGeneration" <> chunk."branchGeneration"
+              OR chat."memorySourceRevision" <> chunk."sourceRevisionAtCreation"
+            )
+          )
+          OR (
+            chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+            AND (
+              chunk."sourceProjectionVersion" <>
+                ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+              OR NOT EXISTS (
+                SELECT 1 FROM "MemoryRecallChunkMessage" AS source_map
+                WHERE source_map."userId" = chunk."userId"
+                  AND source_map."chatId" = chunk."chatId"
+                  AND source_map."chunkId" = chunk."id"
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM "MemoryRecallChunkMessage" AS source_map
+                LEFT JOIN "Message" AS source_message
+                  ON source_message."chatId" = source_map."chatId"
+                  AND source_message."id" = source_map."messageId"
+                WHERE source_map."userId" = chunk."userId"
+                  AND source_map."chatId" = chunk."chatId"
+                  AND source_map."chunkId" = chunk."id"
+                  AND (
+                    source_message."id" IS NULL
+                    OR source_message."updatedAt" <>
+                      source_map."sourceMessageUpdatedAt"
+                    OR NOT EXISTS (
+                      WITH RECURSIVE active_path AS (
+                        SELECT message."id", message."parentMessageId"
+                        FROM "Message" AS message
+                        WHERE message."chatId" = chat."id"
+                          AND message."id" = chat."activeLeafMessageId"
+                        UNION ALL
+                        SELECT parent."id", parent."parentMessageId"
+                        FROM active_path AS child
+                        INNER JOIN "Message" AS parent
+                          ON parent."chatId" = chat."id"
+                          AND parent."id" = child."parentMessageId"
+                      )
+                      SELECT 1 FROM active_path
+                      WHERE active_path."id" = source_map."messageId"
+                    )
+                  )
+              )
+            )
+          )
         )
       ORDER BY chunk."id"
     `);
@@ -139,9 +206,25 @@ async function targetIds(
       ORDER BY candidate."id"
       FOR UPDATE OF candidate
     `);
+    const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT digest."id"
+      FROM "ChatMemoryDigest" AS digest
+      LEFT JOIN "Chat" AS chat
+        ON chat."userId" = digest."userId" AND chat."id" = digest."chatId"
+      WHERE digest."userId" = ${userId}
+        AND digest."chatId" = ${selection.chatId}
+        AND (digest."state" <> 'ACTIVE'::"MemoryHistoryItemState"
+          OR chat."id" IS NULL
+          OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
+          OR chat."memoryBranchGeneration" <> digest."branchGeneration"
+          OR chat."memorySourceRevision" <> digest."sourceRevisionAtCreation"
+          OR chat."activeLeafMessageId" IS DISTINCT FROM digest."activeLeafMessageId")
+      ORDER BY digest."id"
+    `);
     return {
       candidateIds: candidates.map(({ id }) => id),
-      chunkIds: chunks.map(({ id }) => id)
+      chunkIds: chunks.map(({ id }) => id),
+      digestIds: digests.map(({ id }) => id)
     };
   }
 
@@ -193,9 +276,27 @@ async function targetIds(
       AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
     ORDER BY candidate."id"
   `);
+  const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT DISTINCT digest."id"
+    FROM "ChatMemoryDigest" AS digest
+    INNER JOIN "ChatMemoryDigestMessage" AS source_map
+      ON source_map."userId" = digest."userId"
+      AND source_map."digestId" = digest."id"
+    INNER JOIN "MemorySuppression" AS suppression
+      ON suppression."userId" = source_map."userId"
+      AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+        suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+        AND suppression."sourceChatId" = source_map."chatId"
+        AND suppression."sourceMessageId" = source_map."messageId"
+      ))
+    WHERE digest."userId" = ${userId}
+      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+    ORDER BY digest."id"
+  `);
   return {
     candidateIds: candidates.map(({ id }) => id),
-    chunkIds: chunks.map(({ id }) => id)
+    chunkIds: chunks.map(({ id }) => id),
+    digestIds: digests.map(({ id }) => id)
   };
 }
 
@@ -499,11 +600,23 @@ export async function purgeMemoryHistorySelection(
   await purgeMemoryHistoryReceiptDerivatives(tx, userId, selection);
   while (true) {
     const ids = await targetIds(tx, userId, selection);
-    if (ids.candidateIds.length === 0 && ids.chunkIds.length === 0) break;
+    if (ids.candidateIds.length === 0 && ids.chunkIds.length === 0 &&
+      ids.digestIds.length === 0) break;
     await settleAttemptItems(tx, userId, ids);
     await tx.memorySearchEntry.deleteMany({
       where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
     });
+    if (ids.digestIds.length > 0) {
+      await tx.chatMemoryDigestChunk.deleteMany({
+        where: { digestId: { in: [...ids.digestIds] }, userId }
+      });
+      await tx.chatMemoryDigestMessage.deleteMany({
+        where: { digestId: { in: [...ids.digestIds] }, userId }
+      });
+      await tx.chatMemoryDigest.deleteMany({
+        where: { id: { in: [...ids.digestIds] }, userId }
+      });
+    }
     if (ids.chunkIds.length > 0) {
       await tx.memoryRecallChunkMessage.deleteMany({
         where: { chunkId: { in: [...ids.chunkIds] }, userId }
@@ -536,7 +649,8 @@ export async function inspectMemoryHistoryPurge(
     : selection.kind === "SOURCE"
       ? await inspectMemoryFeedbackInvalidSource(tx, userId, selection.chatId, ids)
       : await inspectMemoryFeedbackHistoryClear(tx, userId, ids);
-  const historyItemCount = ids.candidateIds.length + ids.chunkIds.length;
+  const historyItemCount = ids.candidateIds.length + ids.chunkIds.length +
+    ids.digestIds.length;
   let referenceCount = 0;
   let searchCount = 0;
   if (historyItemCount > 0) {

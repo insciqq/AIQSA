@@ -125,6 +125,35 @@ describe("optional local development profile", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("uses the only explicitly assigned active credential after profile restore", async () => {
+    const update = vi.fn();
+    const profilePrisma = {
+      providerConnection: {
+        findMany: vi.fn(async () => [{
+          credentials: [
+            { id: "credential-old", userAssignments: [] },
+            {
+              id: "credential-restored",
+              userAssignments: [{ userId: "profile-user" }]
+            }
+          ],
+          defaultCredentialId: "credential-retired-default",
+          family: "openai",
+          id: "connection-openai"
+        }]),
+        update
+      }
+    } as unknown as PrismaClient;
+
+    await ensureLocalDevProfileDefaultCredentials(profilePrisma);
+
+    expect(update).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledWith({
+      data: { defaultCredentialId: "credential-restored" },
+      where: { id: "connection-openai" }
+    });
+  });
+
   it("fails closed when the entrypoint does not export run", async () => {
     await expect(runOptionalLocalDevProfile(prisma, {
       loadModule: async () => ({}),

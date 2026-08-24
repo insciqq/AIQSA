@@ -137,6 +137,10 @@ async function createAutomaticMemory(userId: string, statement: string) {
       status: "complete"
     }
   });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: message.id },
+    where: { id: chat.id }
+  });
   const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
   const created = await createPrismaMemoryFactRepository(keyring, prisma).save(userId, {
     evidence: {
@@ -191,14 +195,18 @@ async function makeConflict(
       where: { factId, id: firstVersionId, userId }
     });
     const firstEvidence = await tx.memoryEvidence.findFirstOrThrow({
-      select: { branchGeneration: true, chatId: true },
+      select: { branchGeneration: true, chatId: true, messageId: true },
       where: {
         factVersionId: firstVersionId,
         sourceType: "MESSAGE",
         userId
       }
     });
-    if (firstEvidence.branchGeneration === null || !firstEvidence.chatId) {
+    if (
+      firstEvidence.branchGeneration === null ||
+      !firstEvidence.chatId ||
+      !firstEvidence.messageId
+    ) {
       throw new Error("memory_review_conflict_source_missing");
     }
     const secondStatement = "I prefer detailed technical explanations.";
@@ -206,9 +214,14 @@ async function makeConflict(
       data: {
         chatId: firstEvidence.chatId,
         content: textMessageContent(secondStatement),
+        parentMessageId: firstEvidence.messageId,
         role: "user",
         status: "complete"
       }
+    });
+    await tx.chat.update({
+      data: { activeLeafMessageId: secondMessage.id },
+      where: { id: firstEvidence.chatId }
     });
     await tx.memoryEvent.create({
       data: {
@@ -518,7 +531,7 @@ describe("Prisma Memory review feedback", () => {
       expect(versions.filter(({ state }) => state === "ACTIVE")).toEqual([
         expect.objectContaining({
           displayText: "Use a balanced level of technical detail.",
-          sensitivityClass: "SENSITIVE",
+          sensitivityClass: "NORMAL",
           sourceMode: "EXPLICIT",
           supersedesVersionId: conflictIds[0]
         })
