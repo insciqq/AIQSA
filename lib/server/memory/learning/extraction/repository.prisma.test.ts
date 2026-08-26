@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import {
+  createTestProviderExecutionAuthority,
+  deleteTestProviderExecutionAuthority,
+  type TestProviderExecutionAuthority
+} from "@/tests/support/providerExecutionAuthority";
 import { textMessageContent } from "../../../../domain/content";
 import { providerTemplateIds } from "../../../../domain/providerTemplates";
 import { prisma } from "../../../prisma";
@@ -61,6 +66,15 @@ const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 10
 const keyring = MemorySuppressionKeyring.parse(
   `current=facts-v1,facts-v1=${keyBytes.toString("base64")}`
 );
+let executionAuthority: TestProviderExecutionAuthority | null = null;
+
+async function loadExecutionAuthority(): Promise<TestProviderExecutionAuthority> {
+  executionAuthority ??= await createTestProviderExecutionAuthority(
+    prisma,
+    "memory-extraction"
+  );
+  return executionAuthority;
+}
 
 async function createOwner(label: string): Promise<string> {
   const suffix = randomUUID();
@@ -401,27 +415,7 @@ async function createSucceededBinding(
   const id = `fact-binding-${randomUUID()}`;
   const completedAt = new Date();
   const createdAt = new Date(completedAt.getTime() - 1_000);
-  const [authority] = await prisma.$queryRaw<Array<{
-    connectionId: string;
-    credentialId: string;
-    credentialVersionId: string;
-    providerModelId: string;
-  }>>(Prisma.sql`
-    SELECT model."id" AS "providerModelId",
-      connection."id" AS "connectionId",
-      credential."id" AS "credentialId",
-      credential."activeVersionId" AS "credentialVersionId"
-    FROM "ProviderModel" AS model
-    INNER JOIN "ProviderConnection" AS connection
-      ON connection."id" = model."connectionId"
-    INNER JOIN "ProviderCredential" AS credential
-      ON credential."connectionId" = connection."id"
-      AND credential."id" = connection."defaultCredentialId"
-    WHERE credential."activeVersionId" IS NOT NULL
-    ORDER BY model."id"
-    LIMIT 1
-  `);
-  if (!authority) throw new Error("memory_vnext_test_execution_authority_missing");
+  const authority = await loadExecutionAuthority();
   await prisma.memoryExecutionBinding.create({
     data: {
       acceptedOutputHash: null,
@@ -732,6 +726,9 @@ async function activateHybridIndex(userId: string): Promise<void> {
 
 describe("Prisma Memory vNext source-message ingestion", () => {
   afterAll(async () => {
+    if (executionAuthority) {
+      await deleteTestProviderExecutionAuthority(prisma, executionAuthority);
+    }
     await prisma.$disconnect();
   });
 

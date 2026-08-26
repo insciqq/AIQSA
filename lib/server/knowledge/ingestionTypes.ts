@@ -6,6 +6,7 @@ import type { KnowledgeVectorSpaceConfiguration } from "./indexProfile";
 export type KnowledgeIngestionFailureCode =
   | "chunking_failed"
   | "embedding_failed"
+  | "embedding_rate_limited"
   | "embedding_unavailable"
   | "knowledge_chunk_limit_exceeded"
   | "knowledge_file_limit_exceeded"
@@ -26,7 +27,8 @@ export type KnowledgeIngestionFailureCode =
 export class KnowledgeIngestionError extends Error {
   constructor(
     readonly code: KnowledgeIngestionFailureCode,
-    readonly retryable = false
+    readonly retryable = false,
+    readonly retryAfterMs: number | null = null
   ) {
     super(code);
     this.name = "KnowledgeIngestionError";

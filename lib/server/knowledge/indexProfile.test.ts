@@ -38,8 +38,8 @@ function embeddingConfiguration(
 }
 
 describe("Knowledge vector-space profiles", () => {
-  it("activates document context in profile 4 without changing profile-3 layout reconstruction", () => {
-    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(4);
+  it("activates conservative full-input sizing in profile 6", () => {
+    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(6);
     expect(KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION).toBe(3);
   });
 

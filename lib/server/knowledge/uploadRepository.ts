@@ -140,8 +140,14 @@ async function withSourceState(
           versions: {
             select: {
               artifacts: {
-                orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
-                select: { errorCode: true, state: true, updatedAt: true, warningCodes: true }
+                orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+                select: {
+                  errorCode: true,
+                  id: true,
+                  state: true,
+                  updatedAt: true,
+                  warningCodes: true
+                }
               },
               id: true
             }
@@ -149,31 +155,33 @@ async function withSourceState(
         },
         where: { id: { in: sourceIds } }
       });
-  const sourceStates = new Map<string, KnowledgeUploadSourceState>(sources.map((source) => [
-    source.id,
-    {
-      currentVersionId: source.currentVersionId,
-      pendingVersionId: source.pendingVersionId,
-      versionStates: source.versions.flatMap((version) => {
-        const artifact = version.artifacts[0];
-        return artifact
-          ? [{
-              errorCode: artifact.errorCode,
-              id: version.id,
-              state: artifact.state,
-              updatedAt: artifact.updatedAt,
-              warningCodes: [...artifact.warningCodes]
-            }]
-          : [];
-      })
-    }
-  ]));
+  const sourcesById = new Map(sources.map((source) => [source.id, source]));
   return batches.map((batch) => ({
     ...batch,
-    items: batch.items.map((item) => ({
-      ...item,
-      sourceState: item.sourceId ? sourceStates.get(item.sourceId) ?? null : null
-    }))
+    items: batch.items.map((item) => {
+      const source = item.sourceId ? sourcesById.get(item.sourceId) : undefined;
+      const sourceState = source
+        ? {
+            currentVersionId: source.currentVersionId,
+            pendingVersionId: source.pendingVersionId,
+            versionStates: source.versions.flatMap((version) => {
+              const artifact = item.sourceArtifactId
+                ? version.artifacts.find(({ id }) => id === item.sourceArtifactId)
+                : version.artifacts[0];
+              return artifact
+                ? [{
+                    errorCode: artifact.errorCode,
+                    id: version.id,
+                    state: artifact.state,
+                    updatedAt: artifact.updatedAt,
+                    warningCodes: [...artifact.warningCodes]
+                  }]
+                : [];
+            })
+          } satisfies KnowledgeUploadSourceState
+        : null;
+      return { ...item, sourceState };
+    })
   }));
 }
 
@@ -780,6 +788,7 @@ export function createPrismaKnowledgeUploadRepository(client: PrismaClient = pri
             errorCode: null,
             multipartUploadId: null,
             settledAt: input.now,
+            sourceArtifactId: input.sourceArtifactId,
             sourceId: input.sourceId,
             sourceVersionId: input.sourceVersionId,
             state: "PROCESSING",

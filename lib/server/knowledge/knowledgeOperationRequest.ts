@@ -235,8 +235,7 @@ export function decodeKnowledgeOperationRequestV2(value: unknown): KnowledgeOper
     case "automatic_search": {
       if (variantKey === "query") {
         const query = canonicalText(value.query, KNOWLEDGE_QUERY_MAX_CHARACTERS);
-        return query && envelope.resolvedSourceIds.length >= 1 &&
-          envelope.sourceAliases.length === 0
+        return query && envelope.resolvedSourceIds.length >= 1
           ? Object.freeze({ ...envelope, operation: "automatic_search", query })
           : null;
       }

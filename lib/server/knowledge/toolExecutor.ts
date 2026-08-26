@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import type { EmbeddingAdapter } from "../providers/embeddings";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embeddings";
+import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type {
   ModelToolCall,
@@ -20,6 +22,7 @@ import {
   KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
   KNOWLEDGE_QUERY_MAX_CHARACTERS,
   KNOWLEDGE_RESULT_LIMIT,
+  KNOWLEDGE_SCOPED_RESULT_LIMIT,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_SEARCH_TOOL_NAME,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
@@ -54,6 +57,7 @@ import type {
 import type { KnowledgeBudgetReservationStopReason } from "./knowledgeBudgetReservation";
 import {
   knowledgeRetrievalTool,
+  normalizeKnowledgeQuery,
   parseKnowledgeExecutionRequest
 } from "./knowledgeTools";
 import {
@@ -93,8 +97,10 @@ export type KnowledgeRetrievalStore = Readonly<{
     userId: string;
   }>): Promise<KnowledgeBudgetState | null>;
   hybridSearch(input: Readonly<{
+    anchorQuery?: string;
     bindingOrdinals?: readonly number[];
     candidateLimit: number;
+    excludedContentHashes: readonly string[];
     operation: KnowledgeOperationKind;
     query: string;
     resultLimit: number;
@@ -180,6 +186,7 @@ export type KnowledgeBudgetState = Readonly<{
   invocationOrdinal: number;
   policy: KnowledgeBudgetPolicy;
   priorContentHashes: readonly string[];
+  priorSourceAliases: readonly string[];
   stopReason: KnowledgeBudgetStopReason | null;
   usage: KnowledgeBudgetUsage;
 }>;
@@ -221,6 +228,17 @@ function safeFailureCode(error: unknown): string {
   return /^[a-z][a-z0-9_]{0,127}$/u.test(candidate)
     ? candidate
     : "embedding_unavailable";
+}
+
+function permitsLexicalQueryDegradation(error: unknown): boolean {
+  if (error instanceof ProviderAdmissionError) {
+    return error.code === "model_not_available" || error.code.startsWith("credential_");
+  }
+  if (!(error instanceof EmbeddingAdapterError)) return false;
+  return error.code === "embedding_request_timed_out" ||
+    error.code === "embedding_provider_request_failed" ||
+    error.code === "embedding_provider_http_error" &&
+      (error.httpStatus === 429 || error.httpStatus !== null && error.httpStatus >= 500);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -395,8 +413,9 @@ function includedPassages(
   const excerptBudgetBytes = Math.max(1, maximumBytes - metadataReserveBytes);
   const sourceAliasByArtifact = primarySourceAliasesByArtifact(aliases);
   const selected: KnowledgeRetrievedPassageEvidence[] = [];
+  const pendingExpandedContext: Array<string | null> = [];
   let retainedExcerptBytes = 0;
-  for (const { text, ...passage } of passages) {
+  for (const { expandedContext, text, ...passage } of passages) {
     const sourceTextBytes = Buffer.byteLength(text, "utf8");
     if (sourceTextBytes > excerptBudgetBytes) {
       if (selected.length === 0) throw new Error("knowledge_evidence_item_too_large");
@@ -418,9 +437,18 @@ function includedPassages(
       sourceTextBytes,
       textTruncated: false
     });
+    pendingExpandedContext.push(expandedContext || null);
     retainedExcerptBytes += sourceTextBytes;
   }
-  return selected;
+  let remainingContextBytes = excerptBudgetBytes - retainedExcerptBytes;
+  return selected.map((passage, index) => {
+    const expandedContext = pendingExpandedContext[index];
+    if (!expandedContext) return passage;
+    const expandedContextBytes = Buffer.byteLength(expandedContext, "utf8");
+    if (expandedContextBytes > remainingContextBytes) return passage;
+    remainingContextBytes -= expandedContextBytes;
+    return { ...passage, expandedContext };
+  });
 }
 
 function primarySourceAliasesByArtifact(
@@ -478,9 +506,20 @@ async function loadBudgetState(input: Readonly<{
     invocationOrdinal,
     policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
     priorContentHashes: [],
+    priorSourceAliases: [],
     stopReason: knowledgeBudgetStopReason(DEFAULT_KNOWLEDGE_BUDGET_POLICY, usage),
     usage
   };
+}
+
+function automaticSourceAliasesPreviouslyDisclosed(
+  request: NonNullable<ReturnType<typeof parseKnowledgeExecutionRequest>>,
+  budgetState: KnowledgeBudgetState
+): boolean {
+  if (request.operation !== "automatic_search" || request.sourceAliases.length === 0) return true;
+  const disclosed = new Set(budgetState.priorSourceAliases);
+  return budgetState.invocationOrdinal > 1 &&
+    request.sourceAliases.every((alias) => disclosed.has(alias));
 }
 
 function aliasFilter(
@@ -540,6 +579,22 @@ function originalQuerySha256(context: ToolExecutionContext): string {
   return createHash("sha256")
     .update(canonicalJson(original?.content ?? context.request.context ?? context.request))
     .digest("hex");
+}
+
+function currentUserAnchorQuery(
+  context: ToolExecutionContext,
+  request: NonNullable<ReturnType<typeof parseKnowledgeExecutionRequest>>
+): string | null {
+  if (
+    request.operation !== "automatic_search" ||
+    request.focused
+  ) return null;
+  const currentUserQuery = normalizeKnowledgeQuery(
+    textFromContentBlocks(context.request.content)
+  );
+  return currentUserQuery && currentUserQuery !== request.query
+    ? currentUserQuery
+    : null;
 }
 
 function operationRequestInput(input: Readonly<{
@@ -603,6 +658,14 @@ function operationRequestInput(input: Readonly<{
         operation: "discover_sources" as const
       });
   }
+}
+
+function automaticSearchResultLimit(
+  request: NonNullable<ReturnType<typeof parseKnowledgeExecutionRequest>>
+): number {
+  return request.operation === "automatic_search" && request.sourceAliases.length > 0
+    ? KNOWLEDGE_SCOPED_RESULT_LIMIT
+    : KNOWLEDGE_RESULT_LIMIT;
 }
 
 function reservationPriorBudgetState(
@@ -817,13 +880,16 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ? reservationInput.request.discovery.limit
         : null;
     const reservedCandidateLimit = purposeLimit ?? staticPolicy.candidateLimit;
+    const reservedResultLimit = purposeLimit ?? automaticSearchResultLimit(
+      reservationInput.request
+    );
     const result = await input.budgetReservations.reserve({
       estimate: {
         candidateCount: reservedCandidateLimit,
         costMicros: 0,
         latencyMs: 1_000,
         queryEmbeddingCalls: usesSemanticRetrieval ? 1 : 0,
-        retrievedTokens: (purposeLimit ?? staticPolicy.resultLimit) * 512
+        retrievedTokens: reservedResultLimit * 512
       },
       idempotencyKey: `knowledge-operation:${reservationInput.modelRunToolCallId}`,
       modelRunToolCallId: reservationInput.modelRunToolCallId,
@@ -898,6 +964,12 @@ export function createKnowledgeToolExecutor(input: Readonly<{
     if (budgetState.stopReason) {
       return { kind: "rejected", result: budgetRejectionResult(call, budgetState.stopReason) };
     }
+    if (!automaticSourceAliasesPreviouslyDisclosed(request, budgetState)) {
+      return {
+        kind: "rejected",
+        result: errorResult(call, "knowledge_scope_alias_unavailable")
+      };
+    }
     if (!input.budgetReservations) return { kind: "admitted" };
     const bindings = await input.store.loadBindings({ runId, userId });
     if (!validBindings(bindings)) {
@@ -970,8 +1042,12 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       if (budgetState.stopReason) {
         return budgetRejectionResult(call, budgetState.stopReason);
       }
+      if (!automaticSourceAliasesPreviouslyDisclosed(request, budgetState)) {
+        return errorResult(call, "knowledge_scope_alias_unavailable");
+      }
       const candidateLimit = staticPolicy.candidateLimit;
-      const resultLimit = staticPolicy.resultLimit;
+      const resultLimit = automaticSearchResultLimit(request);
+      const anchorQuery = currentUserAnchorQuery(context, request);
       const startedAt = Date.now();
       const bindings = await input.store.loadBindings({ runId, userId: context.userId });
       if (!validBindings(bindings)) return errorResult(call, "knowledge_run_binding_unavailable");
@@ -1327,6 +1403,10 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       if (groups.length !== 1) throw new Error("knowledge_embedding_space_incompatible");
 
       const embeddingExecutions: KnowledgeEmbeddingExecutionEvidence[] = [];
+      let semanticUnavailable = false;
+      const semanticQueries = anchorQuery
+        ? [anchorQuery, request.query]
+        : [request.query];
       const vectors: Array<{
         bindingOrdinal: number;
         indexGenerationId: string;
@@ -1342,12 +1422,12 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           const result = await runtime.adapter.embed({
             mode: "query",
             ...(options?.signal ? { signal: options.signal } : {}),
-            texts: [request.query]
+            texts: semanticQueries
           });
           throwIfAborted(options?.signal);
-          const vector = result.vectors[0];
-          if (!vector || vector.length !== group.bindings[0]!.targetDimension ||
-            vector.some((value) => !Number.isFinite(value))) {
+          if (result.vectors.length !== semanticQueries.length || result.vectors.some((vector) =>
+            vector.length !== group.bindings[0]!.targetDimension ||
+            vector.some((value) => !Number.isFinite(value)))) {
             throw new Error("embedding_response_dimension_mismatch");
           }
           embeddingExecutions.push({
@@ -1362,23 +1442,44 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             totalTokens: result.usage.totalTokens ?? result.usage.inputTokens ?? 0
           });
           for (const binding of group.bindings) {
-            vectors.push({
-              bindingOrdinal: binding.ordinal,
-              indexGenerationId: binding.indexGenerationId,
-              knowledgeBaseId: binding.knowledgeBaseId,
-              targetDimension: binding.targetDimension,
-              vector
-            });
+            for (const vector of result.vectors) {
+              vectors.push({
+                bindingOrdinal: binding.ordinal,
+                indexGenerationId: binding.indexGenerationId,
+                knowledgeBaseId: binding.knowledgeBaseId,
+                targetDimension: binding.targetDimension,
+                vector
+              });
+            }
           }
         } catch (error) {
           throwIfAborted(options?.signal);
+          if (permitsLexicalQueryDegradation(error)) {
+            semanticUnavailable = true;
+            embeddingExecutions.push({
+              bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
+              durationMs: Date.now() - embeddingStartedAt,
+              inputTokens: 0,
+              modelId: runtime?.configuration.upstreamModelId ??
+                group.snapshot.model.upstreamModelId,
+              provider: runtime?.provider ?? group.snapshot.providerFamily,
+              providerModelId: runtime?.providerModelId ??
+                group.bindings[0]!.embeddingProviderModelId,
+              requestId: null,
+              status: "error",
+              totalTokens: 0
+            });
+            continue;
+          }
           throw new Error(safeFailureCode(error), { cause: error });
         }
       }
 
       const search = await input.store.hybridSearch({
+        ...(anchorQuery ? { anchorQuery } : {}),
         ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
         candidateLimit,
+        excludedContentHashes: budgetState.priorContentHashes,
         operation: request.operation,
         query: request.query,
         resultLimit,
@@ -1419,7 +1520,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         : scopedBindings.some((binding) =>
               binding.indexedContentRevision < binding.baseContentRevision)
             ? "base_indexing"
-            : "base_empty";
+            : "no_relevant_evidence";
       const durationMs = Date.now() - startedAt;
       return persist(finalizedEvidence({
         bases: baseEvidence(
@@ -1431,9 +1532,11 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         candidateLimit,
         durationMs,
         embeddingExecutions,
-        ...(budgetState.excludedResources
-          ? { failureCode: "partial_sources_ready" }
-          : {}),
+        ...(semanticUnavailable
+          ? { failureCode: "semantic_retrieval_unavailable" }
+          : budgetState.excludedResources
+            ? { failureCode: "partial_sources_ready" }
+            : {}),
         fusion: ranking.fusion,
         invocationOrdinal: budgetState.invocationOrdinal,
         operation: request.operation,

@@ -100,7 +100,12 @@ function uploadBatchPath(baseId: string, batchId?: string): string {
 }
 
 function uploadItemPath(baseId: string, batchId: string, itemId: string): string {
-  return `${uploadBatchPath(baseId, batchId)}/items/${encodeURIComponent(itemId)}`;
+  return [
+    "/api/me/knowledge-uploads",
+    encodeURIComponent(baseId),
+    encodeURIComponent(batchId),
+    encodeURIComponent(itemId)
+  ].join("/");
 }
 
 function lifecycleRequest(

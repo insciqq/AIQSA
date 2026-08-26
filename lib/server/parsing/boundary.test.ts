@@ -155,6 +155,47 @@ describe("document parser boundary", () => {
     })).resolves.toMatchObject({ engine: "tika", text: "binary document fixture" });
   });
 
+  it("classifies parser rate limiting as retryable and preserves a bounded retry delay", async () => {
+    const boundary = createDocumentParserBoundary({
+      config: { docling: engineConfig("http://docling:5001/") },
+      fetch: vi.fn<typeof fetch>(async () => new Response("private overload body", {
+        headers: { "retry-after": "75" },
+        status: 429
+      })),
+      sidecarFallback: false
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("docx-fixture"),
+      fileName: "fixture.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    })).rejects.toMatchObject({
+      code: "parser_unavailable",
+      httpStatus: 429,
+      retryAfterMs: 75_000
+    });
+  });
+
+  it("classifies a parser invalid request as permanent", async () => {
+    const boundary = createDocumentParserBoundary({
+      config: { docling: engineConfig("http://docling:5001/") },
+      fetch: vi.fn<typeof fetch>(async () => new Response("private rejection body", {
+        status: 422
+      })),
+      sidecarFallback: false
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("corrupt-docx-fixture"),
+      fileName: "fixture.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    })).rejects.toMatchObject({
+      code: "parser_rejected",
+      httpStatus: 422,
+      retryAfterMs: null
+    });
+  });
+
   it("falls back from a rejected Docling parse to Tika", async () => {
     const doclingParse = vi.fn<DocumentParserEngineAdapter["parse"]>(async () => {
       throw new DocumentParserError("parser_rejected", "docling");
@@ -189,7 +230,8 @@ describe("document parser boundary", () => {
     const nativeDocument = parsed("native_pdf", "Metric\t6.7");
     const nativePdfParser = vi.fn(async () => ({
       classification: "native_text" as const,
-      document: nativeDocument
+      document: nativeDocument,
+      reasonCode: null
     }));
     const doclingParse = vi.fn<DocumentParserEngineAdapter["parse"]>();
     const boundary = createDocumentParserBoundary({
@@ -210,7 +252,8 @@ describe("document parser boundary", () => {
   it("routes image-only PDFs to Docling with native quality evidence", async () => {
     const nativePdfParser = vi.fn(async () => ({
       classification: "image_only" as const,
-      document: null
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
     }));
     const doclingParse = vi.fn(async () => parsed("docling", "ocr output"));
     const boundary = createDocumentParserBoundary({
@@ -225,7 +268,12 @@ describe("document parser boundary", () => {
       mimeType: "application/pdf"
     })).resolves.toMatchObject({
       attempts: [
-        { engine: "native_pdf", errorCode: null, outcome: "quality_failure" },
+        {
+          engine: "native_pdf",
+          errorCode: null,
+          outcome: "quality_failure",
+          reasonCode: "native_pdf_image_heavy_low_text"
+        },
         { engine: "docling", errorCode: null, outcome: "complete" }
       ],
       engine: "docling",

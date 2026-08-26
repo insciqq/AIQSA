@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError, type ParsedDocument } from "../parsing";
 import { finalizeParsedDocument } from "../parsing/assessment";
 import type { EmbeddingRuntimeBinding } from "../providerRuntime/embeddingRuntime";
+import { EmbeddingAdapterError } from "../providers/embeddings";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
@@ -201,6 +202,63 @@ describe("Knowledge ingestion processor", () => {
       normalizedTextChecksum: digest(normalized.body),
       pageCount: 1
     }));
+  });
+
+  it("logs content-free native PDF quality reasons with ingestion identity", async () => {
+    const storage = createMemoryStorageAdapter();
+    await storage.putObject({
+      body: Buffer.from("hello"),
+      contentType: "application/pdf",
+      storageKey: "original.txt"
+    });
+    const repo = repository();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fallback = parsed();
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      parser: {
+        parse: vi.fn(async () => finalizeParsedDocument({
+          attempts: [
+            {
+              engine: "native_pdf",
+              errorCode: null,
+              outcome: "quality_failure",
+              reasonCode: "native_pdf_possible_multi_column"
+            },
+            { engine: "docling", errorCode: null, outcome: "complete" }
+          ],
+          blocks: fallback.blocks,
+          engine: "docling",
+          mediaType: "application/pdf",
+          pageCount: 1,
+          status: "complete"
+        }))
+      },
+      repository: repo,
+      storage
+    });
+
+    try {
+      await process(claim("parsing", {
+        fileName: "document.pdf",
+        mimeType: "application/pdf"
+      }));
+      expect(info).toHaveBeenCalledWith(JSON.stringify({
+        artifactId: "artifact-1",
+        attemptNumber: 1,
+        event: "knowledge_ingestion_parser_quality_fallback",
+        knowledgeBaseId: "base-1",
+        reasonCode: "native_pdf_possible_multi_column",
+        sourceId: "document-1",
+        sourceVersionId: "version-1",
+        stage: "parsing"
+      }));
+      const normalized = JSON.parse(storage.objects.get("normalized.json")!.body.toString("utf8"));
+      expect(normalized.parser.attempts[0]).not.toHaveProperty("reasonCode");
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it("routes only PDFs through the immutable System Model processing pin", async () => {
@@ -604,14 +662,80 @@ describe("Knowledge ingestion processor", () => {
     const process = createKnowledgeIngestionProcessor({
       config,
       embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
-      parser: { parse: vi.fn(async () => { throw new DocumentParserError("parser_unavailable", "docling"); }) },
+      parser: {
+        parse: vi.fn(async () => {
+          throw new DocumentParserError("parser_unavailable", "docling", {
+            retryAfterMs: 60_000
+          });
+        })
+      },
       repository: repository(),
       storage
     });
 
     await expect(process(claim("parsing"))).rejects.toMatchObject({
       code: "parser_unavailable",
+      retryAfterMs: 60_000,
       retryable: true
+    });
+  });
+
+  it.each([
+    {
+      expectedCode: "embedding_rate_limited",
+      httpStatus: 429,
+      retryAfterMs: 75_000,
+      retryable: true
+    },
+    {
+      expectedCode: "embedding_unavailable",
+      httpStatus: 503,
+      retryAfterMs: null,
+      retryable: true
+    },
+    {
+      expectedCode: "embedding_failed",
+      httpStatus: 400,
+      retryAfterMs: null,
+      retryable: false
+    }
+  ])("classifies embedding HTTP $httpStatus without retrying permanent requests", async ({
+    expectedCode,
+    httpStatus,
+    retryAfterMs,
+    retryable
+  }) => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(), config);
+    await storage.putObject({
+      body: encoded.body,
+      contentType: "application/json",
+      storageKey: "normalized.json"
+    });
+    const providerError = new EmbeddingAdapterError("embedding_provider_http_error", {
+      httpStatus,
+      retryAfterMs
+    });
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: {
+        resolveForInstallation: vi.fn(),
+        resolveForUser: vi.fn(async () => binding(vi.fn(async () => {
+          throw providerError;
+        })))
+      },
+      repository: repository(),
+      storage
+    });
+
+    await expect(process(claim("embedding", {
+      ingestChunkCount: 1,
+      normalizedTextByteSize: encoded.body.byteLength,
+      normalizedTextChecksum: encoded.checksum
+    }))).rejects.toMatchObject({
+      code: expectedCode,
+      retryAfterMs,
+      retryable
     });
   });
 

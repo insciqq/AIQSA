@@ -5,7 +5,7 @@ import { createAnthropicMessagesAdapter, type AnthropicStreamEvent } from "../pr
 import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
 
-function request(): ProviderRunRequest {
+function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
     attachmentIds: [],
     attachments: [],
@@ -26,7 +26,8 @@ function request(): ProviderRunRequest {
     params: { background: true, stream: true },
     prompt: { developer: null, system: null },
     provider: "openai",
-    searchPlan: { mode: "all_selected", options: [] }
+    searchPlan: { mode: "all_selected", options: [] },
+    ...overrides
   };
 }
 
@@ -155,6 +156,55 @@ describe("provider tool loop", () => {
 
     expect(outcome).toMatchObject({ final: { finalText: "budgeted answer" }, status: "complete" });
     expect(requests.map((candidate) => candidate.toolChoice)).toEqual(["auto", "none"]);
+  });
+
+  it("requires only the first tool round when preparation requires initial evidence", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        if (requests.length === 1) {
+          return {
+            finalProviderResponsePreview: {},
+            finalText: "",
+            toolCalls: [{ arguments: {}, id: "call-a", name: "alpha" }],
+            usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+          };
+        }
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "grounded answer",
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+
+    const outcome = await runProviderToolLoop({
+      adapter,
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 },
+      executeTool: async (call) => ({
+        status: "complete",
+        value: {
+          callId: call.id,
+          content: [{ text: "evidence", type: "text" }],
+          name: call.name,
+          status: "complete"
+        }
+      }),
+      initialRequest: request({ toolChoice: "required" }),
+      parallelToolCalls: false,
+      tools: [{
+        capability: "mcp",
+        description: "A",
+        inputSchema: { type: "object" },
+        name: "alpha"
+      }]
+    });
+
+    expect(outcome).toMatchObject({ final: { finalText: "grounded answer" }, status: "complete" });
+    expect(requests.map((candidate) => candidate.toolChoice)).toEqual(["required", "auto"]);
   });
 
   it("replays the complete recovered provider transcript without a hidden provider chain", async () => {

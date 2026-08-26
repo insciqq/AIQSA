@@ -6,8 +6,10 @@ import {
 } from "./documentContext";
 import type { StoredKnowledgeNormalizedDocument } from "./normalizedDocument";
 
-export const KNOWLEDGE_HIERARCHICAL_INDEX_VERSION = 2;
+export const KNOWLEDGE_HIERARCHICAL_INDEX_VERSION = 3;
 export const KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES = 10_000;
+export const KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES_PER_PASSAGE = 50;
+export const KNOWLEDGE_EXACT_QUERY_MAX_VALUES = 64;
 export const KNOWLEDGE_DOCUMENT_CONTEXT_MAX_BYTES = 256 * 1_024;
 
 const MAX_SUMMARY_CHARACTERS = 4_000;
@@ -99,6 +101,11 @@ export type KnowledgeHierarchicalIndexPlan = Readonly<{
   derivationMode: "legacy_chunks" | "normalized_v2";
   document: KnowledgeHierarchicalDocumentPlan;
   exactEntries: readonly KnowledgeHierarchicalExactEntryPlan[];
+  exactIndex: Readonly<{
+    candidateCount: number;
+    retainedCount: number;
+    truncated: boolean;
+  }>;
   id: string;
   passages: readonly KnowledgeHierarchicalPassagePlan[];
   schemaVersion: typeof KNOWLEDGE_HIERARCHICAL_INDEX_VERSION;
@@ -297,6 +304,55 @@ function matches(value: string, pattern: RegExp, capture = 0): string[] {
   });
 }
 
+function exactDateValues(value: string): string[] {
+  return matches(value, /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b/gu);
+}
+
+function exactIdentifierValues(value: string): string[] {
+  return (value.normalize("NFKC").match(
+    /[\p{L}\p{M}\p{N}_]+(?:[.-][\p{L}\p{M}\p{N}_]+)*/gu
+  ) ?? []).filter((candidate) =>
+    candidate.length >= 3 && candidate.length <= 64 &&
+    /\p{L}/u.test(candidate) && /\d/u.test(candidate));
+}
+
+function exactNumberValues(value: string): string[] {
+  return matches(
+    value,
+    /(?:^|[^\p{L}\p{N}_-])([+-]?\d+(?:[.,]\d+)?)(?=$|[^\p{L}\p{N}_-])/gu,
+    1
+  );
+}
+
+/** Query-side exact candidates share the index-side identifier/date/number
+ * grammar. The bounded normalized set is safe to pass to one SQL `unnest` lane. */
+export function knowledgeExactQueryValues(query: string): string[] {
+  const compact = compactText(query, 3_000);
+  if (!compact) return [];
+  const filenameLike = compact.match(
+    /[\p{L}\p{M}\p{N}_-]+(?:\.[\p{L}\p{M}\p{N}_-]+)+/gu
+  ) ?? [];
+  const quoted = matches(compact, /["“«]([^"”»]{2,512})["”»]/gu, 1);
+  const candidates = [
+    ...exactIdentifierValues(compact),
+    ...exactDateValues(compact),
+    ...exactNumberValues(compact),
+    ...filenameLike,
+    ...quoted,
+    compact
+  ];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = knowledgeExactNormalizedValue(candidate);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= KNOWLEDGE_EXACT_QUERY_MAX_VALUES) break;
+  }
+  return result;
+}
+
 type ExactSeed = Readonly<{
   kind: KnowledgeExactEntryKind;
   page: number | null;
@@ -359,18 +415,9 @@ function exactSeeds(
     });
   }
   for (const passage of passages) {
-    const dateValues = matches(
-      passage.text,
-      /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b/gu
-    );
-    const identifierValues = words(passage.text).filter((value) =>
-      value.length >= 3 && value.length <= 64 && /\p{L}/u.test(value) && /\d/u.test(value)
-    );
-    const numberValues = matches(
-      passage.text,
-      /(?:^|[^\p{L}\p{N}_-])([+-]?\d+(?:[.,]\d+)?)(?=$|[^\p{L}\p{N}_-])/gu,
-      1
-    );
+    const dateValues = exactDateValues(passage.text);
+    const identifierValues = exactIdentifierValues(passage.text);
+    const numberValues = exactNumberValues(passage.text);
     for (const [kind, values] of [
       ["date", dateValues],
       ["identifier", identifierValues],
@@ -513,9 +560,24 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
     });
   });
 
+  const exactKindPriority: Readonly<Record<KnowledgeExactEntryKind, number>> = {
+    filename: 0,
+    title: 1,
+    heading: 2,
+    tag: 3,
+    identifier: 4,
+    date: 5,
+    number: 6
+  };
+  type PreparedExactSeed = ExactSeed & Readonly<{
+    discoveryOrdinal: number;
+    key: string;
+    normalizedValue: string;
+    value: string;
+  }>;
   const seenExact = new Set<string>();
-  const exactEntries: KnowledgeHierarchicalExactEntryPlan[] = [];
-  for (const seed of exactSeeds(document, sections, passages)) {
+  const preparedSeeds: PreparedExactSeed[] = [];
+  for (const [discoveryOrdinal, seed] of exactSeeds(document, sections, passages).entries()) {
     const value = compactText(seed.value, 512);
     const normalizedValue = knowledgeExactNormalizedValue(value);
     if (!value || !normalizedValue) continue;
@@ -527,30 +589,54 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
     ].join("\0");
     if (seenExact.has(key)) continue;
     seenExact.add(key);
+    preparedSeeds.push({ ...seed, discoveryOrdinal, key, normalizedValue, value });
+  }
+  preparedSeeds.sort((left, right) =>
+    exactKindPriority[left.kind] - exactKindPriority[right.kind] ||
+    left.discoveryOrdinal - right.discoveryOrdinal ||
+    left.normalizedValue.localeCompare(right.normalizedValue, "und") ||
+    left.key.localeCompare(right.key, "und"));
+
+  const passageCounts = new Map<string, number>();
+  const retainedSeeds: PreparedExactSeed[] = [];
+  for (const seed of preparedSeeds) {
+    if (seed.passageId) {
+      const count = passageCounts.get(seed.passageId) ?? 0;
+      if (count >= KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES_PER_PASSAGE) continue;
+      passageCounts.set(seed.passageId, count + 1);
+    }
+    if (retainedSeeds.length < KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES) {
+      retainedSeeds.push(seed);
+    }
+  }
+
+  const exactEntries: KnowledgeHierarchicalExactEntryPlan[] = [];
+  for (const seed of retainedSeeds) {
     const ordinal = exactEntries.length;
     exactEntries.push(Object.freeze({
-      id: stableId("kie", id, String(ordinal), key),
+      id: stableId("kie", id, String(ordinal), seed.key),
       kind: seed.kind,
-      normalizedValue,
+      normalizedValue: seed.normalizedValue,
       ordinal,
       page: seed.page,
       pageEnd: seed.pageEnd,
       passageId: seed.passageId,
       sectionId: seed.sectionId,
-      value,
-      valueHash: sha256(value)
+      value: seed.value,
+      valueHash: sha256(seed.value)
     }));
-    if (exactEntries.length > KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES) {
-      throw new KnowledgeHierarchicalIndexError(
-        "knowledge_hierarchical_exact_entry_limit_exceeded"
-      );
-    }
   }
+  const exactIndex = Object.freeze({
+    candidateCount: preparedSeeds.length,
+    retainedCount: exactEntries.length,
+    truncated: preparedSeeds.length > exactEntries.length
+  });
 
   const withoutChecksum = Object.freeze({
     derivationMode: input.document ? "normalized_v2" as const : "legacy_chunks" as const,
     document,
     exactEntries: Object.freeze(exactEntries),
+    exactIndex,
     id,
     passages: Object.freeze(passages),
     schemaVersion: KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,

@@ -5,8 +5,11 @@ import { chunkKnowledgeDocument } from "./chunking";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import {
   buildKnowledgeHierarchicalIndex,
+  KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES,
+  KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES_PER_PASSAGE,
   KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,
   knowledgeExactNormalizedValue,
+  knowledgeExactQueryValues,
   knowledgeLexicalLanguage
 } from "./hierarchicalIndex";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
@@ -195,7 +198,7 @@ describe("Knowledge hierarchical index derivation", () => {
     const contextual = build(context);
     const alternate = build(alternateContext);
 
-    expect(contextual.schemaVersion).toBe(2);
+    expect(contextual.schemaVersion).toBe(KNOWLEDGE_HIERARCHICAL_INDEX_VERSION);
     expect(contextual.passages[0]!.documentContext).toEqual(context);
     expect(contextual.checksum).not.toBe(alternate.checksum);
     expect(contextual.passages[0]!.contentHash).toBe(alternate.passages[0]!.contentHash);
@@ -222,5 +225,68 @@ describe("Knowledge hierarchical index derivation", () => {
     })).toThrowError(expect.objectContaining({
       code: "knowledge_hierarchical_index_input_invalid"
     }));
+  });
+
+  it("extracts punctuation-heavy exact values from an ordinary user question", () => {
+    expect(knowledgeExactQueryValues(
+      "Что связано с SAFE-2718, AB_123, invoice.00491, 2026-08-20 и 15432.70?"
+    )).toEqual(expect.arrayContaining([
+      "safe-2718",
+      "ab_123",
+      "invoice.00491",
+      "2026-08-20",
+      "15432.70"
+    ]));
+    expect(new Set(knowledgeExactQueryValues("SAFE-2718 SAFE-2718")).size)
+      .toBe(knowledgeExactQueryValues("SAFE-2718 SAFE-2718").length);
+  });
+
+  it("soft-caps exact overflow deterministically while retaining higher-priority values", () => {
+    const { chunks } = fixture();
+    const template = chunks[0]!;
+    const overflowChunks = Array.from({ length: 240 }, (_, index) => {
+      const numbers = Array.from({ length: 60 }, (_value, numberIndex) =>
+        String(1_000_000 + index * 100 + numberIndex));
+      return {
+        ...template,
+        contentHash: index.toString(16).padStart(64, "0"),
+        embeddingTextHash: (index + 1).toString(16).padStart(64, "0"),
+        index,
+        page: index + 1,
+        pageEnd: index + 1,
+        text: `SAFE-${index.toString().padStart(4, "0")} 2026-08-20 ${numbers.join(" ")}`,
+        tokenCount: 1
+      };
+    });
+    const input = {
+      chunks: overflowChunks,
+      document: null,
+      fileName: "financial-catalog.pdf",
+      mimeType: "application/pdf",
+      sourceArtifactId: "artifact-overflow",
+      sourceName: "Financial catalog"
+    } as const;
+    const first = buildKnowledgeHierarchicalIndex(input);
+    const second = buildKnowledgeHierarchicalIndex(input);
+
+    expect(first).toEqual(second);
+    expect(first.exactEntries).toHaveLength(KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES);
+    expect(first.exactIndex).toMatchObject({
+      candidateCount: expect.any(Number),
+      retainedCount: KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES,
+      truncated: true
+    });
+    expect(first.exactIndex.candidateCount).toBeGreaterThan(first.exactIndex.retainedCount);
+    expect(first.exactEntries.filter((entry) => entry.kind === "identifier")).toHaveLength(240);
+    expect(first.exactEntries.filter((entry) => entry.kind === "date")).toHaveLength(240);
+    expect(first.exactEntries.some((entry) => entry.kind === "filename" &&
+      entry.value === "financial-catalog.pdf")).toBe(true);
+    const perPassage = new Map<string, number>();
+    for (const entry of first.exactEntries) {
+      if (!entry.passageId) continue;
+      perPassage.set(entry.passageId, (perPassage.get(entry.passageId) ?? 0) + 1);
+    }
+    expect(Math.max(...perPassage.values()))
+      .toBeLessThanOrEqual(KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES_PER_PASSAGE);
   });
 });

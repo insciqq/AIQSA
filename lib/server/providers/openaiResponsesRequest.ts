@@ -16,7 +16,7 @@ export type OpenAIResponsesTextContentBlock = {
 };
 
 export type OpenAIResponsesImageContentBlock = {
-  detail: "auto";
+  detail: "auto" | "original";
   image_url: string;
   type: "input_image";
 };
@@ -151,9 +151,12 @@ function imageBlock(
   attachment: ProviderAttachment,
   redactImages: boolean
 ): OpenAIResponsesImageContentBlock {
+  const metadata = isRecord(attachment.metadata) ? attachment.metadata : {};
+  const image = isRecord(metadata.image) ? metadata.image : {};
+  const detail = image.detail === "original" ? "original" : "auto";
   if (redactImages) {
     return {
-      detail: "auto",
+      detail,
       image_url: "[image data url omitted]",
       type: "input_image"
     };
@@ -164,7 +167,7 @@ function imageBlock(
   }
 
   return {
-    detail: "auto",
+    detail,
     image_url: attachment.dataUrl,
     type: "input_image"
   };

@@ -1,6 +1,6 @@
 import {
   KNOWLEDGE_CANDIDATE_LIMIT,
-  KNOWLEDGE_RESULT_LIMIT
+  KNOWLEDGE_SCOPED_RESULT_LIMIT
 } from "./retrievalTypes";
 
 export const KNOWLEDGE_FOCUSED_REQUEST_VERSION = 1 as const;
@@ -12,7 +12,7 @@ export type KnowledgeFocusedRequestV1 = Readonly<{
   fusion: "weighted_rrf_v2";
   neighborWindow: typeof KNOWLEDGE_FOCUSED_NEIGHBOR_WINDOW;
   originalQuery: string;
-  resultLimit: typeof KNOWLEDGE_RESULT_LIMIT;
+  resultLimit: typeof KNOWLEDGE_SCOPED_RESULT_LIMIT;
   retrievalQuery: string;
   version: typeof KNOWLEDGE_FOCUSED_REQUEST_VERSION;
 }>;
@@ -66,7 +66,7 @@ export function createKnowledgeFocusedRequest(input: Readonly<{
     fusion: "weighted_rrf_v2",
     neighborWindow: KNOWLEDGE_FOCUSED_NEIGHBOR_WINDOW,
     originalQuery,
-    resultLimit: KNOWLEDGE_RESULT_LIMIT,
+    resultLimit: KNOWLEDGE_SCOPED_RESULT_LIMIT,
     retrievalQuery,
     version: KNOWLEDGE_FOCUSED_REQUEST_VERSION
   });
@@ -78,7 +78,7 @@ export function decodeKnowledgeFocusedRequest(
   if (!record(value) || Object.keys(value).length !== 7 ||
     value.version !== KNOWLEDGE_FOCUSED_REQUEST_VERSION ||
     value.candidateLimit !== KNOWLEDGE_CANDIDATE_LIMIT ||
-    value.resultLimit !== KNOWLEDGE_RESULT_LIMIT ||
+    value.resultLimit !== KNOWLEDGE_SCOPED_RESULT_LIMIT ||
     value.neighborWindow !== KNOWLEDGE_FOCUSED_NEIGHBOR_WINDOW ||
     value.fusion !== "weighted_rrf_v2" ||
     typeof value.originalQuery !== "string" ||
@@ -94,7 +94,7 @@ export function decodeKnowledgeFocusedRequest(
     fusion: "weighted_rrf_v2",
     neighborWindow: KNOWLEDGE_FOCUSED_NEIGHBOR_WINDOW,
     originalQuery,
-    resultLimit: KNOWLEDGE_RESULT_LIMIT,
+    resultLimit: KNOWLEDGE_SCOPED_RESULT_LIMIT,
     retrievalQuery,
     version: KNOWLEDGE_FOCUSED_REQUEST_VERSION
   });

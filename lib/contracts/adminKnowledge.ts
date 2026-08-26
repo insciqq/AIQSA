@@ -147,7 +147,7 @@ export type AdminKnowledgeSettings = Readonly<{
   profile: AdminKnowledgeProfileSettings;
   retrieval: {
     candidateLimit: 40;
-    resultLimit: 8;
+    resultLimit: 16;
   };
 }>;
 
@@ -454,7 +454,7 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
     answerPolicyUpdatedBy !== null && (!record(answerPolicyUpdatedBy) ||
       !safeString(answerPolicyUpdatedBy.id) ||
       !safeString(answerPolicyUpdatedBy.displayName, 160)) ||
-    retrieval.candidateLimit !== 40 || retrieval.resultLimit !== 8 ||
+    retrieval.candidateLimit !== 40 || retrieval.resultLimit !== 16 ||
     Object.keys(retrieval).some((key) => key !== "candidateLimit" && key !== "resultLimit")) {
     return null;
   }
@@ -480,7 +480,7 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
       profile,
       retrieval: {
         candidateLimit: 40,
-        resultLimit: 8
+        resultLimit: 16
       }
     }
   };

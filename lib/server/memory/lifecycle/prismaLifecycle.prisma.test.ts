@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  createTestProviderExecutionAuthority,
+  deleteTestProviderExecutionAuthority,
+  type TestProviderExecutionAuthority
+} from "@/tests/support/providerExecutionAuthority";
+import {
   MEMORY_CONFIRMATION_COPY_VERSION
 } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
@@ -55,6 +60,15 @@ const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 81
 const keyring = MemorySuppressionKeyring.parse(
   `current=lifecycle-v1,lifecycle-v1=${keyBytes.toString("base64")}`
 );
+let executionAuthority: TestProviderExecutionAuthority | null = null;
+
+async function loadExecutionAuthority(): Promise<TestProviderExecutionAuthority> {
+  executionAuthority ??= await createTestProviderExecutionAuthority(
+    prisma,
+    "memory-lifecycle"
+  );
+  return executionAuthority;
+}
 
 function purgeRegistry(): MemoryDeletionContributorRegistry {
   const registry = new MemoryDeletionContributorRegistry({
@@ -369,27 +383,7 @@ async function createFactCandidateFixture(input: Readonly<{
   const settings = await prisma.userMemorySettings.findUniqueOrThrow({
     where: { userId: input.userId }
   });
-  const [authority] = await prisma.$queryRaw<Array<{
-    connectionId: string;
-    credentialId: string;
-    credentialVersionId: string;
-    providerModelId: string;
-  }>>(Prisma.sql`
-    SELECT model."id" AS "providerModelId",
-      connection."id" AS "connectionId",
-      credential."id" AS "credentialId",
-      credential."activeVersionId" AS "credentialVersionId"
-    FROM "ProviderModel" AS model
-    INNER JOIN "ProviderConnection" AS connection
-      ON connection."id" = model."connectionId"
-    INNER JOIN "ProviderCredential" AS credential
-      ON credential."connectionId" = connection."id"
-      AND credential."id" = connection."defaultCredentialId"
-    WHERE credential."activeVersionId" IS NOT NULL
-    ORDER BY model."id"
-    LIMIT 1
-  `);
-  if (!authority) throw new Error("memory_test_execution_authority_missing");
+  const authority = await loadExecutionAuthority();
   await prisma.$transaction(async (tx) => {
     await tx.memoryJob.create({
       data: {
@@ -1003,6 +997,9 @@ function upgradedRegistry(): MemoryDeletionContributorRegistry {
 
 describe("Prisma Memory Forget and purge lifecycle", () => {
   afterAll(async () => {
+    if (executionAuthority) {
+      await deleteTestProviderExecutionAuthority(prisma, executionAuthority);
+    }
     await prisma.$disconnect();
   });
 

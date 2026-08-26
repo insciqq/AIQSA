@@ -6,6 +6,7 @@ import { buildOpenAIResponsesRequest } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
@@ -112,6 +113,43 @@ describe("provider-neutral personal context", () => {
     );
     expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("proper nouns, code identifiers");
     expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("in their original form");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("copy the supported value character-for-character");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("leading zeroes");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+      "already authorized the current user to access every supplied SOURCE block"
+    );
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+      "first retain the exact supported operands and units"
+    );
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Answer only the requested claims");
+  });
+
+  it("adds the trusted Knowledge tool-loop contract whenever the retrieval tool is present", () => {
+    const focused = request({
+      tools: [{
+        capability: "knowledge",
+        description: "Search selected Knowledge",
+        inputSchema: { type: "object" },
+        name: "search_knowledge"
+      }]
+    });
+    const instructions = buildOpenAIResponsesRequest(focused).instructions;
+    expect(instructions).toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1);
+    expect(instructions).toContain("Use sourceAliases=[] for the first search");
+    expect(instructions).toContain(
+      "proper name, identifier, date, number, unit, quoted phrase"
+    );
+    expect(instructions).toContain(
+      "Do not translate, synonymize, generalize, or reformat"
+    );
+    expect(instructions).toContain("one exact query for each missing item");
+    expect(instructions).toContain("Never substitute a nearby or similarly named row");
+    expect(instructions).toContain("verify each requested name, identifier, date, number, unit");
+    expect(instructions).toContain(
+      "already authorized the current user to access the selected Knowledge Sources"
+    );
+    expect(instructions).toContain("show the operation, and then calculate");
+    expect(instructions).toContain("Answer only the requested claims");
   });
 
   it.each([

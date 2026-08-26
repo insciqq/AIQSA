@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import {
+  createTestProviderExecutionAuthority,
+  deleteTestProviderExecutionAuthority,
+  type TestProviderExecutionAuthority
+} from "@/tests/support/providerExecutionAuthority";
 import { textMessageContent } from "../../../../domain/content";
 import { prisma } from "../../../prisma";
 import {
@@ -53,6 +58,7 @@ const keyring = MemorySuppressionKeyring.parse(
   `current=consolidation-v1,consolidation-v1=${keyBytes.toString("base64")}`
 );
 const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
+let executionAuthority: TestProviderExecutionAuthority | null = null;
 
 type CandidateFixture = Readonly<{
   candidateId: string;
@@ -219,28 +225,11 @@ async function loadExecutionAuthority(): Promise<Readonly<{
   credentialVersionId: string;
   providerModelId: string;
 }>> {
-  const [authority] = await prisma.$queryRaw<Array<{
-    connectionId: string;
-    credentialId: string;
-    credentialVersionId: string;
-    providerModelId: string;
-  }>>(Prisma.sql`
-    SELECT model."id" AS "providerModelId",
-      connection."id" AS "connectionId",
-      credential."id" AS "credentialId",
-      credential."activeVersionId" AS "credentialVersionId"
-    FROM "ProviderModel" AS model
-    INNER JOIN "ProviderConnection" AS connection
-      ON connection."id" = model."connectionId"
-    INNER JOIN "ProviderCredential" AS credential
-      ON credential."connectionId" = connection."id"
-      AND credential."id" = connection."defaultCredentialId"
-    WHERE credential."activeVersionId" IS NOT NULL
-    ORDER BY model."id"
-    LIMIT 1
-  `);
-  if (!authority) throw new Error("memory_test_execution_authority_missing");
-  return authority;
+  executionAuthority ??= await createTestProviderExecutionAuthority(
+    prisma,
+    "memory-consolidation"
+  );
+  return executionAuthority;
 }
 
 async function createSucceededBinding(input: Readonly<{
@@ -843,6 +832,9 @@ async function saveExplicitFact(userId: string): Promise<Readonly<{
 
 describe("Prisma Memory fact consolidation", () => {
   afterAll(async () => {
+    if (executionAuthority) {
+      await deleteTestProviderExecutionAuthority(prisma, executionAuthority);
+    }
     await prisma.$disconnect();
   });
 

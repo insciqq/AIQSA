@@ -2,19 +2,28 @@ import { describe, expect, it } from "vitest";
 import {
   boundKnowledgeCandidates,
   fuseKnowledgeCandidates,
+  KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR,
+  KNOWLEDGE_METADATA_RELEVANCE_FLOOR,
+  KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS,
+  KNOWLEDGE_RRF_K,
+  KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR,
   rankKnowledgeCandidates,
   type KnowledgeCandidateSignal,
   type KnowledgeRetrievalCandidate,
   type KnowledgeRetrievalLane
 } from "./retrievalRanking";
 
-function signal(lane: KnowledgeRetrievalLane, rank: number): KnowledgeCandidateSignal {
+function signal(
+  lane: KnowledgeRetrievalLane,
+  rank: number,
+  input: Partial<Pick<KnowledgeCandidateSignal, "rawScore" | "vectorDistance">> = {}
+): KnowledgeCandidateSignal {
   return {
     exactKind: lane === "exact" ? "identifier" : null,
     lane,
     rank,
-    rawScore: 1,
-    vectorDistance: lane === "passage_semantic" ? 0.05 : null,
+    rawScore: input.rawScore ?? 1,
+    vectorDistance: input.vectorDistance ?? (lane === "passage_semantic" ? 0.05 : null),
     vectorMode: lane === "passage_semantic" ? "exact" : null
   };
 }
@@ -77,39 +86,87 @@ describe("Knowledge retrieval ranking", () => {
     expect(fused!.fusedScore).toBeGreaterThan(single!.fusedScore);
   });
 
-  it("never drops a non-empty candidate pool because of a confidence threshold", async () => {
-    const result = await rankKnowledgeCandidates({
-      candidates: [candidate({
-        chunkId: "weak",
-        signals: [signal("neighbor", 999), signal("passage_semantic", 999)]
-      })],
-      resultLimit: 8
-    });
-    expect(result.selected.map((entry) => entry.chunkId)).toEqual(["weak"]);
-    expect(result.evidence.candidateOrder).toEqual(["weak"]);
-  });
+  it("keeps direct passage evidence above coarse document and section routing hits", () => {
+    const ranked = fuseKnowledgeCandidates([
+      candidate({
+        chunkId: "coarse-parent",
+        signals: [signal("document_lexical", 1), signal("section_lexical", 1)]
+      }),
+      candidate({
+        chunkId: "direct-passage",
+        signals: [signal("passage_semantic", 40, {
+          rawScore: KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR,
+          vectorDistance: 1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR
+        })]
+      })
+    ]);
 
-  it("takes the best item from up to four Sources before global fill", async () => {
-    const result = await rankKnowledgeCandidates({
-      candidates: [
-        candidate({ chunkId: "a1", source: "a", signals: [signal("exact", 1)] }),
-        candidate({ chunkId: "a2", source: "a", signals: [signal("exact", 2)] }),
-        candidate({ chunkId: "b1", source: "b", signals: [signal("passage_lexical", 1)] }),
-        candidate({ chunkId: "c1", source: "c", signals: [signal("passage_lexical", 2)] }),
-        candidate({ chunkId: "d1", source: "d", signals: [signal("passage_lexical", 3)] }),
-        candidate({ chunkId: "e1", source: "e", signals: [signal("passage_lexical", 4)] })
-      ],
-      resultLimit: 5
-    });
-    expect(result.selected.slice(0, 4).map((entry) => entry.sourceName)).toEqual([
-      "a", "b", "c", "d"
+    const strongestCoarseScore = (
+      KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.document_lexical +
+      KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.section_lexical
+    ) / (KNOWLEDGE_RRF_K + 1);
+    const weakestRetainedDirectScore =
+      KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS.passage_semantic / (KNOWLEDGE_RRF_K + 40);
+    expect(weakestRetainedDirectScore).toBeGreaterThan(strongestCoarseScore);
+    expect(ranked.map((entry) => entry.chunkId)).toEqual([
+      "direct-passage",
+      "coarse-parent"
     ]);
   });
 
-  it("caps each Source at three primary chunks when multiple Sources exist", async () => {
+  it("drops candidates below every named floor while retaining exact equality", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [
-        ...Array.from({ length: 7 }, (_, index) => candidate({
+        candidate({
+          chunkId: "weak-lexical",
+          signals: [signal("passage_lexical", 1, {
+            rawScore: KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR - 0.001
+          })]
+        }),
+        candidate({
+          chunkId: "weak-metadata",
+          signals: [signal("metadata", 1, {
+            rawScore: KNOWLEDGE_METADATA_RELEVANCE_FLOOR - 0.001
+          })]
+        }),
+        candidate({
+          chunkId: "weak-semantic",
+          signals: [signal("passage_semantic", 1, {
+            rawScore: KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR - 0.001,
+            vectorDistance: 1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR + 0.001
+          })]
+        }),
+        candidate({
+          chunkId: "exact",
+          signals: [signal("exact", 40, { rawScore: 0 })]
+        })
+      ],
+      resultLimit: 8
+    });
+    expect(result.selected.map((entry) => entry.chunkId)).toEqual(["exact"]);
+    expect(result.evidence.candidateOrder).toEqual(["exact"]);
+  });
+
+  it("returns an ordinary empty ranking when every generated candidate is irrelevant", async () => {
+    const result = await rankKnowledgeCandidates({
+      candidates: [candidate({
+        chunkId: "nearest-but-irrelevant",
+        signals: [
+          signal("neighbor", 1),
+          signal("passage_semantic", 1, { rawScore: 0.2, vectorDistance: 0.8 })
+        ]
+      })],
+      resultLimit: 8
+    });
+    expect(result.ranked).toEqual([]);
+    expect(result.selected).toEqual([]);
+    expect(result.evidence.candidateOrder).toEqual([]);
+  });
+
+  it("allows one clearly stronger Source to fill every result slot", async () => {
+    const result = await rankKnowledgeCandidates({
+      candidates: [
+        ...Array.from({ length: 8 }, (_, index) => candidate({
           chunkId: `a${index}`,
           source: "a",
           signals: [signal("exact", index + 1)]
@@ -118,11 +175,25 @@ describe("Knowledge retrieval ranking", () => {
       ],
       resultLimit: 8
     });
-    expect(result.selected.filter((entry) => entry.sourceName === "a")).toHaveLength(3);
-    expect(result.selected.filter((entry) => entry.sourceName === "b")).toHaveLength(1);
+    expect(result.selected).toHaveLength(8);
+    expect(result.selected.every((entry) => entry.sourceName === "a")).toBe(true);
   });
 
-  it("shares one diversity slot and primary cap across compatible artifacts of one Source", async () => {
+  it("interleaves near-equal Sources only inside the soft relevance band", async () => {
+    const result = await rankKnowledgeCandidates({
+      candidates: [
+        candidate({ chunkId: "a1", source: "a", signals: [signal("exact", 1)] }),
+        candidate({ chunkId: "a2", source: "a", signals: [signal("exact", 2)] }),
+        candidate({ chunkId: "b1", source: "b", signals: [signal("exact", 3)] }),
+        candidate({ chunkId: "b2", source: "b", signals: [signal("exact", 4)] })
+      ],
+      resultLimit: 4
+    });
+
+    expect(result.selected.map((entry) => entry.sourceName)).toEqual(["a", "b", "a", "b"]);
+  });
+
+  it("shares soft-diversity counts across compatible artifacts without a hard Source cap", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [
         ...Array.from({ length: 4 }, (_, index) => candidate({
@@ -150,11 +221,8 @@ describe("Knowledge retrieval ranking", () => {
       resultLimit: 8
     });
 
-    expect(result.selected.slice(0, 2).map((entry) => entry.documentId)).toEqual([
-      "source-a",
-      "source-b"
-    ]);
-    expect(result.selected.filter((entry) => entry.documentId === "source-a")).toHaveLength(3);
+    expect(result.selected).toHaveLength(8);
+    expect(result.selected.every((entry) => entry.documentId === "source-a")).toBe(true);
     expect(new Set(result.selected
       .filter((entry) => entry.documentId === "source-a")
       .map((entry) => entry.sourceArtifactId))).toEqual(new Set([

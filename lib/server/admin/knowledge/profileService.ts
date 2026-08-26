@@ -24,7 +24,10 @@ import {
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createAcceptedProviderRequestExecutor } from "../../providerRuntime/acceptedRequestExecutor";
-import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import {
+  applySystemModelReasoningEffort,
+  createSystemModelRoleResolver
+} from "../../providerRuntime/systemModelRole";
 import {
   normalizeProviderModelConfiguration,
   ProviderConfigurationError
@@ -218,9 +221,10 @@ export function createAdminKnowledgeProfileService(
     const resolved = await createSystemModelRoleResolver(client).resolve();
     if (!resolved.ok) return null;
     try {
+      const snapshot = normalizeProviderExecutionSnapshot(resolved.role.snapshot);
       return {
         policyVersion: resolved.policyVersion,
-        snapshot: normalizeProviderExecutionSnapshot(resolved.role.snapshot)
+        snapshot: applySystemModelReasoningEffort(snapshot, resolved.reasoningEffort)
       };
     } catch {
       return null;

@@ -9,16 +9,27 @@ const UNPDF_MODULE_PATH = resolveRuntimeModulePath("unpdf");
 const CANVAS_MODULE_PATH = resolveRuntimeModulePath("@napi-rs/canvas");
 
 export const PDF_MODEL_BATCH_PAGE_COUNT = 2;
-export const PDF_MODEL_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const PDF_MODEL_VISION_BATCH_PAGE_COUNT = 1;
+export const PDF_MODEL_MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 export const PDF_MODEL_MAX_BATCH_IMAGE_BYTES = 16 * 1024 * 1024;
-export const PDF_MODEL_MAX_IMAGE_PIXELS = 4_000_000;
-export const PDF_MODEL_MAX_IMAGE_WIDTH = 1_800;
-export const PDF_MODEL_MAX_IMAGE_HEIGHT = 2_400;
+export const PDF_MODEL_MAX_IMAGE_PIXELS = 10_000_000;
+export const PDF_MODEL_MAX_IMAGE_WIDTH = 3_000;
+export const PDF_MODEL_MAX_IMAGE_HEIGHT = 4_200;
+export const PDF_MODEL_MAX_RENDER_SCALE = 4;
 export const PDF_MODEL_PREPARATION_TIMEOUT_MS = 120_000;
+
+const LEGACY_PDF_MODEL_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const LEGACY_PDF_MODEL_MAX_BATCH_IMAGE_BYTES = 16 * 1024 * 1024;
+const LEGACY_PDF_MODEL_MAX_IMAGE_PIXELS = 4_000_000;
+const LEGACY_PDF_MODEL_MAX_IMAGE_WIDTH = 1_800;
+const LEGACY_PDF_MODEL_MAX_IMAGE_HEIGHT = 2_400;
+const LEGACY_PDF_MODEL_MAX_RENDER_SCALE = 2;
 
 export type PdfModelProcessingMode =
   | "system_model_direct_pdf"
   | "system_model_vision";
+
+export type PdfModelImageMimeType = "image/jpeg" | "image/png";
 
 export type PreparedPdfBatch =
   | Readonly<{
@@ -31,6 +42,7 @@ export type PreparedPdfBatch =
       images: readonly Readonly<{
         bytes: Buffer;
         height: number;
+        mimeType: PdfModelImageMimeType;
         page: number;
         sourceHeight: number;
         sourceWidth: number;
@@ -43,9 +55,45 @@ export type PreparedPdfBatch =
 
 type PreparationWorkerOptions = Readonly<{
   createWorker?: (source: string, options: WorkerOptions) => Worker;
+  maxImageBytes?: number;
   maxPages: number;
   timeoutMs?: number;
+  visionQuality?:
+    | "adaptive_high_fidelity"
+    | "high_fidelity"
+    | "legacy";
 }>;
+
+function visionLimits(options: PreparationWorkerOptions) {
+  const legacy = options.visionQuality === "legacy";
+  const limits = legacy
+    ? {
+        highFidelity: false,
+        maxBatchImageBytes: LEGACY_PDF_MODEL_MAX_BATCH_IMAGE_BYTES,
+        maxImageBytes: LEGACY_PDF_MODEL_MAX_IMAGE_BYTES,
+        maxImageHeight: LEGACY_PDF_MODEL_MAX_IMAGE_HEIGHT,
+        maxImagePixels: LEGACY_PDF_MODEL_MAX_IMAGE_PIXELS,
+        maxImageWidth: LEGACY_PDF_MODEL_MAX_IMAGE_WIDTH,
+        maxRenderScale: LEGACY_PDF_MODEL_MAX_RENDER_SCALE
+      }
+    : {
+        highFidelity: options.visionQuality !== "high_fidelity",
+        maxBatchImageBytes: PDF_MODEL_MAX_BATCH_IMAGE_BYTES,
+        maxImageBytes: PDF_MODEL_MAX_IMAGE_BYTES,
+        maxImageHeight: PDF_MODEL_MAX_IMAGE_HEIGHT,
+        maxImagePixels: PDF_MODEL_MAX_IMAGE_PIXELS,
+        maxImageWidth: PDF_MODEL_MAX_IMAGE_WIDTH,
+        maxRenderScale: PDF_MODEL_MAX_RENDER_SCALE
+      };
+  const requestedMaxImageBytes = options.maxImageBytes;
+  return {
+    ...limits,
+    maxImageBytes: Number.isSafeInteger(requestedMaxImageBytes) &&
+      Number(requestedMaxImageBytes) >= 8 && Number(requestedMaxImageBytes) <= limits.maxImageBytes
+      ? Number(requestedMaxImageBytes)
+      : limits.maxImageBytes
+  };
+}
 
 function engine(mode: PdfModelProcessingMode): DocumentParserEngine {
   return mode;
@@ -136,25 +184,65 @@ function workerSource(): string {
             workerData.maxImageHeight / baseViewport.height,
             Math.sqrt(workerData.maxImagePixels /
               (baseViewport.width * baseViewport.height)),
-            2
+            workerData.maxRenderScale
           );
           if (!Number.isFinite(scale) || scale <= 0) fail("parser_rejected");
           const width = Math.max(1, Math.floor(baseViewport.width * scale));
           const height = Math.max(1, Math.floor(baseViewport.height * scale));
           if (width * height > workerData.maxImagePixels) fail("parser_output_too_large");
-          const rendered = await unpdf.renderPageAsImage(document, pageNumber, {
-            canvasImport,
-            scale
-          });
-          const bytes = new Uint8Array(rendered);
-          if (bytes.byteLength < 8 || bytes.byteLength > workerData.maxImageBytes ||
-            bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e ||
-            bytes[3] !== 0x47) fail("parser_output_too_large");
+          let bytes;
+          let mimeType;
+          if (workerData.highFidelityVision) {
+            const factory = new CanvasFactory();
+            let drawingContext;
+            let renderPage;
+            try {
+              renderPage = await document.getPage(pageNumber);
+              const viewport = renderPage.getViewport({ scale });
+              drawingContext = factory.create(viewport.width, viewport.height);
+              await renderPage.render({
+                canvas: drawingContext.canvas,
+                canvasContext: drawingContext.context,
+                viewport
+              }).promise;
+              bytes = Uint8Array.from(await drawingContext.canvas.encode("png"));
+              mimeType = "image/png";
+              if (bytes.byteLength > workerData.maxImageBytes) {
+                for (const quality of [92, 85, 75]) {
+                  bytes = Uint8Array.from(
+                    await drawingContext.canvas.encode("jpeg", quality)
+                  );
+                  mimeType = "image/jpeg";
+                  if (bytes.byteLength <= workerData.maxImageBytes) break;
+                }
+              }
+            } finally {
+              try { await renderPage?.cleanup?.(); } catch {}
+              try { if (drawingContext) factory.destroy(drawingContext); } catch {}
+            }
+          } else {
+            const rendered = await unpdf.renderPageAsImage(document, pageNumber, {
+              canvasImport,
+              scale
+            });
+            bytes = new Uint8Array(rendered);
+            mimeType = "image/png";
+          }
+          const validPng = mimeType === "image/png" && bytes?.[0] === 0x89 &&
+            bytes?.[1] === 0x50 && bytes?.[2] === 0x4e && bytes?.[3] === 0x47;
+          const validJpeg = mimeType === "image/jpeg" && bytes?.[0] === 0xff &&
+            bytes?.[1] === 0xd8 && bytes?.[bytes.byteLength - 2] === 0xff &&
+            bytes?.[bytes.byteLength - 1] === 0xd9;
+          if (!bytes || bytes.byteLength < 8 ||
+            bytes.byteLength > workerData.maxImageBytes || !validPng && !validJpeg) {
+            fail("parser_output_too_large");
+          }
           totalBytes += bytes.byteLength;
           if (totalBytes > workerData.maxOutputBytes) fail("parser_output_too_large");
           images.push({
             bytes,
             height,
+            mimeType,
             page: pageNumber,
             sourceHeight: baseViewport.height,
             sourceWidth: baseViewport.width,
@@ -168,13 +256,24 @@ function workerSource(): string {
       }
     }
 
+    function transferListFor(result) {
+      if (result?.kind === "pdf" && result.bytes?.buffer instanceof ArrayBuffer) {
+        return [result.bytes.buffer];
+      }
+      if (result?.kind === "images" && Array.isArray(result.images)) {
+        return result.images.map((image) => image.bytes?.buffer)
+          .filter((buffer) => buffer instanceof ArrayBuffer);
+      }
+      return [];
+    }
+
     Promise.resolve().then(() => {
       if (workerData.operation === "inspect") return inspect();
       if (workerData.operation === "direct") return direct();
       if (workerData.operation === "vision") return vision();
       fail("parser_rejected");
     }).then(
-      (result) => parentPort.postMessage({ ok: true, result }),
+      (result) => parentPort.postMessage({ ok: true, result }, transferListFor(result)),
       (error) => parentPort.postMessage({
         code: error && typeof error === "object" && typeof error.code === "string"
           ? error.code
@@ -195,6 +294,18 @@ function clonedBytes(value: unknown): Buffer | null {
     return Buffer.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
   }
   if (value instanceof ArrayBuffer) return Buffer.from(new Uint8Array(value));
+  return null;
+}
+
+function detectedImageMimeType(bytes: Buffer): PdfModelImageMimeType | null {
+  if (
+    bytes.byteLength >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 &&
+    bytes[2] === 0x4e && bytes[3] === 0x47
+  ) return "image/png";
+  if (
+    bytes.byteLength >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 &&
+    bytes[bytes.byteLength - 2] === 0xff && bytes[bytes.byteLength - 1] === 0xd9
+  ) return "image/jpeg";
   return null;
 }
 
@@ -220,6 +331,7 @@ function runPreparationWorker(
   if (input.signal?.aborted) return Promise.reject(abortReason(input.signal));
   return new Promise((resolve, reject) => {
     const transferred = Uint8Array.from(input.bytes);
+    const limits = visionLimits(options);
     let worker: Worker;
     try {
       worker = (options.createWorker ?? ((source, workerOptions) =>
@@ -232,12 +344,14 @@ function runPreparationWorker(
         workerData: {
           bytes: transferred,
           canvasModulePath: CANVAS_MODULE_PATH,
-          maxImageBytes: PDF_MODEL_MAX_IMAGE_BYTES,
-          maxImageHeight: PDF_MODEL_MAX_IMAGE_HEIGHT,
-          maxImagePixels: PDF_MODEL_MAX_IMAGE_PIXELS,
-          maxImageWidth: PDF_MODEL_MAX_IMAGE_WIDTH,
+          maxImageBytes: limits.maxImageBytes,
+          maxImageHeight: limits.maxImageHeight,
+          maxImagePixels: limits.maxImagePixels,
+          maxImageWidth: limits.maxImageWidth,
+          maxRenderScale: limits.maxRenderScale,
+          highFidelityVision: limits.highFidelity,
           maxOutputBytes: input.operation === "vision"
-            ? PDF_MODEL_MAX_BATCH_IMAGE_BYTES
+            ? limits.maxBatchImageBytes
             : Math.max(input.bytes.byteLength + 1024 * 1024, 2 * 1024 * 1024),
           maxPages: options.maxPages,
           operation: input.operation,
@@ -333,6 +447,7 @@ export async function preparePdfModelBatch(
     throw new DocumentParserError("parser_rejected", engine(input.mode));
   }
   const operation = input.mode === "system_model_direct_pdf" ? "direct" : "vision";
+  const limits = visionLimits(options);
   const value = await runPreparationWorker({ ...input, operation }, options);
   if (!isRecord(value)) {
     throw new DocumentParserError("parser_invalid_output", engine(input.mode));
@@ -355,11 +470,14 @@ export async function preparePdfModelBatch(
   }
   const images = value.images.map((entry, index) => {
     const bytes = isRecord(entry) ? clonedBytes(entry.bytes) : null;
-    if (!isRecord(entry) || !bytes ||
+    const mimeType = bytes ? detectedImageMimeType(bytes) : null;
+    if (!isRecord(entry) || !bytes || !mimeType ||
+      (entry.mimeType !== "image/png" && entry.mimeType !== "image/jpeg") ||
+      entry.mimeType !== mimeType ||
       entry.page !== input.pageStart + index || !Number.isSafeInteger(entry.width) ||
       !Number.isSafeInteger(entry.height) || Number(entry.width) < 1 ||
       Number(entry.height) < 1 || Number(entry.width) * Number(entry.height) >
-      PDF_MODEL_MAX_IMAGE_PIXELS || bytes.byteLength > PDF_MODEL_MAX_IMAGE_BYTES ||
+      limits.maxImagePixels || bytes.byteLength > limits.maxImageBytes ||
       typeof entry.sourceWidth !== "number" || !Number.isFinite(entry.sourceWidth) ||
       Number(entry.sourceWidth) <= 0 || typeof entry.sourceHeight !== "number" ||
       !Number.isFinite(entry.sourceHeight) || Number(entry.sourceHeight) <= 0) {
@@ -368,6 +486,7 @@ export async function preparePdfModelBatch(
     return Object.freeze({
       bytes,
       height: Number(entry.height),
+      mimeType,
       page: Number(entry.page),
       sourceHeight: Number(entry.sourceHeight),
       sourceWidth: Number(entry.sourceWidth),

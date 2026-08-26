@@ -46,7 +46,7 @@ describe("administrator Knowledge settings service", () => {
       operations: { alerts: [], migration: { discrepancies: 0 } },
       retrieval: {
         candidateLimit: 40,
-        resultLimit: 8
+        resultLimit: 16
       }
     });
     expect(settings).not.toHaveProperty("policy");

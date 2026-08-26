@@ -15,7 +15,6 @@ import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository
 import { normalizeReadSourceRequest } from "./readSourceLocator";
 import { decodeKnowledgeRetrievalEvidence, knowledgeToolResultText } from "./toolResult";
 import { chunkKnowledgeDocument } from "./chunking";
-import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 
 const binding = {
@@ -122,7 +121,9 @@ function producedTableRowPassages(
   const projections = chunkKnowledgeDocument({
     document: normalized,
     maxChunks: 20,
-    profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    // Read-source must keep accepting immutable profile-5 projection groups.
+    // Profile 6 intentionally degrades indivisible oversized cells before dispatch.
+    profileVersion: 5
   }).filter((chunk) => chunk.documentContext?.locator.kind === "table_row_projection" &&
     chunk.documentContext.locator.rowIndex === 1);
   const firstLocator = projections[0]?.documentContext?.locator;

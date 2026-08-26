@@ -62,7 +62,8 @@ describe("model PDF geometry enrichment", () => {
     const enriched = enrichModelPdfGeometry(model, {
       blocks: [block("Total cholesterol 5.3 mmol/L", 0, [box])],
       classification: "native_text",
-      pageCount: 1
+      pageCount: 1,
+      quality: { pages: [], visualGroupOverflow: false }
     });
 
     expect(enriched.blocks[0]?.text).toBe("Total cholesterol\t5.3 mmol/L");
@@ -81,7 +82,8 @@ describe("model PDF geometry enrichment", () => {
         top: 96
       }])],
       classification: "native_text",
-      pageCount: 1
+      pageCount: 1,
+      quality: { pages: [], visualGroupOverflow: false }
     });
     expect(enriched).toBe(model);
   });

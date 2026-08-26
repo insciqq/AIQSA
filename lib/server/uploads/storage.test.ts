@@ -3,6 +3,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   GetObjectCommand,
+  PutObjectCommand,
   UploadPartCommand
 } from "@aws-sdk/client-s3";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -176,6 +177,34 @@ describe("filesystem storage bounded reads", () => {
 });
 
 describe("S3 storage bounded reads", () => {
+  it("re-chunks a coalesced proxy body below S3-compatible streaming limits", async () => {
+    const source = Buffer.alloc(16 * 1_024 * 1_024 + 1, 0x61);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(source);
+        controller.close();
+      }
+    });
+    const observedChunkBytes: number[] = [];
+    s3Send.mockImplementationOnce(async (command: PutObjectCommand) => {
+      expect(command).toBeInstanceOf(PutObjectCommand);
+      const uploaded = command.input.Body as AsyncIterable<Uint8Array>;
+      for await (const chunk of uploaded) observedChunkBytes.push(chunk.byteLength);
+      return {};
+    });
+    const storage = createS3StorageAdapter(s3Env);
+
+    await storage.putObjectStream!({
+      body,
+      byteSize: source.byteLength,
+      contentType: "application/pdf",
+      storageKey: "owned/coalesced.pdf"
+    });
+
+    expect(observedChunkBytes).toEqual([8 * 1_024 * 1_024, 8 * 1_024 * 1_024, 1]);
+    expect((s3Send.mock.calls[0]?.[0] as PutObjectCommand).input.ContentLength).toBe(source.byteLength);
+  });
+
   it("requests only maxBytes plus one sentinel byte and accepts the exact boundary", async () => {
     s3Send.mockResolvedValue({
       Body: {

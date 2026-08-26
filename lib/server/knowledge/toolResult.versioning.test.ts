@@ -214,6 +214,15 @@ describe("Knowledge result contract versioning", () => {
     expect(evidence.providerText).toContain("Locator: page=1; heading=document root");
     expect(evidence.providerText).toContain("Truncated: no");
     expect(evidence.providerText).toContain("Evidence:\nVerified passage");
+    expect(evidence.providerText).toContain(
+      "The requested label and value must occur together inside the primary Evidence section"
+    );
+    expect(evidence.providerText).toContain(
+      "a nearby or similarly named row is not a substitute"
+    );
+    expect(evidence.providerText).toContain(
+      "Do not finalize or declare insufficient evidence"
+    );
     expect(evidence.providerText).not.toContain("legacy source");
     for (const privateValue of [
       "private-base-id",
@@ -225,6 +234,28 @@ describe("Knowledge result contract versioning", () => {
     expect(decodeKnowledgeRetrievalEvidence({
       ...evidence,
       results: [{ ...evidence.results[0]!, handle: "K1.1" }]
+    })).toBeNull();
+  });
+
+  it("preserves and renders bounded expanded context as separately atomic evidence", () => {
+    const expandedContext = [
+      "Additional independently matched complete row from the same Source:",
+      "Metric B | 42"
+    ].join("\n");
+    const evidence = currentEvidence({
+      results: [{ ...passage(), expandedContext }]
+    });
+    const decoded = decodeKnowledgeRetrievalEvidence(evidence);
+
+    expect(decoded?.results[0]?.expandedContext).toBe(expandedContext);
+    expect(evidence.providerText).toContain(
+      "Related same-Source context (each labeled segment is independent evidence):"
+    );
+    expect(evidence.providerText).toContain(expandedContext);
+    expect(evidence.providerText).toContain("never combine fields across those segments");
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      results: [{ ...evidence.results[0]!, expandedContext: 42 }]
     })).toBeNull();
   });
 

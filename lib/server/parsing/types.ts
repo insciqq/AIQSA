@@ -223,10 +223,24 @@ export type ParserAttemptOutcome =
   | "rejected"
   | "retryable_failure";
 
+export type DocumentParserQualityReasonCode =
+  | "native_pdf_excessive_fragmentation"
+  | "native_pdf_excessive_visual_groups"
+  | "native_pdf_image_heavy_low_text"
+  | "native_pdf_invalid_text_characters"
+  | "native_pdf_low_text_density"
+  | "native_pdf_non_simple_layout"
+  | "native_pdf_possible_multi_column"
+  | "native_pdf_quality_failure"
+  | "native_pdf_visual_group_overflow";
+
 export type ParsedDocumentParserAttempt = Readonly<{
   engine: DocumentParserEngine;
   errorCode: DocumentParserErrorCode | null;
   outcome: ParserAttemptOutcome;
+  /** Transient, content-free diagnostics. Normalized artifacts intentionally
+   * keep their existing schema and omit this processing-time field. */
+  reasonCode?: DocumentParserQualityReasonCode;
 }>;
 
 export type ParsedDocument = Readonly<{

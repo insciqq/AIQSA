@@ -67,7 +67,7 @@ function knowledgeSettings(): AdminKnowledgeSettings {
     }),
     retrieval: {
       candidateLimit: 40,
-      resultLimit: 8
+      resultLimit: 16
     }
   };
 }

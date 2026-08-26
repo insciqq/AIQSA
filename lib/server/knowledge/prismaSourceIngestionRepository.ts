@@ -493,6 +493,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
             claimedAt: null,
             embeddedPassageCount: input.expectedChunkCount,
             errorCode: null,
+            nextAttemptAt: input.now,
             processingStage: null,
             readyAt: input.now,
             state: "ready",
@@ -575,7 +576,16 @@ export function createPrismaKnowledgeSourceIngestionRepository(
     ): Promise<boolean> {
       const identity = sourceIdentity(input);
       const updated = await client.knowledgeSourceIndexArtifact.updateMany({
-        data: { processingStage: "parsing", state: "processing", updatedAt: input.now },
+        data: {
+          attemptCount: 0,
+          claimedAt: null,
+          claimToken: null,
+          errorCode: null,
+          nextAttemptAt: input.now,
+          processingStage: "parsing",
+          state: "processing",
+          updatedAt: input.now
+        },
         where: {
           claimToken: identity.claimToken,
           id: identity.artifactId,
@@ -646,8 +656,13 @@ export function createPrismaKnowledgeSourceIngestionRepository(
       if (input.chunkCount < 1) return false;
       const updated = await client.knowledgeSourceIndexArtifact.updateMany({
         data: {
+          attemptCount: 0,
+          claimedAt: null,
+          claimToken: null,
           chunkCount: input.chunkCount,
           embeddedPassageCount: 0,
+          errorCode: null,
+          nextAttemptAt: input.now,
           processingStage: "embedding",
           updatedAt: input.now
         },
@@ -674,6 +689,11 @@ export function createPrismaKnowledgeSourceIngestionRepository(
       return client.$transaction(async (tx) => {
         const updated = await tx.knowledgeSourceIndexArtifact.updateMany({
           data: {
+            attemptCount: 0,
+            claimedAt: null,
+            claimToken: null,
+            errorCode: null,
+            nextAttemptAt: input.now,
             normalizedTextByteSize: input.normalizedTextByteSize,
             normalizedTextChecksum: input.normalizedTextChecksum,
             normalizedTextStorageKey: input.normalizedTextStorageKey,

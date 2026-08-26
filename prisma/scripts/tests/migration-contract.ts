@@ -42,6 +42,8 @@ const KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION =
   "20260821000000_knowledge_basic_runtime_cleanup";
 const KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION =
   "20260822020000_knowledge_tool_coexistence_constraints";
+const KNOWLEDGE_MAP_REDUCE_LIMITS_MIGRATION =
+  "20260826120000_knowledge_map_reduce_result_limits";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
@@ -3373,12 +3375,19 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     INSERT INTO "ModelRunToolCall" (
       id, "modelRunId", "roundIndex", ordinal, "providerCallId", "toolName",
       arguments, state, "startedAt", "completedAt", "updatedAt"
-    ) VALUES (
-      'knowledge-coexistence-four-binding-call', 'knowledge-h4-run-2', 0, 3,
-      'knowledge-coexistence-four-binding-provider-call', 'search_knowledge',
-      '{"query":"four binding receipt"}'::jsonb, 'complete',
-      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-    );
+    ) VALUES
+      (
+        'knowledge-coexistence-four-binding-call', 'knowledge-h4-run-2', 0, 3,
+        'knowledge-coexistence-four-binding-provider-call', 'search_knowledge',
+        '{"query":"four binding receipt","sourceAliases":[]}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'knowledge-map-reduce-scoped-call', 'knowledge-h4-run-2', 0, 5,
+        'knowledge-map-reduce-scoped-provider-call', 'search_knowledge',
+        '{"query":"scoped row","sourceAliases":["S1"]}'::jsonb, 'complete',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
     INSERT INTO "KnowledgeRun" (
       id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
       outcome, fusion, "candidateLimit", "resultLimit", "candidateCount",
@@ -3386,7 +3395,7 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     ) VALUES (
       'knowledge-coexistence-four-binding-run', 'knowledge-h4-run-2',
       'knowledge-coexistence-four-binding-call', 4, 'automatic_search',
-      'four binding receipt', 'base_empty', 'weighted_rrf_v2', 40, 8, 0,
+      'four binding receipt', 'base_empty', 'weighted_rrf_v2', 40, 16, 0,
       (SELECT jsonb_agg(jsonb_build_object(
         'baseName', 'Base ' || ordinal,
         'knowledgeBaseId', 'base-' || ordinal,
@@ -3398,6 +3407,12 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
         'providerModelId', 'embedding-' || ordinal
       ) ORDER BY ordinal) FROM generate_series(1, 4) AS ordinal),
       1, CURRENT_TIMESTAMP
+    ), (
+      'knowledge-map-reduce-scoped-run', 'knowledge-h4-run-2',
+      'knowledge-map-reduce-scoped-call', 6, 'automatic_search',
+      'scoped row', 'no_relevant_evidence', 'weighted_rrf_v2', 40, 8, 0,
+      '[{"baseName":"Scoped Base","ordinal":0}]'::jsonb,
+      '[]'::jsonb, 'No relevant evidence.', '[]'::jsonb, 1, CURRENT_TIMESTAMP
     );
   `);
   assert.equal(
@@ -3410,6 +3425,43 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     "4:4",
     "Knowledge coexistence failed to persist a four-binding operation receipt",
   );
+  assert.equal(
+    psqlScalar(database, `
+      SELECT string_agg("resultLimit"::text, ':' ORDER BY "invocationOrdinal")
+      FROM "KnowledgeRun"
+      WHERE id IN (
+        'knowledge-coexistence-four-binding-run',
+        'knowledge-map-reduce-scoped-run'
+      );
+    `),
+    "16:8",
+    "Knowledge map/reduce limits did not admit broad sixteen and scoped eight",
+  );
+
+  for (const [label, command] of [
+    [
+      "arbitrary broad limit",
+      `UPDATE "KnowledgeRun" SET "resultLimit" = 9
+        WHERE id = 'knowledge-coexistence-four-binding-run';`,
+    ],
+    [
+      "oversized scoped limit",
+      `UPDATE "KnowledgeRun" SET "resultLimit" = 16
+        WHERE id = 'knowledge-map-reduce-scoped-run';`,
+    ],
+  ] as const) {
+    const invalidLimit = compose([
+      "exec", "-T", POSTGRES_SERVICE,
+      "psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER,
+      "--dbname", database, "--command", command,
+    ]);
+    assert.notEqual(invalidLimit.status, 0, `Knowledge accepted ${label}`);
+    assert.match(
+      `${invalidLimit.stdout}\n${invalidLimit.stderr}`,
+      /knowledge_basic_focused_run_contract_invalid/u,
+      `${label} failed without the map/reduce checkpoint guard`,
+    );
+  }
 
   assert.equal(
     psqlScalar(database, `
@@ -4056,9 +4108,14 @@ function runKnowledgeToolCoexistenceMigrationProof(
 ): void {
   const cleanupIndex = committed.indexOf(KNOWLEDGE_BASIC_RUNTIME_CLEANUP_MIGRATION);
   const coexistenceIndex = committed.indexOf(KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION);
+  const mapReduceIndex = committed.indexOf(KNOWLEDGE_MAP_REDUCE_LIMITS_MIGRATION);
   assert.ok(
     coexistenceIndex > cleanupIndex,
     "Knowledge tool coexistence migration must follow the Basic runtime cleanup",
+  );
+  assert.ok(
+    mapReduceIndex > coexistenceIndex,
+    "Knowledge map/reduce limits migration must follow tool coexistence",
   );
   const coexistenceSql = readFileSync(
     join(migrationsRoot, KNOWLEDGE_TOOL_COEXISTENCE_MIGRATION, "migration.sql"),
@@ -4083,6 +4140,30 @@ function runKnowledgeToolCoexistenceMigrationProof(
     coexistenceSql,
     /\bUPDATE\s+"KnowledgeRun"\b/iu,
     "Knowledge tool coexistence must not rewrite immutable historical receipts",
+  );
+  const mapReduceSql = readFileSync(
+    join(migrationsRoot, KNOWLEDGE_MAP_REDUCE_LIMITS_MIGRATION, "migration.sql"),
+    "utf8",
+  );
+  assert.match(
+    mapReduceSql,
+    /jsonb_array_length\(checkpoint_arguments -> 'sourceAliases'\) = 0[\s\S]*NOT IN \(8, 16\)/u,
+    "Knowledge broad-map guard must admit only legacy eight or current sixteen",
+  );
+  assert.match(
+    mapReduceSql,
+    /ELSE NEW\."resultLimit" IS DISTINCT FROM 8/u,
+    "Knowledge source-scoped reduce guard must retain eight results",
+  );
+  assert.match(
+    mapReduceSql,
+    /'no_relevant_evidence'/u,
+    "Knowledge map/reduce guard must admit the current empty-evidence outcome",
+  );
+  assert.doesNotMatch(
+    mapReduceSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Knowledge map/reduce migration must not rewrite immutable receipts",
   );
 }
 

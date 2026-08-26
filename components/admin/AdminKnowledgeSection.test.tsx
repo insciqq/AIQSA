@@ -20,7 +20,7 @@ const settings = {
   profile: adminKnowledgeProfileFixture(),
   retrieval: {
     candidateLimit: 40 as const,
-    resultLimit: 8 as const
+    resultLimit: 16 as const
   }
 };
 

@@ -107,7 +107,7 @@ function parserFailure(error: unknown): KnowledgeIngestionError {
     return new KnowledgeIngestionError("parser_unavailable", true);
   }
   if (error.code === "parser_unavailable" || error.code === "parser_timeout") {
-    return new KnowledgeIngestionError("parser_unavailable", true);
+    return new KnowledgeIngestionError("parser_unavailable", true, error.retryAfterMs);
   }
   if (error.code === "parser_output_too_large") {
     return new KnowledgeIngestionError("knowledge_text_limit_exceeded");
@@ -128,12 +128,34 @@ function embeddingFailure(error: unknown): KnowledgeIngestionError {
     return new KnowledgeIngestionError("embedding_unavailable", true);
   }
   if (error instanceof EmbeddingAdapterError) {
-    const terminal = [
-      "embedding_batch_invalid",
-      "embedding_input_invalid",
-      "embedding_request_too_large"
-    ].includes(error.code);
-    return new KnowledgeIngestionError("embedding_failed", !terminal);
+    if (error.code === "embedding_provider_http_error") {
+      if (error.httpStatus === 429) {
+        return new KnowledgeIngestionError(
+          "embedding_rate_limited",
+          true,
+          error.retryAfterMs
+        );
+      }
+      if (
+        error.httpStatus === null ||
+        error.httpStatus === 408 ||
+        error.httpStatus >= 500
+      ) {
+        return new KnowledgeIngestionError(
+          "embedding_unavailable",
+          true,
+          error.retryAfterMs
+        );
+      }
+      return new KnowledgeIngestionError("embedding_failed");
+    }
+    if (
+      error.code === "embedding_provider_request_failed" ||
+      error.code === "embedding_request_timed_out"
+    ) {
+      return new KnowledgeIngestionError("embedding_unavailable", true);
+    }
+    return new KnowledgeIngestionError("embedding_failed");
   }
   return new KnowledgeIngestionError("embedding_failed", true);
 }
@@ -142,6 +164,25 @@ function hierarchicalIndexFailure(error: unknown): unknown {
   return error instanceof KnowledgeHierarchicalIndexPersistenceError
     ? new KnowledgeIngestionError("knowledge_hierarchical_index_failed")
     : error;
+}
+
+function logParserQualityDiagnostics(
+  claim: KnowledgeWorkClaim,
+  parsed: Awaited<ReturnType<DocumentParserBoundary["parse"]>>
+): void {
+  for (const attempt of parsed.attempts) {
+    if (!attempt.reasonCode) continue;
+    console.info(JSON.stringify({
+      artifactId: claim.artifact.id,
+      attemptNumber: claim.attemptCount,
+      event: "knowledge_ingestion_parser_quality_fallback",
+      knowledgeBaseId: claim.knowledgeBaseId,
+      reasonCode: attempt.reasonCode,
+      sourceId: claim.sourceId,
+      sourceVersionId: claim.sourceVersionId,
+      stage: "parsing"
+    }));
+  }
 }
 
 async function readExactObject(input: Readonly<{
@@ -282,7 +323,10 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       claim.artifact.id,
       claim.sourceVersionId
     ));
-    const pending = knowledgeEmbeddingBatches(chunks).filter(
+    const pending = knowledgeEmbeddingBatches(
+      chunks,
+      claim.artifact.chunkingProfileVersion
+    ).filter(
       (batch) => !completed.has(batch.batchIndex)
     );
     let binding: EmbeddingRuntimeBinding | null = null;
@@ -400,6 +444,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         if (signal?.aborted) throw signal.reason ?? error;
         throw parserFailure(error);
       }
+      logParserQualityDiagnostics(claim, parsed);
       let encoded;
       try {
         encoded = encodeKnowledgeNormalizedDocument(parsed, config, {

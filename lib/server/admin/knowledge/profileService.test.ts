@@ -1,8 +1,12 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import type { KnowledgeVectorSpacePin } from "../../knowledge/indexProfile";
+import {
+  KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  type KnowledgeVectorSpacePin
+} from "../../knowledge/indexProfile";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import {
+  KNOWLEDGE_PDF_PARSER_PROFILE_VERSION,
   knowledgeProfileConfiguration,
   knowledgeProfileEgressPolicy
 } from "../../knowledge/knowledgeProfile";
@@ -156,7 +160,7 @@ describe("administrator Knowledge profile service", () => {
 
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        pdfParserProfileVersion: 1,
+        pdfParserProfileVersion: KNOWLEDGE_PDF_PARSER_PROFILE_VERSION,
         pdfProcessingMode: "system_model_direct_pdf",
         pdfSystemModelPolicyVersion: 7,
         pdfSystemModelSnapshot: systemModel.snapshot,
@@ -248,7 +252,7 @@ describe("administrator Knowledge profile service", () => {
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         activatedAt: NOW,
-        chunkingProfileVersion: 4,
+        chunkingProfileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
         embeddingProviderModelId: "embedding-1",
         executionAuthority: "installation",
         preflightStatus: "ready",
