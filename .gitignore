@@ -28,3 +28,6 @@ test-results/
 /sa.json:Zone.Identifier
 # Operator-local reference material outside the task namespace.
 /agent_docs/PRD/**
+
+AIQSA_PDF_MICROBENCH/**
+AIQSA_PDF_MICROBENCH
