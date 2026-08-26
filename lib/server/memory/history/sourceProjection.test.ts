@@ -126,6 +126,36 @@ describe("Memory safe source snapshot", () => {
     expect(first.snapshotHash).toMatch(/^[a-f0-9]{64}$/u);
   });
 
+  it("keeps turn identities stable when incremental projection starts at a suffix", () => {
+    const firstUser = userMessage({ id: "user-first", parentMessageId: null });
+    const firstAssistant = assistantMessage({
+      id: "assistant-first",
+      parentMessageId: firstUser.id
+    });
+    const secondUser = userMessage({
+      id: "user-second",
+      parentMessageId: firstAssistant.id
+    });
+    const secondAssistant = assistantMessage({
+      id: "assistant-second",
+      parentMessageId: secondUser.id
+    });
+
+    const full = buildMemorySafeSourceSnapshot(snapshotInput([
+      firstUser,
+      firstAssistant,
+      secondUser,
+      secondAssistant
+    ]));
+    const suffix = buildMemorySafeSourceSnapshot(snapshotInput([
+      { ...secondUser, parentMessageId: null },
+      secondAssistant
+    ]));
+
+    expect(full.recallChunkProjection.turnGroups[1]?.id)
+      .toBe(suffix.recallChunkProjection.turnGroups[0]?.id);
+  });
+
   it("preserves English negation and dates while leaving language metadata und", () => {
     const user = userMessage({
       id: "user-english",

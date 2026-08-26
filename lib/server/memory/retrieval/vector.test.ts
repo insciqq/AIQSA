@@ -94,7 +94,8 @@ describe("Memory vector lane orchestration", () => {
     expect(factSql).toContain('evidence_chat."permanentDeletionAt" IS NULL');
     expect(factSql).toContain('current_chat."projectId" IS NULL');
     expect(factSql).toContain('current_chat."permanentDeletionAt" IS NULL');
-    expect(factSql).toContain('current_chat."memoryMode" = \'NORMAL\'');
+    expect(factSql).toContain('current_chat."memoryMode" IN');
+    expect(factSql).toContain("'EXCLUDED'::\"MemoryChatMode\"");
     expect(factSql).toContain('feedback_retraction."retractsFeedbackId" = negative_feedback."id"');
     expect(factSql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
     expect(factSql).toContain('scope."targetIdSnapshot" IS NULL');
@@ -116,6 +117,30 @@ describe("Memory vector lane orchestration", () => {
     expect(sql).not.toContain("authority_source_map");
     expect(sql).not.toContain("MemoryFactVersion");
     expect(sql).not.toContain("MemoryRecallChunk");
+  });
+
+  it("allows bounded wide exploration without a hard per-chat chunk quota", async () => {
+    const wide = input({ limit: 120 });
+    const sql = memoryVectorCandidateSql({
+      input: wide,
+      itemType: "RECALL_CHUNK",
+      limit: 120
+    });
+    expect(sql.strings.join("?")).not.toContain('PARTITION BY chunk."chatId"');
+    expect(sql.values).toContain(120);
+
+    const executor: MemoryVectorLaneExecutor = {
+      candidateScan: vi.fn(async () => []),
+      eligibleCount: vi.fn(async () => 0),
+      rejoin: vi.fn(async () => []),
+      resolveActiveProfile: vi.fn(async () => ({ profile, status: "READY" as const }))
+    };
+    await expect(searchMemoryVectorLanes(executor, wide)).resolves.toMatchObject({
+      hits: [],
+      status: "READY"
+    });
+    await expect(searchMemoryVectorLanes(executor, input({ limit: 121 })))
+      .rejects.toThrow("memory_vector_query_invalid");
   });
 
   it("uses bounded HNSW overfetch and exact fallback after authoritative underfill", async () => {

@@ -25,6 +25,20 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(summary).not.toHaveProperty("outcome");
   });
 
+  it("projects limited Memory use without exposing its internal degradation reason", () => {
+    const summary = summarizeMessageRunArtifacts(
+      { events: [], searchRuns: [] },
+      undefined,
+      null,
+      [],
+      "LIMITED"
+    );
+
+    expect(summary).toMatchObject({ memoryStatus: "LIMITED" });
+    expect(summary).not.toHaveProperty("degradationCode");
+    expect(summary).not.toHaveProperty("outcome");
+  });
+
   it("projects only direct citations, Sources, and Reasoning", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [

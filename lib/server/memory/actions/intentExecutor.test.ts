@@ -17,6 +17,7 @@ const clientRefs = createMemoryClientRefService({ encryptionKey: () => randomByt
 function intent(overrides: Record<string, unknown> = {}) {
   return {
     action: "NONE",
+    aggregationRequested: false,
     applyResponsePreferences: false,
     category: null,
     categoryHint: null,

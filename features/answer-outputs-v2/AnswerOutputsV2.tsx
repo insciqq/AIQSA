@@ -81,11 +81,18 @@ function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerStat
   );
 }
 
-function MemoryStatusV2() {
+function MemoryStatusV2({ status }: Readonly<{
+  status: NonNullable<ThreadArtifactSummary["memoryStatus"]>;
+}>) {
+  const limited = status === "LIMITED";
   return (
-    <p className="v2-memory-answer-state" data-testid="memory-unavailable-status" role="status">
+    <p
+      className="v2-memory-answer-state"
+      data-testid={limited ? "memory-limited-status" : "memory-unavailable-status"}
+      role="status"
+    >
       <UiV2Icon name="memory" />
-      <span>{mt("answer.unavailable")}</span>
+      <span>{mt(limited ? "answer.limited" : "answer.unavailable")}</span>
     </p>
   );
 }
@@ -489,7 +496,8 @@ export function AnswerOutputsV2({
     artifact && showReasoning && artifact.reasoningText.some((text) => text.trim())
   );
   const hasMemoryAction = Boolean(artifact?.memoryAction);
-  const hasMemoryStatus = artifact?.memoryStatus === "UNAVAILABLE";
+  const hasMemoryStatus = artifact?.memoryStatus === "LIMITED" ||
+    artifact?.memoryStatus === "UNAVAILABLE";
   const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
     artifact.knowledgeState.answer === "insufficient_evidence" ||
     artifact.knowledgeState.scope === "partial_sources_ready"
@@ -504,7 +512,7 @@ export function AnswerOutputsV2({
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
       {identitySlot ? <div className="v2-answer-identity">{identitySlot}</div> : null}
-      {artifact?.memoryStatus === "UNAVAILABLE" ? <MemoryStatusV2 /> : null}
+      {artifact?.memoryStatus ? <MemoryStatusV2 status={artifact.memoryStatus} /> : null}
       {artifact?.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
       {artifact && hasSources ? (
         <SourcesV2 artifact={artifact} knowledgeReference={knowledgeReference} />

@@ -18,6 +18,19 @@ describe("explicit Memory secret screening", () => {
     expect(memoryExplicitStatementContainsSecret("My password is hunter2-secret")).toBe(false);
     expect(memoryExplicitStatementContainsSecret("Мой пароль: hunter2-secret")).toBe(false);
     expect(memoryExplicitStatementContainsSecret("API-ключ: example-secret-value")).toBe(false);
+    expect(memoryExplicitStatementContainsSecret("The user said they were ready.")).toBe(false);
+  });
+
+  it("does not classify canonical UUID identifiers as high-entropy credentials", () => {
+    expect(parseMemorySecret(
+      "Source chat 652ca28b-7ac4-4078-97cd-9b48066e7cb9"
+    )).toEqual({ containsSecret: false, findings: [] });
+    expect(parseMemorySecret(
+      "Source chunk 9c24a000-9bd2-41b9-96ff-a9369526af5c"
+    )).toEqual({ containsSecret: false, findings: [] });
+    expect(parseMemorySecret(
+      "652ca28b-7ac4-4078-97cd-9b48066e7cb9-secret123"
+    ).findings).toContain("HIGH_ENTROPY_TOKEN");
   });
 
   it.each([
@@ -46,6 +59,8 @@ describe("explicit Memory secret screening", () => {
 
   it("does not require a language or keyword fallback for recovery and card formats", () => {
     expect(parseMemorySecret("ABCD-EFGH-IJKL-MNOP").findings)
+      .toContain("RECOVERY_CODE");
+    expect(parseMemorySecret("abcd-efgh-ijkl-mnop").findings)
       .toContain("RECOVERY_CODE");
     expect(parseMemorySecret("4111 1111 1111 1111").findings)
       .toContain("PAYMENT_CARD");

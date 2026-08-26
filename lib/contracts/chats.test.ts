@@ -555,6 +555,17 @@ describe("chat wire contracts", () => {
     });
     expect(decode({
       citations: [],
+      memoryStatus: "LIMITED",
+      reasoningText: [],
+      sources: []
+    })?.messages[0]?.artifactSummary).toEqual({
+      citations: [],
+      memoryStatus: "LIMITED",
+      reasoningText: [],
+      sources: []
+    });
+    expect(decode({
+      citations: [],
       memoryStatus: "FAILED_SAFE",
       reasoningText: [],
       sources: []

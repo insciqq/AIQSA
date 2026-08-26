@@ -14,6 +14,7 @@ const context = {
 
 const output = {
   action: "SAVE",
+  aggregationRequested: false,
   applyResponsePreferences: false,
   category: "preferences",
   categoryHint: null,
@@ -47,7 +48,12 @@ describe("MemoryActionIntent service", () => {
     expect(request.name).toBe("MemoryActionIntent");
     expect(request.schema).toMatchObject({
       additionalProperties: false,
-      required: expect.arrayContaining(["action", "profileRequested", "thisChatOnly"])
+      required: expect.arrayContaining([
+        "action",
+        "aggregationRequested",
+        "profileRequested",
+        "thisChatOnly"
+      ])
     });
     expect(request.userPrompt).toContain("current_user_message");
     expect(request.userPrompt).toContain("Please remember that I prefer tea.");
@@ -70,6 +76,15 @@ describe("MemoryActionIntent service", () => {
     );
     expect(request.systemPrompt).toContain(
       "pastChatsUseful true, memoryUseful false, retrievalMode PAST_CHAT_SEARCH"
+    );
+    expect(request.systemPrompt).toContain(
+      "Set aggregationRequested true only when answering requires combining evidence"
+    );
+    expect(request.systemPrompt).toContain(
+      "queryText a recall query for the recurring set-member predicate"
+    );
+    expect(request.systemPrompt).toContain(
+      "queryText should retrieve the X events, not Y"
     );
     expect(request.systemPrompt).toContain(
       "carry, use, or keep a personal fact or preference in future conversations"

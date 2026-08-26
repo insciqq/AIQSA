@@ -53,11 +53,12 @@ export const STRUCTURED_OUTPUT_LIMITS = Object.freeze({
   minOutputTokens: 16
 });
 
-// OpenRouter's max_tokens budget includes hidden reasoning tokens for reasoning
-// models. A tiny schema payload can therefore be truncated before the required
-// tool call exists. This is only a wire-budget floor: the accepted JSON remains
-// bounded by the provider-neutral output-size limit and the strict schema.
-const OPENROUTER_REASONING_STRUCTURED_OUTPUT_MIN_TOKENS = 1_024;
+// Responses max_output_tokens and OpenRouter max_tokens include hidden
+// reasoning tokens. A tiny schema payload can therefore be truncated before
+// the required JSON or tool call exists. This is only a wire-budget floor: the
+// accepted JSON remains bounded by the provider-neutral output-size limit and
+// the strict schema.
+const REASONING_STRUCTURED_OUTPUT_MIN_TOKENS = 1_024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -208,6 +209,13 @@ export function buildOpenAIResponsesStructuredOutputRequest(
     throw new Error("structured_output_adapter_unsupported");
   }
   const normalized = normalizeRequest(request);
+  const maxOutputTokens = normalized.reasoningEffort &&
+    normalized.reasoningEffort !== "none"
+    ? Math.max(
+        normalized.maxOutputTokens,
+        REASONING_STRUCTURED_OUTPUT_MIN_TOKENS
+      )
+    : normalized.maxOutputTokens;
   const body: Record<string, unknown> = {
     ...(model.adapterKind === "openai_responses_native" ? { background: false } : {}),
     input: [{
@@ -215,7 +223,7 @@ export function buildOpenAIResponsesStructuredOutputRequest(
       role: "user"
     }],
     instructions: normalized.systemPrompt,
-    max_output_tokens: normalized.maxOutputTokens,
+    max_output_tokens: maxOutputTokens,
     model: model.upstreamModelId,
     store: false,
     stream: false,
@@ -278,7 +286,7 @@ export function buildOpenRouterStructuredOutputRequest(
   const maxTokens = reasoningActive || params.reasoning.exclude
     ? Math.max(
         normalized.maxOutputTokens,
-        OPENROUTER_REASONING_STRUCTURED_OUTPUT_MIN_TOKENS
+        REASONING_STRUCTURED_OUTPUT_MIN_TOKENS
       )
     : normalized.maxOutputTokens;
   const reasoning: Record<string, unknown> = {};

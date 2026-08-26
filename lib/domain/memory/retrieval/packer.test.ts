@@ -27,8 +27,20 @@ const historicalPlan = planMemoryRetrieval({
   now,
   temporalIntent: "HISTORICAL"
 });
+const aggregationPlan = planMemoryRetrieval({
+  aggregationRequested: true,
+  currentUserText: "all deployment rehearsals completed before launch day",
+  filters: { sourceKinds: ["HISTORY"] },
+  mode: "PAST_CHAT_SEARCH",
+  now,
+  temporalIntent: "ANY"
+});
 
-function metadata(id: string, history = false): MemoryCandidateMetadata {
+function metadata(
+  id: string,
+  history = false,
+  sourceChatId = "chat-source"
+): MemoryCandidateMetadata {
   return {
     canonicalKey: null, category: history ? null : "preferences", confidence: 0,
     conflict: false,
@@ -44,7 +56,7 @@ function metadata(id: string, history = false): MemoryCandidateMetadata {
     occurredTo: null, pinned: false, scopeAffinity: 0, scopeType: history ? null : "GLOBAL_USER",
     predicateKey: null, relationDepth: 0,
     sensitivityClass: history ? null : "NORMAL", sourceAssistantId: null,
-    sourceChatId: history ? "chat-source" : null, sourceFolderId: null,
+    sourceChatId: history ? sourceChatId : null, sourceFolderId: null,
     sourceMode: history ? null : "EXPLICIT",
     sourceAuthority: history ? "PAST_CHAT" : "EXPLICIT", subjectKey: null,
     synthesisDepth: 0, systemFrom: now,
@@ -52,7 +64,12 @@ function metadata(id: string, history = false): MemoryCandidateMetadata {
   };
 }
 
-function ranked(id: string, history = false, tier: "CORE" | "DYNAMIC" = "DYNAMIC"):
+function ranked(
+  id: string,
+  history = false,
+  tier: "CORE" | "DYNAMIC" = "DYNAMIC",
+  sourceChatId = "chat-source"
+):
 MemoryRankedCandidate {
   return {
     entryId: tier === "CORE" ? null : `entry-${id}`,
@@ -66,17 +83,22 @@ MemoryRankedCandidate {
     finalScore: tier === "CORE" ? 0 : 0.1, itemId: id,
     itemType: history ? "RECALL_CHUNK" : "FACT_VERSION",
     laneRanks: tier === "CORE" ? {} : history ? { HISTORY_RECALL_VECTOR: 1 } : { FACT_VECTOR: 1 },
-    metadata: metadata(id, history), rrfScore: tier === "CORE" ? 0 : 0.1,
+    metadata: metadata(id, history, sourceChatId), rrfScore: tier === "CORE" ? 0 : 0.1,
     selectionReason: tier === "CORE" ? "core.high" : "semantic_relevance"
   };
 }
 
-function expansion(id: string, history = false, text = `memory ${id}`): MemoryExpandedCandidate {
+function expansion(
+  id: string,
+  history = false,
+  text = `memory ${id}`,
+  sourceChatId = "chat-source"
+): MemoryExpandedCandidate {
   return {
     itemId: id, itemType: history ? "RECALL_CHUNK" : "FACT_VERSION",
     occurredFrom: history ? now : null, occurredTo: history ? now : null,
     projectionKind: history ? "RECALL_CHUNK_SAFE_PROJECTED_TEXT" : "FACT_DISPLAY_TEXT",
-    safeText: text, sourceChatId: history ? "chat-source" : null, supportingItemId: null
+    safeText: text, sourceChatId: history ? sourceChatId : null, supportingItemId: null
   };
 }
 
@@ -97,7 +119,7 @@ describe("Personal Memory context pack", () => {
     expect(pack.text).toContain("Response preferences");
     expect(pack.text).toContain("Relevant prior conversations");
     expect(pack.text).toContain("answer that fact directly");
-    expect(pack.packerVersion).toBe("memory-context-packer-v6");
+    expect(pack.packerVersion).toBe("memory-context-packer-v10");
   });
 
   it("labels depth-one synthesis in a separate inferred-pattern section", () => {
@@ -283,6 +305,76 @@ describe("Personal Memory context pack", () => {
       "Prefer the current user message and current active chat context on conflict."
     );
     expect(pack.text).not.toContain("bounded profile inventory");
+  });
+
+  it("packs distinct aggregation sources before repeats without a per-chat quota", () => {
+    const distinct = Array.from({ length: 10 }, (_, index) => ({
+      candidate: ranked(`event-${index}`, true, "DYNAMIC", `chat-${index}`),
+      expansion: expansion(
+        `event-${index}`,
+        true,
+        `User: completed rehearsal ${index + 1} and recorded its outcome.`,
+        `chat-${index}`
+      )
+    }));
+    const repeats = Array.from({ length: 12 }, (_, index) => ({
+      candidate: {
+        ...ranked(`event-repeat-${index}`, true, "DYNAMIC", "chat-0"),
+        finalScore: 0.99 - index / 100
+      },
+      expansion: expansion(
+        `event-repeat-${index}`,
+        true,
+        `User: additional relevant detail ${index + 1} from the first conversation.`,
+        "chat-0"
+      )
+    }));
+    const pack = packMemoryPersonalContext({
+      expanded: [
+        ...repeats.map(({ expansion }) => expansion),
+        ...distinct.map(({ expansion }) => expansion)
+      ],
+      plan: aggregationPlan,
+      ranked: [
+        ...repeats.map(({ candidate }) => candidate),
+        ...distinct.map(({ candidate }) => candidate)
+      ]
+    });
+
+    expect(pack.items).toHaveLength(20);
+    expect(new Set(pack.items.map(({ sourceChatId }) => sourceChatId)).size).toBe(10);
+    expect(pack.items.filter(({ sourceChatId }) => sourceChatId === "chat-0")).toHaveLength(11);
+    expect(pack.items.slice(0, 10).map(({ sourceChatId }) => sourceChatId))
+      .toEqual(Array.from({ length: 10 }, (_, index) => `chat-${index}`));
+    expect(pack.approxTokens).toBeLessThanOrEqual(10_000);
+    expect(pack.hardCapTokens).toBe(10_000);
+    expect(pack.text).toContain("Combine every relevant listed event");
+    expect(pack.text).toContain(
+      "Keep set members, temporal boundaries, and supporting facts distinct"
+    );
+    expect(pack.text).not.toContain("Do not count the boundary event itself");
+  });
+
+  it("makes the ten-source aggregation ceiling reachable for full history chunks", () => {
+    const items = Array.from({ length: 10 }, (_, index) => ({
+      candidate: ranked(`long-event-${index}`, true, "DYNAMIC", `long-chat-${index}`),
+      expansion: expansion(
+        `long-event-${index}`,
+        true,
+        `Event ${index + 1}: ${"bounded detail ".repeat(175)}`,
+        `long-chat-${index}`
+      )
+    }));
+    const pack = packMemoryPersonalContext({
+      expanded: items.map(({ expansion }) => expansion),
+      plan: aggregationPlan,
+      ranked: items.map(({ candidate }) => candidate)
+    });
+
+    expect(pack.items).toHaveLength(10);
+    expect(pack.omissionCounts.history_token_budget).toBeUndefined();
+    expect(pack.targetTokens).toBe(10_000);
+    expect(pack.hardCapTokens).toBe(10_000);
   });
 
   it("separates current and dated superseded facts in a historical pack", () => {

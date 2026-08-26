@@ -284,6 +284,7 @@ async function createControlAuthorizedSave(
   const statement = "I prefer concise answers.";
   const defaultControlIntent = {
     action: "SAVE",
+    aggregationRequested: false,
     applyResponsePreferences: false,
     category: "preferences",
     categoryHint: null,
@@ -1059,6 +1060,7 @@ describe("Prisma Memory persistence", () => {
     try {
       const legacyIntent = {
         action: "SAVE",
+        aggregationRequested: false,
         applyResponsePreferences: false,
         category: "sensitive",
         categoryHint: "preferences",
@@ -1150,6 +1152,7 @@ describe("Prisma Memory persistence", () => {
       ));
       const controlIntent: MemoryActionIntent = {
         action: "FORGET",
+        aggregationRequested: false,
         applyResponsePreferences: false,
         category: null,
         categoryHint: null,

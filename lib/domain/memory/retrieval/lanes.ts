@@ -1,8 +1,9 @@
 import {
-  MEMORY_RETRIEVAL_LANE_LIMITS,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_LANE_ORDER,
+  memoryRetrievalLaneLimit,
   type MemoryRetrievalLane
 } from "./config";
 import type { MemoryLaneResult } from "./contracts";
@@ -17,30 +18,35 @@ export type MemoryRetrievalLaneLimitAllocation = Readonly<
 >;
 
 export function allocateMemoryRetrievalLaneLimits(
-  lanes: readonly MemoryRetrievalLane[]
+  lanes: readonly MemoryRetrievalLane[],
+  aggregationRequested = false
 ): MemoryRetrievalLaneLimitAllocation {
   const profileRequested = lanes.includes("FACT_PROFILE");
   if (
     lanes.length === 0 || lanes.length > MEMORY_RETRIEVAL_LANE_ORDER.length ||
     new Set(lanes).size !== lanes.length ||
     lanes.some((lane) => !MEMORY_RETRIEVAL_LANE_ORDER.includes(lane)) ||
-    (profileRequested && lanes.length !== 1)
+    (profileRequested && lanes.length !== 1) ||
+    typeof aggregationRequested !== "boolean"
   ) throw new Error("memory_retrieval_lane_contract_invalid");
   const configuredTotal = lanes.reduce(
-    (total, lane) => total + MEMORY_RETRIEVAL_LANE_LIMITS[lane],
+    (total, lane) => total + memoryRetrievalLaneLimit(lane, aggregationRequested),
     0
   );
-  if (configuredTotal <= MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES) {
+  const candidateCeiling = aggregationRequested
+    ? MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES
+    : MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES;
+  if (configuredTotal <= candidateCeiling) {
     return Object.freeze(Object.fromEntries(
-      lanes.map((lane) => [lane, MEMORY_RETRIEVAL_LANE_LIMITS[lane]])
+      lanes.map((lane) => [lane, memoryRetrievalLaneLimit(lane, aggregationRequested)])
     ));
   }
-  const scale = MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES / configuredTotal;
+  const scale = candidateCeiling / configuredTotal;
   const allocations = lanes.map((lane) => {
-    const scaled = MEMORY_RETRIEVAL_LANE_LIMITS[lane] * scale;
+    const scaled = memoryRetrievalLaneLimit(lane, aggregationRequested) * scale;
     return { fraction: scaled - Math.floor(scaled), lane, limit: Math.max(1, Math.floor(scaled)) };
   });
-  let remaining = MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES - allocations.reduce(
+  let remaining = candidateCeiling - allocations.reduce(
     (total, allocation) => total + allocation.limit,
     0
   );

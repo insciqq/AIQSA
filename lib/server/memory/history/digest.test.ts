@@ -6,7 +6,7 @@ import {
   type MemoryHistoryPreparedChunk
 } from "./contract";
 import {
-  MemoryChatDigestError,
+  MemoryChatDigestOutputError,
   buildHierarchicalMemoryChatDigest,
   buildIncrementalMemoryChatDigestRequest,
   buildMemoryChatDigestRequest,
@@ -19,6 +19,22 @@ import {
   selectMemoryChatDigestSourceChunks
 } from "./digest";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
+
+function expectDigestOutputInvalid(
+  value: unknown,
+  reason: MemoryChatDigestOutputError["reason"]
+): void {
+  try {
+    decodeMemoryChatDigest(value);
+    throw new Error("expected_memory_chat_digest_output_invalid");
+  } catch (error) {
+    expect(error).toBeInstanceOf(MemoryChatDigestOutputError);
+    expect(error).toMatchObject({
+      code: "memory_chat_digest_output_invalid",
+      reason
+    });
+  }
+}
 
 const source: MemoryHistoryIndexSourceIdentity = Object.freeze({
   activeLeafMessageId: "assistant-30",
@@ -80,21 +96,22 @@ describe("Memory chat digests", () => {
     const decoded = decodeMemoryChatDigest({
       decisions: ["Use cedar deployment"],
       open_loops: ["Confirm rollout date"],
-      summary: "The chat compared deployment options.",
+      summary: "The user said they were comparing deployment options.",
       topics: ["Deployment"]
     });
-    expect(decoded.summary).toBe("The chat compared deployment options.");
+    expect(decoded.summary).toBe(
+      "The user said they were comparing deployment options."
+    );
     expect(Object.isFrozen(decoded)).toBe(true);
 
     for (const invalid of [
       { ...decoded, extra: true, open_loops: decoded.openLoops },
+      { decisions: [], open_loops: [], summary: "   ", topics: [] },
       { decisions: [], open_loops: [], summary: "x".repeat(2_001), topics: [] },
       { decisions: ["x".repeat(257)], open_loops: [], summary: "summary", topics: [] },
       { decisions: [], open_loops: [], summary: "summary", topics: Array(13).fill("topic") }
     ]) {
-      expect(() => decodeMemoryChatDigest(invalid)).toThrowError(
-        new MemoryChatDigestError("memory_chat_digest_invalid")
-      );
+      expectDigestOutputInvalid(invalid, "contract");
     }
   });
 
@@ -115,9 +132,12 @@ describe("Memory chat digests", () => {
     const segments = partitionMemoryChatDigestSourceChunks(selected);
     expect(segments.map((segment) => segment.length)).toEqual([24, 5]);
     const request = buildMemoryChatDigestRequest(segments[0]!);
-    expect(request.name).toBe("memory_chat_digest_v2");
+    expect(request.name).toBe("memory_chat_digest_v3");
     expect(request.userPrompt.length).toBeLessThan(32_000);
     expect(request.systemPrompt).toContain("untrusted quoted data");
+    expect(request.systemPrompt).toContain("user-authored events");
+    expect(request.systemPrompt).toContain("incidental");
+    expect(request.systemPrompt).toContain("each distinct item");
     const incremental = buildIncrementalMemoryChatDigestRequest(
       "Summary: Earlier deployment constraints.",
       segments[1]!
@@ -144,20 +164,20 @@ describe("Memory chat digests", () => {
     expect(first.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(first.updateMode).toBe("FULL_REBUILD");
     expect(first.safeDigestText).toContain("Summary:");
-    expect(MEMORY_CHAT_DIGEST_PIPELINE_VERSION).toBe("memory-chat-digest-v2");
+    expect(MEMORY_CHAT_DIGEST_PIPELINE_VERSION).toBe("memory-chat-digest-v3");
 
-    expect(() => decodeMemoryChatDigest({
+    expectDigestOutputInvalid({
       decisions: [],
       open_loops: [],
       summary: "api key: sk-digestSecret1234567890",
       topics: []
-    })).toThrowError(new MemoryChatDigestError("memory_chat_digest_invalid"));
-    expect(() => decodeMemoryChatDigest({
+    }, "safety_rejected");
+    expectDigestOutputInvalid({
       decisions: Array(12).fill("D".repeat(200)),
       open_loops: [],
       summary: "A short visible prefix.",
       topics: Array(12).fill("T".repeat(200))
-    })).toThrowError(new MemoryChatDigestError("memory_chat_digest_invalid"));
+    }, "aggregate_limit");
   });
 
   it("[E08] reuses an unchanged digest with zero provider executions", async () => {

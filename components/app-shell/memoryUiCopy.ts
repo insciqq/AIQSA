@@ -126,6 +126,7 @@ const EN = {
   "action.rejected": "Memory action was not applied.",
   "action.thisChatOnly": "Saved for this chat only.",
   "action.manage": "Manage Memories",
+  "answer.limited": "Memory was used with limitations for this response.",
   "answer.unavailable": "Memory was unavailable for this response.",
   "source.learnedMemory": "Learned memory",
   "source.pastChat": "Past chat",

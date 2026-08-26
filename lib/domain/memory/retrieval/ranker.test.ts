@@ -12,6 +12,21 @@ const profilePlan = planMemoryRetrieval({
   now,
   profileRequested: true
 });
+const pastChatPlan = planMemoryRetrieval({
+  currentUserText: "deployment rehearsals before launch day",
+  filters: { sourceKinds: ["HISTORY"] },
+  mode: "PAST_CHAT_SEARCH",
+  now,
+  temporalIntent: "ANY"
+});
+const aggregationPlan = planMemoryRetrieval({
+  aggregationRequested: true,
+  currentUserText: "all deployment rehearsals completed before launch day",
+  filters: { sourceKinds: ["HISTORY"] },
+  mode: "PAST_CHAT_SEARCH",
+  now,
+  temporalIntent: "ANY"
+});
 
 function metadata(id: string): MemoryCandidateMetadata {
   return {
@@ -36,6 +51,30 @@ function candidate(id: string, lane: MemoryRetrievalLane, rawScore: number): Mem
   return {
     entryId: `entry-${id}`, hardFilterPassed: true, itemId: id,
     itemType: "FACT_VERSION", lane, metadata: metadata(id), rawScore
+  };
+}
+
+function historyCandidate(id: string, rawScore: number): MemoryLaneCandidate {
+  const base = candidate(id, "HISTORY_RECALL_VECTOR", rawScore);
+  return {
+    ...base,
+    itemType: "RECALL_CHUNK",
+    metadata: {
+      ...base.metadata,
+      category: null,
+      coreSalience: "NONE",
+      directness: null,
+      factId: null,
+      historySafetyClass: "NORMAL",
+      identityKind: null,
+      lifecycleState: null,
+      modality: null,
+      scopeType: null,
+      sensitivityClass: null,
+      sourceAuthority: "PAST_CHAT",
+      sourceChatId: `chat-${id}`,
+      sourceMode: null
+    }
   };
 }
 
@@ -120,6 +159,65 @@ describe("relative-rank Memory fusion", () => {
     expect(fuseMemoryRetrievalCandidates(empty, [{
       lane: "FACT_VECTOR", candidates: [candidate("vector", "FACT_VECTOR", 0.8)]
     }], now)).toEqual([]);
+  });
+
+  it("widens history fusion only for an explicit aggregation plan", () => {
+    const candidates = Array.from({ length: 12 }, (_, index) =>
+      historyCandidate(`history-${index}`, 1 - index / 100));
+    const results = [{ candidates, lane: "HISTORY_RECALL_VECTOR" as const }];
+
+    expect(fuseMemoryRetrievalCandidates(pastChatPlan, results, now)).toHaveLength(6);
+    expect(fuseMemoryRetrievalCandidates(aggregationPlan, results, now)).toHaveLength(12);
+  });
+
+  it("lets aggregation coverage candidates from a second history lane reach fusion", () => {
+    const ftsCandidates = Array.from({ length: 30 }, (_, index) => {
+      const value = historyCandidate(`fts-${index}`, 1 - index / 100);
+      return { ...value, lane: "HISTORY_RECALL_FTS_SIMPLE" as const };
+    });
+    const vectorCandidates = Array.from({ length: 30 }, (_, index) => {
+      const value = historyCandidate(`vector-${index}`, 1 - index / 100);
+      return { ...value, lane: "HISTORY_RECALL_VECTOR" as const };
+    });
+    const ranked = fuseMemoryRetrievalCandidates(aggregationPlan, [{
+      candidates: ftsCandidates,
+      lane: "HISTORY_RECALL_FTS_SIMPLE"
+    }, {
+      candidates: vectorCandidates,
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+
+    expect(ranked).toHaveLength(60);
+    expect(ranked.filter(({ itemId }) => itemId.startsWith("fts-"))).toHaveLength(30);
+    expect(ranked.filter(({ itemId }) => itemId.startsWith("vector-"))).toHaveLength(30);
+  });
+
+  it("preserves identical aggregation evidence from independent source chats", () => {
+    const first = historyCandidate("first", 0.9);
+    const second = historyCandidate("second", 0.8);
+    const sharedDedupe = "same-safe-projection";
+    const ranked = fuseMemoryRetrievalCandidates(aggregationPlan, [{
+      candidates: [{
+        ...first,
+        metadata: { ...first.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-a" }
+      }, {
+        ...second,
+        metadata: { ...second.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-b" }
+      }],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual(["first", "second"]);
+    expect(fuseMemoryRetrievalCandidates(pastChatPlan, [{
+      candidates: [{
+        ...first,
+        metadata: { ...first.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-a" }
+      }, {
+        ...second,
+        metadata: { ...second.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-b" }
+      }],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now)).toHaveLength(1);
   });
 
   it("isolates profile candidates from targeted semantic fusion", () => {

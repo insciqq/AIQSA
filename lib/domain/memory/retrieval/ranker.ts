@@ -1,12 +1,14 @@
 import {
   MEMORY_RETRIEVAL_FUSION_VERSION,
   MEMORY_RETRIEVAL_LANE_WEIGHTS,
-  MEMORY_RETRIEVAL_LANE_LIMITS,
   MEMORY_RETRIEVAL_LANE_ORDER,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_RRF_K,
   MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
+  memoryRetrievalLaneLimit,
   type MemoryRetrievalLane
 } from "./config";
 import type {
@@ -120,6 +122,9 @@ function boundedCandidates(
   plan: MemoryRetrievalPlan,
   results: readonly MemoryLaneResult[]
 ): readonly MemoryLaneCandidate[] {
+  const candidateCeiling = plan.aggregationRequested
+    ? MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES
+    : MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES;
   const byLane = new Map<MemoryRetrievalLane, MemoryLaneCandidate[]>();
   for (const lane of MEMORY_RETRIEVAL_LANE_ORDER) byLane.set(lane, []);
   for (const result of results) {
@@ -148,11 +153,11 @@ function boundedCandidates(
       seen.add(key);
       bounded.push(candidate);
       if (
-        seen.size >= MEMORY_RETRIEVAL_LANE_LIMITS[lane] ||
-        bounded.length >= MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES
+        seen.size >= memoryRetrievalLaneLimit(lane, plan.aggregationRequested) ||
+        bounded.length >= candidateCeiling
       ) break;
     }
-    if (bounded.length >= MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES) break;
+    if (bounded.length >= candidateCeiling) break;
   }
   return bounded;
 }
@@ -162,6 +167,20 @@ function selectionReason(laneRanks: Aggregate["laneRanks"]): string {
     .filter((lane) => laneRanks[lane] !== undefined)
     .map((lane) => lane.toLocaleLowerCase("und"))
     .join("+");
+}
+
+function rankedDedupeKey(
+  plan: MemoryRetrievalPlan,
+  candidate: MemoryRankedCandidate
+): string {
+  if (
+    plan.aggregationRequested &&
+    candidate.itemType === "RECALL_CHUNK" &&
+    candidate.metadata.sourceChatId
+  ) {
+    return `${candidate.metadata.sourceChatId}:${candidate.metadata.dedupeKey}`;
+  }
+  return candidate.metadata.dedupeKey;
 }
 
 const deterministicMatchOrder: readonly MemoryDeterministicMatch[] = [
@@ -238,8 +257,11 @@ export function fuseMemoryRetrievalCandidates(
   );
   const dedupe = new Set<string>();
   return ranked.filter((candidate) => {
-    if (dedupe.has(candidate.metadata.dedupeKey)) return false;
-    dedupe.add(candidate.metadata.dedupeKey);
+    const key = rankedDedupeKey(plan, candidate);
+    if (dedupe.has(key)) return false;
+    dedupe.add(key);
     return true;
-  }).slice(0, MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES);
+  }).slice(0, plan.aggregationRequested
+    ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
+    : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES);
 }
