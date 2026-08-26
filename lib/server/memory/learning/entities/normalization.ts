@@ -18,7 +18,6 @@ export const MEMORY_ENTITY_TYPES = Object.freeze([
 export type MemoryEntityType = (typeof MEMORY_ENTITY_TYPES)[number];
 
 const surroundingPunctuation = /^[\s"'“”‘’«»()[\]{}.,;:!?…—–-]+|[\s"'“”‘’«»()[\]{}.,;:!?…—–-]+$/gu;
-const pronounAlias = /^(?:it|its|itself|he|him|his|himself|she|her|hers|herself|they|them|their|theirs|themselves|this|that|these|those|one|ones|он|она|оно|они|его|её|ее|их|ему|ей|им|него|неё|нее|них|этот|эта|это|эти|тот|та|то|те|данный|данная|данное|данные)$/iu;
 
 function boundedText(value: string, maxLength = 256): string | null {
   const normalized = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
@@ -34,26 +33,8 @@ export function normalizeMemoryEntityAlias(value: string): string | null {
   const stripped = bounded.replace(surroundingPunctuation, "")
     .trim()
     .replace(/\s+/gu, " ")
-    .toLocaleLowerCase("und")
-    .replaceAll("ё", "е");
-  return stripped && stripped.length <= 256 && !pronounAlias.test(stripped)
-    ? stripped
-    : null;
-}
-
-export function memoryEntityAliasIsPronoun(value: string): boolean {
-  const bounded = boundedText(value);
-  if (!bounded) return false;
-  const stripped = bounded.replace(surroundingPunctuation, "")
-    .trim()
-    .toLocaleLowerCase("und")
-    .replaceAll("ё", "е");
-  return pronounAlias.test(stripped);
-}
-
-export function memoryTextContainsCoreference(value: string): boolean {
-  const tokens = value.normalize("NFKC").match(/[\p{L}\p{N}_-]+/gu) ?? [];
-  return tokens.some((token) => memoryEntityAliasIsPronoun(token));
+    .toLocaleLowerCase("und");
+  return stripped && stripped.length <= 256 ? stripped : null;
 }
 
 function mappedType(value: string): MemoryEntityType | null {
@@ -66,6 +47,35 @@ function mappedType(value: string): MemoryEntityType | null {
 
 export function memoryEntityType(value: string): MemoryEntityType | null {
   return mappedType(value);
+}
+
+export function memoryEntityTypeFamily(value: string): string | null {
+  const entityType = mappedType(value);
+  if (!entityType) return null;
+  return entityType === "PRODUCT" || entityType === "DEVICE"
+    ? "product-device"
+    : entityType.toLocaleLowerCase("und");
+}
+
+/** Creation identity is grounded only in an exact nominal source span. The
+ * provider's canonical label and free-standing qualifier proposals are never
+ * part of this key. */
+export function memoryGroundedEntityCanonicalKey(input: Readonly<{
+  entityType: string;
+  mention: string | null;
+  mentionKind: "NAMED" | "NOMINAL" | "PRONOMINAL" | "ELLIPSIS" | "UNKNOWN";
+}>): string | null {
+  if ((input.mentionKind !== "NAMED" && input.mentionKind !== "NOMINAL") ||
+    input.mention === null) return null;
+  const family = memoryEntityTypeFamily(input.entityType);
+  const mention = normalizeMemoryEntityAlias(input.mention);
+  if (!family || !mention) return null;
+  const component = normalizeMemoryIdentityComponent(
+    `entity-v3-${family}-mention`,
+    mention
+  );
+  if (!component) return null;
+  return `entity:v3:${family}:${component}`;
 }
 
 export function memoryEntityCanonicalKey(input: Readonly<{
@@ -110,10 +120,16 @@ export function memoryEntityCanonicalKey(input: Readonly<{
 export function memoryEntityAliases(input: Readonly<{
   aliases: readonly string[];
   canonicalLabel: string;
-  mention: string;
+  mention: string | null;
+  mentionKind?: "NAMED" | "NOMINAL" | "PRONOMINAL" | "ELLIPSIS" | "UNKNOWN";
 }>): readonly Readonly<{ displayAlias: string; normalizedAlias: string }>[] {
   const unique = new Map<string, string>();
-  for (const displayAlias of [input.mention, input.canonicalLabel, ...input.aliases]) {
+  const sourceSupported = input.mentionKind === undefined ||
+    input.mentionKind === "NAMED" || input.mentionKind === "NOMINAL"
+    ? [input.mention, ...input.aliases]
+    : [];
+  for (const displayAlias of sourceSupported) {
+    if (displayAlias === null) continue;
     const normalizedAlias = normalizeMemoryEntityAlias(displayAlias);
     if (normalizedAlias && !unique.has(normalizedAlias)) {
       unique.set(normalizedAlias, displayAlias.normalize("NFKC").trim());

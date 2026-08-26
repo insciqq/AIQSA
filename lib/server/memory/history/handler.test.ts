@@ -4,6 +4,7 @@ import type { MemoryJobClaim } from "../coordinator/types";
 import type { MemoryHistorySafetyClassifier } from "./classifier";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
+  EMPTY_MEMORY_HISTORY_WORK_COUNTERS,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint,
   memoryHistoryIndexResultHash,
@@ -98,7 +99,12 @@ function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndex
     chunks,
     suppressionIdentitySnapshot,
     null,
-    { checkpointMessages, incremental, rebuiltChunkIds }
+    {
+      checkpointMessages,
+      incremental,
+      rebuiltChunkIds,
+      work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
+    }
   );
   return {
     classificationPolicyVersion: null,
@@ -112,7 +118,8 @@ function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndex
     resultHash,
     reusedChunkIds: [],
     source,
-    suppressionIdentitySnapshot
+    suppressionIdentitySnapshot,
+    work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   };
 }
 
@@ -219,6 +226,14 @@ describe("Memory INDEX_HISTORY handler", () => {
     const result = await handler.execute(currentClaim, executionContext);
 
     expect(result).toMatchObject({
+      operationalCounters: {
+        digestFullRebuild: 0,
+        digestIncremental: 0,
+        digestNoop: 0,
+        historyChunksBuilt: 0,
+        historyChunksReplaced: 0,
+        historyMessagesProjected: 0
+      },
       stage: "lexical_ready"
     });
     expect(result.acceptedResultHash).not.toBe(currentPlan.resultHash);
@@ -268,7 +283,8 @@ describe("Memory INDEX_HISTORY handler", () => {
         checkpointMessages: basePlan.checkpointMessages,
         incremental,
         rebuiltChunkIds: ["chunk-tail"],
-        reusedChunkIds: ["chunk-stable"]
+        reusedChunkIds: ["chunk-stable"],
+        work: basePlan.work
       }
     );
     const currentPlan: MemoryHistoryIndexPlan = {
@@ -284,15 +300,20 @@ describe("Memory INDEX_HISTORY handler", () => {
       contentHash: "d".repeat(64),
       decisions: ["Use cedar deployment"],
       id: "digest-1",
+      incrementalDepth: 0,
+      inputFingerprint: "e".repeat(64),
       languageCode: "en",
       occurredFrom: "2026-08-10T10:00:00.000Z",
       occurredTo: "2026-08-10T10:01:00.000Z",
       openLoops: ["Confirm rollout"],
+      rebuildPolicyVersion: "memory-chat-digest-rebuild-v2",
       safeDigestText: "Summary: Deployment options were compared.",
       sourceChunkIds: ["chunk-stable", "chunk-tail"],
+      sourceFingerprint: "f".repeat(64),
       sourceMessageIds: ["user-1", "assistant-1"],
       summary: "Deployment options were compared.",
-      topics: ["Deployment"]
+      topics: ["Deployment"],
+      updateMode: "FULL_REBUILD"
     } as const;
     const classifier = {
       classify: vi.fn()
@@ -315,12 +336,17 @@ describe("Memory INDEX_HISTORY handler", () => {
     };
     const digestGenerator = {
       generate: vi.fn(async () => ({
+        classificationRequired: true,
         digest,
         executions: [{
           acceptedOutputHash: "c".repeat(64),
           bindingId: "digest-generation"
         }],
-        policyVersion: "memory-chat-digest-policy-test"
+        policyVersion: "memory-chat-digest-policy-test",
+        work: {
+          digestSegmentsProcessed: 1,
+          digestSourceChunksProcessed: 1
+        }
       }))
     };
     const apply = vi.fn(async () => undefined);
@@ -336,6 +362,14 @@ describe("Memory INDEX_HISTORY handler", () => {
       } as unknown as MemoryHistoryIndexRepository
     });
     const result = await handler.execute(currentClaim, context());
+
+    expect(result.operationalCounters).toMatchObject({
+      digestFullRebuild: 1,
+      digestIncremental: 0,
+      digestNoop: 0,
+      digestSegmentsProcessed: 1,
+      digestSourceChunksProcessed: 1
+    });
 
     expect(classifier.classify.mock.calls[0]?.[0]).toEqual([
       expect.objectContaining({ id: "chunk-tail" })
@@ -378,5 +412,69 @@ describe("Memory INDEX_HISTORY handler", () => {
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );
+  });
+
+  it("does not invoke digest classification for a fingerprint no-op", async () => {
+    const currentClaim = claim();
+    const currentPlan = plan([chunk("chunk-stable", 0)]);
+    const classify = vi.fn(async () => ({
+      decisions: [{ chunkId: "chunk-stable", sensitivity: "NORMAL" as const }],
+      policyVersion: "memory-history-safety-policy-test"
+    }));
+    const digest = {
+      anchorChunkId: "chunk-stable",
+      contentHash: "d".repeat(64),
+      decisions: [],
+      id: "digest-noop",
+      incrementalDepth: 2,
+      inputFingerprint: "e".repeat(64),
+      languageCode: "en",
+      occurredFrom: "2026-08-10T10:00:00.000Z",
+      occurredTo: "2026-08-10T10:01:00.000Z",
+      openLoops: [],
+      rebuildPolicyVersion: "memory-chat-digest-rebuild-v2",
+      safeDigestText: "Summary: Existing safe digest.",
+      sourceChunkIds: ["chunk-stable"],
+      sourceFingerprint: "f".repeat(64),
+      sourceMessageIds: ["user-1", "assistant-1"],
+      summary: "Existing safe digest.",
+      topics: [],
+      updateMode: "UNCHANGED" as const
+    };
+    const handler = createMemoryHistoryIndexHandler({
+      classifier: { classify },
+      digestGenerator: {
+        generate: vi.fn(async () => ({
+          classificationRequired: false,
+          digest,
+          executions: [],
+          policyVersion: "prior-generator:prior-classifier",
+          work: {
+            digestSegmentsProcessed: 0,
+            digestSourceChunksProcessed: 0
+          }
+        }))
+      },
+      repository: {
+        apply: vi.fn(async () => undefined),
+        preflight: vi.fn(async () => ({ status: "READY" as const })),
+        prepare: vi.fn(async () => ({ plan: currentPlan }))
+      } as unknown as MemoryHistoryIndexRepository
+    });
+
+    const result = await handler.execute(currentClaim, context());
+
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "chunk-stable" })],
+      expect.anything()
+    );
+    expect(result.operationalCounters).toMatchObject({
+      digestFullRebuild: 0,
+      digestIncremental: 0,
+      digestNoop: 1,
+      digestSegmentsProcessed: 0,
+      digestSourceChunksProcessed: 0
+    });
   });
 });

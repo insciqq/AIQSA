@@ -18,6 +18,8 @@ import { enqueueMemoryJob } from "../persistence/jobs";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { loadMemoryReusableFactSourceSnapshots } from
+  "../synthesis/authoritySnapshots";
 import { removeUnsupportedMemoryEntityLinks } from "../learning/entities/lifecycle";
 import {
   memoryReclassificationAcceptedOutputHash,
@@ -151,6 +153,7 @@ type IndexableClassifiedFact = Readonly<{
   displayText: string;
   factId: string;
   languageCode: string;
+  modality: string;
   sensitivityClass: string;
   sourceMode: string;
   structuredValue: Prisma.JsonValue;
@@ -169,6 +172,7 @@ export async function ensureClassifiedSearchEntry(
       fact."id" AS "factId", fact."canonicalKey", fact."category",
       version."id" AS "versionId", version."displayText",
       version."structuredValue", version."languageCode",
+      version."modality"::text AS "modality",
       version."sensitivityClass"::text AS "sensitivityClass",
       version."sourceMode"::text AS "sourceMode"
     FROM "MemoryFactVersion" AS version
@@ -194,28 +198,21 @@ export async function ensureClassifiedSearchEntry(
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
       AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryReusableFactAuthorityPredicate(settings.userId)}
+      AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
+        includePatterns: true
+      })}
   `);
   if (!row) return;
   const index = await requireActiveMemoryIndex(tx, settings);
   if (!index) throw new Error("memory_active_generation_invalid");
   const normalizedSearchText = normalizeMemorySearchText(row.displayText);
   if (!normalizedSearchText) return;
-  const sources = await tx.memoryEvidence.findMany({
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: {
-      branchGeneration: true,
-      messageId: true,
-      safeSourceHash: true,
-      sourceProjectionVersion: true,
-      sourceType: true
-    },
-    where: {
-      factVersionId,
-      stance: "SUPPORTS",
-      userId: settings.userId
-    }
-  });
+  const snapshots = await loadMemoryReusableFactSourceSnapshots(
+    tx,
+    settings.userId,
+    [row]
+  );
+  const sources = snapshots.get(factVersionId) ?? [];
   let entry = await tx.memorySearchEntry.findFirst({
     select: { embeddingState: true, id: true },
     where: {
@@ -351,7 +348,11 @@ export function createPrismaMemoryReclassificationRepository(
           AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
           AND version."displayText" IS NOT NULL
           AND ${memoryCanonicalGlobalScopePredicate()}
-          AND ${memoryReusableFactAuthorityPredicate(userId)}
+          AND ${memoryReusableFactAuthorityPredicate(userId, {
+            classification: "PENDING",
+            includePatterns: true,
+            lifecycle: "RECLASSIFICATION"
+          })}
         ORDER BY version."createdAt", version."id"
         LIMIT ${limit}
       `);
@@ -418,7 +419,11 @@ export function createPrismaMemoryReclassificationRepository(
               'PENDING'::"MemorySafetyClassificationState"
             AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
             AND ${memoryCanonicalGlobalScopePredicate()}
-            AND ${memoryReusableFactAuthorityPredicate(userId)}
+            AND ${memoryReusableFactAuthorityPredicate(userId, {
+              classification: "PENDING",
+              includePatterns: true,
+              lifecycle: "RECLASSIFICATION"
+            })}
           FOR UPDATE OF version, fact, scope
         `);
         if (!current) continue;

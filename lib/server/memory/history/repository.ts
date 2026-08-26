@@ -4,6 +4,7 @@ import {
   type MemoryHistoryItemState,
   type PrismaClient
 } from "@prisma/client";
+import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { prisma } from "../../prisma";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import {
@@ -33,11 +34,13 @@ import {
   type MemoryTransaction
 } from "../persistence/transaction";
 import {
-  loadMemorySourceSnapshot,
+  lockMemorySourceChat,
+  type LockedMemorySourceChat,
   type MemorySourceSnapshot
 } from "../sourceState";
 import {
   chunkMemoryRecallProjection,
+  DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS,
   MEMORY_HISTORY_CHUNKING_VERSION,
   type MemoryRecallChunkMessageJoin
 } from "./chunking";
@@ -51,7 +54,10 @@ import {
   type MemoryHistoryIndexSourceIdentity,
   type MemoryHistoryPreparedChunk
 } from "./contract";
-import { planMemoryHistoryIncrementalUpdate } from "./incremental";
+import {
+  MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
+  planMemoryHistoryTailUpdate
+} from "./incremental";
 import {
   buildMemorySafeSourceSnapshot,
   MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
@@ -90,6 +96,17 @@ type CurrentChunkRow = Readonly<{
   sourceRevisionAtCreation: number;
   state: MemoryHistoryItemState;
   messageJoins: readonly MemoryRecallChunkMessageJoin[];
+}>;
+
+type HistoryPathMessageMetadata = Readonly<{
+  createdAt: Date;
+  cycle: boolean;
+  depth: number;
+  id: string;
+  parentMessageId: string | null;
+  role: string;
+  status: string;
+  updatedAt: Date;
 }>;
 
 type ExpectedSearchEntry = Readonly<{
@@ -132,9 +149,9 @@ function runTimeZone(value: Prisma.JsonValue | null): string {
 }
 
 function sourceMatchesJob(
-  source: MemorySourceSnapshot | null,
+  source: LockedMemorySourceChat | null,
   job: MemoryJobDescriptor
-): source is MemorySourceSnapshot & Readonly<{ activeLeafMessageId: string }> {
+): source is LockedMemorySourceChat & Readonly<{ activeLeafMessageId: string }> {
   return Boolean(
     source &&
     source.memoryMode === "NORMAL" &&
@@ -143,9 +160,59 @@ function sourceMatchesJob(
     source.id === job.chatId &&
     source.memoryBranchGeneration === job.branchGeneration &&
     source.memorySourceRevision === job.sourceRevision &&
-    source.sourceHash === job.sourceHash &&
     source.userId === job.userId
   );
+}
+
+async function loadHistoryPathMetadata(
+  tx: MemoryTransaction,
+  chatId: string,
+  activeLeafMessageId: string
+): Promise<readonly HistoryPathMessageMetadata[]> {
+  const rows = await tx.$queryRaw<HistoryPathMessageMetadata[]>(Prisma.sql`
+    WITH RECURSIVE active_path AS (
+      SELECT
+        message."id", message."parentMessageId", message."role",
+        message."status"::text AS "status", message."createdAt",
+        message."updatedAt", 0 AS "depth",
+        ARRAY[message."id"]::text[] AS visited, FALSE AS cycle
+      FROM "Message" AS message
+      WHERE message."chatId" = ${chatId}
+        AND message."id" = ${activeLeafMessageId}
+
+      UNION ALL
+
+      SELECT
+        parent."id", parent."parentMessageId", parent."role",
+        parent."status"::text AS "status", parent."createdAt",
+        parent."updatedAt", child."depth" + 1,
+        child.visited || parent."id",
+        parent."id" = ANY(child.visited)
+      FROM active_path AS child
+      INNER JOIN "Message" AS parent
+        ON parent."chatId" = ${chatId}
+       AND parent."id" = child."parentMessageId"
+      WHERE NOT child.cycle
+        AND child."depth" < ${MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES}
+    )
+    SELECT
+      "id", "parentMessageId", "role", "status", "createdAt", "updatedAt",
+      "depth", cycle
+    FROM active_path
+    ORDER BY "depth" DESC
+  `);
+  if (
+    rows.length === 0 ||
+    rows.length > MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES ||
+    rows.some((row) => row.cycle) ||
+    rows[0]?.parentMessageId !== null ||
+    rows.at(-1)?.id !== activeLeafMessageId ||
+    rows.some((row, index) =>
+      index > 0 && row.parentMessageId !== rows[index - 1]?.id)
+  ) {
+    throw new MemoryCoordinatorError("memory_source_path_invalid", false);
+  }
+  return Object.freeze(rows);
 }
 
 async function probeWith(
@@ -158,7 +225,7 @@ async function probeWith(
       status: "CANCELLED"
     };
   }
-  const source = await loadMemorySourceSnapshot(tx, {
+  const source = await lockMemorySourceChat(tx, {
     chatId: job.chatId,
     lock: "SHARE",
     personalOnly: true,
@@ -386,22 +453,56 @@ async function loadIncrementalHistoryState(
   });
 }
 
-function chunkProjectionMatchesStored(
-  stored: CurrentChunkRow,
-  projected: MemoryHistoryPreparedChunk
-): boolean {
-  return stored.id === projected.id &&
-    stored.chunkOrdinal === projected.ordinal &&
-    stored.chunkingVersion === projected.chunkingVersion &&
-    stored.contentHash === projected.contentHash &&
-    stored.languageCode === projected.languageCode &&
-    stored.normalizedSafeSearchText === projected.normalizedSafeSearchText &&
-    stored.occurredFrom.toISOString() === projected.occurredFrom &&
-    stored.occurredTo.toISOString() === projected.occurredTo &&
-    stored.safeProjectedText === projected.safeProjectedText &&
-    stored.sourceAssistantId === projected.sourceAssistantId &&
-    stored.sourceFolderId === projected.folderId &&
-    stored.sourceProjectionVersion === projected.sourceProjectionVersion;
+function storedChunkProjection(
+  row: CurrentChunkRow,
+  source: MemorySourceSnapshot,
+  ordinal: number
+): MemoryHistoryPreparedChunk {
+  return {
+    approxTokens: estimateApproxTokens(row.safeProjectedText),
+    branchGeneration: source.memoryBranchGeneration,
+    chatId: source.id,
+    chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+    contentHash: row.contentHash,
+    folderId: source.folderId,
+    id: row.id,
+    languageCode: row.languageCode as MemoryHistoryPreparedChunk["languageCode"],
+    messageJoins: row.messageJoins,
+    normalizedSafeSearchText: row.normalizedSafeSearchText,
+    occurredFrom: row.occurredFrom.toISOString(),
+    occurredTo: row.occurredTo.toISOString(),
+    ordinal,
+    overlapFromPreviousTurnGroupIds: [],
+    providerSafeText: row.safeProjectedText,
+    publicationState: row.state === "SUPPRESSED" ? "SUPPRESSED" : "ACTIVE",
+    redactionReasonCodes: Object.freeze([...row.redactionReasonCodes]),
+    redactionState: row.redactionState,
+    safeProjectedText: row.safeProjectedText,
+    safetyClass: row.safetyClass,
+    sourceAssistantId: row.sourceAssistantId,
+    sourceContentHash: source.sourceHash,
+    sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+    sourceRevision: source.memorySourceRevision,
+    turnGroupIds: [],
+    userId: source.userId
+  };
+}
+
+function alignHistoryTailStart(
+  path: readonly HistoryPathMessageMetadata[],
+  requested: number
+): number {
+  let start = Math.max(0, Math.min(requested, path.length));
+  // A projected recall unit starts with the user message. A one-row rewind is
+  // still bounded and prevents a suffix from starting on its assistant.
+  if (
+    start > 0 &&
+    path[start]?.role === "assistant" &&
+    path[start - 1]?.role === "user"
+  ) {
+    start -= 1;
+  }
+  return start;
 }
 
 async function prepareWith(
@@ -419,32 +520,95 @@ async function prepareWith(
       }
     };
   }
-  const source = await loadMemorySourceSnapshot(tx, {
+  const chat = await lockMemorySourceChat(tx, {
     chatId: job.chatId,
     lock: "SHARE",
     personalOnly: true,
     userId: job.userId
   });
-  if (!sourceMatchesJob(source, job)) return { decision: staleDecision };
-
-  const pathIds = source.messages.map((message) => message.id);
-  const rows = await tx.message.findMany({
+  if (!sourceMatchesJob(chat, job)) return { decision: staleDecision };
+  const path = await loadHistoryPathMetadata(tx, chat.id, chat.activeLeafMessageId);
+  const source: MemorySourceSnapshot & Readonly<{ activeLeafMessageId: string }> = {
+    ...chat,
+    activeLeafMessageId: chat.activeLeafMessageId,
+    messages: path.map(({ createdAt, id, updatedAt }) => ({
+      createdAt,
+      id,
+      updatedAt
+    })),
+    sourceHash: job.sourceHash
+  };
+  const checkpointMessages = path.map((message, ordinal) => ({
+    createdAt: message.createdAt.toISOString(),
+    messageId: message.id,
+    ordinal,
+    sourceMessageUpdatedAt: message.updatedAt.toISOString()
+  }));
+  const [admission, previous] = await Promise.all([
+    loadHistoryAdmission(tx, source, now),
+    loadIncrementalHistoryState(tx, source)
+  ]);
+  const previousIsCurrent = previous.checkpointPipelineVersion ===
+    MEMORY_HISTORY_INDEX_PIPELINE_VERSION;
+  let incremental = planMemoryHistoryTailUpdate({
+    currentMessages: checkpointMessages,
+    previousChunks: previousIsCurrent
+      ? previous.chunks.map((chunk) => ({
+          id: chunk.id,
+          messageJoins: chunk.messageJoins,
+          ordinal: chunk.chunkOrdinal
+        }))
+      : [],
+    previousMessages: previousIsCurrent ? previous.messages : []
+  });
+  const excluded = new Set(admission.excludedMessageIds);
+  const cutoff = admission.sourceCreatedAtCutoff
+    ? new Date(admission.sourceCreatedAtCutoff)
+    : null;
+  const pathById = new Map(path.map((message) => [message.id, message]));
+  const reusableIds = new Set(incremental.reusedChunkIds);
+  const reusableRows = previous.chunks.filter((chunk) =>
+    reusableIds.has(chunk.id) &&
+    chunk.messageJoins.every((join) => {
+      const message = pathById.get(join.messageId);
+      return Boolean(
+        message &&
+        !excluded.has(join.messageId) &&
+        (cutoff === null || message.createdAt > cutoff)
+      );
+    }));
+  // Admission drift can affect an arbitrary earlier segment. It is rare and
+  // cannot use an append proof, so fail closed to the bounded full-rebuild lane.
+  if (reusableRows.length !== reusableIds.size) {
+    incremental = {
+      commonPathMessageCount: incremental.commonPathMessageCount,
+      mode: "FULL_REBUILD",
+      rebuildFromMessageOrdinal: 0,
+      reusedChunkIds: []
+    };
+  }
+  const retainedRows = incremental.mode === "FULL_REBUILD"
+    ? []
+    : reusableRows;
+  const retained = retainedRows.map((row, ordinal) =>
+    storedChunkProjection(row, source, ordinal));
+  const requestedTailStart = incremental.mode === "UNCHANGED"
+    ? path.length
+    : incremental.rebuildFromMessageOrdinal;
+  const tailStart = alignHistoryTailStart(path, requestedTailStart);
+  const tailPath = path.slice(tailStart);
+  const tailIds = tailPath.map((message) => message.id);
+  const rows = tailIds.length === 0 ? [] : await tx.message.findMany({
     select: {
-      chatId: true,
       content: true,
-      createdAt: true,
-      id: true,
-      parentMessageId: true,
-      role: true,
-      status: true,
-      updatedAt: true
+      id: true
     },
-    where: { chatId: source.id, id: { in: pathIds } }
+    where: { chatId: source.id, id: { in: tailIds } }
   });
   const byId = new Map(rows.map((row) => [row.id, row]));
-  if (pathIds.some((id) => !byId.has(id))) return { decision: staleDecision };
+  if (tailIds.some((id) => !byId.has(id))) return { decision: staleDecision };
 
-  const runs = await tx.modelRun.findMany({
+  const runs = tailIds.length === 0 ? [] : await tx.modelRun.findMany({
     select: {
       assistantId: true,
       assistantMessageId: true,
@@ -454,7 +618,7 @@ async function prepareWith(
       userMessageId: true
     },
     where: {
-      assistantMessageId: { in: pathIds },
+      assistantMessageId: { in: tailIds },
       chatId: source.id,
       userId: source.userId
     }
@@ -480,17 +644,18 @@ async function prepareWith(
     ]);
   }
 
-  const messages: MemoryHistorySourceMessageInput[] = pathIds.map((id) => {
-    const row = byId.get(id);
-    if (!row) throw new MemoryCoordinatorError("memory_source_stale", false);
-    const base = pathOrigin(row.role);
-    if (row.role !== "assistant") {
+  const messages: MemoryHistorySourceMessageInput[] = tailPath.map((metadata, ordinal) => {
+    const contentRow = byId.get(metadata.id);
+    if (!contentRow) throw new MemoryCoordinatorError("memory_source_stale", false);
+    const base = pathOrigin(metadata.role);
+    const parentMessageId = ordinal === 0 ? null : metadata.parentMessageId;
+    if (metadata.role !== "assistant") {
       return {
-        chatId: row.chatId,
-        content: row.content,
-        createdAt: row.createdAt,
-        id: row.id,
-        parentMessageId: row.parentMessageId,
+        chatId: source.id,
+        content: contentRow.content,
+        createdAt: metadata.createdAt,
+        id: metadata.id,
+        parentMessageId,
         provenance: {
           assistantId: null,
           complete: true,
@@ -499,13 +664,13 @@ async function prepareWith(
           origin: base.origin,
           taintSources: base.taintSources
         },
-        role: row.role,
-        status: row.status,
-        updatedAt: row.updatedAt
+        role: metadata.role,
+        status: metadata.status,
+        updatedAt: metadata.updatedAt
       };
     }
 
-    const candidates = runsByAssistantMessage.get(row.id) ?? [];
+    const candidates = runsByAssistantMessage.get(metadata.id) ?? [];
     const run = candidates.length === 1 ? candidates[0]! : null;
     // Runtime sources live outside the visible Message row. Their raw payloads
     // stay excluded at those dedicated boundaries; ordinary use must not taint
@@ -515,11 +680,11 @@ async function prepareWith(
         ? ["DEVELOPER"]
         : [];
     return {
-      chatId: row.chatId,
-      content: row.content,
-      createdAt: row.createdAt,
-      id: row.id,
-      parentMessageId: row.parentMessageId,
+      chatId: source.id,
+      content: contentRow.content,
+      createdAt: metadata.createdAt,
+      id: metadata.id,
+      parentMessageId,
       provenance: {
         assistantId: run?.assistantId && ownedAssistantIds.has(run.assistantId)
           ? run.assistantId
@@ -530,9 +695,9 @@ async function prepareWith(
         origin: "VISIBLE_ASSISTANT",
         taintSources
       },
-      role: row.role,
-      status: row.status,
-      updatedAt: row.updatedAt
+      role: metadata.role,
+      status: metadata.status,
+      updatedAt: metadata.updatedAt
     };
   });
 
@@ -540,19 +705,6 @@ async function prepareWith(
   const activeRun = activeRunCandidates.length === 1
     ? activeRunCandidates[0]!
     : null;
-  const safeSnapshot = buildMemorySafeSourceSnapshot({
-    activeLeafMessageId: source.activeLeafMessageId,
-    branchGeneration: source.memoryBranchGeneration,
-    chatId: source.id,
-    folderId: source.folderId,
-    messages,
-    mode: source.memoryMode,
-    sourceContentHash: source.sourceHash,
-    sourceRevision: source.memorySourceRevision,
-    timeZone: runTimeZone(activeRun?.normalizedRequest ?? null),
-    userId: source.userId
-  });
-  const admission = await loadHistoryAdmission(tx, source, now);
   const sourceIdentity: MemoryHistoryIndexSourceIdentity = {
     activeLeafMessageId: source.activeLeafMessageId,
     branchGeneration: source.memoryBranchGeneration,
@@ -561,63 +713,51 @@ async function prepareWith(
     sourceRevision: source.memorySourceRevision,
     userId: source.userId
   };
-  const projectedChunks = chunkMemoryRecallProjection(safeSnapshot, undefined, {
-    excludedMessageIds: admission.excludedMessageIds,
-    sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
-  }).map((chunk): MemoryHistoryPreparedChunk => ({
-    ...chunk,
-    id: memoryHistoryChunkId(sourceIdentity, chunk),
-    publicationState: "ACTIVE"
-  }));
-  const checkpointMessages = source.messages.map((message, ordinal) => ({
-    createdAt: message.createdAt.toISOString(),
-    messageId: message.id,
-    ordinal,
-    sourceMessageUpdatedAt: message.updatedAt.toISOString()
-  }));
-  const previous = await loadIncrementalHistoryState(tx, source);
-  const incremental = planMemoryHistoryIncrementalUpdate({
-    currentMessages: checkpointMessages,
-    nextChunks: projectedChunks,
-    previousChunks: previous.checkpointPipelineVersion ===
-        MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-      ? previous.chunks.map((chunk) => ({
-          id: chunk.id,
-          messageJoins: chunk.messageJoins,
-          ordinal: chunk.chunkOrdinal
-        }))
-      : [],
-    previousMessages: previous.checkpointPipelineVersion ===
-        MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-      ? previous.messages
-      : []
-  });
-  const storedById = new Map(previous.chunks.map((chunk) => [chunk.id, chunk]));
-  const reusable = new Set(incremental.reusedChunkIds.filter((id) => {
-    const projected = projectedChunks.find((chunk) => chunk.id === id);
-    const stored = storedById.get(id);
-    return Boolean(projected && stored && chunkProjectionMatchesStored(stored, projected));
-  }));
-  const chunks = projectedChunks.map((chunk): MemoryHistoryPreparedChunk => {
-    const stored = reusable.has(chunk.id) ? storedById.get(chunk.id) : null;
-    return stored
-      ? {
-          ...chunk,
-          publicationState: stored.state === "SUPPRESSED" ? "SUPPRESSED" : "ACTIVE",
-          redactionReasonCodes: [...stored.redactionReasonCodes],
-          redactionState: stored.redactionState,
-          safetyClass: stored.safetyClass
-        }
-      : chunk;
-  });
-  const reusedChunkIds = chunks.flatMap((chunk) =>
-    reusable.has(chunk.id) ? [chunk.id] : []);
-  const rebuiltChunkIds = chunks.flatMap((chunk) =>
-    reusable.has(chunk.id) ? [] : [chunk.id]);
+  const projectedChunks = messages.length === 0
+    ? []
+    : chunkMemoryRecallProjection(buildMemorySafeSourceSnapshot({
+        activeLeafMessageId: tailPath.at(-1)?.id ?? null,
+        branchGeneration: source.memoryBranchGeneration,
+        chatId: source.id,
+        folderId: source.folderId,
+        messages,
+        mode: source.memoryMode,
+        sourceContentHash: source.sourceHash,
+        sourceRevision: source.memorySourceRevision,
+        timeZone: runTimeZone(activeRun?.normalizedRequest ?? null),
+        userId: source.userId
+      }), undefined, {
+        excludedMessageIds: admission.excludedMessageIds,
+        sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
+      }).map((chunk, ordinal): MemoryHistoryPreparedChunk => ({
+        ...chunk,
+        id: memoryHistoryChunkId(sourceIdentity, chunk),
+        ordinal: retained.length + ordinal,
+        publicationState: "ACTIVE"
+      }));
+  const retainedIds = new Set(retained.map((chunk) => chunk.id));
+  const rebuilt = projectedChunks.filter((chunk) => !retainedIds.has(chunk.id));
+  const chunks = [...retained, ...rebuilt];
+  if (chunks.length > DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS.maxChunks) {
+    throw new MemoryCoordinatorError("memory_history_chunk_limit_exceeded", false);
+  }
+  const reusedChunkIds = retained.map((chunk) => chunk.id);
+  const rebuiltChunkIds = rebuilt.map((chunk) => chunk.id);
   const incrementalSnapshot = {
     commonPathMessageCount: incremental.commonPathMessageCount,
     mode: incremental.mode,
-    rebuildFromMessageOrdinal: incremental.rebuildFromMessageOrdinal
+    rebuildFromMessageOrdinal: tailStart
+  } as const;
+  const work = {
+    chunksBuilt: projectedChunks.length,
+    chunksReplaced: Math.max(0, previous.chunks.length - retained.length),
+    chunksReused: retained.length,
+    digestSegmentsProcessed: 0,
+    digestSourceChunksProcessed: 0,
+    messageContentRowsLoaded: rows.length,
+    messagesProjected: messages.length,
+    modelRunRowsLoaded: runs.length,
+    pathMetadataRowsRead: path.length
   } as const;
   const resultHash = memoryHistoryIndexResultHash(
     sourceIdentity,
@@ -630,7 +770,8 @@ async function prepareWith(
       digestPolicyVersion: null,
       incremental: incrementalSnapshot,
       rebuiltChunkIds,
-      reusedChunkIds
+      reusedChunkIds,
+      work
     }
   );
   return {
@@ -646,7 +787,8 @@ async function prepareWith(
       resultHash,
       reusedChunkIds,
       source: sourceIdentity,
-      suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
+      suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
+      work
     }
   };
 }
@@ -822,9 +964,14 @@ async function planAlreadyApplied(
   if (plan.digest === null) return activeDigest === null;
   if (!activeDigest || activeDigest.id !== plan.digest.id ||
     activeDigest.contentHash !== plan.digest.contentHash ||
+    activeDigest.incrementalDepth !== plan.digest.incrementalDepth ||
+    activeDigest.inputFingerprint !== plan.digest.inputFingerprint ||
+    activeDigest.rebuildPolicyVersion !== plan.digest.rebuildPolicyVersion ||
     activeDigest.safeDigestText !== plan.digest.safeDigestText ||
+    activeDigest.sourceFingerprint !== plan.digest.sourceFingerprint ||
     activeDigest.sourceContentHash !== plan.source.sourceHash ||
-    activeDigest.activeLeafMessageId !== plan.source.activeLeafMessageId) return false;
+    activeDigest.activeLeafMessageId !== plan.source.activeLeafMessageId ||
+    activeDigest.updateMode !== plan.digest.updateMode) return false;
   const [digestChunks, digestMessages] = await Promise.all([
     tx.chatMemoryDigestChunk.findMany({
       orderBy: { ordinal: "asc" }, where: { digestId: plan.digest.id }
@@ -1023,24 +1170,29 @@ async function persistDigest(
       contentHash: digest.contentHash,
       decisions: [...digest.decisions],
       id: digest.id,
+      incrementalDepth: digest.incrementalDepth,
+      inputFingerprint: digest.inputFingerprint,
       languageCode: digest.languageCode,
       normalizedSafeSearchText: normalizeMemorySearchText(digest.safeDigestText),
       occurredFrom: new Date(digest.occurredFrom),
       occurredTo: new Date(digest.occurredTo),
       openLoops: [...digest.openLoops],
       pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+      rebuildPolicyVersion: digest.rebuildPolicyVersion,
       redactionState: "NOT_NEEDED",
       safeDigestText: digest.safeDigestText,
       safetyClass: "NORMAL",
       safetyPolicyVersion: plan.digestPolicyVersion,
       sourceAssistantId: anchor.sourceAssistantId,
       sourceContentHash: plan.source.sourceHash,
+      sourceFingerprint: digest.sourceFingerprint,
       sourceFolderId: anchor.folderId,
       sourceProjectionVersion: anchor.sourceProjectionVersion,
       sourceRevisionAtCreation: plan.source.sourceRevision,
       state: "ACTIVE",
       summary: digest.summary,
       topics: [...digest.topics],
+      updateMode: digest.updateMode,
       userId: plan.source.userId
     },
     update: {
@@ -1049,23 +1201,28 @@ async function persistDigest(
       branchGeneration: plan.source.branchGeneration,
       contentHash: digest.contentHash,
       decisions: [...digest.decisions],
+      incrementalDepth: digest.incrementalDepth,
+      inputFingerprint: digest.inputFingerprint,
       invalidatedAt: null,
       languageCode: digest.languageCode,
       normalizedSafeSearchText: normalizeMemorySearchText(digest.safeDigestText),
       occurredFrom: new Date(digest.occurredFrom),
       occurredTo: new Date(digest.occurredTo),
       openLoops: [...digest.openLoops],
+      rebuildPolicyVersion: digest.rebuildPolicyVersion,
       redactionState: "NOT_NEEDED",
       safeDigestText: digest.safeDigestText,
       safetyClass: "NORMAL",
       safetyPolicyVersion: plan.digestPolicyVersion,
       sourceAssistantId: anchor.sourceAssistantId,
       sourceContentHash: plan.source.sourceHash,
+      sourceFingerprint: digest.sourceFingerprint,
       sourceFolderId: anchor.folderId,
       sourceRevisionAtCreation: plan.source.sourceRevision,
       state: "ACTIVE",
       summary: digest.summary,
-      topics: [...digest.topics]
+      topics: [...digest.topics],
+      updateMode: digest.updateMode
     },
     where: { id: digest.id }
   });
@@ -1130,7 +1287,8 @@ async function applyPlan(
         digestPolicyVersion: plan.digestPolicyVersion,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
-        reusedChunkIds: plan.reusedChunkIds
+        reusedChunkIds: plan.reusedChunkIds,
+        work: plan.work
       }
     ) !== plan.resultHash
   ) {
@@ -1138,7 +1296,7 @@ async function applyPlan(
   }
   const settings = await lockMemorySettings(tx, claim.userId, false);
   if (!settings.referenceChatHistory) return;
-  const source = await loadMemorySourceSnapshot(tx, {
+  const source = await lockMemorySourceChat(tx, {
     chatId: claim.chatId,
     lock: "SHARE",
     personalOnly: true,

@@ -11,6 +11,7 @@ import {
 } from "./config";
 import type {
   MemoryCandidateMetadata,
+  MemoryDeterministicMatch,
   MemoryLaneCandidate,
   MemoryLaneResult,
   MemoryRankedCandidate,
@@ -19,6 +20,7 @@ import type {
 
 type Aggregate = Readonly<{
   candidate: MemoryLaneCandidate;
+  deterministicMatches: readonly MemoryDeterministicMatch[];
   laneRanks: Partial<Record<MemoryRetrievalLane, number>>;
   rrfScore: number;
 }>;
@@ -162,6 +164,10 @@ function selectionReason(laneRanks: Aggregate["laneRanks"]): string {
     .join("+");
 }
 
+const deterministicMatchOrder: readonly MemoryDeterministicMatch[] = [
+  "PROFILE", "EXACT_TEXT", "EXACT_ALIAS_SINGLE_ROOT"
+];
+
 /** Relative ranks are the only cross-lane score. Raw lexical and cosine values
  * remain per-lane diagnostics and are never combined or thresholded here. */
 export function fuseMemoryRetrievalCandidates(
@@ -187,6 +193,9 @@ export function fuseMemoryRetrievalCandidates(
     }
     aggregates.set(key, {
       candidate: previous?.candidate ?? candidate,
+      deterministicMatches: deterministicMatchOrder.filter((match) =>
+        previous?.deterministicMatches.includes(match) ||
+        candidate.deterministicMatch === match),
       laneRanks: { ...(previous?.laneRanks ?? {}), [candidate.lane]: rank },
       rrfScore: (previous?.rrfScore ?? 0) +
         MEMORY_RETRIEVAL_LANE_WEIGHTS[candidate.lane] /
@@ -200,6 +209,9 @@ export function fuseMemoryRetrievalCandidates(
       entryId: aggregate.candidate.entryId,
       featureSnapshot: {
         authorityRank: authorityRank(aggregate.candidate.metadata),
+        deterministicMatches: aggregate.deterministicMatches,
+        directFactAuthority: aggregate.candidate.itemType === "FACT_VERSION" &&
+          aggregate.candidate.entryId === null,
         fusionVersion: MEMORY_RETRIEVAL_FUSION_VERSION,
         laneCount,
         temporalFit: temporalFit(plan, aggregate.candidate.metadata),

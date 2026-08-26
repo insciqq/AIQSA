@@ -69,7 +69,7 @@ import {
 } from "./vector";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v7";
+  "memory-run-retrieval-admission-v8";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -444,6 +444,7 @@ function attemptItems(
         supportingItemId: packed.supportingItemId,
         temporalReason: packed.temporalReason,
         historical: candidate.metadata.historical,
+        includePatterns: plan.includePatterns,
         lifecycleState: candidate.metadata.lifecycleState,
         retrievalMode: plan.mode,
         temporalIntent: plan.temporalIntent,
@@ -464,12 +465,14 @@ function attemptItems(
 function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknown>> {
   return {
     applyResponsePreferences: plan.applyResponsePreferences,
+    entityMentions: plan.entityMentions,
     filterAsOf: plan.filters.asOf?.toISOString() ?? null,
     filterFrom: plan.filters.from?.toISOString() ?? null,
     filterScopeTargetId: plan.filters.scopeTargetId,
     filterScopeType: plan.filters.scopeType,
     filterSourceKinds: plan.filters.sourceKinds,
     filterTo: plan.filters.to?.toISOString() ?? null,
+    includePatterns: plan.includePatterns,
     lexicalAvailable: plan.lexicalQuery !== null,
     mode: plan.mode,
     plannerVersion: plan.plannerVersion,
@@ -488,6 +491,50 @@ function utilityEvidence(
   return result.status === "READY"
     ? { reason: null, role, state: "READY" }
     : { reason: result.reason, role, state: "UNAVAILABLE" };
+}
+
+function relevanceEvidence(
+  candidates: readonly MemoryRelevanceCandidate[],
+  result: MemoryRunRerankResult | null,
+  acceptedCount: number,
+  rejoinedCount: number
+): Readonly<Record<string, unknown>> {
+  const decisionCounts: Record<string, number> = {};
+  const byHandle = new Map(candidates.map((candidate) => [candidate.handle, candidate]));
+  const decisions = result?.status === "READY"
+    ? result.decisions.flatMap((decision) => {
+        const candidate = byHandle.get(decision.handle);
+        if (!candidate) return [];
+        return [{
+          applicable: decision.applicable,
+          authorityLevel: candidate.authorityLevel,
+          category: candidate.candidate.metadata.category,
+          current: decision.current,
+          deterministicMatches:
+            candidate.candidate.featureSnapshot.deterministicMatches ?? [],
+          directness: candidate.directness,
+          itemType: candidate.candidate.itemType,
+          laneRankKeys: Object.keys(candidate.candidate.laneRanks).sort(),
+          modality: candidate.candidate.metadata.modality,
+          reasonCode: decision.reasonCode,
+          relevanceScore: decision.relevanceScore,
+          sourceKind: candidate.sourceKind,
+          sourceMode: candidate.candidate.metadata.sourceMode
+        }];
+      })
+    : [];
+  if (result?.status === "READY") {
+    for (const decision of result.decisions) {
+      decisionCounts[decision.reasonCode] = (decisionCounts[decision.reasonCode] ?? 0) + 1;
+    }
+  }
+  return {
+    relevanceAcceptedCount: acceptedCount,
+    relevanceCandidateCount: candidates.length,
+    relevanceDecisionCounts: decisionCounts,
+    relevanceDecisions: decisions,
+    relevanceRejoinedCount: rejoinedCount
+  };
 }
 
 function utilityUsedExternal(
@@ -657,7 +704,30 @@ export function applyMemoryRelevance(
   result: MemoryRunRerankResult | null,
   plan?: MemoryRetrievalPlan
 ): readonly MemoryRankedCandidate[] {
-  if (!result || result.status !== "READY") return [];
+  if (!result || result.status !== "READY") {
+    return candidates.flatMap((entry) => {
+      const matches = entry.candidate.featureSnapshot.deterministicMatches ?? [];
+      const deterministic = entry.current && !entry.historical && (
+        plan?.mode === "CURRENT_PROFILE"
+          ? matches.includes("PROFILE")
+          : plan?.mode === "TARGETED_CURRENT" &&
+            (matches.includes("EXACT_TEXT") ||
+              matches.includes("EXACT_ALIAS_SINGLE_ROOT"))
+      );
+      if (!deterministic) return [];
+      const match = matches.includes("EXACT_TEXT")
+        ? "exact_text"
+        : matches.includes("EXACT_ALIAS_SINGLE_ROOT")
+          ? "exact_alias_single_root"
+          : "profile";
+      return [{
+        ...entry.candidate,
+        finalScore: match === "exact_text" ? 1 : 0.95,
+        selectionReason: `deterministic_fallback.${match}`
+      }];
+    }).sort((left, right) =>
+      right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId));
+  }
   const byHandle = new Map(candidates.map((entry) => [entry.handle, entry]));
   return result.decisions.flatMap((decision) => {
     const entry = byHandle.get(decision.handle);
@@ -682,6 +752,10 @@ export function applyMemoryRelevance(
         right.metadata.observedAt ?? right.metadata.systemFrom;
       const chronological = (leftTime?.getTime() ?? 0) - (rightTime?.getTime() ?? 0);
       if (chronological !== 0) return chronological;
+      const transactional = (left.metadata.systemFrom?.getTime() ?? 0) -
+        (right.metadata.systemFrom?.getTime() ?? 0);
+      if (transactional !== 0) return transactional;
+      return left.itemId.localeCompare(right.itemId);
     }
     return right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId);
   });
@@ -689,6 +763,7 @@ export function applyMemoryRelevance(
 
 function degradationFor(
   result: MemoryLocalRetrievalResult,
+  queryEmbedding: MemoryRunQueryEmbeddingResult | null,
   relevance: MemoryRunRerankResult | null,
   hadCandidates: boolean,
   dynamicAllowed = true,
@@ -698,15 +773,27 @@ function degradationFor(
     return "memory_relevance_unavailable";
   }
   if (!dynamicAllowed) return null;
-  if (result.lexicalState === "FAILED") return "memory_fts_unavailable";
-  if (result.lexicalState === "DEGRADED") return "memory_fts_partial_unavailable";
-  if (!result.snapshot.indexMode) {
+  if (result.lexicalState === "FAILED" || result.lexicalState === "DEGRADED") {
+    const families = new Set(result.lexicalFailures.map((lane) =>
+      lane === "FACT_ENTITY" ? "entity" : lane.endsWith("_FTS_SIMPLE") ? "fts"
+        : lane.endsWith("_EXACT") ? "exact" : "recent"));
+    if (families.size === 1 && families.has("entity")) return "memory_entity_unavailable";
+    if (families.size === 1 && families.has("fts")) return "memory_fts_unavailable";
+    if (families.size === 1 && families.has("exact")) return "memory_exact_unavailable";
+    return result.lexicalState === "FAILED"
+      ? "memory_lexical_unavailable"
+      : "memory_lexical_partial_unavailable";
+  }
+  if (!result.snapshot.indexMode && !profileRequested) {
     return "memory_index_unavailable";
   }
   // A broad profile request deliberately reads the bounded current-fact lane.
   // It neither needs nor uses query-vector retrieval, so vector degradation is
   // not a failure for this mode.
   if (profileRequested) return null;
+  if (queryEmbedding?.status === "UNAVAILABLE") {
+    return "memory_query_embedding_unavailable";
+  }
   if (result.vectorState === "DEGRADED") return "memory_vector_unavailable";
   if (result.snapshot.indexMode === "HYBRID" && result.vectorState === "NOT_CONFIGURED") {
     return "memory_query_embedding_unavailable";
@@ -815,7 +902,7 @@ export function createMemoryRunRetrievalService(
         return emptyAttempt(input.expected, "DISABLED", snapshot.reason, null,
           cachedActionEvidence);
       }
-      const controlRefs = controlCache.control === undefined && options.controlRefs
+      const controlRefs = options.controlRefs
         ? await abortableRead(options.controlRefs.load({
             assistantMessageIds: recentAssistantMessageIds(input.normalizedRequest),
             chatId: input.chatId,
@@ -925,8 +1012,10 @@ export function createMemoryRunRetrievalService(
       let plan: MemoryRetrievalPlan;
       try {
         plan = planMemoryRetrieval({
+          allowedEntityRefs: controlRefs,
           applyResponsePreferences: preferencesRequested,
           currentUserText: control.intent.queryText,
+          entityMentions: control.intent.entityMentions,
           filters: {
             asOf: control.intent.temporalAsOf
               ? new Date(control.intent.temporalAsOf)
@@ -939,6 +1028,7 @@ export function createMemoryRunRetrievalService(
               ? new Date(control.intent.temporalTo)
               : null
           },
+          includePatterns: control.intent.includePatterns,
           mode: control.intent.retrievalMode,
           now: input.now,
           profileRequested: control.intent.profileRequested,
@@ -960,22 +1050,13 @@ export function createMemoryRunRetrievalService(
           queryHash: memorySha256(plan.normalizedQuery)
         });
       }
-      const queryEmbeddingRequired = !plan.profileRequested;
-      if (!plan.queryPresent ||
-        (queryEmbeddingRequired && snapshot.indexMode !== "HYBRID") ||
-        (plan.profileRequested && snapshot.indexMode === null)) {
-        return emptyAttempt(input.expected, "FAILED_SAFE",
-          !plan.queryPresent
-            ? "memory_plan_query_missing"
-            : plan.profileRequested
-              ? "memory_index_unavailable"
-              : "memory_vector_index_unavailable",
-          plan.queryPresent ? plan.normalizedQuery : null,
+      if (!plan.queryPresent) {
+        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_plan_query_missing", null,
           { ...actionEvidence, plan: planEvidence(plan) });
       }
 
       let queryEmbedding: MemoryRunQueryEmbeddingResult | null = null;
-      if (queryEmbeddingRequired && plan.queryPresent && !querySecret &&
+      if (!plan.profileRequested && plan.queryPresent && !querySecret &&
         snapshot.indexMode === "HYBRID") {
         if (options.utilities && options.vectorRepository) {
           const profile = await abortableRead(
@@ -1010,21 +1091,6 @@ export function createMemoryRunRetrievalService(
           queryEmbedding = { reason: "memory_query_embedding_unavailable", status: "UNAVAILABLE" };
         }
       }
-      if (queryEmbeddingRequired && queryEmbedding?.status !== "READY") {
-        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_query_embedding_unavailable",
-          plan.normalizedQuery, {
-            ...actionEvidence,
-            plan: planEvidence(plan),
-            utilityEgressMode: currentControlExternal || utilityUsedExternal(queryEmbedding)
-              ? "CONSENTED_EXTERNAL"
-              : "LOCAL_ONLY",
-            utilityExecutions: [
-              utilityEvidence("MEMORY_CONTROL", control),
-              utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding)
-            ]
-          });
-      }
-
       let local: MemoryLocalRetrievalResult;
       try {
         local = await abortableRead(repository.retrieve({
@@ -1220,20 +1286,12 @@ export function createMemoryRunRetrievalService(
         !selectedCoreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
       const dynamicExpanded = rejoined.filter((candidate) =>
         selectedKeys.has(`${candidate.itemType}:${candidate.itemId}`));
-      const degradationCode = expansionFailed
-        ? "memory_expansion_unavailable"
-        : degradationFor(
-          local,
-          relevance,
-          relevanceInput.length > 0,
-          dynamicAllowed,
-          plan.profileRequested
-        );
-      if (degradationCode) {
-        return emptyAttempt(input.expected, "FAILED_SAFE", degradationCode,
+      if (expansionFailed) {
+        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_expansion_unavailable",
           plan.normalizedQuery, {
             ...actionEvidence,
             candidateCount: relevanceInput.length,
+            ...relevanceEvidence(relevanceInput, relevance, relevant.length, 0),
             lexicalFailures: local.lexicalFailures,
             lexicalState: local.lexicalState,
             plan: planEvidence(plan),
@@ -1250,6 +1308,14 @@ export function createMemoryRunRetrievalService(
             vectorState: local.vectorState
           });
       }
+      const degradationCode = degradationFor(
+        local,
+        queryEmbedding,
+        relevance,
+        relevanceInput.length > 0,
+        dynamicAllowed,
+        plan.profileRequested
+      );
       const pack = packMemoryPersonalContext({
         core: selectedCore,
         expanded: dynamicExpanded,
@@ -1272,6 +1338,13 @@ export function createMemoryRunRetrievalService(
         lexicalState: local.lexicalState,
         omissionCounts: pack.omissionCounts,
         plan: planEvidence(plan),
+        ...relevanceEvidence(
+          relevanceInput,
+          relevance,
+          relevant.length,
+          rejoinedRelevant.length
+        ),
+        ...(degradationCode ? { degradationCode } : {}),
         utilityEgressMode: externalUtilityUsed ? "CONSENTED_EXTERNAL" : "LOCAL_ONLY",
         utilityExecutions,
         vectorEvidence: local.vectorEvidence,
@@ -1299,7 +1372,8 @@ export function createMemoryRunRetrievalService(
           targetTokens: pack.targetTokens
         },
         items,
-        outcome: "USED",
+        ...(degradationCode ? { degradationCode } : {}),
+        outcome: degradationCode ? "DEGRADED" : "USED",
         preparedContext: { approxTokens: pack.approxTokens, text: pack.text },
         ...(querySecret ? { queryHash: memorySha256(plan.normalizedQuery) } : {}),
         querySnapshot: querySecret || !plan.queryPresent ? null : plan.normalizedQuery

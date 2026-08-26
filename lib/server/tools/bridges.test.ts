@@ -170,7 +170,8 @@ describe("provider tool bridges", () => {
       function: {
         description: "Search the web.",
         name: "search_engine_1",
-        parameters: searchTool.inputSchema
+        parameters: searchTool.inputSchema,
+        strict: true
       },
       type: "function"
     });

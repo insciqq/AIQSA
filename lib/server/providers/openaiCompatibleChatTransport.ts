@@ -105,6 +105,8 @@ export function createFetchOpenAIChatCompletionClient(input: Readonly<{
   endpoint: string;
   fetchFn?: typeof fetch;
   headers: Readonly<Record<string, string>>;
+  headersForBody?: (body: Readonly<Record<string, unknown>>) =>
+    Readonly<Record<string, string>>;
   invalidJsonError: string;
   notObjectError: string;
   providerName: string;
@@ -123,7 +125,10 @@ export function createFetchOpenAIChatCompletionClient(input: Readonly<{
     try {
       const response = await fetchFn(input.endpoint, {
         body: JSON.stringify(body),
-        headers: input.headers,
+        headers: {
+          ...input.headers,
+          ...input.headersForBody?.(body)
+        },
         method: "POST",
         ...(input.redirect ? { redirect: input.redirect } : {}),
         signal: timeout.signal

@@ -35,8 +35,19 @@ function validToken(value: string, maxLength: number): boolean {
 }
 
 const sha256 = /^[a-f0-9]{64}$/u;
-const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v2";
+const vNextFactExtractionPipelines = new Set([
+  "memory-fact-extraction-vnext-v2",
+  "memory-fact-extraction-vnext-v3",
+  "memory-fact-extraction-vnext-v4",
+  "memory-fact-extraction-vnext-v5"
+]);
 const relationPipeline = "memory-fact-relation-v2";
+
+export function isMemoryDirectMessageExtractionPipeline(
+  pipelineVersion: string
+): boolean {
+  return vNextFactExtractionPipelines.has(pipelineVersion);
+}
 
 function validSource(input: MemoryJobEnqueueInput["source"]): boolean {
   return input === undefined || (
@@ -61,8 +72,10 @@ export async function enqueueMemoryJob(
     !validToken(input.idempotencyFingerprint, 128) ||
     !validToken(input.pipelineVersion, 64) ||
     !validSource(input.source) ||
+    (input.targetFactVersionId !== undefined &&
+      !validToken(input.targetFactVersionId, 256)) ||
     (input.kind === "EXTRACT_FACTS" &&
-      input.pipelineVersion === vNextFactExtractionPipeline &&
+      isMemoryDirectMessageExtractionPipeline(input.pipelineVersion) &&
       input.source?.sourceMessageId === undefined) ||
     (input.kind === "RESOLVE_FACT_RELATIONS" && (
       input.pipelineVersion !== relationPipeline ||
@@ -71,6 +84,7 @@ export async function enqueueMemoryJob(
       input.source?.sourceMessageId === undefined
     )) ||
     (input.kind !== "RESOLVE_FACT_RELATIONS" &&
+      input.kind !== "SYNTHESIZE_MEMORIES" &&
       input.targetFactVersionId !== undefined)
   ) {
     return memoryPersistenceFailure("memory_input_invalid");
@@ -100,7 +114,7 @@ export async function enqueueMemoryJob(
   });
   if (existing) {
     const sourceConflict = input.kind === "EXTRACT_FACTS" &&
-      input.pipelineVersion === vNextFactExtractionPipeline
+      isMemoryDirectMessageExtractionPipeline(input.pipelineVersion)
       ? existing.chatId !== (input.source?.chatId ?? null) ||
         existing.sourceMessageId !== (input.source?.sourceMessageId ?? null)
       : existing.chatId !== (input.source?.chatId ?? null) ||

@@ -6,7 +6,8 @@ import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import {
   memoryActiveSuppressionPredicate
 } from "../retrieval/localRepository";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import { memoryExactVNextDirectAuthorityPredicate } from
+  "../persistence/eligibility";
 import type { MemoryRunUtilityService } from "../retrieval/runUtilities";
 import {
   type MemoryVectorRepository
@@ -94,7 +95,7 @@ function eligibilityPredicates(userId: string): readonly Prisma.Sql[] {
       'NORMAL'::"MemorySensitivityClass",
       'SENSITIVE'::"MemorySensitivityClass"
     )`,
-    memoryPersonalFactEvidencePredicate(userId),
+    memoryExactVNextDirectAuthorityPredicate(userId),
     memoryActiveSuppressionPredicate(userId)
   ];
 }
@@ -233,8 +234,21 @@ function mergeTargetCandidates(
   primary: readonly MemoryActionTarget[],
   supplemental: readonly MemoryActionTarget[]
 ): readonly MemoryActionTarget[] {
+  const supplementalKeys = new Set(supplemental.map((target) =>
+    `${target.factId}:${target.versionId}`));
   const merged = new Map<string, MemoryActionTarget>();
-  for (const target of [...primary, ...supplemental]) {
+  // The current user turn is direct targeting evidence. Preserve the semantic
+  // lane's ordering for candidates that also have the strongest local overlap,
+  // then admit the remaining strongest local ties before generic semantic hits.
+  // This only shapes the bounded candidate set; the strict selector still owns
+  // target choice and may return AMBIGUOUS instead of guessing.
+  for (const target of [
+    ...primary.filter((candidate) => supplementalKeys.has(
+      `${candidate.factId}:${candidate.versionId}`
+    )),
+    ...supplemental,
+    ...primary
+  ]) {
     const key = `${target.factId}:${target.versionId}`;
     if (!merged.has(key)) merged.set(key, target);
   }
@@ -299,6 +313,7 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
               factMode: "CURRENT",
               factTemporalAsOf: null,
               folderId: null,
+              includePatterns: false,
               occurredFrom: null,
               occurredTo: null,
               sourceAssistantId: null,
@@ -347,7 +362,7 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
           return target ? [target] : [];
         });
         const fused = fusedTargets(lexicalTargets, scoredVectorTargets);
-        if (fused.length > 1 || !request.fallbackText) {
+        if (!request.fallbackText) {
           return { status: "READY", targets: fused };
         }
         const fallback = await input.explicitService.list(request.userId, {
@@ -357,10 +372,11 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
         });
         return {
           status: "READY",
-          // One semantic winner is not enough to prove uniqueness when the
-          // exact user command locally matches several Saved Memories. Keep
-          // every strongest tied target so the strict selector can ask for a
-          // choice instead of silently applying a destructive mutation.
+          // Semantic retrieval can have several hits and still omit a direct
+          // distinctive term that the control model summarized out of
+          // targetQuery. Keep every strongest direct-text tie so the strict
+          // selector can ask for a choice instead of silently applying a
+          // destructive mutation to an incomplete candidate set.
           targets: mergeTargetCandidates(
             fused,
             localFallbackTargets(fallback.memories, request.fallbackText)

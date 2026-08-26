@@ -38,6 +38,11 @@ const ENVIRONMENT_POLICY_FIELDS = Object.freeze({
     max: 60_000,
     min: 1_000
   }),
+  AIQSA_MEMORY_COORDINATOR_LEASE_MS: Object.freeze({
+    field: "leaseMs" as const,
+    max: 15 * 60_000,
+    min: 100
+  }),
   AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: Object.freeze({
     field: "maxDeletionClaimsPerWorkerPass" as const,
     max: 1_000,

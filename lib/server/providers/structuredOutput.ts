@@ -6,11 +6,11 @@ import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import { extractOpenAIUsage } from "./openaiResponsesResponse";
 import {
   assertValidOpenRouterTerminalResponse,
-  extractOpenRouterText,
   extractOpenRouterUsage
 } from "./openRouterChatResponse";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
+import { openRouterChatToolBridge } from "../tools/bridges";
 
 export const STRUCTURED_OUTPUT_SUPPORTED_ADAPTERS = [
   "openai_responses_native",
@@ -52,6 +52,12 @@ export const STRUCTURED_OUTPUT_LIMITS = Object.freeze({
   maxSchemaBytes: 32 * 1024,
   minOutputTokens: 16
 });
+
+// OpenRouter's max_tokens budget includes hidden reasoning tokens for reasoning
+// models. A tiny schema payload can therefore be truncated before the required
+// tool call exists. This is only a wire-budget floor: the accepted JSON remains
+// bounded by the provider-neutral output-size limit and the strict schema.
+const OPENROUTER_REASONING_STRUCTURED_OUTPUT_MIN_TOKENS = 1_024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -264,26 +270,52 @@ export function buildOpenRouterStructuredOutputRequest(
   }
   const normalized = normalizeRequest(request);
   const params = normalizeOpenRouterParams(model.defaultParams);
+  const reasoningDisabled = normalized.reasoningEffort === "none";
+  const reasoningActive = !reasoningDisabled && (
+    params.reasoning.enabled || Boolean(normalized.reasoningEffort) ||
+      params.reasoning.maxTokens > 0
+  );
+  const maxTokens = reasoningActive || params.reasoning.exclude
+    ? Math.max(
+        normalized.maxOutputTokens,
+        OPENROUTER_REASONING_STRUCTURED_OUTPUT_MIN_TOKENS
+      )
+    : normalized.maxOutputTokens;
+  const reasoning: Record<string, unknown> = {};
+  if (reasoningActive) reasoning.enabled = true;
+  const effort = reasoningDisabled ? null : normalized.reasoningEffort ??
+    (params.reasoning.enabled ? params.reasoning.effort : null);
+  if (effort && effort !== "none") reasoning.effort = effort;
+  if (params.reasoning.exclude) reasoning.exclude = true;
+  if (!reasoningDisabled && params.reasoning.maxTokens > 0) {
+    reasoning.max_tokens = params.reasoning.maxTokens;
+  }
   return {
-    max_completion_tokens: normalized.maxOutputTokens,
+    max_tokens: maxTokens,
     messages: [
-      { content: normalized.systemPrompt, role: "system" },
+      {
+        content: [
+          normalized.systemPrompt,
+          "Call the single supplied function exactly once and do not return a free-form answer."
+        ].join("\n\n"),
+        role: "system"
+      },
       { content: normalized.userPrompt, role: "user" }
     ],
     model: model.upstreamModelId,
     provider: openRouterProviderRouting(model),
-    ...(normalized.reasoningEffort
-      ? { reasoning: { effort: normalized.reasoningEffort } }
-      : {}),
-    response_format: {
-      json_schema: {
+    ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
+    stream: false,
+    tool_choice: "required",
+    tools: [{
+      function: {
+        description: "Return the structured result required by the system instruction.",
         name: normalized.name,
-        schema: schemaForProvider(normalized.schema),
+        parameters: schemaForProvider(normalized.schema),
         strict: true
       },
-      type: "json_schema"
-    },
-    stream: false,
+      type: "function"
+    }],
     ...(typeof params.temperature === "number" ? { temperature: params.temperature } : {})
   };
 }
@@ -320,13 +352,23 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
         buildOpenRouterStructuredOutputRequest(input.model, request),
         options
       );
-      assertValidOpenRouterTerminalResponse(response);
-      const responseText = extractOpenRouterText(response);
+      assertValidOpenRouterTerminalResponse(response, { allowToolCalls: true });
       options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
       if (isRecord(response.usage)) {
         options?.onUsage?.(extractOpenRouterUsage(response));
       }
-      return parseObject(responseText);
+      let calls;
+      try {
+        calls = openRouterChatToolBridge.parseToolCalls(response);
+      } catch {
+        throw new Error("structured_output_invalid");
+      }
+      if (calls.length !== 1 || calls[0]?.name !== request.name ||
+        !isRecord(calls[0].arguments) ||
+        jsonBytes(calls[0].arguments) > STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters * 4) {
+        throw new Error("structured_output_invalid");
+      }
+      return calls[0].arguments;
     }
   };
 }

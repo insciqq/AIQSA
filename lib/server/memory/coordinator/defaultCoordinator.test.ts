@@ -19,7 +19,7 @@ describe("default Memory coordinator composition", () => {
     }
   });
 
-  it("runs cutover reconciliation in the periodic pass", async () => {
+  it("runs durable work discovery serially in the periodic pass", async () => {
     const order: string[] = [];
     let active = 0;
     let maximumActive = 0;
@@ -33,13 +33,25 @@ describe("default Memory coordinator composition", () => {
     };
 
     await reconcileDefaultMemoryWork({
-      cutover: step("cutover")
+      cutover: step("cutover"),
+      historyBackfill: step("history"),
+      reclassification: step("reclassification"),
+      relations: step("relations"),
+      synthesis: step("synthesis")
     });
 
     expect(maximumActive).toBe(1);
     expect(order).toEqual([
       "cutover:start",
-      "cutover:end"
+      "cutover:end",
+      "history:start",
+      "history:end",
+      "reclassification:start",
+      "reclassification:end",
+      "relations:start",
+      "relations:end",
+      "synthesis:start",
+      "synthesis:end"
     ]);
   });
 });

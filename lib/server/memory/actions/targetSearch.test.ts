@@ -184,6 +184,75 @@ describe("Memory action target search", () => {
     });
   });
 
+  it("promotes direct-text ties when multiple generic semantic hits omit one target", async () => {
+    const deps = dependencies();
+    const weekly = memorySummaryFixture({
+      currentVersionId: "memory-version-weekly",
+      displayText: "My private-marker weekly reporting format is concise.",
+      id: "memory-fact-weekly"
+    });
+    const monthly = memorySummaryFixture({
+      currentVersionId: "memory-version-monthly",
+      displayText: "My private-marker monthly reporting format is detailed.",
+      id: "memory-fact-monthly"
+    });
+    const unrelated = memorySummaryFixture({
+      currentVersionId: "memory-version-unrelated",
+      displayText: "My saved reporting format for invoices is tabular.",
+      id: "memory-fact-unrelated"
+    });
+    deps.vectorRepository.search.mockResolvedValue({
+      hits: [
+        {
+          distance: 0.1,
+          entryId: "entry-weekly",
+          itemId: weekly.currentVersionId!,
+          itemType: "FACT_VERSION",
+          score: 0.9
+        },
+        {
+          distance: 0.15,
+          entryId: "entry-unrelated",
+          itemId: unrelated.currentVersionId!,
+          itemType: "FACT_VERSION",
+          score: 0.85
+        }
+      ],
+      lanes: [],
+      profile,
+      status: "READY"
+    });
+    deps.repository.byActiveGenerationVersionIds.mockResolvedValue([
+      { factId: weekly.id, versionId: weekly.currentVersionId! },
+      { factId: unrelated.id, versionId: unrelated.currentVersionId! }
+    ]);
+    deps.explicitService.get.mockImplementation(async (_userId, factId) =>
+      memoryDetailFixture(
+        factId === weekly.id ? weekly : factId === monthly.id ? monthly : unrelated
+      ));
+    deps.explicitService.list.mockResolvedValue(memoryListFixture([
+      unrelated,
+      weekly,
+      monthly
+    ]));
+
+    await expect(createMemoryActionTargetSearchService(deps as never).semantic({
+      attemptId: "attempt-1",
+      fallbackText:
+        "Change one private-marker reporting-format preference without saying weekly or monthly.",
+      query: "saved reporting-format preferences",
+      signal: new AbortController().signal,
+      userId: "user-1"
+    })).resolves.toMatchObject({
+      status: "READY",
+      targets: [
+        { factId: "memory-fact-weekly" },
+        { factId: "memory-fact-monthly" },
+        { factId: "memory-fact-unrelated" }
+      ]
+    });
+  });
+
   it("treats learned legacy sensitive targets like normal targets", async () => {
     const deps = dependencies();
     const sensitive = memorySummaryFixture({

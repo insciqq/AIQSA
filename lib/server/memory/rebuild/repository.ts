@@ -38,11 +38,9 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
-import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
-import {
-  loadPersonalMemoryEvidenceSnapshots,
-  memoryPersonalFactEvidencePredicate
-} from "../persistence/eligibility";
+import { loadMemoryReusableFactSourceSnapshots } from
+  "../synthesis/authoritySnapshots";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import {
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
@@ -62,6 +60,7 @@ import {
   parseMemoryRebuildJobFingerprint,
   type MemoryShadowRebuildOperation
 } from "./contract";
+import { MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS } from "./wake";
 
 type CurrentSearchItemType = Extract<
   MemorySearchItemType,
@@ -90,18 +89,11 @@ type FactRow = Readonly<{
   displayText: string;
   factId: string;
   languageCode: string;
+  modality: string;
   sensitivityClass: string;
   sourceMode: string;
   structuredValue: Prisma.JsonValue;
   versionId: string;
-}>;
-
-type FactEvidenceRow = Readonly<{
-  branchGeneration: number | null;
-  factVersionId: string;
-  safeSourceHash: string;
-  sourceProjectionVersion: string;
-  sourceType: string;
 }>;
 
 type ChunkRow = Readonly<{
@@ -195,6 +187,29 @@ const nonterminalJobStates: readonly MemoryJobState[] = [
   "WAITING_FOR_EGRESS_CONSENT"
 ];
 
+async function shadowCutoverHasBlockingJobs(
+  tx: MemoryTransaction,
+  userId: string,
+  memoryGeneration: number
+): Promise<boolean> {
+  const kinds = Prisma.join(MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS.map((kind) =>
+    Prisma.sql`${kind}::"MemoryJobKind"`));
+  const states = Prisma.join(nonterminalJobStates.map((state) =>
+    Prisma.sql`${state}::"MemoryJobState"`));
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT job."id"
+    FROM "MemoryJob" AS job
+    WHERE job."userId" = ${userId}
+      AND job."memoryGenerationSnapshot" = ${memoryGeneration}
+      AND job."kind" IN (${kinds})
+      AND job."state" IN (${states})
+    ORDER BY job."createdAt", job."id"
+    LIMIT 1
+    FOR SHARE OF job
+  `);
+  return rows.length > 0;
+}
+
 function itemKey(itemType: CurrentSearchItemType, itemId: string): string {
   return `${itemType}:${itemId}`;
 }
@@ -282,6 +297,7 @@ async function eligibleFacts(
       fact."id" AS "factId", fact."canonicalKey", fact."category",
       version."id" AS "versionId", version."displayText",
       version."structuredValue", version."languageCode",
+      version."modality"::text AS "modality",
       version."sensitivityClass"::text AS "sensitivityClass",
       version."sourceMode"::text AS "sourceMode"
     FROM "MemoryFact" AS fact
@@ -305,69 +321,32 @@ async function eligibleFacts(
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = version."userId"
     WHERE fact."userId" = ${settings.userId}
       AND (
         fact."state" = 'ACTIVE'::"MemoryFactState"
         OR (fact."state" = 'RETRACTED'::"MemoryFactState"
           AND fact."movedToFactId" IS NOT NULL)
       )
-      AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryPersonalFactEvidencePredicate(settings.userId, { exactVNext: true })}
+      AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
+        includePatterns: true,
+        lifecycle: "CURRENT_OR_HISTORICAL"
+      })}
     ORDER BY fact."id",
       COALESCE(version."occurredAt", version."validFrom", version."observedAt", version."systemFrom"),
       version."systemFrom", version."id"
   `);
   if (rows.length === 0) return [];
-  const automaticIds = rows
-    .filter(({ sourceMode }) => sourceMode === "AUTOMATIC")
-    .map(({ versionId }) => versionId);
-  const explicitIds = rows
-    .filter(({ sourceMode }) => sourceMode === "EXPLICIT")
-    .map(({ versionId }) => versionId);
-  const personalEvidence = await loadPersonalMemoryEvidenceSnapshots(
+  const sourceSnapshots = await loadMemoryReusableFactSourceSnapshots(
     tx,
     settings.userId,
-    automaticIds,
-    { exactVNext: true }
+    rows
   );
-  const explicitEvidence = explicitIds.length === 0
-    ? []
-    : await tx.memoryEvidence.findMany({
-    orderBy: [{ factVersionId: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-    select: {
-      branchGeneration: true,
-      factVersionId: true,
-      safeSourceHash: true,
-      sourceProjectionVersion: true,
-      sourceType: true
-    },
-    where: {
-      factVersionId: { in: explicitIds },
-      sourceType: "EXPLICIT_ACTION",
-      userId: settings.userId
-    }
-  }) as readonly FactEvidenceRow[];
-  const evidence: readonly FactEvidenceRow[] = [
-    ...explicitEvidence,
-    ...personalEvidence.map((item) => ({
-      branchGeneration: item.branchGeneration,
-      factVersionId: item.factVersionId,
-      safeSourceHash: item.safeSourceHash,
-      sourceProjectionVersion: item.sourceProjectionVersion,
-      sourceType: "MESSAGE"
-    }))
-  ];
   return rows.flatMap((row) => {
     const normalizedSearchText = normalizeMemorySearchText(row.displayText);
     if (!normalizedSearchText) return [];
-    const sources = evidence
-      .filter(({ factVersionId }) => factVersionId === row.versionId)
-      .map((item) => ({
-        branchGeneration: item.branchGeneration,
-        safeSourceHash: item.safeSourceHash,
-        sourceProjectionVersion: item.sourceProjectionVersion,
-        sourceType: item.sourceType
-      }));
+    const sources = sourceSnapshots.get(row.versionId) ?? [];
     if (row.sourceMode === "AUTOMATIC" && sources.length === 0) return [];
     return [{
       itemId: row.versionId,
@@ -415,11 +394,8 @@ async function eligibleChunks(
       ON chat."userId" = chunk."userId" AND chat."id" = chunk."chatId"
       AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND chat."memoryBranchGeneration" = chunk."branchGeneration"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId" AND checkpoint."chatId" = chunk."chatId"
-      AND checkpoint."branchGeneration" = chunk."branchGeneration"
-      AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
     WHERE chunk."userId" = ${settings.userId}
@@ -596,6 +572,8 @@ async function potentiallyCompatibleAutomaticFactCount(
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = version."userId"
     WHERE version."userId" = ${settings.userId}
       AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
       AND (
@@ -616,9 +594,10 @@ async function potentiallyCompatibleAutomaticFactCount(
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
-      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-      AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryPersonalFactEvidencePredicate(settings.userId)}
+      AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
+        includePatterns: true,
+        lifecycle: "CURRENT_OR_HISTORICAL"
+      })}
   `);
   return Number.isSafeInteger(row?.count) ? row.count : 0;
 }
@@ -1006,6 +985,18 @@ async function applyShadowCatchUp(
     );
     return;
   }
+
+  // A source-producing job admitted on the current fence may still commit an
+  // eligible fact/history item. Activating now would advance the destructive
+  // generation, stale that exact job, and permanently lose the settled turn.
+  // The settings lock prevents a new source job from being admitted after this
+  // proof; row share locks make a concurrent terminal settlement wake the
+  // succeeded rebuild after this transaction commits.
+  if (await shadowCutoverHasBlockingJobs(
+    tx,
+    settings.userId,
+    settings.memoryGeneration
+  )) return;
 
   await tx.memoryIndexGeneration.update({
     data: { readyAt: now, state: "READY" },

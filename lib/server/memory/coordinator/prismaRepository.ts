@@ -9,6 +9,14 @@ import { prisma } from "../../prisma";
 import { isMemoryCoordinatorErrorCode, MemoryCoordinatorError } from "./errors";
 import { memorySourceJobSnapshotMatches } from "../sourceState";
 import { lockMemorySettings } from "../persistence/transaction";
+import {
+  decodeMemoryOperationalCounters,
+  type MemoryOperationalCounters
+} from "../operational/counters";
+import {
+  memoryJobBlocksShadowCutover,
+  wakeCurrentMemoryShadowRebuildInTransaction
+} from "../rebuild/wake";
 import type {
   MemoryDeletionApply,
   MemoryDeletionClaim,
@@ -78,6 +86,7 @@ export type MemoryCoordinatorRepository = Readonly<{
     apply?: MemoryJobApply;
     claim: MemoryJobClaim;
     now: Date;
+    operationalCounters?: MemoryOperationalCounters;
     stage: string | null;
   }): Promise<boolean>;
   heartbeatDeletion(input: {
@@ -353,6 +362,7 @@ type CommitJobTransitionInput = Readonly<{
   apply?: MemoryJobApply;
   claim: MemoryJobClaim;
   now: Date;
+  operationalCounters?: MemoryOperationalCounters;
   stage: string | null;
 }>;
 
@@ -475,6 +485,12 @@ async function commitJobSuccessWithAuthority(
         userId: input.claim.userId
       }
     });
+    if (staled.count === 1 && memoryJobBlocksShadowCutover(input.claim.kind)) {
+      await wakeCurrentMemoryShadowRebuildInTransaction(
+        tx,
+        input.claim.userId
+      );
+    }
     return staled.count === 1;
   }
   await input.apply?.(tx, input.claim);
@@ -487,6 +503,12 @@ async function commitJobSuccessWithAuthority(
       leaseExpiresAt: null,
       leaseToken: null,
       nextAttemptAt: null,
+      ...(input.operationalCounters === undefined
+        ? {}
+        : {
+            operationalCounters:
+              input.operationalCounters as Prisma.InputJsonObject
+          }),
       stage: input.stage,
       state: "SUCCEEDED",
       updatedAt: input.now
@@ -499,6 +521,9 @@ async function commitJobSuccessWithAuthority(
       userId: input.claim.userId
     }
   });
+  if (updated.count === 1 && memoryJobBlocksShadowCutover(input.claim.kind)) {
+    await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.claim.userId);
+  }
   return updated.count === 1;
 }
 
@@ -699,25 +724,31 @@ export function createPrismaMemoryCoordinatorRepository(
       if (!validDecision(input.decision)) return false;
       const terminal = input.decision.status === "STALE" ||
         input.decision.status === "CANCELLED";
-      const updated = await client.memoryJob.updateMany({
-        data: {
-          completedAt: terminal ? input.now : null,
-          errorCode: input.decision.errorCode,
-          leaseExpiresAt: null,
-          leaseToken: null,
-          nextAttemptAt: null,
-          state: input.decision.status,
-          updatedAt: input.now
-        },
-        where: {
-          id: input.claim.id,
-          leaseExpiresAt: { gt: input.now },
-          leaseToken: input.claim.claimToken,
-          state: "CLAIMED",
-          userId: input.claim.userId
+      return client.$transaction(async (tx) => {
+        const updated = await tx.memoryJob.updateMany({
+          data: {
+            completedAt: terminal ? input.now : null,
+            errorCode: input.decision.errorCode,
+            leaseExpiresAt: null,
+            leaseToken: null,
+            nextAttemptAt: null,
+            state: input.decision.status,
+            updatedAt: input.now
+          },
+          where: {
+            id: input.claim.id,
+            leaseExpiresAt: { gt: input.now },
+            leaseToken: input.claim.claimToken,
+            state: "CLAIMED",
+            userId: input.claim.userId
+          }
+        });
+        if (updated.count === 1 && terminal &&
+          memoryJobBlocksShadowCutover(input.claim.kind)) {
+          await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.claim.userId);
         }
+        return updated.count === 1;
       });
-      return updated.count === 1;
     },
 
     async retryJob(input) {
@@ -744,25 +775,30 @@ export function createPrismaMemoryCoordinatorRepository(
 
     async terminalJob(input) {
       if (!isMemoryCoordinatorErrorCode(input.errorCode)) return false;
-      const updated = await client.memoryJob.updateMany({
-        data: {
-          completedAt: input.now,
-          errorCode: input.errorCode,
-          leaseExpiresAt: null,
-          leaseToken: null,
-          nextAttemptAt: null,
-          state: "TERMINAL_FAILED",
-          updatedAt: input.now
-        },
-        where: {
-          id: input.claim.id,
-          leaseExpiresAt: { gt: input.now },
-          leaseToken: input.claim.claimToken,
-          state: "CLAIMED",
-          userId: input.claim.userId
+      return client.$transaction(async (tx) => {
+        const updated = await tx.memoryJob.updateMany({
+          data: {
+            completedAt: input.now,
+            errorCode: input.errorCode,
+            leaseExpiresAt: null,
+            leaseToken: null,
+            nextAttemptAt: null,
+            state: "TERMINAL_FAILED",
+            updatedAt: input.now
+          },
+          where: {
+            id: input.claim.id,
+            leaseExpiresAt: { gt: input.now },
+            leaseToken: input.claim.claimToken,
+            state: "CLAIMED",
+            userId: input.claim.userId
+          }
+        });
+        if (updated.count === 1 && memoryJobBlocksShadowCutover(input.claim.kind)) {
+          await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.claim.userId);
         }
+        return updated.count === 1;
       });
-      return updated.count === 1;
     },
 
     async terminalUnavailableJobs(input) {
@@ -801,7 +837,11 @@ export function createPrismaMemoryCoordinatorRepository(
     },
 
     async commitJobSuccess(input) {
-      if (!sha256.test(input.acceptedResultHash) || !validStage(input.stage)) return false;
+      if (!sha256.test(input.acceptedResultHash) || !validStage(input.stage) ||
+        (input.operationalCounters !== undefined &&
+          decodeMemoryOperationalCounters(input.operationalCounters) === null)) {
+        return false;
+      }
       for (let attempt = 0; attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS; attempt += 1) {
         try {
           return await client.$transaction((tx) =>
@@ -889,28 +929,34 @@ export function createPrismaMemoryCoordinatorRepository(
       if (input.decision.status === "WAITING_FOR_EGRESS_CONSENT") return false;
       const terminal = input.decision.status === "STALE" ||
         input.decision.status === "CANCELLED";
-      const updated = await client.memoryJob.updateMany({
-        data: input.decision.status === "READY"
-          ? {
-              errorCode: null,
-              nextAttemptAt: null,
-              state: "QUEUED",
-              updatedAt: input.now
-            }
-          : {
-              completedAt: input.now,
-              errorCode: input.decision.errorCode,
-              nextAttemptAt: null,
-              state: terminal ? input.decision.status : "QUEUED",
-              updatedAt: input.now
-            },
-        where: {
-          id: input.job.id,
-          state: "WAITING_FOR_EGRESS_CONSENT",
-          userId: input.job.userId
+      return client.$transaction(async (tx) => {
+        const updated = await tx.memoryJob.updateMany({
+          data: input.decision.status === "READY"
+            ? {
+                errorCode: null,
+                nextAttemptAt: null,
+                state: "QUEUED",
+                updatedAt: input.now
+              }
+            : {
+                completedAt: input.now,
+                errorCode: input.decision.errorCode,
+                nextAttemptAt: null,
+                state: terminal ? input.decision.status : "QUEUED",
+                updatedAt: input.now
+              },
+          where: {
+            id: input.job.id,
+            state: "WAITING_FOR_EGRESS_CONSENT",
+            userId: input.job.userId
+          }
+        });
+        if (updated.count === 1 && terminal &&
+          memoryJobBlocksShadowCutover(input.job.kind)) {
+          await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.job.userId);
         }
+        return updated.count === 1;
       });
-      return updated.count === 1;
     },
 
     async claimDeletion(input) {

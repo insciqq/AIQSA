@@ -21,6 +21,7 @@ import type {
   MemoryJobExecutionResult,
   MemoryJobGateDecision
 } from "./types";
+import { decodeMemoryOperationalCounters } from "../operational/counters";
 
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
@@ -43,6 +44,8 @@ function validGateDecision(value: MemoryJobGateDecision): boolean {
 function validJobResult(value: MemoryJobExecutionResult): boolean {
   return Boolean(value) && sha256.test(value.acceptedResultHash) &&
     (value.stage === undefined || value.stage === null || safeStage.test(value.stage)) &&
+    (value.operationalCounters === undefined ||
+      decodeMemoryOperationalCounters(value.operationalCounters) !== null) &&
     (value.apply === undefined || typeof value.apply === "function");
 }
 
@@ -389,6 +392,7 @@ export class MemoryCoordinator {
         apply: result.apply,
         claim,
         now: this.#clock(),
+        operationalCounters: result.operationalCounters,
         stage: result.stage === undefined ? currentStage : result.stage
       });
       if (!committed) controller.abort(new Error("memory_job_lease_lost"));

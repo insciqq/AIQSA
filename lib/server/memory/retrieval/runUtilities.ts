@@ -41,7 +41,7 @@ import {
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v9";
+  "memory-multilingual-relevance-v11";
 export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
@@ -54,8 +54,8 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v9",
-  promptVersion: "memory-relevance-prompt-v9",
+  policyVersion: "memory-relevance-policy-v11",
+  promptVersion: "memory-relevance-prompt-v10",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
     maxCandidates: 30,
@@ -65,7 +65,8 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     completePerCandidateDecisions: true,
     profileInventoryPostcondition: true,
     lifecycleTemporalModes: true,
-    version: 9
+    openRouterReasoning: "disabled_for_interactive_deadline",
+    version: 11
   }),
   schemaVersion: "memory-relevance-result-v5"
 });

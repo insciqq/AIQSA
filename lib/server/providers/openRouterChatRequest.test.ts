@@ -111,10 +111,34 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
 
 describe("OpenRouter request builders", () => {
   it("serializes required tool choice", () => {
-    expect(buildOpenRouterChatRequest(request({
+    const body = buildOpenRouterChatRequest(request({
       toolChoice: "required",
       tools: [currentSearchToolFixture]
-    })).tool_choice).toBe("required");
+    }));
+
+    expect(body).toMatchObject({
+      max_tokens: 64,
+      provider: { require_parameters: true },
+      tool_choice: "required",
+      tools: [{ function: { strict: true }, type: "function" }]
+    });
+    expect(body).not.toHaveProperty("max_completion_tokens");
+    expect(body).not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("keeps ordinary non-strict tools on the standard OpenRouter chat route", () => {
+    const body = buildOpenRouterChatRequest(request({
+      parallelToolCalls: false,
+      toolChoice: "required",
+      tools: [{ ...currentSearchToolFixture, strict: undefined }]
+    }));
+
+    expect(body).toMatchObject({
+      max_completion_tokens: 64,
+      parallel_tool_calls: false,
+      tool_choice: "required"
+    });
+    expect(body).not.toHaveProperty("max_tokens");
   });
 
   it("builds chat route, cache, reasoning, instruction, and metadata controls", () => {

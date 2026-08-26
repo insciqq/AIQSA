@@ -49,6 +49,10 @@ function mockClient(
   const client = {
     $transaction: vi.fn(async () => { throw new Error("vector unavailable"); }),
     $queryRaw,
+    memoryEntityAlias: { findFirst: vi.fn(async () => {
+      if (options.failLaneQueries === true) throw new Error("entity lookup unavailable");
+      return null;
+    }) },
     memoryPauseInterval: { findMany: vi.fn(async () => []) },
     memorySourceBarrier: { findMany: vi.fn(async () => []) },
     memorySuppression: { findMany: vi.fn(async () => []) }
@@ -94,6 +98,9 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('"checkpoint"."branchGeneration" = "source_chat"."memoryBranchGeneration"');
     expect(sql).toContain('FROM "MemoryRecallChunkMessage" AS authority_source_map');
     expect(sql).toContain('authority_source_message."updatedAt" <>');
+    expect(sql).toContain(
+      '"ChatMemoryCheckpointMessage" AS authority_checkpoint_message'
+    );
     expect(sql).toContain('source_chat."projectId" IS NULL');
     expect(sql).toContain('chunk."chunkingVersion" =');
     expect(sql).toContain('chunk."sourceProjectionVersion" =');
@@ -104,6 +111,10 @@ describe("local Memory retrieval repository", () => {
     expect(result.snapshot.historySuppressionIdentitySnapshot).toMatch(/^[a-f0-9]{64}$/u);
     expect(sql).toContain('"MemorySourceBarrier"');
     expect(sql).toContain("plainto_tsquery('simple'");
+    expect(sql).toContain("unnest(");
+    expect(sql).toContain('term_match."maximumMatchedTermLength" DESC');
+    expect(sql).toContain('term_match."matchedTermCount" DESC');
+    expect(sql).not.toContain("whole_query");
     expect(sql).not.toContain("plainto_tsquery('russian'");
     expect(sql).not.toContain("plainto_tsquery('english'");
     expect(sql).not.toContain("websearch_to_tsquery");
@@ -130,6 +141,25 @@ describe("local Memory retrieval repository", () => {
       ]);
       expect(mocked.laneSql.length).toBeGreaterThan(0);
     }
+  });
+
+  it("accepts owner-validated encrypted entity refs at the wire maximum scale", async () => {
+    const opaqueRef = `mr1.${"a".repeat(500)}`;
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        allowedEntityRefs: [opaqueRef],
+        currentUserText: "Acme",
+        entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
+        now
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toContain("FACT_ENTITY");
   });
 
   it("runs one isolated fact-only profile lane with explicit memories ordered first", async () => {

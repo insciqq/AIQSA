@@ -88,7 +88,8 @@ function openRouterFunctionTool(tool: RunTool): SerializedProviderTool {
       function: {
         description: tool.description,
         name: tool.name,
-        parameters: tool.inputSchema
+        parameters: tool.inputSchema,
+        ...(tool.strict !== undefined ? { strict: tool.strict } : {})
       },
       type: "function"
     }

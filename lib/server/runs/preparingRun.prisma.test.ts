@@ -92,12 +92,15 @@ const queryEmbeddingVersions = Object.freeze({
 
 const currentCoreRetrievalFeature = Object.freeze({
   historical: false,
+  includePatterns: false,
   retrievalMode: "TARGETED_CURRENT" as const,
   tier: "CORE" as const
 });
 
 const currentDynamicRetrievalFeature = Object.freeze({
+  directFactAuthority: false,
   historical: false,
+  includePatterns: false,
   retrievalMode: "TARGETED_CURRENT" as const,
   tier: "DYNAMIC" as const
 });
@@ -3151,7 +3154,9 @@ describe("PREPARING run orchestration", () => {
         selected: Readonly<{
           displayText: string;
           featureSnapshot: Readonly<{
+            directFactAuthority?: false;
             historical: false;
+            includePatterns: false;
             retrievalMode: "TARGETED_CURRENT";
             tier: "CORE" | "DYNAMIC";
           }>;

@@ -67,7 +67,9 @@ function validJob(job: MemoryJobDescriptor): boolean {
   return job.kind === "SYNTHESIZE_MEMORIES" &&
     job.pipelineVersion === MEMORY_SYNTHESIS_PIPELINE_VERSION &&
     job.chatId === null && job.sourceMessageId === null &&
-    job.targetFactVersionId === null && job.activeLeafMessageId === null &&
+    (job.targetFactVersionId === null ||
+      /^[A-Za-z0-9][A-Za-z0-9._:+@/=-]{0,255}$/u.test(job.targetFactVersionId)) &&
+    job.activeLeafMessageId === null &&
     job.branchGeneration === null && job.sourceRevision === null &&
     job.sourceHash === null;
 }

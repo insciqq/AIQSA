@@ -34,6 +34,7 @@ function input(overrides: Partial<MemoryVectorSearchInput> = {}): MemoryVectorSe
       factMode: "CURRENT",
       factTemporalAsOf: null,
       folderId: "folder-1",
+      includePatterns: false,
       occurredFrom: null,
       occurredTo: null,
       sourceAssistantId: null,
@@ -76,6 +77,15 @@ describe("Memory vector lane orchestration", () => {
     expect(chunkSql).toContain('source_chat."projectId" IS NULL');
     expect(chunkSql).toContain('chunk."chunkingVersion" =');
     expect(chunkSql).toContain('chunk."sourceProjectionVersion" =');
+    expect(chunkSql).toContain(
+      '"ChatMemoryCheckpointMessage" AS authority_checkpoint_message'
+    );
+    expect(chunkSql).not.toContain(
+      'checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"'
+    );
+    expect(chunkSql).not.toContain(
+      'source_chat."memoryBranchGeneration" = chunk."branchGeneration"'
+    );
     expect(chunkSql).toContain('negative_feedback."recallChunkId" = chunk."id"');
     expect(chunkSql).toContain('negative_run."chatId" =');
     expect(factSql).toContain('negative_feedback."memoryFactVersionId" = version."id"');

@@ -8,6 +8,7 @@ import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "./contract";
+import { MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION } from "./digest";
 import { purgeMemoryHistorySelection } from "./purge";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
@@ -331,21 +332,26 @@ describe("Prisma Memory history purge", () => {
           chatId: chat.id,
           contentHash: memorySha256("invalidated digest"),
           id: digestId,
+          incrementalDepth: 0,
+          inputFingerprint: memorySha256({ digestId, input: "invalidated" }),
           invalidatedAt: new Date(),
           languageCode: "en",
           normalizedSafeSearchText: "invalidated digest",
           occurredFrom: message.createdAt,
           occurredTo: message.createdAt,
           pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+          rebuildPolicyVersion: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
           redactionState: "NOT_NEEDED",
           safeDigestText: "Summary: Invalidated deployment digest.",
           safetyClass: "NORMAL",
           safetyPolicyVersion: "memory-chat-digest-policy-test",
           sourceContentHash: memorySha256({ chatId: chat.id, revision: 1 }),
+          sourceFingerprint: memorySha256({ digestId, source: "invalidated" }),
           sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
           sourceRevisionAtCreation: 1,
           state: "INVALIDATED",
           summary: "Invalidated deployment digest.",
+          updateMode: "FULL_REBUILD",
           userId
         }
       });

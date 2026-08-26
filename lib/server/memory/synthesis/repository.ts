@@ -5,6 +5,7 @@ import type {
   MemoryJobDescriptor,
   MemoryJobGateDecision
 } from "../coordinator/types";
+import { enqueueMemoryJob } from "../persistence/jobs";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import {
@@ -18,11 +19,12 @@ import {
   type MemorySynthesisOutput
 } from "./contract";
 import {
-  memorySynthesisPatternAuthorityPredicate,
+  memorySynthesisPatternInvalidationPredicate,
   memorySynthesisSourceAuthorityPredicate
 } from "./eligibility";
 import {
   buildMemorySynthesisPlan,
+  buildMemoryTargetedSynthesisPlan,
   memorySynthesisJobFingerprint,
   memorySynthesisPatternFingerprint,
   memorySynthesisSourceEligibilityHash,
@@ -59,6 +61,11 @@ type SynthesisSourceRow = Readonly<{
   structuredValue: Prisma.JsonValue;
   subjectKey: string | null;
   versionId: string;
+}>;
+
+type TargetedSourceRelationRow = Readonly<{
+  sourceEligibilityHash: string;
+  targetVersionId: string;
 }>;
 
 export type MemorySynthesisSnapshot = Readonly<{
@@ -124,8 +131,17 @@ function source(row: SynthesisSourceRow): MemorySynthesisSource {
 
 async function loadSources(
   client: SynthesisQueryClient,
-  userId: string
+  userId: string,
+  versionIds?: readonly string[]
 ): Promise<readonly MemorySynthesisSource[]> {
+  const exactIds = versionIds
+    ? [...new Set(versionIds)].slice(0, MEMORY_SYNTHESIS_MAX_SOURCES)
+    : null;
+  if (exactIds?.length === 0) return [];
+  const exactSourcePredicate = exactIds
+    ? Prisma.sql`AND source_version."id" IN (${Prisma.join(exactIds)})`
+    : Prisma.empty;
+  const sourceLimit = exactIds?.length ?? MEMORY_SYNTHESIS_MAX_SOURCES * 2;
   const rows = await client.$queryRaw<SynthesisSourceRow[]>(Prisma.sql`
     SELECT
       source_version."id" AS "versionId", source_version."factId",
@@ -138,11 +154,18 @@ async function loadSources(
       source_fact."category", source_fact."subjectKey", source_fact."predicateKey",
       settings."memoryGeneration",
       ARRAY(
-        SELECT entity_link."entityId"
+        SELECT DISTINCT aiqsa_memory_entity_root_id(
+          source_version."userId", entity_link."entityId"
+        )
         FROM "MemoryFactVersionEntity" AS entity_link
         WHERE entity_link."userId" = source_version."userId"
           AND entity_link."factVersionId" = source_version."id"
-        ORDER BY entity_link."entityId"
+          AND aiqsa_memory_entity_root_id(
+            source_version."userId", entity_link."entityId"
+          ) IS NOT NULL
+        ORDER BY aiqsa_memory_entity_root_id(
+          source_version."userId", entity_link."entityId"
+        )
         LIMIT 16
       )::text[] AS "entityIds",
       ARRAY(
@@ -177,16 +200,65 @@ async function loadSources(
     WHERE source_version."userId" = ${userId}
       AND settings."useMemoryFacts" = TRUE
       AND settings."synthesisEnabled" = TRUE
+      ${exactSourcePredicate}
       AND ${memorySynthesisSourceAuthorityPredicate(userId)}
     ORDER BY source_version."observedAt" DESC, source_version."id"
-    LIMIT ${MEMORY_SYNTHESIS_MAX_SOURCES * 2}
+    LIMIT ${sourceLimit}
   `);
   return Object.freeze(rows.map(source));
 }
 
+async function loadTargetedPlan(
+  client: SynthesisQueryClient,
+  userId: string,
+  targetFactVersionId: string,
+  settings: Readonly<{
+    memoryGeneration: number;
+    synthesisEnabledAt: Date;
+  }>
+): Promise<MemorySynthesisPlan | null> {
+  const relations = await client.$queryRaw<TargetedSourceRelationRow[]>(Prisma.sql`
+    SELECT relation."sourceEligibilityHash", relation."targetVersionId"
+    FROM "MemoryFactVersionRelation" AS relation
+    INNER JOIN "MemoryFactVersion" AS pattern_version
+      ON pattern_version."userId" = relation."userId"
+     AND pattern_version."id" = relation."sourceVersionId"
+     AND pattern_version."modality" = 'PATTERN'::"MemoryFactModality"
+     AND pattern_version."directness" = 'INFERRED'::"MemoryDirectness"
+     AND pattern_version."synthesisDepth" = 1
+     AND pattern_version."pipelineVersion" = ${MEMORY_SYNTHESIS_PIPELINE_VERSION}
+    WHERE relation."userId" = ${userId}
+      AND relation."sourceVersionId" = ${targetFactVersionId}
+      AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+      AND relation."pipelineVersion" = ${MEMORY_SYNTHESIS_PIPELINE_VERSION}
+      AND relation."sourceEligibilityHash" ~ '^[a-f0-9]{64}$'
+    ORDER BY relation."targetVersionId"
+    LIMIT ${MEMORY_SYNTHESIS_MAX_SOURCES + 1}
+  `);
+  if (relations.length < 3 || relations.length > MEMORY_SYNTHESIS_MAX_SOURCES) {
+    return null;
+  }
+  const storedHash = new Map(relations.map((relation) => [
+    relation.targetVersionId,
+    relation.sourceEligibilityHash
+  ]));
+  const sources = (await loadSources(
+    client,
+    userId,
+    relations.map(({ targetVersionId }) => targetVersionId)
+  )).filter((entry) => storedHash.get(entry.versionId) === entry.eligibilityHash);
+  if (new Set(sources.map(({ factId }) => factId)).size < 3) return null;
+  return buildMemoryTargetedSynthesisPlan({
+    boundary: settings.synthesisEnabledAt,
+    generation: settings.memoryGeneration,
+    sources
+  });
+}
+
 export async function loadMemorySynthesisSnapshot(
   client: SynthesisQueryClient,
-  userId: string
+  userId: string,
+  targetFactVersionId: string | null = null
 ): Promise<MemorySynthesisSnapshot | null> {
   const settings = await client.userMemorySettings.findUnique({
     select: {
@@ -205,20 +277,30 @@ export async function loadMemorySynthesisSnapshot(
     settings.synthesisPolicyVersion !== MEMORY_SYNTHESIS_POLICY_VERSION) {
     return { plan: null, settings };
   }
-  const sources = await loadSources(client, userId);
+  const plan = targetFactVersionId
+    ? await loadTargetedPlan(client, userId, targetFactVersionId, {
+        memoryGeneration: settings.memoryGeneration,
+        synthesisEnabledAt: settings.synthesisEnabledAt
+      })
+    : buildMemorySynthesisPlan({
+        boundary: settings.synthesisEnabledAt,
+        generation: settings.memoryGeneration,
+        sources: await loadSources(client, userId)
+      });
   return {
-    plan: buildMemorySynthesisPlan({
-      boundary: settings.synthesisEnabledAt,
-      generation: settings.memoryGeneration,
-      sources
-    }),
+    plan,
     settings
   };
 }
 
-function expectedJobFingerprint(userId: string, plan: MemorySynthesisPlan): string {
+function expectedJobFingerprint(
+  userId: string,
+  plan: MemorySynthesisPlan,
+  targetFactVersionId: string | null
+): string {
   return memorySynthesisJobFingerprint({
     sourceSetFingerprint: plan.sourceSetFingerprint,
+    ...(targetFactVersionId ? { targetFactVersionId } : {}),
     userId
   });
 }
@@ -227,7 +309,9 @@ function validJob(job: MemoryJobDescriptor): boolean {
   return job.kind === "SYNTHESIZE_MEMORIES" &&
     job.pipelineVersion === MEMORY_SYNTHESIS_PIPELINE_VERSION &&
     job.chatId === null && job.sourceMessageId === null &&
-    job.targetFactVersionId === null && job.activeLeafMessageId === null &&
+    (job.targetFactVersionId === null ||
+      /^[A-Za-z0-9][A-Za-z0-9._:+@/=-]{0,255}$/u.test(job.targetFactVersionId)) &&
+    job.activeLeafMessageId === null &&
     job.branchGeneration === null && job.sourceRevision === null &&
     job.sourceHash === null;
 }
@@ -245,7 +329,11 @@ function gate(
   }
   if (snapshot.settings.memoryGeneration !== job.memoryGenerationSnapshot ||
     snapshot.settings.memoryRevision !== job.memoryRevisionSnapshot ||
-    !snapshot.plan || expectedJobFingerprint(job.userId, snapshot.plan) !==
+    !snapshot.plan || expectedJobFingerprint(
+      job.userId,
+      snapshot.plan,
+      job.targetFactVersionId
+    ) !==
       job.idempotencyFingerprint) {
     return { errorCode: "memory_synthesis_snapshot_stale", status: "STALE" };
   }
@@ -413,14 +501,19 @@ async function retractCurrentPattern(
   });
 }
 
-export async function retractInvalidMemorySynthesisPatterns(
+export type MemorySynthesisInvalidationResult = Readonly<{
+  invalidated: number;
+  scheduled: number;
+}>;
+
+export async function reconcileInvalidMemorySynthesisPatterns(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   now: Date,
   limit = 32
-): Promise<number> {
+): Promise<MemorySynthesisInvalidationResult> {
   if (!Number.isFinite(now.getTime()) || !Number.isSafeInteger(limit) ||
-    limit < 1 || limit > 128) return 0;
+    limit < 1 || limit > 128) return { invalidated: 0, scheduled: 0 };
   const rows = await tx.$queryRaw<Array<{ factId: string; versionId: string }>>(
     Prisma.sql`
       SELECT fact."id" AS "factId", version."id" AS "versionId"
@@ -440,19 +533,85 @@ export async function retractInvalidMemorySynthesisPatterns(
         AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
         AND version."systemTo" IS NULL
         AND version."modality" = 'PATTERN'::"MemoryFactModality"
-        AND NOT (${memorySynthesisPatternAuthorityPredicate(settings.userId)})
+        AND ${memorySynthesisPatternInvalidationPredicate(settings.userId)}
       ORDER BY version."createdAt", version."id"
       LIMIT ${limit}
       FOR UPDATE OF fact, version SKIP LOCKED
     `
   );
+  const targetedPlans = new Map<string, MemorySynthesisPlan>();
+  if (
+    settings.useMemoryFacts && settings.synthesisEnabled &&
+    settings.synthesisEnabledAt &&
+    settings.synthesisPolicyVersion === MEMORY_SYNTHESIS_POLICY_VERSION
+  ) {
+    for (const row of rows) {
+      const plan = await loadTargetedPlan(tx, settings.userId, row.versionId, {
+        memoryGeneration: settings.memoryGeneration,
+        synthesisEnabledAt: settings.synthesisEnabledAt
+      });
+      if (plan) targetedPlans.set(row.versionId, plan);
+    }
+  }
   for (const row of rows) {
     await retractCurrentPattern(tx, settings.userId, row.factId, row.versionId, now);
   }
+  let scheduled = 0;
   if (rows.length > 0) {
     await advanceMemoryMutation(tx, settings, "SYNTHESIS_PATTERN_CHANGE");
+    for (const [targetFactVersionId, plan] of targetedPlans) {
+      const idempotencyFingerprint = memorySynthesisJobFingerprint({
+        sourceSetFingerprint: plan.sourceSetFingerprint,
+        targetFactVersionId,
+        userId: settings.userId
+      });
+      const revived = await tx.memoryJob.updateMany({
+        data: {
+          acceptedResultHash: null,
+          attemptCount: 0,
+          completedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          leaseExpiresAt: null,
+          leaseToken: null,
+          memoryGenerationSnapshot: settings.memoryGeneration,
+          memoryRevisionSnapshot: settings.memoryRevision,
+          nextAttemptAt: null,
+          stage: null,
+          state: "QUEUED"
+        },
+        where: {
+          idempotencyFingerprint,
+          kind: "SYNTHESIZE_MEMORIES",
+          state: { in: ["CANCELLED", "STALE"] },
+          targetFactVersionId,
+          userId: settings.userId
+        }
+      });
+      const queued = await enqueueMemoryJob(tx, settings, {
+        idempotencyFingerprint,
+        kind: "SYNTHESIZE_MEMORIES",
+        pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
+        targetFactVersionId
+      });
+      if (queued.created || revived.count > 0) scheduled += 1;
+    }
   }
-  return rows.length;
+  return Object.freeze({ invalidated: rows.length, scheduled });
+}
+
+export async function retractInvalidMemorySynthesisPatterns(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  now: Date,
+  limit = 32
+): Promise<number> {
+  return (await reconcileInvalidMemorySynthesisPatterns(
+    tx,
+    settings,
+    now,
+    limit
+  )).invalidated;
 }
 
 export function createPrismaMemorySynthesisRepository(
@@ -460,11 +619,14 @@ export function createPrismaMemorySynthesisRepository(
 ) {
   return Object.freeze({
     async snapshot(job: MemoryJobDescriptor): Promise<MemorySynthesisSnapshot | null> {
-      return loadMemorySynthesisSnapshot(client, job.userId);
+      return loadMemorySynthesisSnapshot(client, job.userId, job.targetFactVersionId);
     },
 
     async preflight(job: MemoryJobDescriptor): Promise<MemoryJobGateDecision> {
-      const decision = gate(job, await loadMemorySynthesisSnapshot(client, job.userId));
+      const decision = gate(
+        job,
+        await loadMemorySynthesisSnapshot(client, job.userId, job.targetFactVersionId)
+      );
       if (decision.status !== "READY") {
         await client.$executeRaw(Prisma.sql`
           UPDATE "MemorySynthesisExecution"
@@ -520,18 +682,30 @@ export function createPrismaMemorySynthesisRepository(
       now: Date
     ): Promise<number> {
       const settings = await lockMemorySettings(tx, claim.userId, true);
-      const snapshot = await loadMemorySynthesisSnapshot(tx, claim.userId);
+      const snapshot = await loadMemorySynthesisSnapshot(
+        tx,
+        claim.userId,
+        claim.targetFactVersionId
+      );
       const plan = snapshot?.plan;
       if (!settings.useMemoryFacts || !settings.synthesisEnabled || !plan ||
         settings.memoryGeneration !== claim.memoryGenerationSnapshot ||
         settings.memoryRevision !== claim.memoryRevisionSnapshot ||
         plan.sourceSetFingerprint !== expectedPlan.sourceSetFingerprint ||
         plan.sourceSnapshotHash !== expectedPlan.sourceSnapshotHash ||
-        expectedJobFingerprint(claim.userId, plan) !== claim.idempotencyFingerprint) {
+        expectedJobFingerprint(
+          claim.userId,
+          plan,
+          claim.targetFactVersionId
+        ) !== claim.idempotencyFingerprint) {
         throw new Error("memory_synthesis_source_stale");
       }
       const scope = await ensureGlobalMemoryScope(tx, settings);
       const sourceByRef = new Map(plan.sources.map((entry) => [entry.ref, entry]));
+      const entityIdByRef = new Map(plan.entityBindings.map((entry) => [
+        entry.ref,
+        entry.entityId
+      ]));
       let applied = 0;
       for (const pattern of result.output.patterns) {
         const cluster = clusterFor(plan, pattern.sourceRefs);
@@ -542,12 +716,19 @@ export function createPrismaMemorySynthesisRepository(
           new Set(sources.map(({ factId }) => factId)).size < 3) {
           throw new Error("memory_synthesis_source_stale");
         }
+        const entityIds = pattern.entityRefs.map((ref) => entityIdByRef.get(ref)).filter(
+          (entityId): entityId is string => Boolean(entityId)
+        );
+        if (entityIds.length !== pattern.entityRefs.length ||
+          new Set(entityIds).size !== entityIds.length) {
+          throw new Error("memory_synthesis_source_stale");
+        }
         const normalized = normalizeMemorySearchText(pattern.statement);
         if (!normalized) continue;
         const proposedCanonicalKey = patternIdentityKey(
           cluster.key,
           pattern.reasonCode,
-          pattern.entityRefs
+          entityIds
         );
         let fact: Readonly<{
           canonicalKey: string;
@@ -697,6 +878,18 @@ export function createPrismaMemorySynthesisRepository(
           })),
           skipDuplicates: true
         });
+        if (entityIds.length > 0) {
+          await tx.memoryFactVersionEntity.createMany({
+            data: entityIds.map((entityId) => ({
+              confidence: 1,
+              entityId,
+              factVersionId: versionId,
+              role: "MENTION" as const,
+              userId: claim.userId
+            })),
+            skipDuplicates: true
+          });
+        }
         await tx.memoryFact.update({
           data: {
             category: "patterns",

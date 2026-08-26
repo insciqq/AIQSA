@@ -10,6 +10,18 @@ export type OpenRouterChatClient = Omit<
   streamChatCompletion?: OpenAICompatibleChatClient["streamChatCompletion"];
 }>;
 
+function usesStrictOpenRouterTool(body: Readonly<Record<string, unknown>>): boolean {
+  if (body.tool_choice === "none" || !Array.isArray(body.tools)) return false;
+  return body.tools.some((tool) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
+    const fn = (tool as Record<string, unknown>).function;
+    return Boolean(
+      fn && typeof fn === "object" && !Array.isArray(fn) &&
+      (fn as Record<string, unknown>).strict === true
+    );
+  });
+}
+
 export function createFetchOpenRouterChatClient(input: {
   apiKey: string;
   appTitle?: string;
@@ -31,6 +43,9 @@ export function createFetchOpenRouterChatClient(input: {
       ...(input.httpReferer ? { "HTTP-Referer": input.httpReferer } : {}),
       ...(input.appTitle ? { "X-Title": input.appTitle } : {})
     },
+    headersForBody: (body): Readonly<Record<string, string>> => usesStrictOpenRouterTool(body)
+      ? { "x-anthropic-beta": "structured-outputs-2025-11-13" }
+      : {},
     invalidJsonError: "openrouter_response_invalid_json",
     notObjectError: "openrouter_response_not_object",
     providerName: "OpenRouter"

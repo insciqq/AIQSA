@@ -96,6 +96,62 @@ const pausableJobStates = [
   "WAITING_FOR_EGRESS_CONSENT"
 ] as const;
 
+const shadowGenerationStates = [
+  "BUILDING",
+  "CATCHING_UP",
+  "READY"
+] as const;
+
+async function cancelEmbeddingTargetTransitionWork(
+  tx: MemoryTransaction,
+  userId: string,
+  cancelledAt: Date
+): Promise<void> {
+  const shadows = await tx.memoryIndexGeneration.findMany({
+    select: { id: true },
+    where: {
+      state: { in: [...shadowGenerationStates] },
+      userId
+    }
+  });
+  if (shadows.length === 0) return;
+
+  // The selected embedding destination is part of every shadow's immutable
+  // authority.  Cancel both a queued parent and any provider I/O already in
+  // flight before retiring the now-incompatible, still-invisible generation.
+  // Active entries stay available for lexical/vector fallback until a new
+  // shadow reaches its fenced cutover.
+  await tx.memoryJob.updateMany({
+    data: {
+      completedAt: cancelledAt,
+      errorCode: "memory_embedding_target_changed",
+      errorMessage: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "CANCELLED",
+      updatedAt: cancelledAt
+    },
+    where: {
+      kind: { in: ["EMBED_ITEMS", "REBUILD_INDEX"] },
+      state: { in: [...pausableJobStates] },
+      userId
+    }
+  });
+  const shadowIds = shadows.map(({ id }) => id);
+  await tx.memoryIndexGeneration.updateMany({
+    data: { state: "CANCELLED" },
+    where: {
+      id: { in: shadowIds },
+      state: { in: [...shadowGenerationStates] },
+      userId
+    }
+  });
+  await tx.memorySearchEntry.deleteMany({
+    where: { indexGenerationId: { in: shadowIds }, userId }
+  });
+}
+
 async function closePauseAdmissionCutoff(
   tx: MemoryTransaction,
   userId: string,
@@ -329,6 +385,8 @@ export function createPrismaMemorySettingsRepository(
           return memoryPersistenceFailure("memory_revision_conflict");
         }
         const embeddingDeploymentId = patch.embeddingDeploymentId;
+        const embeddingSelectionChanged = owns(patch, "embeddingDeploymentId") &&
+          embeddingDeploymentId !== settings.embeddingProviderModelId;
         if (owns(patch, "embeddingDeploymentId") && embeddingDeploymentId != null) {
           try {
             await validateEmbeddingSelection(tx, {
@@ -369,6 +427,9 @@ export function createPrismaMemorySettingsRepository(
           await advanceMemoryMutation(tx, settings, "MEMORY_VISIBLE_SETTING_CHANGE");
         }
         const cutoff = now();
+        if (embeddingSelectionChanged) {
+          await cancelEmbeddingTargetTransitionWork(tx, userId, cutoff);
+        }
         const data: Prisma.UserMemorySettingsUpdateManyMutationInput = {
           settingsRevision: { increment: 1 }
         };
@@ -484,6 +545,9 @@ export function createPrismaMemorySettingsRepository(
           if (patch.decayEnabled) {
             settings.decayPolicyVersion = MEMORY_DECAY_POLICY_VERSION;
           }
+        }
+        if (owns(patch, "embeddingDeploymentId")) {
+          settings.embeddingProviderModelId = patch.embeddingDeploymentId!;
         }
         if (owns(patch, "referenceChatHistory")) {
           settings.referenceChatHistory = patch.referenceChatHistory!;

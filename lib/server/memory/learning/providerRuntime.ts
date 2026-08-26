@@ -3,6 +3,7 @@ import type {
   ModelRunSseEvent,
   ModelRunUsage
 } from "../../../domain/modelRunEvents";
+import { maxOutputTokensFromParams } from "../../../domain/providerParams";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import {
   providerAuthenticationMode,
@@ -59,6 +60,8 @@ export type MemoryLearningProviderFailure = Readonly<{
 
 type RuntimeClient = Pick<PrismaClient, "$transaction">;
 
+export const MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR = 8_192;
+
 const replaySafeTransientHttpStatuses = new Set([
   408,
   429,
@@ -85,6 +88,59 @@ class MemoryLearningHttpStatusError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function reasoningEnabled(
+  snapshot: ProviderExecutionSnapshot,
+  request: ProviderRunRequest
+): boolean {
+  if (!snapshot.model.capabilities.reasoning) return false;
+  const value = isRecord(request.params.reasoning)
+    ? request.params.reasoning
+    : isRecord(snapshot.model.defaultParams.reasoning)
+      ? snapshot.model.defaultParams.reasoning
+      : {};
+  if (value.enabled === false || value.effort === "none") return false;
+  if (value.enabled === true || typeof value.effort === "string") return true;
+  return typeof snapshot.model.capabilities.defaultReasoningEffort === "string" &&
+    snapshot.model.capabilities.defaultReasoningEffort !== "none";
+}
+
+/** Reasoning tokens share the completion ceiling on forced structured tool
+ * routes. Keep the semantic role's ordinary cap for non-reasoning models, but
+ * give an enabled reasoning model enough total headroom to emit the same
+ * bounded schema after thinking. The model's configured/default ceiling still
+ * limits the uplift, and no provider or model name participates. */
+export function applyMemoryLearningReasoningBudget(
+  snapshot: ProviderExecutionSnapshot,
+  request: ProviderRunRequest
+): ProviderRunRequest {
+  const strictSingleTool = request.toolChoice === "required" &&
+    request.tools?.length === 1 && request.tools[0]?.strict === true;
+  const requested = maxOutputTokensFromParams(request.params);
+  if (!strictSingleTool || requested === undefined ||
+    !reasoningEnabled(snapshot, request)) return request;
+
+  const configuredLimit = maxOutputTokensFromParams(snapshot.model.defaultParams);
+  const capabilityLimit = snapshot.model.capabilities.defaultMaxOutputTokens;
+  const limits = [configuredLimit, capabilityLimit].filter(
+    (value): value is number => typeof value === "number" &&
+      Number.isFinite(value) && value > 0
+  );
+  const ceiling = limits.length > 0 ? Math.min(...limits) : null;
+  const reasoningFloor = ceiling === null
+    ? MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR
+    : Math.min(MEMORY_REASONING_TOOL_OUTPUT_TOKEN_FLOOR, ceiling);
+  const adjusted = Math.max(requested, reasoningFloor);
+  if (adjusted === requested) return request;
+  return {
+    ...request,
+    params: {
+      ...request.params,
+      maxOutputTokens: adjusted,
+      max_output_tokens: adjusted
+    }
+  };
 }
 
 function noAuthEvidence(value: unknown): boolean {
@@ -283,8 +339,12 @@ export function createAcceptedMemoryLearningProvider<
     })) {
       throw new Error(input.invalidRuntimeError);
     }
+    const providerRequest = applyMemoryLearningReasoningBudget(
+      snapshot,
+      input.buildRequest(snapshot, request)
+    );
     const result = await collectProviderResult(
-      runtime.adapter.stream(input.buildRequest(snapshot, request), { signal }),
+      runtime.adapter.stream(providerRequest, { signal }),
       input.callError
     );
     return {

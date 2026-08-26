@@ -5,23 +5,31 @@ import type {
   MemoryExtractedCandidate,
   MemoryFactCandidateEntity
 } from "../extraction/contract";
+import { memoryEntitySlotCanonicalKey } from "../identity/normalization";
+import {
+  loadAdmissibleMemoryEntityAliases,
+  memoryAdmissibleEntityAliasPredicate,
+  memoryEntityRootIdSql
+} from "./authority";
 import {
   memoryEntityAliases,
   memoryEntityAliasSupportFingerprint,
-  memoryEntityCanonicalKey,
+  memoryGroundedEntityCanonicalKey,
   normalizeMemoryEntityAlias,
   type MemoryEntityType
 } from "./normalization";
-import {
-  resolveMemoryEntityCandidate,
-  type MemoryEntityResolutionCandidate
-} from "./resolver";
 
 type EntityRow = Readonly<{
   canonicalKey: string;
   entityType: MemoryEntityType;
   id: string;
   mergedIntoId: string | null;
+  state: string;
+}>;
+
+type ResolutionCandidate = EntityRow & Readonly<{
+  aliases: readonly string[];
+  rootId: string;
 }>;
 
 type LockedEntity = Readonly<{
@@ -36,79 +44,76 @@ async function rootId(
   userId: string,
   entityId: string
 ): Promise<string | null> {
-  const rows = await tx.$queryRaw<Array<{
-    cycle: boolean;
-    id: string;
-    mergedIntoId: string | null;
-  }>>(Prisma.sql`
-    WITH RECURSIVE roots AS (
-      SELECT entity."id", entity."mergedIntoId",
-        ARRAY[entity."id"]::text[] AS visited, FALSE AS cycle
-      FROM "MemoryEntity" AS entity
-      WHERE entity."userId" = ${userId} AND entity."id" = ${entityId}
-
-      UNION ALL
-
-      SELECT entity."id", entity."mergedIntoId", roots.visited || entity."id",
-        entity."id" = ANY(roots.visited)
-      FROM roots
-      INNER JOIN "MemoryEntity" AS entity
-        ON entity."userId" = ${userId} AND entity."id" = roots."mergedIntoId"
-      WHERE NOT roots.cycle
-    )
-    SELECT "id", "mergedIntoId", cycle FROM roots
-    ORDER BY cardinality(visited) DESC
+  const [row] = await tx.$queryRaw<Array<{ id: string | null }>>(Prisma.sql`
+    SELECT ${memoryEntityRootIdSql(userId, Prisma.sql`${entityId}`)} AS "id"
   `);
-  if (rows.some(({ cycle }) => cycle)) throw new Error("memory_entity_merge_cycle");
-  return rows.find(({ mergedIntoId }) => mergedIntoId === null)?.id ?? null;
+  return row?.id ?? null;
 }
 
 async function resolutionCandidates(
   tx: MemoryTransaction,
   userId: string,
   entity: MemoryFactCandidateEntity,
-  canonicalKey: string
-): Promise<readonly MemoryEntityResolutionCandidate[]> {
+  canonicalKey: string | null,
+  adjudicatedEntityId: string | null
+): Promise<readonly ResolutionCandidate[]> {
   const normalizedAliases = memoryEntityAliases(entity)
     .map(({ normalizedAlias }) => normalizedAlias);
+  const lookupIds = [entity.contextEntityId, adjudicatedEntityId]
+    .filter((id): id is string => id !== null);
   const rows = await tx.$queryRaw<EntityRow[]>(Prisma.sql`
     SELECT DISTINCT entity."id", entity."canonicalKey",
-      entity."entityType", entity."mergedIntoId"
+      entity."entityType", entity."mergedIntoId", entity."state"::text AS state
     FROM "MemoryEntity" AS entity
-    LEFT JOIN "MemoryEntityAlias" AS alias
-      ON alias."userId" = entity."userId" AND alias."entityId" = entity."id"
     WHERE entity."userId" = ${userId}
       AND (
-        entity."id" = ${entity.contextEntityId}
-        OR entity."canonicalKey" = ${canonicalKey}
+        ${lookupIds.length === 0
+          ? Prisma.sql`FALSE`
+          : Prisma.sql`entity."id" IN (${Prisma.join(lookupIds)})`}
+        OR ${canonicalKey === null
+          ? Prisma.sql`FALSE`
+          : Prisma.sql`entity."canonicalKey" = ${canonicalKey}`}
         OR ${normalizedAliases.length === 0
           ? Prisma.sql`FALSE`
-          : Prisma.sql`alias."normalizedAlias" IN (${Prisma.join(normalizedAliases)})`}
+          : Prisma.sql`EXISTS (
+              SELECT 1 FROM "MemoryEntityAlias" AS alias
+              WHERE alias."userId" = entity."userId"
+                AND alias."entityId" = entity."id"
+                AND alias."normalizedAlias" IN (${Prisma.join(normalizedAliases)})
+                AND ${memoryAdmissibleEntityAliasPredicate(userId)}
+            )`}
       )
     ORDER BY entity."id"
     LIMIT 32
   `);
-  const candidates: MemoryEntityResolutionCandidate[] = [];
+  const candidates: ResolutionCandidate[] = [];
   for (const row of rows) {
     const canonicalRootId = await rootId(tx, userId, row.id);
     if (!canonicalRootId) continue;
     const root = canonicalRootId === row.id
       ? row
       : await tx.memoryEntity.findFirst({
-          select: { canonicalKey: true, entityType: true, id: true, mergedIntoId: true },
+          select: {
+            canonicalKey: true,
+            entityType: true,
+            id: true,
+            mergedIntoId: true,
+            state: true
+          },
           where: { id: canonicalRootId, userId }
         }) as EntityRow | null;
-    if (!root) continue;
-    const aliases = await tx.memoryEntityAlias.findMany({
-      orderBy: [{ normalizedAlias: "asc" }, { id: "asc" }],
-      select: { normalizedAlias: true },
-      where: { entityId: row.id, userId }
-    });
+    if (!root || root.state !== "ACTIVE") continue;
+    const aliases = await loadAdmissibleMemoryEntityAliases(
+      tx,
+      userId,
+      [row.id],
+      16
+    );
     candidates.push({
+      ...row,
       aliases: aliases.map(({ normalizedAlias }) => normalizedAlias),
       canonicalKey: root.canonicalKey,
       entityType: root.entityType,
-      id: row.id,
       rootId: root.id
     });
   }
@@ -120,55 +125,195 @@ function entityId(userId: string, canonicalKey: string): string {
     canonicalKey,
     domain: "aiqsa.memory.entity",
     userId,
-    version: 2
+    version: 3
   });
+}
+
+function renewedEntityCanonicalKey(
+  baseCanonicalKey: string,
+  terminalEntityId: string
+): string {
+  const renewal = memorySha256({
+    baseCanonicalKey,
+    domain: "aiqsa.memory.entity-renewal",
+    terminalEntityId,
+    version: 1
+  });
+  const suffix = `:renewed:${renewal.slice(0, 32)}`;
+  return baseCanonicalKey.length + suffix.length <= 256
+    ? `${baseCanonicalKey}${suffix}`
+    : `entity:v3:renewed:${renewal}`;
+}
+
+function compatibleEntityTypes(left: string, right: string): boolean {
+  return left === right ||
+    (left === "PRODUCT" && right === "DEVICE") ||
+    (left === "DEVICE" && right === "PRODUCT");
+}
+
+function exactAliasRoots(
+  entity: MemoryFactCandidateEntity,
+  candidates: readonly ResolutionCandidate[]
+): readonly string[] {
+  const aliases = new Set(memoryEntityAliases(entity)
+    .map(({ normalizedAlias }) => normalizedAlias));
+  return [...new Set(candidates
+    .filter((candidate) => compatibleEntityTypes(
+      candidate.entityType,
+      entity.entityType
+    ) && candidate.aliases.some((alias) => aliases.has(alias)))
+    .map(({ rootId }) => rootId))].sort();
 }
 
 async function resolveOrCreate(
   tx: MemoryTransaction,
   userId: string,
   entity: MemoryFactCandidateEntity,
-  languageCode: string
+  languageCode: string,
+  adjudicatedEntityId: string | null = null
 ): Promise<string | null> {
-  const canonicalKey = memoryEntityCanonicalKey(entity);
-  if (!canonicalKey) return null;
+  const canonicalKey = memoryGroundedEntityCanonicalKey(entity);
   const candidates = await resolutionCandidates(
     tx,
     userId,
     entity,
-    canonicalKey
+    canonicalKey,
+    adjudicatedEntityId
   );
-  const resolution = resolveMemoryEntityCandidate({
-    aliases: [entity.mention, entity.canonicalLabel, ...entity.aliases],
-    canonicalLabel: entity.canonicalLabel,
-    contextEntityId: entity.contextEntityId,
-    entityType: entity.entityType as MemoryEntityType,
-    qualifiers: entity.qualifiers
-  }, candidates);
-  if (resolution.outcome === "AMBIGUOUS") return null;
-  if (resolution.outcome === "REUSE") return resolution.entityId;
-  const id = entityId(userId, resolution.canonicalKey);
-  await tx.memoryEntity.createMany({
-    data: [{
-      canonicalKey: resolution.canonicalKey,
-      displayName: entity.canonicalLabel,
-      entityType: entity.entityType,
-      id,
-      languageCode,
-      userId
-    }],
-    skipDuplicates: true
-  });
-  return (await tx.memoryEntity.findFirst({
-    select: { id: true },
-    where: { canonicalKey: resolution.canonicalKey, userId }
-  }))?.id ?? null;
+
+  if (entity.contextEntityId !== null) {
+    const context = candidates.find((candidate) =>
+      compatibleEntityTypes(candidate.entityType, entity.entityType) &&
+      (candidate.id === entity.contextEntityId ||
+        candidate.rootId === entity.contextEntityId));
+    if (!context) return null;
+    if (adjudicatedEntityId !== null) {
+      const adjudicatedRoot = await rootId(tx, userId, adjudicatedEntityId);
+      if (adjudicatedRoot !== context.rootId) return null;
+    }
+    return context.rootId;
+  }
+
+  const canonicalRoots = canonicalKey === null
+    ? []
+    : [...new Set(candidates.filter((candidate) =>
+        candidate.canonicalKey === canonicalKey &&
+        compatibleEntityTypes(candidate.entityType, entity.entityType) &&
+        candidate.aliases.length > 0)
+      .map(({ rootId }) => rootId))].sort();
+  if (canonicalRoots.length === 1) return canonicalRoots[0]!;
+  if (canonicalRoots.length > 1) return null;
+
+  const aliasRoots = exactAliasRoots(entity, candidates);
+  if (aliasRoots.length === 1) return aliasRoots[0]!;
+  if (aliasRoots.length > 1) {
+    const adjudicatedRoot = adjudicatedEntityId === null
+      ? null
+      : await rootId(tx, userId, adjudicatedEntityId);
+    if (!adjudicatedRoot || !aliasRoots.includes(adjudicatedRoot)) return null;
+    // HIGH semantic authority is checked before this repository is called.
+    // Exact admissible alias collision bounds the merge and prevents broad /
+    // specific lexical similarity from becoming merge authority.
+    for (const redundantRoot of aliasRoots) {
+      if (redundantRoot === adjudicatedRoot) continue;
+      await mergeMemoryEntities(tx, userId, redundantRoot, adjudicatedRoot);
+    }
+    return adjudicatedRoot;
+  }
+
+  if (adjudicatedEntityId !== null) {
+    const adjudicatedRoot = await rootId(tx, userId, adjudicatedEntityId);
+    const adjudicated = candidates.find(({ rootId }) =>
+      rootId === adjudicatedRoot);
+    if (adjudicatedRoot && adjudicated && compatibleEntityTypes(
+      adjudicated.entityType,
+      entity.entityType
+    )) return adjudicatedRoot;
+    return null;
+  }
+
+  if (!canonicalKey) return null;
+  let creationKey = canonicalKey;
+  for (let depth = 0; depth < 16; depth += 1) {
+    const id = entityId(userId, creationKey);
+    await tx.memoryEntity.createMany({
+      data: [{
+        automaticOnly: true,
+        canonicalKey: creationKey,
+        displayName: entity.mention!,
+        entityType: entity.entityType,
+        id,
+        languageCode,
+        userId
+      }],
+      skipDuplicates: true
+    });
+    const stored = await tx.memoryEntity.findFirst({
+      select: { id: true, state: true },
+      where: { canonicalKey: creationKey, userId }
+    });
+    if (!stored) throw new Error("memory_entity_commit_failed");
+    if (stored.state === "ACTIVE") return stored.id;
+    if (stored.state === "MERGED") {
+      const canonicalRoot = await rootId(tx, userId, stored.id);
+      if (canonicalRoot) return canonicalRoot;
+    }
+    creationKey = renewedEntityCanonicalKey(canonicalKey, stored.id);
+  }
+  return null;
 }
 
-function sourceContainsAlias(source: string, displayAlias: string): boolean {
-  return source.normalize("NFKC").toLocaleLowerCase("und").includes(
-    displayAlias.normalize("NFKC").trim().toLocaleLowerCase("und")
+/** Resolves the mandatory product subject before observation fingerprints and
+ * fact lookup are computed. Call this inside the per-candidate savepoint. */
+export async function materializeMemoryCandidateEntityIdentity(
+  tx: MemoryTransaction,
+  input: Readonly<{
+    adjudicatedEntityId: string | null;
+    candidate: MemoryExtractedCandidate;
+    userId: string;
+  }>
+): Promise<MemoryExtractedCandidate> {
+  const candidate = input.candidate;
+  if (candidate.identityKind !== "SLOT" ||
+    candidate.predicateKey !== "product_status") return candidate;
+
+  if (candidate.identityVersion === "slot-v3" && candidate.subjectEntityId) {
+    const canonicalRoot = await rootId(
+      tx,
+      input.userId,
+      candidate.subjectEntityId
+    );
+    if (canonicalRoot !== candidate.subjectEntityId) {
+      throw new Error("memory_fact_candidate_invalid");
+    }
+    return candidate;
+  }
+
+  const subjects = candidate.entities.filter((entity) =>
+    entity.role === "SUBJECT" &&
+    (entity.entityType === "PRODUCT" || entity.entityType === "DEVICE"));
+  if (subjects.length !== 1) throw new Error("memory_fact_candidate_invalid");
+  const subject = subjects[0]!;
+  const resolvedEntityId = await resolveOrCreate(
+    tx,
+    input.userId,
+    subject,
+    candidate.languageCode,
+    input.adjudicatedEntityId
   );
+  if (!resolvedEntityId) throw new Error("memory_fact_candidate_invalid");
+  const canonicalKey = memoryEntitySlotCanonicalKey(resolvedEntityId);
+  return Object.freeze({
+    ...candidate,
+    canonicalKey,
+    entities: Object.freeze(candidate.entities.map((entity) =>
+      entity === subject
+        ? Object.freeze({ ...entity, contextEntityId: resolvedEntityId })
+        : entity)),
+    identityVersion: "slot-v3" as const,
+    subjectEntityId: resolvedEntityId,
+    subjectKey: `entity:${resolvedEntityId}`
+  });
 }
 
 async function attachAliases(
@@ -178,12 +323,10 @@ async function attachAliases(
     entityId: string;
     evidenceId: string;
     languageCode: string;
-    quote: string;
     userId: string;
   }>
 ): Promise<void> {
-  const grounded = memoryEntityAliases(input.entity).filter(({ displayAlias }) =>
-    sourceContainsAlias(input.quote, displayAlias));
+  const grounded = memoryEntityAliases(input.entity);
   for (const alias of grounded) {
     const id = memorySha256({
       domain: "aiqsa.memory.entity-alias",
@@ -246,17 +389,27 @@ export async function persistMemoryCandidateEntities(
   }>
 ): Promise<void> {
   const entities = [...input.candidate.entities].sort((left, right) => {
-    const leftKey = memoryEntityCanonicalKey(left) ?? left.canonicalLabel;
-    const rightKey = memoryEntityCanonicalKey(right) ?? right.canonicalLabel;
+    const leftKey = memoryGroundedEntityCanonicalKey(left) ?? left.canonicalLabel;
+    const rightKey = memoryGroundedEntityCanonicalKey(right) ?? right.canonicalLabel;
     return `${leftKey}:${left.role}`.localeCompare(`${rightKey}:${right.role}`);
   });
   for (const entity of entities) {
-    const canonicalEntityId = await resolveOrCreate(
-      tx,
-      input.userId,
-      entity,
-      input.candidate.languageCode
-    );
+    const materializedSubjectId = entity.role === "SUBJECT" &&
+      input.candidate.predicateKey === "product_status"
+      ? input.candidate.subjectEntityId ?? null
+      : null;
+    const canonicalEntityId = materializedSubjectId === null
+      ? await resolveOrCreate(
+          tx,
+          input.userId,
+          entity,
+          input.candidate.languageCode
+        )
+      : await rootId(tx, input.userId, materializedSubjectId);
+    if (materializedSubjectId !== null &&
+      canonicalEntityId !== materializedSubjectId) {
+      throw new Error("memory_fact_candidate_invalid");
+    }
     if (!canonicalEntityId) continue;
     await tx.memoryFactVersionEntity.createMany({
       data: [{
@@ -264,7 +417,9 @@ export async function persistMemoryCandidateEntities(
         entityId: canonicalEntityId,
         factVersionId: input.factVersionId,
         mentionText: entity.mention,
-        normalizedMention: normalizeMemoryEntityAlias(entity.mention),
+        normalizedMention: entity.mention === null
+          ? null
+          : normalizeMemoryEntityAlias(entity.mention),
         role: entity.role,
         userId: input.userId
       }],
@@ -275,16 +430,9 @@ export async function persistMemoryCandidateEntities(
       entityId: canonicalEntityId,
       evidenceId: input.evidenceId,
       languageCode: input.candidate.languageCode,
-      quote: input.candidate.quote ?? input.candidate.evidence[0]?.quote ?? "",
       userId: input.userId
     });
   }
-}
-
-function compatibleEntityTypes(left: string, right: string): boolean {
-  return left === right ||
-    (left === "PRODUCT" && right === "DEVICE") ||
-    (left === "DEVICE" && right === "PRODUCT");
 }
 
 export async function mergeMemoryEntities(
@@ -294,13 +442,17 @@ export async function mergeMemoryEntities(
   canonicalEntityId: string
 ): Promise<string> {
   if (redundantEntityId === canonicalEntityId) {
-    throw new Error("memory_entity_merge_self");
+    const canonicalRoot = await rootId(tx, userId, canonicalEntityId);
+    if (!canonicalRoot) throw new Error("memory_entity_merge_invalid");
+    return canonicalRoot;
   }
   const redundantRootBeforeLock = await rootId(tx, userId, redundantEntityId);
   const canonicalRootBeforeLock = await rootId(tx, userId, canonicalEntityId);
-  if (!redundantRootBeforeLock || !canonicalRootBeforeLock ||
-    redundantRootBeforeLock === canonicalRootBeforeLock) {
+  if (!redundantRootBeforeLock || !canonicalRootBeforeLock) {
     throw new Error("memory_entity_merge_invalid");
+  }
+  if (redundantRootBeforeLock === canonicalRootBeforeLock) {
+    return canonicalRootBeforeLock;
   }
   const ids = [redundantRootBeforeLock, canonicalRootBeforeLock].sort();
   const rows = await tx.$queryRaw<LockedEntity[]>(Prisma.sql`
@@ -313,6 +465,9 @@ export async function mergeMemoryEntities(
   if (rows.length !== 2) throw new Error("memory_entity_merge_target_missing");
   const redundantRoot = await rootId(tx, userId, redundantEntityId);
   const canonicalRoot = await rootId(tx, userId, canonicalEntityId);
+  if (redundantRoot !== null && redundantRoot === canonicalRoot) {
+    return redundantRoot;
+  }
   if (redundantRoot !== redundantRootBeforeLock ||
     canonicalRoot !== canonicalRootBeforeLock) {
     throw new Error("memory_entity_merge_stale");

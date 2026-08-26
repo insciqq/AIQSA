@@ -1,7 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
-import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
-  "../learning/extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
+} from "../learning/extraction/contract";
 import { projectMemoryHistorySafeText } from "../history/safety";
 import { memorySha256 } from "./lexical";
 import { memoryAutomaticEvidencePausePredicate } from "./pauseIntervals";
@@ -212,6 +214,51 @@ export function memoryPersonalFactEvidencePredicate(
       })} > 0
     )
     AND ${memoryFactDependenciesPredicate(userId, factVersionId)}
+  )`;
+}
+
+/**
+ * Exact provenance fence for direct reusable facts. Explicit rows keep their
+ * user-authored authority; automatic rows must come from the current governed
+ * extraction pipeline and carry both the version-level ingestion identity and
+ * exact current Message evidence. Callers remain responsible for lifecycle,
+ * safety, and scope policy.
+ */
+export function memoryExactVNextDirectAuthorityPredicate(
+  userId: string | Prisma.Sql,
+  input: Readonly<{
+    factVersionId?: Prisma.Sql;
+    sourceMode?: Prisma.Sql;
+    version?: Prisma.Sql;
+  }> = {}
+): Prisma.Sql {
+  const version = input.version ?? Prisma.sql`version`;
+  const factVersionId = input.factVersionId ?? Prisma.sql`${version}."id"`;
+  const sourceMode = input.sourceMode ?? Prisma.sql`${version}."sourceMode"`;
+  return Prisma.sql`(
+    ${version}."modality" <> 'PATTERN'::"MemoryFactModality"
+    AND ${version}."directness" IN (
+      'DIRECT'::"MemoryDirectness",
+      'PARAPHRASED'::"MemoryDirectness"
+    )
+    AND ${version}."synthesisDepth" = 0
+    AND ${version}."synthesisGeneration" IS NULL
+    AND ${version}."synthesisSourceSetFingerprint" IS NULL
+    AND
+    (
+      ${sourceMode} = 'EXPLICIT'::"MemoryFactSourceMode"
+      OR (
+        ${sourceMode} = 'AUTOMATIC'::"MemoryFactSourceMode"
+        AND ${version}."ingestionFingerprint" ~ '^[a-f0-9]{64}$'
+        AND ${version}."pipelineVersion" =
+          ${MEMORY_FACT_EXTRACTION_PIPELINE_VERSION}
+      )
+    )
+    AND ${memoryPersonalFactEvidencePredicate(userId, {
+      exactVNext: true,
+      factVersionId,
+      sourceMode
+    })}
   )`;
 }
 

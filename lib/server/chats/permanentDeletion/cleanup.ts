@@ -330,6 +330,84 @@ async function settleDestinationAttemptItems(
   `);
 }
 
+async function releaseAggregateExecutionReferences(
+  tx: Prisma.TransactionClient,
+  claim: MemoryDeletionClaim,
+  ids: Pick<AggregateIds, "executionBindingIds" | "jobIds">
+): Promise<void> {
+  if (ids.executionBindingIds.length === 0 && ids.jobIds.length === 0) return;
+  const executionBindingIds = [...ids.executionBindingIds];
+
+  if (executionBindingIds.length > 0) {
+    const classifiedVersions = await tx.memoryFactVersion.findMany({
+      select: { id: true },
+      where: {
+        safetyClassifierExecutionId: { in: executionBindingIds },
+        userId: claim.userId
+      }
+    });
+    if (classifiedVersions.length > 0) {
+      const versionIds = classifiedVersions.map(({ id }) => id);
+      // A retained fact must never keep apparently-valid classification
+      // provenance whose execution owner is about to disappear with the chat.
+      // Fence it until the ordinary global reclassification reconciler records
+      // fresh, owner-independent evidence. Forgotten/retracted rows remain
+      // fenced and are not rediscovered by that reconciler.
+      await tx.memorySearchEntry.deleteMany({
+        where: { factVersionId: { in: versionIds }, userId: claim.userId }
+      });
+      await tx.memoryFactVersion.updateMany({
+        data: {
+          coreEligible: false,
+          coreSalience: "NONE",
+          safetyClassificationReasonCode: null,
+          safetyClassificationState: "PENDING",
+          safetyClassifiedAt: null,
+          safetyClassifierExecutionId: null,
+          safetyClassifierModelId: null,
+          safetyClassifierPolicyVersion: null,
+          safetyClassifierProviderId: null
+        },
+        where: {
+          id: { in: versionIds },
+          safetyClassifierExecutionId: { in: executionBindingIds },
+          userId: claim.userId
+        }
+      });
+    }
+    await tx.memoryFactVersionRelation.updateMany({
+      data: { executionId: null },
+      where: { executionId: { in: executionBindingIds }, userId: claim.userId }
+    });
+    await tx.memoryFactExtractionExecution.deleteMany({
+      where: {
+        executionBindingId: { in: executionBindingIds },
+        userId: claim.userId
+      }
+    });
+    await tx.memorySynthesisExecution.deleteMany({
+      where: {
+        executionBindingId: { in: executionBindingIds },
+        userId: claim.userId
+      }
+    });
+  }
+
+  await tx.memoryAuxiliarySemanticCall.deleteMany({
+    where: {
+      OR: [
+        ...(executionBindingIds.length > 0
+          ? [{ executionId: { in: executionBindingIds } }]
+          : []),
+        ...(ids.jobIds.length > 0
+          ? [{ ownerJobId: { in: [...ids.jobIds] } }]
+          : [])
+      ],
+      userId: claim.userId
+    }
+  });
+}
+
 async function auditCleanup(
   tx: Prisma.TransactionClient,
   claim: MemoryDeletionClaim,
@@ -513,6 +591,7 @@ async function applyAggregateDeletion(
       where: { id: { in: [...ids.candidateIds] }, userId: claim.userId }
     });
   }
+  await releaseAggregateExecutionReferences(tx, claim, ids);
   await tx.chatMemoryDigestChunk.deleteMany({
     where: { chatId: claim.targetId, userId: claim.userId }
   });

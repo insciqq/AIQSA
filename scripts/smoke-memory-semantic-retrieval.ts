@@ -40,7 +40,8 @@ const REQUEST_TIMEOUT_MS = 660_000;
 const POLL_TIMEOUT_MS = 1_200_000;
 const POLL_INTERVAL_MS = 2_000;
 const MAX_REBUILD_ACTIONS = 1;
-const MAX_CHAT_RUNS = 12;
+const MAX_CHAT_RUNS = 13;
+const RECOVER_LATEST = process.argv.includes("--recover-latest");
 
 type SmokeStage =
   | "answer_recall"
@@ -337,6 +338,7 @@ async function sendMessage(
       body: JSON.stringify({
         content: { blocks: [{ text, type: "text" }] },
         expectedActiveLeafId: chat.activeLeafMessageId,
+        mcp: { mode: "off" },
         modelId: answer.modelId,
         provider: answer.connectionId,
         searchPlan: { mode: "all_selected", optionIds: [] },
@@ -543,6 +545,90 @@ async function waitForLearnedFact(source: SourceRun, notBefore: Date): Promise<v
   });
 }
 
+async function logAutomaticFactDiagnostic(
+  source: SourceRun,
+  notBefore: Date,
+  marker: string
+): Promise<void> {
+  const evidence = await prisma.memoryEvidence.findMany({
+    distinct: ["factVersionId"],
+    select: { factVersionId: true },
+    where: {
+      chatId: source.chat.id,
+      createdAt: { gte: notBefore },
+      messageId: source.userMessage.id,
+      sourceRole: "user",
+      sourceType: "MESSAGE",
+      userId: authenticatedUserId
+    }
+  });
+  const factVersionIds = evidence.map(({ factVersionId }) => factVersionId);
+  const [versions, searchEntries] = await Promise.all([
+    prisma.memoryFactVersion.findMany({
+      select: {
+        category: true,
+        contentPurgedAt: true,
+        coreEligible: true,
+        directness: true,
+        displayText: true,
+        modality: true,
+        normalizedSearchText: true,
+        safetyClassificationState: true,
+        semanticFrame: true,
+        sourceMode: true,
+        state: true,
+        structuredValue: true
+      },
+      where: {
+        createdAt: { gte: notBefore },
+        id: { in: factVersionIds },
+        userId: authenticatedUserId
+      }
+    }),
+    prisma.memorySearchEntry.findMany({
+      select: {
+        embeddingState: true,
+        normalizedSearchText: true
+      },
+      where: {
+        factVersionId: { in: factVersionIds },
+        userId: authenticatedUserId
+      }
+    })
+  ]);
+  const containsMarker = (value: unknown): boolean => {
+    try {
+      return JSON.stringify(value).toLocaleLowerCase("und").includes(marker);
+    } catch {
+      return false;
+    }
+  };
+  console.error(JSON.stringify({
+    diagnostic: "automatic_fact_projection",
+    evidenceCount: evidence.length,
+    sanitizedAggregatesOnly: true,
+    searchEntries: searchEntries.map((entry) => ({
+      embeddingState: entry.embeddingState,
+      hasMarker: containsMarker(entry.normalizedSearchText)
+    })),
+    versions: versions.map((version) => ({
+      category: version.category,
+      contentPurged: version.contentPurgedAt !== null,
+      coreEligible: version.coreEligible,
+      directness: version.directness,
+      displayHasMarker: containsMarker(version.displayText),
+      displayLength: version.displayText?.length ?? null,
+      modality: version.modality,
+      normalizedSearchHasMarker: containsMarker(version.normalizedSearchText),
+      safetyClassificationState: version.safetyClassificationState,
+      semanticFrameHasMarker: containsMarker(version.semanticFrame),
+      sourceMode: version.sourceMode,
+      state: version.state,
+      structuredValueHasMarker: containsMarker(version.structuredValue)
+    }))
+  }));
+}
+
 async function waitForIndexedHistorySource(source: SourceRun): Promise<void> {
   await poll("history_index", async () => {
     const [settings, status] = await Promise.all([
@@ -691,6 +777,71 @@ async function cleanupSmokeState(
   return owned.length;
 }
 
+async function recoverLatestSmokeState(): Promise<void> {
+  const rootPrefix = "Memory smoke vector source ";
+  const root = await prisma.chat.findFirst({
+    orderBy: { createdAt: "desc" },
+    select: { title: true, userId: true },
+    where: { title: { startsWith: rootPrefix }, userId: authenticatedUserId }
+  });
+  const marker = root?.title.slice(rootPrefix.length) ?? "";
+  if (!root || !/^[a-p]{12}$/u.test(marker)) {
+    return fail("automatic_learning", "memory_smoke_recovery_target_missing");
+  }
+  const chats = (await prisma.chat.findMany({
+    select: { id: true, memoryMode: true, title: true },
+    where: { title: { endsWith: marker }, userId: authenticatedUserId }
+  })).filter(({ title }) => title.startsWith("Memory smoke "));
+  if (chats.length === 0 || chats.length > MAX_CHAT_RUNS) {
+    return fail("automatic_learning", "memory_smoke_cleanup_bound_exhausted");
+  }
+  for (const chat of chats) {
+    if (chat.memoryMode !== "EXCLUDED") await excludeChatFromMemory(chat.id);
+  }
+  const owned = (await allConsumerMemories()).filter((item) =>
+    item.statement.includes(marker)
+  );
+  if (owned.length > 20) {
+    return fail("automatic_learning", "memory_smoke_cleanup_bound_exhausted");
+  }
+  for (const item of owned) await forgetConsumerMemory(item.memoryRef);
+  await poll("automatic_learning", async () => {
+    const [activeFacts, nonExcludedChats, readyEntries] = await Promise.all([
+      prisma.memoryFactVersion.count({
+        where: {
+          contentPurgedAt: null,
+          displayText: { contains: marker },
+          state: "ACTIVE",
+          userId: authenticatedUserId
+        }
+      }),
+      prisma.chat.count({
+        where: {
+          id: { in: chats.map(({ id }) => id) },
+          memoryMode: { not: "EXCLUDED" },
+          userId: authenticatedUserId
+        }
+      }),
+      prisma.memorySearchEntry.count({
+        where: {
+          embeddingState: "READY",
+          normalizedSearchText: { contains: marker },
+          userId: authenticatedUserId
+        }
+      })
+    ]);
+    return activeFacts === 0 && nonExcludedChats === 0 && readyEntries === 0
+      ? true
+      : null;
+  });
+  console.log(JSON.stringify({
+    cleanedMemoryItems: owned.length,
+    excludedSmokeChats: chats.length,
+    sanitizedAggregatesOnly: true,
+    status: "recovered"
+  }));
+}
+
 function cgroupResourceLimits() {
   return readCgroupResourceLimits((path) => {
     try {
@@ -703,6 +854,10 @@ function cgroupResourceLimits() {
 
 async function main(): Promise<void> {
   await authenticate();
+  if (RECOVER_LATEST) {
+    await recoverLatestSmokeState();
+    return;
+  }
 
   // Every call through this point is read-only after authentication. Missing
   // production bindings therefore fail before a chat or rebuild is admitted.
@@ -770,7 +925,7 @@ async function main(): Promise<void> {
     const identityStartedAt = new Date();
     const identitySource = await sourceRun(
       `Memory smoke identity ${marker}`,
-      "Меня зовут Алина. Это моё постоянное имя во всех разговорах.",
+      `Меня зовут Алина-${marker}. Это моё постоянное имя во всех разговорах.`,
       answer
     );
     await waitForLearnedFact(identitySource, identityStartedAt);
@@ -781,12 +936,12 @@ async function main(): Promise<void> {
     });
     const identityRecall = await sourceRun(
       `Memory smoke identity recall ${marker}`,
-      "Как меня зовут? Используй мою сохранённую Personal Memory, если она содержит имя.",
+      `Моё сохранённое имя содержит часть ${marker}. Как оно полностью звучит?`,
       answer
     );
-    const identityRecalled = /алин/iu.test(
-      textFromContent(identityRecall.assistant.content)
-    );
+    const identityAnswer = textFromContent(identityRecall.assistant.content);
+    const identityRecalled = /алин/iu.test(identityAnswer) &&
+      identityAnswer.toLocaleLowerCase().includes(marker);
     const identitySourceBound = await verifier.recalledAutomaticFactCount({
       chatId: identitySource.chat.id,
       messageId: identitySource.userMessage.id,
@@ -802,7 +957,7 @@ async function main(): Promise<void> {
     const preferenceStartedAt = new Date();
     const preferenceSource = await sourceRun(
       `Memory smoke preference ${marker}`,
-      `I always prefer concise answers in a response format called ${marker}-grid. This named format is a stable long-term preference in every conversation.`,
+      `When I read answers, I prefer a concise response format called ${marker}-grid.`,
       answer
     );
     await waitForLearnedFact(preferenceSource, preferenceStartedAt);
@@ -829,6 +984,7 @@ async function main(): Promise<void> {
       userId: authenticatedUserId
     }) > 0;
     if (!preferenceRecalled || !preferenceSourceBound) {
+      await logAutomaticFactDiagnostic(preferenceSource, preferenceStartedAt, marker);
       fail("answer_recall", "memory_smoke_preference_recall_failed");
     }
     scenarios.complete("english");
@@ -896,12 +1052,14 @@ async function main(): Promise<void> {
     scenarios.complete("intent_without_exact_keywords");
 
     const ambiguityTargets = await waitForAmbiguityTargets(marker);
-    if (ambiguityTargets.length !== 2) {
+    if (ambiguityTargets.length < 2) {
       fail("answer_recall", "memory_smoke_ambiguity_fixture_invalid");
     }
+    const expectedUpdateStatement =
+      `My ${marker} reporting-format preference is visual summaries.`;
     const update = await sourceRun(
       `Memory smoke ambiguous update ${marker}`,
-      `Change one of my saved ${marker} reporting-format preferences, but I am not specifying whether weekly or monthly. Use this exact replacement statement: "My ${marker} reporting-format preference is visual summaries."`,
+      `Change one of my saved ${marker} reporting-format preferences, but I am not specifying whether weekly or monthly. Use this exact replacement statement: "${expectedUpdateStatement}"`,
       answer
     );
     const updateAction = requiredMemoryAction(update, "UPDATE", "AMBIGUOUS");
@@ -910,7 +1068,7 @@ async function main(): Promise<void> {
       candidate.provenance === "SAVED" && candidate.statement.includes(marker));
     const selectedUpdate = updateCandidates[0];
     if (updateCandidates.length < 2 || !selectedUpdate ||
-      !updateAction.statement?.trim() || !updateAction.statement.includes(marker)) {
+      updateAction.statement !== expectedUpdateStatement) {
       fail("answer_recall", "memory_smoke_update_selection_failed");
     }
     explicitStatements.add(updateAction.statement);
@@ -926,8 +1084,22 @@ async function main(): Promise<void> {
         : null);
     scenarios.complete("update_target_selection");
 
+    const thirdSave = await sourceRun(
+      `Memory smoke implicit save quarterly ${marker}`,
+      `Please carry this preference into future conversations too: my ${marker} quarterly reporting format is graphical.`,
+      answer
+    );
+    const thirdSaveAction = memoryAction(thirdSave);
+    if (thirdSaveAction.operation === "SAVE" && thirdSaveAction.status === "COMMITTED" &&
+      thirdSaveAction.statement) explicitStatements.add(thirdSaveAction.statement);
+    requiredMemoryAction(thirdSave, "SAVE", "COMMITTED");
+    await assertStrictControlSucceeded(thirdSave);
+    if (!thirdSaveAction.statement?.includes(marker)) {
+      fail("answer_recall", "memory_smoke_implicit_intent_failed");
+    }
+
     const postUpdateTargets = await waitForAmbiguityTargets(marker);
-    if (postUpdateTargets.length !== 2) {
+    if (postUpdateTargets.length < 2) {
       fail("answer_recall", "memory_smoke_ambiguity_fixture_invalid");
     }
     const forget = await sourceRun(
@@ -993,6 +1165,9 @@ async function main(): Promise<void> {
   let cleanedMemoryItems = 0;
   let cleanupError: unknown = null;
   try {
+    // Long paid-provider runs can outlive the bootstrap session. Renew it so
+    // cleanup remains guaranteed even after a long failure poll.
+    await authenticate();
     cleanedMemoryItems = await cleanupSmokeState(
       marker,
       explicitStatements,
@@ -1001,10 +1176,11 @@ async function main(): Promise<void> {
   } catch (error) {
     cleanupError = error;
   }
-  if (primaryError) throw primaryError;
-  if (cleanupError || !scenarioEvidence) {
+  if (cleanupError) {
     return fail("automatic_learning", "memory_smoke_cleanup_failed");
   }
+  if (primaryError) throw primaryError;
+  if (!scenarioEvidence) return fail("automatic_learning", "memory_smoke_cleanup_failed");
 
   const resourceLimits = cgroupResourceLimits();
   console.log(JSON.stringify({

@@ -17,6 +17,7 @@ import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../history/contract";
+import { MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION } from "../history/digest";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from
   "../history/sourceProjection";
 import {
@@ -24,8 +25,11 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
-import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
-  "../learning/extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
+} from "../learning/extraction/contract";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
 
 const fixtureNow = new Date("2026-08-10T12:00:00.000Z");
@@ -36,6 +40,7 @@ type RetrievalFixture = Readonly<{
   assistantId: string;
   automaticSensitiveFactVersionId: string;
   currentChatId: string;
+  directUnindexedFactVersionId: string;
   enFactVersionId: string;
   entityFactVersionId: string;
   excludedChunkId: string;
@@ -49,6 +54,7 @@ type RetrievalFixture = Readonly<{
   legacyFolderFactVersionId: string;
   macbookHistoricalFactVersionId: string;
   mergedMacbookFactVersionId: string;
+  movedHistoricalMacbookFactVersionId: string;
   otherFolderFactVersionId: string;
   rawSourceText: string;
   ruFactVersionId: string;
@@ -321,6 +327,7 @@ async function createFact(input: Readonly<{
   expiresAt?: Date;
   generationId: string;
   holdUntilExpired?: boolean;
+  indexed?: boolean;
   languageCode: string;
   scopeAssistantId?: string;
   scopeChatId?: string;
@@ -420,10 +427,16 @@ async function createFact(input: Readonly<{
         factId,
         id: versionId,
         importance: 0.9,
+        ingestionFingerprint: sourceMode === "AUTOMATIC"
+          ? memorySha256({ domain: "memory-retrieval-test", sourceHash, versionId })
+          : null,
         languageCode: input.languageCode,
         modality: "PREFERENCE",
         normalizedSearchText: normalized,
-        pipelineVersion: "memory-retrieval-test-v1",
+        observedAt: sourceMode === "AUTOMATIC" ? fixtureNow : null,
+        pipelineVersion: sourceMode === "AUTOMATIC"
+          ? MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
+          : "memory-retrieval-test-v1",
         ...classifiedSafety,
         sensitivityClass: input.sensitivityClass ?? "NORMAL",
         sourceMode,
@@ -472,24 +485,26 @@ async function createFact(input: Readonly<{
             userId: input.userId
           }
     });
-    await tx.memorySearchEntry.create({
-      data: {
-        embeddingState: "NOT_APPLICABLE",
-        factVersionId: versionId,
-        indexGenerationId: input.generationId,
-        itemType: "FACT_VERSION",
-        languageCode: input.languageCode,
-        safeContentHash: memorySha256({ displayText: input.displayText, structuredValue }),
-        normalizedSearchText: normalized,
-        safetyIdentitySnapshot: memorySha256({ sensitivity: input.sensitivityClass ?? "NORMAL" }),
-        sourceIdentitySnapshot: memorySha256({ sourceMode, versionId }),
-        suppressionIdentitySnapshot: memorySha256({
-          canonicalKey: input.canonicalKey,
-          normalizedValue: normalized
-        }),
-        userId: input.userId
-      }
-    });
+    if (input.indexed !== false) {
+      await tx.memorySearchEntry.create({
+        data: {
+          embeddingState: "NOT_APPLICABLE",
+          factVersionId: versionId,
+          indexGenerationId: input.generationId,
+          itemType: "FACT_VERSION",
+          languageCode: input.languageCode,
+          safeContentHash: memorySha256({ displayText: input.displayText, structuredValue }),
+          normalizedSearchText: normalized,
+          safetyIdentitySnapshot: memorySha256({ sensitivity: input.sensitivityClass ?? "NORMAL" }),
+          sourceIdentitySnapshot: memorySha256({ sourceMode, versionId }),
+          suppressionIdentitySnapshot: memorySha256({
+            canonicalKey: input.canonicalKey,
+            normalizedValue: normalized
+          }),
+          userId: input.userId
+        }
+      });
+    }
     if (input.holdUntilExpired && input.expiresAt) {
       const remaining = input.expiresAt.getTime() - Date.now();
       if (remaining > 0) {
@@ -509,6 +524,10 @@ async function createEntityLink(input: Readonly<{
   const evidence = await prisma.memoryEvidence.findFirstOrThrow({
     select: { id: true },
     where: { factVersionId: input.factVersionId, userId: input.userId }
+  });
+  const version = await prisma.memoryFactVersion.findUniqueOrThrow({
+    select: { sourceMode: true },
+    where: { id: input.factVersionId }
   });
   const entityId = randomUUID();
   const aliasId = randomUUID();
@@ -539,14 +558,26 @@ async function createEntityLink(input: Readonly<{
       }
     });
     await tx.memoryEntityAliasSupport.create({
-      data: {
-        aliasId,
-        evidenceId: evidence.id,
-        id: randomUUID(),
-        supportFingerprint: memorySha256({ aliasId, evidenceId: evidence.id }),
-        supportKind: "EVIDENCE",
-        userId: input.userId
-      }
+      data: version.sourceMode === "EXPLICIT"
+        ? {
+            aliasId,
+            factVersionId: input.factVersionId,
+            id: randomUUID(),
+            supportFingerprint: memorySha256({
+              aliasId,
+              factVersionId: input.factVersionId
+            }),
+            supportKind: "FACT_VERSION",
+            userId: input.userId
+          }
+        : {
+            aliasId,
+            evidenceId: evidence.id,
+            id: randomUUID(),
+            supportFingerprint: memorySha256({ aliasId, evidenceId: evidence.id }),
+            supportKind: "EVIDENCE",
+            userId: input.userId
+          }
     });
     await tx.memoryFactVersionEntity.create({
       data: {
@@ -699,7 +730,7 @@ async function createChunk(input: Readonly<{
         safeProjectedText: input.safeText,
         safetyClass: input.safetyClass ?? "NORMAL",
         sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-        sourceRevisionAtCreation: 1,
+        sourceRevisionAtCreation: 0,
         state,
         invalidatedAt: state === "INVALIDATED" ? fixtureNow : null,
         userId: input.userId
@@ -799,17 +830,25 @@ async function createDigestHistoryChat(input: Readonly<{
         occurredFrom: input.occurredAt,
         occurredTo: new Date(input.occurredAt.getTime() + 5 * 60_000),
         openLoops: [`Open loop from ${input.title}`],
+        incrementalDepth: 0,
+        inputFingerprint: memorySha256({
+          digestId,
+          mode: "FULL_REBUILD"
+        }),
         pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+        rebuildPolicyVersion: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
         redactionState: "NOT_NEEDED",
         safeDigestText: input.digestText,
         safetyClass: "NORMAL",
         safetyPolicyVersion: "memory-chat-digest-policy-test",
         sourceContentHash: sourceHash,
+        sourceFingerprint: memorySha256({ chunkId }),
         sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
         sourceRevisionAtCreation: 1,
         state: "ACTIVE",
         summary: input.digestText,
         topics: ["Deployment"],
+        updateMode: "FULL_REBUILD",
         userId: input.userId
       }
     });
@@ -959,6 +998,14 @@ describe("local Memory retrieval on PostgreSQL", () => {
       languageCode: "en",
       userId
     });
+    const directUnindexedFactVersionId = await createFact({
+      canonicalKey: "profile.direct_unindexed_sentinel",
+      displayText: "Unindexed exact sentinel",
+      generationId,
+      indexed: false,
+      languageCode: "en",
+      userId
+    });
     const expiredFactVersionId = await createFact({
       canonicalKey: "profile.expired_editor",
       coreEligible: true,
@@ -1019,6 +1066,14 @@ describe("local Memory retrieval on PostgreSQL", () => {
       generationId,
       languageCode: "en",
       userId
+    });
+    const movedHistoricalMacbookFactVersionId = await createHistoricalFactVersion({
+      currentVersionId: mergedMacbookFactVersionId,
+      displayText: "The user ordered a MacBook Air in July 2025.",
+      generationId,
+      userId,
+      validFrom: new Date("2025-07-01T00:00:00.000Z"),
+      validTo: new Date("2025-08-01T00:00:00.000Z")
     });
     const mergedVersion = await prisma.memoryFactVersion.findUniqueOrThrow({
       select: { factId: true, systemFrom: true },
@@ -1184,6 +1239,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       assistantId: assistant.id,
       automaticSensitiveFactVersionId,
       currentChatId: current.chatId,
+      directUnindexedFactVersionId,
       enFactVersionId,
       entityFactVersionId,
       excludedChunkId,
@@ -1197,6 +1253,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       legacyFolderFactVersionId,
       macbookHistoricalFactVersionId,
       mergedMacbookFactVersionId,
+      movedHistoricalMacbookFactVersionId,
       otherFolderFactVersionId,
       rawSourceText,
       ruFactVersionId,
@@ -1510,7 +1567,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.text).toContain("Neovim");
   });
 
-  it("retrieves the current MacBook pointer or its genuine history by explicit mode", async () => {
+  it("[E07] retrieves one canonical current pointer or deduplicated genuine history", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const currentPlan = planMemoryRetrieval({
       currentUserText: "MacBook",
@@ -1565,6 +1622,33 @@ describe("local Memory retrieval on PostgreSQL", () => {
         })
       })
     ]));
+    const targetFactId = (await prisma.memoryFactVersion.findUniqueOrThrow({
+      select: { factId: true },
+      where: { id: fixture.entityFactVersionId }
+    })).factId;
+    const movedFactId = (await prisma.memoryFactVersion.findUniqueOrThrow({
+      select: { factId: true },
+      where: { id: fixture.movedHistoricalMacbookFactVersionId }
+    })).factId;
+    const [root] = await prisma.$queryRaw<Array<{ factRootId: string | null }>>(Prisma.sql`
+      SELECT aiqsa_memory_fact_root_id(
+        ${fixture.userId}, ${movedFactId}
+      ) AS "factRootId"
+    `);
+    expect(root?.factRootId).toBe(targetFactId);
+    expect(ranked.filter(({ itemId }) => [
+      fixture.macbookHistoricalFactVersionId,
+      fixture.movedHistoricalMacbookFactVersionId
+    ].includes(itemId))).toHaveLength(1);
+    expect(ranked).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        itemId: fixture.macbookHistoricalFactVersionId,
+        metadata: expect.objectContaining({ factId: targetFactId })
+      })
+    ]));
+    expect(ranked.map(({ itemId }) => itemId)).not.toContain(
+      fixture.movedHistoricalMacbookFactVersionId
+    );
     expect(ranked.map(({ itemId }) => itemId)).not.toContain(
       fixture.mergedMacbookFactVersionId
     );
@@ -1584,7 +1668,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.text).not.toContain("expired MacBook");
   });
 
-  it("uses bounded pointer, FTS, entity, lifecycle, and expiry query plans", async () => {
+  it("[E07] proves bounded canonical authority, history, entity, FTS, and expiry plans", async () => {
     const entityLink = await prisma.memoryFactVersionEntity.findFirstOrThrow({
       select: { entityId: true },
       where: { factVersionId: fixture.entityFactVersionId, userId: fixture.userId }
@@ -1605,6 +1689,22 @@ describe("local Memory retrieval on PostgreSQL", () => {
         ORDER BY fact."currentVersionId"
         LIMIT 25
       `);
+      const authority = await tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT version."id"
+        FROM "MemoryFactVersion" AS version
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId"
+          AND fact."id" = version."factId"
+        INNER JOIN "MemoryScope" AS scope
+          ON scope."userId" = fact."userId"
+          AND scope."id" = fact."scopeId"
+        INNER JOIN "UserMemorySettings" AS settings
+          ON settings."userId" = version."userId"
+        WHERE ${memoryReusableFactAuthorityPredicate(fixture.userId)}
+        ORDER BY version."state", version."systemTo", version."systemFrom", version."id"
+        LIMIT 100
+      `);
       const fts = await tx.$queryRaw<unknown[]>(Prisma.sql`
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         SELECT entry."id"
@@ -1618,13 +1718,21 @@ describe("local Memory retrieval on PostgreSQL", () => {
         WHERE link."userId" = ${fixture.userId}
           AND link."entityId" = ${entityLink.entityId}
           AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
-        ORDER BY link."factVersionId"
-        LIMIT 50
+          AND link."factVersionId" >= ''
+        ORDER BY link."userId", link."entityId", link."role", link."factVersionId"
       `);
       const history = await tx.$queryRaw<unknown[]>(Prisma.sql`
-        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        EXPLAIN (FORMAT JSON)
         SELECT version."id"
         FROM "MemoryFactVersion" AS version
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId"
+          AND fact."id" = version."factId"
+        INNER JOIN "MemoryFact" AS root_fact
+          ON root_fact."userId" = fact."userId"
+          AND root_fact."id" = aiqsa_memory_fact_root_id(
+            ${fixture.userId}, fact."id"
+          )
         WHERE version."userId" = ${fixture.userId}
           AND version."contentPurgedAt" IS NULL
           AND version."state" IN (
@@ -1645,7 +1753,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
         ORDER BY version."expiresAt", version."id"
         LIMIT 100
       `);
-      return { entity, expiry, fts, history, pointer };
+      return { authority, entity, expiry, fts, history, pointer };
     });
     const indexes = Object.fromEntries(Object.entries(plans).map(([kind, plan]) => [
       kind,
@@ -1656,6 +1764,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
       name === "MemoryFact_active_owner_scope_idx" ||
       name === "MemoryFact_userId_currentVersionId_idx"
     ), planEvidence).toBe(true);
+    expect(indexes.authority, planEvidence)
+      .toContain("MemoryFactVersion_retrieval_lifecycle_idx");
     expect(indexes.fts, planEvidence).toContain("MemorySearchEntry_simple_gin_idx");
     expect(indexes.entity).toContain(
       "MemoryFactVersionEntity_userId_entityId_role_factVersionId_idx"
@@ -1669,8 +1779,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
       version: "memory-vnext-retrieval-query-plans-v1"
     });
     expect(evidence).toMatchObject({
-      explainedPlanKinds: ["entity", "expiry", "fts", "history", "pointer"],
-      indexBackedPlanKinds: 5,
+      explainedPlanKinds: ["authority", "entity", "expiry", "fts", "history", "pointer"],
+      indexBackedPlanKinds: 6,
       sanitizedAggregatesOnly: true
     });
     expect(JSON.stringify(evidence)).not.toContain(fixture.userId);
@@ -1729,6 +1839,74 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(entityLane?.candidates.find(({ itemId }) =>
       itemId === fixture.entityFactVersionId)?.metadata.category).toBe("other");
 
+    const hintedPlan = planMemoryRetrieval({
+      allowedEntityRefs: ["opaque-macbook-ref"],
+      currentUserText: "макбук",
+      entityMentions: [{
+        occurrenceIndex: 0,
+        resolvedRef: "opaque-macbook-ref",
+        text: "макбук"
+      }],
+      now: fixtureNow
+    });
+    const hinted = await repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan: hintedPlan,
+      userId: fixture.userId
+    });
+    expect(hinted.laneResults.find(({ lane }) => lane === "FACT_ENTITY")
+      ?.candidates).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          deterministicMatch: "EXACT_ALIAS_SINGLE_ROOT",
+          entryId: null,
+          itemId: fixture.entityFactVersionId
+        })
+      ]));
+    const ambiguousEntityId = await createEntityLink({
+      alias: "макбук",
+      displayName: "Another MacBook",
+      factVersionId: fixture.directUnindexedFactVersionId,
+      userId: fixture.userId
+    });
+    try {
+      const ambiguous = await repository.retrieve({
+        assistantId: null,
+        chatId: fixture.currentChatId,
+        now: fixtureNow,
+        plan: hintedPlan,
+        userId: fixture.userId
+      });
+      const ambiguousMatches = ambiguous.laneResults
+        .find(({ lane }) => lane === "FACT_ENTITY")?.candidates ?? [];
+      expect(ambiguousMatches.map(({ itemId }) => itemId)).toEqual(expect.arrayContaining([
+        fixture.entityFactVersionId,
+        fixture.directUnindexedFactVersionId
+      ]));
+      expect(ambiguousMatches.every(({ deterministicMatch }) =>
+        deterministicMatch === null)).toBe(true);
+    } finally {
+      const aliases = await prisma.memoryEntityAlias.findMany({
+        select: { id: true },
+        where: { entityId: ambiguousEntityId, userId: fixture.userId }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFactVersionEntity.deleteMany({
+          where: { entityId: ambiguousEntityId, userId: fixture.userId }
+        });
+        await tx.memoryEntityAliasSupport.deleteMany({
+          where: { aliasId: { in: aliases.map(({ id }) => id) }, userId: fixture.userId }
+        });
+        await tx.memoryEntityAlias.deleteMany({
+          where: { entityId: ambiguousEntityId, userId: fixture.userId }
+        });
+        await tx.memoryEntity.deleteMany({
+          where: { id: ambiguousEntityId, userId: fixture.userId }
+        });
+      });
+    }
+
     for (const [query, excludedId] of [
       ["ghostbook", fixture.invalidDependencyEntityFactVersionId],
       ["expiredbook", fixture.expiredFactVersionId],
@@ -1738,6 +1916,52 @@ describe("local Memory retrieval on PostgreSQL", () => {
       expect(result.laneResults.flatMap(({ candidates }) => candidates)
         .map(({ itemId }) => itemId)).not.toContain(excludedId);
     }
+  });
+
+  it("keeps exact current facts available without a search entry", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({
+      currentUserText: "Unindexed exact sentinel",
+      now: fixtureNow
+    });
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+
+    expect(result.laneResults.find(({ lane }) => lane === "FACT_EXACT")?.candidates)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          deterministicMatch: "EXACT_TEXT",
+          entryId: null,
+          itemId: fixture.directUnindexedFactVersionId
+        })
+      ]));
+    expect(result.laneResults.find(({ lane }) => lane === "FACT_FTS_SIMPLE")?.candidates
+      .map(({ itemId }) => itemId)).not.toContain(fixture.directUnindexedFactVersionId);
+  });
+
+  it("surfaces distinctive fact terms from a longer natural-language question", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({
+      currentUserText: "Which preferred editor do I consistently use for daily coding?",
+      now: fixtureNow
+    });
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+
+    expect(result.laneResults.find(({ lane }) => lane === "FACT_FTS_SIMPLE")?.candidates)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: fixture.enFactVersionId })
+      ]));
   });
 
   it("does not add an unconditional recency lane for alias or unrelated queries", async () => {
@@ -1798,6 +2022,18 @@ describe("local Memory retrieval on PostgreSQL", () => {
       { expected: fixture.ruFactVersionId, query: "предпочтительный редактор" },
       { expected: fixture.validChunkId, query: "миграции PostgreSQL" }
     ];
+    // Qualify steady-state retrieval after every distinct query shape has
+    // populated the query-engine statement cache and PostgreSQL page cache.
+    for (const testCase of cases) {
+      const plan = planMemoryRetrieval({ currentUserText: testCase.query, now: fixtureNow });
+      await repository.retrieve({
+        assistantId: null,
+        chatId: fixture.currentChatId,
+        now: fixtureNow,
+        plan,
+        userId: fixture.userId
+      });
+    }
     const latencies: number[] = [];
     let crossTenantHits = 0;
     let recalled = 0;
@@ -1869,7 +2105,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(JSON.stringify(evidence)).not.toContain(fixture.userId);
     expect(JSON.stringify(evidence)).not.toContain(fixture.safeChunkText);
     console.info("memory_local_retrieval_qualification", evidence);
-  });
+  }, 30_000);
 
   it("applies a durable ALL suppression before ranking", async () => {
     const suppression = await prisma.memorySuppression.create({

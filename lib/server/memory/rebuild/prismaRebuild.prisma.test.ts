@@ -55,6 +55,7 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
+import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   MEMORY_PURGE_REQUIRED_CONTRIBUTORS,
@@ -63,6 +64,8 @@ import {
 import { registerMemoryDeletionContributors } from "../purge/leaves";
 import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { memoryFeedbackIdempotencyFingerprint } from "../review/feedbackRepository";
+import { MEMORY_RECLASSIFICATION_PIPELINE_VERSION } from
+  "../reclassification/classifier";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   applyMemorySourceMutations,
@@ -682,6 +685,18 @@ async function processRebuildJob(
   })).resolves.toBe(true);
 }
 
+async function waitForDatabaseTimeAfter(boundary: Date): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const [row] = await prisma.$queryRaw<Array<{ now: Date }>>`
+      SELECT CURRENT_TIMESTAMP AS "now"
+    `;
+    if (row && row.now.getTime() > boundary.getTime()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("database_time_boundary_not_reached");
+}
+
 async function claimDeletion(
   userId: string,
   deletionId: string,
@@ -858,6 +873,26 @@ async function createHistoryDerivative(input: Readonly<{
       status: "READY"
     },
     where: { userId_chatId: { chatId: chat.id, userId: input.userId } }
+  });
+  const checkpointMessages = await prisma.message.findMany({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { createdAt: true, id: true, updatedAt: true },
+    where: { chatId: chat.id }
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.chatMemoryCheckpointMessage.deleteMany({
+      where: { chatId: chat.id, userId: input.userId }
+    });
+    await tx.chatMemoryCheckpointMessage.createMany({
+      data: checkpointMessages.map((message, ordinal) => ({
+        chatId: chat.id,
+        messageId: message.id,
+        ordinal,
+        sourceMessageCreatedAt: message.createdAt,
+        sourceMessageUpdatedAt: message.updatedAt,
+        userId: input.userId
+      }))
+    });
   });
 
   const chunkId = randomUUID();
@@ -1391,6 +1426,91 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
+  it("waits for current-fence source jobs and wakes cutover after terminal settlement", async () => {
+    const userId = await createOwner("source-job-cutover");
+    const { explicit } = services();
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
+    try {
+      await saveExplicit(
+        explicit,
+        userId,
+        "Keep source-job cutover summaries concise.",
+        "source-job-cutover-save"
+      );
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await rebuild.admit(userId, {
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: "source-job-cutover" }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      const rebuildJob = await prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      });
+      const identity = parseMemoryRebuildJobFingerprint(
+        rebuildJob.idempotencyFingerprint
+      );
+      if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+      const blocker = await prisma.memoryJob.create({
+        data: {
+          idempotencyFingerprint: memorySha256({
+            nonce: "source-job-cutover-blocker",
+            userId
+          }),
+          kind: "RECLASSIFY_FACTS",
+          memoryGenerationSnapshot: before.memoryGeneration,
+          memoryRevisionSnapshot: before.memoryRevision,
+          pipelineVersion: MEMORY_RECLASSIFICATION_PIPELINE_VERSION,
+          userId
+        }
+      });
+
+      await processRebuildJob(admitted.jobId, rebuild);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({
+        activeIndexGenerationId: before.activeIndexGenerationId,
+        memoryGeneration: before.memoryGeneration,
+        memoryRevision: before.memoryRevision
+      });
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: identity.generationId }
+      })).resolves.toMatchObject({ state: "CATCHING_UP" });
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+
+      const blockerClaim = await claimRebuildJob(blocker.id, new Date());
+      await expect(coordinator.commitJobSuccess({
+        acceptedResultHash: "d".repeat(64),
+        claim: blockerClaim,
+        now: new Date(),
+        stage: "source_settled"
+      })).resolves.toBe(true);
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      })).resolves.toMatchObject({ state: "QUEUED" });
+
+      await processRebuildJob(admitted.jobId, rebuild);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({
+        activeIndexGenerationId: identity.generationId,
+        memoryGeneration: before.memoryGeneration + 1,
+        memoryRevision: before.memoryRevision + 1
+      });
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: blocker.id }
+      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("cuts over content-free identities idempotently and rolls back an exact generation", async () => {
     const userId = await createOwner("cutover-rollback");
     const { explicit } = services();
@@ -1574,17 +1694,16 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         "I prefer an expiring rebuild fact.",
         "expired-rebuild-target"
       );
-      const expiresAt = new Date(Date.now() + 1_000);
-      await prisma.$transaction(async (tx) => {
-        await tx.memoryFactVersion.update({
-          data: { expiresAt },
-          where: { id: expiring.memory.currentVersionId! }
-        });
-        const remaining = expiresAt.getTime() - Date.now();
-        if (remaining > 0) {
-          await new Promise((resolve) => setTimeout(resolve, remaining + 50));
-        }
+      const [databaseClock] = await prisma.$queryRaw<Array<{ now: Date }>>`
+        SELECT CURRENT_TIMESTAMP AS "now"
+      `;
+      if (!databaseClock) throw new Error("database_clock_missing");
+      const expiresAt = new Date(databaseClock.now.getTime() + 750);
+      await prisma.memoryFactVersion.update({
+        data: { expiresAt },
+        where: { id: expiring.memory.currentVersionId! }
       });
+      await waitForDatabaseTimeAfter(expiresAt);
 
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
@@ -1779,6 +1898,124 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     } finally {
       await cleanupOwner(userId);
       await provider?.cleanup();
+    }
+  });
+
+  it("retires an obsolete embedding shadow and admits the newly selected target", async () => {
+    const userId = await createOwner("embedding-target-switch");
+    const { explicit } = services();
+    const rebuildRepository = createPrismaMemoryRebuildRepository(prisma);
+    const settingsRepository = createPrismaMemorySettingsRepository(prisma);
+    let firstProvider: Awaited<ReturnType<typeof configureEmbeddingProvider>> | null = null;
+    let secondProvider: Awaited<ReturnType<typeof configureEmbeddingProvider>> | null = null;
+    try {
+      await saveExplicit(
+        explicit,
+        userId,
+        "Keep deployment summaries concise.",
+        "embedding-target-switch"
+      );
+      firstProvider = await configureEmbeddingProvider(
+        userId,
+        "embedding-target-switch-first"
+      );
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await rebuildRepository.admit(userId, {
+        embeddingDeploymentId: firstProvider.modelId,
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        operation: "REEMBED",
+        pin: firstProvider.pin,
+        requestIdentity: { nonce: "embedding-target-switch-first" }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      const parent = await prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      });
+      const identity = parseMemoryRebuildJobFingerprint(parent.idempotencyFingerprint);
+      if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+
+      await processRebuildJob(admitted.jobId, rebuildRepository);
+      await expect(rebuildRepository.status(userId, admitted.jobId)).resolves.toMatchObject({
+        state: "CATCHING_UP",
+        totalUnits: 1
+      });
+      await prisma.memoryJob.updateMany({
+        data: {
+          completedAt: new Date(),
+          errorCode: "memory_embedding_target_stale",
+          state: "STALE",
+          updatedAt: new Date()
+        },
+        where: { kind: "EMBED_ITEMS", userId }
+      });
+
+      secondProvider = await configureEmbeddingProvider(
+        userId,
+        "embedding-target-switch-second"
+      );
+      await prisma.userMemorySettings.update({
+        data: { embeddingProviderModelId: firstProvider.modelId },
+        where: { userId }
+      });
+      const switching = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const changed = await settingsRepository.patch(userId, {
+        embeddingDeploymentId: secondProvider.modelId,
+        expectedMemoryRevision: switching.memoryRevision,
+        expectedSettingsRevision: switching.settingsRevision
+      });
+      expect(changed).toMatchObject({
+        embeddingProviderModelId: secondProvider.modelId,
+        memoryRevision: switching.memoryRevision + 1,
+        settingsRevision: switching.settingsRevision + 1
+      });
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: identity.generationId }
+      })).resolves.toMatchObject({ state: "CANCELLED" });
+      await expect(prisma.memorySearchEntry.count({
+        where: { indexGenerationId: identity.generationId, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      })).resolves.toMatchObject({
+        errorCode: "memory_embedding_target_changed",
+        state: "CANCELLED"
+      });
+      await expect(prisma.memoryJob.count({
+        where: {
+          kind: { in: ["EMBED_ITEMS", "REBUILD_INDEX"] },
+          state: {
+            in: [
+              "CLAIMED",
+              "QUEUED",
+              "RETRYABLE_FAILED",
+              "WAITING_FOR_EGRESS_CONSENT"
+            ]
+          },
+          userId
+        }
+      })).resolves.toBe(0);
+
+      const replacement = await rebuildRepository.admit(userId, {
+        embeddingDeploymentId: secondProvider.modelId,
+        expectedMemoryRevision: changed.memoryRevision,
+        expectedSettingsRevision: changed.settingsRevision,
+        operation: "REEMBED",
+        pin: secondProvider.pin,
+        requestIdentity: { nonce: "embedding-target-switch-second" }
+      });
+      if (replacement.kind !== "ok") throw new Error(replacement.kind);
+      await expect(rebuildRepository.cancel(userId, replacement.jobId)).resolves.toMatchObject({
+        state: "CANCELLED"
+      });
+    } finally {
+      await cleanupOwner(userId);
+      await secondProvider?.cleanup();
+      await firstProvider?.cleanup();
     }
   });
 

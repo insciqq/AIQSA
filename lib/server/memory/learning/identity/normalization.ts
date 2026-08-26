@@ -1,6 +1,7 @@
 import { memorySha256 } from "../../persistence/lexical";
 
 export const MEMORY_SLOT_IDENTITY_VERSION = "slot-v2";
+export const MEMORY_ENTITY_SLOT_IDENTITY_VERSION = "slot-v3";
 export const MEMORY_PROPOSITION_IDENTITY_VERSION = "proposition-v1";
 
 const asciiComponent = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
@@ -80,4 +81,13 @@ export function memorySlotCanonicalKey(input: Readonly<{
         version: 1
       }).slice(0, 48)}`;
   return `slot:v2:${subject}:${input.predicateKey}:${dimension}`;
+}
+
+export function memoryEntitySlotCanonicalKey(entityId: string): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/u.test(entityId)) {
+    throw new Error("memory_entity_identity_invalid");
+  }
+  const key = `slot:v3:entity:${entityId}:product_status:_`;
+  if (key.length > 256) throw new Error("memory_entity_identity_invalid");
+  return key;
 }

@@ -33,11 +33,12 @@ import { memorySha256 } from "../persistence/lexical";
 import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
-  loadPersonalEligibleFactVersionIds,
   loadPersonalMemoryEvidenceSnapshots,
   loadPersonalMemoryRunIds
 } from "../persistence/eligibility";
 import { canonicalGlobalMemoryScopeWhere } from "../persistence/scopes";
+import { retractUnsupportedAutomaticMemoryEntities } from
+  "../learning/entities/lifecycle";
 import {
   loadMemorySuppressionKeyring,
   type MemorySuppressionKeyring
@@ -48,6 +49,7 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
 
 type SourceActionClient = Pick<
   PrismaClient,
@@ -268,6 +270,7 @@ export function createPrismaMemoryRecallSourceMutationRepository(
           );
           if (created.created) counterAdvanced = true;
         }
+        await retractUnsupportedAutomaticMemoryEntities(tx, userId);
       });
     }
   });
@@ -426,10 +429,11 @@ export function createMemorySourceActionService(input: Readonly<{
         }
       });
       if (!scope) throw new MemorySourceActionError("memory_not_found");
-      const eligibleVersionIds = await loadPersonalEligibleFactVersionIds(
+      const eligibleVersionIds = await loadMemoryReusableFactVersionIds(
         input.client,
         userId,
-        [version.id]
+        [version.id],
+        { includePatterns: true }
       );
       if (fact.state !== "ACTIVE" || fact.currentVersionId !== version.id ||
         version.state !== "ACTIVE" || version.contentPurgedAt !== null ||
@@ -897,9 +901,15 @@ export function createMemorySourceActionService(input: Readonly<{
         throw new MemorySourceActionError("memory_secret_rejected");
       }
       const mutationAction = actionInput.action === "CORRECT" ? "EDIT" as const : "FORGET" as const;
+      const exactStatementHash = actionInput.action === "CORRECT"
+        ? memorySha256(actionInput.statement)
+        : null;
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
         action: mutationAction,
         expectedTargetVersionId: version.id,
+        ...(exactStatementHash === null
+          ? {}
+          : { replacementStatementHash: exactStatementHash }),
         targetFactId: ref.target.factId
       });
       const authorization = await input.authorizationRepository.mint(userId, {
@@ -921,6 +931,10 @@ export function createMemorySourceActionService(input: Readonly<{
             expectedVersionId: version.id,
             mutationAuthorizationId: authorization.id,
             statement: actionInput.statement
+          }, {
+            exactStatementHash: exactStatementHash!,
+            modelRunId: ref.originatingRunId,
+            persistedToolCallId: null
           });
         } catch (error) {
           if (error instanceof ExplicitMemoryServiceError &&

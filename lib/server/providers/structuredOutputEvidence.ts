@@ -4,12 +4,20 @@ import {
   type StructuredOutputAdapterKind
 } from "./structuredOutput";
 
-export type StructuredOutputVerificationEvidence = Readonly<{
-  adapterKind: StructuredOutputAdapterKind;
-  probeVersion: 2;
-  upstreamModelId: string;
-  verified: true;
-}>;
+export type StructuredOutputVerificationEvidence = Readonly<
+  | {
+      adapterKind: Exclude<StructuredOutputAdapterKind, "openrouter_chat_completions">;
+      probeVersion: 2;
+      upstreamModelId: string;
+      verified: true;
+    }
+  | {
+      adapterKind: "openrouter_chat_completions";
+      probeVersion: 4;
+      upstreamModelId: string;
+      verified: true;
+    }
+>;
 
 export type StructuredOutputVerificationStatus =
   | "not_verified"
@@ -27,10 +35,10 @@ export function structuredOutputVerificationEvidence(
   return supportsStructuredOutputAdapter(adapterKind) && upstreamModelId.trim()
     ? {
         adapterKind,
-        probeVersion: 2,
+        probeVersion: adapterKind === "openrouter_chat_completions" ? 4 : 2,
         upstreamModelId: upstreamModelId.trim(),
         verified: true
-      }
+      } as StructuredOutputVerificationEvidence
     : null;
 }
 
@@ -40,7 +48,9 @@ export function decodeStructuredOutputVerificationEvidence(
   if (
     !isRecord(value) ||
     value.verified !== true ||
-    value.probeVersion !== 2 ||
+    (value.adapterKind === "openrouter_chat_completions"
+      ? value.probeVersion !== 4
+      : value.probeVersion !== 2) ||
     typeof value.adapterKind !== "string" ||
     !supportsStructuredOutputAdapter(value.adapterKind) ||
     typeof value.upstreamModelId !== "string" ||
@@ -49,10 +59,10 @@ export function decodeStructuredOutputVerificationEvidence(
   ) return null;
   return {
     adapterKind: value.adapterKind,
-    probeVersion: 2,
+    probeVersion: value.adapterKind === "openrouter_chat_completions" ? 4 : 2,
     upstreamModelId: value.upstreamModelId,
     verified: true
-  };
+  } as StructuredOutputVerificationEvidence;
 }
 
 export function hasVerifiedStructuredOutput(

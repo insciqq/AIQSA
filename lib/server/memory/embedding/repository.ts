@@ -15,9 +15,8 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
-import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
@@ -195,6 +194,8 @@ async function loadFactTarget(
       ON scope."userId" = fact."userId"
       AND scope."id" = fact."scopeId"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = version."userId"
     WHERE version."userId" = ${row.userId}
       AND version."id" = ${row.factVersionId}
       AND (
@@ -214,8 +215,10 @@ async function loadFactTarget(
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
-      AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryPersonalFactEvidencePredicate(row.userId, { exactVNext: true })}
+      AND ${memoryReusableFactAuthorityPredicate(row.userId, {
+        includePatterns: true,
+        lifecycle: "CURRENT_OR_HISTORICAL"
+      })}
     LIMIT 1
   `);
   const current = rows[0];
@@ -262,12 +265,9 @@ async function loadRecallChunkTarget(
       AND chat."id" = chunk."chatId"
       AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND chat."memoryBranchGeneration" = chunk."branchGeneration"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId"
       AND checkpoint."chatId" = chunk."chatId"
-      AND checkpoint."branchGeneration" = chunk."branchGeneration"
-      AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
     WHERE chunk."userId" = ${row.userId}

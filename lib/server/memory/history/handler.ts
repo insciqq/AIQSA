@@ -6,6 +6,7 @@ import type {
   MemoryJobHandler
 } from "../coordinator/types";
 import { memorySha256 } from "../persistence/lexical";
+import type { MemoryOperationalCounters } from "../operational/counters";
 import {
   authorizeMemoryExecutionResultsForCommit,
   MemoryExecutionError,
@@ -136,7 +137,8 @@ export function applyMemoryHistoryClassifications(
         digestPolicyVersion: null,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
-        reusedChunkIds: plan.reusedChunkIds
+        reusedChunkIds: plan.reusedChunkIds,
+        work: plan.work
       }
     )
   };
@@ -152,14 +154,23 @@ function attachMemoryChatDigest(
   }
   let digest = generated.digest;
   let digestPolicyVersion = generated.policyVersion;
+  const work = {
+    ...plan.work,
+    digestSegmentsProcessed: generated.work.digestSegmentsProcessed,
+    digestSourceChunksProcessed: generated.work.digestSourceChunksProcessed
+  };
   if (digest) {
-    if (!safety || safety.decisions.length !== 1 ||
-      safety.decisions[0]?.chunkId !== digest.id) {
+    if (generated.classificationRequired) {
+      if (!safety || safety.decisions.length !== 1 ||
+        safety.decisions[0]?.chunkId !== digest.id) {
+        throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
+      }
+      digestPolicyVersion = `${generated.policyVersion}:${safety.policyVersion}`;
+      if (safety.decisions[0].sensitivity === "SECRET" ||
+        safety.decisions[0].sensitivity === "UNCERTAIN") digest = null;
+    } else if (safety !== null) {
       throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
     }
-    digestPolicyVersion = `${generated.policyVersion}:${safety.policyVersion}`;
-    if (safety.decisions[0].sensitivity === "SECRET" ||
-      safety.decisions[0].sensitivity === "UNCERTAIN") digest = null;
   } else if (safety !== null) {
     throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
   }
@@ -167,6 +178,7 @@ function attachMemoryChatDigest(
     ...plan,
     digest,
     digestPolicyVersion,
+    work,
     resultHash: memoryHistoryIndexResultHash(
       plan.source,
       plan.chunks,
@@ -178,7 +190,8 @@ function attachMemoryChatDigest(
         digestPolicyVersion,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
-        reusedChunkIds: plan.reusedChunkIds
+        reusedChunkIds: plan.reusedChunkIds,
+        work
       }
     )
   };
@@ -195,6 +208,28 @@ function staleExecutionResult(
     },
     stage: "source_stale"
   };
+}
+
+function historyOperationalCounters(
+  plan: MemoryHistoryIndexPlan
+): MemoryOperationalCounters {
+  const digestNoop = plan.digest && plan.work.digestSegmentsProcessed === 0
+    ? 1
+    : 0;
+  return Object.freeze({
+    digestFullRebuild: plan.digest?.updateMode === "FULL_REBUILD" ? 1 : 0,
+    digestIncremental: plan.digest?.updateMode === "INCREMENTAL" ? 1 : 0,
+    digestNoop,
+    digestSegmentsProcessed: plan.work.digestSegmentsProcessed,
+    digestSourceChunksProcessed: plan.work.digestSourceChunksProcessed,
+    historyChunksBuilt: plan.work.chunksBuilt,
+    historyChunksReplaced: plan.work.chunksReplaced,
+    historyChunksReused: plan.work.chunksReused,
+    historyMessageContentRowsLoaded: plan.work.messageContentRowsLoaded,
+    historyMessagesProjected: plan.work.messagesProjected,
+    historyModelRunRowsLoaded: plan.work.modelRunRowsLoaded,
+    historyPathMetadataRowsRead: plan.work.pathMetadataRowsRead
+  });
 }
 
 export function createMemoryHistoryIndexHandler(
@@ -251,7 +286,7 @@ export function createMemoryHistoryIndexHandler(
             { jobId: claim.id, signal: context.signal, userId: claim.userId }
           );
           executionResults.push(...generated.executions);
-          const digestSafety = generated.digest
+          const digestSafety = generated.digest && generated.classificationRequired
             ? await dependencies.classifier.classify([{
                 id: generated.digest.id,
                 safeProjectedText: generated.digest.safeDigestText
@@ -264,9 +299,14 @@ export function createMemoryHistoryIndexHandler(
           plan = attachMemoryChatDigest(plan, generated, digestSafety);
         } else {
           plan = attachMemoryChatDigest(plan, {
+            classificationRequired: false,
             digest: null,
             executions: [],
-            policyVersion: "memory-chat-digest-disabled"
+            policyVersion: "memory-chat-digest-disabled",
+            work: {
+              digestSegmentsProcessed: 0,
+              digestSourceChunksProcessed: 0
+            }
           }, null);
         }
         await context.setStage("lexical_apply");
@@ -297,6 +337,7 @@ export function createMemoryHistoryIndexHandler(
               context.now()
             );
           },
+          operationalCounters: historyOperationalCounters(plan),
           stage: "lexical_ready"
         };
       } catch (error) {

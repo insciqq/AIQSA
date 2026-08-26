@@ -3,9 +3,13 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v1";
-export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v1";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v2";
+export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
+  "memory-history-rebuild-required-v2";
+export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v2";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
+export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
+export const MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES = 8_192;
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 
@@ -48,16 +52,46 @@ export type MemoryHistoryDigestPlan = Readonly<{
   contentHash: string;
   decisions: readonly string[];
   id: string;
+  incrementalDepth: number;
+  inputFingerprint: string;
   languageCode: string;
   occurredFrom: string;
   occurredTo: string;
   openLoops: readonly string[];
   safeDigestText: string;
+  rebuildPolicyVersion: string;
   sourceChunkIds: readonly string[];
+  sourceFingerprint: string;
   sourceMessageIds: readonly string[];
   summary: string;
   topics: readonly string[];
+  updateMode: "FULL_REBUILD" | "INCREMENTAL" | "REBOUND" | "UNCHANGED";
 }>;
+
+export type MemoryHistoryWorkCounters = Readonly<{
+  chunksBuilt: number;
+  chunksReplaced: number;
+  chunksReused: number;
+  digestSegmentsProcessed: number;
+  digestSourceChunksProcessed: number;
+  messageContentRowsLoaded: number;
+  messagesProjected: number;
+  modelRunRowsLoaded: number;
+  pathMetadataRowsRead: number;
+}>;
+
+export const EMPTY_MEMORY_HISTORY_WORK_COUNTERS: MemoryHistoryWorkCounters =
+  Object.freeze({
+    chunksBuilt: 0,
+    chunksReplaced: 0,
+    chunksReused: 0,
+    digestSegmentsProcessed: 0,
+    digestSourceChunksProcessed: 0,
+    messageContentRowsLoaded: 0,
+    messagesProjected: 0,
+    modelRunRowsLoaded: 0,
+    pathMetadataRowsRead: 0
+  });
 
 export type MemoryHistoryIndexPlan = Readonly<{
   classificationPolicyVersion: string | null;
@@ -76,6 +110,7 @@ export type MemoryHistoryIndexPlan = Readonly<{
   reusedChunkIds: readonly string[];
   source: MemoryHistoryIndexSourceIdentity;
   suppressionIdentitySnapshot: string;
+  work: MemoryHistoryWorkCounters;
 }>;
 
 type FingerprintSource = Pick<
@@ -184,6 +219,7 @@ export function memoryHistoryIndexResultHash(
     incremental?: MemoryHistoryIndexPlan["incremental"];
     rebuiltChunkIds?: readonly string[];
     reusedChunkIds?: readonly string[];
+    work?: MemoryHistoryWorkCounters;
   }> = {}
 ): string {
   return memorySha256({
@@ -207,6 +243,7 @@ export function memoryHistoryIndexResultHash(
     rebuiltChunkIds: options.rebuiltChunkIds ?? [],
     reusedChunkIds: options.reusedChunkIds ?? [],
     source,
-    suppressionIdentitySnapshot
+    suppressionIdentitySnapshot,
+    work: options.work ?? EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   });
 }

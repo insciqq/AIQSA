@@ -218,6 +218,7 @@ describe("Prisma memory coordinator repository preflight", () => {
         return 1;
       }),
       $queryRaw: vi.fn(async () => queryRows[queryIndex++] ?? []),
+      memoryIndexGeneration: { findFirst: vi.fn(async () => null) },
       memoryJob
     };
     const client = {

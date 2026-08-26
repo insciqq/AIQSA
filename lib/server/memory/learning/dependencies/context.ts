@@ -2,8 +2,13 @@ import { Prisma } from "@prisma/client";
 import { textFromContentBlocks } from "../../../../domain/modelRunEvents";
 import { projectMemoryHistorySafeText } from "../../history/safety";
 import { memorySha256 } from "../../persistence/lexical";
-import { memoryPersonalFactEvidencePredicate } from "../../persistence/eligibility";
+import { memoryExactVNextDirectAuthorityPredicate } from
+  "../../persistence/eligibility";
 import type { MemoryTransaction } from "../../persistence/transaction";
+import {
+  loadAdmissibleMemoryEntityAliases,
+  memoryEntityRootIdSql
+} from "../entities/authority";
 import {
   MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_CONTEXT_MESSAGES,
@@ -90,40 +95,28 @@ async function factEntity(
   entityType: string;
 }> | null> {
   const [row] = await tx.$queryRaw<EntityRow[]>(Prisma.sql`
-    WITH RECURSIVE roots AS (
-      SELECT entity."id", entity."mergedIntoId", entity."displayName",
-        entity."entityType", ARRAY[entity."id"]::text[] AS visited,
-        FALSE AS cycle
-      FROM "MemoryFactVersionEntity" AS link
-      INNER JOIN "MemoryEntity" AS entity
-        ON entity."userId" = link."userId" AND entity."id" = link."entityId"
-      WHERE link."userId" = ${userId}
-        AND link."factVersionId" = ${factVersionId}
-        AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
-
-      UNION ALL
-
-      SELECT entity."id", entity."mergedIntoId", entity."displayName",
-        entity."entityType", roots.visited || entity."id",
-        entity."id" = ANY(roots.visited)
-      FROM roots
-      INNER JOIN "MemoryEntity" AS entity
-        ON entity."userId" = ${userId} AND entity."id" = roots."mergedIntoId"
-      WHERE NOT roots.cycle
-    )
-    SELECT roots."id" AS "canonicalId", roots."displayName", roots."entityType"
-    FROM roots
-    WHERE roots."mergedIntoId" IS NULL AND NOT roots.cycle
-    ORDER BY roots."id"
+    SELECT root."id" AS "canonicalId", root."displayName", root."entityType"
+    FROM "MemoryFactVersionEntity" AS link
+    INNER JOIN "MemoryEntity" AS root
+      ON root."userId" = link."userId"
+      AND root."id" = ${memoryEntityRootIdSql(
+        userId,
+        Prisma.sql`link."entityId"`
+      )}
+    WHERE link."userId" = ${userId}
+      AND link."factVersionId" = ${factVersionId}
+      AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
+    ORDER BY root."id"
     LIMIT 1
   `);
   if (!row) return null;
-  const aliases = await tx.memoryEntityAlias.findMany({
-    orderBy: [{ normalizedAlias: "asc" }, { id: "asc" }],
-    select: { displayAlias: true },
-    take: 4,
-    where: { entityId: row.canonicalId, userId }
-  });
+  const aliases = await loadAdmissibleMemoryEntityAliases(
+    tx,
+    userId,
+    [row.canonicalId],
+    4
+  );
+  if (aliases.length === 0) return null;
   return {
     aliases: aliases.map(({ displayAlias }) => displayAlias),
     displayName: row.displayName,
@@ -161,7 +154,7 @@ async function factRefs(
         'SENSITIVE'::"MemorySensitivityClass"
       )
       AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
-      AND ${memoryPersonalFactEvidencePredicate(userId)}
+      AND ${memoryExactVNextDirectAuthorityPredicate(userId)}
       AND aiqsa_memory_fact_dependencies_valid(${userId}, version."id")
     ORDER BY fact."pinned" DESC, fact."lastConfirmedAt" DESC NULLS LAST,
       version."systemFrom" DESC, version."id"

@@ -231,7 +231,9 @@ async function insertReadyChunks(
         ${fixture.userId},
         ${fixture.chatId},
         0,
-        1,
+        -- Stable chunks retain their creation revision while the READY
+        -- checkpoint advances; current authority comes from exact maps.
+        0,
         n,
         repeat(md5(${prefix} || '-chunk-' || n), 2),
         'Safe vector fixture ' || n,
@@ -308,6 +310,7 @@ function searchInput(
       factMode: "CURRENT",
       factTemporalAsOf: null,
       folderId: null,
+      includePatterns: false,
       occurredFrom: null,
       occurredTo: null,
       sourceAssistantId: null,

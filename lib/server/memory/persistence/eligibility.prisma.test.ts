@@ -12,8 +12,10 @@ import { prisma } from "../../prisma";
 import { createMemoryClientRefService } from "../actions/clientRef";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
-import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
-  "../learning/extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
+} from "../learning/extraction/contract";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
@@ -293,10 +295,16 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
             factId,
             id: factVersionId,
             importance: 0.9,
+            ingestionFingerprint: memorySha256({
+              domain: "data-002-extraction",
+              factVersionId,
+              sourceMessageContentHash
+            }),
             languageCode: "en",
             modality: "PREFERENCE",
             normalizedSearchText: factNormalized,
-            pipelineVersion: "data-002-learning-v1",
+            observedAt: fixtureNow,
+            pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
             safetyClassificationReasonCode: "response_preference",
             safetyClassificationState: "CLASSIFIED",
             safetyClassifiedAt: fixtureNow,
@@ -501,6 +509,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           factMode: "CURRENT",
           factTemporalAsOf: null,
           folderId: null,
+          includePatterns: false,
           occurredFrom: null,
           occurredTo: null,
           sourceAssistantId: null,

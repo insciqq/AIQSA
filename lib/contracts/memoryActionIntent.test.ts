@@ -16,6 +16,8 @@ function intent(overrides: Record<string, unknown> = {}) {
     category: null,
     categoryHint: null,
     confidenceBand: "HIGH",
+    entityMentions: [],
+    includePatterns: false,
     memoryUseful: false,
     pastChatsUseful: false,
     profileRequested: false,
@@ -92,6 +94,7 @@ describe("MemoryActionIntent strict contract", () => {
   it("admits only an unqualified NONE fact inventory as a broad profile request", () => {
     expect(decodeMemoryActionIntent(intent({
       action: "NONE",
+      categoryHint: "null",
       memoryUseful: true,
       profileRequested: true,
       queryText: "current Saved and learned facts about the user",
@@ -276,6 +279,87 @@ describe("MemoryActionIntent strict contract", () => {
       retrievalMode: "CURRENT_PROFILE",
       temporalIntent: "ANY"
     }))).toMatchObject({ ok: false });
+  });
+
+  it("canonicalizes provider string-null timestamps and unused read-only payloads", () => {
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: true,
+      queryText: "the user's current response-length preference",
+      referencedMemoryRef: "null",
+      replacementStatement: "null",
+      statement: "null",
+      targetQuery: "null",
+      temporalAsOf: "null",
+      temporalFrom: "null",
+      temporalTo: "null"
+    }))).toMatchObject({
+      ok: true,
+      value: {
+        action: "NONE",
+        referencedMemoryRef: null,
+        replacementStatement: null,
+        statement: null,
+        targetQuery: null,
+        temporalAsOf: null,
+        temporalFrom: null,
+        temporalTo: null
+      }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: true,
+      queryText: "the user's earlier response-length preference",
+      retrievalMode: "HISTORICAL_MEMORY",
+      temporalAsOf: "null",
+      temporalIntent: "AS_OF"
+    }))).toMatchObject({ ok: false });
+  });
+
+  it("keeps planner hints only on an admitted read and gates patterns to targeted current", () => {
+    const mention = { occurrenceIndex: 0, resolvedRef: "opaque-ref", text: "Acme" };
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      entityMentions: [mention],
+      includePatterns: true,
+      memoryUseful: true,
+      queryText: "Acme workflow"
+    }))).toMatchObject({
+      ok: true,
+      value: { entityMentions: [mention], includePatterns: true }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      entityMentions: [mention],
+      includePatterns: true,
+      memoryUseful: true,
+      profileRequested: true,
+      queryText: "current profile",
+      retrievalMode: "CURRENT_PROFILE"
+    }))).toMatchObject({
+      ok: true,
+      value: { entityMentions: [mention], includePatterns: false }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "SAVE",
+      entityMentions: [mention],
+      includePatterns: true,
+      statement: "I use Acme."
+    }))).toMatchObject({
+      ok: true,
+      value: { entityMentions: [], includePatterns: false }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "SAVE",
+      entityMentions: [mention],
+      includePatterns: true,
+      memoryUseful: true,
+      queryText: "Acme workflow",
+      statement: "I use Acme."
+    }))).toMatchObject({
+      ok: true,
+      value: { entityMentions: [mention], includePatterns: true }
+    });
   });
 
   it("limits ambiguous destructive target selection to one extra call", () => {

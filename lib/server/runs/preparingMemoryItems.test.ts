@@ -22,6 +22,7 @@ const item = {
   factVersionId: "version-1",
   featureSnapshot: {
     historical: false,
+    includePatterns: false,
     retrievalMode: "TARGETED_CURRENT",
     tier: "CORE"
   },
@@ -49,6 +50,7 @@ const automaticFactRow = Object.freeze({
   factState: "ACTIVE",
   identityKind: "PROPOSITION",
   languageCode: "und",
+  modality: "PREFERENCE",
   mergedIntoVersionId: null,
   movedFromVersionId: null,
   observedAt: null,
@@ -143,6 +145,90 @@ describe("preparing Memory item finalization", () => {
     expect(factSql).toContain('negative_feedback."memoryFactVersionId" =');
   });
 
+  it("revalidates a direct exact fact without a search generation", async () => {
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+      .mockResolvedValueOnce([automaticFactRow])
+      .mockResolvedValueOnce([automaticEvidenceRow()])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    await expect(resolvePreparingMemoryItem(
+      { $queryRaw } as unknown as Prisma.TransactionClient,
+      authority,
+      "concise answers",
+      {
+        ...item,
+        featureSnapshot: {
+          deterministicMatches: ["EXACT_TEXT"],
+          directFactAuthority: true,
+          historical: false,
+          includePatterns: false,
+          retrievalMode: "TARGETED_CURRENT",
+          tier: "DYNAMIC"
+        },
+        selectionReason: "deterministic_fallback.exact_text"
+      }
+    )).resolves.toMatchObject({ factVersionId: "version-1" });
+
+    const factSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
+    expect(factSql).toContain("aiqsa_memory_fact_root_id");
+    expect(factSql).not.toContain('INNER JOIN "MemoryIndexGeneration"');
+    expect(factSql).not.toContain('INNER JOIN "MemorySearchEntry"');
+  });
+
+  it("freezes an explicitly authorized PATTERN through source relations without message evidence", async () => {
+    const patternRow = {
+      ...automaticFactRow,
+      coreEligible: false,
+      coreSalience: "NONE",
+      displayText: "The user tends to follow a recurring weekly review workflow.",
+      factCanonicalKey: `prop:v1:${"a".repeat(64)}`,
+      factCategory: "patterns",
+      modality: "PATTERN",
+      searchSafeContentHash: memorySha256({
+        displayText: "The user tends to follow a recurring weekly review workflow.",
+        structuredValue: automaticFactRow.structuredValue
+      })
+    };
+    const relations = Array.from({ length: 3 }, (_, index) => ({
+      pipelineVersion: "memory-synthesis-v2",
+      sourceEligibilityHash: String(index + 1).repeat(64),
+      targetVersionId: `source-version-${index + 1}`
+    }));
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+      .mockResolvedValueOnce([patternRow])
+      .mockResolvedValueOnce(relations)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const resolved = await resolvePreparingMemoryItem(
+      { $queryRaw } as unknown as Prisma.TransactionClient,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What recurring workflow pattern do I follow?",
+      {
+        ...item,
+        exactSafeText: patternRow.displayText,
+        featureSnapshot: {
+          directFactAuthority: false,
+          historical: false,
+          includePatterns: true,
+          retrievalMode: "TARGETED_CURRENT",
+          tier: "DYNAMIC"
+        },
+        selectionReason: "rrf+pattern_relevance"
+      }
+    );
+
+    expect(resolved).toMatchObject({
+      sourceBranchGenerationSnapshot: null,
+      sourceChatIdSnapshot: null,
+      sourceMessageIdsSnapshot: [],
+      sourceSnapshot: { synthesisRelations: relations },
+      versionSnapshot: { modality: "PATTERN" }
+    });
+    expect($queryRaw).toHaveBeenCalledTimes(4);
+  });
+
   it.each([
     {
       label: "message content hash",
@@ -224,14 +310,18 @@ describe("preparing Memory item finalization", () => {
 
   it("rejoins an overview digest through all of its exact source messages", async () => {
     const digestText = "Summary: Cedar was selected for the deployment.";
+    const digestMessageIds = Array.from(
+      { length: 4_000 },
+      (_, ordinal) => `source-message-${ordinal}`
+    );
     const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [{
       branchGeneration: 2,
       chatId: "source-chat",
       contentHash: "anchor-content-hash",
       digestContentHash: "digest-content-hash",
       digestId: "digest-1",
-      digestPipelineVersion: "memory-chat-digest-v1",
-      digestSafetyPolicyVersion: "memory-chat-digest-policy-v1",
+      digestPipelineVersion: "memory-chat-digest-v2",
+      digestSafetyPolicyVersion: "memory-chat-digest-policy-v2",
       digestText,
       languageCode: "en",
       redactionState: "NOT_NEEDED",
@@ -245,14 +335,13 @@ describe("preparing Memory item finalization", () => {
     const tx = {
       $queryRaw,
       chatMemoryDigestMessage: {
-        findMany: vi.fn(async () => [
-          { messageId: "source-user" },
-          { messageId: "source-assistant" }
-        ])
+        findMany: vi.fn(async () => digestMessageIds.map((messageId) => ({
+          messageId
+        })))
       }
     } as unknown as Prisma.TransactionClient;
 
-    await expect(resolvePreparingMemoryItem(
+    const resolved = await resolvePreparingMemoryItem(
       tx,
       { ...authority, indexGenerationId: "generation-1" },
       "Give me a history overview.",
@@ -267,17 +356,18 @@ describe("preparing Memory item finalization", () => {
         selectionReason: "history_recall_recent",
         supportingItemId: "digest-1"
       }
-    )).resolves.toMatchObject({
+    );
+    expect(resolved).toMatchObject({
       exactItemId: "chunk-1",
       featureSnapshot: { supportingItemId: "digest-1" },
       projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-      sourceMessageIdsSnapshot: ["source-user", "source-assistant"],
       sourceSnapshot: { digestId: "digest-1", schemaVersion: 3 },
       versionSnapshot: {
-        digestPipelineVersion: "memory-chat-digest-v1",
+        digestPipelineVersion: "memory-chat-digest-v2",
         schemaVersion: 3
       }
     });
+    expect(resolved.sourceMessageIdsSnapshot).toEqual(digestMessageIds);
     const digestSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
     expect(digestSql).toContain('FROM "ChatMemoryDigestChunk" AS digest_anchor');
     expect(digestSql).toContain('FROM "ChatMemoryDigestMessage" AS digest_source_message');
@@ -293,7 +383,11 @@ describe("preparing Memory item finalization", () => {
       "concise answers",
       {
         ...item,
-        featureSnapshot: { ...item.featureSnapshot, tier: "DYNAMIC" },
+        featureSnapshot: {
+          ...item.featureSnapshot,
+          directFactAuthority: false,
+          tier: "DYNAMIC"
+        },
         selectionReason: "rrf+relevance"
       }
     )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });

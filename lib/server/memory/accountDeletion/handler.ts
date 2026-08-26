@@ -170,6 +170,8 @@ async function purgeReusableAndPrivateMemory(
   const userId = claim.userId;
 
   await purgeMemoryFeedbackAccount(tx, userId);
+  await tx.memoryFactExtractionCandidateReceipt.deleteMany({ where: { userId } });
+  await tx.memoryFactExtractionExecution.deleteMany({ where: { userId } });
   await tx.memorySynthesisExecution.deleteMany({ where: { userId } });
   await tx.memoryCandidate.deleteMany({ where: { userId } });
   await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
@@ -207,6 +209,9 @@ async function purgeReusableAndPrivateMemory(
     )
     DELETE FROM "MemoryScope" WHERE "userId" = ${userId}
   `);
+  // subjectEntityId deliberately restricts entity deletion until every fact
+  // container is gone; the second pass settles those now-unreferenced roots.
+  await pruneUnreferencedMemoryEntities(tx, userId);
 
   while (true) {
     const leaves = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -325,6 +330,8 @@ export async function inspectAccountMemoryDeletionResiduals(
       UNION ALL SELECT 'facts', COUNT(*)::integer FROM "MemoryFact" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'versions', COUNT(*)::integer FROM "MemoryFactVersion" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'version-relations', COUNT(*)::integer FROM "MemoryFactVersionRelation" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'fact-extraction-executions', COUNT(*)::integer FROM "MemoryFactExtractionExecution" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'fact-extraction-candidate-receipts', COUNT(*)::integer FROM "MemoryFactExtractionCandidateReceipt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'synthesis-executions', COUNT(*)::integer FROM "MemorySynthesisExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'auxiliary-semantic-calls', COUNT(*)::integer FROM "MemoryAuxiliarySemanticCall" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer FROM "MemoryEvidence" WHERE "userId" = ${input.userId}

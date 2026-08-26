@@ -1,5 +1,5 @@
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v4";
-export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v5";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v6";
+export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v6";
 export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v6";
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;

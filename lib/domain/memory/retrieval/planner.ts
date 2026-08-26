@@ -1,4 +1,5 @@
 import type {
+  MemoryRetrievalEntityMention,
   MemoryRetrievalFilters,
   MemoryRetrievalMode,
   MemoryRetrievalPlan,
@@ -8,12 +9,15 @@ import type {
 } from "./contracts";
 import { MEMORY_RETRIEVAL_MODES, MEMORY_TEMPORAL_INTENTS } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v8";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v11";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
+export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
+export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
 
 const sourceKinds = new Set<MemoryRetrievalSourceKind>(["EVENT", "FACT", "HISTORY"]);
 const scopeTypes = new Set(["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"]);
 const opaqueTargetPattern = /^[^\u0000-\u001f\u007f]{1,256}$/u;
+const opaqueEntityRefPattern = /^[^\u0000-\u0020\u007f]{1,2048}$/u;
 
 function boundedUnicode(value: string): string {
   return Array.from(value.normalize("NFKC").trim().replace(/\s+/gu, " "))
@@ -29,6 +33,62 @@ function lexicalQuery(value: string): string | null {
 
 function validDate(value: Date | null): boolean {
   return value === null || value instanceof Date && Number.isFinite(value.getTime());
+}
+
+function validOpaqueRef(value: string): boolean {
+  return opaqueEntityRefPattern.test(value);
+}
+
+function exactOccurrenceExists(
+  query: string,
+  mention: string,
+  occurrenceIndex: number
+): boolean {
+  let from = 0;
+  for (let occurrence = 0; occurrence <= occurrenceIndex; occurrence += 1) {
+    const at = query.indexOf(mention, from);
+    if (at < 0) return false;
+    if (occurrence === occurrenceIndex) return true;
+    from = at + mention.length;
+  }
+  return false;
+}
+
+function entityMentionsFor(
+  input: MemoryRetrievalPlannerInput,
+  normalizedQuery: string
+): readonly MemoryRetrievalEntityMention[] {
+  const mentions = input.entityMentions ?? [];
+  const allowedRefs = input.allowedEntityRefs ?? [];
+  if (!Array.isArray(mentions) || mentions.length > MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS ||
+    !Array.isArray(allowedRefs) || allowedRefs.length > 20 ||
+    allowedRefs.some((ref) => !validOpaqueRef(ref))) {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
+  const allowed = new Set(allowedRefs);
+  const seen = new Set<string>();
+  return Object.freeze(mentions.flatMap((mention) => {
+    if (!mention || typeof mention !== "object" ||
+      typeof mention.text !== "string" || mention.text.trim() !== mention.text ||
+      mention.text.length < 1 || mention.text.length > 256 ||
+      /[\u0000-\u001f\u007f]/u.test(mention.text) ||
+      !Number.isSafeInteger(mention.occurrenceIndex) ||
+      mention.occurrenceIndex < 0 || mention.occurrenceIndex > 15 ||
+      (mention.resolvedRef !== null && !validOpaqueRef(mention.resolvedRef))) {
+      throw new Error("memory_retrieval_plan_invalid");
+    }
+    if (!exactOccurrenceExists(normalizedQuery, mention.text, mention.occurrenceIndex)) return [];
+    const key = `${mention.text}\u0000${mention.occurrenceIndex}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [Object.freeze({
+      occurrenceIndex: mention.occurrenceIndex,
+      resolvedRef: mention.resolvedRef && allowed.has(mention.resolvedRef)
+        ? mention.resolvedRef
+        : null,
+      text: mention.text
+    })];
+  }));
 }
 
 function filtersFor(
@@ -131,6 +191,9 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     typeof input.applyResponsePreferences !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
+  if (input.includePatterns !== undefined && typeof input.includePatterns !== "boolean") {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
   if (input.profileRequested !== undefined && typeof input.profileRequested !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
@@ -140,9 +203,11 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     throw new Error("memory_retrieval_plan_invalid");
   }
   const normalizedQuery = boundedUnicode(input.currentUserText);
+  const entityMentions = entityMentionsFor(input, input.currentUserText);
   const filters = filtersFor(input, applyResponsePreferences);
   const mode = inferredMode(input, filters, profileRequested);
   const temporalIntent = inferredTemporalIntent(input, filters, mode);
+  const includePatterns = input.includePatterns === true;
   if (
     !MEMORY_RETRIEVAL_MODES.includes(mode) ||
     !MEMORY_TEMPORAL_INTENTS.includes(temporalIntent) ||
@@ -152,11 +217,13 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
       filters,
       profileRequested,
       input.recencyRequested === true
-    )
+    ) || includePatterns && mode !== "TARGETED_CURRENT"
   ) throw new Error("memory_retrieval_plan_invalid");
   return {
     applyResponsePreferences,
+    entityMentions,
     filters,
+    includePatterns,
     lexicalQuery: lexicalQuery(normalizedQuery),
     mode,
     normalizedExactQuery: normalizedQuery.toLocaleLowerCase("und"),

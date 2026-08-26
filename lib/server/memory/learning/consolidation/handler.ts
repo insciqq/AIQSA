@@ -98,6 +98,7 @@ function createMemoryFactNeighborhoodResolver(
           factMode: "CURRENT",
           factTemporalAsOf: null,
           folderId: scope.type === "FOLDER" ? scope.targetId : null,
+          includePatterns: false,
           occurredFrom: null,
           occurredTo: null,
           sourceAssistantId: null,

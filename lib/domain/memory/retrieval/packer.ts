@@ -246,6 +246,11 @@ export function packMemoryPersonalContext(input: Readonly<{
   let dynamicFactTokens = 0;
   let historyTokens = 0;
   for (const candidate of input.ranked) {
+    if (candidate.metadata.sourceAuthority === "SYNTHESIS" &&
+      !input.plan.includePatterns) {
+      increment(omissionCounts, "pattern_not_authorized");
+      continue;
+    }
     if (input.plan.profileRequested && candidate.itemType === "RECALL_CHUNK") {
       increment(omissionCounts, "profile_history_excluded");
       continue;

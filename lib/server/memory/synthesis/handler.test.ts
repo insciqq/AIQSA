@@ -119,7 +119,7 @@ function repository(
 }
 
 describe("Dream synthesis handler", () => {
-  it("performs one governed call, stages it, reauthorizes, and applies", async () => {
+  it("[E06] performs one governed synthesis call, stages, reauthorizes, and applies", async () => {
     const plan = synthesisPlan();
     const providerResult = result(plan);
     const repo = repository(plan);
@@ -145,7 +145,7 @@ describe("Dream synthesis handler", () => {
     expect(execution.acceptedResultHash).toBe(providerResult.acceptedOutputHash);
   });
 
-  it("recovers a durable staged output without a second provider call", async () => {
+  it("[E06] recovers staged synthesis with zero additional provider calls", async () => {
     const plan = synthesisPlan();
     const staged = result(plan);
     const repo = repository(plan, staged);

@@ -7,7 +7,7 @@ import {
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v5" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v7" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -16,6 +16,9 @@ export const MEMORY_ACTION_INTENT_MAX_TARGET_CALLS =
 export const MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH = 2_000 as const;
 export const MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH = 500 as const;
 export const MEMORY_ACTION_INTENT_MAX_REF_LENGTH = 2_048 as const;
+export const MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS = 8 as const;
+export const MEMORY_ACTION_INTENT_MAX_ENTITY_MENTION_LENGTH = 256 as const;
+export const MEMORY_ACTION_INTENT_MAX_ENTITY_OCCURRENCE_INDEX = 15 as const;
 
 export const MEMORY_ACTION_INTENT_ACTIONS = [
   "NONE",
@@ -103,8 +106,22 @@ function strictText(maxLength: number) {
 }
 
 const nullableText = (maxLength: number) => strictText(maxLength).nullable();
-const nullableTimestamp = z.string().datetime({ offset: true }).max(64).nullable();
-const categoryText = z.enum(MEMORY_ACTION_INTENT_CATEGORIES).nullable();
+const providerNull = (value: unknown) =>
+  typeof value === "string" && value.toLowerCase() === "null" ? null : value;
+const nullableTimestamp = z.preprocess(
+  providerNull,
+  z.string().datetime({ offset: true }).max(64).nullable()
+);
+const categoryText = z.preprocess(
+  providerNull,
+  z.enum(MEMORY_ACTION_INTENT_CATEGORIES).nullable()
+);
+const entityMentionSchema = z.strictObject({
+  occurrenceIndex: z.number().int().min(0)
+    .max(MEMORY_ACTION_INTENT_MAX_ENTITY_OCCURRENCE_INDEX),
+  resolvedRef: nullableText(MEMORY_ACTION_INTENT_MAX_REF_LENGTH),
+  text: strictText(MEMORY_ACTION_INTENT_MAX_ENTITY_MENTION_LENGTH)
+});
 
 const memoryActionIntentWireSchema = z.strictObject({
   action: z.enum(MEMORY_ACTION_INTENT_ACTIONS),
@@ -112,6 +129,8 @@ const memoryActionIntentWireSchema = z.strictObject({
   category: categoryText,
   categoryHint: categoryText,
   confidenceBand: z.enum(MEMORY_ACTION_INTENT_CONFIDENCE_BANDS),
+  entityMentions: z.array(entityMentionSchema).max(MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS),
+  includePatterns: z.boolean(),
   memoryUseful: z.boolean(),
   pastChatsUseful: z.boolean(),
   profileRequested: z.boolean(),
@@ -244,6 +263,33 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       type: ["string", "null"]
     },
     confidenceBand: { enum: [...MEMORY_ACTION_INTENT_CONFIDENCE_BANDS], type: "string" },
+    entityMentions: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          occurrenceIndex: {
+            maximum: MEMORY_ACTION_INTENT_MAX_ENTITY_OCCURRENCE_INDEX,
+            minimum: 0,
+            type: "integer"
+          },
+          resolvedRef: {
+            maxLength: MEMORY_ACTION_INTENT_MAX_REF_LENGTH,
+            minLength: 1,
+            type: ["string", "null"]
+          },
+          text: {
+            maxLength: MEMORY_ACTION_INTENT_MAX_ENTITY_MENTION_LENGTH,
+            minLength: 1,
+            type: "string"
+          }
+        },
+        required: ["text", "occurrenceIndex", "resolvedRef"],
+        type: "object"
+      },
+      maxItems: MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS,
+      type: "array"
+    },
+    includePatterns: { type: "boolean" },
     memoryUseful: { type: "boolean" },
     pastChatsUseful: { type: "boolean" },
     profileRequested: {
@@ -298,6 +344,8 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "category",
     "categoryHint",
     "confidenceBand",
+    "entityMentions",
+    "includePatterns",
     "memoryUseful",
     "pastChatsUseful",
     "profileRequested",
@@ -412,7 +460,7 @@ function normalizeSafeMemoryRouting(
     };
   }
   if (facts && !history && value.retrievalMode === "HISTORICAL_MEMORY" &&
-    value.temporalIntent !== "CURRENT" && validTemporalShape(value)) {
+    value.temporalIntent !== "CURRENT") {
     return value;
   }
   if (facts || history || preferences) {
@@ -421,13 +469,67 @@ function normalizeSafeMemoryRouting(
   return currentRouting(value, "TARGETED_CURRENT");
 }
 
+/** Remove fields that cannot affect the selected action. This is a
+ * canonicalization only: mutation statements and target selectors required by
+ * the chosen action are never repaired, inferred, or replaced. */
+function normalizeUnusedActionPayload(
+  value: MemoryActionIntentWire
+): MemoryActionIntentWire {
+  if (value.action === "RESET") return value;
+  if (value.action === "SAVE") {
+    return {
+      ...value,
+      referencedMemoryRef: null,
+      replacementStatement: null,
+      targetQuery: null
+    };
+  }
+  if (value.action === "UPDATE") return { ...value, statement: null };
+  if (value.action === "FORGET") {
+    return { ...value, replacementStatement: null, statement: null };
+  }
+  if (value.action === "SEARCH") {
+    return {
+      ...value,
+      referencedMemoryRef: null,
+      replacementStatement: null,
+      statement: null,
+      thisChatOnly: false
+    };
+  }
+  return {
+    ...value,
+    referencedMemoryRef: null,
+    replacementStatement: null,
+    statement: null,
+    targetQuery: null,
+    thisChatOnly: false
+  };
+}
+
+function normalizeSafePlannerHints(value: MemoryActionIntentWire): MemoryActionIntentWire {
+  const retrievalRequested = value.memoryUseful || value.pastChatsUseful ||
+    value.applyResponsePreferences || value.profileRequested;
+  const hintsAllowed = retrievalRequested && value.queryText !== null;
+  return {
+    ...value,
+    entityMentions: hintsAllowed ? value.entityMentions : [],
+    includePatterns: hintsAllowed && value.memoryUseful && !value.profileRequested &&
+      value.retrievalMode === "TARGETED_CURRENT" && value.temporalIntent === "CURRENT"
+      ? value.includePatterns
+      : false
+  };
+}
+
 export function decodeMemoryActionIntent(value: unknown): MemoryActionIntentDecodeResult {
   const wire = memoryActionIntentWireSchema.safeParse(value);
   if (!wire.success) return { code: "memory_action_intent_invalid", ok: false };
-  const direct = memoryActionIntentSchema.safeParse(wire.data);
-  const result = direct.success
-    ? direct
-    : memoryActionIntentSchema.safeParse(normalizeSafeMemoryRouting(wire.data));
+  const actionPayload = normalizeUnusedActionPayload(wire.data);
+  const direct = memoryActionIntentSchema.safeParse(actionPayload);
+  const routed = direct.success
+    ? actionPayload
+    : normalizeSafeMemoryRouting(actionPayload);
+  const result = memoryActionIntentSchema.safeParse(normalizeSafePlannerHints(routed));
   if (!result.success) return { code: "memory_action_intent_invalid", ok: false };
   const intent = result.data;
   const ordinaryCategoryHint = intent.categoryHint === "sensitive"

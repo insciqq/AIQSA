@@ -9,13 +9,13 @@ import {
   type MemoryCounterMutation
 } from "../../domain/memory/counters";
 import { memorySha256 } from "./persistence/lexical";
+import { isMemoryDirectMessageExtractionPipeline } from "./persistence/jobs";
 import {
   lockMemorySettings,
   type MemoryTransaction
 } from "./persistence/transaction";
 
 export const MEMORY_SOURCE_PROJECTION_VERSION = "memory-source-v1";
-const vNextFactExtractionPipeline = "memory-fact-extraction-vnext-v2";
 const vNextFactRelationPipeline = "memory-fact-relation-v2";
 
 const MAX_COUNTER = 2_147_483_647;
@@ -582,7 +582,7 @@ export async function memorySourceJobSnapshotMatches(
   if (settings[0]?.memoryGeneration !== job.memoryGenerationSnapshot) return false;
   if (
     (job.kind === "EXTRACT_FACTS" &&
-      job.pipelineVersion === vNextFactExtractionPipeline) ||
+      isMemoryDirectMessageExtractionPipeline(job.pipelineVersion)) ||
     (job.kind === "RESOLVE_FACT_RELATIONS" &&
       job.pipelineVersion === vNextFactRelationPipeline)
   ) {

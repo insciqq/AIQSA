@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryClientRefService } from "../actions/clientRef";
+import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
+import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
@@ -323,15 +325,34 @@ describe("Memory source actions", () => {
       requestNonce: "request-1",
       statement: "Use the frozen replacement."
     }, now)).resolves.toEqual({ status: "COMMITTED" });
+    const exactStatementHash = memorySha256("Use the frozen replacement.");
     expect(findLatestActionResult).toHaveBeenCalledWith({
       orderBy: { attemptOrdinal: "desc" },
       select: { budgetSnapshot: true },
       where: { modelRunId: "run-1", state: "CONSUMED", userId: "user-1" }
     });
-    expect(update).toHaveBeenCalledWith("user-1", "fact-1", expect.objectContaining({
-      expectedVersionId: "version-1",
-      statement: "Use the frozen replacement."
-    }));
+    expect(mint).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      action: "EDIT",
+      authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
+        action: "EDIT",
+        expectedTargetVersionId: "version-1",
+        replacementStatementHash: exactStatementHash,
+        targetFactId: "fact-1"
+      })
+    }), now);
+    expect(update).toHaveBeenCalledWith(
+      "user-1",
+      "fact-1",
+      expect.objectContaining({
+        expectedVersionId: "version-1",
+        statement: "Use the frozen replacement."
+      }),
+      {
+        exactStatementHash,
+        modelRunId: "run-1",
+        persistedToolCallId: null
+      }
+    );
 
     await expect(service.execute("user-1", {
       action: "CORRECT",

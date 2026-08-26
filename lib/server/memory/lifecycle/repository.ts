@@ -28,11 +28,15 @@ import {
 } from "../purge/contract";
 import { auditMemoryDeletion } from "../purge/reconciliation";
 import type { MemoryDeletionContributorRegistry } from "../purge/registry";
+import { retractUnsupportedAutomaticMemoryEntities } from
+  "../learning/entities/lifecycle";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   MEMORY_HISTORY_CLEAR_TARGET_TYPE,
   auditMemoryHistoryClearDeletion
 } from "../history/purge";
+import { invalidateMemoryFactExtractionStaging } from
+  "../learning/extraction/repository";
 
 type ActiveFactRow = Readonly<{
   canonicalKey: string;
@@ -61,6 +65,7 @@ type FactVersionRow = Readonly<{
   displayText: string | null;
   factId: string;
   id: string;
+  systemFrom: Date;
 }>;
 
 type SourceEvidenceRow = Readonly<{
@@ -491,7 +496,7 @@ async function factVersions(
   if (factIds.length === 0) return [];
   return tx.memoryFactVersion.findMany({
     orderBy: [{ factId: "asc" }, { systemFrom: "asc" }, { id: "asc" }],
-    select: { displayText: true, factId: true, id: true },
+    select: { displayText: true, factId: true, id: true, systemFrom: true },
     where: { factId: { in: [...factIds] }, userId }
   });
 }
@@ -574,6 +579,16 @@ async function applyForgetFence(
 ): Promise<ReadonlyMap<string, string>> {
   const versions = await factVersions(tx, settings.userId, facts.map(({ factId }) => factId));
   const sources = await sourceEvidence(tx, settings.userId, versions.map(({ id }) => id));
+  const latestSystemFromByFact = new Map<string, number>();
+  for (const version of versions) {
+    latestSystemFromByFact.set(
+      version.factId,
+      Math.max(
+        latestSystemFromByFact.get(version.factId) ?? -1,
+        version.systemFrom.getTime()
+      )
+    );
+  }
   for (const suppression of suppressionInputs(facts, versions, sources)) {
     await createMemorySuppressionInTransaction(
       tx,
@@ -589,7 +604,8 @@ async function applyForgetFence(
     const eventId = randomUUID();
     const transitionAt = new Date(Math.max(
       now.getTime(),
-      fact.currentSystemFrom.getTime() + 1
+      fact.currentSystemFrom.getTime() + 1,
+      (latestSystemFromByFact.get(fact.factId) ?? fact.currentSystemFrom.getTime()) + 1
     ));
     await tx.memoryEvent.create({
       data: {
@@ -640,6 +656,7 @@ async function applyForgetFence(
     `);
     events.set(fact.factId, eventId);
   }
+  await retractUnsupportedAutomaticMemoryEntities(tx, settings.userId);
   return events;
 }
 
@@ -709,6 +726,11 @@ async function applyLearnedDeletionFence(
   if (!Number.isSafeInteger(affectedFacts) || affectedFacts < 0) {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
+
+  await invalidateMemoryFactExtractionStaging(tx, {
+    reasonCode: "learned_memory_deleted",
+    userId
+  }, now);
 
   await tx.$executeRaw(Prisma.sql`
     UPDATE "MemoryFact" AS fact
@@ -790,6 +812,7 @@ async function applyLearnedDeletionFence(
       userId
     }
   });
+  await retractUnsupportedAutomaticMemoryEntities(tx, userId);
   return affectedFacts;
 }
 
@@ -804,6 +827,11 @@ async function applyAllReusableDeletionFence(
     where: { id: barrierId, kind: "ALL_REUSABLE", userId: settings.userId }
   });
   if (!barrier) return memoryPersistenceFailure("memory_counter_contract_invalid");
+
+  await invalidateMemoryFactExtractionStaging(tx, {
+    reasonCode: "all_memory_deleted",
+    userId: settings.userId
+  }, now);
 
   const affectedFacts = await tx.memoryFact.count({
     where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
@@ -937,6 +965,7 @@ async function applyAllReusableDeletionFence(
   settings.synthesisPolicyVersion = null;
   settings.lastSynthesisAt = null;
   settings.useMemoryFacts = false;
+  await retractUnsupportedAutomaticMemoryEntities(tx, settings.userId);
   return affectedFacts;
 }
 

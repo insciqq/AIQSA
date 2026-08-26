@@ -114,6 +114,7 @@ export function createPrismaAdminMemoryStatusRepository(
         systemPolicy,
         generations,
         rebuildingRows,
+        shadowGenerationRows,
         historyReindexingRows,
         pendingClassificationRows,
         staleChunkOwners,
@@ -161,6 +162,16 @@ export function createPrismaAdminMemoryStatusRepository(
               where: {
                 kind: "REBUILD_INDEX",
                 state: { in: [...ACTIVE_JOB_STATES] },
+                userId: { in: ownerIds }
+              }
+            }),
+        ownerIds.length === 0
+          ? Promise.resolve([])
+          : client.memoryIndexGeneration.findMany({
+              distinct: ["userId"],
+              select: { userId: true },
+              where: {
+                state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
                 userId: { in: ownerIds }
               }
             }),
@@ -352,6 +363,7 @@ export function createPrismaAdminMemoryStatusRepository(
       const staleOwners = new Set(staleChunkOwners.map(({ userId }) => userId));
       const rebuildingOwners = new Set([
         ...rebuildingRows.map(({ userId }) => userId),
+        ...shadowGenerationRows.map(({ userId }) => userId),
         ...historyReindexingRows.flatMap(({ userId }) =>
           staleOwners.has(userId) ? [userId] : [])
       ]);

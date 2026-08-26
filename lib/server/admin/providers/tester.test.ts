@@ -61,19 +61,30 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
   };
 }
 
-function structuredChatResponse() {
+function structuredChatResponse(toolCall = false) {
+  const result = {
+    count: 2,
+    label: "AIQSA",
+    ready: true,
+    tool_ids: ["alpha", "beta"]
+  };
   return new Response(JSON.stringify({
     choices: [{
-      finish_reason: "stop",
-      message: {
-        content: JSON.stringify({
-          count: 2,
-          label: "AIQSA",
-          ready: true,
-          tool_ids: ["alpha", "beta"]
-        }),
-        role: "assistant"
-      }
+      finish_reason: toolCall ? "tool_calls" : "stop",
+      message: toolCall
+        ? {
+            content: null,
+            role: "assistant",
+            tool_calls: [{
+              function: {
+                arguments: JSON.stringify(result),
+                name: "aiqsa_structured_output_probe"
+              },
+              id: "call-1",
+              type: "function"
+            }]
+          }
+        : { content: JSON.stringify(result), role: "assistant" }
     }],
     usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
   }), { headers: { "content-type": "application/json" }, status: 200 });
@@ -98,7 +109,9 @@ describe("admin provider draft tester", () => {
   it("verifies all five answer-model compatibility contracts", async () => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
       const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
-      return body.stream === true ? streamedChatResponse() : structuredChatResponse();
+      return body.stream === true
+        ? streamedChatResponse()
+        : structuredChatResponse(Array.isArray(body.tools));
     });
     const providerTester = createAdminProviderDraftTester({
       createDiscoveryClient: () => discovery(),
@@ -372,7 +385,10 @@ describe("admin provider draft tester", () => {
           }];
         }
       }),
-      createFetch: () => async () => structuredChatResponse()
+      createFetch: () => async (_url, request) => {
+        const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+        return structuredChatResponse(Array.isArray(body.tools));
+      }
     });
     const selected = input({
       model: {
@@ -399,7 +415,7 @@ describe("admin provider draft tester", () => {
         selectedProviders: ["Anthropic"],
         structuredOutput: {
           adapterKind: "openrouter_chat_completions",
-          probeVersion: 2,
+          probeVersion: 4,
           upstreamModelId: "vendor/model",
           verified: true
         },
@@ -409,7 +425,7 @@ describe("admin provider draft tester", () => {
     });
   });
 
-  it("keeps model access verified when an OpenRouter backend ignores strict response_format", async () => {
+  it("keeps model access verified when an OpenRouter backend ignores a required tool call", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{
         finish_reason: "stop",
@@ -441,7 +457,8 @@ describe("admin provider draft tester", () => {
     const [, request] = fetchFn.mock.calls[1] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
       provider: { require_parameters: true },
-      response_format: { json_schema: { strict: true }, type: "json_schema" }
+      tool_choice: "required",
+      tools: [{ type: "function" }]
     });
   });
 
@@ -517,7 +534,10 @@ describe("admin provider draft tester", () => {
     const secondBody = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
     const fourthBody = JSON.parse(String(fetchFn.mock.calls[3]?.[1]?.body));
     expect(firstBody).not.toHaveProperty("response_format");
-    expect(secondBody).toHaveProperty("response_format.json_schema.strict", true);
+    expect(secondBody).toMatchObject({
+      tool_choice: "required",
+      tools: [{ type: "function" }]
+    });
     expect(fourthBody).toMatchObject({ stream: true });
   });
 
@@ -618,7 +638,10 @@ describe("admin provider draft tester", () => {
   });
 
   it("gives an OpenRouter reasoning diagnostic the standard output budget", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () => structuredChatResponse());
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+      return structuredChatResponse(Array.isArray(body.tools));
+    });
     const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
     const openRouter = input({
       mode: "tiny_generation",
@@ -645,10 +668,11 @@ describe("admin provider draft tester", () => {
     });
     const [, request] = fetchFn.mock.calls[1] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
-      max_completion_tokens: 128,
+      max_tokens: 1_024,
       provider: { require_parameters: true },
-      response_format: { json_schema: { strict: true }, type: "json_schema" },
-      stream: false
+      stream: false,
+      tool_choice: "required",
+      tools: [{ type: "function" }]
     });
   });
 

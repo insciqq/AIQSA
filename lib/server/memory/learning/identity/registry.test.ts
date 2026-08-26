@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
+import type { MemorySemanticFrame } from "../extraction/contract";
 import {
-  memoryPropositionCanonicalKey,
-  normalizeMemoryIdentityComponent
-} from "./normalization";
-import {
-  memoryProductStatusEvidenceIsExplicit,
-  memorySourceLooksNonAuthoritative,
+  MemoryIdentityError,
   resolveMemoryIdentity,
   type MemoryIdentityProposal,
   type MemoryValueProposal
 } from "./registry";
 
-const emptyValue: MemoryValueProposal = {
+const frame: MemorySemanticFrame = Object.freeze({
+  assertionStatus: "ASSERTED",
+  changeIntent: "NONE",
+  memoryDirective: "NONE",
+  polarity: "AFFIRMED",
+  speechAct: "ASSERTION",
+  subjectScope: "CURRENT_USER",
+  temporalPerspective: "CURRENT"
+});
+
+const emptyValue: MemoryValueProposal = Object.freeze({
   frequency: null,
   kind: null,
   limit: null,
@@ -21,11 +27,9 @@ const emptyValue: MemoryValueProposal = {
   state: null,
   strength: null,
   value: null
-};
+});
 
-function identity(
-  overrides: Partial<MemoryIdentityProposal> = {}
-): MemoryIdentityProposal {
+function identity(overrides: Partial<MemoryIdentityProposal> = {}): MemoryIdentityProposal {
   return {
     dimensionKey: null,
     mode: "PROPOSITION",
@@ -39,114 +43,63 @@ function identity(
   };
 }
 
-describe("Memory vNext identity registry", () => {
-  it("uses readable ASCII components and collision-resistant non-transliterated hashes", () => {
-    expect(normalizeMemoryIdentityComponent("product", "  MacBook   Air M4 "))
-      .toBe("macbook-air-m4");
-    const cyrillic = normalizeMemoryIdentityComponent("place", "Хельсинки");
-    expect(cyrillic).toMatch(/^h-[a-f0-9]{48}$/u);
-    expect(cyrillic).toBe(
-      normalizeMemoryIdentityComponent("place", "Хельсинки")
-    );
-    expect(cyrillic).not.toContain("helsinki");
-  });
-
-  it("creates dimension-aware residence and employment slots", () => {
-    const residence = resolveMemoryIdentity({
+describe("language-neutral Memory identity registry", () => {
+  it("builds code-owned product SLOT identity from validated structured values", () => {
+    const result = resolveMemoryIdentity({
       identity: identity({
         mode: "SLOT",
-        predicateKey: "residence",
+        predicateKey: "product_status",
         subject: {
-          canonicalLabel: null,
-          entityType: "PERSON_SELF",
-          qualifiers: { brand: null, model: null }
+          canonicalLabel: "MacBook Air M4",
+          entityType: "DEVICE",
+          qualifiers: { brand: "Apple", model: "MacBook Air M4" }
         }
       }),
       memoryType: "STATE",
-      sourceText: "Я живу в Хельсинки",
-      statement: "Пользователь живёт в Хельсинки",
-      value: { ...emptyValue, kind: "primary", place: "Хельсинки" }
+      semanticFrame: frame,
+      statement: "opaque statement",
+      value: { ...emptyValue, state: "owned" }
     });
-    expect(residence).toMatchObject({
-      canonicalKey: "slot:v2:person:self:residence:primary",
-      dimensionKey: "primary",
+    expect(result).toMatchObject({
       identityKind: "SLOT",
+      predicateKey: "product_status",
+      structuredValue: { schema: "product-status-v1", state: "owned" }
+    });
+  });
+
+  it("uses structured temporal perspective, never source wording, for former residence", () => {
+    const proposal = identity({
+      dimensionKey: "primary",
+      mode: "SLOT",
       predicateKey: "residence",
-      subjectKey: "person:self"
+      subject: {
+        canonicalLabel: null,
+        entityType: "PERSON_SELF",
+        qualifiers: { brand: null, model: null }
+      }
     });
-    expect(residence.structuredValue).toMatchObject({
-      kind: "primary",
-      placeKey: expect.stringMatching(/^place:h-[a-f0-9]{48}$/u),
-      schema: "residence-v1"
+    const current = resolveMemoryIdentity({
+      identity: proposal,
+      memoryType: "STATE",
+      semanticFrame: frame,
+      statement: "same opaque statement",
+      value: { ...emptyValue, kind: "primary", place: "Turku" }
     });
-
-    const employment = resolveMemoryIdentity({
-      identity: identity({
-        dimensionKey: "OpenAI",
-        mode: "SLOT",
-        predicateKey: "employment_status",
-        subject: {
-          canonicalLabel: null,
-          entityType: "PERSON_SELF",
-          qualifiers: { brand: null, model: null }
-        }
-      }),
-      memoryType: "WORKFLOW",
-      sourceText: "I work at OpenAI as an engineer.",
-      statement: "The user works at OpenAI as an engineer.",
-      value: { ...emptyValue, role: "engineer", state: "current" }
+    const former = resolveMemoryIdentity({
+      identity: proposal,
+      memoryType: "STATE",
+      semanticFrame: { ...frame, temporalPerspective: "FORMER" },
+      statement: "same opaque statement",
+      value: { ...emptyValue, kind: "primary", place: "Turku" }
     });
-    expect(employment.canonicalKey)
-      .toBe("slot:v2:person:self:employment_status:organization:openai");
-    expect(employment.structuredValue).toEqual({
-      roleKey: "engineer",
-      schema: "employment-status-v1",
-      state: "current"
-    });
+    expect(current.identityKind).toBe("SLOT");
+    expect(former.identityKind).toBe("PROPOSITION");
   });
 
-  it("keeps category metadata out of proposition identity", () => {
-    const statement = "The user reads release notes.";
-    const common = {
-      identity: identity(),
-      sourceText: "I read release notes.",
-      statement,
-      value: emptyValue
-    };
-    const preference = resolveMemoryIdentity({
-      ...common,
-      memoryType: "PREFERENCE"
-    });
-    const state = resolveMemoryIdentity({ ...common, memoryType: "STATE" });
-    expect(preference.category).not.toBe(state.category);
-    expect(preference.canonicalKey).toBe(state.canonicalKey);
-  });
-
-  it.each(["constraint", "routine"] as const)(
-    "falls back to proposition when %s has no stable dimension",
-    (predicateKey) => {
-      const resolved = resolveMemoryIdentity({
-        identity: identity({
-          mode: "SLOT",
-          predicateKey,
-          subject: {
-            canonicalLabel: null,
-            entityType: "PERSON_SELF",
-            qualifiers: { brand: null, model: null }
-          }
-        }),
-        memoryType: predicateKey === "constraint" ? "CONSTRAINT" : "HABIT",
-        sourceText: "I have a durable personal rule.",
-        statement: "The user has a durable personal rule.",
-        value: { ...emptyValue, value: "durable personal rule" }
-      });
-      expect(resolved.identityKind).toBe("PROPOSITION");
-    }
-  );
-
-  it("falls back to a proposition for weak dimensions and retrospective residence", () => {
-    const weakPreference = resolveMemoryIdentity({
+  it("falls back conservatively when a SLOT vocabulary is incomplete", () => {
+    const result = resolveMemoryIdentity({
       identity: identity({
+        dimensionKey: "format:answer",
         mode: "SLOT",
         predicateKey: "preference",
         subject: {
@@ -156,91 +109,52 @@ describe("Memory vNext identity registry", () => {
         }
       }),
       memoryType: "PREFERENCE",
-      sourceText: "I prefer compact phones.",
-      statement: "The user prefers compact phones.",
-      value: { ...emptyValue, value: "compact phones" }
+      semanticFrame: frame,
+      statement: "opaque preference",
+      value: emptyValue
     });
-    expect(weakPreference).toMatchObject({
-      canonicalKey: memoryPropositionCanonicalKey(
-        "The user prefers compact phones."
-      ),
-      identityKind: "PROPOSITION"
-    });
+    expect(result.identityKind).toBe("PROPOSITION");
+  });
 
-    const unknownPredicate = resolveMemoryIdentity({
+  it("drops an unsupported optional preference strength without losing the SLOT", () => {
+    const result = resolveMemoryIdentity({
       identity: identity({
+        dimensionKey: "format:answer",
         mode: "SLOT",
-        predicateKey: "ownership_status"
-      }),
-      memoryType: "STATE",
-      sourceText: "I have a device.",
-      statement: "The user has a device.",
-      value: { ...emptyValue, state: "owned" }
-    });
-    expect(unknownPredicate.identityKind).toBe("PROPOSITION");
-
-    const formerResidence = resolveMemoryIdentity({
-      identity: identity({
-        mode: "SLOT",
-        predicateKey: "residence",
+        predicateKey: "preference",
         subject: {
           canonicalLabel: null,
           entityType: "PERSON_SELF",
           qualifiers: { brand: null, model: null }
         }
       }),
-      memoryType: "STATE",
-      sourceText: "I previously lived in Helsinki.",
-      statement: "The user previously lived in Helsinki.",
-      value: { ...emptyValue, kind: "primary", place: "Helsinki" }
+      memoryType: "PREFERENCE",
+      semanticFrame: frame,
+      statement: "opaque preference",
+      value: { ...emptyValue, strength: "consistent", value: "concise" }
     });
-    expect(formerResidence.identityKind).toBe("PROPOSITION");
+    expect(result).toMatchObject({
+      identityKind: "SLOT",
+      predicateKey: "preference",
+      structuredValue: { strength: null, value: "concise" }
+    });
   });
 
-  it("keeps product ownership states distinct and requires direct evidence", () => {
-    const workDevice = resolveMemoryIdentity({
+  it("rejects invalid code-owned product states independent of language", () => {
+    expect(() => resolveMemoryIdentity({
       identity: identity({
         mode: "SLOT",
         predicateKey: "product_status",
         subject: {
-          canonicalLabel: "MacBook Air",
+          canonicalLabel: "device",
           entityType: "DEVICE",
-          qualifiers: { brand: "Apple", model: "MacBook Air" }
+          qualifiers: { brand: null, model: null }
         }
       }),
       memoryType: "STATE",
-      sourceText: "This is my work MacBook Air.",
-      statement: "The user uses a work MacBook Air.",
-      value: { ...emptyValue, state: "work_device" }
-    });
-    expect(workDevice.structuredValue).toEqual({
-      schema: "product-status-v1",
-      state: "work_device"
-    });
-    expect(memoryProductStatusEvidenceIsExplicit(
-      "work_device",
-      "This is my work laptop."
-    )).toBe(true);
-    expect(memoryProductStatusEvidenceIsExplicit(
-      "owned",
-      "This is my work laptop."
-    )).toBe(false);
-    expect(memoryProductStatusEvidenceIsExplicit(
-      "borrowed",
-      "I borrowed this laptop."
-    )).toBe(true);
-  });
-
-  it("flags questions, hypotheticals and third-party statements as non-authoritative", () => {
-    expect(memorySourceLooksNonAuthoritative("How do I configure a MacBook?"))
-      .toBe(true);
-    expect(memorySourceLooksNonAuthoritative("If I bought a MacBook, would it work?"))
-      .toBe(true);
-    expect(memorySourceLooksNonAuthoritative("My brother owns a MacBook."))
-      .toBe(true);
-    expect(memorySourceLooksNonAuthoritative("I bought a MacBook."))
-      .toBe(false);
-    expect(memorySourceLooksNonAuthoritative("My new MacBook? It is excellent."))
-      .toBe(false);
+      semanticFrame: frame,
+      statement: "opaque",
+      value: { ...emptyValue, state: "maybe_owned" }
+    })).toThrowError(new MemoryIdentityError("memory_fact_identity_invalid"));
   });
 });
