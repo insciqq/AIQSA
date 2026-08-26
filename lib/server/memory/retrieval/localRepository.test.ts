@@ -169,6 +169,37 @@ describe("local Memory retrieval repository", () => {
     expect(sql).not.toContain('attachment."extractedText"');
   });
 
+  it("uses targeted digests only as a navigation lane to an authoritative raw anchor", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "Where did we discuss the PostgreSQL migration?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane))
+      .toContain("HISTORY_DIGEST_FTS_SIMPLE");
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain("all_digest_navigation");
+    expect(sql).toContain("matched_navigation");
+    expect(sql).toContain("FROM matched_navigation AS navigation");
+    expect(sql).toContain('navigation."searchVectorSimple"');
+    expect(sql).toContain('navigation."itemId" = eligible."itemId"');
+    expect(sql.indexOf("matched_navigation AS MATERIALIZED")).toBeLessThan(
+      sql.indexOf("\n    digest_navigation AS MATERIALIZED")
+    );
+    expect(sql).not.toContain('digest."safeDigestText" AS "safeText"');
+  });
+
   it("runs candidate lanes for generic and recognizable-secret direct input", async () => {
     for (const currentUserText of [
       "What is PostgreSQL?",

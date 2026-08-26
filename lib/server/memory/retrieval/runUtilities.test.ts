@@ -4,9 +4,11 @@ import type { PrismaMemoryExecutionService } from "../execution";
 import {
   createMemoryRunUtilityService,
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
+  MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
   MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
   MEMORY_RERANK_MAX_ATTEMPTS,
+  MEMORY_RERANK_TARGETED_MAX_CANDIDATES,
   type MemoryRunUtilityService
 } from "./runUtilities";
 import {
@@ -151,7 +153,7 @@ function execution(log: string[]) {
   const admission = {
     bind: vi.fn(async (
       _userId: string,
-      input: { inputHash: string; role: Parameters<typeof snapshot>[0] }
+      input: { inputHash: string; ordinal: number; role: Parameters<typeof snapshot>[0] }
     ) => {
       log.push(`bind:${input.role}`);
       return { id: `binding-${input.role}` };
@@ -599,7 +601,7 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("reranks a broad history aggregation in three concurrent governed batches", async () => {
+  it("reranks the full broad history pool in nine governed batches", async () => {
     const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
       id: `binding-${input.ordinal}`
     }));
@@ -661,7 +663,9 @@ describe("Memory run utility execution", () => {
       execution: executionService,
       provider
     });
-    const candidates = Array.from({ length: 60 }, (_, index) => ({
+    const candidates = Array.from({
+      length: MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES
+    }, (_, index) => ({
       ...currentHistoryRerankCandidate,
       authorityLevel: "PAST_CHAT" as const,
       current: true,
@@ -686,17 +690,83 @@ describe("Memory run utility execution", () => {
     expect(result).toMatchObject({ bindingId: "binding-2", status: "READY" });
     expect(result.status === "READY" ? result.decisions.map(({ handle }) => handle) : [])
       .toEqual(candidates.map(({ handle }) => handle));
-    expect(providerRun).toHaveBeenCalledTimes(3);
+    expect(providerRun).toHaveBeenCalledTimes(MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
     expect(providerRun.mock.calls.map((call) => rerankInput(call[1]).candidates.length))
-      .toEqual([
-        MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
-        MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
-        MEMORY_RERANK_AGGREGATION_BATCH_SIZE
-      ]);
-    expect(bind).toHaveBeenCalledTimes(3);
+      .toEqual(Array.from(
+        { length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES },
+        () => MEMORY_RERANK_AGGREGATION_BATCH_SIZE
+      ));
+    expect(bind).toHaveBeenCalledTimes(MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
     expect(bind.mock.calls.map((call) => call[1].ordinal))
-      .toEqual([2, 4, 6]);
+      .toEqual([2, 4, 6, 10, 12, 14, 16, 18, 20]);
     expect(peak).toBe(3);
+  });
+
+  it("reranks the widened targeted pool in bounded governed batches", async () => {
+    const log: string[] = [];
+    const bound = execution(log);
+    const providerRun = vi.fn(async (
+      _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
+      input: Parameters<MemoryRunUtilityProvider["run"]>[1]
+    ) => {
+      const rerank = rerankInput(input);
+      return {
+        providerResponseId: `response-${rerank.candidates[0]?.handle}`,
+        toolCalls: [{
+          arguments: {
+            decisions: rerank.candidates.map((candidate) => ({
+              applicable: true,
+              current: true,
+              handle: candidate.handle,
+              reason_code: "DIRECT_RELEVANCE",
+              relevance_score: 0.9
+            }))
+          },
+          id: `call-${rerank.candidates[0]?.handle}`,
+          name: MEMORY_RERANK_TOOL_NAME
+        }],
+        usage: {
+          cachedInputTokens: 0,
+          inputTokens: 100,
+          outputTokens: 50,
+          reasoningTokens: 0,
+          totalTokens: 150
+        }
+      };
+    });
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider: { run: providerRun }
+    });
+    const candidates = Array.from({
+      length: MEMORY_RERANK_TARGETED_MAX_CANDIDATES
+    }, (_, index) => ({
+      ...currentFactRerankCandidate,
+      authorityLevel: "SAVED" as const,
+      current: true,
+      handle: `c${index}`,
+      occurredFrom: null,
+      occurredTo: null,
+      sensitivityClass: "NORMAL" as const,
+      sourceKind: "FACT" as const,
+      text: `Safe targeted fact ${index}.`
+    }));
+
+    const result = await service.rerank({
+      ...baseInput(),
+      candidates,
+      profileRequested: false,
+      query: "Which facts apply?"
+    });
+
+    expect(result.status === "READY" ? result.decisions.map(({ handle }) => handle) : [])
+      .toEqual(candidates.map(({ handle }) => handle));
+    expect(providerRun).toHaveBeenCalledTimes(4);
+    expect(providerRun.mock.calls.map((call) => rerankInput(call[1]).candidates.length))
+      .toEqual([20, 20, 20, 20]);
+    expect(bound.admission.bind.mock.calls.map((call) => call[1].ordinal))
+      .toEqual([2, 4, 6, 10]);
   });
 
   it("partitions aggregation reranking by the complete structured prompt limit", async () => {
@@ -875,7 +945,7 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("rejects a broad-profile result that drops a supplied current fact", async () => {
+  it("accepts valid broad-profile scores beside malformed entries for RRF fallback", async () => {
     const log: string[] = [];
     const bound = execution(log);
     const provider: MemoryRunUtilityProvider = {
@@ -894,7 +964,7 @@ describe("Memory run utility execution", () => {
               current: true,
               handle: "c1",
               reason_code: "NOT_RELEVANT",
-              relevance_score: 0.2
+              relevance_score: 2
             }]
           },
           id: "call-1",
@@ -942,17 +1012,17 @@ describe("Memory run utility execution", () => {
       retrievalMode: "CURRENT_PROFILE",
       query: "What do you know about me?"
     })).resolves.toMatchObject({
-      reason: "memory_run_utility_output_invalid",
-      status: "UNAVAILABLE"
+      decisions: [
+        expect.objectContaining({ handle: "c0", relevanceScore: 0.95 })
+      ],
+      status: "READY"
     });
-    expect(provider.run).toHaveBeenCalledTimes(MEMORY_RERANK_MAX_ATTEMPTS);
-    expect(bound.lifecycle.settle).toHaveBeenCalledTimes(MEMORY_RERANK_MAX_ATTEMPTS);
-    for (const call of bound.lifecycle.settle.mock.calls) {
-      expect(call[2]).toMatchObject({
-        errorCode: "memory_run_utility_output_invalid",
-        state: "FAILED"
-      });
-    }
+    expect(provider.run).toHaveBeenCalledOnce();
+    expect(bound.lifecycle.settle).toHaveBeenCalledWith(
+      "user-1",
+      expect.any(String),
+      expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
+    );
   });
 
   it("accepts a broad-profile result when every supplied fact is directly relevant", async () => {
@@ -1104,7 +1174,7 @@ describe("Memory run utility execution", () => {
     expect(provider.run).toHaveBeenCalledOnce();
   });
 
-  it("blocks a thirty-first rerank candidate before binding or provider I/O", async () => {
+  it("blocks a candidate beyond the widened targeted bound before provider I/O", async () => {
     const log: string[] = [];
     const bound = execution(log);
     const provider = { run: vi.fn() } as unknown as MemoryRunUtilityProvider;
@@ -1116,7 +1186,8 @@ describe("Memory run utility execution", () => {
 
     await expect(service.rerank({
       ...baseInput(),
-      candidates: Array.from({ length: 31 }, (_, index) => ({
+      candidates: Array.from({ length: MEMORY_RERANK_TARGETED_MAX_CANDIDATES + 1 },
+        (_, index) => ({
         ...currentFactRerankCandidate,
         authorityLevel: "SAVED" as const,
         current: true,
@@ -1126,7 +1197,7 @@ describe("Memory run utility execution", () => {
         sensitivityClass: "NORMAL" as const,
         sourceKind: "FACT" as const,
         text: `Fact ${index}`
-      })),
+        })),
       profileRequested: false,
       query: "Which facts apply?"
     })).resolves.toEqual({
@@ -1137,7 +1208,7 @@ describe("Memory run utility execution", () => {
     expect(provider.run).not.toHaveBeenCalled();
   });
 
-  it("blocks a sixty-first aggregation candidate before binding or provider I/O", async () => {
+  it("blocks a candidate beyond the widened aggregation bound before provider I/O", async () => {
     const log: string[] = [];
     const bound = execution(log);
     const provider = { run: vi.fn() } as unknown as MemoryRunUtilityProvider;
@@ -1150,7 +1221,8 @@ describe("Memory run utility execution", () => {
     await expect(service.rerank({
       ...baseInput(),
       aggregationRequested: true,
-      candidates: Array.from({ length: 61 }, (_, index) => ({
+      candidates: Array.from({ length: MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES + 1 },
+        (_, index) => ({
         ...currentHistoryRerankCandidate,
         authorityLevel: "PAST_CHAT" as const,
         current: true,
@@ -1160,7 +1232,7 @@ describe("Memory run utility execution", () => {
         sensitivityClass: "NORMAL" as const,
         sourceKind: "HISTORY" as const,
         text: `History candidate ${index}`
-      })),
+        })),
       profileRequested: false,
       query: "Which events happened across my chats?",
       retrievalMode: "PAST_CHAT_SEARCH",
@@ -1278,7 +1350,7 @@ describe("Memory run utility execution", () => {
                   decisions: [{
                     applicable: true,
                     current: true,
-                    handle: "c0",
+                    handle: "x0",
                     reason_code: "NOT_RELEVANT",
                     relevance_score: 0.1
                   }]
@@ -1384,7 +1456,7 @@ describe("Memory run utility execution", () => {
     ["OUTDATED", true, false],
     ["NOT_RELEVANT", true, true]
   ] as const)(
-    "rejects contradictory %s rerank flags and exhausts only the one safe retry",
+    "accepts non-authoritative compatibility flags for %s without retrying",
     async (reasonCode, applicable, current) => {
       const executionService = {
         admission: {
@@ -1448,23 +1520,22 @@ describe("Memory run utility execution", () => {
         profileRequested: false,
         query: "How should I respond?"
       })).resolves.toEqual({
-        bindingId: "binding-3",
-        reason: "memory_run_utility_output_invalid",
-        status: "UNAVAILABLE"
+        bindingId: "binding-2",
+        decisions: [{
+          applicable,
+          current,
+          handle: "c0",
+          reasonCode,
+          relevanceScore: 0.1
+        }],
+        status: "READY"
       });
-      expect(provider.run).toHaveBeenCalledTimes(2);
-      expect(executionService.lifecycle.settle).toHaveBeenCalledTimes(2);
-      expect(executionService.lifecycle.settle).toHaveBeenNthCalledWith(
-        1,
+      expect(provider.run).toHaveBeenCalledOnce();
+      expect(executionService.lifecycle.settle).toHaveBeenCalledOnce();
+      expect(executionService.lifecycle.settle).toHaveBeenCalledWith(
         "user-1",
         "binding-2",
-        expect.objectContaining({ state: "FAILED" })
-      );
-      expect(executionService.lifecycle.settle).toHaveBeenNthCalledWith(
-        2,
-        "user-1",
-        "binding-3",
-        expect.objectContaining({ state: "FAILED" })
+        expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
       );
     }
   );

@@ -50,7 +50,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v9";
+  "memory-local-retrieval-repository-v10";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -631,7 +631,7 @@ function historyPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
 
 function historyDigestPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
   const digestMode = plan.mode === "HISTORY_OVERVIEW" ||
-    plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH";
+    plan.mode === "PAST_CHAT_SEARCH";
   if (!digestMode ||
     !plan.filters.sourceKinds.includes("HISTORY")) return Prisma.sql`FALSE`;
   const scope = plan.filters.scopeType === null
@@ -1477,23 +1477,27 @@ function profileSql(
   `;
 }
 
+function distinctiveFtsTerms(plan: MemoryRetrievalPlan): readonly string[] {
+  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
+  const distinctTerms = [...new Set(plan.lexicalQuery.split(" "))].slice(0, 64);
+  // A natural-language question contains short connective terms that are
+  // common to unrelated memories. Search the longer, more distinctive half
+  // independently; authoritative rejoin and bounded packing still own admission.
+  // Keeping at least two terms preserves compact requests such as "tea style".
+  return distinctTerms
+    .map((term, index) => ({ index, length: Array.from(term).length, term }))
+    .sort((left, right) => right.length - left.length || left.index - right.index)
+    .slice(0, Math.min(distinctTerms.length, Math.max(2, Math.ceil(distinctTerms.length / 2))))
+    .map(({ term }) => term);
+}
+
 function ftsSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
   limit: number
 ): Prisma.Sql {
-  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const distinctTerms = [...new Set(plan.lexicalQuery.split(" "))].slice(0, 64);
-  // A natural-language question contains short connective terms that are
-  // common to unrelated memories. Search the longer, more distinctive half
-  // independently; the mandatory relevance model still owns final admission.
-  // Keeping at least two terms preserves compact requests such as "tea style".
-  const terms = distinctTerms
-    .map((term, index) => ({ index, length: Array.from(term).length, term }))
-    .sort((left, right) => right.length - left.length || left.index - right.index)
-    .slice(0, Math.min(distinctTerms.length, Math.max(2, Math.ceil(distinctTerms.length / 2))))
-    .map(({ term }) => term);
+  const terms = distinctiveFtsTerms(plan);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(
@@ -1526,6 +1530,59 @@ function ftsSql(
     WHERE term_match."matchedTermCount" > 0
     ORDER BY term_match."maximumMatchedTermLength" DESC,
       term_match."matchedTermCount" DESC, term_match."rankScore" DESC,
+      eligible."itemId" LIMIT ${limit}
+  `;
+}
+
+function targetedDigestFtsSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  limit: number
+): Prisma.Sql {
+  if (plan.mode !== "PAST_CHAT_SEARCH" || plan.aggregationRequested) {
+    throw new Error("memory_retrieval_lane_invalid");
+  }
+  const terms = distinctiveFtsTerms(plan);
+  if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)}),
+    all_digest_navigation AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)}),
+    query_terms AS MATERIALIZED (
+      SELECT DISTINCT term, char_length(term)::integer AS "termLength",
+        plainto_tsquery('simple', term) AS query
+      FROM unnest(${terms}::text[]) AS terms(term)
+      WHERE plainto_tsquery('simple', term) <> ''::tsquery
+    ),
+    matched_navigation AS MATERIALIZED (
+      SELECT navigation.*, term_match."matchedTermCount",
+        term_match."maximumMatchedTermLength", term_match."rankScore"
+      FROM all_digest_navigation AS navigation
+      CROSS JOIN LATERAL (
+        SELECT COUNT(*)::integer AS "matchedTermCount",
+          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+            "maximumMatchedTermLength",
+          COALESCE(SUM(ts_rank_cd(navigation."searchVectorSimple", query_terms.query)),
+            0.0)::double precision AS "rankScore"
+        FROM query_terms
+        WHERE navigation."searchVectorSimple" @@ query_terms.query
+      ) AS term_match
+      WHERE term_match."matchedTermCount" > 0
+    ),
+    digest_navigation AS MATERIALIZED (
+      SELECT DISTINCT ON (navigation."sourceChatId") navigation.*
+      FROM matched_navigation AS navigation
+      ORDER BY navigation."sourceChatId",
+        navigation."maximumMatchedTermLength" DESC,
+        navigation."matchedTermCount" DESC, navigation."rankScore" DESC,
+        navigation."occurredTo" DESC NULLS LAST, navigation."itemId"
+    )
+    SELECT ${candidateColumns(Prisma.sql`navigation."rankScore"`)}
+    FROM eligible
+    INNER JOIN digest_navigation AS navigation
+      ON navigation."sourceChatId" = eligible."sourceChatId"
+      AND navigation."itemId" = eligible."itemId"
+    ORDER BY navigation."maximumMatchedTermLength" DESC,
+      navigation."matchedTermCount" DESC, navigation."rankScore" DESC,
       eligible."itemId" LIMIT ${limit}
   `;
 }
@@ -1593,6 +1650,8 @@ function localLexicalLanes(
       lanes.push("HISTORY_RECALL_RECENT");
     } else {
       lanes.push("HISTORY_RECALL_EXACT");
+      if (plan.mode === "PAST_CHAT_SEARCH" && !plan.aggregationRequested &&
+        plan.lexicalQuery) lanes.push("HISTORY_DIGEST_FTS_SIMPLE");
       if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
       if (plan.recencyRequested) lanes.push("HISTORY_RECALL_RECENT");
     }
@@ -1602,11 +1661,12 @@ function localLexicalLanes(
 
 function allocatedLimit(
   allocation: MemoryRetrievalLaneLimitAllocation,
-  lane: MemoryRetrievalLane
+  lane: MemoryRetrievalLane,
+  aggregationRequested: boolean
 ): number {
   const limit = allocation[lane];
   if (!Number.isSafeInteger(limit) || !limit || limit < 1 ||
-    limit > memoryRetrievalLaneLimit(lane, true)) {
+    limit > memoryRetrievalLaneLimit(lane, aggregationRequested)) {
     throw new Error("memory_retrieval_lane_contract_invalid");
   }
   return limit;
@@ -1618,6 +1678,9 @@ function laneSql(
   lane: MemoryRetrievalLane,
   limit: number
 ): Prisma.Sql {
+  if (lane === "HISTORY_DIGEST_FTS_SIMPLE") {
+    return targetedDigestFtsSql(snapshot, plan, limit);
+  }
   const itemType = lane.startsWith("FACT_") ? "FACT_VERSION" : "RECALL_CHUNK";
   if (lane === "FACT_PROFILE") return profileSql(snapshot, plan, limit);
   if (lane === "FACT_ENTITY") return entitySql(snapshot, plan, limit);
@@ -1640,7 +1703,7 @@ function pushLexicalTasks(
   const failures: MemoryRetrievalLane[] = [];
   const lanes = localLexicalLanes(snapshot, plan);
   for (const lane of lanes) {
-    const limit = allocatedLimit(allocation, lane);
+    const limit = allocatedLimit(allocation, lane, plan.aggregationRequested);
     const sql = laneSql(snapshot, plan, lane, limit);
     tasks.push({
       async execute() {
@@ -1727,7 +1790,8 @@ function pushVectorTasks(
   if (lanes.length === 0) return { state: () => "DISABLED" };
   const itemTypes = lanes.map((lane) =>
     lane === "FACT_VECTOR" ? "FACT_VERSION" as const : "RECALL_CHUNK" as const);
-  const limit = Math.max(...lanes.map((lane) => allocatedLimit(allocation, lane)));
+  const limit = Math.max(...lanes.map((lane) =>
+    allocatedLimit(allocation, lane, input.plan.aggregationRequested)));
   let state: MemoryLocalRetrievalResult["vectorState"] = "READY";
   const result = createPrismaMemoryVectorRepository(client).search({
     eligibility: {
@@ -1771,7 +1835,7 @@ function pushVectorTasks(
     const lane: MemoryRetrievalLane = itemType === "FACT_VERSION"
       ? "FACT_VECTOR"
       : "HISTORY_RECALL_VECTOR";
-    const laneLimit = allocatedLimit(allocation, lane);
+    const laneLimit = allocatedLimit(allocation, lane, input.plan.aggregationRequested);
     tasks.push({
       async execute() {
         const searched = await result;

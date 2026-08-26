@@ -7,6 +7,7 @@ import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import {
   fuseMemoryRetrievalCandidates,
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
+  MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   packMemoryPersonalContext,
   planMemoryRetrieval,
   type MemoryRankedCandidate
@@ -1381,7 +1382,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(ranked.every(({ itemType }) => itemType === "FACT_VERSION")).toBe(true);
   });
 
-  it("uses several bounded chat digests for overview while targeted search returns exact chunks", async () => {
+  it("uses digests for overview while targeted search returns authoritative raw chunks", async () => {
     const userId = await createOwner("memory-history-overview");
     try {
       const generationId = await activateLexicalGeneration(userId);
@@ -1393,7 +1394,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       });
       const histories = [
         await createDigestHistoryChat({
-          digestText: "Summary: The cedar deployment chat selected a blue-green rollout.",
+          digestText: "Summary: Sequoiaonly marks the cedar deployment chat, which selected a blue-green rollout.",
           generationId,
           occurredAt: new Date("2026-07-10T09:00:00.000Z"),
           safeChunkText: "User:\nThe cedar deployment needs a blue-green rollout.",
@@ -1480,6 +1481,11 @@ describe("local Memory retrieval on PostgreSQL", () => {
         plan: targetedPlan,
         userId
       });
+      expect(targeted.laneResults.map(({ lane }) => lane)).toEqual([
+        "HISTORY_RECALL_EXACT",
+        "HISTORY_DIGEST_FTS_SIMPLE",
+        "HISTORY_RECALL_FTS_SIMPLE"
+      ]);
       const targetedRanked = fuseMemoryRetrievalCandidates(
         targetedPlan,
         targeted.laneResults,
@@ -1501,6 +1507,44 @@ describe("local Memory retrieval on PostgreSQL", () => {
           history.digestText
         );
       }
+
+      const digestOnlyPlan = planMemoryRetrieval({
+        currentUserText: "sequoiaonly",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: fixtureNow,
+        temporalIntent: "ANY"
+      });
+      const digestOnly = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan: digestOnlyPlan,
+        userId
+      });
+      expect(digestOnly.laneResults.find(({ lane }) =>
+        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates.map(({ itemId }) => itemId))
+        .toEqual([histories[0]!.chunkId]);
+      const digestOnlyRanked = fuseMemoryRetrievalCandidates(
+        digestOnlyPlan,
+        digestOnly.laneResults,
+        fixtureNow
+      );
+      expect(digestOnlyRanked).toMatchObject([{
+        itemId: histories[0]!.chunkId,
+        laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
+      }]);
+      const digestOnlyExpanded = await repository.expand(
+        digestOnly.snapshot,
+        digestOnlyPlan,
+        digestOnlyRanked
+      );
+      expect(digestOnlyExpanded).toEqual([expect.objectContaining({
+        itemId: histories[0]!.chunkId,
+        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+        safeText: histories[0]!.safeChunkText,
+        supportingItemId: null
+      })]);
 
       const aggregationPlan = planMemoryRetrieval({
         aggregationRequested: true,
@@ -2126,9 +2170,9 @@ describe("local Memory retrieval on PostgreSQL", () => {
     }
     const sampleCount = cases.length * 5;
     const evidence = Object.freeze({
-      candidateHardCap: 150,
+      candidateHardCap: MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
       crossTenantHits,
-      evidenceVersion: "memory-language-agnostic-local-candidates-v3",
+      evidenceVersion: "memory-language-agnostic-local-candidates-v4",
       latencyP95Ms: Number(percentile95(latencies).toFixed(2)),
       maximumLatencyP95Ms: 150,
       maximumCandidateCount,
@@ -2138,7 +2182,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       sampleCount
     });
     expect(evidence).toMatchObject({
-      candidateHardCap: 150,
+      candidateHardCap: MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
       crossTenantHits: 0,
       maximumCandidateCount: expect.any(Number),
       recallAt5: 1,

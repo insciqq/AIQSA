@@ -726,9 +726,9 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("bounds semantic reranking to 20 facts, 10 history chunks, and 30 stable handles", () => {
+  it("bounds semantic reranking to 20 facts, 60 history chunks, and 80 stable handles", () => {
     const facts = Array.from({ length: 21 }, (_, index) => core(`fact-${index}`));
-    const history = Array.from({ length: 11 }, (_, index) =>
+    const history = Array.from({ length: 61 }, (_, index) =>
       rankedHistory(`history-${index}`, "NORMAL"));
     const candidates = memoryRelevanceCandidates(
       [...facts.map(({ candidate }) => candidate), ...history],
@@ -736,20 +736,20 @@ describe("Personal Memory v1 run admission", () => {
         ...history.map(({ itemId }) => expandedHistory(itemId))]
     );
 
-    expect(candidates).toHaveLength(30);
+    expect(candidates).toHaveLength(80);
     expect(candidates.filter(({ candidate }) =>
       candidate.itemType === "FACT_VERSION")).toHaveLength(20);
     expect(candidates.filter(({ candidate }) =>
-      candidate.itemType === "RECALL_CHUNK")).toHaveLength(10);
+      candidate.itemType === "RECALL_CHUNK")).toHaveLength(60);
     expect(candidates.map(({ handle }) => handle)).toEqual(
-      Array.from({ length: 30 }, (_, index) => `c${index}`)
+      Array.from({ length: 80 }, (_, index) => `c${index}`)
     );
     expect(candidates.some(({ candidate }) => candidate.itemId === "fact-20")).toBe(false);
-    expect(candidates.some(({ candidate }) => candidate.itemId === "history-10")).toBe(false);
+    expect(candidates.some(({ candidate }) => candidate.itemId === "history-60")).toBe(false);
   });
 
-  it("retains sixty distinct history sources for an aggregation rerank", () => {
-    const history = Array.from({ length: 61 }, (_, index) => ({
+  it("retains 180 distinct history sources for an aggregation rerank", () => {
+    const history = Array.from({ length: 181 }, (_, index) => ({
       ...rankedHistory(`aggregate-${index}`, "NORMAL"),
       metadata: {
         ...rankedHistory(`aggregate-${index}`, "NORMAL").metadata,
@@ -767,13 +767,13 @@ describe("Personal Memory v1 run admission", () => {
       { aggregationRequested: true }
     );
 
-    expect(candidates).toHaveLength(60);
+    expect(candidates).toHaveLength(180);
     expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual(
-      Array.from({ length: 60 }, (_, index) => `aggregate-${index}`)
+      Array.from({ length: 180 }, (_, index) => `aggregate-${index}`)
     );
   });
 
-  it("never restores history that the strict relevance model rejected", () => {
+  it("uses compatibility model fields only for ordering, never admission", () => {
     const history = ["direct", "coverage", "outdated"].map((id, index) => ({
       ...rankedHistory(id, "NORMAL"),
       metadata: {
@@ -833,12 +833,11 @@ describe("Personal Memory v1 run admission", () => {
       temporalIntent: "ANY"
     });
 
-    expect(applyMemoryRelevance(candidates, result, plan)).toMatchObject([
-      { itemId: "direct" }
-    ]);
-    expect(applyMemoryRelevance(candidates, result)).toMatchObject([
-      { itemId: "direct" }
-    ]);
+    const expectedOrder = ["direct", "unrelated-fact", "coverage", "outdated"];
+    expect(applyMemoryRelevance(candidates, result, plan).map(({ itemId }) => itemId))
+      .toEqual(expectedOrder);
+    expect(applyMemoryRelevance(candidates, result).map(({ itemId }) => itemId))
+      .toEqual(expectedOrder);
   });
 
   it("reviews one candidate per strong source before globally ranked repeats", () => {
@@ -873,7 +872,37 @@ describe("Personal Memory v1 run admission", () => {
       candidate.metadata.sourceChatId === "source-chat-0")).toHaveLength(10);
   });
 
-  it("deduplicates only byte-identical history projections before bounded reranking", () => {
+  it("keeps fact relevance slots while diversifying history sources", () => {
+    const fact = core("fact-between");
+    const history = [
+      ["history-a-1", "chat-a"],
+      ["history-a-2", "chat-a"],
+      ["history-b", "chat-b"]
+    ].map(([id, sourceChatId], index) => ({
+      ...rankedHistory(id!, "NORMAL"),
+      finalScore: 1 - index / 10,
+      metadata: {
+        ...rankedHistory(id!, "NORMAL").metadata,
+        sourceChatId: sourceChatId!
+      }
+    }));
+    const candidates = memoryRelevanceCandidates(
+      [history[0]!, fact.candidate, history[1]!, history[2]!],
+      [
+        ...history.map((candidate) => ({
+          ...expandedHistory(candidate.itemId),
+          sourceChatId: candidate.metadata.sourceChatId
+        })),
+        fact.expansion
+      ]
+    );
+
+    expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual([
+      "history-a-1", "fact-between", "history-b", "history-a-2"
+    ]);
+  });
+
+  it("preserves byte-identical projections from distinct evidence roots", () => {
     const fact = core("fact");
     const history = [
       rankedHistory("history-best", "NORMAL"),
@@ -902,10 +931,10 @@ describe("Personal Memory v1 run admission", () => {
     );
 
     expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual([
-      "fact", "history-best", "history-distinct"
+      "fact", "history-best", "history-duplicate", "history-distinct"
     ]);
-    expect(candidates.map(({ handle }) => handle)).toEqual(["c0", "c1", "c2"]);
-    expect(candidates.filter(({ sourceKind }) => sourceKind === "HISTORY")).toHaveLength(2);
+    expect(candidates.map(({ handle }) => handle)).toEqual(["c0", "c1", "c2", "c3"]);
+    expect(candidates.filter(({ sourceKind }) => sourceKind === "HISTORY")).toHaveLength(3);
   });
 
   it("preserves identical history projections at distinct times for a recency plan", () => {
@@ -941,7 +970,7 @@ describe("Personal Memory v1 run admission", () => {
     ]);
   });
 
-  it("orders accepted historical fact states chronologically after reranking", () => {
+  it("keeps relevance selection ahead of chronology rendering", () => {
     const current = core("current-macbook").candidate;
     const previousBase = core("ordered-macbook").candidate;
     const previous: MemoryRankedCandidate = {
@@ -984,12 +1013,12 @@ describe("Personal Memory v1 run admission", () => {
     }, plan);
 
     expect(accepted.map(({ itemId }) => itemId)).toEqual([
-      "ordered-macbook",
-      "current-macbook"
+      "current-macbook",
+      "ordered-macbook"
     ]);
   });
 
-  it("breaks equal historical domain times by transaction time and stable ID", () => {
+  it("uses stable fused order to break equal reranker scores", () => {
     const domainTime = new Date("2025-07-01T00:00:00.000Z");
     const candidates = [
       ["state-z", "2025-07-03T00:00:00.000Z"],
@@ -1023,18 +1052,18 @@ describe("Personal Memory v1 run admission", () => {
     );
     const accepted = applyMemoryRelevance(relevance, {
       bindingId: "binding-historical-ties",
-      decisions: relevance.map((candidate, index) => ({
+      decisions: relevance.map((candidate) => ({
         applicable: true,
         current: true,
         handle: candidate.handle,
         reasonCode: "DIRECT_RELEVANCE" as const,
-        relevanceScore: 0.99 - index * 0.1
+        relevanceScore: 0.9
       })),
       status: "READY"
     }, plan);
 
     expect(accepted.map(({ itemId }) => itemId)).toEqual([
-      "state-a", "state-b", "state-z"
+      "state-z", "state-b", "state-a"
     ]);
   });
 
@@ -1726,7 +1755,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NOT_AVAILABLE",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v1"
+        version: "memory-retrieval-component-metrics-v2"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
@@ -1751,7 +1780,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   );
 
-  it("carries trusted recency intent but excludes a recent irrelevant candidate", async () => {
+  it("carries trusted recency intent without making model relevance an admission gate", async () => {
     const local = repository({ candidates: [laneCandidate("recent-irrelevant")] });
     const options = retrievalOptions([], true);
     const result = await createMemoryRunRetrievalService(
@@ -1768,19 +1797,39 @@ describe("Personal Memory v1 run admission", () => {
         text: "relevant text recent-irrelevant"
       })]
     }));
-    expect(result.items).toEqual([]);
+    expect(result.items).toEqual([
+      expect.objectContaining({ recallChunkId: "recent-irrelevant" })
+    ]);
     expect(result.budgetSnapshot).toMatchObject({
       plan: { recencyRequested: true }
     });
   });
 
-  it("packs only the relevance model's ordered subset", async () => {
+  it("packs the relevance order while retaining lower-scored eligible evidence", async () => {
     const local = repository({ candidates: [laneCandidate("a"), laneCandidate("b")] });
-    const result = await createMemoryRunRetrievalService(local.value, {
-      ...retrievalOptions(["c1"])
-    }).retrieve(runInput("cross language query"));
-    expect(result.items).toEqual([expect.objectContaining({ recallChunkId: "b" })]);
+    const options = retrievalOptions(["c1"]);
+    vi.mocked(options.utilities.rerank).mockResolvedValue({
+      bindingId: "binding-partial-relevance",
+      decisions: [{
+        applicable: true,
+        current: true,
+        handle: "c1",
+        reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: 0.9
+      }],
+      status: "READY"
+    });
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("cross language query"));
+    expect(result.items).toEqual([
+      expect.objectContaining({ recallChunkId: "b" }),
+      expect.objectContaining({ recallChunkId: "a" })
+    ]);
     expect(result.items?.[0]?.selectionReason).toContain("direct_relevance");
+    expect(result.items?.[1]?.selectionReason).toContain("rerank_partial_rrf");
+    expect(result.budgetSnapshot).toMatchObject({
+      componentMetrics: { rerankerFallbackUsed: true }
+    });
   });
 
   it("applies opt-in decay after relevance while preserving baseline scores and items", async () => {
@@ -2190,7 +2239,7 @@ describe("Personal Memory v1 run admission", () => {
     ]);
   });
 
-  it("requires relevance strictly above the configured floor", () => {
+  it("keeps zero and legacy-floor scores because the junk floor is disabled", () => {
     const candidates = memoryRelevanceCandidates(
       [rankedHistory("at-floor", "NORMAL")],
       [expandedHistory("at-floor")]
@@ -2206,23 +2255,51 @@ describe("Personal Memory v1 run admission", () => {
       }],
       status: "READY"
     });
-    expect(decide(0.6)).toEqual([]);
+    expect(decide(0)).toHaveLength(1);
+    expect(decide(0.6)).toHaveLength(1);
     expect(decide(0.600_001)).toHaveLength(1);
   });
 
-  it("returns zero items on abstention or unavailable fuzzy relevance", async () => {
+  it("keeps deterministic sorter bonuses inside the persisted unit-score contract", () => {
+    const base = core("exact-unit-score");
+    const exact = {
+      ...base.candidate,
+      featureSnapshot: {
+        ...base.candidate.featureSnapshot,
+        deterministicMatches: ["EXACT_TEXT" as const]
+      }
+    };
+    const candidates = memoryRelevanceCandidates([exact], [base.expansion]);
+    const ranked = applyMemoryRelevance(candidates, {
+      bindingId: "binding-unit-score",
+      decisions: [{
+        applicable: true,
+        current: true,
+        handle: "c0",
+        reasonCode: "DIRECT_RELEVANCE",
+        relevanceScore: 1
+      }],
+      status: "READY"
+    });
+
+    expect(ranked).toMatchObject([{ finalScore: 1, itemId: "exact-unit-score" }]);
+  });
+
+  it("retains episodic RRF evidence on abstention or unavailable reranking", async () => {
     for (const decision of [[], null] as const) {
       const local = repository({ candidates: [laneCandidate("a")], core: [core()] });
       const result = await createMemoryRunRetrievalService(
         local.value,
         retrievalOptions(decision)
       ).retrieve(runInput("unrelated question"));
-      expect(result.items).toEqual([]);
-      expect(result.outcome).toBe("EMPTY");
+      expect(result.items).toEqual([
+        expect.objectContaining({ recallChunkId: "a" })
+      ]);
+      expect(result.outcome).toBe(decision === null ? "DEGRADED" : "USED");
     }
   });
 
-  it("[E07] uses only exact current facts when the reranker is unavailable", async () => {
+  it("[E07] preserves exact current facts in RRF fallback", async () => {
     const exact: MemoryLaneCandidate = {
       ...factLaneCandidate("exact-current", 1),
       deterministicMatch: "EXACT_TEXT",
@@ -2239,7 +2316,7 @@ describe("Personal Memory v1 run admission", () => {
       degradationCode: "memory_relevance_unavailable",
       items: [{
         factVersionId: "exact-current",
-        selectionReason: "deterministic_fallback.exact_text"
+        selectionReason: "fact_exact+rerank_fallback_rrf"
       }],
       outcome: "DEGRADED"
     });
@@ -2467,10 +2544,8 @@ describe("Personal Memory v1 run admission", () => {
       query: "Как меня зовут?"
     }));
     expect(result.items).toEqual([
-      expect.objectContaining({ factVersionId: "saved-name" })
+      expect.objectContaining({ factVersionId: "saved-name" }),
+      expect.objectContaining({ factVersionId: "arbitrary-fact" })
     ]);
-    expect(result.items?.some((item) =>
-      item.itemType === "FACT_VERSION" && item.factVersionId === "arbitrary-fact"))
-      .toBe(false);
   });
 });

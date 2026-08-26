@@ -24,8 +24,10 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import type { MemoryExecutionOwner } from "../execution/owner";
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import { memorySha256 } from "../persistence/lexical";
-import { MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR } from
-  "../../../domain/memory/retrieval/config";
+import {
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES
+} from "../../../domain/memory/retrieval/config";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   type MemoryVectorProfile
@@ -54,14 +56,23 @@ import {
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v18";
+  "memory-multilingual-relevance-v19";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
   "memory-evidence-aggregation-v2";
 export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
 export const MEMORY_RERANK_AGGREGATION_BATCH_SIZE = 20;
-export const MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES = 60;
-export const MEMORY_RERANK_AGGREGATION_MAX_BATCHES = 5;
+export const MEMORY_RERANK_TARGETED_MAX_CANDIDATES =
+  MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES;
+export const MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES =
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES;
+export const MEMORY_RERANK_AGGREGATION_MAX_BATCHES = Math.ceil(
+  MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES / MEMORY_RERANK_AGGREGATION_BATCH_SIZE
+);
 export const MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES = 3;
+export const MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS =
+  MEMORY_RERANK_TARGETED_MAX_CANDIDATES * 4_000;
+export const MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS =
+  MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES * 4_000;
 export const MEMORY_AGGREGATION_MAX_ATTEMPTS = 2;
 export const MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS = 24;
 export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 8;
@@ -76,28 +87,30 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v15",
-  promptVersion: "memory-relevance-prompt-v14",
+  policyVersion: "memory-relevance-policy-v16",
+  promptVersion: "memory-relevance-prompt-v15",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
     aggregationBatchSize: MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
     aggregationBatchMaxPromptCharacters: MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
     maxAggregationBatches: MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
     maxAggregationCandidates: MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
-    maxTargetedCandidates: 30,
+    maxTargetedCandidates: MEMORY_RERANK_TARGETED_MAX_CANDIDATES,
     maxAttemptsPerBatch: MEMORY_RERANK_MAX_ATTEMPTS,
-    maxAggregationTotalCharacters: 240_000,
+    maxAggregationTotalCharacters: MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS,
     maxParallelAggregationBatches: MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES,
     maxOutputTokens: 4_096,
-    maxTargetedTotalCharacters: 32_000,
-    completePerCandidateDecisions: true,
-    profileInventoryPostcondition: true,
+    maxTargetedTotalCharacters: MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS,
+    partialPerCandidateDecisions: true,
+    profileInventoryPostcondition: false,
     lifecycleTemporalModes: true,
     openRouterReasoning: "disabled_for_interactive_deadline",
     aggregationAware: true,
     aggregationCandidateSelection: "session_score_then_distinct_source_first",
     aggregationRoleAssignment: "separate_global_evidence_planner",
-    version: 18
+    serverAuthorityOnly: true,
+    sorterNotGate: true,
+    version: 19
   }),
   schemaVersion: "memory-relevance-result-v5"
 });
@@ -311,7 +324,7 @@ function aggregationProviderInput(
   };
 }
 
-function partitionAggregationRerankCandidates(
+function partitionRerankCandidates(
   input: Parameters<MemoryRunUtilityService["rerank"]>[0]
 ): readonly MemoryRerankUtilityProviderInput["candidates"][] | null {
   const batches: MemoryRerankUtilityProviderInput["candidates"][] = [];
@@ -476,8 +489,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 function decodeRerank(
   calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"],
-  expectedHandles: readonly string[],
-  profileRequested: boolean
+  expectedHandles: readonly string[]
 ): readonly MemoryRunRerankDecision[] | null {
   const call = calls?.[0];
   if (
@@ -487,30 +499,25 @@ function decodeRerank(
     !exactKeys(call.arguments, ["decisions"]) ||
     !Array.isArray(call.arguments.decisions)
   ) return null;
-  if (call.arguments.decisions.length !== expectedHandles.length) return null;
+  const expected = new Set(expectedHandles);
   const reasonCodes = new Set([
     "DIRECT_RELEVANCE", "SUPPORTING_CONTEXT", "RESPONSE_PREFERENCE",
     "OUTDATED", "NOT_RELEVANT"
   ]);
   const decisions: MemoryRunRerankDecision[] = [];
+  const seen = new Set<string>();
   for (let index = 0; index < call.arguments.decisions.length; index += 1) {
     const value = call.arguments.decisions[index];
     if (!isRecord(value) || !exactKeys(value, [
       "applicable", "current", "handle", "reason_code", "relevance_score"
-    ]) || value.handle !== expectedHandles[index] ||
+    ]) || typeof value.handle !== "string" || !expected.has(value.handle) ||
+      seen.has(value.handle) ||
       typeof value.applicable !== "boolean" || typeof value.current !== "boolean" ||
       typeof value.relevance_score !== "number" ||
       !Number.isFinite(value.relevance_score) || value.relevance_score < 0 ||
       value.relevance_score > 1 || typeof value.reason_code !== "string" ||
-      !reasonCodes.has(value.reason_code)) return null;
-    const positive = value.reason_code === "DIRECT_RELEVANCE" ||
-      value.reason_code === "SUPPORTING_CONTEXT" ||
-      value.reason_code === "RESPONSE_PREFERENCE";
-    if (
-      (positive && (!value.applicable || !value.current)) ||
-      (value.reason_code === "OUTDATED" && (value.applicable || value.current)) ||
-      (value.reason_code === "NOT_RELEVANT" && value.applicable)
-    ) return null;
+      !reasonCodes.has(value.reason_code)) continue;
+    seen.add(value.handle);
     decisions.push({
       applicable: value.applicable,
       current: value.current,
@@ -519,11 +526,7 @@ function decodeRerank(
       relevanceScore: value.relevance_score
     });
   }
-  if (profileRequested && decisions.some((decision) =>
-    !decision.applicable || !decision.current ||
-    decision.reasonCode !== "DIRECT_RELEVANCE" ||
-    decision.relevanceScore <= MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR)) return null;
-  return decisions;
+  return decisions.length > 0 ? decisions : null;
 }
 
 function decodeAggregation(
@@ -1025,8 +1028,10 @@ export function createMemoryRunUtilityService(
         input.candidates.length < 1 ||
         input.candidates.length > (aggregationRequested
           ? MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES
-          : 30) ||
-        totalCharacters > (aggregationRequested ? 240_000 : 32_000) ||
+          : MEMORY_RERANK_TARGETED_MAX_CANDIDATES) ||
+        totalCharacters > (aggregationRequested
+          ? MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS
+          : MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS) ||
         new Set(handles).size !== handles.length ||
         input.candidates.some((candidate, index) =>
           candidate.handle !== `c${index}` ||
@@ -1038,14 +1043,7 @@ export function createMemoryRunUtilityService(
         ) || input.profileRequested && input.candidates.some((candidate) =>
           !candidate.current || candidate.sourceKind === "HISTORY")
       ) return unavailable("memory_utility_input_blocked");
-      const candidateBatches = aggregationRequested
-        ? partitionAggregationRerankCandidates(input)
-        : memoryRunUtilityPromptCharacters(rerankProviderInput(
-            input,
-            input.candidates
-          )) <= MEMORY_RERANK_MAX_PROMPT_CHARACTERS
-          ? [input.candidates]
-          : null;
+      const candidateBatches = partitionRerankCandidates(input);
       if (!candidateBatches) return unavailable("memory_utility_input_blocked");
       const results = await mapWithConcurrency(
         candidateBatches,
@@ -1053,8 +1051,8 @@ export function createMemoryRunUtilityService(
         async (candidates, batchIndex) => {
           const batchHandles = candidates.map((candidate) => candidate.handle);
           const inputHash = memoryExecutionSha256({
-            aggregationBatchCount: candidateBatches.length,
-            aggregationBatchIndex: batchIndex,
+            rerankBatchCount: candidateBatches.length,
+            rerankBatchIndex: batchIndex,
             aggregationRequested,
             candidates: candidates.map((candidate) => ({
               authorityLevel: candidate.authorityLevel,
@@ -1075,7 +1073,7 @@ export function createMemoryRunUtilityService(
             queryHash: memorySha256(input.query),
             retrievalMode: input.retrievalMode,
             temporalIntent: input.temporalIntent,
-            version: 10
+            version: 11
           });
           const firstOrdinal = rerankBatchFirstOrdinal(batchIndex);
           let result = await runTextUtility(
@@ -1087,7 +1085,7 @@ export function createMemoryRunUtilityService(
             rerankVersions,
             inputHash,
             null,
-            (calls) => decodeRerank(calls, batchHandles, input.profileRequested)
+            (calls) => decodeRerank(calls, batchHandles)
           );
           // A structurally invalid settled response is safe to retry once: the
           // reranker has no side effects, and each attempt receives its own
@@ -1108,24 +1106,24 @@ export function createMemoryRunUtilityService(
               rerankVersions,
               inputHash,
               result.snapshotHash,
-              (calls) => decodeRerank(calls, batchHandles, input.profileRequested)
+              (calls) => decodeRerank(calls, batchHandles)
             );
           }
           return result;
         }
       );
-      const failed = results.find((result) => result.status !== "READY");
-      if (failed?.status === "UNAVAILABLE") {
-        return unavailable(failed.reason, failed.bindingId);
-      }
       const ready = results.filter((result) => result.status === "READY");
       const bindingId = ready[0]?.bindingId;
-      return bindingId && ready.length === results.length
-        ? {
-            bindingId,
-            decisions: ready.flatMap((result) => result.output),
-            status: "READY"
-          }
+      if (bindingId && ready.length > 0) {
+        return {
+          bindingId,
+          decisions: ready.flatMap((result) => result.output),
+          status: "READY"
+        };
+      }
+      const failed = results.find((result) => result.status === "UNAVAILABLE");
+      return failed?.status === "UNAVAILABLE"
+        ? unavailable(failed.reason, failed.bindingId)
         : unavailable("memory_run_utility_unavailable");
     }
   });

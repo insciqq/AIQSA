@@ -119,7 +119,7 @@ describe("Personal Memory context pack", () => {
     expect(pack.text).toContain("Response preferences");
     expect(pack.text).toContain("Relevant prior conversations");
     expect(pack.text).toContain("answer that fact directly");
-    expect(pack.packerVersion).toBe("memory-context-packer-v10");
+    expect(pack.packerVersion).toBe("memory-context-packer-v11");
   });
 
   it("labels depth-one synthesis in a separate inferred-pattern section", () => {
@@ -355,7 +355,30 @@ describe("Personal Memory context pack", () => {
     expect(pack.text).not.toContain("Do not count the boundary event itself");
   });
 
-  it("makes the ten-source aggregation ceiling reachable for full history chunks", () => {
+  it("applies source diversity only inside history relevance slots", () => {
+    const candidates = [
+      ranked("history-a-1", true, "DYNAMIC", "chat-a"),
+      ranked("fact-between"),
+      ranked("history-a-2", true, "DYNAMIC", "chat-a"),
+      ranked("history-b", true, "DYNAMIC", "chat-b")
+    ];
+    const pack = packMemoryPersonalContext({
+      expanded: candidates.map((candidate) => expansion(
+        candidate.itemId,
+        candidate.itemType === "RECALL_CHUNK",
+        `memory ${candidate.itemId}`,
+        candidate.metadata.sourceChatId ?? "chat-source"
+      )),
+      plan,
+      ranked: candidates
+    });
+
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual([
+      "history-a-1", "fact-between", "history-b", "history-a-2"
+    ]);
+  });
+
+  it("keeps all distinct aggregation sources reachable for full history chunks", () => {
     const items = Array.from({ length: 10 }, (_, index) => ({
       candidate: ranked(`long-event-${index}`, true, "DYNAMIC", `long-chat-${index}`),
       expansion: expansion(

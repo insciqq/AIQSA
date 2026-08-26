@@ -274,7 +274,7 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
         path: "retrieval/runAdmission.test.ts"
       },
       {
-        anchor: "[E07] uses only exact current facts when the reranker is unavailable",
+        anchor: "[E07] preserves exact current facts in RRF fallback",
         kind: "provider_budget",
         path: "retrieval/runAdmission.test.ts"
       },
@@ -450,7 +450,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v14",
+      retrieval: "memory-personal-retrieval-v15",
       synthesis: [
         "memory-synthesis-v2",
         "memory-synthesis-policy-v2",
