@@ -161,13 +161,13 @@ describe("relative-rank Memory fusion", () => {
     }], now)).toEqual([]);
   });
 
-  it("widens history fusion only for an explicit aggregation plan", () => {
-    const candidates = Array.from({ length: 12 }, (_, index) =>
+  it("uses the widened targeted lane and the larger aggregation lane", () => {
+    const candidates = Array.from({ length: 61 }, (_, index) =>
       historyCandidate(`history-${index}`, 1 - index / 100));
     const results = [{ candidates, lane: "HISTORY_RECALL_VECTOR" as const }];
 
-    expect(fuseMemoryRetrievalCandidates(pastChatPlan, results, now)).toHaveLength(6);
-    expect(fuseMemoryRetrievalCandidates(aggregationPlan, results, now)).toHaveLength(12);
+    expect(fuseMemoryRetrievalCandidates(pastChatPlan, results, now)).toHaveLength(60);
+    expect(fuseMemoryRetrievalCandidates(aggregationPlan, results, now)).toHaveLength(61);
   });
 
   it("lets aggregation coverage candidates from a second history lane reach fusion", () => {
@@ -215,6 +215,16 @@ describe("relative-rank Memory fusion", () => {
       }, {
         ...second,
         metadata: { ...second.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-b" }
+      }],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now)).toHaveLength(2);
+    expect(fuseMemoryRetrievalCandidates(pastChatPlan, [{
+      candidates: [{
+        ...first,
+        metadata: { ...first.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-a" }
+      }, {
+        ...second,
+        metadata: { ...second.metadata, dedupeKey: sharedDedupe, sourceChatId: "chat-a" }
       }],
       lane: "HISTORY_RECALL_VECTOR"
     }], now)).toHaveLength(1);

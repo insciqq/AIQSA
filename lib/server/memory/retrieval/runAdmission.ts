@@ -4,16 +4,16 @@ import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
   MEMORY_CONTEXT_TARGET_TOKENS,
   MEMORY_DECAY_POLICY_VERSION,
-  MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
-  MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
   MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES,
   MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
   applyMemoryDecay,
   fuseMemoryRetrievalCandidates,
   isEligibleMemoryResponsePreferenceCore,
+  memoryRetrievalEvidenceRootKey,
   packMemoryPersonalContext,
   planMemoryRetrieval,
   type MemoryContextPack,
@@ -79,7 +79,7 @@ import {
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
   "memory-run-retrieval-admission-v11";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v1";
+  "memory-retrieval-component-metrics-v2";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -586,7 +586,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   for (const result of input.laneResults) {
     candidateCountsByLane[result.lane] = result.candidates.length;
     for (const candidate of result.candidates) {
-      beforeFusionRoots.add(candidate.metadata.dedupeKey);
+      beforeFusionRoots.add(memoryRetrievalEvidenceRootKey(candidate));
     }
   }
   const packedKeys = new Set(input.pack.items.map((item) =>
@@ -606,11 +606,15 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
       incrementCount(utilityFailureReasonCounts, utility.reason);
     }
   }
-  const digestHits = input.expanded.filter((candidate) =>
-    candidate.projectionKind === "CHAT_DIGEST_SAFE_TEXT").length;
+  const digestHits = (candidateCountsByLane.HISTORY_DIGEST_FTS_SIMPLE ?? 0) +
+    input.expanded.filter((candidate) =>
+      candidate.projectionKind === "CHAT_DIGEST_SAFE_TEXT").length;
   const rawChunkExpansions = input.expanded.filter((candidate) =>
     candidate.itemType === "RECALL_CHUNK" &&
     candidate.projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT").length;
+  const rerankerDecisionHandles = new Set(input.relevance?.status === "READY"
+    ? input.relevance.decisions.map(({ handle }) => handle)
+    : []);
   return Object.freeze({
     candidateCountsByLane,
     candidatesRetainedAfterReranker: input.relevant.length,
@@ -627,7 +631,9 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     rawChunkExpansions,
     rawRoundExpansions: 0,
     rerankerFallbackUsed: input.relevanceInput.length > 0 &&
-      input.relevance?.status !== "READY",
+      (input.relevance?.status === "READY"
+        ? input.relevanceInput.some(({ handle }) => !rerankerDecisionHandles.has(handle))
+        : true),
     safetyFindingCounts: {},
     safetyMetricsState: "QUERY_ONLY_BASELINE",
     selectedSourceChats: selectedSourceChats.size,
@@ -637,7 +643,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     temporalParserType: null,
     temporalUnrestrictedCandidateCount: 0,
     uniqueEvidenceRootsAfterFusion: new Set(input.dynamicFused.map((candidate) =>
-      candidate.metadata.dedupeKey)).size,
+      memoryRetrievalEvidenceRootKey(candidate))).size,
     uniqueEvidenceRootsBeforeFusion: beforeFusionRoots.size,
     utilityCallCounts,
     utilityFailureReasonCounts,
@@ -818,7 +824,7 @@ export type MemoryRelevanceCandidate = Readonly<{
   text: string;
 }>;
 
-function aggregationSessionOrder(
+function sourceDiversityOrder(
   candidates: readonly MemoryRelevanceCandidate[]
 ): readonly MemoryRelevanceCandidate[] {
   type SourceGroup = {
@@ -826,7 +832,6 @@ function aggregationSessionOrder(
     firstIndex: number;
     sourceChatId: string;
   };
-  const facts = candidates.filter(({ sourceKind }) => sourceKind !== "HISTORY");
   const groups = new Map<string, SourceGroup>();
   candidates.forEach((candidate, index) => {
     if (candidate.sourceKind !== "HISTORY") return;
@@ -847,25 +852,25 @@ function aggregationSessionOrder(
     return score(right) - score(left) ||
       left.firstIndex - right.firstIndex ||
       left.sourceChatId.localeCompare(right.sourceChatId);
-  }).slice(0, MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS);
+  });
 
   // Session relevance is estimated from its strongest chunk plus a small
-  // breadth signal. Give every selected session one semantic-review slot,
-  // then fill the remaining bounded pool by the original global rank. This
-  // avoids both a hard per-session chunk quota and domination by one verbose
-  // conversation before the strict relevance utility sees other sessions.
-  const selectedSources = new Set(selectedGroups.map(({ sourceChatId }) => sourceChatId));
+  // breadth signal. Give every source one semantic-review slot, then fill the
+  // remaining bounded pool by the original global rank. This is a soft order:
+  // no source is excluded and there is no per-source quota.
   const firstCandidates = selectedGroups.map(({ candidates: entries }) => entries[0]!);
   const firstKeys = new Set(firstCandidates.map(({ candidate }) =>
     `${candidate.itemType}:${candidate.itemId}`));
   const repeats = candidates.filter((candidate) => {
     if (candidate.sourceKind !== "HISTORY") return false;
-    const sourceChatId = candidate.candidate.metadata.sourceChatId ??
-      `missing-source:${candidate.candidate.itemId}`;
     const key = `${candidate.candidate.itemType}:${candidate.candidate.itemId}`;
-    return selectedSources.has(sourceChatId) && !firstKeys.has(key);
+    return !firstKeys.has(key);
   });
-  return [...facts, ...firstCandidates, ...repeats];
+  const history = [...firstCandidates, ...repeats];
+  let historyIndex = 0;
+  return candidates.map((candidate) => candidate.sourceKind === "HISTORY"
+    ? history[historyIndex++]!
+    : candidate);
 }
 
 export function memoryRelevanceCandidates(
@@ -881,21 +886,9 @@ export function memoryRelevanceCandidates(
     `${candidate.itemType}:${candidate.itemId}`,
     candidate
   ]));
-  const seenHistoryProjections = new Set<string>();
   const projected = ranked.flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
-    // Chunks retain source-specific identities, but repeated chats can still
-    // produce the exact same safe projection. For non-temporal plans, one copy
-    // is sufficient evidence; removing later byte-for-byte copies before the
-    // bounded reranker preserves room for distinct facts and history without
-    // fuzzy or semantic deduplication. Recency and aggregation plans retain
-    // every source occurrence because its time/source identity is evidence.
-    if (candidate.itemType === "RECALL_CHUNK" &&
-      !options.recencyRequested && !options.aggregationRequested) {
-      if (seenHistoryProjections.has(projection.safeText)) return [];
-      seenHistoryProjections.add(projection.safeText);
-    }
     const sourceKind = candidate.itemType === "RECALL_CHUNK"
       ? "HISTORY" as const
       : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const;
@@ -919,9 +912,7 @@ export function memoryRelevanceCandidates(
       text: projection.safeText
     }];
   });
-  const ordered = options.aggregationRequested
-    ? aggregationSessionOrder(projected)
-    : projected;
+  const ordered = sourceDiversityOrder(projected);
   let factCount = 0;
   let historyCount = 0;
   const historyLimit = options.aggregationRequested
@@ -936,71 +927,63 @@ export function memoryRelevanceCandidates(
     return historyCount <= historyLimit;
   }).slice(0, options.aggregationRequested
     ? MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES
-    : 30);
+    : MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES);
   return bounded.map((entry, index) => ({ ...entry, handle: `c${index}` }));
 }
 
 export function applyMemoryRelevance(
   candidates: readonly MemoryRelevanceCandidate[],
   result: MemoryRunRerankResult | null,
-  plan?: MemoryRetrievalPlan
+  _plan?: MemoryRetrievalPlan
 ): readonly MemoryRankedCandidate[] {
   if (!result || result.status !== "READY") {
-    return candidates.flatMap((entry) => {
-      const matches = entry.candidate.featureSnapshot.deterministicMatches ?? [];
-      const deterministic = entry.current && !entry.historical && (
-        plan?.mode === "CURRENT_PROFILE"
-          ? matches.includes("PROFILE")
-          : plan?.mode === "TARGETED_CURRENT" &&
-            (matches.includes("EXACT_TEXT") ||
-              matches.includes("EXACT_ALIAS_SINGLE_ROOT"))
-      );
-      if (!deterministic) return [];
-      const match = matches.includes("EXACT_TEXT")
-        ? "exact_text"
-        : matches.includes("EXACT_ALIAS_SINGLE_ROOT")
-          ? "exact_alias_single_root"
-          : "profile";
-      return [{
-        ...entry.candidate,
-        finalScore: match === "exact_text" ? 1 : 0.95,
-        selectionReason: `deterministic_fallback.${match}`
-      }];
-    }).sort((left, right) =>
-      right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId));
+    return candidates.map((entry) => ({
+      ...entry.candidate,
+      selectionReason: `${entry.candidate.selectionReason}+rerank_fallback_rrf`
+    }));
   }
   const byHandle = new Map(candidates.map((entry) => [entry.handle, entry]));
-  const accepted = result.decisions.flatMap((decision) => {
-    const entry = byHandle.get(decision.handle);
-    if (!entry || !decision.applicable || !decision.current ||
-      decision.relevanceScore <= MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR) return [];
+  const decisionByHandle = new Map(result.decisions.flatMap((decision) =>
+    byHandle.has(decision.handle) ? [[decision.handle, decision] as const] : []));
+  const originalOrder = new Map(candidates.map((entry, index) => [
+    `${entry.candidate.itemType}:${entry.candidate.itemId}`,
+    index
+  ]));
+  return candidates.map((entry) => {
     const candidate = entry.candidate;
-    const reason = `${candidate.selectionReason}+${decision.reasonCode.toLocaleLowerCase("und")}`;
-    return [{
-      ...candidate,
-      finalScore: decision.relevanceScore * (
-        candidate.metadata.sourceAuthority === "SYNTHESIS"
-          ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
-          : 1
-      ),
-      selectionReason: reason.length <= 128 ? reason : "semantic_relevance"
-    }];
-  }).sort((left, right) => {
-    if (plan?.mode === "HISTORICAL_MEMORY") {
-      const leftTime = left.metadata.occurredAt ?? left.metadata.validFrom ??
-        left.metadata.observedAt ?? left.metadata.systemFrom;
-      const rightTime = right.metadata.occurredAt ?? right.metadata.validFrom ??
-        right.metadata.observedAt ?? right.metadata.systemFrom;
-      const chronological = (leftTime?.getTime() ?? 0) - (rightTime?.getTime() ?? 0);
-      if (chronological !== 0) return chronological;
-      const transactional = (left.metadata.systemFrom?.getTime() ?? 0) -
-        (right.metadata.systemFrom?.getTime() ?? 0);
-      if (transactional !== 0) return transactional;
-      return left.itemId.localeCompare(right.itemId);
+    const decision = decisionByHandle.get(entry.handle);
+    if (!decision) {
+      return {
+        ...candidate,
+        selectionReason: `${candidate.selectionReason}+rerank_partial_rrf`
+      };
     }
-    return right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId);
-  });
-  return accepted;
+    const matches = candidate.featureSnapshot.deterministicMatches ?? [];
+    const deterministicBonus = matches.includes("EXACT_TEXT")
+      ? 0.05
+      : matches.includes("EXACT_ALIAS_SINGLE_ROOT") || matches.includes("PROFILE")
+        ? 0.025
+        : candidate.metadata.current && candidate.metadata.sourceMode === "EXPLICIT"
+          ? 0.01
+          : 0;
+    const authorityMultiplier = candidate.metadata.sourceAuthority === "SYNTHESIS"
+      ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
+      : 1;
+    const reason = `${candidate.selectionReason}+semantic_sort.` +
+      decision.reasonCode.toLocaleLowerCase("und");
+    return {
+      ...candidate,
+      // Model applicable/current fields are compatibility metadata only. All
+      // authority and lifecycle decisions were already enforced server-side.
+      finalScore: Math.min(1, decision.relevanceScore * authorityMultiplier +
+        deterministicBonus),
+      selectionReason: reason.length <= 128 ? reason : "semantic_sort"
+    };
+  }).sort((left, right) =>
+    right.finalScore - left.finalScore ||
+    right.rrfScore - left.rrfScore ||
+    (originalOrder.get(`${left.itemType}:${left.itemId}`) ?? Number.MAX_SAFE_INTEGER) -
+      (originalOrder.get(`${right.itemType}:${right.itemId}`) ?? Number.MAX_SAFE_INTEGER));
 }
 
 function degradationFor(

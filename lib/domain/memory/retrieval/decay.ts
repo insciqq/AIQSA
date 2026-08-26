@@ -110,8 +110,8 @@ function chronological(candidate: MemoryRankedCandidate): number {
     candidate.metadata.observedAt ?? candidate.metadata.systemFrom)?.getTime() ?? 0;
 }
 
-/** Applies only to candidates that already passed strict relevance. Disabled
- * or unknown policy versions return the exact original array and objects. */
+/** Applies only after authoritative rejoin and optional semantic ordering.
+ * Disabled or unknown policy versions return the exact original array and objects. */
 export function applyMemoryDecay(
   candidates: readonly MemoryRankedCandidate[],
   input: Readonly<{

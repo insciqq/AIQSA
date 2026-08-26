@@ -38,15 +38,16 @@ describe("Memory retrieval lane scheduler", () => {
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(allocation).toEqual({
-      FACT_EXACT: 4,
-      FACT_ENTITY: 5,
-      FACT_FTS_SIMPLE: 5,
-      FACT_RECENT: 2,
-      FACT_VECTOR: 5,
-      HISTORY_RECALL_EXACT: 2,
-      HISTORY_RECALL_FTS_SIMPLE: 3,
-      HISTORY_RECALL_RECENT: 1,
-      HISTORY_RECALL_VECTOR: 3
+      FACT_EXACT: 7,
+      FACT_ENTITY: 10,
+      FACT_FTS_SIMPLE: 10,
+      FACT_RECENT: 3,
+      FACT_VECTOR: 10,
+      HISTORY_DIGEST_FTS_SIMPLE: 25,
+      HISTORY_RECALL_EXACT: 10,
+      HISTORY_RECALL_FTS_SIMPLE: 25,
+      HISTORY_RECALL_RECENT: 10,
+      HISTORY_RECALL_VECTOR: 50
     });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);
@@ -62,13 +63,17 @@ describe("Memory retrieval lane scheduler", () => {
   it("gives aggregation history lanes a larger bounded ceiling", () => {
     const targetedHistory = [
       "HISTORY_RECALL_EXACT",
+      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_RECENT",
       "HISTORY_RECALL_VECTOR"
     ] as const;
     expect(allocateMemoryRetrievalLaneLimits(targetedHistory)).toEqual({
-      HISTORY_RECALL_EXACT: 4,
-      HISTORY_RECALL_FTS_SIMPLE: 6,
-      HISTORY_RECALL_VECTOR: 6
+      HISTORY_RECALL_EXACT: 12,
+      HISTORY_DIGEST_FTS_SIMPLE: 30,
+      HISTORY_RECALL_FTS_SIMPLE: 30,
+      HISTORY_RECALL_RECENT: 12,
+      HISTORY_RECALL_VECTOR: 60
     });
     const aggregationHistoryLanes = [
       "HISTORY_RECALL_EXACT",

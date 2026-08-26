@@ -169,18 +169,16 @@ function selectionReason(laneRanks: Aggregate["laneRanks"]): string {
     .join("+");
 }
 
-function rankedDedupeKey(
-  plan: MemoryRetrievalPlan,
-  candidate: MemoryRankedCandidate
+export function memoryRetrievalEvidenceRootKey(
+  candidate: Pick<MemoryLaneCandidate, "itemType" | "metadata">
 ): string {
-  if (
-    plan.aggregationRequested &&
-    candidate.itemType === "RECALL_CHUNK" &&
-    candidate.metadata.sourceChatId
-  ) {
-    return `${candidate.metadata.sourceChatId}:${candidate.metadata.dedupeKey}`;
-  }
-  return candidate.metadata.dedupeKey;
+  // The same projection reached through several lanes is one piece of
+  // evidence, while byte-identical projections from different conversations
+  // remain independent source roots.
+  return candidate.itemType === "RECALL_CHUNK"
+    ? `history:${candidate.metadata.sourceChatId ?? "missing-source"}:` +
+      candidate.metadata.dedupeKey
+    : `fact:${candidate.metadata.dedupeKey}`;
 }
 
 const deterministicMatchOrder: readonly MemoryDeterministicMatch[] = [
@@ -257,7 +255,7 @@ export function fuseMemoryRetrievalCandidates(
   );
   const dedupe = new Set<string>();
   return ranked.filter((candidate) => {
-    const key = rankedDedupeKey(plan, candidate);
+    const key = memoryRetrievalEvidenceRootKey(candidate);
     if (dedupe.has(key)) return false;
     dedupe.add(key);
     return true;

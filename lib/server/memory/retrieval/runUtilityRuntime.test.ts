@@ -146,16 +146,16 @@ describe("Memory run utility provider runtime", () => {
           ? JSON.parse(init.body) as unknown
           : null;
         expect(JSON.stringify(body)).toContain(
-          "SAVED outranks LEARNED, and LEARNED outranks PAST_CHAT"
+          "only as an ordering feature"
         );
         expect(JSON.stringify(body)).toContain(
-          "Authority is never a relevance signal"
+          "compatibility metadata and do not control server admission"
         );
         expect(JSON.stringify(body)).toContain(
           "a candidate that contains that value and states the requested property is DIRECT_RELEVANCE"
         );
         expect(JSON.stringify(body)).toContain(
-          "A different detail about the same project or event is NOT_RELEVANT"
+          "A different detail about the same project or event is usually NOT_RELEVANT"
         );
         expect(JSON.stringify(body)).toContain("temporal boundary");
         expect(JSON.stringify(body)).toContain('\\"profile_requested\\":false');

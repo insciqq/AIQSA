@@ -1,22 +1,26 @@
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v14";
-export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v8";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v10";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v15";
+export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v9";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v11";
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;
-export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 30;
-export const MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES = 200;
+export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 160;
+export const MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES = 400;
 export const MEMORY_RETRIEVAL_MAX_PARALLEL_LANES = 4;
-export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 30;
-export const MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES = 120;
-export const MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES = 60;
-export const MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS = 60;
-export const MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES = 10;
+export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 100;
+export const MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES = 250;
+export const MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES = 60;
+export const MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES = 80;
+export const MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES = 180;
+export const MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS = 180;
 
-// Candidate generation deliberately has no semantic similarity cutoff. Only
-// the bounded nearest eligible candidates reach the mandatory relevance model,
-// which remains the authority for admission into the dynamic context pack.
+// Candidate generation deliberately has no semantic similarity cutoff. The
+// bounded nearest eligible candidates reach an optional ordering model; only
+// server-side authority and lifecycle fences control admission.
 export const MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR = -1;
-export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR = 0.6;
+// Compatibility reranking is an ordering feature, not an admission gate. A
+// calibrated optional junk floor may be introduced later, but is deliberately
+// disabled until fixed-sample evidence supports one.
+export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR: number | null = null;
 export const MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER = 0.5;
 
 export const MEMORY_RETRIEVAL_LANE_WEIGHTS = Object.freeze({
@@ -27,6 +31,7 @@ export const MEMORY_RETRIEVAL_LANE_WEIGHTS = Object.freeze({
   FACT_RECENT: 0.65,
   FACT_VECTOR: 1,
   HISTORY_RECALL_EXACT: 1.35,
+  HISTORY_DIGEST_FTS_SIMPLE: 1,
   HISTORY_RECALL_FTS_SIMPLE: 1,
   HISTORY_RECALL_RECENT: 0.65,
   HISTORY_RECALL_VECTOR: 1
@@ -43,9 +48,9 @@ export const MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS = 24;
 export const MEMORY_CONTEXT_MAX_DYNAMIC_FACTS = 6;
 export const MEMORY_CONTEXT_PROFILE_MAX_FACTS = 12;
 export const MEMORY_CONTEXT_MAX_HISTORY_SNIPPETS = 10;
-export const MEMORY_CONTEXT_MAX_SOURCE_CHATS = 10;
+export const MEMORY_CONTEXT_MAX_SOURCE_CHATS = 20;
 export const MEMORY_CONTEXT_AGGREGATION_MAX_HISTORY_SNIPPETS = 20;
-export const MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS = 10;
+export const MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS = 40;
 export const MEMORY_CONTEXT_OVERVIEW_MAX_DIGESTS = 8;
 export const MEMORY_CONTEXT_OVERVIEW_MAX_SOURCE_CHATS = 8;
 export const MEMORY_CONTEXT_DYNAMIC_FACT_TARGET_TOKENS = 500;
@@ -60,10 +65,11 @@ export const MEMORY_RETRIEVAL_LANE_LIMITS = Object.freeze({
   FACT_FTS_SIMPLE: 12,
   FACT_RECENT: 4,
   FACT_VECTOR: 12,
-  HISTORY_RECALL_EXACT: 4,
-  HISTORY_RECALL_FTS_SIMPLE: 6,
-  HISTORY_RECALL_RECENT: 3,
-  HISTORY_RECALL_VECTOR: 6
+  HISTORY_RECALL_EXACT: 12,
+  HISTORY_DIGEST_FTS_SIMPLE: 30,
+  HISTORY_RECALL_FTS_SIMPLE: 30,
+  HISTORY_RECALL_RECENT: 12,
+  HISTORY_RECALL_VECTOR: 60
 } as const);
 
 export const MEMORY_RETRIEVAL_AGGREGATION_HISTORY_LANE_LIMITS = Object.freeze({
@@ -90,6 +96,7 @@ export const MEMORY_RETRIEVAL_LANE_ORDER = Object.freeze([
   "FACT_EXACT",
   "FACT_ENTITY",
   "HISTORY_RECALL_EXACT",
+  "HISTORY_DIGEST_FTS_SIMPLE",
   "FACT_FTS_SIMPLE",
   "HISTORY_RECALL_FTS_SIMPLE",
   "FACT_VECTOR",
