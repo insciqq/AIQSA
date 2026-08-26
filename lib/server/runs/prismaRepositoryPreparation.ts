@@ -1408,14 +1408,16 @@ const retrievalExecutionRoles = new Set([
 const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ["MEMORY_CONTROL", new Set([0, 1])],
   ["MEMORY_QUERY_EMBED", new Set([1, 3])],
-  ["MEMORY_RERANK", new Set([2, 3])]
+  ["MEMORY_RERANK", new Set([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])]
 ]);
 
 export function validMemoryRetrievalExecutionSequence(
   bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[],
-  profileRequested = false
+  profileRequested = false,
+  aggregationRequested = false
 ): boolean {
-  if (bindings.length > 6) return false;
+  if (profileRequested && aggregationRequested) return false;
+  if (bindings.length > (aggregationRequested ? 16 : 6)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
   if (new Set(positions).size !== positions.length || bindings.some((binding) =>
@@ -1423,6 +1425,8 @@ export function validMemoryRetrievalExecutionSequence(
     !retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal)
   )) return false;
   const present = new Set(positions);
+  if (!aggregationRequested && bindings.some((binding) =>
+    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal >= 4)) return false;
   if (profileRequested && positions.some((position) =>
     position !== "MEMORY_CONTROL:0" &&
     position !== "MEMORY_RERANK:2" &&
@@ -1435,13 +1439,28 @@ export function validMemoryRetrievalExecutionSequence(
       (profileRequested
         ? present.has("MEMORY_CONTROL:0")
         : present.has("MEMORY_QUERY_EMBED:1"))) &&
-    (!present.has("MEMORY_RERANK:3") || present.has("MEMORY_RERANK:2"))
+    (!present.has("MEMORY_RERANK:3") || present.has("MEMORY_RERANK:2")) &&
+    (!present.has("MEMORY_RERANK:4") || present.has("MEMORY_CONTROL:0")) &&
+    (!present.has("MEMORY_RERANK:5") || present.has("MEMORY_RERANK:4")) &&
+    (!present.has("MEMORY_RERANK:6") || present.has("MEMORY_CONTROL:0")) &&
+    (!present.has("MEMORY_RERANK:7") || present.has("MEMORY_RERANK:6")) &&
+    (!present.has("MEMORY_RERANK:8") || present.has("MEMORY_RERANK:2")) &&
+    (!present.has("MEMORY_RERANK:9") || present.has("MEMORY_RERANK:8")) &&
+    (!present.has("MEMORY_RERANK:10") || present.has("MEMORY_RERANK:6")) &&
+    (!present.has("MEMORY_RERANK:11") || present.has("MEMORY_RERANK:10")) &&
+    (!present.has("MEMORY_RERANK:12") || present.has("MEMORY_RERANK:10")) &&
+    (!present.has("MEMORY_RERANK:13") || present.has("MEMORY_RERANK:12"))
   );
 }
 
 function profileInventoryDeclared(value: unknown): boolean {
   if (!isRecord(value) || !isRecord(value.plan)) return false;
   return value.plan.profileRequested === true;
+}
+
+function aggregationInventoryDeclared(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.plan)) return false;
+  return value.plan.aggregationRequested === true;
 }
 
 export function validMemoryRerankRetrySettlement(
@@ -1452,13 +1471,17 @@ export function validMemoryRerankRetrySettlement(
     state: string;
   }>[]
 ): boolean {
-  const retry = bindings.find((binding) =>
-    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal === 3);
-  if (!retry) return true;
-  const primary = bindings.find((binding) =>
-    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal === 2);
-  return primary?.state === "FAILED" &&
-    primary.errorCode === "memory_run_utility_output_invalid";
+  return [2, 4, 6, 8, 10, 12].every((primaryOrdinal) => {
+    const retry = bindings.find((binding) =>
+      binding.logicalRole === "MEMORY_RERANK" &&
+      binding.ordinal === primaryOrdinal + 1);
+    if (!retry) return true;
+    const primary = bindings.find((binding) =>
+      binding.logicalRole === "MEMORY_RERANK" &&
+      binding.ordinal === primaryOrdinal);
+    return primary?.state === "FAILED" &&
+      primary.errorCode === "memory_run_utility_output_invalid";
+  });
 }
 
 type PreparingAttemptExecutionEvidence = Readonly<{
@@ -1651,7 +1674,8 @@ async function loadPreparingAttemptExecutionEvidence(
     if (
       !validMemoryRetrievalExecutionSequence(
         bindings,
-        profileInventoryDeclared(budgetSnapshot)
+        profileInventoryDeclared(budgetSnapshot),
+        aggregationInventoryDeclared(budgetSnapshot)
       ) ||
       !validMemoryRerankRetrySettlement(bindings)
     ) {

@@ -7,7 +7,7 @@ import {
 } from "./safety";
 
 export const MEMORY_HISTORY_SOURCE_PROJECTION_VERSION =
-  "memory-history-source-projection-v2";
+  "memory-history-source-projection-v3";
 
 export const MEMORY_HISTORY_SOURCE_ORIGINS = [
   "DEVELOPER",
@@ -516,7 +516,6 @@ function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTur
       assistantMessageId: assistant.input.id,
       id: memorySha256({
         assistantMessageId: assistant.input.id,
-        ordinal,
         projectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
         userMessageId: user.input.id
       }),

@@ -1,14 +1,45 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { planMemoryRetrieval } from "../../../domain/memory/retrieval";
+import {
+  planMemoryRetrieval,
+  type MemoryRankedCandidate
+} from "../../../domain/memory/retrieval";
 import { MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION } from "../persistence/lexical";
-import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
+import {
+  createPrismaLocalMemoryRetrievalRepository,
+  selectMemoryAggregationSessionRepresentatives
+} from "./localRepository";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "./vector";
 
 const now = new Date("2026-08-10T12:00:00.000Z");
+
+function sessionCandidate(
+  id: string,
+  sourceChatId: string,
+  finalScore: number,
+  laneRanks: MemoryRankedCandidate["laneRanks"]
+): MemoryRankedCandidate {
+  return {
+    entryId: `entry-${id}`,
+    featureSnapshot: {
+      authorityRank: 0,
+      fusionVersion: "test",
+      laneCount: Object.keys(laneRanks).length,
+      temporalFit: 1,
+      tier: "DYNAMIC"
+    },
+    finalScore,
+    itemId: id,
+    itemType: "RECALL_CHUNK",
+    laneRanks,
+    metadata: { sourceChatId } as MemoryRankedCandidate["metadata"],
+    rrfScore: finalScore,
+    selectionReason: "history_recall_vector"
+  };
+}
 
 function snapshotRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -61,6 +92,22 @@ function mockClient(
 }
 
 describe("local Memory retrieval repository", () => {
+  it("collapses broad chunk signals to one scored representative per aggregation session", () => {
+    const selected = selectMemoryAggregationSessionRepresentatives([
+      sessionCandidate("a-1", "source-a", 0.4, { HISTORY_RECALL_VECTOR: 1 }),
+      sessionCandidate("b-1", "source-b", 0.35, { HISTORY_RECALL_VECTOR: 2 }),
+      sessionCandidate("a-2", "source-a", 0.3, { HISTORY_RECALL_FTS_SIMPLE: 2 }),
+      sessionCandidate("a-3", "source-a", 0.2, { HISTORY_RECALL_VECTOR: 5 })
+    ]);
+
+    expect(selected.map(({ itemId }) => itemId)).toEqual(["a-1", "b-1"]);
+    expect(selected[0]).toMatchObject({
+      featureSnapshot: { laneCount: 2 },
+      laneRanks: { HISTORY_RECALL_FTS_SIMPLE: 2, HISTORY_RECALL_VECTOR: 1 }
+    });
+    expect(selected[0]!.finalScore).toBeCloseTo(0.43);
+  });
+
   it("emits tenant-first authoritative FTS SQL without selecting raw message content", async () => {
     const mocked = mockClient();
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
@@ -222,6 +269,80 @@ describe("local Memory retrieval repository", () => {
     expect(sql).not.toContain('entry."normalizedSearchText"');
     expect(sql).not.toContain('chunk."safeProjectedText"');
     expect(sql).not.toContain('message."content"');
+  });
+
+  it("uses exact attributable chunks for explicit multi-chat aggregation", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: "Which project milestones did I mention across our chats?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual([
+      "HISTORY_RECALL_EXACT",
+      "HISTORY_RECALL_FTS_SIMPLE"
+    ]);
+    expect(mocked.laneSql).toHaveLength(2);
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain('FROM "MemorySearchEntry" AS entry');
+    expect(sql).toContain('entry."normalizedSearchText"');
+    expect(sql).toContain('INNER JOIN "MemoryRecallChunk" AS chunk');
+    expect(sql).not.toContain('FROM "ChatMemoryDigest" AS digest');
+    expect(sql).not.toContain('chunk."safeProjectedText"');
+    expect(sql).not.toContain('message."content"');
+  });
+
+  it("keeps the raw history vector lane available for multi-chat aggregation", async () => {
+    const mocked = mockClient(snapshotRow({
+      generationIndexMode: "HYBRID",
+      generationPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+    }));
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: "Which deployment rehearsals did I complete across past chats?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1",
+      vector: {
+        minimumScore: 0.4,
+        profile: {
+          configurationFingerprint: "c".repeat(64),
+          connectionId: "connection-1",
+          dimension: 1_024,
+          generationId: "generation-1",
+          minimumSimilarity: 0.55,
+          providerModelId: "model-1",
+          retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
+          vectorSpaceFingerprint: "d".repeat(64)
+        },
+        vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0)
+      }
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual([
+      "HISTORY_RECALL_EXACT",
+      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_VECTOR"
+    ]);
+    expect(result.vectorState).toBe("DEGRADED");
   });
 
   it("loads query-independent response preferences only when the plan admits them", async () => {

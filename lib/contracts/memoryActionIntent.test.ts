@@ -12,6 +12,7 @@ import {
 function intent(overrides: Record<string, unknown> = {}) {
   return {
     action: "NONE",
+    aggregationRequested: false,
     applyResponsePreferences: false,
     category: null,
     categoryHint: null,
@@ -216,6 +217,37 @@ describe("MemoryActionIntent strict contract", () => {
     }))).toMatchObject({
       ok: true,
       value: { recencyRequested: true, retrievalMode: "PAST_CHAT_SEARCH" }
+    });
+  });
+
+  it("admits aggregation only for a bounded past-chat answer plan", () => {
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "all deployment rehearsals completed before launch day",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    }))).toMatchObject({
+      ok: true,
+      value: { aggregationRequested: true }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      aggregationRequested: true,
+      memoryUseful: true,
+      queryText: "current preference"
+    }))).toMatchObject({
+      ok: true,
+      value: { aggregationRequested: false }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "LIST",
+      aggregationRequested: true,
+      reasonCode: "list_request"
+    }))).toMatchObject({
+      ok: true,
+      value: { action: "LIST", aggregationRequested: false }
     });
   });
 

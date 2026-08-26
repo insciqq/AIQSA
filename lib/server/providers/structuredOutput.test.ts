@@ -167,6 +167,29 @@ describe("provider structured output", () => {
     }
   });
 
+  it.each([
+    "openai_responses_native",
+    "openai_responses_compatible"
+  ] as const)(
+    "reserves Responses output budget for reasoning before strict JSON on %s",
+    (adapterKind) => {
+      const model = responsesModel(adapterKind);
+      expect(buildOpenAIResponsesStructuredOutputRequest(model, {
+        ...request,
+        reasoningEffort: "medium"
+      })).toHaveProperty("max_output_tokens", 1_024);
+      expect(buildOpenAIResponsesStructuredOutputRequest(model, {
+        ...request,
+        maxOutputTokens: 2_048,
+        reasoningEffort: "medium"
+      })).toHaveProperty("max_output_tokens", 2_048);
+      expect(buildOpenAIResponsesStructuredOutputRequest(model, {
+        ...request,
+        reasoningEffort: "none"
+      })).toHaveProperty("max_output_tokens", 64);
+    }
+  );
+
   it("preserves OpenRouter routing while forcing one schema-bound tool call", () => {
     expect(buildOpenRouterStructuredOutputRequest(openRouterModel, request)).toMatchObject({
       max_tokens: 64,

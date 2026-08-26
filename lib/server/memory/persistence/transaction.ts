@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   memoryCounterEffectFor,
@@ -13,7 +14,14 @@ import {
 } from "./lexical";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 
-const SERIALIZABLE_ATTEMPTS = 3;
+// Provider work can complete in a burst for one user. Every authoritative
+// Memory commit deliberately takes the same settings lock, so Serializable
+// waiters may each need a fresh snapshot before they can enter the short
+// commit section. Keep provider work outside this loop and give the
+// rollback-safe commit enough attempts to drain that burst.
+const SERIALIZABLE_ATTEMPTS = 24;
+const SERIALIZABLE_RETRY_BASE_DELAY_MS = 25;
+const SERIALIZABLE_RETRY_MAX_DELAY_MS = 500;
 
 export type MemoryTransaction = Prisma.TransactionClient;
 
@@ -59,7 +67,17 @@ export type MemoryTransactionOptions = Readonly<{
   clock?: () => number;
   deadlineAtMs?: number;
   requireActiveOwner?: boolean;
+  serializationRetryDelay?: (retryOrdinal: number) => Promise<void>;
 }>;
+
+async function waitForSerializationRetry(retryOrdinal: number): Promise<void> {
+  const ceiling = Math.min(
+    SERIALIZABLE_RETRY_MAX_DELAY_MS,
+    SERIALIZABLE_RETRY_BASE_DELAY_MS * (2 ** Math.max(0, retryOrdinal - 1))
+  );
+  const milliseconds = randomInt(1, ceiling + 1);
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
 
 function remainingTransactionDeadlineMs(
   options: MemoryTransactionOptions
@@ -95,7 +113,7 @@ function serializationConflict(error: unknown): boolean {
     typeof error.meta === "object" &&
     error.meta !== null &&
     "code" in error.meta &&
-    error.meta.code === "40001";
+    (error.meta.code === "40001" || error.meta.code === "40P01");
 }
 
 function transactionDeadlineExceeded(error: unknown): boolean {
@@ -113,7 +131,17 @@ export async function lockMemorySettings(
   userId: string,
   requireActiveOwner: boolean
 ): Promise<LockedMemorySettings> {
+  // A joined `FOR UPDATE OF owner, settings` can acquire the two table locks
+  // in opposite orders across concurrent transactions. Materializing the
+  // owner lock first gives every Memory path one deterministic lock order,
+  // then the outer query locks the settings row.
   const rows = await tx.$queryRaw<LockedMemorySettingsRow[]>(Prisma.sql`
+    WITH locked_owner AS MATERIALIZED (
+      SELECT owner."id", owner."status"
+      FROM "User" AS owner
+      WHERE owner."id" = ${userId}
+      FOR UPDATE OF owner
+    )
     SELECT
       settings."userId",
       settings."useMemoryFacts",
@@ -135,11 +163,11 @@ export async function lockMemorySettings(
       settings."synthesisEnabledAt",
       settings."synthesisPolicyVersion",
       settings."lastSynthesisAt",
-      owner."status" AS "ownerStatus"
+      locked_owner."status" AS "ownerStatus"
     FROM "UserMemorySettings" AS settings
-    INNER JOIN "User" AS owner ON owner."id" = settings."userId"
+    INNER JOIN locked_owner ON locked_owner."id" = settings."userId"
     WHERE settings."userId" = ${userId}
-    FOR UPDATE OF owner, settings
+    FOR UPDATE OF settings
   `);
   const row = rows[0];
   if (!row || (requireActiveOwner && row.ownerStatus !== "active")) {
@@ -180,7 +208,10 @@ export async function withLockedMemoryTransaction<T>(
       )) {
         return memoryPersistenceFailure("memory_admission_deadline_exceeded");
       }
-      if (attempt < SERIALIZABLE_ATTEMPTS - 1 && serializationConflict(error)) continue;
+      if (attempt < SERIALIZABLE_ATTEMPTS - 1 && serializationConflict(error)) {
+        await (options.serializationRetryDelay ?? waitForSerializationRetry)(attempt + 1);
+        continue;
+      }
       throw error;
     }
   }

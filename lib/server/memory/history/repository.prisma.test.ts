@@ -1607,7 +1607,7 @@ describe("Memory lexical history index persistence", () => {
       });
       expect(digest).toMatchObject({
         activeLeafMessageId: first.assistantMessage.id,
-        pipelineVersion: "memory-chat-digest-v2",
+        pipelineVersion: "memory-chat-digest-v3",
         redactionState: "NOT_NEEDED",
         safetyClass: "NORMAL",
         safeDigestText: expect.stringContaining("Summary:"),

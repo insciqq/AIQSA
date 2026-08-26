@@ -315,4 +315,22 @@ describe("answer outputs v2", () => {
       /FAILED_SAFE|DEGRADED|error|code/i
     );
   });
+
+  it("says Memory was limited instead of unavailable when a degraded pack was used", () => {
+    render(<AnswerOutputsV2 artifact={{
+      citations: [],
+      memoryStatus: "LIMITED",
+      reasoningText: [],
+      sources: []
+    }} showReasoning={false} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Memory was used with limitations for this response."
+    );
+    expect(screen.getByTestId("memory-limited-status")).not.toHaveTextContent(
+      /FAILED_SAFE|DEGRADED|error|code/i
+    );
+    expect(screen.queryByText("Memory was unavailable for this response."))
+      .not.toBeInTheDocument();
+  });
 });

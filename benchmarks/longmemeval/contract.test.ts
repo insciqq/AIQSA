@@ -1,0 +1,255 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  LONGMEMEVAL_MAX_EVALUATOR_CONCURRENCY,
+  LONGMEMEVAL_MAX_CONCURRENCY,
+  assertBenchmarkBaseUrl,
+  assertBenchmarkDatabaseUrl,
+  decodeLongMemEvalDataset,
+  longMemEvalQuestionPrompt,
+  mapConcurrentOrdered,
+  mergeLongMemEvalEvaluationResults,
+  parseLongMemEvalDate,
+  partitionLongMemEvalEvaluation,
+  resolveBenchmarkOutputDirectory,
+  sanitizeLongMemEvalRetrievalAudit,
+  selectLongMemEvalCases
+} from "./contract";
+
+function fixture(questionId = "question-1") {
+  return {
+    answer: "Business Administration",
+    answer_session_ids: ["session-1"],
+    haystack_dates: ["2023/05/20 (Sat) 02:21"],
+    haystack_session_ids: ["session-1"],
+    haystack_sessions: [[
+      { content: "I graduated in Business Administration.", role: "user" },
+      { content: "Congratulations!", role: "assistant" }
+    ]],
+    question: "What degree did I graduate with?",
+    question_date: "2023/05/30 (Tue) 23:40",
+    question_id: questionId,
+    question_type: "single-session-user"
+  };
+}
+
+describe("LongMemEval adapter contract", () => {
+  it("decodes aligned official rows without changing their text", () => {
+    const [entry] = decodeLongMemEvalDataset([fixture()]);
+    expect(entry).toMatchObject({
+      question: "What degree did I graduate with?",
+      questionId: "question-1",
+      questionType: "single-session-user"
+    });
+    expect(entry?.haystackSessions[0]?.[0]?.content)
+      .toBe("I graduated in Business Administration.");
+  });
+
+  it("preserves empty turn content present in the official cleaned dataset", () => {
+    const value = fixture();
+    value.haystack_sessions[0]![0]!.content = "";
+    const [entry] = decodeLongMemEvalDataset([value]);
+    expect(entry?.haystackSessions[0]?.[0]?.content).toBe("");
+  });
+
+  it("rejects misaligned sessions and malformed benchmark dates", () => {
+    expect(() => decodeLongMemEvalDataset([{
+      ...fixture(),
+      haystack_dates: []
+    }])).toThrow("longmemeval_session_alignment_invalid");
+    expect(() => parseLongMemEvalDate("2023/05/30 (Mon) 23:40"))
+      .toThrow("longmemeval_date_invalid");
+  });
+
+  it("uses the official question fields in the Memory query wrapper", () => {
+    const [entry] = decodeLongMemEvalDataset([fixture()]);
+    expect(longMemEvalQuestionPrompt(entry!)).toBe(
+      "Please answer the question based on the relevant chat history.\n\n" +
+      "Current Date: 2023/05/30 (Tue) 23:40\n" +
+      "Question: What degree did I graduate with?\nAnswer:"
+    );
+  });
+
+  it("selects a reproducible sample and preserves explicit question order", () => {
+    const cases = decodeLongMemEvalDataset([
+      fixture("question-1"),
+      fixture("question-2"),
+      fixture("question-3")
+    ]);
+    const first = selectLongMemEvalCases(cases, { sampleSize: 2, seed: "seed" });
+    const second = selectLongMemEvalCases(cases, { sampleSize: 2, seed: "seed" });
+    expect(first.cases.map(({ questionId }) => questionId))
+      .toEqual(second.cases.map(({ questionId }) => questionId));
+    expect(selectLongMemEvalCases(cases, {
+      questionIds: ["question-3", "question-1"]
+    }).cases.map(({ questionId }) => questionId)).toEqual([
+      "question-3",
+      "question-1"
+    ]);
+  });
+
+  it("runs bounded concurrent work while preserving input order", async () => {
+    let active = 0;
+    let peak = 0;
+    const release: Array<() => void> = [];
+    const pending = mapConcurrentOrdered([3, 2, 1, 0], 3, async (value) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => release.push(resolve));
+      active -= 1;
+      return value * 2;
+    });
+
+    await vi.waitFor(() => expect(active).toBe(3));
+    release.splice(0).forEach((resolve) => resolve());
+    await vi.waitFor(() => expect(active).toBe(1));
+    release.splice(0).forEach((resolve) => resolve());
+
+    await expect(pending).resolves.toEqual([6, 4, 2, 0]);
+    expect(peak).toBe(3);
+  });
+
+  it("rejects invalid concurrency before starting work", async () => {
+    const operation = vi.fn(async () => 1);
+    await expect(mapConcurrentOrdered([1], 0, operation))
+      .rejects.toThrow("longmemeval_concurrency_invalid");
+    await expect(mapConcurrentOrdered(
+      [1], LONGMEMEVAL_MAX_CONCURRENCY + 1, operation
+    )).rejects.toThrow("longmemeval_concurrency_invalid");
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("shards 500 evaluations evenly and merges them in answer order", () => {
+    const questionIds = Array.from(
+      { length: 500 },
+      (_, index) => `question-${index}`
+    );
+    const shards = partitionLongMemEvalEvaluation(questionIds, 16);
+    const sizes = shards.map((shard) => shard.length);
+    expect(shards).toHaveLength(16);
+    expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThanOrEqual(1);
+    expect(new Set(shards.flat())).toEqual(new Set(questionIds));
+
+    const completed = [...shards].reverse().map((shard) =>
+      [...shard].reverse().map((questionId) => ({
+        questionId,
+        value: `label-${questionId}`
+      })));
+    expect(mergeLongMemEvalEvaluationResults(questionIds, completed)).toEqual(
+      questionIds.map((questionId) => `label-${questionId}`)
+    );
+  });
+
+  it("fails closed for invalid evaluator concurrency or shard coverage", () => {
+    expect(() => partitionLongMemEvalEvaluation(
+      ["question-1"],
+      LONGMEMEVAL_MAX_EVALUATOR_CONCURRENCY + 1
+    )).toThrow("longmemeval_evaluator_concurrency_invalid");
+    expect(() => mergeLongMemEvalEvaluationResults(
+      ["question-1", "question-2"],
+      [[{ questionId: "question-1", value: true }]]
+    )).toThrow("longmemeval_evaluator_result_incomplete");
+    expect(() => mergeLongMemEvalEvaluationResults(
+      ["question-1"],
+      [[
+        { questionId: "question-1", value: true },
+        { questionId: "question-1", value: false }
+      ]]
+    )).toThrow("longmemeval_evaluator_result_invalid");
+  });
+
+  it("stops admission and waits for active work before rejecting", async () => {
+    let releaseActive: (() => void) | undefined;
+    let activeSettled = false;
+    const started: number[] = [];
+    const pending = mapConcurrentOrdered([0, 1, 2], 2, async (value) => {
+      started.push(value);
+      if (value === 0) {
+        await new Promise<void>((resolve) => {
+          releaseActive = resolve;
+        });
+        activeSettled = true;
+        return value;
+      }
+      throw new Error("expected_failure");
+    });
+
+    await vi.waitFor(() => expect(started).toEqual([0, 1]));
+    expect(activeSettled).toBe(false);
+    releaseActive?.();
+
+    await expect(pending).rejects.toThrow("expected_failure");
+    expect(activeSettled).toBe(true);
+    expect(started).toEqual([0, 1]);
+  });
+
+  it("retains only aggregate text-free retrieval diagnostics", () => {
+    expect(sanitizeLongMemEvalRetrievalAudit({
+      aggregationBoundaryCount: 1,
+      aggregationGroupCounts: { BOUNDARY: 1, MEMBER: 4, private_text: "hidden" },
+      aggregationGuideFormat: "DETAILED",
+      aggregationMemberCount: 4,
+      aggregationOperation: "COUNT",
+      aggregationResolution: "RESOLVED",
+      aggregationState: "READY",
+      hardCapTokens: 5_000,
+      itemCount: 5,
+      omissionCounts: { history_limit: 2, unsafe: "secret text" },
+      packedTokens: 2_300,
+      plan: {
+        aggregationRequested: true,
+        mode: "PAST_CHAT_SEARCH",
+        normalizedQuery: "private query"
+      },
+      reason: "no_relevant_memory",
+      relevanceAcceptedCount: 5,
+      relevanceCandidateCount: 10,
+      relevanceDecisionCounts: { NOT_RELEVANT: 5, SUPPORTING_CONTEXT: 5 },
+      relevanceDecisions: [{ text: "private candidate" }],
+      relevanceRejoinedCount: 5,
+      targetTokens: 4_000
+    })).toEqual({
+      aggregationBoundaryCount: 1,
+      aggregationGroupCounts: { BOUNDARY: 1, MEMBER: 4 },
+      aggregationGuideFormat: "DETAILED",
+      aggregationMemberCount: 4,
+      aggregationOperation: "COUNT",
+      aggregationRequested: true,
+      aggregationResolution: "RESOLVED",
+      aggregationState: "READY",
+      hardCapTokens: 5_000,
+      itemCount: 5,
+      mode: "PAST_CHAT_SEARCH",
+      omissionCounts: { history_limit: 2 },
+      packedTokens: 2_300,
+      reason: "no_relevant_memory",
+      relevanceAcceptedCount: 5,
+      relevanceCandidateCount: 10,
+      relevanceDecisionCounts: { NOT_RELEVANT: 5, SUPPORTING_CONTEXT: 5 },
+      relevanceRejoinedCount: 5,
+      targetTokens: 4_000
+    });
+  });
+
+  it("accepts only the acknowledged loopback ports and disposable database identity", () => {
+    expect(assertBenchmarkBaseUrl("http://127.0.0.1:3137/", 3137).origin)
+      .toBe("http://127.0.0.1:3137");
+    expect(() => assertBenchmarkBaseUrl("http://127.0.0.1:3000/", 3000))
+      .toThrow("longmemeval_base_url_not_isolated");
+    const database = "postgresql://aiqsa_benchmark:" +
+      "aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/" +
+      "aiqsa_memory_benchmark?schema=public";
+    expect(assertBenchmarkDatabaseUrl(database, 55437).pathname)
+      .toBe("/aiqsa_memory_benchmark");
+    expect(() => assertBenchmarkDatabaseUrl(database.replace("55437", "5432"), 5432))
+      .toThrow("longmemeval_database_url_not_isolated");
+  });
+
+  it("confines generated artifacts to a child of the ignored results directory", () => {
+    expect(resolveBenchmarkOutputDirectory("/repo/benchmarks/longmemeval", "results/run-1"))
+      .toBe("/repo/benchmarks/longmemeval/results/run-1");
+    expect(() => resolveBenchmarkOutputDirectory(
+      "/repo/benchmarks/longmemeval",
+      "../../outside"
+    )).toThrow("longmemeval_output_directory_not_isolated");
+  });
+});

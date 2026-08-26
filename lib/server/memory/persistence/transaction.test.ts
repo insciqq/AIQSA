@@ -69,12 +69,66 @@ describe("Memory transaction admission deadline", () => {
       client,
       "user-1",
       async () => "ok",
-      { clock: () => now, deadlineAtMs: 1_000 }
+      {
+        clock: () => now,
+        deadlineAtMs: 1_000,
+        serializationRetryDelay: async () => undefined
+      }
     )).resolves.toBe("ok");
     expect(options).toEqual([
       expect.objectContaining({ maxWait: 100, timeout: 100 }),
       expect.objectContaining({ maxWait: 40, timeout: 40 })
     ]);
+  });
+
+  it("backs off and survives a sustained serializable conflict burst", async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([lockedSettings]) };
+    const client = {
+      $transaction: vi.fn(async (
+        operation: (value: typeof tx) => Promise<unknown>
+      ) => {
+        attempts += 1;
+        if (attempts < 8) throw prismaError("P2034");
+        return operation(tx);
+      })
+    } as unknown as PrismaClient;
+
+    await expect(withLockedMemoryTransaction(
+      client,
+      "user-1",
+      async () => "ok",
+      {
+        serializationRetryDelay: async (retryOrdinal) => {
+          delays.push(retryOrdinal);
+        }
+      }
+    )).resolves.toBe("ok");
+    expect(attempts).toBe(8);
+    expect(delays).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("treats a raw PostgreSQL deadlock as a rollback-safe conflict", async () => {
+    let attempts = 0;
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([lockedSettings]) };
+    const client = {
+      $transaction: vi.fn(async (
+        operation: (value: typeof tx) => Promise<unknown>
+      ) => {
+        attempts += 1;
+        if (attempts === 1) throw prismaError("P2010", { code: "40P01" });
+        return operation(tx);
+      })
+    } as unknown as PrismaClient;
+
+    await expect(withLockedMemoryTransaction(
+      client,
+      "user-1",
+      async () => "ok",
+      { serializationRetryDelay: async () => undefined }
+    )).resolves.toBe("ok");
+    expect(attempts).toBe(2);
   });
 
   it("normalizes database lock and transaction expiry to the safe deadline code", async () => {

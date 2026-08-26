@@ -32,6 +32,9 @@ export const DEFAULT_MEMORY_COORDINATOR_POLICY: MemoryCoordinatorPolicy = Object
   reconciliationBatchSize: 100
 });
 
+const MAX_MEMORY_JOB_PARALLELISM = 32;
+const MAX_MEMORY_JOB_PARALLELISM_PER_USER = 16;
+
 const ENVIRONMENT_POLICY_FIELDS = Object.freeze({
   AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: Object.freeze({
     field: "intervalMs" as const,
@@ -60,12 +63,12 @@ const ENVIRONMENT_POLICY_FIELDS = Object.freeze({
   }),
   AIQSA_MEMORY_JOB_PARALLELISM: Object.freeze({
     field: "maxJobParallel" as const,
-    max: 16,
+    max: MAX_MEMORY_JOB_PARALLELISM,
     min: 1
   }),
   AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: Object.freeze({
     field: "maxJobParallelPerUser" as const,
-    max: 16,
+    max: MAX_MEMORY_JOB_PARALLELISM_PER_USER,
     min: 1
   })
 });
@@ -99,8 +102,12 @@ export function resolveMemoryCoordinatorPolicy(
     !boundedInteger(policy.heartbeatMs, 10, policy.leaseMs - 1) ||
     !boundedInteger(policy.maxJobAttempts, 1, 20) ||
     !boundedInteger(policy.maxDeletionFastAttempts, 1, 20) ||
-    !boundedInteger(policy.maxJobParallel, 1, 16) ||
-    !boundedInteger(policy.maxJobParallelPerUser, 1, policy.maxJobParallel) ||
+    !boundedInteger(policy.maxJobParallel, 1, MAX_MEMORY_JOB_PARALLELISM) ||
+    !boundedInteger(
+      policy.maxJobParallelPerUser,
+      1,
+      Math.min(policy.maxJobParallel, MAX_MEMORY_JOB_PARALLELISM_PER_USER)
+    ) ||
     !boundedInteger(policy.maxDeletionParallel, 1, 8) ||
     !boundedInteger(policy.maxJobClaimsPerWorkerPass, 1, 1_000) ||
     !boundedInteger(policy.maxDeletionClaimsPerWorkerPass, 1, 1_000) ||

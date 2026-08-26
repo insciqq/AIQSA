@@ -287,6 +287,63 @@ describe("Memory item vector enrichment handler", () => {
     });
   });
 
+  it("replays an accounted embedding when its vector was not durably applied", async () => {
+    const fixture = dependencies();
+    const inputHash = memoryItemEmbeddingInputHash(fixture.current);
+    const handler = createMemoryItemEmbeddingHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        bindings: vi.fn(async () => [{
+          acceptedOutputHash: "f".repeat(64),
+          id: "settled-binding",
+          inputHash,
+          ordinal: 0,
+          secretFreeExecutionSnapshot: {},
+          state: "SUCCEEDED" as const
+        }])
+      }
+    });
+
+    await expect(handler.execute(claim(), context())).resolves.toMatchObject({
+      stage: "vector_ready"
+    });
+    expect(fixture.bind).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ ordinal: 1 })
+    );
+    expect(fixture.embed).toHaveBeenCalledOnce();
+    expect(fixture.applyFailed).not.toHaveBeenCalled();
+  });
+
+  it("keeps an authoritative apply infrastructure failure retryable", async () => {
+    const fixture = dependencies();
+    const handler = createMemoryItemEmbeddingHandler({
+      ...fixture.base,
+      execution: {
+        ...fixture.base.execution,
+        lifecycle: {
+          ...fixture.base.execution.lifecycle,
+          withAuthorizedResultCommit: vi.fn(async () => {
+            throw new Error("serialization_retry_exhausted");
+          })
+        }
+      }
+    } as MemoryItemEmbeddingHandlerDependencies);
+
+    await expect(handler.execute(claim(), context())).rejects.toMatchObject({
+      code: "memory_embedding_apply_retryable",
+      retryable: true
+    } satisfies Partial<MemoryCoordinatorError>);
+    expect(fixture.embed).toHaveBeenCalledOnce();
+    expect(fixture.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-1",
+      expect.objectContaining({ state: "SUCCEEDED" })
+    );
+    expect(fixture.applyFailed).not.toHaveBeenCalled();
+  });
+
   it("degrades uncertain and recovered calls without replaying provider I/O", async () => {
     const recovered = dependencies();
     const recoveredClaim = claim();

@@ -181,6 +181,35 @@ describe("Memory retrieval execution sequence", () => {
     ])).toBe(true);
   });
 
+  it("allows five bounded reranker batches plus one global aggregation and retries", () => {
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 3 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 4 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 5 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 6 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 7 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 8 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 9 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 10 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 11 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 12 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 13 }
+    ], false, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 4 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 6 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 8 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 10 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 12 }
+    ], false, true)).toBe(true);
+  });
+
   it("allows the embedding-free reranker sequence only for a broad profile inventory", () => {
     const profileSequence = [
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
@@ -224,6 +253,29 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(false);
   });
 
+  it("rejects aggregation reranker ordinals unless aggregation was declared", () => {
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+    ], false, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 8 }
+    ], false, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 8 }
+    ])).toBe(false);
+  });
+
   it("requires a durably invalid primary result before accepting a reranker retry", () => {
     const retry = {
       errorCode: null,
@@ -249,6 +301,33 @@ describe("Memory retrieval execution sequence", () => {
       ordinal: 2,
       state: "FAILED"
     }, retry])).toBe(false);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_output_invalid",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 4,
+      state: "FAILED"
+    }, {
+      ...retry,
+      ordinal: 5
+    }])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_output_invalid",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 8,
+      state: "FAILED"
+    }, {
+      ...retry,
+      ordinal: 9
+    }])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_output_invalid",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 10,
+      state: "FAILED"
+    }, {
+      ...retry,
+      ordinal: 11
+    }])).toBe(true);
   });
 });
 

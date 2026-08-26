@@ -31,7 +31,10 @@ import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/reposit
 import { createPrismaMemorySynthesisHandler } from "../synthesis/handler";
 import { reconcileMemorySynthesisWork } from "../synthesis/reconcile";
 import { MEMORY_SYNTHESIS_VERSIONS } from "../synthesis/provider";
-import { reconcileMemoryHistoryBackfills } from "../history/backfill";
+import {
+  reconcileMemoryHistoryBackfills,
+  resolveMemoryHistoryBackfillWindow
+} from "../history/backfill";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -55,7 +58,12 @@ type DefaultMemoryReconciliationWork = Readonly<{
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     cutover: () => createPrismaMemoryRetrievalCutoverRepository(prisma).reconcile(),
-    historyBackfill: () => reconcileMemoryHistoryBackfills(prisma),
+    historyBackfill: () => reconcileMemoryHistoryBackfills(
+      prisma,
+      resolveMemoryHistoryBackfillWindow(
+        getDefaultMemoryCoordinatorRuntime().policy.maxJobParallelPerUser
+      )
+    ),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
     relations: () => reconcileMemoryFactRelationJobs(prisma),
     synthesis: () => reconcileMemorySynthesisWork(
