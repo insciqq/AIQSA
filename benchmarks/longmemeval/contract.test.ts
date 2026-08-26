@@ -4,8 +4,11 @@ import {
   LONGMEMEVAL_MAX_CONCURRENCY,
   assertBenchmarkBaseUrl,
   assertBenchmarkDatabaseUrl,
+  buildLongMemEvalBaselineManifest,
   decodeLongMemEvalDataset,
+  evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
+  longMemEvalReaderOracleGap,
   mapConcurrentOrdered,
   mergeLongMemEvalEvaluationResults,
   parseLongMemEvalDate,
@@ -85,6 +88,56 @@ describe("LongMemEval adapter contract", () => {
       "question-3",
       "question-1"
     ]);
+  });
+
+  it("records a deterministic content-free baseline manifest", () => {
+    const selection = selectLongMemEvalCases(decodeLongMemEvalDataset([
+      fixture("question-1"),
+      fixture("question-2")
+    ]), { sampleSize: 2, seed: "fixed-seed" });
+    const first = buildLongMemEvalBaselineManifest(selection);
+    const second = buildLongMemEvalBaselineManifest(selection);
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      configuration: {
+        automaticFactLearning: false,
+        embeddingBatchSize: 1,
+        targetedPreFusionCandidates: 30
+      },
+      questionCount: 2,
+      questionIdDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      seed: "fixed-seed",
+      version: 1
+    });
+    expect(JSON.stringify(first)).not.toContain("What degree");
+  });
+
+  it("computes benchmark-only source, round, MRR, NDCG, and reader-gap metrics", () => {
+    expect(evaluateLongMemEvalComponentMetrics({
+      answerRoundIds: ["round-b", "round-d"],
+      answerSessionIds: ["session-b", "session-d"],
+      candidates: [
+        { evidenceHandle: "e1", roundId: "round-a", sessionId: "session-a" },
+        { evidenceHandle: "e2", roundId: "round-b", sessionId: "session-b" },
+        { evidenceHandle: "e3", roundId: "round-d", sessionId: "session-d" }
+      ],
+      k: 2
+    })).toEqual({
+      evidenceMrr: 0.5,
+      evidenceNdcgAtK: 1 / Math.log2(3) / (1 + 1 / Math.log2(3)),
+      k: 2,
+      roundRecallAtK: 0.5,
+      sourceSessionRecallAtK: 0.5
+    });
+    expect(longMemEvalReaderOracleGap(0.4, 1)).toBeCloseTo(0.6);
+    expect(() => evaluateLongMemEvalComponentMetrics({
+      answerSessionIds: ["session-b"],
+      candidates: [
+        { evidenceHandle: "duplicate", sessionId: "session-a" },
+        { evidenceHandle: "duplicate", sessionId: "session-b" }
+      ],
+      k: 2
+    })).toThrow("longmemeval_component_metric_input_invalid");
   });
 
   it("runs bounded concurrent work while preserving input order", async () => {
@@ -191,6 +244,38 @@ describe("LongMemEval adapter contract", () => {
       aggregationOperation: "COUNT",
       aggregationResolution: "RESOLVED",
       aggregationState: "READY",
+      componentMetrics: {
+        candidateCountsByLane: {
+          FACT_EXACT: 4,
+          HISTORY_RECALL_VECTOR: 6,
+          private_text: "hidden"
+        },
+        candidatesRetainedAfterRejoin: 4,
+        candidatesRetainedAfterReranker: 5,
+        candidatesSentToReranker: 10,
+        digestHits: 2,
+        embeddingBatchSizeDistribution: { "1": 7 },
+        packedEvidenceItems: 5,
+        packedEvidenceTokens: 2_300,
+        plannerFallbackUsed: false,
+        queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
+        rawChunkExpansions: 8,
+        rawRoundExpansions: 0,
+        rerankerFallbackUsed: true,
+        safetyFindingCounts: { JSON_WEB_TOKEN: 1 },
+        safetyMetricsState: "QUERY_ONLY_BASELINE",
+        selectedSourceChats: 3,
+        temporalFilteredCandidateCount: 0,
+        temporalParserConfidence: null,
+        temporalParserState: "NOT_AVAILABLE",
+        temporalParserType: null,
+        temporalUnrestrictedCandidateCount: 0,
+        uniqueEvidenceRootsAfterFusion: 7,
+        uniqueEvidenceRootsBeforeFusion: 9,
+        utilityCallCounts: { MEMORY_CONTROL: 1, MEMORY_RERANK: 1 },
+        utilityFailureReasonCounts: { memory_relevance_unavailable: 1 },
+        version: "memory-retrieval-component-metrics-v1"
+      },
       hardCapTokens: 5_000,
       itemCount: 5,
       omissionCounts: { history_limit: 2, unsafe: "secret text" },
@@ -216,17 +301,41 @@ describe("LongMemEval adapter contract", () => {
       aggregationRequested: true,
       aggregationResolution: "RESOLVED",
       aggregationState: "READY",
+      candidateCountsByLane: { FACT_EXACT: 4, HISTORY_RECALL_VECTOR: 6 },
+      candidatesRetainedAfterRejoin: 4,
+      candidatesRetainedAfterReranker: 5,
+      candidatesSentToReranker: 10,
+      componentMetricsVersion: "memory-retrieval-component-metrics-v1",
+      digestHits: 2,
+      embeddingBatchSizeDistribution: { "1": 7 },
       hardCapTokens: 5_000,
       itemCount: 5,
       mode: "PAST_CHAT_SEARCH",
       omissionCounts: { history_limit: 2 },
       packedTokens: 2_300,
+      plannerFallbackUsed: false,
+      queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
+      rawChunkExpansions: 8,
+      rawRoundExpansions: 0,
       reason: "no_relevant_memory",
       relevanceAcceptedCount: 5,
       relevanceCandidateCount: 10,
       relevanceDecisionCounts: { NOT_RELEVANT: 5, SUPPORTING_CONTEXT: 5 },
       relevanceRejoinedCount: 5,
-      targetTokens: 4_000
+      rerankerFallbackUsed: true,
+      safetyFindingCounts: { JSON_WEB_TOKEN: 1 },
+      safetyMetricsState: "QUERY_ONLY_BASELINE",
+      selectedSourceChats: 3,
+      targetTokens: 4_000,
+      temporalFilteredCandidateCount: 0,
+      temporalParserConfidence: null,
+      temporalParserState: "NOT_AVAILABLE",
+      temporalParserType: null,
+      temporalUnrestrictedCandidateCount: 0,
+      uniqueEvidenceRootsAfterFusion: 7,
+      uniqueEvidenceRootsBeforeFusion: 9,
+      utilityCallCounts: { MEMORY_CONTROL: 1, MEMORY_RERANK: 1 },
+      utilityFailureReasonCounts: { memory_relevance_unavailable: 1 }
     });
   });
 

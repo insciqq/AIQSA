@@ -23,6 +23,30 @@ export const LONGMEMEVAL_QUESTION_TYPES = [
   "temporal-reasoning"
 ] as const;
 
+export const LONGMEMEVAL_MEMORY_SOTA_BASELINE_CONFIGURATION = Object.freeze({
+  aggregationContextHardCapTokens: 10_000,
+  aggregationContextTargetTokens: 10_000,
+  aggregationHistoryCandidatesToReranker: 60,
+  aggregationPreFusionCandidates: 200,
+  aggregationRankedCandidates: 120,
+  automaticFactLearning: false,
+  embeddingBatchSize: 1,
+  embeddingDimension: 1_536,
+  embeddingModel: "qwen/qwen3-embedding-8b",
+  rerankerScoreFloor: 0.6,
+  targetedContextHardCapTokens: 5_000,
+  targetedContextTargetTokens: 4_000,
+  targetedDigestLane: false,
+  targetedHistoryCandidatesToReranker: 10,
+  targetedHistoryExactLane: 4,
+  targetedHistoryFtsSimpleLane: 6,
+  targetedHistoryRecentLane: 3,
+  targetedHistoryVectorLane: 6,
+  targetedPreFusionCandidates: 30,
+  targetedRankedCandidates: 30,
+  version: "memory-sota-baseline-2026-08-27"
+} as const);
+
 export type LongMemEvalQuestionType =
   (typeof LONGMEMEVAL_QUESTION_TYPES)[number];
 
@@ -49,6 +73,29 @@ export type LongMemEvalSelection = Readonly<{
   seed: string;
 }>;
 
+export type LongMemEvalComponentCandidate = Readonly<{
+  evidenceHandle: string;
+  roundId?: string | null;
+  sessionId: string;
+}>;
+
+export type LongMemEvalComponentMetrics = Readonly<{
+  evidenceMrr: number | null;
+  evidenceNdcgAtK: number | null;
+  k: number;
+  roundRecallAtK: number | null;
+  sourceSessionRecallAtK: number | null;
+}>;
+
+export type LongMemEvalBaselineManifest = Readonly<{
+  configuration: typeof LONGMEMEVAL_MEMORY_SOTA_BASELINE_CONFIGURATION;
+  questionCount: number;
+  questionIdDigest: string;
+  selectionMode: LongMemEvalSelection["mode"];
+  seed: string;
+  version: 1;
+}>;
+
 export type LongMemEvalRetrievalAudit = Readonly<{
   aggregationBoundaryCount: number | null;
   aggregationGroupCounts: Readonly<Record<string, number>>;
@@ -58,17 +105,41 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   aggregationRequested: boolean | null;
   aggregationResolution: string | null;
   aggregationState: string | null;
+  candidateCountsByLane: Readonly<Record<string, number>>;
+  candidatesRetainedAfterRejoin: number | null;
+  candidatesRetainedAfterReranker: number | null;
+  candidatesSentToReranker: number | null;
+  componentMetricsVersion: string | null;
+  digestHits: number | null;
+  embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
   hardCapTokens: number | null;
   itemCount: number | null;
   mode: string | null;
   omissionCounts: Readonly<Record<string, number>>;
   packedTokens: number | null;
+  plannerFallbackUsed: boolean | null;
+  queryVariantCounts: Readonly<Record<string, number>>;
+  rawChunkExpansions: number | null;
+  rawRoundExpansions: number | null;
   reason: string | null;
   relevanceAcceptedCount: number | null;
   relevanceCandidateCount: number | null;
   relevanceDecisionCounts: Readonly<Record<string, number>>;
   relevanceRejoinedCount: number | null;
+  rerankerFallbackUsed: boolean | null;
+  safetyFindingCounts: Readonly<Record<string, number>>;
+  safetyMetricsState: string | null;
+  selectedSourceChats: number | null;
   targetTokens: number | null;
+  temporalFilteredCandidateCount: number | null;
+  temporalParserConfidence: number | null;
+  temporalParserState: string | null;
+  temporalParserType: string | null;
+  temporalUnrestrictedCandidateCount: number | null;
+  uniqueEvidenceRootsAfterFusion: number | null;
+  uniqueEvidenceRootsBeforeFusion: number | null;
+  utilityCallCounts: Readonly<Record<string, number>>;
+  utilityFailureReasonCounts: Readonly<Record<string, number>>;
 }>;
 
 /** Runs bounded independent work concurrently while preserving input order.
@@ -186,6 +257,16 @@ function uppercaseCode(value: unknown, maximum = 32): string | null {
     : null;
 }
 
+function versionCode(value: unknown): string | null {
+  return typeof value === "string" &&
+    /^[a-z0-9][a-z0-9._-]{0,95}$/u.test(value) ? value : null;
+}
+
+function boundedConfidence(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) &&
+    value >= 0 && value <= 1 ? value : null;
+}
+
 /** Retains only aggregate, text-free retrieval evidence before the disposable
  * benchmark identity (and its private Memory rows) is deleted. */
 export function sanitizeLongMemEvalRetrievalAudit(
@@ -193,6 +274,7 @@ export function sanitizeLongMemEvalRetrievalAudit(
 ): LongMemEvalRetrievalAudit {
   const budget = isRecord(value) ? value : {};
   const plan = isRecord(budget.plan) ? budget.plan : {};
+  const component = isRecord(budget.componentMetrics) ? budget.componentMetrics : {};
   const mode = typeof plan.mode === "string" &&
     /^[A-Z_]{1,32}$/u.test(plan.mode) ? plan.mode : null;
   const reason = typeof budget.reason === "string" &&
@@ -208,17 +290,52 @@ export function sanitizeLongMemEvalRetrievalAudit(
       : null,
     aggregationResolution: uppercaseCode(budget.aggregationResolution),
     aggregationState: uppercaseCode(budget.aggregationState),
+    candidateCountsByLane: sanitizedCounts(component.candidateCountsByLane),
+    candidatesRetainedAfterRejoin:
+      nonNegativeInteger(component.candidatesRetainedAfterRejoin),
+    candidatesRetainedAfterReranker:
+      nonNegativeInteger(component.candidatesRetainedAfterReranker),
+    candidatesSentToReranker: nonNegativeInteger(component.candidatesSentToReranker),
+    componentMetricsVersion: versionCode(component.version),
+    digestHits: nonNegativeInteger(component.digestHits),
+    embeddingBatchSizeDistribution:
+      sanitizedCounts(component.embeddingBatchSizeDistribution),
     hardCapTokens: nonNegativeInteger(budget.hardCapTokens),
     itemCount: nonNegativeInteger(budget.itemCount),
     mode,
     omissionCounts: sanitizedCounts(budget.omissionCounts),
     packedTokens: nonNegativeInteger(budget.packedTokens),
+    plannerFallbackUsed: typeof component.plannerFallbackUsed === "boolean"
+      ? component.plannerFallbackUsed
+      : null,
+    queryVariantCounts: sanitizedCounts(component.queryVariantCounts),
+    rawChunkExpansions: nonNegativeInteger(component.rawChunkExpansions),
+    rawRoundExpansions: nonNegativeInteger(component.rawRoundExpansions),
     reason,
     relevanceAcceptedCount: nonNegativeInteger(budget.relevanceAcceptedCount),
     relevanceCandidateCount: nonNegativeInteger(budget.relevanceCandidateCount),
     relevanceDecisionCounts: sanitizedCounts(budget.relevanceDecisionCounts),
     relevanceRejoinedCount: nonNegativeInteger(budget.relevanceRejoinedCount),
-    targetTokens: nonNegativeInteger(budget.targetTokens)
+    rerankerFallbackUsed: typeof component.rerankerFallbackUsed === "boolean"
+      ? component.rerankerFallbackUsed
+      : null,
+    safetyFindingCounts: sanitizedCounts(component.safetyFindingCounts),
+    safetyMetricsState: uppercaseCode(component.safetyMetricsState),
+    selectedSourceChats: nonNegativeInteger(component.selectedSourceChats),
+    targetTokens: nonNegativeInteger(budget.targetTokens),
+    temporalFilteredCandidateCount:
+      nonNegativeInteger(component.temporalFilteredCandidateCount),
+    temporalParserConfidence: boundedConfidence(component.temporalParserConfidence),
+    temporalParserState: uppercaseCode(component.temporalParserState),
+    temporalParserType: uppercaseCode(component.temporalParserType),
+    temporalUnrestrictedCandidateCount:
+      nonNegativeInteger(component.temporalUnrestrictedCandidateCount),
+    uniqueEvidenceRootsAfterFusion:
+      nonNegativeInteger(component.uniqueEvidenceRootsAfterFusion),
+    uniqueEvidenceRootsBeforeFusion:
+      nonNegativeInteger(component.uniqueEvidenceRootsBeforeFusion),
+    utilityCallCounts: sanitizedCounts(component.utilityCallCounts),
+    utilityFailureReasonCounts: sanitizedCounts(component.utilityFailureReasonCounts)
   });
 }
 
@@ -409,6 +526,110 @@ export function selectLongMemEvalCases(
     mode: "seeded_hash",
     seed
   });
+}
+
+export function buildLongMemEvalBaselineManifest(
+  selection: LongMemEvalSelection
+): LongMemEvalBaselineManifest {
+  const questionIdDigest = createHash("sha256")
+    .update(selection.seed, "utf8")
+    .update("\u0000", "utf8")
+    .update(selection.cases.map(({ questionId }) => questionId).join("\u0000"), "utf8")
+    .digest("hex");
+  return Object.freeze({
+    configuration: LONGMEMEVAL_MEMORY_SOTA_BASELINE_CONFIGURATION,
+    questionCount: selection.cases.length,
+    questionIdDigest,
+    selectionMode: selection.mode,
+    seed: selection.seed,
+    version: 1
+  });
+}
+
+function validatedMetricK(k: number, candidateCount: number): number {
+  if (!Number.isSafeInteger(k) || k < 1 || k > 10_000 || candidateCount > 100_000) {
+    throw new Error("longmemeval_component_metric_input_invalid");
+  }
+  return Math.min(k, candidateCount);
+}
+
+function uniqueNonEmpty(values: readonly string[]): ReadonlySet<string> {
+  if (values.some((value) => typeof value !== "string" || !value ||
+    value.includes("\u0000"))) {
+    throw new Error("longmemeval_component_metric_input_invalid");
+  }
+  return new Set(values);
+}
+
+/** Benchmark-only component metrics. Gold session/round localization never
+ * enters a runtime Memory request or candidate interface. */
+export function evaluateLongMemEvalComponentMetrics(input: Readonly<{
+  answerRoundIds?: readonly string[];
+  answerSessionIds: readonly string[];
+  candidates: readonly LongMemEvalComponentCandidate[];
+  k: number;
+}>): LongMemEvalComponentMetrics {
+  const k = validatedMetricK(input.k, input.candidates.length);
+  const sessionGold = uniqueNonEmpty(input.answerSessionIds);
+  const roundGold = input.answerRoundIds === undefined
+    ? null
+    : uniqueNonEmpty(input.answerRoundIds);
+  const seenHandles = new Set<string>();
+  const candidates = input.candidates.map((candidate) => {
+    if (!candidate.evidenceHandle || candidate.evidenceHandle.includes("\u0000") ||
+      !candidate.sessionId || candidate.sessionId.includes("\u0000") ||
+      seenHandles.has(candidate.evidenceHandle) ||
+      (candidate.roundId !== undefined && candidate.roundId !== null &&
+        (!candidate.roundId || candidate.roundId.includes("\u0000")))) {
+      throw new Error("longmemeval_component_metric_input_invalid");
+    }
+    seenHandles.add(candidate.evidenceHandle);
+    return candidate;
+  });
+  const topCandidates = candidates.slice(0, k);
+  const foundSessions = new Set(topCandidates.flatMap((candidate) =>
+    sessionGold.has(candidate.sessionId) ? [candidate.sessionId] : []));
+  const foundRounds = roundGold === null ? null : new Set(topCandidates.flatMap((candidate) =>
+    candidate.roundId && roundGold.has(candidate.roundId) ? [candidate.roundId] : []));
+  const candidateRelevant = (candidate: LongMemEvalComponentCandidate) =>
+    roundGold && roundGold.size > 0
+      ? Boolean(candidate.roundId && roundGold.has(candidate.roundId))
+      : sessionGold.has(candidate.sessionId);
+  const relevance = candidates.map(candidateRelevant);
+  const firstRelevant = relevance.findIndex(Boolean);
+  const dcg = topCandidates.map(candidateRelevant).reduce((sum, relevant, index) =>
+    relevant ? sum + 1 / Math.log2(index + 2) : sum, 0);
+  const relevantRootCount = roundGold && roundGold.size > 0
+    ? roundGold.size : sessionGold.size;
+  const idealCount = Math.min(k, relevance.filter(Boolean).length);
+  let idealDcg = 0;
+  for (let index = 0; index < idealCount; index += 1) {
+    idealDcg += 1 / Math.log2(index + 2);
+  }
+  return Object.freeze({
+    evidenceMrr: relevantRootCount === 0 ? null
+      : firstRelevant < 0 ? 0 : 1 / (firstRelevant + 1),
+    evidenceNdcgAtK: relevantRootCount === 0 ? null
+      : idealDcg === 0 ? 0 : dcg / idealDcg,
+    k: input.k,
+    roundRecallAtK: roundGold === null || roundGold.size === 0
+      ? null
+      : (foundRounds?.size ?? 0) / roundGold.size,
+    sourceSessionRecallAtK: sessionGold.size === 0
+      ? null
+      : foundSessions.size / sessionGold.size
+  });
+}
+
+export function longMemEvalReaderOracleGap(
+  retrievedContextScore: number,
+  oracleContextScore: number
+): number {
+  if (![retrievedContextScore, oracleContextScore].every((value) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1)) {
+    throw new Error("longmemeval_reader_oracle_score_invalid");
+  }
+  return oracleContextScore - retrievedContextScore;
 }
 
 export function assertBenchmarkBaseUrl(value: string, expectedPort: number): URL {

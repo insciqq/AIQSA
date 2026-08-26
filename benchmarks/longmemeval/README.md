@@ -59,19 +59,23 @@ Use `--case-concurrency N` and `--session-concurrency N` to lower either
 bounded concurrency limit; the defaults are `2` and `16` respectively.
 
 Add `--debug-memory` only for an explicitly disposable diagnostic run. The
-runner then captures the exact normalized pre-provider request, prepared
+runner then captures the secret-screened normalized pre-provider request, prepared
 Personal Memory context, selected items in order, source-session mapping,
 chat digests, per-session history checkpoint/job/chunk status, governed
 history and retrieval executions, and answer binding before the benchmark
-user is deleted. Each raw `memory-debug-*.json` artifact is written
-under the ignored result directory with mode `0600`; the flag is off by
-default, and raw debug data never enters `run-summary.json` or normal logs.
+user is deleted. Each `memory-debug-*.json` artifact receives a final recursive
+recognized-secret screen and is written under the ignored result directory
+with mode `0600`; the flag is off by default, and debug data never enters
+`run-summary.json` or normal logs.
 The runner writes only sanitized accounting and model-binding evidence beside
 `answers.jsonl` under `benchmarks/longmemeval/results/`; it does not log chat
-content or hypotheses. Aggregate retrieval decisions, bounded failure reason
-codes, pack budgets, and
+content or hypotheses. Aggregate lane/candidate/evidence-root flow,
+query-variant and fallback counts, retrieval decisions, bounded failure reason
+codes, pack budgets, embedding batch sizes, utility latency classes, and
 per-role peak provider concurrency are retained so throttling and context loss
-can be diagnosed without retaining private Memory text.
+can be diagnosed without retaining private Memory text. Every summary records
+the fixed pre-SOTA baseline configuration and the active versioned retrieval
+configuration for comparison.
 
 To verify the selected OpenRouter embedding deployment accepts a ten-input
 batch without exposing input or vector content, run the guarded capability
