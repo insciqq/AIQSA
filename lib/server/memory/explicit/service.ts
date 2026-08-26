@@ -197,6 +197,7 @@ export type ExplicitMemoryService = Readonly<{
 export type MemoryOperationExecutionContext = Readonly<{
   admissionDeadlineAtMs?: number;
   authorizedPayloadHash?: string;
+  exactStatementHash?: string;
   modelRunId: string;
   persistedToolCallId?: string | null;
   safetyClassifierExecutionId?: string;
@@ -253,7 +254,9 @@ function controlSafetyClassification(
 
 function statementSafetyClassification(
   classification: StorableMemoryStatementClassification | null,
-  inputStatement: string
+  inputStatement: string,
+  displayProjection: "CLASSIFIER_NORMALIZED" | "EXACT_INPUT" =
+    "CLASSIFIER_NORMALIZED"
 ): MemoryFactSafetyClassificationInput | undefined {
   if (!classification?.executionId) return undefined;
   if (!classification.acceptedOutputHash || !classification.inputHash) {
@@ -262,6 +265,7 @@ function statementSafetyClassification(
   return {
     acceptedOutputHash: classification.acceptedOutputHash,
     decision: memoryStatementClassificationDecision(classification),
+    displayProjection,
     executionId: classification.executionId,
     inputHash: classification.inputHash,
     inputStatement,
@@ -804,6 +808,13 @@ export function createExplicitMemoryService(input: Readonly<{
         input.readRepository.getEditable(userId, factId)
       );
       if (!current) return failure("memory_not_found");
+      const updatesStatement = Object.hasOwn(updateInput, "statement");
+      if (execution?.exactStatementHash !== undefined && (
+        !updatesStatement || typeof updateInput.statement !== "string" ||
+        execution.exactStatementHash !== memorySha256(updateInput.statement)
+      )) {
+        return failure("memory_contract_invalid");
+      }
       const targetScope = updateInput.scope
         ? await persisted(() => input.scopeRepository.ensure(userId, updateInput.scope!))
         : null;
@@ -911,7 +922,9 @@ export function createExplicitMemoryService(input: Readonly<{
             requestedStatement
           )
         : null;
-      const statement = classification?.normalizedStatement ?? requestedStatement;
+      const statement = execution?.exactStatementHash === undefined
+        ? classification?.normalizedStatement ?? requestedStatement
+        : requestedStatement;
       const sensitivityClass = execution?.sensitivityClass || classification
         ? mostRestrictiveSensitivity([
             current.sensitivityClass,
@@ -948,7 +961,13 @@ export function createExplicitMemoryService(input: Readonly<{
           ),
           safetyClassification: execution?.safetyClassifierExecutionId
             ? controlSafetyClassification(execution)
-            : statementSafetyClassification(classification, requestedStatement),
+            : statementSafetyClassification(
+                classification,
+                requestedStatement,
+                execution?.exactStatementHash === undefined
+                  ? "CLASSIFIER_NORMALIZED"
+                  : "EXACT_INPUT"
+              ),
           sensitivityClass,
           statement,
           validFrom,

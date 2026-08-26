@@ -312,6 +312,7 @@ async function saveLegacyExplicit(
       safetyClassification: {
         acceptedOutputHash: classification.acceptedOutputHash,
         decision: memoryStatementClassificationDecision(classification),
+        displayProjection: "CLASSIFIER_NORMALIZED",
         executionId: classification.executionId,
         inputHash: classification.inputHash,
         inputStatement: statement,
@@ -1032,7 +1033,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             safeProjectedText: chunkText,
             safetyClass: "NORMAL",
             sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-            sourceRevisionAtCreation: 1,
+            sourceRevisionAtCreation: 0,
             userId: fixture.userId
           }
         });
@@ -1052,7 +1053,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
             safeProjectedText: failingChunkText,
             safetyClass: "NORMAL",
             sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-            sourceRevisionAtCreation: 1,
+            sourceRevisionAtCreation: 0,
             userId: fixture.userId
           }
         });

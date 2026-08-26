@@ -2,12 +2,12 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
-  memorySynthesisPatternAuthorityPredicate,
+  memorySynthesisPatternInvalidationPredicate,
   memorySynthesisSourceAuthorityPredicate
 } from "./eligibility";
 import {
   loadMemorySynthesisSnapshot,
-  retractInvalidMemorySynthesisPatterns
+  reconcileInvalidMemorySynthesisPatterns
 } from "./repository";
 import {
   memorySynthesisJobFingerprint,
@@ -50,9 +50,9 @@ async function invalidPatternOwners(
     WHERE version."state" = 'ACTIVE'::"MemoryFactVersionState"
       AND version."systemTo" IS NULL
       AND version."modality" = 'PATTERN'::"MemoryFactModality"
-      AND NOT (${memorySynthesisPatternAuthorityPredicate(
+      AND ${memorySynthesisPatternInvalidationPredicate(
         Prisma.sql`version."userId"`
-      )})
+      )}
     GROUP BY version."userId"
     ORDER BY MIN(version."createdAt"), version."userId"
     LIMIT ${MEMORY_SYNTHESIS_MAX_SCHEDULED_OWNERS}
@@ -104,21 +104,26 @@ export async function reconcileMemorySynthesisWork(
 ): Promise<MemorySynthesisReconciliationResult> {
   if (!Number.isFinite(now.getTime())) return { invalidated: 0, scheduled: 0 };
   let invalidated = 0;
+  let scheduled = 0;
+  const targetedOwners = new Set<string>();
   for (const owner of await invalidPatternOwners(client)) {
-    invalidated += await withLockedMemoryTransaction(
+    const result = await withLockedMemoryTransaction(
       client,
       owner.userId,
-      (tx, settings) => retractInvalidMemorySynthesisPatterns(
+      (tx, settings) => reconcileInvalidMemorySynthesisPatterns(
         tx,
         settings,
         now
       )
     );
+    invalidated += result.invalidated;
+    scheduled += result.scheduled;
+    if (result.scheduled > 0) targetedOwners.add(owner.userId);
   }
 
-  let scheduled = 0;
   const cooldownBefore = new Date(now.getTime() - MEMORY_SYNTHESIS_COOLDOWN_MS);
   for (const owner of await schedulableOwners(client, now)) {
+    if (targetedOwners.has(owner.userId)) continue;
     const admitted = await authorityAvailable(owner.userId).catch(() => false);
     if (!admitted) continue;
     scheduled += await withLockedMemoryTransaction(

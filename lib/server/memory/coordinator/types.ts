@@ -3,6 +3,7 @@ import type {
   MemoryJobKind,
   Prisma
 } from "@prisma/client";
+import type { MemoryOperationalCounters } from "../operational/counters";
 
 export type MemoryJobDescriptor = Readonly<{
   activeLeafMessageId: string | null;
@@ -69,6 +70,7 @@ export type MemoryDeletionApply = (
 export type MemoryJobExecutionResult = Readonly<{
   acceptedResultHash: string;
   apply?: MemoryJobApply;
+  operationalCounters?: MemoryOperationalCounters;
   stage?: string | null;
 }>;
 

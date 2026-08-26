@@ -14,7 +14,7 @@ import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
-  "memory-personal-retrieval-v4-vector";
+  "memory-personal-retrieval-v5-vector";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
   "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v7-bounded-strategy-corpus";
 export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
@@ -75,6 +75,7 @@ export type MemoryVectorEligibility = Readonly<{
   factMode: "CURRENT" | "HISTORICAL";
   factTemporalAsOf: Date | null;
   folderId: string | null;
+  includePatterns: boolean;
   occurredFrom: Date | null;
   occurredTo: Date | null;
   sourceAssistantId: string | null;
@@ -278,6 +279,8 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
     !validDate(input.eligibility.occurredTo) ||
     !validDate(input.eligibility.factTemporalAsOf) ||
     !["CURRENT", "HISTORICAL"].includes(input.eligibility.factMode) ||
+    typeof input.eligibility.includePatterns !== "boolean" ||
+    input.eligibility.includePatterns && input.eligibility.factMode !== "CURRENT" ||
     Boolean(input.eligibility.factTemporalAsOf &&
       (input.eligibility.occurredFrom || input.eligibility.occurredTo)) ||
     Boolean(
@@ -509,7 +512,13 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           )
           AND ${memoryReusableFactAuthorityPredicate(
             Prisma.sql`entry."userId"`,
-            { settings: Prisma.sql`fact_settings` }
+            {
+              includePatterns: input.eligibility.includePatterns,
+              lifecycle: input.eligibility.factMode === "HISTORICAL"
+                ? "CURRENT_OR_HISTORICAL"
+                : "CURRENT",
+              settings: Prisma.sql`fact_settings`
+            }
           )}
           AND ${memoryCanonicalGlobalScopePredicate()}
       )`
@@ -532,9 +541,6 @@ function chunkEligibilityPredicates(
     Prisma.sql`chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"`,
     Prisma.sql`source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"`,
     Prisma.sql`source_chat."projectId" IS NULL`,
-    Prisma.sql`source_chat."memoryBranchGeneration" = chunk."branchGeneration"`,
-    Prisma.sql`checkpoint."branchGeneration" = chunk."branchGeneration"`,
-    Prisma.sql`checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"`,
     Prisma.sql`checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"`,
     Prisma.sql`checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}`,
     memoryHistoryChunkSourceAuthorityPredicate({

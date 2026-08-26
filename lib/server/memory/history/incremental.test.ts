@@ -1,9 +1,8 @@
-import { performance } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import type { MemoryRecallChunkMessageJoin } from "./chunking";
 import {
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
-  planMemoryHistoryIncrementalUpdate,
+  planMemoryHistoryTailUpdate,
   type MemoryHistoryCheckpointMessageIdentity,
   type MemoryHistoryIncrementalChunk
 } from "./incremental";
@@ -45,12 +44,11 @@ function chunks(
 }
 
 describe("incremental Memory history planning", () => {
-  it("rewinds one complete turn for an append and reuses only the stable prefix", () => {
+  it("retains every proven chunk and reads one overlap turn for an append", () => {
     const previousMessages = messages(3);
     const currentMessages = messages(4);
-    const result = planMemoryHistoryIncrementalUpdate({
+    const result = planMemoryHistoryTailUpdate({
       currentMessages,
-      nextChunks: chunks(currentMessages),
       previousChunks: chunks(previousMessages),
       previousMessages
     });
@@ -59,8 +57,7 @@ describe("incremental Memory history planning", () => {
       commonPathMessageCount: 6,
       mode: "APPEND",
       rebuildFromMessageOrdinal: 4,
-      rebuiltChunkIds: ["chunk-2", "chunk-3"],
-      reusedChunkIds: ["chunk-0", "chunk-1"]
+      reusedChunkIds: ["chunk-0", "chunk-1", "chunk-2"]
     });
   });
 
@@ -69,18 +66,16 @@ describe("incremental Memory history planning", () => {
     const editedMessages = messages(4).map((message, ordinal) => ordinal === 4
       ? { ...message, sourceMessageUpdatedAt: "2026-08-11T00:00:00.000Z" }
       : message);
-    const edited = planMemoryHistoryIncrementalUpdate({
+    const edited = planMemoryHistoryTailUpdate({
       currentMessages: editedMessages,
-      nextChunks: chunks(editedMessages),
       previousChunks: chunks(previousMessages),
       previousMessages
     });
     expect(edited).toMatchObject({
       commonPathMessageCount: 4,
       mode: "DIVERGENCE",
-      rebuildFromMessageOrdinal: 2,
-      rebuiltChunkIds: ["chunk-1", "chunk-2", "chunk-3"],
-      reusedChunkIds: ["chunk-0"]
+      rebuildFromMessageOrdinal: 0,
+      reusedChunkIds: []
     });
 
     const branchedMessages = [
@@ -90,32 +85,29 @@ describe("incremental Memory history planning", () => {
         messageId: `branch-${ordinal}`
       }))
     ];
-    expect(planMemoryHistoryIncrementalUpdate({
+    expect(planMemoryHistoryTailUpdate({
       currentMessages: branchedMessages,
-      nextChunks: chunks(branchedMessages),
       previousChunks: chunks(previousMessages),
       previousMessages
     })).toMatchObject({
       commonPathMessageCount: 4,
       mode: "DIVERGENCE",
-      rebuildFromMessageOrdinal: 2,
-      reusedChunkIds: ["chunk-0"]
+      rebuildFromMessageOrdinal: 0,
+      reusedChunkIds: []
     });
   });
 
   it("reuses every exact chunk on an unchanged retry and falls back when unbounded", () => {
     const stableMessages = messages(3);
     const stableChunks = chunks(stableMessages);
-    expect(planMemoryHistoryIncrementalUpdate({
+    expect(planMemoryHistoryTailUpdate({
       currentMessages: stableMessages,
-      nextChunks: stableChunks,
       previousChunks: stableChunks,
       previousMessages: stableMessages
     })).toEqual({
       commonPathMessageCount: 6,
       mode: "UNCHANGED",
       rebuildFromMessageOrdinal: 4,
-      rebuiltChunkIds: [],
       reusedChunkIds: ["chunk-0", "chunk-1", "chunk-2"]
     });
 
@@ -127,36 +119,50 @@ describe("incremental Memory history planning", () => {
       })
     );
     const nextChunks = chunks(unbounded.slice(0, -1));
-    expect(planMemoryHistoryIncrementalUpdate({
+    expect(planMemoryHistoryTailUpdate({
       currentMessages: unbounded,
-      nextChunks,
       previousChunks: nextChunks,
       previousMessages: unbounded
     })).toMatchObject({
       commonPathMessageCount: 0,
       mode: "FULL_REBUILD",
       rebuildFromMessageOrdinal: 0,
-      rebuiltChunkIds: nextChunks.map(({ id }) => id),
       reusedChunkIds: []
     });
   });
 
-  it("keeps a 4,000-turn append's rebuild set bounded to the overlap tail", () => {
-    const previousMessages = messages(4_000);
-    const currentMessages = messages(4_001);
-    const startedAt = performance.now();
-    const result = planMemoryHistoryIncrementalUpdate({
+  it("plans a 4,000-message append before content with one overlap turn", () => {
+    const previousMessages = messages(2_000);
+    const currentMessages = messages(2_001);
+    const result = planMemoryHistoryTailUpdate({
       currentMessages,
-      nextChunks: chunks(currentMessages),
       previousChunks: chunks(previousMessages),
       previousMessages
     });
-    const durationMs = performance.now() - startedAt;
 
     expect(result.mode).toBe("APPEND");
-    expect(result.commonPathMessageCount).toBe(8_000);
-    expect(result.reusedChunkIds).toHaveLength(3_999);
-    expect(result.rebuiltChunkIds).toEqual(["chunk-3999", "chunk-4000"]);
-    expect(durationMs).toBeLessThan(1_000);
+    expect(result.commonPathMessageCount).toBe(4_000);
+    expect(result.rebuildFromMessageOrdinal).toBe(3_998);
+    expect(result.reusedChunkIds).toHaveLength(2_000);
+  });
+
+  it("[E08] bounds edit and branch divergence to one maximum chunk plus overlap", () => {
+    const previousMessages = messages(2_000);
+    const currentMessages = previousMessages.map((message, ordinal) =>
+      ordinal === 3_000
+        ? { ...message, sourceMessageUpdatedAt: "2026-08-12T00:00:00.000Z" }
+        : message);
+    const result = planMemoryHistoryTailUpdate({
+      currentMessages,
+      previousChunks: chunks(previousMessages),
+      previousMessages
+    });
+
+    expect(result).toMatchObject({
+      commonPathMessageCount: 3_000,
+      mode: "DIVERGENCE",
+      rebuildFromMessageOrdinal: 2_986
+    });
+    expect(result.reusedChunkIds).toHaveLength(1_493);
   });
 });

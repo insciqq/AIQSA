@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../../prisma";
 import {
   loadPersonalMemoryEvidenceSnapshots,
-  memoryPersonalFactEvidencePredicate
+  memoryExactVNextDirectAuthorityPredicate
 } from "../../persistence/eligibility";
 import { memorySha256 } from "../../persistence/lexical";
 import { MEMORY_FACT_RELATION_PIPELINE_VERSION } from "./policy";
@@ -73,7 +73,9 @@ export async function reconcileMemoryFactRelationJobs(
       AND owner_user."status" = 'active'::"UserStatus"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
       AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-      AND ${memoryPersonalFactEvidencePredicate(Prisma.sql`version."userId"`)}
+      AND ${memoryExactVNextDirectAuthorityPredicate(
+        Prisma.sql`version."userId"`
+      )}
     ORDER BY version."userId", version."createdAt", version."id"
   `);
   if (targets.length === 0) return 0;
@@ -82,7 +84,8 @@ export async function reconcileMemoryFactRelationJobs(
       client,
       userId,
       targets.filter((target) => target.userId === userId)
-        .map(({ targetFactVersionId }) => targetFactVersionId)
+        .map(({ targetFactVersionId }) => targetFactVersionId),
+      { exactVNext: true }
     )))).flat();
   const selected = targets.flatMap((target) => {
     const item = evidence.find(({ factVersionId }) =>

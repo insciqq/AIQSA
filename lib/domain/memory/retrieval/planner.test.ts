@@ -95,6 +95,63 @@ describe("language-agnostic Memory retrieval planning", () => {
     })).toThrow("memory_retrieval_filter_invalid");
   });
 
+  it("admits synthesis patterns only through an explicit targeted-current decision", () => {
+    expect(planMemoryRetrieval({ currentUserText: "current workflow", now }))
+      .toMatchObject({ includePatterns: false, mode: "TARGETED_CURRENT" });
+    expect(planMemoryRetrieval({
+      currentUserText: "current workflow",
+      includePatterns: true,
+      now
+    })).toMatchObject({ includePatterns: true, mode: "TARGETED_CURRENT" });
+    expect(() => planMemoryRetrieval({
+      currentUserText: "profile",
+      filters: { sourceKinds: ["FACT"] },
+      includePatterns: true,
+      mode: "CURRENT_PROFILE",
+      now,
+      profileRequested: true
+    })).toThrow("memory_retrieval_plan_invalid");
+    expect(() => planMemoryRetrieval({
+      currentUserText: "past fact",
+      filters: { sourceKinds: ["FACT"] },
+      includePatterns: true,
+      mode: "HISTORICAL_MEMORY",
+      now,
+      temporalIntent: "HISTORICAL"
+    })).toThrow("memory_retrieval_plan_invalid");
+    expect(() => planMemoryRetrieval({
+      currentUserText: "current workflow",
+      includePatterns: "true" as never,
+      now
+    })).toThrow("memory_retrieval_plan_invalid");
+  });
+
+  it("retains only exact entity occurrences and owner-validated opaque refs", () => {
+    const longRef = `mr1.${"a".repeat(500)}`;
+    const plan = planMemoryRetrieval({
+      allowedEntityRefs: ["ref-acme", longRef],
+      currentUserText: "Compare Acme with Acme",
+      entityMentions: [
+        { occurrenceIndex: 1, resolvedRef: "ref-acme", text: "Acme" },
+        { occurrenceIndex: 2, resolvedRef: "ref-acme", text: "Acme" },
+        { occurrenceIndex: 0, resolvedRef: "unowned-ref", text: "Compare" },
+        { occurrenceIndex: 0, resolvedRef: longRef, text: "with" }
+      ],
+      now
+    });
+
+    expect(plan.entityMentions).toEqual([
+      { occurrenceIndex: 1, resolvedRef: "ref-acme", text: "Acme" },
+      { occurrenceIndex: 0, resolvedRef: null, text: "Compare" },
+      { occurrenceIndex: 0, resolvedRef: longRef, text: "with" }
+    ]);
+    expect(() => planMemoryRetrieval({
+      currentUserText: "Acme",
+      entityMentions: [{ occurrenceIndex: -1, resolvedRef: null, text: "Acme" }],
+      now
+    })).toThrow("memory_retrieval_plan_invalid");
+  });
+
   it("treats only an empty normalized turn as absent", () => {
     expect(planMemoryRetrieval({ currentUserText: " \n\t ", now }).queryPresent).toBe(false);
   });

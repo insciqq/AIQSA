@@ -100,6 +100,42 @@ describe("OpenRouter Chat transport", () => {
     });
   });
 
+  it("adds the OpenRouter strict-tool gate only to an active strict request", async () => {
+    const calls: RequestInit[] = [];
+    const client = createFetchOpenRouterChatClient({
+      apiKey: "key",
+      fetchFn: async (_input, init) => {
+        calls.push(init ?? {});
+        return new Response("{}", { status: 200 });
+      }
+    });
+    const strictTool = {
+      function: {
+        name: "strict_result",
+        parameters: { type: "object" },
+        strict: true
+      },
+      type: "function"
+    };
+
+    await client.createChatCompletion({
+      model: "model-test",
+      tool_choice: "required",
+      tools: [strictTool]
+    });
+    await client.createChatCompletion({
+      model: "model-test",
+      tool_choice: "none",
+      tools: [strictTool]
+    });
+    await client.createChatCompletion({ model: "model-test" });
+
+    expect(new Headers(calls[0]?.headers).get("x-anthropic-beta"))
+      .toBe("structured-outputs-2025-11-13");
+    expect(new Headers(calls[1]?.headers).get("x-anthropic-beta")).toBeNull();
+    expect(new Headers(calls[2]?.headers).get("x-anthropic-beta")).toBeNull();
+  });
+
   it("keeps empty and non-object behavior while collapsing malformed remote JSON", async () => {
     const responses = [
       new Response("", { status: 200 }),

@@ -11,7 +11,9 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   memoryFactExtractionJobFingerprint
 } from "./extraction/contract";
+import { invalidateMemoryFactExtractionStaging } from "./extraction/repository";
 import { normalizeMemoryFactsForSourceMutation } from "./consolidation/normalization";
+import { retractUnsupportedAutomaticMemoryEntities } from "./entities/lifecycle";
 
 function invalidatesCandidates(event: MemoryRetainedSourceMutationEvent): boolean {
   return event.previous.folderId !== event.snapshot.folderId ||
@@ -104,11 +106,20 @@ export async function applyMemoryLearningSourceMutation(
   const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null =
     await normalizeMemoryFactsForSourceMutation(tx, event);
+  await retractUnsupportedAutomaticMemoryEntities(
+    tx,
+    event.snapshot.userId
+  );
   if (settings && !permanentDelete) {
     await reopenSourcePurge(tx, settings, event.snapshot.id);
   }
   if (invalidatesCandidates(event)) {
     const now = new Date();
+    await invalidateMemoryFactExtractionStaging(tx, {
+      chatId: event.snapshot.id,
+      reasonCode: "source_invalidated",
+      userId: event.snapshot.userId
+    }, now);
     const candidates = await tx.memoryCandidate.findMany({
       select: { id: true },
       where: {

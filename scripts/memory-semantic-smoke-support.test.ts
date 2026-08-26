@@ -655,6 +655,15 @@ describe("Memory semantic smoke support", () => {
     expect(source).toContain('secretAction.operation !== "SAVE"');
     expect(source).toContain('secretAction.status !== "REJECTED"');
     expect(source).toContain("memory_smoke_expected_fact_missing");
+    expect(source).toContain('mcp: { mode: "off" }');
+    expect(source).toContain("`Меня зовут Алина-${marker}");
+    expect(source).toContain("identityAnswer.toLocaleLowerCase().includes(marker)");
+    expect(source).toContain(
+      "When I read answers, I prefer a concise response format called ${marker}-grid."
+    );
+    expect(source).not.toContain(
+      "This named format is a stable long-term preference in every conversation."
+    );
     const learnedFactLoop = source.slice(
       source.indexOf("async function waitForLearnedFact("),
       source.indexOf("async function waitForIndexedHistorySource(")
@@ -663,9 +672,9 @@ describe("Memory semantic smoke support", () => {
     expect(learnedFactLoop).toContain("sourceBackedFactVersionCount");
     expect(learnedFactLoop).toContain("sourceBackedFactEmbeddingReadyCount");
     expect(source).toContain("readyExplicitFactEmbeddingCount");
-    expect(source).toContain("This named format is a stable long-term preference");
-    expect(source.match(/await sourceRun\(/gu)).toHaveLength(12);
-    expect(source).toContain("const MAX_CHAT_RUNS = 12;");
+    expect(source.match(/await sourceRun\(/gu)).toHaveLength(13);
+    expect(source).toContain("const MAX_CHAT_RUNS = 13;");
+    expect(source).toContain("Memory smoke implicit save quarterly ${marker}");
     const main = source.slice(source.indexOf("async function main(): Promise<void>"));
     const consumerGate = main.indexOf("requireConsumerPreparation(settings);");
     const providerPreflight = main.indexOf("answer = await preflightPrismaMemorySemanticSmoke(");
@@ -699,7 +708,7 @@ describe("Memory semantic smoke support", () => {
     }
     const implicitPromptLines = source.split("\n").filter((line) =>
       line.includes("Please carry this preference into future conversations"));
-    expect(implicitPromptLines).toHaveLength(2);
+    expect(implicitPromptLines).toHaveLength(3);
     expect(implicitPromptLines.join("\n")).not.toMatch(/\b(?:remember|save|store)\b/iu);
   });
 });

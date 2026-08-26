@@ -155,6 +155,116 @@ async function createTurn(userId: string, title: string) {
   return { assistantMessage, chat, run, userMessage };
 }
 
+async function attachRunOwnedSafetyExecution(input: Readonly<{
+  factVersionId: string;
+  source: Awaited<ReturnType<typeof createTurn>>;
+  userId: string;
+}>): Promise<string> {
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    where: { userId: input.userId }
+  });
+  const startedAt = new Date();
+  const completedAt = new Date(startedAt.getTime() + 1);
+  const bindingId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    const attempt = await tx.memoryRetrievalAttempt.create({
+      data: {
+        admissionKind: "NORMAL_SEND",
+        admittedAssistantLeafMessageId: input.source.assistantMessage.id,
+        admittedUserMessageId: input.source.userMessage.id,
+        attemptOrdinal: 0,
+        baseRequestHash: memorySha256({ kind: "source-base" }),
+        boundedPrivateBaseRequestSnapshot: {},
+        chatId: input.source.chat.id,
+        chatMemoryModeSnapshot: "NORMAL",
+        consumedAt: completedAt,
+        expiresAt: new Date(completedAt.getTime() + 60_000),
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        modelRunId: input.source.run.id,
+        outcome: "EMPTY",
+        queryHash: memorySha256("source-query"),
+        retrievalRevisionSnapshot: settings.memoryRevision,
+        settingsSnapshot: {},
+        state: "CONSUMED",
+        userId: input.userId,
+        utilityEgressMode: "LOCAL_ONLY"
+      }
+    });
+    await tx.modelRunMemoryBinding.create({
+      data: {
+        boundedSafeQuerySnapshot: "source-query",
+        contextTextHash: memorySha256(""),
+        contextTokenCount: 0,
+        finalizedAt: completedAt,
+        finalizedRevisionSnapshot: settings.memoryRevision,
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        modelRunId: input.source.run.id,
+        outcome: "EMPTY",
+        queryHash: memorySha256("source-query"),
+        queryPlannerVersion: "permanent-chat-test-v1",
+        retrievalAttemptId: attempt.id,
+        retrievalPipelineVersion: "permanent-chat-test-v1",
+        retrievalRevisionSnapshot: settings.memoryRevision,
+        settingsSnapshot: {},
+        userId: input.userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memorySha256({ decision: "NORMAL" }),
+        completedAt,
+        createdAt: startedAt,
+        destinationFingerprint: memorySha256("source-memory-control"),
+        id: bindingId,
+        inputHash: memorySha256("source-memory-control-input"),
+        logicalRole: "MEMORY_CONTROL",
+        ordinal: 0,
+        ownerType: "RETRIEVAL_ATTEMPT",
+        pipelineVersion: "permanent-chat-control-fixture-v1",
+        policyVersion: "permanent-chat-control-policy-v1",
+        promptVersion: "permanent-chat-control-prompt-v1",
+        providerId: "permanent-chat-fixture",
+        recoverableUntil: completedAt,
+        relationsDetachedAt: completedAt,
+        retrievalAttemptId: attempt.id,
+        schemaVersion: "permanent-chat-control-schema-v1",
+        secretFreeExecutionSnapshot: {
+          providerExecutionSnapshot: {
+            providerFamily: "permanent-chat-fixture",
+            providerModelId: "permanent-chat-control-v1"
+          },
+          version: 1
+        },
+        startedAt,
+        state: "SUCCEEDED",
+        userId: input.userId
+      }
+    });
+    await tx.usageEvent.create({
+      data: {
+        memoryExecutionBindingId: bindingId,
+        modelId: "permanent-chat-control-v1",
+        provider: "permanent-chat-fixture",
+        providerModelId: "permanent-chat-control-v1",
+        userId: input.userId
+      }
+    });
+    await tx.memoryFactVersion.update({
+      data: {
+        safetyClassificationReasonCode: "response_preference",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifiedAt: completedAt,
+        safetyClassifierExecutionId: bindingId,
+        safetyClassifierModelId: "permanent-chat-control-v1",
+        safetyClassifierPolicyVersion: "permanent-chat-control-policy-v1",
+        safetyClassifierProviderId: "permanent-chat-fixture"
+      },
+      where: { id: input.factVersionId }
+    });
+  });
+  return bindingId;
+}
+
 async function createSourceChunk(input: Readonly<{
   assistantCreatedAt: Date;
   chatId: string;
@@ -391,6 +501,11 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
     statement: `Origin preference ${randomUUID()}`,
     userId
   });
+  const sourceOwnedSafetyExecutionId = await attachRunOwnedSafetyExecution({
+    factVersionId: originFact.versionId,
+    source,
+    userId
+  });
   const sourceEvent = await prisma.memoryEvent.create({
     data: {
       actorType: "JOB",
@@ -535,6 +650,22 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
     where: { id: originFact.factId }
   });
   expect(fact.state).toBe(alsoForgetOriginMemories ? "FORGOTTEN" : "ACTIVE");
+  await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+    where: { id: originFact.versionId }
+  })).resolves.toMatchObject({
+    coreEligible: false,
+    coreSalience: "NONE",
+    safetyClassificationReasonCode: null,
+    safetyClassificationState: "PENDING",
+    safetyClassifiedAt: null,
+    safetyClassifierExecutionId: null,
+    safetyClassifierModelId: null,
+    safetyClassifierPolicyVersion: null,
+    safetyClassifierProviderId: null
+  });
+  await expect(prisma.memoryExecutionBinding.findUnique({
+    where: { id: sourceOwnedSafetyExecutionId }
+  })).resolves.toBeNull();
   if (alsoForgetOriginMemories) {
     await expect(prisma.memorySuppression.count({
       where: { scope: { in: ["FACT", "VALUE"] }, userId }

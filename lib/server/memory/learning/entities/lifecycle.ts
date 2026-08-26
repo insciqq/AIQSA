@@ -1,5 +1,69 @@
 import { Prisma } from "@prisma/client";
 import type { MemoryTransaction } from "../../persistence/transaction";
+import { memoryAdmissibleEntityAliasPredicate } from "./authority";
+
+/** Synchronously retires automatic-only roots after their final authoritative
+ * alias support is fenced. Historical merged children remain redirects and
+ * can never promote themselves. */
+export async function retractUnsupportedAutomaticMemoryEntities(
+  tx: MemoryTransaction,
+  userId: string,
+  entityIds: readonly string[] = []
+): Promise<number> {
+  const ids = [...new Set(entityIds.filter(Boolean))];
+  return tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryEntity" AS entity
+    SET
+      "state" = 'RETRACTED'::"MemoryEntityState",
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE entity."userId" = ${userId}
+      AND entity."state" = 'ACTIVE'::"MemoryEntityState"
+      AND entity."mergedIntoId" IS NULL
+      AND entity."automaticOnly" = TRUE
+      AND ${ids.length === 0
+        ? Prisma.sql`TRUE`
+        : Prisma.sql`entity."id" IN (${Prisma.join(ids)})`}
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM "MemoryEntityAlias" AS historical_alias
+          WHERE historical_alias."userId" = entity."userId"
+            AND aiqsa_memory_entity_root_id(
+              historical_alias."userId", historical_alias."entityId"
+            ) = entity."id"
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "MemoryFactVersionEntity" AS historical_link
+          WHERE historical_link."userId" = entity."userId"
+            AND aiqsa_memory_entity_root_id(
+              historical_link."userId", historical_link."entityId"
+            ) = entity."id"
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "MemoryFact" AS historical_fact
+          WHERE historical_fact."userId" = entity."userId"
+            AND aiqsa_memory_entity_root_id(
+              historical_fact."userId", historical_fact."subjectEntityId"
+            ) = entity."id"
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryEntityAlias" AS alias
+        WHERE alias."userId" = entity."userId"
+          AND aiqsa_memory_entity_root_id(
+            alias."userId", alias."entityId"
+          ) = entity."id"
+          AND ${memoryAdmissibleEntityAliasPredicate(
+            userId,
+            Prisma.sql`alias."id"`,
+            { includePendingClassification: true }
+          )}
+      )
+  `);
+}
 
 /**
  * Removes automatic entity links once their semantic version has no direct

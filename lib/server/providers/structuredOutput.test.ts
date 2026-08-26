@@ -121,15 +121,16 @@ describe("provider structured output", () => {
       }
     });
     expect(openRouter).toMatchObject({
-      response_format: {
-        json_schema: {
-          schema: {
+      tools: [{
+        function: {
+          parameters: {
             properties: {
               tool_ids: { maxItems: 2, type: "array" }
             }
           }
-        }
-      }
+        },
+        type: "function"
+      }]
     });
     expect(JSON.stringify(responses)).not.toContain("uniqueItems");
     expect(JSON.stringify(openRouter)).not.toContain("uniqueItems");
@@ -166,9 +167,9 @@ describe("provider structured output", () => {
     }
   });
 
-  it("preserves OpenRouter routing while forcing parameter support", () => {
+  it("preserves OpenRouter routing while forcing one schema-bound tool call", () => {
     expect(buildOpenRouterStructuredOutputRequest(openRouterModel, request)).toMatchObject({
-      max_completion_tokens: 64,
+      max_tokens: 64,
       model: "vendor/model",
       provider: {
         allow_fallbacks: false,
@@ -179,15 +180,78 @@ describe("provider structured output", () => {
         sort: "latency",
         zdr: true
       },
-      response_format: {
-        json_schema: {
+      stream: false,
+      tool_choice: "required",
+      tools: [{
+        function: {
           name: "strict_result",
-          schema,
+          parameters: schema,
           strict: true
         },
-        type: "json_schema"
+        type: "function"
+      }]
+    });
+    expect(buildOpenRouterStructuredOutputRequest(openRouterModel, request))
+      .not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("reserves enough OpenRouter completion budget for reasoning before a strict tool call", () => {
+    const reasoningModel: ProviderModelConfiguration = {
+      ...openRouterModel,
+      capabilities: {
+        ...openRouterModel.capabilities,
+        reasoning: true
       },
-      stream: false
+      defaultParams: {
+        ...openRouterModel.defaultParams,
+        reasoning: {
+          enabled: true,
+          effort: "high",
+          exclude: true,
+          maxTokens: 512
+        }
+      }
+    };
+
+    expect(buildOpenRouterStructuredOutputRequest(reasoningModel, {
+      ...request,
+      reasoningEffort: "high"
+    })).toMatchObject({
+      max_tokens: 1_024,
+      reasoning: {
+        effort: "high",
+        enabled: true,
+        exclude: true,
+        max_tokens: 512
+      }
+    });
+    expect(buildOpenRouterStructuredOutputRequest(reasoningModel, {
+      ...request,
+      maxOutputTokens: 2_048,
+      reasoningEffort: "high"
+    })).toHaveProperty("max_tokens", 2_048);
+
+    const disabled = buildOpenRouterStructuredOutputRequest(reasoningModel, {
+      ...request,
+      reasoningEffort: "none"
+    });
+    expect(disabled).toMatchObject({
+      max_tokens: 1_024,
+      reasoning: { exclude: true }
+    });
+    expect(disabled.reasoning).not.toHaveProperty("enabled");
+    expect(disabled.reasoning).not.toHaveProperty("effort");
+    expect(disabled.reasoning).not.toHaveProperty("max_tokens");
+
+    expect(buildOpenRouterStructuredOutputRequest({
+      ...reasoningModel,
+      defaultParams: {
+        ...reasoningModel.defaultParams,
+        reasoning: { enabled: false, exclude: true }
+      }
+    }, request)).toMatchObject({
+      max_tokens: 1_024,
+      reasoning: { exclude: true }
     });
   });
 
@@ -220,9 +284,19 @@ describe("provider structured output", () => {
     expect(JSON.stringify(await adapter.execute(request))).not.toContain("private-provider-id");
   });
 
-  it("parses one OpenRouter object and rejects free-form output", async () => {
+  it("parses one OpenRouter schema tool call and rejects free-form output", async () => {
     const createChatCompletion = vi.fn(async () => ({
-      choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ ok: true }) } }],
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null as string | null,
+          tool_calls: [{
+            function: { arguments: JSON.stringify({ ok: true }), name: "strict_result" },
+            id: "call-1",
+            type: "function"
+          }]
+        }
+      }],
       id: "openrouter-response-1",
       usage: { completion_tokens: 3, prompt_tokens: 9, total_tokens: 12 }
     }));
@@ -242,7 +316,10 @@ describe("provider structured output", () => {
     }));
 
     createChatCompletion.mockResolvedValueOnce({
-      choices: [{ finish_reason: "stop", message: { content: "not json" } }],
+      choices: [{
+        finish_reason: "stop",
+        message: { content: "not json", tool_calls: [] }
+      }],
       id: "openrouter-response-invalid",
       usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 }
     });

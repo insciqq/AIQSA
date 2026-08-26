@@ -66,10 +66,11 @@ describe("Memory fact extraction decoder", () => {
     const plan = decodeMemoryFactExtraction([{
       arguments: {
         observations: [{
+          candidate_ref: "C1",
           confidence_band: "HIGH",
-          correction: false,
           dependency_refs: [],
           entities: [],
+          evidence: { occurrence_index: 0, text: quote },
           future_useful: true,
           identity: {
             dimension_key: null,
@@ -82,17 +83,23 @@ describe("Memory fact extraction decoder", () => {
             }
           },
           memory_type: "PREFERENCE",
-          quote,
           reason_code: "durable_preference",
+          semantic_frame: {
+            assertion_status: "ASSERTED",
+            change_intent: "NONE",
+            memory_directive: "NONE",
+            polarity: "AFFIRMED",
+            speech_act: "ASSERTION",
+            subject_scope: "CURRENT_USER",
+            temporal_perspective: "CURRENT"
+          },
           sensitivity: "NORMAL",
           statement: "The user prefers emoji and decomposed cafe spelling.",
           temporal: {
-            expected_at: null,
-            expires_at: null,
-            occurred_at: null,
+            expiration_intent: "NONE",
+            normalization: { kind: "NONE" },
+            perspective: "CURRENT",
             raw_expression: null,
-            valid_from: null,
-            valid_to: null
           },
           temporary: false,
           value: {

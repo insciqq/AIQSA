@@ -118,7 +118,7 @@ export type AdminProviderTestEvidence = {
       | "openai_responses_compatible"
       | "openai_responses_native"
       | "openrouter_chat_completions";
-    probeVersion: 2;
+    probeVersion: 2 | 3 | 4;
     upstreamModelId: string;
     verified: true;
   };

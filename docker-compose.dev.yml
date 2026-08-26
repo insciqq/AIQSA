@@ -12,7 +12,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
-    command: sh -c "rm -rf /app/.next/dev && npm run db:generate && npm run db:migrate:deploy && npm run db:seed && npm run dev"
+    command: sh -c "find /app/.next -mindepth 1 -delete && npm run db:generate && npm run db:migrate:deploy && npm run db:seed && npm run dev"
     environment:
       AIQSA_APP_BASE_URL: http://localhost:${AIQSA_PORT:-3000}
       AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:-aiqsa-development-session-secret-000000000000000000000000}
@@ -30,6 +30,10 @@ services:
       # Next dev retains substantially more tracing state per background pass
       # than the standalone production worker. Explicit kicks remain immediate.
       AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: ${AIQSA_MEMORY_COORDINATOR_INTERVAL_MS:-30000}
+      # Next dev may pause the instrumentation event loop while compiling a
+      # newly reached route. Keep one paid provider call inside its lease;
+      # production retains the shorter independently heartbeated default.
+      AIQSA_MEMORY_COORDINATOR_LEASE_MS: ${AIQSA_MEMORY_COORDINATOR_LEASE_MS:-660000}
       AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: ${AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS:-64}
       AIQSA_MEMORY_DELETION_PARALLELISM: ${AIQSA_MEMORY_DELETION_PARALLELISM:-1}
       AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: ${AIQSA_MEMORY_JOB_CLAIMS_PER_PASS:-16}

@@ -276,7 +276,10 @@ describe("Memory coordinator", () => {
     registry.registerJob({
       execute: async (_claim, context) => {
         await context.setStage("APPLIED");
-        return { acceptedResultHash: RESULT_HASH };
+        return {
+          acceptedResultHash: RESULT_HASH,
+          operationalCounters: { historyChunksBuilt: 2 }
+        };
       },
       kind: claim.kind,
       preflight
@@ -294,6 +297,7 @@ describe("Memory coordinator", () => {
     expect(commitJobSuccess).toHaveBeenCalledWith(expect.objectContaining({
       acceptedResultHash: RESULT_HASH,
       claim,
+      operationalCounters: { historyChunksBuilt: 2 },
       stage: "APPLIED"
     }));
   });

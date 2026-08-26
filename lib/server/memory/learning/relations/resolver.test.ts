@@ -17,7 +17,6 @@ MemoryRelationVersionSnapshot {
     canonicalKey: "slot.product_status.product.macbook",
     dimensionKey: "product.macbook",
     directness: "DIRECT",
-    displayText: "The user owns a MacBook.",
     entities: [{
       canonicalKey: "product.macbook",
       entityType: "PRODUCT",
@@ -32,6 +31,8 @@ MemoryRelationVersionSnapshot {
     occurredAt: null,
     predicateKey: "product_status",
     ref: "R1",
+    semanticAdjudication: null,
+    semanticFrame: null,
     sourceMode: "AUTOMATIC",
     state: "ACTIVE",
     structuredValue: { state: "owned" },
@@ -72,7 +73,6 @@ function relationSnapshot(): MemoryRelationSnapshot {
     memoryGeneration: 3,
     memoryRevision: 9,
     pending: relationVersion({
-      displayText: "The user owns a 15-inch MacBook Air M4.",
       factId: "fact-pending",
       ref: "P0",
       state: "PENDING_RELATION",
@@ -88,8 +88,7 @@ function relationSnapshot(): MemoryRelationSnapshot {
       sourceHash: "d".repeat(64),
       sourceMessageId: "message-internal-1",
       sourceRevision: 4
-    },
-    sourceText: "Actually, it is the 15-inch MacBook Air M4."
+    }
   };
 }
 

@@ -6,6 +6,7 @@ import type {
   MemoryExpandedCandidate,
   MemoryLaneCandidate,
   MemoryRankedCandidate,
+  MemoryRetrievalLane,
   MemoryRetrievalPlan
 } from "../../../domain/memory/retrieval";
 import {
@@ -131,6 +132,8 @@ function factLaneCandidate(id: string, rawScore: number): MemoryLaneCandidate {
 function profileFactLaneCandidate(id: string, rawScore: number): MemoryLaneCandidate {
   return {
     ...factLaneCandidate(id, rawScore),
+    deterministicMatch: "PROFILE",
+    entryId: null,
     lane: "FACT_PROFILE"
   };
 }
@@ -216,6 +219,9 @@ function repository(options: Readonly<{
   candidates?: readonly MemoryLaneCandidate[];
   core?: readonly MemoryCoreCandidate[];
   decayEnabled?: boolean;
+  lexicalFailures?: readonly MemoryRetrievalLane[];
+  lexicalState?: "DEGRADED" | "DISABLED" | "FAILED" | "READY";
+  vectorState?: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
 }> = {}) {
   const activeIndexGenerationId = options.activeIndexGenerationId === undefined
     ? "generation-1" : options.activeIndexGenerationId;
@@ -227,10 +233,16 @@ function repository(options: Readonly<{
   const candidates = options.candidates ?? [];
   const retrieve = vi.fn(async (_input: { plan: MemoryRetrievalPlan; vector?: unknown }) => ({
     core: options.core ?? [],
-    laneResults: candidates.length ? [{ candidates, lane: "HISTORY_RECALL_VECTOR" as const }] : [],
-    lexicalFailures: [], lexicalState: activeIndexGenerationId ? "READY" as const : "DISABLED" as const,
+    laneResults: [...new Set(candidates.map(({ lane }) => lane))].map((lane) => ({
+      candidates: candidates.filter((candidate) => candidate.lane === lane),
+      lane
+    })),
+    lexicalFailures: options.lexicalFailures ?? [],
+    lexicalState: options.lexicalState ??
+      (activeIndexGenerationId ? "READY" as const : "DISABLED" as const),
     snapshot: state, vectorEvidence: [],
-    vectorState: activeIndexGenerationId ? "READY" as const : "NOT_CONFIGURED" as const
+    vectorState: options.vectorState ??
+      (activeIndexGenerationId ? "READY" as const : "NOT_CONFIGURED" as const)
   }));
   const coreByKey = new Map((options.core ?? []).map((entry) => [
     `${entry.candidate.itemType}:${entry.candidate.itemId}`,
@@ -318,6 +330,8 @@ function retrievalOptions(
           category: null,
           categoryHint: null,
           confidenceBand: "HIGH" as const,
+          entityMentions: [],
+          includePatterns: false,
           memoryUseful: true,
           pastChatsUseful: true,
           profileRequested: false,
@@ -361,6 +375,8 @@ function intentOptions(overrides: Record<string, unknown>) {
           category: null,
           categoryHint: null,
           confidenceBand: "HIGH" as const,
+          entityMentions: [],
+          includePatterns: false,
           memoryUseful: false,
           pastChatsUseful: false,
           profileRequested: false,
@@ -819,6 +835,55 @@ describe("Personal Memory v1 run admission", () => {
     ]);
   });
 
+  it("breaks equal historical domain times by transaction time and stable ID", () => {
+    const domainTime = new Date("2025-07-01T00:00:00.000Z");
+    const candidates = [
+      ["state-z", "2025-07-03T00:00:00.000Z"],
+      ["state-b", "2025-07-02T00:00:00.000Z"],
+      ["state-a", "2025-07-02T00:00:00.000Z"]
+    ].map(([id, systemFrom]) => {
+      const base = core(id!).candidate;
+      return {
+        ...base,
+        metadata: {
+          ...base.metadata,
+          current: false,
+          historical: true,
+          lifecycleState: "SUPERSEDED" as const,
+          systemFrom: new Date(systemFrom!),
+          validFrom: domainTime
+        }
+      };
+    });
+    const plan = planMemoryRetrieval({
+      currentUserText: "How did this state change?",
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      mode: "HISTORICAL_MEMORY",
+      now,
+      temporalIntent: "HISTORICAL"
+    });
+    const relevance = memoryRelevanceCandidates(
+      candidates,
+      candidates.map(({ itemId }) => core(itemId).expansion),
+      { temporalIntent: "HISTORICAL" }
+    );
+    const accepted = applyMemoryRelevance(relevance, {
+      bindingId: "binding-historical-ties",
+      decisions: relevance.map((candidate, index) => ({
+        applicable: true,
+        current: true,
+        handle: candidate.handle,
+        reasonCode: "DIRECT_RELEVANCE" as const,
+        relevanceScore: 0.99 - index * 0.1
+      })),
+      status: "READY"
+    }, plan);
+
+    expect(accepted.map(({ itemId }) => itemId)).toEqual([
+      "state-a", "state-b", "state-z"
+    ]);
+  });
+
   it("does not replay a resolved Memory action across a preparing retry", async () => {
     const local = repository({});
     const control = {
@@ -831,6 +896,8 @@ describe("Personal Memory v1 run admission", () => {
           category: "preferences" as const,
           categoryHint: null,
           confidenceBand: "HIGH" as const,
+          entityMentions: [],
+          includePatterns: false,
           memoryUseful: false,
           pastChatsUseful: false,
           profileRequested: false,
@@ -950,6 +1017,8 @@ describe("Personal Memory v1 run admission", () => {
           category: "about_you" as const,
           categoryHint: null,
           confidenceBand: "HIGH" as const,
+          entityMentions: [],
+          includePatterns: false,
           memoryUseful: false,
           pastChatsUseful: false,
           profileRequested: false,
@@ -1003,6 +1072,8 @@ describe("Personal Memory v1 run admission", () => {
           category: "preferences" as const,
           categoryHint: null,
           confidenceBand: "HIGH" as const,
+          entityMentions: [],
+          includePatterns: false,
           memoryUseful: false,
           pastChatsUseful: false,
           profileRequested: false,
@@ -1049,6 +1120,8 @@ describe("Personal Memory v1 run admission", () => {
           category: "preferences" as const,
           categoryHint: null,
           confidenceBand: "HIGH" as const,
+          entityMentions: [],
+          includePatterns: false,
           memoryUseful: false,
           pastChatsUseful: false,
           profileRequested: false,
@@ -1224,7 +1297,7 @@ describe("Personal Memory v1 run admission", () => {
           intent: { action: "NONE", queryText: "What is my name?" },
           sourceAttemptId: "attempt-1",
           sourceBindingId: "binding-control",
-          version: 4
+          version: 6
         },
         utilityEgressMode: "CONSENTED_EXTERNAL"
       },
@@ -1277,7 +1350,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext).toBeNull();
   });
 
-  it("admits the past-chat lane independently when fact retrieval is vetoed", async () => {
+  it("[E07] keeps the past-chat lane when fact retrieval is unavailable", async () => {
     const local = repository({ candidates: [laneCandidate("past-chat")] });
     const options = intentOptions({
       memoryUseful: false,
@@ -1738,8 +1811,11 @@ describe("Personal Memory v1 run admission", () => {
     }
   );
 
-  it("fails a broad profile safe when no usable local index is available", async () => {
-    const local = repository({ activeIndexGenerationId: null });
+  it("retrieves a broad profile directly when no local index is available", async () => {
+    const local = repository({
+      activeIndexGenerationId: null,
+      candidates: [profileFactLaneCandidate("profile-name", 1)]
+    });
     const options = intentOptions({
       memoryUseful: true,
       pastChatsUseful: false,
@@ -1751,17 +1827,15 @@ describe("Personal Memory v1 run admission", () => {
       .retrieve(runInput("Что ты обо мне знаешь?", null));
 
     expect(result).toMatchObject({
-      budgetSnapshot: { reason: "memory_index_unavailable" },
-      items: [],
-      outcome: "FAILED_SAFE",
-      preparedContext: null
+      items: [{ factVersionId: "profile-name", itemType: "FACT_VERSION" }],
+      outcome: "USED"
     });
-    expect(local.retrieve).not.toHaveBeenCalled();
+    expect(local.retrieve).toHaveBeenCalledOnce();
     expect(options.utilities.embedQuery).not.toHaveBeenCalled();
-    expect(options.utilities.rerank).not.toHaveBeenCalled();
+    expect(options.utilities.rerank).toHaveBeenCalledOnce();
   });
 
-  it("fails a broad profile safe when the local index becomes unavailable", async () => {
+  it("returns ordinary zero-memory when a direct profile has no candidates", async () => {
     const initialState = snapshot("generation-1");
     const unavailableState = {
       ...initialState,
@@ -1792,12 +1866,7 @@ describe("Personal Memory v1 run admission", () => {
     const result = await createMemoryRunRetrievalService(local, options)
       .retrieve(runInput("Что ты обо мне знаешь?"));
 
-    expect(result).toMatchObject({
-      budgetSnapshot: { reason: "memory_index_unavailable" },
-      items: [],
-      outcome: "FAILED_SAFE",
-      preparedContext: null
-    });
+    expect(result).toMatchObject({ items: [], outcome: "EMPTY", preparedContext: null });
     expect(retrieve).toHaveBeenCalledOnce();
     expect(local.expand).not.toHaveBeenCalled();
     expect(options.utilities.embedQuery).not.toHaveBeenCalled();
@@ -1854,7 +1923,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(decide(0.600_001)).toHaveLength(1);
   });
 
-  it("returns zero items on abstention and fails closed on relevance failure", async () => {
+  it("returns zero items on abstention or unavailable fuzzy relevance", async () => {
     for (const decision of [[], null] as const) {
       const local = repository({ candidates: [laneCandidate("a")], core: [core()] });
       const result = await createMemoryRunRetrievalService(
@@ -1862,11 +1931,179 @@ describe("Personal Memory v1 run admission", () => {
         retrievalOptions(decision)
       ).retrieve(runInput("unrelated question"));
       expect(result.items).toEqual([]);
-      if (decision === null) expect(result).toMatchObject({
-        outcome: "FAILED_SAFE"
-      });
-      else expect(result.outcome).toBe("EMPTY");
+      expect(result.outcome).toBe("EMPTY");
     }
+  });
+
+  it("[E07] uses only exact current facts when the reranker is unavailable", async () => {
+    const exact: MemoryLaneCandidate = {
+      ...factLaneCandidate("exact-current", 1),
+      deterministicMatch: "EXACT_TEXT",
+      entryId: null,
+      lane: "FACT_EXACT"
+    };
+    const local = repository({ activeIndexGenerationId: null, candidates: [exact] });
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      retrievalOptions(null)
+    ).retrieve(runInput("exact current", null));
+
+    expect(result).toMatchObject({
+      degradationCode: "memory_relevance_unavailable",
+      items: [{
+        factVersionId: "exact-current",
+        selectionReason: "deterministic_fallback.exact_text"
+      }],
+      outcome: "DEGRADED"
+    });
+  });
+
+  it("freezes validated pattern and entity hints without granting item authority", async () => {
+    const opaqueRef = `mr1.${"a".repeat(500)}`;
+    const local = repository({ candidates: [factLaneCandidate("hinted-fact", 0.8)] });
+    const options = {
+      ...intentOptions({
+        entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
+        includePatterns: true,
+        memoryUseful: true,
+        pastChatsUseful: false,
+        queryText: "Acme workflow"
+      }),
+      controlRefs: { load: vi.fn(async () => [opaqueRef]) }
+    };
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Use the relevant context."));
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
+        includePatterns: true
+      })
+    }));
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        plan: {
+          entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
+          includePatterns: true
+        }
+      },
+      items: [{ featureSnapshot: { includePatterns: true } }],
+      outcome: "USED"
+    });
+  });
+
+  it("[E07] lets mandatory final authority remove a degraded exact candidate", async () => {
+    const exact: MemoryLaneCandidate = {
+      ...factLaneCandidate("exact-stale", 1),
+      deterministicMatch: "EXACT_TEXT",
+      entryId: null,
+      lane: "FACT_EXACT"
+    };
+    const local = repository({ activeIndexGenerationId: null, candidates: [exact] });
+    vi.mocked(local.value.expand).mockImplementation(async (_snapshot, _plan, ranked) =>
+      vi.mocked(local.value.expand).mock.calls.length === 1
+        ? ranked.map((candidate) => ({
+            itemId: candidate.itemId,
+            itemType: "FACT_VERSION" as const,
+            occurredFrom: null,
+            occurredTo: null,
+            projectionKind: "FACT_DISPLAY_TEXT" as const,
+            safeText: `relevant text ${candidate.itemId}`,
+            sourceChatId: null,
+            supportingItemId: null
+          }))
+        : []);
+
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      retrievalOptions(null)
+    ).retrieve(runInput("exact stale", null));
+
+    expect(local.value.expand).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ items: [], outcome: "EMPTY", preparedContext: null });
+  });
+
+  it.each([
+    {
+      candidateLane: "FACT_FTS_SIMPLE" as const,
+      code: "memory_query_embedding_unavailable",
+      embeddingUnavailable: true,
+      lexicalFailures: [] as readonly MemoryRetrievalLane[],
+      lexicalState: "READY" as const,
+      vectorState: "NOT_CONFIGURED" as const
+    },
+    {
+      candidateLane: "FACT_VECTOR" as const,
+      code: "memory_fts_unavailable",
+      embeddingUnavailable: false,
+      lexicalFailures: ["FACT_FTS_SIMPLE"] as readonly MemoryRetrievalLane[],
+      lexicalState: "DEGRADED" as const,
+      vectorState: "READY" as const
+    },
+    {
+      candidateLane: "FACT_FTS_SIMPLE" as const,
+      code: "memory_entity_unavailable",
+      embeddingUnavailable: false,
+      lexicalFailures: ["FACT_ENTITY"] as readonly MemoryRetrievalLane[],
+      lexicalState: "DEGRADED" as const,
+      vectorState: "READY" as const
+    },
+    {
+      candidateLane: "FACT_FTS_SIMPLE" as const,
+      code: "memory_vector_unavailable",
+      embeddingUnavailable: false,
+      lexicalFailures: [] as readonly MemoryRetrievalLane[],
+      lexicalState: "READY" as const,
+      vectorState: "DEGRADED" as const
+    }
+  ])("[E07] keeps authoritative candidates when one signal degrades: $code", async (testCase) => {
+    const candidate: MemoryLaneCandidate = {
+      ...factLaneCandidate(testCase.code, 0.8),
+      lane: testCase.candidateLane
+    };
+    const local = repository({
+      candidates: [candidate],
+      lexicalFailures: testCase.lexicalFailures,
+      lexicalState: testCase.lexicalState,
+      vectorState: testCase.vectorState
+    });
+    const options = retrievalOptions(["c0"]);
+    if (testCase.embeddingUnavailable) {
+      vi.mocked(options.utilities.embedQuery).mockResolvedValue({
+        reason: "memory_query_embedding_unavailable",
+        status: "UNAVAILABLE"
+      });
+    }
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("current fact"));
+
+    expect(result).toMatchObject({
+      degradationCode: testCase.code,
+      items: [{ factVersionId: testCase.code }],
+      outcome: "DEGRADED"
+    });
+    expect(options.utilities.rerank).toHaveBeenCalledOnce();
+  });
+
+  it("returns zero dynamic memory when every ranking signal is absent", async () => {
+    const local = repository({
+      lexicalFailures: ["FACT_EXACT", "FACT_ENTITY", "FACT_FTS_SIMPLE"],
+      lexicalState: "FAILED",
+      vectorState: "DEGRADED"
+    });
+    const options = retrievalOptions(["c0"]);
+    vi.mocked(options.utilities.embedQuery).mockResolvedValue({
+      reason: "memory_query_embedding_unavailable",
+      status: "UNAVAILABLE"
+    });
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("current fact"));
+
+    expect(result).toMatchObject({ items: [], outcome: "EMPTY", preparedContext: null });
+    expect(options.utilities.rerank).not.toHaveBeenCalled();
   });
 
   it("blocks recognizable-secret input before local or provider retrieval", async () => {

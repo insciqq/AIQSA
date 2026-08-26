@@ -5,13 +5,13 @@ import type { MemoryTextLanguage } from "../../history/language";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
 
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
-  "memory-fact-extraction-vnext-v2";
+  "memory-fact-extraction-vnext-v5";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v5";
+  "memory-fact-extraction-policy-v8";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v11";
+  "memory-fact-extraction-prompt-v23";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-extraction-schema-v4";
+  "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   MEMORY_TEMPORAL_RESOLVER_VERSION;
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
@@ -55,6 +55,87 @@ export type MemoryFactDurableCategory =
 export type MemoryFactConfidenceBand = "HIGH" | "MEDIUM" | "LOW";
 export type MemoryFactCandidateSensitivity =
   "NORMAL" | "SENSITIVE" | "SECRET" | "UNCERTAIN";
+
+export type MemorySemanticSpeechAct =
+  "ASSERTION" | "COMMAND" | "QUESTION" | "OTHER" | "UNKNOWN";
+export type MemorySemanticAssertionStatus =
+  "ASSERTED" | "CONDITIONAL" | "HYPOTHETICAL" | "QUOTED" | "UNKNOWN";
+export type MemorySemanticSubjectScope =
+  "CURRENT_USER" | "THIRD_PARTY" | "ASSISTANT" | "UNKNOWN";
+export type MemorySemanticPolarity =
+  "AFFIRMED" | "NEGATED" | "CORRECTION" | "RETRACTION" | "UNKNOWN";
+export type MemorySemanticTemporalPerspective =
+  "CURRENT" | "FORMER" | "FUTURE" | "EVENT" | "INTERVAL" | "UNKNOWN";
+export type MemorySemanticChangeIntent =
+  "NONE" | "STATE_CHANGE" | "CORRECTION" | "RETRACTION" | "REOPEN" |
+  "UNKNOWN";
+
+export type MemorySemanticFrame = Readonly<{
+  assertionStatus: MemorySemanticAssertionStatus;
+  changeIntent: MemorySemanticChangeIntent;
+  memoryDirective: "NONE" | "EXPLICIT_REMEMBER" | "UNKNOWN";
+  polarity: MemorySemanticPolarity;
+  speechAct: MemorySemanticSpeechAct;
+  subjectScope: MemorySemanticSubjectScope;
+  temporalPerspective: MemorySemanticTemporalPerspective;
+}>;
+
+/** Exact model-authored source reference. Occurrences and all resulting
+ * offsets use JavaScript string indexing and therefore the UTF-16 wire unit. */
+export type MemoryExactTextRef = Readonly<{
+  occurrenceIndex: number;
+  text: string;
+}>;
+
+export type MemoryTemporalPointNormalization = Readonly<
+  | { kind: "NONE" }
+  | {
+      kind: "ABSOLUTE";
+      localDate: string;
+      localTime: string | null;
+      zone: string | null;
+    }
+  | {
+      amount: number;
+      kind: "CALENDAR_OFFSET";
+      unit: "DAY" | "WEEK" | "MONTH" | "YEAR";
+    }
+  | {
+      direction: "PREVIOUS" | "CURRENT" | "NEXT";
+      kind: "RELATIVE_WEEKDAY";
+      weekday: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+    }
+>;
+
+export type MemoryTemporalNormalization = Readonly<
+  | MemoryTemporalPointNormalization
+  | {
+      end: MemoryTemporalPointNormalization;
+      kind: "INTERVAL";
+      start: MemoryTemporalPointNormalization;
+    }
+>;
+
+export type MemorySemanticAdjudication = Readonly<{
+  assertionStatus: MemorySemanticAssertionStatus;
+  candidateRef: string;
+  confidenceBand: MemoryFactConfidenceBand;
+  entailment: "ENTAILED" | "CONTRADICTED" | "UNKNOWN";
+  entityRef: string | null;
+  operation:
+    | "NO_RELATION"
+    | "REINFORCE"
+    | "MERGE_NEW_INTO_TARGET"
+    | "MERGE_TARGET_INTO_NEW"
+    | "SUPERSEDE_TARGET"
+    | "MOVE_TO_DISTINCT_FACT"
+    | "RETRACT_TARGET"
+    | "AMBIGUOUS";
+  reasonCode: string;
+  subjectScope: MemorySemanticSubjectScope;
+  targetRef: string | null;
+  temporalPerspective: MemorySemanticTemporalPerspective;
+}>;
 
 export type MemoryFactCandidateRejection = Readonly<{
   candidateOrdinal: number;
@@ -184,13 +265,15 @@ export type MemoryFactCandidateEntity = Readonly<{
   contextEntityId: string | null;
   contextRef: string | null;
   entityType: string;
-  mention: string;
+  mention: string | null;
+  mentionKind: "NAMED" | "NOMINAL" | "PRONOMINAL" | "ELLIPSIS" | "UNKNOWN";
   qualifiers: Readonly<Record<string, string | null>>;
   role: "SUBJECT" | "OBJECT" | "MENTION";
 }>;
 
 export type MemoryExtractedCandidate = Readonly<{
   /** v1 semantic fields returned by the strict System Model. */
+  candidateRef: string;
   category: string;
   confidenceBand?: MemoryFactConfidenceBand;
   correction?: boolean;
@@ -199,6 +282,11 @@ export type MemoryExtractedCandidate = Readonly<{
   responsePreference?: string | null;
   statement?: string;
   temporary?: boolean;
+
+  /** Strict language-neutral authority emitted by the System Model. */
+  expirationIntent: "EXPLICIT" | "NONE" | "UNKNOWN";
+  semanticFrame: MemorySemanticFrame;
+  temporalNormalization: MemoryTemporalNormalization;
 
   /** Existing persistence projection (server-owned, never model supplied). */
   canonicalKey: string;
@@ -215,7 +303,7 @@ export type MemoryExtractedCandidate = Readonly<{
   expiresAt: string | null;
   id: string;
   identityKind: "PROPOSITION" | "SLOT";
-  identityVersion: "proposition-v1" | "slot-v2";
+  identityVersion: "proposition-v1" | "slot-v2" | "slot-v3";
   importance: number;
   languageCode: MemoryTextLanguage;
   modality:
@@ -247,16 +335,19 @@ export type MemoryExtractedCandidate = Readonly<{
   sensitivity: "NORMAL";
   state: "PENDING";
   subjectKey: string | null;
+  /** Set only by the transactional entity materializer before semantic apply. */
+  subjectEntityId?: string | null;
   temporalResolutionEvidence: Readonly<Record<string, unknown>> | null;
   validFrom: string | null;
   validTo: string | null;
 }>;
 
 export type MemoryFactExtractionPlan = Readonly<{
+  candidateOrdinals: readonly number[];
   candidates: readonly MemoryExtractedCandidate[];
   input: MemoryFactExtractionInput;
   outputHash: string;
-  rejections?: readonly MemoryFactCandidateRejection[];
+  rejections: readonly MemoryFactCandidateRejection[];
 }>;
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
@@ -340,6 +431,7 @@ export function memoryFactCandidateId(
   // changing the source-grounded candidate's id; evidence/content remain in
   // the identity below.
   const {
+    candidateRef: _candidateRef,
     canonicalKey: _serverOwnedOpaqueKey,
     confidenceBand: _confidenceBand,
     correction: _correction,
@@ -347,6 +439,9 @@ export function memoryFactCandidateId(
     quote: _quote,
     responsePreference: _responsePreference,
     statement: _statement,
+    semanticFrame: _semanticFrame,
+    temporalNormalization: _temporalNormalization,
+    expirationIntent: _expirationIntent,
     temporary: _temporary,
     ...identity
   } = candidate;
@@ -434,11 +529,15 @@ export function memoryFactEvidenceFingerprint(
 
 export function memoryFactExtractionOutputHash(
   input: MemoryFactExtractionInput,
-  candidates: readonly MemoryExtractedCandidate[]
+  candidates: readonly MemoryExtractedCandidate[],
+  candidateOrdinals: readonly number[],
+  rejections: readonly MemoryFactCandidateRejection[]
 ): string {
   return memorySha256({
+    candidateOrdinals,
     candidates,
     inputHash: input.inputHash,
-    pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
+    pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+    rejections
   });
 }

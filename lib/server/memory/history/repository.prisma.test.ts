@@ -19,7 +19,10 @@ import {
   materializeMemoryChatDigest,
   type MemoryChatDigestGenerator
 } from "./digest";
-import { memorySha256 } from "../persistence/lexical";
+import {
+  memorySha256,
+  normalizeMemorySearchText
+} from "../persistence/lexical";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
@@ -32,8 +35,15 @@ import {
   readMemoryHistoryIndexingProgress,
   seedMemoryHistoryBackfill
 } from "./backfill";
-import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "./contract";
+import {
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+  MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
+  memoryHistoryIndexJobFingerprint
+} from "./contract";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
+import { createPrismaMemoryHistoryIndexRepository } from "./repository";
+import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
+import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
 async function mutateSource(
   userId: string,
@@ -232,12 +242,18 @@ const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
   async generate(source, chunks) {
     if (chunks.length === 0) {
       return {
+        classificationRequired: false,
         digest: null,
         executions: [],
-        policyVersion: "memory-chat-digest-policy-test"
+        policyVersion: "memory-chat-digest-policy-test",
+        work: {
+          digestSegmentsProcessed: 0,
+          digestSourceChunksProcessed: 0
+        }
       };
     }
     return {
+      classificationRequired: true,
       digest: materializeMemoryChatDigest({
         chunks,
         content: decodeMemoryChatDigest({
@@ -249,7 +265,11 @@ const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
         source
       }),
       executions: [],
-      policyVersion: "memory-chat-digest-policy-test"
+      policyVersion: "memory-chat-digest-policy-test",
+      work: {
+        digestSegmentsProcessed: 1,
+        digestSourceChunksProcessed: chunks.length
+      }
     };
   }
 });
@@ -1024,11 +1044,12 @@ describe("Memory lexical history index persistence", () => {
       const reindexed = await prisma.memoryRecallChunk.findMany({
         where: { chatId: chat.id, state: "ACTIVE", userId }
       });
-      expect(reindexed).toHaveLength(1);
-      expect(reindexed[0]?.safeProjectedText).toContain("Tea is still fine");
+      expect(reindexed).toHaveLength(2);
+      expect(reindexed.map(({ safeProjectedText }) => safeProjectedText).join("\n"))
+        .toContain("Tea is still fine");
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "INVALIDATED", userId }
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);
     }
@@ -1112,7 +1133,7 @@ describe("Memory lexical history index persistence", () => {
         orderBy: { chunkOrdinal: "asc" },
         where: { chatId: chat.id, state: "ACTIVE", userId }
       });
-      expect(currentChunks).toHaveLength(2);
+      expect(currentChunks).toHaveLength(3);
       expect(currentChunks[0]).toMatchObject({
         createdAt: stableChunk.createdAt,
         id: stableChunk.id,
@@ -1121,13 +1142,436 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memorySearchEntry.findFirstOrThrow({
         where: { recallChunkId: stableChunk.id, userId }
       })).resolves.toMatchObject({ id: stableEntry.id });
+      const currentCheckpoint = await prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      });
+      expect(stableChunk.sourceRevisionAtCreation).not.toBe(
+        currentCheckpoint.sourceRevision
+      );
+      const reusableStablePrefix = await prisma.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`
+          SELECT chunk."id"
+          FROM "MemoryRecallChunk" AS chunk
+          INNER JOIN "Chat" AS source_chat
+            ON source_chat."userId" = chunk."userId"
+            AND source_chat."id" = chunk."chatId"
+          INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+            ON checkpoint."userId" = chunk."userId"
+            AND checkpoint."chatId" = chunk."chatId"
+          WHERE chunk."userId" = ${userId}
+            AND chunk."id" = ${stableChunk.id}
+            AND ${memoryHistoryChunkSourceAuthorityPredicate({
+              chat: "source_chat",
+              checkpoint: "checkpoint"
+            })}
+        `
+      );
+      expect(reusableStablePrefix).toEqual([{ id: stableChunk.id }]);
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "INVALIDATED", userId }
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);
     }
   });
+
+  it("preserves a legacy checkpoint version until prepare forces a full rebuild", async () => {
+    const userId = await createOwner("memory-history-pipeline-rebuild");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Pipeline rebuild history", userId }
+      });
+      const first = await createTurn({
+        assistantText: "Initial assistant turn.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-12T13:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Initial user turn."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: first.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: first.assistantMessage.id,
+          runId: first.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      await prisma.chatMemoryCheckpoint.update({
+        data: { pipelineVersion: "memory-history-incremental-v1" },
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      });
+
+      const appended = await createTurn({
+        assistantText: "Appended assistant turn.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-12T13:02:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: "Appended user turn."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: appended.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: appended.assistantMessage.id,
+          runId: appended.run.id,
+          status: "complete"
+        }
+      });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        pipelineVersion: "memory-history-incremental-v1",
+        status: "PENDING"
+      });
+      const claim = await claimHistoryJob(userId);
+      const prepared = await createPrismaMemoryHistoryIndexRepository(prisma)
+        .prepare(claim);
+      if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
+      expect(prepared.plan.incremental.mode).toBe("FULL_REBUILD");
+      expect(prepared.plan.work).toMatchObject({
+        chunksReused: 0,
+        messageContentRowsLoaded: 4,
+        messagesProjected: 4
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("marks destructive source-context drift for a full checkpoint rebuild", async () => {
+    const userId = await createOwner("memory-history-context-rebuild");
+    try {
+      const [folderA, folderB] = await Promise.all([
+        prisma.folder.create({ data: { name: "History A", userId } }),
+        prisma.folder.create({ data: { name: "History B", userId } })
+      ]);
+      const chat = await prisma.chat.create({
+        data: { folderId: folderA.id, title: "Context rebuild history", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Context before the folder move.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-12T14:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Remember this bounded context."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      await mutateSource(userId, chat.id, {
+        mutations: ["FOLDER_MOVE"],
+        patch: { folderId: folderB.id }
+      });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
+        status: "PENDING"
+      });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({
+        enqueuedJobs: 1
+      });
+      const claim = await claimHistoryJob(userId);
+      const prepared = await createPrismaMemoryHistoryIndexRepository(prisma)
+        .prepare(claim);
+      if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
+      expect(prepared.plan.incremental.mode).toBe("FULL_REBUILD");
+      expect(prepared.plan.work).toMatchObject({
+        chunksReused: 0,
+        messageContentRowsLoaded: 2,
+        messagesProjected: 2
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("[E08] bounds a 4,000-message append to the indexed tail plus one overlap", async () => {
+    const userId = await createOwner("memory-history-4000-message-append");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Four thousand message history", userId }
+      });
+      const messageIds = Array.from({ length: 4_000 }, () => randomUUID());
+      const baseTime = Date.parse("2026-08-14T08:00:00.000Z");
+      const messageRows = messageIds.map((id, ordinal) => ({
+        chatId: chat.id,
+        content: textMessageContent(
+          `${ordinal % 2 === 0 ? "User" : "Assistant"} bounded turn ${Math.floor(
+            ordinal / 2
+          )}.`
+        ),
+        createdAt: new Date(baseTime + ordinal * 1_000),
+        id,
+        modelId: ordinal % 2 === 1 ? "history-test-model" : null,
+        parentMessageId: ordinal === 0 ? null : messageIds[ordinal - 1]!,
+        provider: ordinal % 2 === 1 ? "history-test-provider" : null,
+        role: ordinal % 2 === 0 ? "user" : "assistant",
+        status: "complete" as const,
+        updatedAt: new Date(baseTime + ordinal * 1_000)
+      }));
+      for (let offset = 0; offset < messageRows.length; offset += 500) {
+        await prisma.message.createMany({
+          data: messageRows.slice(offset, offset + 500)
+        });
+      }
+      const runRows = Array.from({ length: 2_000 }, (_, turnOrdinal) => ({
+        assistantMessageId: messageIds[turnOrdinal * 2 + 1]!,
+        chatId: chat.id,
+        id: randomUUID(),
+        modelId: "history-test-model",
+        normalizedRequest: {
+          prompt: {
+            baseline: {
+              source: "standard_chat",
+              timeZone: "Europe/Moscow",
+              timeZoneSource: "client"
+            }
+          }
+        },
+        provider: "history-test-provider",
+        status: "complete" as const,
+        userId,
+        userMessageId: messageIds[turnOrdinal * 2]!
+      }));
+      for (let offset = 0; offset < runRows.length; offset += 500) {
+        await prisma.modelRun.createMany({
+          data: runRows.slice(offset, offset + 500)
+        });
+      }
+      await prisma.chat.update({
+        data: { activeLeafMessageId: messageIds.at(-1)! },
+        where: { id: chat.id }
+      });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const initialSource = await loadMemorySourceSnapshot(prisma, {
+        chatId: chat.id,
+        personalOnly: true,
+        userId
+      });
+      if (!initialSource?.activeLeafMessageId) {
+        throw new Error("memory_history_4000_source_missing");
+      }
+      const claimFor = (
+        source: typeof initialSource
+      ): MemoryJobClaim => ({
+        activeLeafMessageId: source.activeLeafMessageId!,
+        attemptCount: 1,
+        branchGeneration: source.memoryBranchGeneration,
+        chatId: source.id,
+        claimToken: randomUUID(),
+        id: randomUUID(),
+        idempotencyFingerprint: memoryHistoryIndexJobFingerprint(source),
+        kind: "INDEX_HISTORY",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        recoveredLease: false,
+        sourceHash: source.sourceHash,
+        sourceMessageId: null,
+        sourceRevision: source.memorySourceRevision,
+        stage: null,
+        targetFactVersionId: null,
+        userId
+      });
+      await prisma.chatMemoryCheckpoint.create({
+        data: {
+          activeLeafMessageId: initialSource.activeLeafMessageId,
+          branchGeneration: initialSource.memoryBranchGeneration,
+          chatId: initialSource.id,
+          lastIndexedMessageId: initialSource.activeLeafMessageId,
+          lastSucceededAt: new Date(),
+          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+          sourceContentHash: initialSource.sourceHash,
+          sourceRevision: initialSource.memorySourceRevision,
+          status: "READY",
+          userId
+        }
+      });
+      for (let offset = 0; offset < messageRows.length; offset += 500) {
+        await prisma.chatMemoryCheckpointMessage.createMany({
+          data: messageRows.slice(offset, offset + 500)
+            .map((message, index) => ({
+              chatId: initialSource.id,
+              messageId: message.id,
+              ordinal: offset + index,
+              sourceMessageCreatedAt: message.createdAt,
+              sourceMessageUpdatedAt: message.updatedAt,
+              userId
+            }))
+        });
+      }
+      const tailPlan = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw(Prisma.sql`SET LOCAL enable_seqscan = off`);
+        return tx.$queryRaw<unknown[]>(Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT checkpoint_message."messageId", checkpoint_message."ordinal"
+          FROM "ChatMemoryCheckpointMessage" AS checkpoint_message
+          WHERE checkpoint_message."userId" = ${userId}
+            AND checkpoint_message."chatId" = ${chat.id}
+            AND checkpoint_message."ordinal" >= 3998
+          ORDER BY checkpoint_message."userId", checkpoint_message."chatId",
+            checkpoint_message."ordinal"
+          LIMIT 8
+        `);
+      });
+      const tailPlanEvidence = JSON.stringify(tailPlan);
+      expect(tailPlanEvidence)
+        .toContain("ChatMemoryCheckpointMessage_user_chat_ordinal_key");
+      expect(tailPlanEvidence).not.toContain('"Node Type":"Seq Scan"');
+      const lastUserText = "User bounded turn 1999.";
+      const lastAssistantText = "Assistant bounded turn 1999.";
+      const initialChunkText =
+        `User: ${lastUserText}\n\nAssistant: ${lastAssistantText}`;
+      const initialChunkId = memorySha256({
+        chatId: chat.id,
+        fixture: "memory-history-4000-tail"
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.create({
+          data: {
+            branchGeneration: initialSource.memoryBranchGeneration,
+            chatId: chat.id,
+            chunkOrdinal: 0,
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+            contentHash: memorySha256(initialChunkText),
+            id: initialChunkId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(initialChunkText),
+            occurredFrom: messageRows[3_998]!.createdAt,
+            occurredTo: messageRows[3_999]!.createdAt,
+            redactionReasonCodes: [],
+            redactionState: "NOT_NEEDED",
+            safeProjectedText: initialChunkText,
+            safetyClass: "NORMAL",
+            sourceAssistantId: null,
+            sourceFolderId: null,
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+            sourceRevisionAtCreation: initialSource.memorySourceRevision,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryRecallChunkMessage.createMany({
+          data: [
+            {
+              chatId: chat.id,
+              chunkId: initialChunkId,
+              endOffset: lastUserText.length,
+              messageId: messageIds[3_998]!,
+              ordinal: 0,
+              role: "user",
+              safeTextHash: memorySha256(lastUserText),
+              sourceMessageContentHash: memorySha256(
+                textMessageContent(lastUserText)
+              ),
+              sourceMessageUpdatedAt: messageRows[3_998]!.updatedAt,
+              startOffset: 0,
+              userId
+            },
+            {
+              chatId: chat.id,
+              chunkId: initialChunkId,
+              endOffset: lastAssistantText.length,
+              messageId: messageIds[3_999]!,
+              ordinal: 1,
+              role: "assistant",
+              safeTextHash: memorySha256(lastAssistantText),
+              sourceMessageContentHash: memorySha256(
+                textMessageContent(lastAssistantText)
+              ),
+              sourceMessageUpdatedAt: messageRows[3_999]!.updatedAt,
+              startOffset: 0,
+              userId
+            }
+          ]
+        });
+      }, {
+        timeout: 30_000
+      });
+
+      const appended = await createTurn({
+        assistantText: "Assistant bounded appended turn.",
+        chatId: chat.id,
+        createdAt: new Date(baseTime + 4_000 * 1_000),
+        parentMessageId: messageIds.at(-1)!,
+        userId,
+        userText: "User bounded appended turn."
+      });
+      const updatedChat = await prisma.$transaction(async (tx) => {
+        await tx.chatMemoryCheckpoint.update({
+          data: { status: "PENDING" },
+          where: { userId_chatId: { chatId: chat.id, userId } }
+        });
+        return tx.chat.update({
+          data: {
+            activeLeafMessageId: appended.assistantMessage.id,
+            memorySourceRevision: { increment: 1 }
+          },
+          where: { id: chat.id }
+        });
+      });
+      const currentSource = await loadMemorySourceSnapshot(prisma, {
+        chatId: updatedChat.id,
+        personalOnly: true,
+        userId
+      });
+      if (!currentSource?.activeLeafMessageId) {
+        throw new Error("memory_history_4000_append_source_missing");
+      }
+      const claim = claimFor(currentSource);
+      const repository = createPrismaMemoryHistoryIndexRepository(prisma);
+      const prepared = await repository.prepare(claim);
+      if ("decision" in prepared) {
+        throw new Error(prepared.decision.errorCode);
+      }
+      expect(prepared.plan.incremental).toMatchObject({
+        commonPathMessageCount: 4_000,
+        mode: "APPEND",
+        rebuildFromMessageOrdinal: 3_998
+      });
+      expect(prepared.plan.work).toEqual({
+        chunksBuilt: 1,
+        chunksReplaced: 0,
+        chunksReused: 1,
+        digestSegmentsProcessed: 0,
+        digestSourceChunksProcessed: 0,
+        messageContentRowsLoaded: 4,
+        messagesProjected: 4,
+        modelRunRowsLoaded: 2,
+        pathMetadataRowsRead: 4_002
+      });
+      expect(prepared.plan.chunks[0]?.id).toBe(initialChunkId);
+      expect(prepared.plan.rebuiltChunkIds).toHaveLength(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
 
   it("persists one retry-idempotent source-bound digest and replaces it after append", async () => {
     const userId = await createOwner("memory-history-digest");
@@ -1163,10 +1607,12 @@ describe("Memory lexical history index persistence", () => {
       });
       expect(digest).toMatchObject({
         activeLeafMessageId: first.assistantMessage.id,
-        pipelineVersion: "memory-chat-digest-v1",
+        pipelineVersion: "memory-chat-digest-v2",
         redactionState: "NOT_NEEDED",
         safetyClass: "NORMAL",
-        safeDigestText: expect.stringContaining("Summary:")
+        safeDigestText: expect.stringContaining("Summary:"),
+        sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        updateMode: "FULL_REBUILD"
       });
       await expect(prisma.chatMemoryDigestChunk.count({
         where: { digestId: digest.id, userId }

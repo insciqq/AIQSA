@@ -11,6 +11,7 @@ import {
 import type { MemoryRetainedSourceMutationEvent } from "../sourceState";
 import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+  MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
   memoryHistoryIndexJobFingerprint
 } from "./contract";
 import { MEMORY_HISTORY_SOURCE_TARGET_TYPE } from "./purge";
@@ -21,6 +22,18 @@ function sourceIdentityChanged(event: MemoryRetainedSourceMutationEvent): boolea
     event.previous.memoryBranchGeneration !== event.snapshot.memoryBranchGeneration ||
     event.previous.memoryMode !== event.snapshot.memoryMode ||
     event.previous.memorySourceRevision !== event.snapshot.memorySourceRevision;
+}
+
+function requiresFullHistoryRebuild(
+  event: MemoryRetainedSourceMutationEvent
+): boolean {
+  return event.previous.folderId !== event.snapshot.folderId ||
+    event.previous.memoryMode !== event.snapshot.memoryMode ||
+    event.mutations.some((mutation) =>
+      mutation === "SOURCE_EXCLUDE" ||
+      mutation === "SOURCE_RESUME" ||
+      mutation === "FOLDER_MOVE" ||
+      mutation === "SCOPE_TARGET_DELETE");
 }
 
 function parentMutationAdvancedMemoryRevision(
@@ -201,7 +214,7 @@ async function updateExistingCheckpoint(
         activeLeafMessageId: event.snapshot.activeLeafMessageId,
         branchGeneration: event.snapshot.memoryBranchGeneration,
         chatId: event.snapshot.id,
-        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
         resumeCreatedAtCutoff,
         sourceContentHash: event.snapshot.sourceHash,
         sourceRevision: event.snapshot.memorySourceRevision,
@@ -214,7 +227,7 @@ async function updateExistingCheckpoint(
         lastErrorCode: null,
         lastIndexedMessageId: null,
         lastSucceededAt: null,
-        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
         resumeCreatedAtCutoff,
         sourceContentHash: event.snapshot.sourceHash,
         sourceRevision: event.snapshot.memorySourceRevision,
@@ -236,7 +249,9 @@ async function updateExistingCheckpoint(
       lastErrorCode: event.snapshot.memoryMode === "NORMAL"
         ? null
         : "memory_source_ineligible",
-      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+      ...(requiresFullHistoryRebuild(event)
+        ? { pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION }
+        : {}),
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
       status: event.snapshot.memoryMode === "NORMAL" ? "PENDING" : "STALE"
@@ -266,7 +281,6 @@ async function ensurePendingCheckpoint(
       activeLeafMessageId,
       branchGeneration: event.snapshot.memoryBranchGeneration,
       lastErrorCode: null,
-      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: event.snapshot.sourceHash,
       sourceRevision: event.snapshot.memorySourceRevision,
       status: "PENDING"

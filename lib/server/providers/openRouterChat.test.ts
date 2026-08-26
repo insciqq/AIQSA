@@ -408,17 +408,18 @@ describe("OpenRouter Chat facade", () => {
 
     expect(createChatCompletion).not.toHaveBeenCalled();
     expect(streamChatCompletion).toHaveBeenCalledOnce();
-    expect(streamChatCompletion.mock.calls[0]?.[0]).toMatchObject({
-      parallel_tool_calls: true,
+    const streamedRequest = streamChatCompletion.mock.calls[0]?.[0];
+    expect(streamedRequest).toMatchObject({
       stream: true,
       tool_choice: "auto",
       tools: [
         {
-          function: { name: "search_engine_1" },
+          function: { name: "search_engine_1", strict: true },
           type: "function"
         }
       ]
     });
+    expect(streamedRequest).not.toHaveProperty("parallel_tool_calls");
     expect(collected.result).toMatchObject({
       finalText: "",
       providerResponseId: "or-tool-1",

@@ -148,14 +148,34 @@ describe("Memory run utility provider runtime", () => {
           "SAVED outranks LEARNED, and LEARNED outranks PAST_CHAT"
         );
         expect(JSON.stringify(body)).toContain(
+          "Authority is never a relevance signal"
+        );
+        expect(JSON.stringify(body)).toContain(
+          "a candidate that contains that value and states the requested property is DIRECT_RELEVANCE"
+        );
+        expect(JSON.stringify(body)).toContain(
           "A different detail about the same project or event is NOT_RELEVANT"
         );
         expect(JSON.stringify(body)).toContain('\\"profile_requested\\":false');
         expect(JSON.stringify(body)).not.toContain("SENSITIVE");
+        if (adapterKind === "openrouter_chat_completions") {
+          expect(new Headers(init?.headers).get("x-anthropic-beta"))
+            .toContain("structured-outputs-2025-11-13");
+          expect(body).toMatchObject({ reasoning: { exclude: true } });
+          expect((body as Record<string, unknown>).reasoning)
+            .not.toHaveProperty("enabled");
+          expect((body as Record<string, unknown>).reasoning)
+            .not.toHaveProperty("effort");
+        }
         expect(body).toMatchObject(adapterKind === "openrouter_chat_completions"
           ? {
-              max_completion_tokens: 4_096,
-              response_format: { json_schema: { strict: true }, type: "json_schema" }
+              max_tokens: 4_096,
+              provider: { require_parameters: true },
+              tool_choice: "required",
+              tools: [{
+                function: { name: MEMORY_RERANK_TOOL_NAME, strict: true },
+                type: "function"
+              }]
             }
           : {
               max_output_tokens: 4_096,
@@ -165,8 +185,19 @@ describe("Memory run utility provider runtime", () => {
           adapterKind === "openrouter_chat_completions"
             ? {
                 choices: [{
-                  finish_reason: "stop",
-                  message: { content: decision, role: "assistant" }
+                  finish_reason: "tool_calls",
+                  message: {
+                    content: null,
+                    role: "assistant",
+                    tool_calls: [{
+                      function: {
+                        arguments: decision,
+                        name: MEMORY_RERANK_TOOL_NAME
+                      },
+                      id: "call-1",
+                      type: "function"
+                    }]
+                  }
                 }],
                 id: "response-1",
                 model: "openrouter/model",
@@ -190,7 +221,28 @@ describe("Memory run utility provider runtime", () => {
         createFetch: () => fetchFn,
         encryptionKey: () => KEY
       });
-      const accepted = snapshot(adapterKind);
+      const baseAccepted = snapshot(adapterKind);
+      const accepted: MemorySecretFreeExecutionSnapshot =
+        adapterKind === "openrouter_chat_completions"
+          ? {
+              ...baseAccepted,
+              providerExecutionSnapshot: {
+                ...baseAccepted.providerExecutionSnapshot,
+                model: {
+                  ...baseAccepted.providerExecutionSnapshot.model,
+                  capabilities: {
+                    ...baseAccepted.providerExecutionSnapshot.model.capabilities,
+                    defaultReasoningEffort: "high",
+                    reasoning: true,
+                    reasoningEfforts: ["high"]
+                  },
+                  defaultParams: {
+                    reasoning: { enabled: true, effort: "high", exclude: true }
+                  }
+                }
+              }
+            }
+          : baseAccepted;
 
       expect(accepted.providerExecutionSnapshot.model.capabilities)
         .not.toHaveProperty("structuredOutput");

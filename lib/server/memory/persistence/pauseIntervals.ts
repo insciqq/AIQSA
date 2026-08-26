@@ -95,6 +95,10 @@ export function memoryHistoryChunkSourceAuthorityPredicate(
       LEFT JOIN "Message" AS authority_source_message
         ON authority_source_message."chatId" = authority_source_map."chatId"
         AND authority_source_message."id" = authority_source_map."messageId"
+      LEFT JOIN "ChatMemoryCheckpointMessage" AS authority_checkpoint_message
+        ON authority_checkpoint_message."userId" = authority_source_map."userId"
+        AND authority_checkpoint_message."chatId" = authority_source_map."chatId"
+        AND authority_checkpoint_message."messageId" = authority_source_map."messageId"
       WHERE authority_source_map."userId" = chunk."userId"
         AND authority_source_map."chatId" = chunk."chatId"
         AND authority_source_map."chunkId" = chunk."id"
@@ -102,22 +106,9 @@ export function memoryHistoryChunkSourceAuthorityPredicate(
           authority_source_message."id" IS NULL
           OR authority_source_message."updatedAt" <>
             authority_source_map."sourceMessageUpdatedAt"
-          OR NOT EXISTS (
-            WITH RECURSIVE active_path AS (
-              SELECT message."id", message."parentMessageId"
-              FROM "Message" AS message
-              WHERE message."chatId" = ${chat}."id"
-                AND message."id" = ${chat}."activeLeafMessageId"
-              UNION ALL
-              SELECT parent."id", parent."parentMessageId"
-              FROM active_path AS child
-              INNER JOIN "Message" AS parent
-                ON parent."chatId" = ${chat}."id"
-                AND parent."id" = child."parentMessageId"
-            )
-            SELECT 1 FROM active_path
-            WHERE active_path."id" = authority_source_map."messageId"
-          )
+          OR authority_checkpoint_message."messageId" IS NULL
+          OR authority_checkpoint_message."sourceMessageUpdatedAt" <>
+            authority_source_map."sourceMessageUpdatedAt"
         )
     )
     AND (

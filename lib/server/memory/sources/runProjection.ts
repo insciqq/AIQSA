@@ -12,11 +12,11 @@ import {
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
-  loadPersonalEligibleFactVersionIds,
   loadPersonalMemoryEvidenceSnapshots,
   loadPersonalMemoryRunIds
 } from "../persistence/eligibility";
 import { canonicalGlobalMemoryScopeWhere } from "../persistence/scopes";
+import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
 
 type MemoryRunSourceClient = Pick<
   PrismaClient,
@@ -269,7 +269,9 @@ export async function loadMemoryRunSources(
   ]);
   const versionById = new Map(versions.map((version) => [version.id, version]));
   const [eligibleVersionIds, evidenceSnapshots] = await Promise.all([
-    loadPersonalEligibleFactVersionIds(client, input.userId, factVersionIds),
+    loadMemoryReusableFactVersionIds(client, input.userId, factVersionIds, {
+      includePatterns: true
+    }),
     loadPersonalMemoryEvidenceSnapshots(client, input.userId, factVersionIds)
   ]);
   const evidenceByVersionId = new Map<string, typeof evidenceSnapshots>();

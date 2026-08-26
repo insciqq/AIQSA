@@ -11,8 +11,10 @@ import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
-import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from
-  "../learning/extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
+} from "../learning/extraction/contract";
 import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
@@ -376,6 +378,18 @@ async function attachAutomaticEvidence(input: Readonly<{
       stance: "SUPPORTS",
       userId: input.userId
     }
+  });
+  await prisma.memoryFactVersion.update({
+    data: {
+      ingestionFingerprint: memorySha256({
+        domain: "memory-reclassification-test",
+        factVersionId: input.factVersionId,
+        messageId: message.id
+      }),
+      observedAt: message.createdAt,
+      pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
+    },
+    where: { id: input.factVersionId }
   });
 }
 

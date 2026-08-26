@@ -7,15 +7,17 @@ import {
 } from "../memory/retrieval/localRepository";
 import {
   memoryExactMessageEvidenceIsCurrent,
-  memoryPersonalEvidenceRowPredicate,
-  memoryPersonalFactEvidencePredicate
+  memoryPersonalEvidenceRowPredicate
 } from "../memory/persistence/eligibility";
+import { memoryReusableFactAuthorityPredicate } from
+  "../memory/synthesis/eligibility";
 import {
   memoryChunkConversationFeedbackPredicate,
   memoryFactConversationFeedbackPredicate
 } from "../memory/persistence/feedback";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../memory/history/chunking";
 import {
+  MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES,
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../memory/history/contract";
@@ -26,6 +28,8 @@ import {
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256
 } from "../memory/persistence/lexical";
+import { memoryCanonicalFactRootIdSql } from
+  "../memory/persistence/canonicalFact";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
   "../memory/retrieval/vector";
 import {
@@ -82,6 +86,7 @@ type FactAuthorityRow = Readonly<{
   factState: string;
   identityKind: string | null;
   languageCode: string;
+  modality: string;
   mergedIntoVersionId: string | null;
   movedFromVersionId: string | null;
   observedAt: Date | null;
@@ -119,6 +124,12 @@ type FactMessageEvidenceRow = Readonly<{
   sourceMessageContentHash: string;
   sourceProjectionVersion: string;
   startOffset: number;
+}>;
+
+type FactSynthesisRelationRow = Readonly<{
+  pipelineVersion: string;
+  sourceEligibilityHash: string;
+  targetVersionId: string;
 }>;
 
 type FactEntityRootRow = Readonly<{
@@ -234,6 +245,7 @@ function commonResolved(
 
 type FactRetrievalContract = Readonly<{
   historical: boolean;
+  includePatterns: boolean;
   mode: "CURRENT_PROFILE" | "HISTORICAL_MEMORY" | "HISTORY_OVERVIEW" |
     "PAST_CHAT_SEARCH" | "TARGETED_CURRENT";
 }>;
@@ -244,16 +256,18 @@ function factRetrievalContract(
 ): FactRetrievalContract {
   const mode = feature?.retrievalMode;
   const historical = feature?.historical;
+  const includePatterns = feature?.includePatterns;
   if (
     (mode !== "CURRENT_PROFILE" && mode !== "TARGETED_CURRENT" &&
       mode !== "HISTORICAL_MEMORY" && mode !== "PAST_CHAT_SEARCH" &&
       mode !== "HISTORY_OVERVIEW") ||
-    typeof historical !== "boolean" ||
+    typeof historical !== "boolean" || typeof includePatterns !== "boolean" ||
     core && historical ||
     !core && mode === "HISTORY_OVERVIEW" ||
-    historical && mode !== "HISTORICAL_MEMORY"
+    historical && mode !== "HISTORICAL_MEMORY" ||
+    includePatterns && mode !== "TARGETED_CURRENT"
   ) throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
-  return { historical, mode };
+  return { historical, includePatterns, mode };
 }
 
 function exactEvidenceValid(row: FactMessageEvidenceRow): boolean {
@@ -335,10 +349,15 @@ async function resolveFact(
   const feature = record(input.featureSnapshot);
   const core = feature?.tier === "CORE";
   const retrieval = factRetrievalContract(feature, core);
-  if (!core && !authority.indexGenerationId) {
+  const direct = !core && feature?.directFactAuthority === true;
+  if (!core && feature?.directFactAuthority !== true &&
+    feature?.directFactAuthority !== false) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+  }
+  if (!core && !direct && !authority.indexGenerationId) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
-  const settingsJoin = core
+  const settingsJoin = core || direct
     ? Prisma.sql`
         INNER JOIN "UserMemorySettings" AS settings
           ON settings."userId" = version."userId"
@@ -374,7 +393,7 @@ async function resolveFact(
         OR version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
         OR version."coreEligible"
       )`
-    : Prisma.sql`entry."id" IS NOT NULL`;
+    : direct ? Prisma.sql`TRUE` : Prisma.sql`entry."id" IS NOT NULL`;
   const lifecycleAuthority = retrieval.historical
     ? Prisma.sql`
         version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
@@ -391,10 +410,10 @@ async function resolveFact(
         AND fact."state" = 'ACTIVE'::"MemoryFactState"
         AND fact."currentVersionId" = version."id"
       `;
-  const lockTargets = core
-    ? Prisma.sql`version, fact, scope, settings`
-    : Prisma.sql`version, fact, scope, settings, generation, entry`;
-  const searchSafeContentHash = core
+  const lockTargets = core || direct
+    ? Prisma.sql`version, fact, root_fact, scope, root_scope, settings`
+    : Prisma.sql`version, fact, root_fact, scope, root_scope, settings, generation, entry`;
+  const searchSafeContentHash = core || direct
     ? Prisma.sql`NULL::text AS "searchSafeContentHash"`
     : Prisma.sql`entry."safeContentHash" AS "searchSafeContentHash"`;
   const [row] = await tx.$queryRaw<FactAuthorityRow[]>(Prisma.sql`
@@ -404,6 +423,7 @@ async function resolveFact(
       version."displayText",
       version."expectedAt", version."expiresAt",
       version."languageCode",
+      version."modality"::text AS "modality",
       version."mergedIntoVersionId", version."movedFromVersionId",
       version."observedAt", version."occurredAt",
       version."sensitivityClass"::text AS "sensitivityClass",
@@ -412,21 +432,35 @@ async function resolveFact(
       version."supersedesVersionId",
       version."structuredValue",
       version."systemFrom", version."systemTo", version."validFrom", version."validTo",
-      fact."canonicalKey" AS "factCanonicalKey",
-      fact."category" AS "factCategory", fact."currentVersionId",
-      fact."identityKind"::text AS "identityKind",
-      fact."id" AS "factId", fact."pinned", fact."state"::text AS "factState",
-      scope."assistantId" AS "scopeAssistantId", scope."chatId" AS "scopeChatId",
-      scope."folderId" AS "scopeFolderId", scope."id" AS "scopeId",
-      scope."state"::text AS "scopeState",
-      scope."targetIdSnapshot" AS "scopeTargetIdSnapshot",
-      scope."scopeType"::text AS "scopeType",
+      root_fact."canonicalKey" AS "factCanonicalKey",
+      root_fact."category" AS "factCategory", root_fact."currentVersionId",
+      root_fact."identityKind"::text AS "identityKind",
+      root_fact."id" AS "factId", root_fact."pinned",
+      root_fact."state"::text AS "factState",
+      root_scope."assistantId" AS "scopeAssistantId",
+      root_scope."chatId" AS "scopeChatId",
+      root_scope."folderId" AS "scopeFolderId", root_scope."id" AS "scopeId",
+      root_scope."state"::text AS "scopeState",
+      root_scope."targetIdSnapshot" AS "scopeTargetIdSnapshot",
+      root_scope."scopeType"::text AS "scopeType",
       ${searchSafeContentHash}
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
+    INNER JOIN "MemoryFact" AS root_fact
+      ON root_fact."userId" = fact."userId"
+      AND root_fact."id" = ${memoryCanonicalFactRootIdSql(
+        authority.userId,
+        Prisma.sql`fact."id"`
+      )}
+      AND root_fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND root_fact."movedToFactId" IS NULL
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    INNER JOIN "MemoryScope" AS root_scope
+      ON root_scope."userId" = root_fact."userId"
+      AND root_scope."id" = root_fact."scopeId"
+      AND root_scope."state" = 'ACTIVE'::"MemoryScopeState"
     ${settingsJoin}
     WHERE version."userId" = ${authority.userId}
       AND version."id" = ${input.factVersionId}
@@ -447,7 +481,10 @@ async function resolveFact(
         folderId: authority.folderId,
         userId: authority.userId
       })}
-      AND ${memoryPersonalFactEvidencePredicate(authority.userId, { exactVNext: true })}
+      AND ${memoryReusableFactAuthorityPredicate(authority.userId, {
+        includePatterns: retrieval.includePatterns,
+        lifecycle: retrieval.historical ? "CURRENT_OR_HISTORICAL" : "CURRENT"
+      })}
       AND ${memoryFactConversationFeedbackPredicate(
         authority.userId,
         authority.chatId
@@ -463,14 +500,14 @@ async function resolveFact(
   `);
   if (
     !row || !exactTextContainsProjection(input.exactSafeText, row.displayText) ||
-    !core && row.searchSafeContentHash !== memorySha256({
+    !core && !direct && row.searchSafeContentHash !== memorySha256({
       displayText: row.displayText,
       structuredValue: row.structuredValue
     })
   ) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
-  const messageEvidence = row.sourceMode === "AUTOMATIC"
+  const messageEvidence = row.sourceMode === "AUTOMATIC" && row.modality !== "PATTERN"
     ? await tx.$queryRaw<FactMessageEvidenceRow[]>(Prisma.sql`
         SELECT
           support."branchGeneration", support."chatId",
@@ -507,9 +544,22 @@ async function resolveFact(
     : [];
   const exactMessageEvidence = messageEvidence.filter(exactEvidenceValid);
   const primaryEvidence = exactMessageEvidence[0] ?? null;
-  if (row.sourceMode === "AUTOMATIC" && !primaryEvidence) {
+  if (row.sourceMode === "AUTOMATIC" && row.modality !== "PATTERN" && !primaryEvidence) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
+  const synthesisRelations = row.modality === "PATTERN"
+    ? await tx.$queryRaw<FactSynthesisRelationRow[]>(Prisma.sql`
+        SELECT relation."pipelineVersion", relation."sourceEligibilityHash",
+          relation."targetVersionId"
+        FROM "MemoryFactVersionRelation" AS relation
+        WHERE relation."userId" = ${authority.userId}
+          AND relation."sourceVersionId" = ${input.factVersionId}
+          AND relation."kind" =
+            'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+        ORDER BY relation."targetVersionId"
+        FOR SHARE OF relation
+      `)
+    : [];
   const sourceMessageIds = primaryEvidence
     ? exactMessageEvidence.flatMap((evidence) =>
         evidence.chatId === primaryEvidence.chatId &&
@@ -536,6 +586,7 @@ async function resolveFact(
     projectedTextHash: memoryPreparingTextHash(compactProjection(row.displayText)),
     projectionKind: projection.kind,
     schemaVersion: 3,
+    synthesisRelations,
     sourceMode: row.sourceMode
   };
   const entityRoots = await factEntityRoots(
@@ -564,6 +615,7 @@ async function resolveFact(
     expiresAt: iso(row.expiresAt),
     identityKind: row.identityKind,
     mergedIntoVersionId: row.mergedIntoVersionId,
+    modality: row.modality,
     movedFromVersionId: row.movedFromVersionId,
     observedAt: iso(row.observedAt),
     occurredAt: iso(row.occurredAt),
@@ -799,10 +851,11 @@ async function digestMessageIds(
   const rows = await tx.chatMemoryDigestMessage.findMany({
     orderBy: { ordinal: "asc" },
     select: { messageId: true },
-    take: 513,
+    take: MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES + 1,
     where: { digestId, userId }
   });
-  if (rows.length === 0 || rows.length > 512) {
+  if (rows.length === 0 ||
+    rows.length > MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
   return rows.map(({ messageId }) => messageId);

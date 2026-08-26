@@ -31,19 +31,32 @@ import {
 } from "../../suppressionKeyring";
 import { loadMemorySourceSnapshot } from "../../sourceState";
 import {
+  MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
+  MEMORY_FACT_MAX_PACKET_CANDIDATES,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
+  memoryFactEvidenceFingerprint,
   memoryFactExtractionInputHash,
   memoryFactExtractionOutputHash,
   type MemoryExtractedCandidate,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan,
+  type MemoryFactCandidateRejection,
   type MemoryFactSourceIdentity
 } from "./contract";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
 import { loadMemoryFactContextRefs } from "../dependencies/context";
+import { materializeMemoryCandidateEntityIdentity } from "../entities/repository";
+import {
+  decodeStoredMemorySemanticAdjudication,
+  encodeStoredMemorySemanticAdjudication,
+  memoryCandidateRequiresSemanticAdjudication,
+  memorySemanticAdjudicationPacketIsValid,
+  memorySemanticAuthorityAdmitsCandidate,
+  type MemorySemanticAdjudicationPacket
+} from "./adjudication";
 
 type PrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -54,8 +67,22 @@ export type MemoryFactExecutionBinding = Readonly<{
   id: string;
   inputHash: string;
   ordinal: number;
+  pipelineVersion: string;
+  policyVersion: string;
+  promptVersion: string;
+  schemaVersion: string;
   secretFreeExecutionSnapshot: unknown;
   state: MemoryExecutionState;
+}>;
+
+export type MemoryFactAuxiliarySemanticCall = Readonly<{
+  acceptedOutputHash: string | null;
+  completedAt: Date | null;
+  executionId: string | null;
+  inputHash: string | null;
+  ownerJobId: string;
+  purpose: string;
+  result: unknown;
 }>;
 
 const staleDecision = Object.freeze({
@@ -557,6 +584,506 @@ async function candidateIsSuppressed(
   return false;
 }
 
+type StagedExtractionOutput = Readonly<{
+  candidateOrdinals: readonly number[];
+  candidates: readonly MemoryExtractedCandidate[];
+  rejections: readonly MemoryFactCandidateRejection[];
+}>;
+
+const terminalApplyOutcomes = new Set([
+  "APPLIED",
+  "MERGED",
+  "REINFORCED",
+  "REPLAY",
+  "SUPERSEDED"
+]);
+
+const stagedRejectionCodes = new Set<MemoryFactCandidateRejection["reasonCode"]>([
+  "REJECT_AMBIGUOUS",
+  "REJECT_DUPLICATE",
+  "REJECT_LOW_CONFIDENCE",
+  "REJECT_SECRET",
+  "REJECT_STALE_SOURCE",
+  "REJECT_TEMPORARY",
+  "REJECT_UNSUPPORTED"
+]);
+
+function planOutput(plan: MemoryFactExtractionPlan): StagedExtractionOutput {
+  return {
+    candidateOrdinals: plan.candidateOrdinals,
+    candidates: plan.candidates,
+    rejections: plan.rejections
+  };
+}
+
+function contextBindings(input: MemoryFactExtractionInput) {
+  return input.contextRefs.map((context) => ({
+    entityId: context.entityId,
+    kind: context.kind,
+    ref: context.ref,
+    source: context.source
+  }));
+}
+
+function planIsValid(plan: MemoryFactExtractionPlan): boolean {
+  const ordinals = [
+    ...plan.candidateOrdinals,
+    ...plan.rejections.map(({ candidateOrdinal }) => candidateOrdinal)
+  ];
+  const orderedOrdinals = [...ordinals].sort((left, right) => left - right);
+  return plan.candidateOrdinals.length === plan.candidates.length &&
+    plan.candidates.length <= MEMORY_FACT_MAX_ACCEPTED_CANDIDATES &&
+    ordinals.length <= MEMORY_FACT_MAX_PACKET_CANDIDATES &&
+    new Set(ordinals).size === ordinals.length &&
+    ordinals.every((ordinal) => Number.isSafeInteger(ordinal) &&
+      ordinal >= 0 && ordinal < MEMORY_FACT_MAX_PACKET_CANDIDATES) &&
+    orderedOrdinals.every((ordinal, index) => ordinal === index) &&
+    plan.candidates.every(({ id }) => /^[a-f0-9]{64}$/u.test(id)) &&
+    plan.rejections.every(({ reasonCode }) => stagedRejectionCodes.has(reasonCode)) &&
+    memoryFactExtractionOutputHash(
+      plan.input,
+      plan.candidates,
+      plan.candidateOrdinals,
+      plan.rejections
+    ) === plan.outputHash;
+}
+
+function receiptFingerprint(
+  plan: MemoryFactExtractionPlan,
+  candidateOrdinal: number,
+  candidate: MemoryExtractedCandidate | null,
+  reasonCode: MemoryFactCandidateRejection["reasonCode"] | null
+): string {
+  return candidate?.id ?? memorySha256({
+    candidateOrdinal,
+    domain: "aiqsa.memory.fact-extraction-rejection",
+    outputHash: plan.outputHash,
+    reasonCode,
+    version: 1
+  });
+}
+
+function receiptId(
+  userId: string,
+  executionId: string,
+  candidateOrdinal: number
+): string {
+  return memorySha256({
+    candidateOrdinal,
+    domain: "aiqsa.memory.fact-extraction-candidate-receipt",
+    executionId,
+    userId,
+    version: 1
+  });
+}
+
+async function stagePlan(
+  tx: MemoryTransaction,
+  job: MemoryJobDescriptor,
+  plan: MemoryFactExtractionPlan,
+  bindingId: string,
+  recoverableUntil: Date
+): Promise<void> {
+  if (
+    !memoryFactExtractionClaimIsValid(job) ||
+    plan.input.source.userId !== job.userId ||
+    plan.input.source.sourceMessageId !== job.sourceMessageId ||
+    !planIsValid(plan) ||
+    !Number.isFinite(recoverableUntil.getTime())
+  ) throw new MemoryCoordinatorError("memory_fact_plan_invalid", false);
+  const source = plan.input.messages.find((message) =>
+    message.evidenceEligible && message.id === plan.input.source.sourceMessageId);
+  if (!source) throw new MemoryCoordinatorError("memory_fact_plan_invalid", false);
+  const id = memorySha256({
+    bindingId,
+    domain: "aiqsa.memory.fact-extraction-execution",
+    jobId: job.id,
+    userId: job.userId,
+    version: 1
+  });
+  const output = planOutput(plan);
+  const bindings = contextBindings(plan.input);
+  await tx.memoryFactExtractionExecution.createMany({
+    data: [{
+      acceptedOutput: output as Prisma.InputJsonValue,
+      acceptedOutputHash: plan.outputHash,
+      contextBindings: bindings as Prisma.InputJsonValue,
+      executionBindingId: bindingId,
+      id,
+      inputHash: plan.input.inputHash,
+      memoryJobId: job.id,
+      recoverableUntil,
+      sourceMessageContentHash: source.contentHash,
+      sourceMessageId: source.id,
+      userId: job.userId
+    }],
+    skipDuplicates: true
+  });
+  const staged = await tx.memoryFactExtractionExecution.findFirst({
+    select: {
+      acceptedOutput: true,
+      acceptedOutputHash: true,
+      appliedAt: true,
+      contextBindings: true,
+      executionBindingId: true,
+      id: true,
+      inputHash: true,
+      recoverableUntil: true,
+      sourceMessageContentHash: true,
+      sourceMessageId: true
+    },
+    where: { memoryJobId: job.id, userId: job.userId }
+  });
+  if (
+    !staged || staged.id !== id || staged.appliedAt !== null ||
+    staged.executionBindingId !== bindingId ||
+    staged.inputHash !== plan.input.inputHash ||
+    staged.acceptedOutputHash !== plan.outputHash ||
+    staged.sourceMessageId !== source.id ||
+    staged.sourceMessageContentHash !== source.contentHash ||
+    staged.recoverableUntil.getTime() !== recoverableUntil.getTime() ||
+    memorySha256(staged.acceptedOutput) !== memorySha256(output) ||
+    memorySha256(staged.contextBindings) !== memorySha256(bindings)
+  ) throw new MemoryCoordinatorError("memory_fact_stage_conflict", false);
+
+  const receiptRows = [
+    ...plan.candidates.map((candidate, index) => {
+      const candidateOrdinal = plan.candidateOrdinals[index]!;
+      return {
+        candidateFingerprint: receiptFingerprint(
+          plan,
+          candidateOrdinal,
+          candidate,
+          null
+        ),
+        candidateOrdinal,
+        extractionExecutionId: id,
+        id: receiptId(job.userId, id, candidateOrdinal),
+        outcome: "PENDING" as const,
+        userId: job.userId
+      };
+    }),
+    ...plan.rejections.map((rejection) => ({
+      candidateFingerprint: receiptFingerprint(
+        plan,
+        rejection.candidateOrdinal,
+        null,
+        rejection.reasonCode
+      ),
+      candidateOrdinal: rejection.candidateOrdinal,
+      extractionExecutionId: id,
+      id: receiptId(job.userId, id, rejection.candidateOrdinal),
+      outcome: "REJECTED" as const,
+      reasonCode: rejection.reasonCode,
+      userId: job.userId
+    }))
+  ];
+  if (receiptRows.length > 0) {
+    await tx.memoryFactExtractionCandidateReceipt.createMany({
+      data: receiptRows,
+      skipDuplicates: true
+    });
+  }
+  const storedReceipts = await tx.memoryFactExtractionCandidateReceipt.findMany({
+    orderBy: [{ candidateOrdinal: "asc" }, { id: "asc" }],
+    select: {
+      candidateFingerprint: true,
+      candidateOrdinal: true,
+      outcome: true,
+      reasonCode: true
+    },
+    where: { extractionExecutionId: id, userId: job.userId }
+  });
+  const expectedReceipts = receiptRows.map((receipt) => ({
+    candidateFingerprint: receipt.candidateFingerprint,
+    candidateOrdinal: receipt.candidateOrdinal,
+    outcome: receipt.outcome,
+    reasonCode: "reasonCode" in receipt ? receipt.reasonCode : null
+  })).sort((left, right) => left.candidateOrdinal - right.candidateOrdinal);
+  if (memorySha256(storedReceipts) !== memorySha256(expectedReceipts)) {
+    throw new MemoryCoordinatorError("memory_fact_stage_conflict", false);
+  }
+}
+
+function parseStagedOutput(value: unknown): StagedExtractionOutput | null {
+  if (!isRecord(value) ||
+    !Array.isArray(value.candidates) ||
+    !Array.isArray(value.candidateOrdinals) ||
+    !Array.isArray(value.rejections)) return null;
+  const candidateOrdinals = value.candidateOrdinals;
+  const rejections = value.rejections;
+  if (!candidateOrdinals.every((ordinal) => Number.isSafeInteger(ordinal)) ||
+    !rejections.every((rejection) => isRecord(rejection) &&
+      Number.isSafeInteger(rejection.candidateOrdinal) &&
+      typeof rejection.reasonCode === "string" &&
+      stagedRejectionCodes.has(
+        rejection.reasonCode as MemoryFactCandidateRejection["reasonCode"]
+      ))) return null;
+  return {
+    candidateOrdinals: candidateOrdinals as number[],
+    candidates: value.candidates as MemoryExtractedCandidate[],
+    rejections: rejections as MemoryFactCandidateRejection[]
+  };
+}
+
+async function loadStagedPlan(
+  client: PrismaClient,
+  job: MemoryJobDescriptor,
+  bindingId: string,
+  input: MemoryFactExtractionInput,
+  now: Date
+): Promise<MemoryFactExtractionPlan | null> {
+  if (!Number.isFinite(now.getTime())) return null;
+  const staged = await client.memoryFactExtractionExecution.findFirst({
+    select: {
+      acceptedOutput: true,
+      acceptedOutputHash: true,
+      appliedAt: true,
+      contextBindings: true,
+      inputHash: true,
+      recoverableUntil: true,
+      sourceMessageContentHash: true,
+      sourceMessageId: true
+    },
+    where: {
+      executionBindingId: bindingId,
+      memoryJobId: job.id,
+      userId: job.userId
+    }
+  });
+  const source = input.messages.find((message) =>
+    message.evidenceEligible && message.id === input.source.sourceMessageId);
+  const output = parseStagedOutput(staged?.acceptedOutput);
+  if (
+    !staged || !source || !output || staged.appliedAt !== null ||
+    staged.recoverableUntil <= now ||
+    staged.inputHash !== input.inputHash ||
+    staged.sourceMessageId !== source.id ||
+    staged.sourceMessageContentHash !== source.contentHash ||
+    memorySha256(staged.contextBindings) !== memorySha256(contextBindings(input))
+  ) return null;
+  const plan: MemoryFactExtractionPlan = {
+    ...output,
+    input,
+    outputHash: staged.acceptedOutputHash
+  };
+  return planIsValid(plan) ? plan : null;
+}
+
+async function reserveSemanticAdjudication(
+  client: PrismaClient,
+  job: MemoryJobDescriptor
+): Promise<"ACQUIRED" | "RECOVERED" | "UNAVAILABLE"> {
+  if (!memoryFactExtractionClaimIsValid(job) || job.sourceMessageId === null) {
+    return "UNAVAILABLE";
+  }
+  return client.$transaction(async (tx) => {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`aiqsa:memory:auxiliary:${job.userId}:${job.sourceMessageId}`}, 0
+      ))::text AS "lock"
+    `);
+    const existing = await tx.memoryAuxiliarySemanticCall.findFirst({
+      select: {
+        completedAt: true,
+        ownerJobId: true,
+        purpose: true
+      },
+      where: { sourceMessageId: job.sourceMessageId!, userId: job.userId }
+    });
+    if (existing) {
+      return existing.ownerJobId === job.id &&
+        existing.purpose === "FACT_EXTRACTION_ADJUDICATION"
+        ? existing.completedAt === null ? "ACQUIRED" : "RECOVERED"
+        : "UNAVAILABLE";
+    }
+    await tx.memoryAuxiliarySemanticCall.create({
+      data: {
+        id: memorySha256({
+          domain: "aiqsa.memory.auxiliary-semantic-call",
+          sourceMessageId: job.sourceMessageId,
+          userId: job.userId,
+          version: 1
+        }),
+        ownerJobId: job.id,
+        purpose: "FACT_EXTRACTION_ADJUDICATION",
+        sourceMessageId: job.sourceMessageId,
+        userId: job.userId
+      }
+    });
+    return "ACQUIRED";
+  });
+}
+
+async function completeSemanticAdjudication(
+  tx: MemoryTransaction,
+  job: MemoryJobDescriptor,
+  bindingId: string,
+  packet: MemorySemanticAdjudicationPacket,
+  now: Date
+): Promise<void> {
+  if (!memoryFactExtractionClaimIsValid(job) || job.sourceMessageId === null ||
+    !Number.isFinite(now.getTime())) {
+    throw new MemoryCoordinatorError("memory_semantic_adjudication_invalid", false);
+  }
+  const row = await tx.memoryAuxiliarySemanticCall.findFirst({
+    select: {
+      acceptedOutputHash: true,
+      completedAt: true,
+      createdAt: true,
+      executionId: true,
+      inputHash: true,
+      result: true
+    },
+    where: {
+      ownerJobId: job.id,
+      purpose: "FACT_EXTRACTION_ADJUDICATION",
+      sourceMessageId: job.sourceMessageId,
+      userId: job.userId
+    }
+  });
+  if (!row) {
+    throw new MemoryCoordinatorError("memory_semantic_adjudication_reservation_missing", true);
+  }
+  if (row.completedAt !== null) {
+    const existing = decodeStoredMemorySemanticAdjudication(row.result);
+    if (row.executionId !== bindingId || row.inputHash !== packet.inputHash ||
+      row.acceptedOutputHash !== packet.outputHash ||
+      memorySha256(existing) !== memorySha256(packet)) {
+      throw new MemoryCoordinatorError("memory_semantic_adjudication_conflict", false);
+    }
+    return;
+  }
+  const updated = await tx.memoryAuxiliarySemanticCall.updateMany({
+    data: {
+      acceptedOutputHash: packet.outputHash,
+      completedAt: new Date(Math.max(now.getTime(), row.createdAt.getTime())),
+      executionId: bindingId,
+      inputHash: packet.inputHash,
+      result: encodeStoredMemorySemanticAdjudication(packet) as Prisma.InputJsonObject
+    },
+    where: {
+      completedAt: null,
+      ownerJobId: job.id,
+      purpose: "FACT_EXTRACTION_ADJUDICATION",
+      sourceMessageId: job.sourceMessageId,
+      userId: job.userId
+    }
+  });
+  if (updated.count !== 1) {
+    throw new MemoryCoordinatorError("memory_semantic_adjudication_conflict", true);
+  }
+}
+
+export async function invalidateMemoryFactExtractionStaging(
+  tx: MemoryTransaction,
+  input: Readonly<{
+    chatId?: string;
+    memoryJobId?: string;
+    reasonCode: string;
+    sourceMessageIds?: readonly string[];
+    userId: string;
+  }>,
+  now: Date
+): Promise<number> {
+  const jobIds = input.chatId
+    ? (await tx.memoryJob.findMany({
+        select: { id: true },
+        where: {
+          chatId: input.chatId,
+          kind: "EXTRACT_FACTS",
+          userId: input.userId
+        }
+      })).map(({ id }) => id)
+    : null;
+  const executions = await tx.memoryFactExtractionExecution.findMany({
+    select: { id: true },
+    where: {
+      appliedAt: null,
+      ...(input.memoryJobId ? { memoryJobId: input.memoryJobId } : {}),
+      ...(jobIds ? { memoryJobId: { in: jobIds } } : {}),
+      ...(input.sourceMessageIds
+        ? { sourceMessageId: { in: [...input.sourceMessageIds] } }
+        : {}),
+      userId: input.userId
+    }
+  });
+  if (executions.length === 0) return 0;
+  const executionIds = executions.map(({ id }) => id);
+  await tx.memoryFactExtractionCandidateReceipt.updateMany({
+    data: {
+      outcome: "STALE",
+      reasonCode: input.reasonCode,
+      updatedAt: now
+    },
+    where: {
+      extractionExecutionId: { in: executionIds },
+      outcome: "PENDING",
+      userId: input.userId
+    }
+  });
+  return tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFactExtractionExecution"
+    SET
+      "acceptedOutput" = NULL,
+      "contextBindings" = NULL,
+      "appliedAt" = GREATEST("createdAt", ${now})
+    WHERE "userId" = ${input.userId}
+      AND "id" IN (${Prisma.join(executionIds)})
+      AND "appliedAt" IS NULL
+  `);
+}
+
+async function rejectCandidate(
+  tx: MemoryTransaction,
+  userId: string,
+  receiptIdValue: string,
+  reasonCode: string,
+  now: Date
+): Promise<void> {
+  const updated = await tx.memoryFactExtractionCandidateReceipt.updateMany({
+    data: { outcome: "REJECTED", reasonCode, updatedAt: now },
+    where: { id: receiptIdValue, outcome: "PENDING", userId }
+  });
+  if (updated.count !== 1) {
+    throw new MemoryCoordinatorError("memory_fact_candidate_state_conflict", true);
+  }
+}
+
+function deterministicCandidateFailure(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  return error.message === "memory_dependency_source_invalid" ||
+    error.message === "memory_dependency_source_stale" ||
+    error.message === "memory_fact_candidate_invalid"
+    ? error.message
+    : null;
+}
+
+async function resultingIds(
+  tx: MemoryTransaction,
+  userId: string,
+  evidenceFingerprint: string
+): Promise<Readonly<{
+  evidenceId: string;
+  factId: string;
+  factVersionId: string;
+}> | null> {
+  const evidence = await tx.memoryEvidence.findFirst({
+    select: { factVersionId: true, id: true },
+    where: { evidenceFingerprint, userId }
+  });
+  if (!evidence) return null;
+  const version = await tx.memoryFactVersion.findFirst({
+    select: { factId: true },
+    where: { id: evidence.factVersionId, userId }
+  });
+  return version ? {
+    evidenceId: evidence.id,
+    factId: version.factId,
+    factVersionId: evidence.factVersionId
+  } : null;
+}
+
 async function applyPlan(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -564,12 +1091,14 @@ async function applyPlan(
   plan: MemoryFactExtractionPlan,
   bindingId: string,
   keyring: MemorySuppressionKeyring,
-  now: Date
+  now: Date,
+  adjudication: MemorySemanticAdjudicationPacket | null = null,
+  authorityBindingId: string = bindingId
 ): Promise<"APPLIED" | "EMPTY" | "STALE"> {
   if (
     !memoryFactExtractionClaimIsValid(claim) ||
     plan.input.source.userId !== claim.userId ||
-    memoryFactExtractionOutputHash(plan.input, plan.candidates) !== plan.outputHash
+    !planIsValid(plan)
   ) throw new MemoryCoordinatorError("memory_fact_plan_invalid", false);
   const liveLease = await tx.$queryRaw<Array<{ id: string; stage: string | null }>>(Prisma.sql`
     SELECT "id", "stage"
@@ -584,37 +1113,212 @@ async function applyPlan(
   if (!liveLease[0]) return "STALE";
   if (liveLease[0].stage === "fact_observations_applied") return "APPLIED";
   if (liveLease[0].stage === "fact_observations_empty_applied") return "EMPTY";
+  const staged = await tx.memoryFactExtractionExecution.findFirst({
+    select: { appliedAt: true, createdAt: true, id: true },
+    where: {
+      acceptedOutputHash: plan.outputHash,
+      executionBindingId: bindingId,
+      inputHash: plan.input.inputHash,
+      memoryJobId: claim.id,
+      userId: claim.userId
+    }
+  });
+  if (!staged || staged.appliedAt !== null) {
+    throw new MemoryCoordinatorError("memory_fact_stage_missing", true);
+  }
   if (!settings.useMemoryFacts || !settings.learnAutomatically ||
-    settings.memoryGeneration !== claim.memoryGenerationSnapshot) return "STALE";
-  const current = await prepareWith(tx, claim, now);
-  if ("decision" in current || current.input.inputHash !== plan.input.inputHash) {
+    settings.memoryGeneration !== claim.memoryGenerationSnapshot) {
+    await invalidateMemoryFactExtractionStaging(tx, {
+      memoryJobId: claim.id,
+      reasonCode: "source_stale",
+      userId: claim.userId
+    }, now);
     return "STALE";
   }
-  // Suppression is an independent candidate outcome.  A suppressed sibling
-  // must not discard otherwise valid candidates from the same strict packet.
-  const admittedCandidates: MemoryExtractedCandidate[] = [];
-  for (const candidate of plan.candidates) {
-    if (
-      candidate.scope.type === "GLOBAL_USER" && candidate.scope.targetId === null &&
-      !memoryAutomaticCandidateContainsSecret(candidate) &&
-      !await candidateIsSuppressed(tx, keyring, plan.input, candidate)
-    ) {
-      admittedCandidates.push(candidate);
+  const current = await prepareWith(tx, claim, now);
+  if ("decision" in current || current.input.inputHash !== plan.input.inputHash) {
+    await invalidateMemoryFactExtractionStaging(tx, {
+      memoryJobId: claim.id,
+      reasonCode: "source_stale",
+      userId: claim.userId
+    }, now);
+    return "STALE";
+  }
+
+  const decisions = new Map(
+    adjudication?.decisions.map((decision) => [decision.candidateRef, decision]) ?? []
+  );
+  if (adjudication && (
+    decisions.size !== adjudication.decisions.length ||
+    !memorySemanticAdjudicationPacketIsValid(plan, adjudication)
+  )) {
+    throw new MemoryCoordinatorError("memory_semantic_adjudication_invalid", false);
+  }
+
+  for (const [index, candidate] of plan.candidates.entries()) {
+    const candidateOrdinal = plan.candidateOrdinals[index]!;
+    const receipt = await tx.memoryFactExtractionCandidateReceipt.findFirst({
+      select: { id: true, outcome: true },
+      where: {
+        candidateOrdinal,
+        extractionExecutionId: staged.id,
+        userId: claim.userId
+      }
+    });
+    if (!receipt) {
+      throw new MemoryCoordinatorError("memory_fact_candidate_receipt_missing", true);
+    }
+    if (receipt.outcome !== "PENDING") continue;
+    const semanticDecision = decisions.get(candidate.candidateRef) ?? null;
+    if (!memorySemanticAuthorityAdmitsCandidate(candidate, semanticDecision) ||
+      (memoryCandidateRequiresSemanticAdjudication(candidate) &&
+        semanticDecision === null)) {
+      await rejectCandidate(
+        tx,
+        claim.userId,
+        receipt.id,
+        "semantic_not_admitted",
+        now
+      );
+      continue;
+    }
+    if (candidate.scope.type !== "GLOBAL_USER" || candidate.scope.targetId !== null) {
+      await rejectCandidate(tx, claim.userId, receipt.id, "scope_not_admitted", now);
+      continue;
+    }
+    if (memoryAutomaticCandidateContainsSecret(candidate)) {
+      await rejectCandidate(tx, claim.userId, receipt.id, "secret_fenced", now);
+      continue;
+    }
+    await tx.$executeRawUnsafe("SAVEPOINT memory_fact_candidate_apply");
+    try {
+      const adjudicatedEntityId = semanticDecision?.entityRef === null ||
+        semanticDecision?.entityRef === undefined
+        ? null
+        : plan.input.contextRefs.find(({ ref }) =>
+            ref === semanticDecision.entityRef)?.entityId ?? null;
+      const materializedCandidate = await materializeMemoryCandidateEntityIdentity(
+        tx,
+        {
+          adjudicatedEntityId,
+          candidate,
+          userId: claim.userId
+        }
+      );
+      if (await candidateIsSuppressed(
+        tx,
+        keyring,
+        plan.input,
+        materializedCandidate
+      )) {
+        await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
+        await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
+        await rejectCandidate(tx, claim.userId, receipt.id, "suppressed", now);
+        continue;
+      }
+      const evidence = materializedCandidate.evidence[0];
+      if (!evidence) {
+        throw new Error("memory_fact_candidate_invalid");
+      }
+      const fingerprint = memoryFactEvidenceFingerprint(
+        plan.input,
+        materializedCandidate,
+        evidence
+      );
+      const before = await resultingIds(tx, claim.userId, fingerprint);
+      const committed = await commitMemoryVNextExtractionPlan(
+        tx,
+        settings,
+        claim,
+        {
+          ...plan,
+          candidateOrdinals: [candidateOrdinal],
+          candidates: [materializedCandidate],
+          rejections: []
+        },
+        authorityBindingId,
+        now,
+        semanticDecision
+      );
+      const result = before ?? await resultingIds(tx, claim.userId, fingerprint);
+      if (!result) {
+        await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
+        await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
+        await rejectCandidate(
+          tx,
+          claim.userId,
+          receipt.id,
+          "semantic_not_admitted",
+          now
+        );
+        continue;
+      }
+      const outcome = before
+        ? "REPLAY"
+        : committed.createdVersions > 0
+          ? "APPLIED"
+          : committed.attachedEvidence > 0
+            ? "REINFORCED"
+            : "REPLAY";
+      const updated = await tx.memoryFactExtractionCandidateReceipt.updateMany({
+        data: {
+          outcome,
+          resultingEvidenceId: result.evidenceId,
+          resultingFactId: result.factId,
+          resultingFactVersionId: result.factVersionId,
+          updatedAt: now
+        },
+        where: { id: receipt.id, outcome: "PENDING", userId: claim.userId }
+      });
+      if (updated.count !== 1) {
+        throw new MemoryCoordinatorError(
+          "memory_fact_candidate_state_conflict",
+          true
+        );
+      }
+      await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
+    } catch (error) {
+      await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
+      await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
+      const reasonCode = deterministicCandidateFailure(error);
+      if (!reasonCode) throw error;
+      await rejectCandidate(tx, claim.userId, receipt.id, reasonCode, now);
     }
   }
 
-  const committed = await commitMemoryVNextExtractionPlan(
-    tx,
-    settings,
-    claim,
-    { ...plan, candidates: admittedCandidates },
-    bindingId,
-    now
-  );
-  const applied = committed.attachedEvidence > 0 || committed.createdVersions > 0;
-  await tx.memoryJob.updateMany({
+  const pending = await tx.memoryFactExtractionCandidateReceipt.count({
+    where: {
+      extractionExecutionId: staged.id,
+      outcome: "PENDING",
+      userId: claim.userId
+    }
+  });
+  if (pending !== 0) {
+    throw new MemoryCoordinatorError("memory_fact_candidate_outcome_incomplete", true);
+  }
+  const applied = await tx.memoryFactExtractionCandidateReceipt.count({
+    where: {
+      extractionExecutionId: staged.id,
+      outcome: { in: [...terminalApplyOutcomes] as Array<
+        "APPLIED" | "MERGED" | "REINFORCED" | "REPLAY" | "SUPERSEDED"
+      > },
+      userId: claim.userId
+    }
+  });
+  const cleared = await tx.memoryFactExtractionExecution.updateMany({
     data: {
-      stage: applied
+      acceptedOutput: Prisma.DbNull,
+      appliedAt: new Date(Math.max(now.getTime(), staged.createdAt.getTime())),
+      contextBindings: Prisma.DbNull
+    },
+    where: { appliedAt: null, id: staged.id, userId: claim.userId }
+  });
+  if (cleared.count !== 1) {
+    throw new MemoryCoordinatorError("memory_fact_stage_state_conflict", true);
+  }
+  const marked = await tx.memoryJob.updateMany({
+    data: {
+      stage: applied > 0
         ? "fact_observations_applied"
         : "fact_observations_empty_applied"
     },
@@ -625,7 +1329,10 @@ async function applyPlan(
       userId: claim.userId
     }
   });
-  return applied ? "APPLIED" : "EMPTY";
+  if (marked.count !== 1) {
+    throw new MemoryCoordinatorError("memory_fact_job_state_conflict", true);
+  }
+  return applied > 0 ? "APPLIED" : "EMPTY";
 }
 
 export function createPrismaMemoryFactExtractionRepository(
@@ -642,29 +1349,77 @@ export function createPrismaMemoryFactExtractionRepository(
     return configured.keyring;
   });
   return Object.freeze({
+    async auxiliary(
+      job: MemoryJobDescriptor
+    ): Promise<MemoryFactAuxiliarySemanticCall | null> {
+      if (job.sourceMessageId === null) return null;
+      return client.memoryAuxiliarySemanticCall.findFirst({
+        select: {
+          acceptedOutputHash: true,
+          completedAt: true,
+          executionId: true,
+          inputHash: true,
+          ownerJobId: true,
+          purpose: true,
+          result: true
+        },
+        where: { sourceMessageId: job.sourceMessageId, userId: job.userId }
+      });
+    },
     apply(
       tx: MemoryTransaction,
       settings: LockedMemorySettings,
       claim: MemoryJobClaim,
       plan: MemoryFactExtractionPlan,
       bindingId: string,
-      now: Date
+      now: Date,
+      adjudication: MemorySemanticAdjudicationPacket | null = null,
+      authorityBindingId: string = bindingId
     ) {
-      return applyPlan(tx, settings, claim, plan, bindingId, keyring(), now);
+      return applyPlan(
+        tx,
+        settings,
+        claim,
+        plan,
+        bindingId,
+        keyring(),
+        now,
+        adjudication,
+        authorityBindingId
+      );
     },
     async applied(
       job: MemoryJobDescriptor,
-      _bindingId: string
+      bindingId: string
     ): Promise<"APPLIED" | "EMPTY" | null> {
       const marker = await client.memoryJob.findFirst({
         select: { stage: true },
         where: { id: job.id, userId: job.userId }
       });
-      return marker?.stage === "fact_observations_applied"
+      if (marker?.stage === "fact_observations_applied") return "APPLIED";
+      if (marker?.stage === "fact_observations_empty_applied") return "EMPTY";
+      const execution = await client.memoryFactExtractionExecution.findFirst({
+        select: { appliedAt: true, id: true },
+        where: {
+          executionBindingId: bindingId,
+          memoryJobId: job.id,
+          userId: job.userId
+        }
+      });
+      if (!execution?.appliedAt) return null;
+      const receipts = await client.memoryFactExtractionCandidateReceipt.findMany({
+        select: { outcome: true },
+        where: {
+          extractionExecutionId: execution.id,
+          userId: job.userId
+        }
+      });
+      if (receipts.some(({ outcome }) =>
+        outcome === "PENDING" || outcome === "STALE" ||
+        outcome === "RETRYABLE_FAILED")) return null;
+      return receipts.some(({ outcome }) => terminalApplyOutcomes.has(outcome))
         ? "APPLIED"
-        : marker?.stage === "fact_observations_empty_applied"
-          ? "EMPTY"
-          : null;
+        : "EMPTY";
     },
     bindings(userId: string, memoryJobId: string): Promise<MemoryFactExecutionBinding[]> {
       return client.memoryExecutionBinding.findMany({
@@ -674,6 +1429,10 @@ export function createPrismaMemoryFactExtractionRepository(
           id: true,
           inputHash: true,
           ordinal: true,
+          pipelineVersion: true,
+          policyVersion: true,
+          promptVersion: true,
+          schemaVersion: true,
           secretFreeExecutionSnapshot: true,
           state: true
         },
@@ -685,15 +1444,77 @@ export function createPrismaMemoryFactExtractionRepository(
         }
       });
     },
+    completeAdjudication(
+      tx: MemoryTransaction,
+      job: MemoryJobDescriptor,
+      bindingId: string,
+      packet: MemorySemanticAdjudicationPacket,
+      now: Date
+    ): Promise<void> {
+      return completeSemanticAdjudication(tx, job, bindingId, packet, now);
+    },
+    discardStale(job: MemoryJobDescriptor, reasonCode: string): Promise<number> {
+      return client.$transaction((tx) => invalidateMemoryFactExtractionStaging(
+        tx,
+        { memoryJobId: job.id, reasonCode, userId: job.userId },
+        new Date()
+      ), {
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+      });
+    },
     prepare(job: MemoryJobDescriptor): Promise<PrepareResult> {
-      return client.$transaction((tx) => prepareWith(tx, job, new Date()), {
+      return client.$transaction(async (tx) => {
+        const now = new Date();
+        const prepared = await prepareWith(tx, job, now);
+        if ("decision" in prepared) {
+          await invalidateMemoryFactExtractionStaging(tx, {
+            memoryJobId: job.id,
+            reasonCode: "source_stale",
+            userId: job.userId
+          }, now);
+        }
+        return prepared;
+      }, {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
       });
     },
     preflight(job: MemoryJobDescriptor): Promise<MemoryJobGateDecision> {
-      return client.$transaction((tx) => probeWith(tx, job, new Date()), {
+      return client.$transaction(async (tx) => {
+        const now = new Date();
+        const decision = await probeWith(tx, job, now);
+        if (decision.status !== "READY") {
+          await invalidateMemoryFactExtractionStaging(tx, {
+            memoryJobId: job.id,
+            reasonCode: "source_stale",
+            userId: job.userId
+          }, now);
+        }
+        return decision;
+      }, {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
       });
+    },
+    reserveAdjudication(
+      job: MemoryJobDescriptor
+    ): Promise<"ACQUIRED" | "RECOVERED" | "UNAVAILABLE"> {
+      return reserveSemanticAdjudication(client, job);
+    },
+    stage(
+      tx: MemoryTransaction,
+      job: MemoryJobDescriptor,
+      plan: MemoryFactExtractionPlan,
+      bindingId: string,
+      recoverableUntil: Date
+    ): Promise<void> {
+      return stagePlan(tx, job, plan, bindingId, recoverableUntil);
+    },
+    staged(
+      job: MemoryJobDescriptor,
+      bindingId: string,
+      input: MemoryFactExtractionInput,
+      now: Date
+    ): Promise<MemoryFactExtractionPlan | null> {
+      return loadStagedPlan(client, job, bindingId, input, now);
     }
   });
 }

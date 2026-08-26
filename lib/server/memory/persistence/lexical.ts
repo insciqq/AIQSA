@@ -4,7 +4,7 @@ export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_SIMPLE_V3";
 export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v3";
 export const MEMORY_LEXICAL_CHUNKING_VERSION = "memory-no-chunking-v1";
 export const MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION =
-  "memory-personal-retrieval-v4-lexical";
+  "memory-personal-retrieval-v5-lexical";
 
 function canonicalJson(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();

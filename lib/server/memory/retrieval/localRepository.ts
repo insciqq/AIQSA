@@ -12,6 +12,7 @@ import {
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   type MemoryCandidateMetadata,
   type MemoryCoreCandidate,
+  type MemoryDeterministicMatch,
   type MemoryExpandedCandidate,
   type MemoryLaneCandidate,
   type MemoryLaneResult,
@@ -32,7 +33,10 @@ import {
   memorySha256
 } from "../persistence/lexical";
 import { normalizeMemoryEntityAlias } from "../learning/entities/normalization";
+import { memoryAdmissibleEntityAliasPredicate } from
+  "../learning/entities/authority";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import { memoryCanonicalFactRootIdSql } from "../persistence/canonicalFact";
 import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
@@ -44,7 +48,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v4";
+  "memory-local-retrieval-repository-v7";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -124,6 +128,7 @@ type CandidateRow = Readonly<{
   coreSalience: string;
   current: boolean;
   dedupeKey: string;
+  deterministicMatch: string | null;
   directness: string | null;
   displayText: string | null;
   dimensionKey: string | null;
@@ -212,6 +217,7 @@ const retrievalModes = new Set([
   "PAST_CHAT_SEARCH", "HISTORY_OVERVIEW"
 ]);
 const temporalIntents = new Set(["CURRENT", "HISTORICAL", "AS_OF", "BETWEEN", "ANY"]);
+const opaqueEntityRefPattern = /^[^\u0000-\u0020\u007f]{1,2048}$/u;
 
 function validToken(value: unknown): value is string {
   return typeof value === "string" && opaqueTokenPattern.test(value);
@@ -318,7 +324,13 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
 }
 
 function decodeCandidate(row: CandidateRow, lane: MemoryRetrievalLane): MemoryLaneCandidate {
+  if (row.deterministicMatch !== null &&
+    !["EXACT_ALIAS_SINGLE_ROOT", "EXACT_TEXT", "PROFILE"]
+      .includes(row.deterministicMatch)) {
+    throw new Error("memory_retrieval_result_invalid");
+  }
   return {
+    deterministicMatch: row.deterministicMatch as MemoryDeterministicMatch | null,
     entryId: row.entryId,
     hardFilterPassed: true,
     itemId: row.itemId,
@@ -562,6 +574,9 @@ function factKindPredicate(plan: MemoryRetrievalPlan): Prisma.Sql {
 }
 
 function factPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
+  const patterns = plan.includePatterns
+    ? Prisma.sql`TRUE`
+    : Prisma.sql`version."modality" <> 'PATTERN'::"MemoryFactModality"`;
   const scope = plan.filters.scopeType
     ? Prisma.sql`scope."scopeType"::text = ${plan.filters.scopeType}`
     : Prisma.sql`TRUE`;
@@ -582,7 +597,7 @@ function factPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
     ? Prisma.sql`${temporalStart} <= ${plan.filters.asOf}
         AND (${temporalEnd} IS NULL OR ${temporalEnd} > ${plan.filters.asOf})`
     : Prisma.sql`TRUE`;
-  return Prisma.sql`${factKindPredicate(plan)} AND ${scope} AND ${target}
+  return Prisma.sql`${patterns} AND ${factKindPredicate(plan)} AND ${scope} AND ${target}
     AND ${from} AND ${to} AND ${asOf}`;
 }
 
@@ -648,23 +663,34 @@ function factColumns(
     ${entry} AS "entryId", version."id" AS "itemId",
     ${safeContentHash} AS "safeContentHash", version."displayText",
     version."structuredValue",
-    'FACT_VERSION'::"MemorySearchItemType" AS "itemType", fact."id" AS "factId",
+    'FACT_VERSION'::"MemorySearchItemType" AS "itemType", root_fact."id" AS "factId",
     (CASE WHEN version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
-      THEN 'fact-version:' || version."id" ELSE 'fact:' || fact."id" END)::text AS "dedupeKey",
-    fact."canonicalKey", fact."category", fact."identityKind"::text AS "identityKind",
-    fact."subjectKey", fact."predicateKey", fact."dimensionKey",
+      THEN 'fact-history:' || encode(digest(convert_to(jsonb_build_object(
+        'rootFactId', root_fact."id",
+        'structuredValue', version."structuredValue",
+        'modality', version."modality"::text,
+        'occurredAt', version."occurredAt",
+        'validFrom', version."validFrom",
+        'validTo', version."validTo",
+        'expectedAt', version."expectedAt"
+      )::text, 'UTF8'), 'sha256'), 'hex')
+      ELSE 'fact:' || root_fact."id" END)::text AS "dedupeKey",
+    root_fact."canonicalKey", root_fact."category",
+    root_fact."identityKind"::text AS "identityKind",
+    root_fact."subjectKey", root_fact."predicateKey", root_fact."dimensionKey",
     version."languageCode", version."modality"::text AS "modality",
     version."sourceMode"::text AS "sourceMode", version."directness"::text AS "directness",
     CASE WHEN version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode" THEN 'EXPLICIT'
       WHEN version."modality" = 'PATTERN'::"MemoryFactModality"
         THEN 'SYNTHESIS' ELSE 'DIRECT_AUTOMATIC' END::text AS "sourceAuthority",
     version."sensitivityClass"::text AS "sensitivityClass",
-    NULL::text AS "historySafetyClass", scope."scopeType"::text AS "scopeType",
-    scope."folderId" AS "sourceFolderId", scope."assistantId" AS "sourceAssistantId",
-    scope."chatId" AS "sourceChatId", fact."pinned",
-    fact."temperatureClass"::text AS "temperatureClass",
-    fact."temperatureScore"::double precision AS "temperatureScore",
-    fact."lastUsedAt", fact."lastConfirmedAt",
+    NULL::text AS "historySafetyClass", root_scope."scopeType"::text AS "scopeType",
+    root_scope."folderId" AS "sourceFolderId",
+    root_scope."assistantId" AS "sourceAssistantId",
+    root_scope."chatId" AS "sourceChatId", root_fact."pinned",
+    root_fact."temperatureClass"::text AS "temperatureClass",
+    root_fact."temperatureScore"::double precision AS "temperatureScore",
+    root_fact."lastUsedAt", root_fact."lastConfirmedAt",
     version."confidence"::double precision AS "confidence",
     version."importance"::double precision AS "importance",
     version."coreEligible", version."coreSalience"::text AS "coreSalience",
@@ -672,14 +698,21 @@ function factColumns(
       WHEN 'ASSISTANT'::"MemoryScopeType" THEN 0.9
       WHEN 'FOLDER'::"MemoryScopeType" THEN 0.8 ELSE 0.7 END::double precision AS "scopeAffinity",
     (version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND fact."currentVersionId" = version."id") AS "current",
+      AND root_fact."currentVersionId" = version."id") AS "current",
     (version."state" = 'SUPERSEDED'::"MemoryFactVersionState") AS "historical",
     FALSE AS "conflict", version."state"::text AS "lifecycleState",
     version."observedAt", version."occurredAt", version."expectedAt", version."expiresAt",
     version."validFrom", version."validTo", version."systemFrom",
-    ARRAY(SELECT link."entityId" FROM "MemoryFactVersionEntity" AS link
-      WHERE link."userId" = version."userId" AND link."factVersionId" = version."id"
-      ORDER BY link."entityId" LIMIT 32)::text[] AS "entityIds",
+    ARRAY(SELECT DISTINCT aiqsa_memory_entity_root_id(
+        link."userId", link."entityId"
+      ) FROM "MemoryFactVersionEntity" AS link
+      WHERE link."userId" = version."userId"
+        AND link."factVersionId" = version."id"
+        AND aiqsa_memory_entity_root_id(
+          link."userId", link."entityId"
+        ) IS NOT NULL
+      ORDER BY aiqsa_memory_entity_root_id(link."userId", link."entityId")
+      LIMIT 32)::text[] AS "entityIds",
     ${matchedEntityRole} AS "matchedEntityRole",
     0::integer AS "relationDepth", version."synthesisDepth" AS "synthesisDepth",
     NULL::timestamp AS "occurredFrom", NULL::timestamp AS "occurredTo"
@@ -766,49 +799,101 @@ function memoryChunkConversationFeedbackPredicate(
 
 function factEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  searchAuthority: "DIRECT" | "INDEXED" = "INDEXED",
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
 ): Prisma.Sql {
-  if (!snapshot.activeGenerationId) throw new Error("memory_retrieval_snapshot_invalid");
+  if (searchAuthority === "INDEXED" &&
+    (!snapshot.activeGenerationId || !snapshot.indexMode)) {
+    throw new Error("memory_retrieval_snapshot_invalid");
+  }
+  const source = searchAuthority === "INDEXED"
+    ? Prisma.sql`
+        FROM "MemorySearchEntry" AS entry
+        INNER JOIN "UserMemorySettings" AS settings
+          ON settings."userId" = entry."userId" AND settings."useMemoryFacts" = TRUE
+          AND settings."activeIndexGenerationId" = ${snapshot.activeGenerationId}
+        INNER JOIN "MemoryIndexGeneration" AS generation
+          ON generation."userId" = settings."userId"
+          AND generation."id" = settings."activeIndexGenerationId"
+          AND generation."id" = entry."indexGenerationId"
+          AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+          AND generation."retrievalPipelineVersion" =
+            ${expectedGenerationPipeline(snapshot.indexMode!)}
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = entry."userId" AND version."id" = entry."factVersionId"
+      `
+    : Prisma.sql`
+        FROM "MemoryFactVersion" AS version
+        INNER JOIN "UserMemorySettings" AS settings
+          ON settings."userId" = version."userId" AND settings."useMemoryFacts" = TRUE
+      `;
+  const entryId = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."id"`
+    : Prisma.sql`NULL::text`;
+  const safeContentHash = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."safeContentHash"`
+    : Prisma.sql`NULL::text`;
+  const normalizedSearchText = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."normalizedSearchText"`
+    : Prisma.sql`version."normalizedSearchText"`;
+  const searchVector = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."searchVectorSimple"`
+    : Prisma.sql`NULL::tsvector`;
+  const indexedEntry = searchAuthority === "INDEXED"
+    ? Prisma.sql`AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"`
+    : Prisma.sql``;
   return Prisma.sql`
-    SELECT ${factColumns(
-      Prisma.sql`entry."id"`,
-      Prisma.sql`NULL::text`,
-      Prisma.sql`entry."safeContentHash"`
-    )},
-      entry."normalizedSearchText", entry."searchVectorSimple"
-    FROM "MemorySearchEntry" AS entry
-    INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = entry."userId" AND settings."useMemoryFacts" = TRUE
-      AND settings."activeIndexGenerationId" = ${snapshot.activeGenerationId}
-    INNER JOIN "MemoryIndexGeneration" AS generation
-      ON generation."userId" = settings."userId" AND generation."id" = settings."activeIndexGenerationId"
-      AND generation."id" = entry."indexGenerationId"
-      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
-      AND generation."retrievalPipelineVersion" =
-        ${expectedGenerationPipeline(snapshot.indexMode!)}
-    INNER JOIN "MemoryFactVersion" AS version
-      ON version."userId" = entry."userId" AND version."id" = entry."factVersionId"
-      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
+    SELECT DISTINCT ON (candidate."dedupeKey") candidate.*
+    FROM (
+      SELECT ${factColumns(entryId, Prisma.sql`NULL::text`, safeContentHash)},
+        ${normalizedSearchText} AS "normalizedSearchText",
+        ${searchVector} AS "searchVectorSimple",
+        (fact."id" = root_fact."id") AS "canonicalSource"
+      ${source}
+    AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
+    INNER JOIN "MemoryFact" AS root_fact
+      ON root_fact."userId" = fact."userId"
+      AND root_fact."id" = ${memoryCanonicalFactRootIdSql(
+        snapshot.userId,
+        Prisma.sql`fact."id"`
+      )}
+      AND root_fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND root_fact."movedToFactId" IS NULL
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-    WHERE entry."userId" = ${snapshot.userId}
-      AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
+    INNER JOIN "MemoryScope" AS root_scope
+      ON root_scope."userId" = root_fact."userId"
+      AND root_scope."id" = root_fact."scopeId"
+      AND root_scope."state" = 'ACTIVE'::"MemoryScopeState"
+    WHERE version."userId" = ${snapshot.userId}
+      ${indexedEntry}
+      AND (${candidatePredicate})
       AND version."sensitivityClass" IN (
         'NORMAL'::"MemorySensitivityClass",
         'SENSITIVE'::"MemorySensitivityClass"
       )
       AND ${factLifecyclePredicate(plan)}
       AND ${memoryFactScopePredicate(snapshot)}
-      AND ${memoryReusableFactAuthorityPredicate(snapshot.userId)}
+      AND ${memoryReusableFactAuthorityPredicate(snapshot.userId, {
+        includePatterns: plan.includePatterns,
+        lifecycle: plan.mode === "HISTORICAL_MEMORY"
+          ? "CURRENT_OR_HISTORICAL"
+          : "CURRENT"
+      })}
       AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
       AND ${memoryFactConversationFeedbackPredicate(snapshot)}
       AND ${factPlanPredicates(plan)}
+    ) AS candidate
+    ORDER BY candidate."dedupeKey", candidate."current" DESC,
+      candidate."canonicalSource" DESC,
+      candidate."systemFrom" DESC NULLS LAST, candidate."itemId"
   `;
 }
 
@@ -820,9 +905,19 @@ function coreSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
       AND fact."state" = 'ACTIVE'::"MemoryFactState" AND fact."currentVersionId" = version."id"
+    INNER JOIN "MemoryFact" AS root_fact
+      ON root_fact."userId" = fact."userId"
+      AND root_fact."id" = ${memoryCanonicalFactRootIdSql(
+        snapshot.userId,
+        Prisma.sql`fact."id"`
+      )}
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+    INNER JOIN "MemoryScope" AS root_scope
+      ON root_scope."userId" = root_fact."userId"
+      AND root_scope."id" = root_fact."scopeId"
+      AND root_scope."state" = 'ACTIVE'::"MemoryScopeState"
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = version."userId" AND settings."useMemoryFacts" = TRUE
     WHERE version."userId" = ${snapshot.userId}
@@ -1156,7 +1251,8 @@ function historyEligibleSelect(
 
 function candidateColumns(
   rawScore: Prisma.Sql,
-  matchedEntityRole: Prisma.Sql = Prisma.sql`eligible."matchedEntityRole"`
+  matchedEntityRole: Prisma.Sql = Prisma.sql`eligible."matchedEntityRole"`,
+  deterministicMatch: Prisma.Sql = Prisma.sql`NULL::text`
 ): Prisma.Sql {
   return Prisma.sql`
     eligible."entryId", eligible."itemId", eligible."itemType", eligible."factId",
@@ -1176,7 +1272,8 @@ function candidateColumns(
     eligible."observedAt", eligible."occurredAt", eligible."expectedAt", eligible."expiresAt",
     eligible."relationDepth", eligible."synthesisDepth",
     eligible."validFrom", eligible."validTo", eligible."systemFrom",
-    eligible."occurredFrom", eligible."occurredTo", ${rawScore}::double precision AS "rawScore"
+    eligible."occurredFrom", eligible."occurredTo", ${rawScore}::double precision AS "rawScore",
+    ${deterministicMatch} AS "deterministicMatch"
   `;
 }
 
@@ -1187,11 +1284,20 @@ function exactSql(
   limit: number
 ): Prisma.Sql {
   const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(snapshot, plan)
+    ? factEligibleSelect(
+        snapshot,
+        plan,
+        "DIRECT",
+        Prisma.sql`version."normalizedSearchText" = ${plan.normalizedExactQuery}`
+      )
     : historyEligibleSelect(snapshot, plan);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
-    SELECT ${candidateColumns(Prisma.sql`1.0`)} FROM eligible
+    SELECT ${candidateColumns(
+      Prisma.sql`1.0`,
+      Prisma.sql`eligible."matchedEntityRole"`,
+      Prisma.sql`'EXACT_TEXT'::text`
+    )} FROM eligible
     WHERE eligible."normalizedSearchText" = ${plan.normalizedExactQuery}
     ORDER BY eligible."itemId" LIMIT ${limit}
   `;
@@ -1216,55 +1322,61 @@ function entityQueryTerms(query: string): readonly string[] {
   return [...values];
 }
 
+function plannedEntityTerms(plan: MemoryRetrievalPlan): Readonly<{
+  hinted: readonly string[];
+  terms: readonly string[];
+}> {
+  const hinted = [...new Set(plan.entityMentions
+    .map((mention) => normalizeMemoryEntityAlias(mention.text))
+    .filter((term): term is string => term !== null))];
+  return {
+    hinted,
+    terms: [...new Set([
+      ...entityQueryTerms(plan.normalizedQuery),
+      ...hinted
+    ])]
+  };
+}
+
 function entitySql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   limit: number
 ): Prisma.Sql {
-  const terms = entityQueryTerms(plan.normalizedQuery);
+  const { hinted: hintedTerms, terms } = plannedEntityTerms(plan);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
+  const exactHint = hintedTerms.length > 0
+    ? Prisma.sql`alias."normalizedAlias" IN (${Prisma.join(hintedTerms)})`
+    : Prisma.sql`FALSE`;
   return Prisma.sql`
     WITH RECURSIVE
-    eligible AS MATERIALIZED (${factEligibleSelect(snapshot, plan)}),
     matched_alias_entities AS MATERIALIZED (
-      SELECT DISTINCT alias."entityId"
+      SELECT DISTINCT alias."entityId", alias."normalizedAlias",
+        ${exactHint} AS "exactHint"
       FROM "MemoryEntityAlias" AS alias
       WHERE alias."userId" = ${snapshot.userId}
         AND alias."normalizedAlias" IN (${Prisma.join(terms)})
-        AND EXISTS (
-          SELECT 1 FROM "MemoryEntityAliasSupport" AS support
-          WHERE support."userId" = alias."userId" AND support."aliasId" = alias."id"
-        )
-    ),
-    entity_roots AS (
-      SELECT entity."id" AS "originId", entity."id" AS "entityId",
-        entity."mergedIntoId", ARRAY[entity."id"]::text[] AS visited,
-        FALSE AS cycle
-      FROM "MemoryEntity" AS entity
-      INNER JOIN matched_alias_entities AS matched
-        ON matched."entityId" = entity."id"
-      WHERE entity."userId" = ${snapshot.userId}
-
-      UNION ALL
-
-      SELECT roots."originId", entity."id", entity."mergedIntoId",
-        roots.visited || entity."id", entity."id" = ANY(roots.visited)
-      FROM entity_roots AS roots
-      INNER JOIN "MemoryEntity" AS entity
-        ON entity."userId" = ${snapshot.userId}
-        AND entity."id" = roots."mergedIntoId"
-      WHERE NOT roots.cycle
-    ),
-    root_map AS MATERIALIZED (
-      SELECT "originId", "entityId" AS "rootId"
-      FROM entity_roots
-      WHERE "mergedIntoId" IS NULL AND NOT cycle
+        AND ${memoryAdmissibleEntityAliasPredicate(snapshot.userId)}
     ),
     matched_roots AS MATERIALIZED (
-      SELECT DISTINCT root_map."rootId" FROM root_map
+      SELECT DISTINCT matched."normalizedAlias", matched."exactHint",
+        aiqsa_memory_entity_root_id(
+        ${snapshot.userId}, matched."entityId"
+      ) AS "rootId"
+      FROM matched_alias_entities AS matched
+      WHERE aiqsa_memory_entity_root_id(
+        ${snapshot.userId}, matched."entityId"
+      ) IS NOT NULL
+    ),
+    unambiguous_exact_roots AS MATERIALIZED (
+      SELECT MIN(matched."rootId") AS "rootId"
+      FROM matched_roots AS matched
+      WHERE matched."exactHint"
+      GROUP BY matched."normalizedAlias"
+      HAVING COUNT(DISTINCT matched."rootId") = 1
     ),
     root_members AS (
-      SELECT matched."rootId", matched."rootId" AS "entityId",
+      SELECT DISTINCT matched."rootId", matched."rootId" AS "entityId",
         ARRAY[matched."rootId"]::text[] AS visited, FALSE AS cycle
       FROM matched_roots AS matched
 
@@ -1286,14 +1398,31 @@ function entitySql(
         (ARRAY_AGG(link."role"::text ORDER BY CASE link."role"
           WHEN 'SUBJECT'::"MemoryEntityLinkRole" THEN 0
           WHEN 'OBJECT'::"MemoryEntityLinkRole" THEN 1 ELSE 2 END,
-          link."role"::text))[1] AS role
+          link."role"::text))[1] AS role,
+        BOOL_OR(exact_root."rootId" IS NOT NULL) AS "deterministic"
       FROM "MemoryFactVersionEntity" AS link
       INNER JOIN root_members AS member
         ON member."entityId" = link."entityId" AND NOT member.cycle
+      LEFT JOIN unambiguous_exact_roots AS exact_root
+        ON exact_root."rootId" = member."rootId"
       WHERE link."userId" = ${snapshot.userId}
       GROUP BY link."factVersionId"
-    )
-    SELECT ${candidateColumns(Prisma.sql`linked.score`, Prisma.sql`linked.role`)}
+    ),
+    eligible AS MATERIALIZED (${factEligibleSelect(
+      snapshot,
+      plan,
+      "DIRECT",
+      Prisma.sql`EXISTS (
+        SELECT 1 FROM linked
+        WHERE linked."factVersionId" = version."id"
+      )`
+    )})
+    SELECT ${candidateColumns(
+      Prisma.sql`linked.score`,
+      Prisma.sql`linked.role`,
+      Prisma.sql`CASE WHEN linked."deterministic"
+        THEN 'EXACT_ALIAS_SINGLE_ROOT'::text ELSE NULL::text END`
+    )}
     FROM eligible
     INNER JOIN linked ON linked."factVersionId" = eligible."itemId"
     ORDER BY linked.score DESC, eligible."itemId"
@@ -1301,19 +1430,39 @@ function entitySql(
   `;
 }
 
+async function hasPotentialEntityAlias(
+  client: PrismaClient,
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan
+): Promise<boolean> {
+  const { terms } = plannedEntityTerms(plan);
+  if (terms.length === 0) return false;
+  return await client.memoryEntityAlias.findFirst({
+    select: { id: true },
+    where: {
+      normalizedAlias: { in: [...terms] },
+      userId: snapshot.userId
+    }
+  }) !== null;
+}
+
 function profileSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   limit: number
 ): Prisma.Sql {
-  const eligible = factEligibleSelect(snapshot, plan);
+  const eligible = factEligibleSelect(snapshot, plan, "DIRECT");
   const authorityScore = Prisma.sql`CASE
     WHEN eligible."sourceMode" = 'EXPLICIT' THEN 1.0
     ELSE 0.8
   END`;
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
-    SELECT ${candidateColumns(authorityScore)} FROM eligible
+    SELECT ${candidateColumns(
+      authorityScore,
+      Prisma.sql`eligible."matchedEntityRole"`,
+      Prisma.sql`'PROFILE'::text`
+    )} FROM eligible
     ORDER BY (eligible."sourceMode" = 'EXPLICIT') DESC,
       eligible."pinned" DESC,
       eligible."importance" DESC,
@@ -1331,16 +1480,48 @@ function ftsSql(
   limit: number
 ): Prisma.Sql {
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
+  const distinctTerms = [...new Set(plan.lexicalQuery.split(" "))].slice(0, 64);
+  // A natural-language question contains short connective terms that are
+  // common to unrelated memories. Search the longer, more distinctive half
+  // independently; the mandatory relevance model still owns final admission.
+  // Keeping at least two terms preserves compact requests such as "tea style".
+  const terms = distinctTerms
+    .map((term, index) => ({ index, length: Array.from(term).length, term }))
+    .sort((left, right) => right.length - left.length || left.index - right.index)
+    .slice(0, Math.min(distinctTerms.length, Math.max(2, Math.ceil(distinctTerms.length / 2))))
+    .map(({ term }) => term);
+  if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(snapshot, plan)
+    ? factEligibleSelect(
+        snapshot,
+        plan,
+        "INDEXED",
+        Prisma.sql`(${Prisma.join(terms.map((term) => Prisma.sql`
+          entry."searchVectorSimple" @@ plainto_tsquery('simple', ${term})
+        `), " OR ")})`
+      )
     : historyEligibleSelect(snapshot, plan);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible}),
-    whole_query AS (SELECT plainto_tsquery('simple', ${plan.lexicalQuery}) AS query)
-    SELECT ${candidateColumns(Prisma.sql`ts_rank_cd(eligible."searchVectorSimple", whole_query.query)`)}
-    FROM eligible CROSS JOIN whole_query
-    WHERE eligible."searchVectorSimple" @@ whole_query.query
-    ORDER BY ts_rank_cd(eligible."searchVectorSimple", whole_query.query) DESC,
+    query_terms AS MATERIALIZED (
+      SELECT DISTINCT term, char_length(term)::integer AS "termLength",
+        plainto_tsquery('simple', term) AS query
+      FROM unnest(${terms}::text[]) AS terms(term)
+      WHERE plainto_tsquery('simple', term) <> ''::tsquery
+    )
+    SELECT ${candidateColumns(Prisma.sql`term_match."rankScore"`)}
+    FROM eligible
+    CROSS JOIN LATERAL (
+      SELECT COUNT(*)::integer AS "matchedTermCount",
+        COALESCE(MAX(query_terms."termLength"), 0)::integer AS "maximumMatchedTermLength",
+        COALESCE(SUM(ts_rank_cd(eligible."searchVectorSimple", query_terms.query)),
+          0.0)::double precision AS "rankScore"
+      FROM query_terms
+      WHERE eligible."searchVectorSimple" @@ query_terms.query
+    ) AS term_match
+    WHERE term_match."matchedTermCount" > 0
+    ORDER BY term_match."maximumMatchedTermLength" DESC,
+      term_match."matchedTermCount" DESC, term_match."rankScore" DESC,
       eligible."itemId" LIMIT ${limit}
   `;
 }
@@ -1386,19 +1567,21 @@ function localLexicalLanes(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan
 ): readonly MemoryRetrievalLane[] {
-  if (!snapshot.activeGenerationId || !snapshot.indexMode || !plan.queryPresent) return [];
+  if (!plan.queryPresent) return [];
+  const indexed = snapshot.activeGenerationId !== null && snapshot.indexMode !== null;
   const lanes: MemoryRetrievalLane[] = [];
   if (snapshot.useMemoryFacts &&
     (plan.filters.sourceKinds.includes("FACT") || plan.filters.sourceKinds.includes("EVENT"))) {
     if (plan.profileRequested) lanes.push("FACT_PROFILE");
     else {
       lanes.push("FACT_EXACT");
-      lanes.push("FACT_ENTITY");
-      if (plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
-      if (plan.recencyRequested) lanes.push("FACT_RECENT");
+      if (entityQueryTerms(plan.normalizedQuery).length > 0) lanes.push("FACT_ENTITY");
+      if (indexed && plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
+      if (indexed && plan.recencyRequested) lanes.push("FACT_RECENT");
     }
   }
-  if (!plan.profileRequested && snapshot.useMemoryFacts && snapshot.referenceChatHistory &&
+  if (indexed && !plan.profileRequested && snapshot.useMemoryFacts &&
+    snapshot.referenceChatHistory &&
     plan.filters.sourceKinds.includes("HISTORY")) {
     if (plan.mode === "HISTORY_OVERVIEW") {
       if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
@@ -1456,6 +1639,10 @@ function pushLexicalTasks(
     tasks.push({
       async execute() {
         try {
+          if (lane === "FACT_ENTITY" &&
+            !await hasPotentialEntityAlias(client, snapshot, plan)) {
+            return { candidates: [], lane };
+          }
           return await queryLane(client, lane, limit, sql);
         } catch {
           failures.push(lane);
@@ -1486,7 +1673,12 @@ function vectorMetadataSql(
   limit: number
 ): Prisma.Sql {
   const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(snapshot, plan)
+    ? factEligibleSelect(
+        snapshot,
+        plan,
+        "INDEXED",
+        Prisma.sql`entry."id" IN (${valuesSql(hits.map((hit) => hit.entryId))})`
+      )
     : historyEligibleSelect(snapshot, plan);
   const score = vectorScoreSql(hits);
   return Prisma.sql`
@@ -1538,6 +1730,7 @@ function pushVectorTasks(
       assistantId: snapshot.assistantId,
       chatId: snapshot.chatId,
       factMode: input.plan.mode === "HISTORICAL_MEMORY" ? "HISTORICAL" : "CURRENT",
+      includePatterns: input.plan.includePatterns,
       factTemporalAsOf: input.plan.filters.asOf,
       folderId: snapshot.folderId,
       occurredFrom: input.plan.filters.from,
@@ -1594,7 +1787,12 @@ function currentFactExpansionSql(
   ids: readonly string[]
 ): Prisma.Sql {
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${factEligibleSelect(snapshot, plan)})
+    WITH eligible AS MATERIALIZED (${factEligibleSelect(
+      snapshot,
+      plan,
+      "DIRECT",
+      Prisma.sql`version."id" IN (${valuesSql(ids)})`
+    )})
     SELECT eligible."itemId", eligible."itemType", version."displayText" AS "safeText",
       'FACT_DISPLAY_TEXT'::text AS "projectionKind", NULL::text AS "sourceChatId",
       NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
@@ -1667,6 +1865,16 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
             plan.temporalIntent !== "HISTORICAL"
           : !plan.profileRequested && !facts && history && !plan.recencyRequested;
   return typeof plan.applyResponsePreferences === "boolean" &&
+    Array.isArray(plan.entityMentions) && plan.entityMentions.length <= 8 &&
+    plan.entityMentions.every((mention) =>
+      typeof mention.text === "string" && mention.text.trim() === mention.text &&
+      mention.text.length >= 1 && mention.text.length <= 256 &&
+      !/[\u0000-\u001f\u007f]/u.test(mention.text) &&
+      Number.isSafeInteger(mention.occurrenceIndex) && mention.occurrenceIndex >= 0 &&
+      mention.occurrenceIndex <= 15 &&
+      (mention.resolvedRef === null || opaqueEntityRefPattern.test(mention.resolvedRef))) &&
+    typeof plan.includePatterns === "boolean" &&
+    (!plan.includePatterns || plan.mode === "TARGETED_CURRENT") &&
     typeof plan.profileRequested === "boolean" &&
     retrievalModes.has(plan.mode) && temporalIntents.has(plan.temporalIntent) &&
     Array.isArray(requestedKinds) &&
@@ -1709,7 +1917,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       candidates: readonly MemoryRankedCandidate[]
     ): Promise<readonly MemoryExpandedCandidate[]> {
       if (
-        snapshot.status !== "READY" || !snapshot.activeGenerationId || !snapshot.indexMode ||
+        snapshot.status !== "READY" ||
         candidates.length > MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES ||
         new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
           candidates.length || candidates.some((candidate) => !validToken(candidate.itemId))
@@ -1718,6 +1926,9 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         .map((candidate) => candidate.itemId);
       const chunkIds = candidates.filter((candidate) => candidate.itemType === "RECALL_CHUNK")
         .map((candidate) => candidate.itemId);
+      if (chunkIds.length > 0 && (!snapshot.activeGenerationId || !snapshot.indexMode)) {
+        throw new Error("memory_expansion_contract_invalid");
+      }
       const queries: Promise<ExpandedRow[]>[] = [];
       if (factIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
         currentFactExpansionSql(snapshot, plan, factIds)));
@@ -1746,7 +1957,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const core = input.plan.applyResponsePreferences
         ? await loadCore(client, snapshot)
         : [];
-      if (!input.plan.queryPresent || !snapshot.activeGenerationId || !snapshot.indexMode) {
+      if (!input.plan.queryPresent) {
         return emptyResult(snapshot, core, input.vector ? "DISABLED" : "NOT_CONFIGURED");
       }
       const lexicalLanes = localLexicalLanes(snapshot, input.plan);

@@ -36,4 +36,6 @@ Runtime roles receive least configuration: app, Memory worker, migration/bootstr
 
 Emergency recovery switches are narrow, temporary, auditable, and fail closed by default. They do not redefine supported topology or bypass migration, ownership, egress, or retention guards. Record their use outside source control and remove them after the exact recovery action.
 
+The Memory coordinator lease is a replay-safety window, not a provider timeout. A longer bounded lease delays crash recovery; a lease shorter than the runtime's heartbeat/provider window can force an otherwise healthy external call into `OUTCOME_UNKNOWN`. Development Compose therefore tolerates compiler pauses while production keeps the independently heartbeated worker default unless an operator deliberately changes it.
+
 Never print a resolved environment snapshot during verification. Evidence uses presence/validity booleans and stable issue codes only. Follow [Security](SECURITY.md) for trust consequences and [Testing](TESTING.md) for disposable overrides.

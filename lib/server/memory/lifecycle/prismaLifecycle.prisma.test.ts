@@ -356,13 +356,44 @@ async function createFactCandidateFixture(input: Readonly<{
   });
   const now = new Date();
   const createdAt = new Date(now.getTime() - 1_000);
+  const recoverableUntil = now;
+  const acceptedOutputHash = memorySha256({ candidateId, output: "accepted" });
+  const inputHash = memorySha256({ candidateId, input: "test" });
+  const extractionExecutionId = memorySha256({
+    bindingId,
+    domain: "aiqsa.memory.fact-extraction-execution",
+    jobId,
+    userId: input.userId,
+    version: 1
+  });
   const settings = await prisma.userMemorySettings.findUniqueOrThrow({
     where: { userId: input.userId }
   });
+  const [authority] = await prisma.$queryRaw<Array<{
+    connectionId: string;
+    credentialId: string;
+    credentialVersionId: string;
+    providerModelId: string;
+  }>>(Prisma.sql`
+    SELECT model."id" AS "providerModelId",
+      connection."id" AS "connectionId",
+      credential."id" AS "credentialId",
+      credential."activeVersionId" AS "credentialVersionId"
+    FROM "ProviderModel" AS model
+    INNER JOIN "ProviderConnection" AS connection
+      ON connection."id" = model."connectionId"
+    INNER JOIN "ProviderCredential" AS credential
+      ON credential."connectionId" = connection."id"
+      AND credential."id" = connection."defaultCredentialId"
+    WHERE credential."activeVersionId" IS NOT NULL
+    ORDER BY model."id"
+    LIMIT 1
+  `);
+  if (!authority) throw new Error("memory_test_execution_authority_missing");
   await prisma.$transaction(async (tx) => {
     await tx.memoryJob.create({
       data: {
-        acceptedResultHash: memorySha256({ candidateId, result: "accepted" }),
+        acceptedResultHash: acceptedOutputHash,
         activeLeafMessageId: input.activeLeafMessageId,
         branchGeneration: 0,
         chatId: input.chatId,
@@ -382,12 +413,13 @@ async function createFactCandidateFixture(input: Readonly<{
     });
     await tx.memoryExecutionBinding.create({
       data: {
-        acceptedOutputHash: memorySha256({ candidateId, output: "accepted" }),
-        completedAt: now,
+        connectionId: authority.connectionId,
         createdAt,
+        credentialId: authority.credentialId,
+        credentialVersionId: authority.credentialVersionId,
         destinationFingerprint: memorySha256({ candidateId, destination: "test" }),
         id: bindingId,
-        inputHash: memorySha256({ candidateId, input: "test" }),
+        inputHash,
         logicalRole: "MEMORY_FACT_EXTRACT",
         memoryJobId: jobId,
         ordinal: 0,
@@ -396,14 +428,55 @@ async function createFactCandidateFixture(input: Readonly<{
         policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
         promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
         providerId: "openai_compatible",
-        recoverableUntil: now,
-        relationsDetachedAt: now,
+        providerModelId: authority.providerModelId,
+        recoverableUntil,
         schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
         secretFreeExecutionSnapshot: {},
         startedAt: createdAt,
-        state: "SUCCEEDED",
+        state: "RUNNING",
         userId: input.userId
       }
+    });
+    await tx.memoryFactExtractionExecution.create({
+      data: {
+        acceptedOutput: {
+          candidateOrdinals: [0],
+          candidates: [{ fixture: "lifecycle-candidate" }],
+          rejections: []
+        },
+        acceptedOutputHash,
+        contextBindings: [],
+        createdAt,
+        executionBindingId: bindingId,
+        id: extractionExecutionId,
+        inputHash,
+        memoryJobId: jobId,
+        recoverableUntil,
+        sourceMessageContentHash: memorySha256(input.displayText),
+        sourceMessageId: input.messageId,
+        userId: input.userId
+      }
+    });
+    await tx.memoryExecutionBinding.update({
+      data: {
+        acceptedOutputHash,
+        completedAt: now,
+        connectionId: null,
+        credentialId: null,
+        credentialVersionId: null,
+        providerModelId: null,
+        relationsDetachedAt: now,
+        state: "SUCCEEDED"
+      },
+      where: { id: bindingId }
+    });
+    await tx.memoryFactExtractionExecution.update({
+      data: {
+        acceptedOutput: Prisma.DbNull,
+        appliedAt: now,
+        contextBindings: Prisma.DbNull
+      },
+      where: { id: extractionExecutionId }
     });
     await tx.memoryCandidate.create({
       data: {

@@ -75,6 +75,13 @@ export type MemoryExecutionSettlementView = Readonly<{
   state: MemoryExecutionSettlementInput["state"];
 }>;
 
+export type MemoryExecutionDurableResultEvidence = Readonly<{
+  bindingId: string;
+  completedAt: Date;
+  recoverableUntil: Date;
+  replayed: boolean;
+}>;
+
 export type MemoryExecutionDetachTarget =
   | Readonly<{ bindingId: string }>
   | Readonly<{ connectionId: string }>
@@ -302,6 +309,36 @@ export async function detachExpiredMemoryExecutionBindings(
   if (!Number.isFinite(now.getTime())) {
     return memoryExecutionFailure("memory_execution_input_invalid");
   }
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFactExtractionCandidateReceipt" AS receipt
+    SET
+      "outcome" = 'STALE'::"MemoryFactExtractionCandidateOutcome",
+      "reasonCode" = 'recovery_window_expired',
+      "updatedAt" = ${now}
+    FROM "MemoryFactExtractionExecution" AS execution,
+      "MemoryExecutionBinding" AS binding
+    WHERE receipt."userId" = execution."userId"
+      AND receipt."extractionExecutionId" = execution."id"
+      AND execution."userId" = binding."userId"
+      AND execution."executionBindingId" = binding."id"
+      AND receipt."outcome" = 'PENDING'::"MemoryFactExtractionCandidateOutcome"
+      AND execution."appliedAt" IS NULL
+      AND execution."recoverableUntil" <= ${now}
+      AND ${targetPredicate(target)}
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFactExtractionExecution" AS execution
+    SET
+      "acceptedOutput" = NULL,
+      "contextBindings" = NULL,
+      "appliedAt" = ${now}
+    FROM "MemoryExecutionBinding" AS binding
+    WHERE execution."userId" = binding."userId"
+      AND execution."executionBindingId" = binding."id"
+      AND execution."appliedAt" IS NULL
+      AND execution."recoverableUntil" <= ${now}
+      AND ${targetPredicate(target)}
+  `);
   return tx.$executeRaw(Prisma.sql`
     UPDATE "MemoryExecutionBinding" AS binding
     SET
@@ -475,8 +512,89 @@ export function createPrismaMemoryExecutionLifecycle(
     });
   }
 
+  /** Commit a successful provider settlement and its recovery owner as one
+   * transaction. The callback must be deterministic and idempotent; it runs
+   * before the binding becomes SUCCEEDED so no recovery observer can see an
+   * accepted output hash without the durable result needed to apply it. */
+  async function settleSucceededWithDurableResult(
+    userId: string,
+    bindingId: string,
+    input: MemoryExecutionSettlementInput & Readonly<{ state: "SUCCEEDED" }>,
+    persist: (
+      tx: MemoryTransaction,
+      evidence: MemoryExecutionDurableResultEvidence
+    ) => Promise<void>
+  ): Promise<MemoryExecutionSettlementView> {
+    if (
+      !isValidMemoryExecutionIdentifier(userId) ||
+      !isValidMemoryExecutionIdentifier(bindingId) ||
+      typeof persist !== "function"
+    ) {
+      return memoryExecutionFailure("memory_execution_input_invalid");
+    }
+    validateSettlement(input);
+    if (input.state !== "SUCCEEDED") {
+      return memoryExecutionFailure("memory_execution_output_invalid");
+    }
+    return withLockedMemoryTransaction(client, userId, async (tx) => {
+      const now = memoryExecutionNow(dependencies);
+      const binding = await loadMemoryExecutionBinding(tx, userId, bindingId);
+      if (sameSettlement(binding, input)) {
+        if (!binding.completedAt || !binding.recoverableUntil) {
+          return memoryExecutionFailure("memory_execution_snapshot_invalid");
+        }
+        await persist(tx, {
+          bindingId: binding.id,
+          completedAt: binding.completedAt,
+          recoverableUntil: binding.recoverableUntil,
+          replayed: true
+        });
+        await assertDurableUsage(tx, binding, input.usage);
+        return settlementView(binding, true);
+      }
+      if (binding.state !== "RUNNING" || binding.relationsDetachedAt) {
+        return memoryExecutionFailure("memory_execution_state_conflict");
+      }
+      const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+      assertMemoryExecutionBindingLineage(binding, snapshot);
+      const recoverableUntil = new Date(
+        now.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS
+      );
+      await persist(tx, {
+        bindingId: binding.id,
+        completedAt: now,
+        recoverableUntil,
+        replayed: false
+      });
+      const updated = await tx.memoryExecutionBinding.updateMany({
+        data: {
+          acceptedOutputHash: input.acceptedOutputHash,
+          completedAt: now,
+          errorCode: input.errorCode,
+          providerResponseId: input.providerResponseId,
+          recoverableUntil,
+          state: "SUCCEEDED",
+          ...usageData(input.usage)
+        },
+        where: {
+          id: binding.id,
+          relationsDetachedAt: null,
+          state: "RUNNING",
+          userId
+        }
+      });
+      if (updated.count !== 1) {
+        return memoryExecutionFailure("memory_execution_state_conflict");
+      }
+      await createUsageEvent(tx, binding, input.usage);
+      const settled = await loadMemoryExecutionBinding(tx, userId, bindingId);
+      return settlementView(settled, false);
+    });
+  }
+
   return Object.freeze({
     settle,
+    settleSucceededWithDurableResult,
 
     async assertResultAuthorized(
       userId: string,

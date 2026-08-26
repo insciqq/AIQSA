@@ -20,6 +20,7 @@ describe("Memory coordinator policy", () => {
   it("loads bounded coordinator controls without accepting unknown values", () => {
     expect(loadMemoryCoordinatorPolicy({
       AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "30000",
+      AIQSA_MEMORY_COORDINATOR_LEASE_MS: "660000",
       AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: "20",
       AIQSA_MEMORY_DELETION_PARALLELISM: "2",
       AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: "10",
@@ -27,6 +28,7 @@ describe("Memory coordinator policy", () => {
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "2"
     })).toMatchObject({
       intervalMs: 30_000,
+      leaseMs: 660_000,
       maxDeletionClaimsPerWorkerPass: 20,
       maxDeletionParallel: 2,
       maxJobClaimsPerWorkerPass: 10,
@@ -40,6 +42,7 @@ describe("Memory coordinator policy", () => {
     { AIQSA_MEMORY_JOB_PARALLELISM: "1.5" },
     { AIQSA_MEMORY_JOB_PARALLELISM: " 2" },
     { AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "999" },
+    { AIQSA_MEMORY_COORDINATOR_LEASE_MS: "900001" },
     {
       AIQSA_MEMORY_JOB_PARALLELISM: "2",
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "3"

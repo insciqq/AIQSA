@@ -8,14 +8,28 @@ import {
   memoryFactDependenciesAreValid,
   persistMemoryFactDependencies
 } from "../dependencies/repository";
+import { loadMemoryFactContextRefs } from "../dependencies/context";
 import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   type MemoryExtractedCandidate,
   type MemoryFactCandidateDependency,
   type MemoryFactCandidateEntity
 } from "../extraction/contract";
-import { pruneUnreferencedMemoryEntities, removeUnsupportedMemoryEntityLinks } from "./lifecycle";
-import { mergeMemoryEntities, persistMemoryCandidateEntities } from "./repository";
+import {
+  loadAdmissibleMemoryEntityAliases
+} from "./authority";
+import {
+  pruneUnreferencedMemoryEntities,
+  removeUnsupportedMemoryEntityLinks,
+  retractUnsupportedAutomaticMemoryEntities
+} from "./lifecycle";
+import { memoryEntityAliasSupportFingerprint } from "./normalization";
+import {
+  materializeMemoryCandidateEntityIdentity,
+  mergeMemoryEntities,
+  persistMemoryCandidateEntities
+} from "./repository";
 
 const observedAt = new Date("2026-08-24T10:00:00.000Z");
 
@@ -27,6 +41,13 @@ type FactFixture = Readonly<{
   evidenceId: string;
   factId: string;
   versionId: string;
+}>;
+
+type AutomaticSupportFixture = Readonly<{
+  branchGeneration: number;
+  chatId: string;
+  evidenceId: string;
+  messageId: string;
 }>;
 
 async function createOwner(label: string): Promise<string> {
@@ -182,12 +203,161 @@ async function createExplicitFact(
   return { evidenceId, factId, versionId };
 }
 
+async function createAutomaticSourceSupport(
+  userId: string,
+  factVersionId: string,
+  sourceText: string,
+  offset: number
+): Promise<AutomaticSupportFixture> {
+  const sourceAt = new Date(observedAt.getTime() + offset);
+  const chat = await prisma.chat.create({
+    data: { title: `Automatic entity source ${offset}`, userId }
+  });
+  const message = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: textMessageContent(sourceText),
+      createdAt: sourceAt,
+      role: "user",
+      status: "complete",
+      updatedAt: sourceAt
+    }
+  });
+  const branchGeneration = 0;
+  await prisma.chat.update({
+    data: { activeLeafMessageId: message.id },
+    where: { id: chat.id }
+  });
+  const sourceHash = memorySha256(sourceText);
+  const evidence = await prisma.memoryEvidence.create({
+    data: {
+      branchGeneration,
+      chatId: chat.id,
+      evidenceFingerprint: memorySha256({
+        endOffset: sourceText.length,
+        messageId: message.id,
+        sourceHash,
+        startOffset: 0,
+        version: 1
+      }),
+      factVersionId,
+      messageId: message.id,
+      observedAt: sourceAt,
+      safeExcerpt: sourceText,
+      safeSourceHash: sourceHash,
+      safetyClass: "NORMAL",
+      sourceEndOffset: sourceText.length,
+      sourceMessageContentHash: sourceHash,
+      sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+      sourceRole: "user",
+      sourceStartOffset: 0,
+      sourceType: "MESSAGE",
+      stance: "SUPPORTS",
+      userId
+    }
+  });
+  return {
+    branchGeneration,
+    chatId: chat.id,
+    evidenceId: evidence.id,
+    messageId: message.id
+  };
+}
+
+async function createAutomaticFactWithSupports(
+  userId: string,
+  sourceTexts: readonly string[],
+  pipelineVersion = MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
+): Promise<FactFixture & Readonly<{ sources: readonly AutomaticSupportFixture[] }>> {
+  const bindingId = await classificationBinding(userId);
+  const scope = await prisma.memoryScope.findFirst({
+    where: { scopeType: "GLOBAL_USER", state: "ACTIVE", userId }
+  }) ?? await prisma.memoryScope.create({
+    data: { scopeType: "GLOBAL_USER", userId }
+  });
+  const event = await prisma.memoryEvent.create({
+    data: { actorType: "JOB", operation: "PROMOTE", userId }
+  });
+  const factId = randomUUID();
+  const versionId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryFact.create({
+      data: {
+        canonicalKey: `proposition:v1:${memorySha256({ sourceTexts })}`,
+        category: "about_you",
+        currentVersionId: versionId,
+        id: factId,
+        scopeId: scope.id,
+        state: "ACTIVE",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.create({
+      data: {
+        category: "about_you",
+        confidence: 1,
+        createdByEventId: event.id,
+        directness: "DIRECT",
+        displayText: sourceTexts[0]!,
+        factId,
+        id: versionId,
+        importance: 0.8,
+        languageCode: "und",
+        modality: "EVENT",
+        normalizedSearchText: normalizeMemorySearchText(sourceTexts[0]!),
+        observedAt,
+        pipelineVersion,
+        safetyClassificationReasonCode: "direct_fixture",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifiedAt: observedAt,
+        safetyClassifierExecutionId: bindingId,
+        safetyClassifierModelId: "memory-entity-fixture",
+        safetyClassifierPolicyVersion: "memory-entity-test-v1",
+        safetyClassifierProviderId: "memory-entity-fixture",
+        sensitivityClass: "NORMAL",
+        sourceMode: "AUTOMATIC",
+        state: "ACTIVE",
+        structuredValue: { statement: sourceTexts[0]! },
+        userId
+      }
+    });
+  });
+  const sources = [];
+  for (const [index, sourceText] of sourceTexts.entries()) {
+    sources.push(await createAutomaticSourceSupport(
+      userId,
+      versionId,
+      sourceText,
+      index * 1_000
+    ));
+  }
+  if (pipelineVersion === MEMORY_FACT_EXTRACTION_PIPELINE_VERSION) {
+    await prisma.memoryFactVersion.update({
+      data: {
+        ingestionFingerprint: memorySha256({
+          domain: "memory-entity-authority-test",
+          sourceTexts,
+          versionId
+        })
+      },
+      where: { id: versionId }
+    });
+  }
+  return {
+    evidenceId: sources[0]!.evidenceId,
+    factId,
+    sources,
+    versionId
+  };
+}
+
 function entityCandidate(input: Readonly<{
   aliases?: readonly string[];
   canonicalLabel?: string;
   contextEntityId?: string | null;
   entityType?: string;
   mention: string;
+  mentionKind?: MemoryFactCandidateEntity["mentionKind"];
   model?: string;
 }>): MemoryFactCandidateEntity {
   return {
@@ -197,6 +367,7 @@ function entityCandidate(input: Readonly<{
     contextRef: input.contextEntityId ? "F1" : null,
     entityType: input.entityType ?? "DEVICE",
     mention: input.mention,
+    mentionKind: input.mentionKind ?? "NAMED",
     qualifiers: {
       brand: "Apple",
       model: input.model ?? "MacBook Air"
@@ -207,6 +378,7 @@ function entityCandidate(input: Readonly<{
 
 function candidate(quote: string, entity: MemoryFactCandidateEntity): MemoryExtractedCandidate {
   return {
+    candidateRef: "entity-test",
     canonicalKey: `proposition:v1:${memorySha256(quote)}`,
     category: "about_you",
     confidence: 1,
@@ -219,6 +391,7 @@ function candidate(quote: string, entity: MemoryFactCandidateEntity): MemoryExtr
     entities: [entity],
     evidence: [],
     expectedAt: null,
+    expirationIntent: "NONE",
     expiresAt: null,
     id: memorySha256({ quote }),
     identityKind: "PROPOSITION",
@@ -234,13 +407,100 @@ function candidate(quote: string, entity: MemoryFactCandidateEntity): MemoryExtr
     rawTemporalExpression: null,
     reasonCode: null,
     scope: { targetId: null, type: "GLOBAL_USER" },
+    semanticFrame: {
+      assertionStatus: "ASSERTED",
+      changeIntent: "NONE",
+      memoryDirective: "NONE",
+      polarity: "AFFIRMED",
+      speechAct: "ASSERTION",
+      subjectScope: "CURRENT_USER",
+      temporalPerspective: "CURRENT"
+    },
     sensitivity: "NORMAL",
     state: "PENDING",
     subjectKey: null,
+    temporalNormalization: { kind: "NONE" },
     temporalResolutionEvidence: null,
     validFrom: null,
     validTo: null
   };
+}
+
+function productCandidate(
+  quote: string,
+  entity: MemoryFactCandidateEntity
+): MemoryExtractedCandidate {
+  return {
+    ...candidate(quote, entity),
+    canonicalKey: "slot:v2:device:fixture:product_status:_",
+    dimensionKey: null,
+    identityKind: "SLOT",
+    identityVersion: "slot-v2",
+    predicateKey: "product_status",
+    proposedValue: { schema: "product-status-v1", state: "owned" },
+    subjectKey: "device:fixture"
+  };
+}
+
+async function createSupportedAliasRoot(input: Readonly<{
+  alias: string;
+  canonicalKey: string;
+  displayName: string;
+  entityType: "DEVICE" | "PRODUCT";
+  fact: FactFixture;
+  userId: string;
+}>): Promise<string> {
+  const entityId = randomUUID();
+  const aliasId = randomUUID();
+  const supportFingerprint = memoryEntityAliasSupportFingerprint({
+    aliasId,
+    factVersionId: input.fact.versionId,
+    userId: input.userId
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryEntity.create({
+      data: {
+        canonicalKey: input.canonicalKey,
+        displayName: input.displayName,
+        entityType: input.entityType,
+        id: entityId,
+        languageCode: "und",
+        userId: input.userId
+      }
+    });
+    await tx.memoryEntityAlias.create({
+      data: {
+        confidence: 1,
+        displayAlias: input.alias,
+        entityId,
+        id: aliasId,
+        languageCode: "und",
+        normalizedAlias: normalizeMemorySearchText(input.alias),
+        sourceKind: "EXPLICIT_FACT",
+        userId: input.userId
+      }
+    });
+    await tx.memoryEntityAliasSupport.create({
+      data: {
+        aliasId,
+        factVersionId: input.fact.versionId,
+        id: randomUUID(),
+        supportFingerprint,
+        supportKind: "FACT_VERSION",
+        userId: input.userId
+      }
+    });
+    await tx.memoryFactVersionEntity.create({
+      data: {
+        confidence: 1,
+        entityId,
+        factVersionId: input.fact.versionId,
+        role: "SUBJECT",
+        userId: input.userId
+      }
+    });
+  });
+  return entityId;
 }
 
 async function attach(
@@ -294,7 +554,7 @@ function messageDependency(input: Readonly<{
 }
 
 describe("Prisma Memory entity provenance", () => {
-  it("reuses a supported cross-language context entity and never stores a pronoun alias", async () => {
+  it("[E03] reuses one cross-language entity, excludes pronouns, and proves lookup plans", async () => {
     const userId = await createOwner("cross-language");
     try {
       const bought = await createExplicitFact(userId, "I bought a MacBook Air.");
@@ -307,12 +567,14 @@ describe("Prisma Memory entity provenance", () => {
       await attach(userId, ordered, "Я заказал макбук.", entityCandidate({
         aliases: ["макбук"],
         contextEntityId: root.id,
-        mention: "макбук"
+        mention: "макбук",
+        mentionKind: "NOMINAL"
       }));
       const received = await createExplicitFact(userId, "I got it yesterday.");
       await attach(userId, received, "I got it yesterday.", entityCandidate({
         contextEntityId: root.id,
-        mention: "it"
+        mention: "it",
+        mentionKind: "PRONOMINAL"
       }));
 
       await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(1);
@@ -331,6 +593,7 @@ describe("Prisma Memory entity provenance", () => {
 
       const planEvidence = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw(Prisma.sql`SET LOCAL enable_seqscan = off`);
+        await tx.$executeRaw(Prisma.sql`SET LOCAL enable_sort = off`);
         const aliasPlan = await tx.$queryRaw<Array<{ "QUERY PLAN": unknown }>>(Prisma.sql`
           EXPLAIN (FORMAT JSON)
           SELECT alias."entityId"
@@ -346,6 +609,15 @@ describe("Prisma Memory entity provenance", () => {
             AND link."entityId" = ${root.id}
             AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
         `);
+        const supportPlan = await tx.$queryRaw<Array<{ "QUERY PLAN": unknown }>>(Prisma.sql`
+          EXPLAIN (FORMAT JSON)
+          SELECT support."id"
+          FROM "MemoryEntityAliasSupport" AS support
+          WHERE support."userId" = ${userId}
+            AND support."aliasId" >= ${aliases[1]!.id}
+          ORDER BY support."userId", support."aliasId"
+          LIMIT 8
+        `);
         const linkIndexes = await tx.$queryRaw<Array<{ indexname: string }>>(Prisma.sql`
           SELECT indexname
           FROM pg_indexes
@@ -356,7 +628,8 @@ describe("Prisma Memory entity provenance", () => {
         return {
           aliasPlan: JSON.stringify(aliasPlan),
           linkIndexes: linkIndexes.map(({ indexname }) => indexname),
-          linkPlan: JSON.stringify(linkPlan)
+          linkPlan: JSON.stringify(linkPlan),
+          supportPlan: JSON.stringify(supportPlan)
         };
       });
       expect(planEvidence.aliasPlan)
@@ -373,6 +646,8 @@ describe("Prisma Memory entity provenance", () => {
       expect(planEvidence.linkPlan).not.toContain('"Node Type":"Seq Scan"');
       expect(planEvidence.linkPlan).toContain(userId);
       expect(planEvidence.linkPlan).toContain(root.id);
+      expect(planEvidence.supportPlan)
+        .toContain("MemoryEntityAliasSupport_userId_aliasId_idx");
     } finally {
       await cleanupOwner(userId);
     }
@@ -425,7 +700,7 @@ describe("Prisma Memory entity provenance", () => {
       await expect(prisma.memoryEntity.update({
         data: { mergedIntoId: null, state: "ACTIVE" },
         where: { id: redundant.id }
-      })).rejects.toThrow(/merge is immutable/u);
+      })).rejects.toThrow(/entity state is immutable/u);
       await expect(prisma.memoryEntity.create({
         data: {
           canonicalKey: "entity:v2:device:merge-chain-probe",
@@ -438,6 +713,346 @@ describe("Prisma Memory entity provenance", () => {
         }
       })).rejects.toThrow(/merge target is cyclic or unavailable/u);
     } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("does not merge broad and specific products from lexical similarity alone", async () => {
+    const userId = await createOwner("no-lexical-merge");
+    try {
+      const broadFact = await createExplicitFact(userId, "I use a MacBook.");
+      await attach(userId, broadFact, "I use a MacBook.", entityCandidate({
+        canonicalLabel: "MacBook",
+        mention: "MacBook",
+        model: "MacBook"
+      }));
+      const specificFact = await createExplicitFact(
+        userId,
+        "I use a MacBook Air M4."
+      );
+      await attach(
+        userId,
+        specificFact,
+        "I use a MacBook Air M4.",
+        entityCandidate({
+          canonicalLabel: "MacBook Air M4",
+          mention: "MacBook Air M4",
+          model: "MacBook Air M4"
+        })
+      );
+
+      await expect(prisma.memoryEntity.findMany({
+        orderBy: { displayName: "asc" },
+        select: { displayName: true, mergedIntoId: true, state: true },
+        where: { userId }
+      })).resolves.toEqual([
+        { displayName: "MacBook", mergedIntoId: null, state: "ACTIVE" },
+        { displayName: "MacBook Air M4", mergedIntoId: null, state: "ACTIVE" }
+      ]);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("[E03] converges a concurrent production merge for an adjudicated alias collision", async () => {
+    const userId = await createOwner("production-merge");
+    try {
+      const canonicalFact = await createExplicitFact(userId, "Portable root A.");
+      const redundantFact = await createExplicitFact(userId, "Portable root B.");
+      const canonicalId = await createSupportedAliasRoot({
+        alias: "portable",
+        canonicalKey: "entity:v3:product-device:portable-a",
+        displayName: "Portable A",
+        entityType: "DEVICE",
+        fact: canonicalFact,
+        userId
+      });
+      const redundantId = await createSupportedAliasRoot({
+        alias: "portable",
+        canonicalKey: "entity:v3:product-device:portable-b",
+        displayName: "Portable B",
+        entityType: "PRODUCT",
+        fact: redundantFact,
+        userId
+      });
+      const proposal = productCandidate(
+        "I own the portable.",
+        entityCandidate({
+          canonicalLabel: "Provider-controlled drift",
+          entityType: "PRODUCT",
+          mention: "portable",
+          model: "Provider-controlled drift"
+        })
+      );
+
+      const materialized = await Promise.all([
+        prisma.$transaction((tx) => materializeMemoryCandidateEntityIdentity(tx, {
+          adjudicatedEntityId: canonicalId,
+          candidate: proposal,
+          userId
+        })),
+        prisma.$transaction((tx) => materializeMemoryCandidateEntityIdentity(tx, {
+          adjudicatedEntityId: canonicalId,
+          candidate: proposal,
+          userId
+        }))
+      ]);
+      expect(materialized).toMatchObject([
+        {
+          canonicalKey: `slot:v3:entity:${canonicalId}:product_status:_`,
+          identityVersion: "slot-v3",
+          subjectEntityId: canonicalId
+        },
+        {
+          canonicalKey: `slot:v3:entity:${canonicalId}:product_status:_`,
+          identityVersion: "slot-v3",
+          subjectEntityId: canonicalId
+        }
+      ]);
+      await expect(prisma.memoryEntity.findUniqueOrThrow({
+        where: { id: canonicalId }
+      })).resolves.toMatchObject({ mergedIntoId: null, state: "ACTIVE" });
+      await expect(prisma.memoryEntity.findUniqueOrThrow({
+        where: { id: redundantId }
+      })).resolves.toMatchObject({
+        mergedIntoId: canonicalId,
+        state: "MERGED"
+      });
+      await expect(prisma.$queryRaw<Array<{ id: string | null }>>(Prisma.sql`
+        SELECT aiqsa_memory_entity_root_id(${userId}, ${redundantId}) AS id
+      `)).resolves.toEqual([{ id: canonicalId }]);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("[E05] keeps one support and fences alias retrieval at the final invalidation", async () => {
+    const userId = await createOwner("support-fence");
+    try {
+      const fact = await createAutomaticFactWithSupports(userId, [
+        "I bought a MacBook Air.",
+        "J'ai acheté un MacBook Air."
+      ]);
+      const legacy = await createAutomaticFactWithSupports(
+        userId,
+        ["I previously considered a LegacyBook."],
+        "memory-fact-extraction-vnext-v3"
+      );
+      await prisma.$transaction((tx) => persistMemoryCandidateEntities(tx, {
+        candidate: candidate(
+          "The user previously considered a LegacyBook.",
+          entityCandidate({ mention: "LegacyBook" })
+        ),
+        evidenceId: legacy.evidenceId,
+        factVersionId: legacy.versionId,
+        userId
+      }));
+      const legacyEntity = await prisma.memoryEntity.findFirstOrThrow({
+        where: { displayName: "LegacyBook", userId }
+      });
+      await expect(prisma.$transaction((tx) =>
+        loadAdmissibleMemoryEntityAliases(tx, userId, [legacyEntity.id])
+      )).resolves.toEqual([]);
+      const direct = entityCandidate({ mention: "MacBook Air" });
+      for (const source of fact.sources) {
+        await prisma.$transaction((tx) => persistMemoryCandidateEntities(tx, {
+          candidate: candidate("The user owns a MacBook Air.", direct),
+          evidenceId: source.evidenceId,
+          factVersionId: fact.versionId,
+          userId
+        }));
+      }
+      const alias = await prisma.memoryEntityAlias.findFirstOrThrow({
+        where: { normalizedAlias: "macbook air", userId }
+      });
+      const entity = await prisma.memoryEntity.findUniqueOrThrow({
+        where: { id: alias.entityId }
+      });
+      const admissible = () => prisma.$transaction((tx) =>
+        loadAdmissibleMemoryEntityAliases(tx, userId, [entity.id]));
+      const context = () => prisma.$transaction((tx) =>
+        loadMemoryFactContextRefs(tx, {
+          activePathMessageIds: [],
+          sourceMessageId: "no-prior-message",
+          userId
+        }));
+      await expect(admissible()).resolves.toMatchObject([{ id: alias.id }]);
+      await expect(context()).resolves.toEqual([
+        expect.objectContaining({
+          aliases: ["MacBook Air"],
+          entityId: entity.id,
+          source: expect.objectContaining({ factVersionId: fact.versionId })
+        })
+      ]);
+      expect((await context()).map(({ source }) => source.factVersionId))
+        .not.toContain(legacy.versionId);
+
+      const suppress = (source: AutomaticSupportFixture) =>
+        prisma.memorySuppression.create({
+          data: {
+            deletionGeneration: 0,
+            fingerprintKeyVersion: "memory-entity-test-v1",
+            normalizationVersion: "memory-search-normalization-v1",
+            scope: "SOURCE_MESSAGE",
+            sourceBranchGeneration: source.branchGeneration,
+            sourceChatId: source.chatId,
+            sourceMessageId: source.messageId,
+            userId
+          }
+        });
+      await suppress(fact.sources[0]!);
+      await expect(admissible()).resolves.toMatchObject([{ id: alias.id }]);
+      await expect(context()).resolves.toEqual([
+        expect.objectContaining({ entityId: entity.id })
+      ]);
+      await expect(prisma.$transaction((tx) =>
+        retractUnsupportedAutomaticMemoryEntities(tx, userId, [entity.id])
+      )).resolves.toBe(0);
+
+      const linkedFact = await createExplicitFact(
+        userId,
+        "The covered device has an extended warranty."
+      );
+      await prisma.memoryFactVersionEntity.create({
+        data: {
+          confidence: 1,
+          entityId: entity.id,
+          factVersionId: linkedFact.versionId,
+          role: "SUBJECT",
+          userId
+        }
+      });
+      expect(await context()).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          aliases: ["MacBook Air"],
+          entityId: entity.id,
+          source: expect.objectContaining({ factVersionId: linkedFact.versionId })
+        })
+      ]));
+
+      let markSuppressionWritten!: () => void;
+      const suppressionWritten = new Promise<void>((resolve) => {
+        markSuppressionWritten = resolve;
+      });
+      let releaseSuppression!: () => void;
+      const suppressionMayCommit = new Promise<void>((resolve) => {
+        releaseSuppression = resolve;
+      });
+      const finalSuppression = prisma.$transaction(async (tx) => {
+        const source = fact.sources[1]!;
+        await tx.memorySuppression.create({
+          data: {
+            deletionGeneration: 0,
+            fingerprintKeyVersion: "memory-entity-test-v1",
+            normalizationVersion: "memory-search-normalization-v1",
+            scope: "SOURCE_MESSAGE",
+            sourceBranchGeneration: source.branchGeneration,
+            sourceChatId: source.chatId,
+            sourceMessageId: source.messageId,
+            userId
+          }
+        });
+        markSuppressionWritten();
+        await suppressionMayCommit;
+      });
+      await suppressionWritten;
+      let aliasesDuringOverlap: Awaited<ReturnType<typeof admissible>> = [];
+      try {
+        aliasesDuringOverlap = await admissible();
+      } finally {
+        releaseSuppression();
+      }
+      await finalSuppression;
+      expect(aliasesDuringOverlap).toMatchObject([{ id: alias.id }]);
+      await expect(admissible()).resolves.toEqual([]);
+      const contextAfterFence = await context();
+      expect(contextAfterFence).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          aliases: [],
+          entityId: null,
+          source: expect.objectContaining({ factVersionId: linkedFact.versionId })
+        })
+      ]));
+      expect(contextAfterFence.some(({ entityId }) => entityId === entity.id))
+        .toBe(false);
+      await expect(prisma.memoryEntityAlias.findUnique({ where: { id: alias.id } }))
+        .resolves.not.toBeNull();
+      await expect(prisma.$transaction((tx) =>
+        retractUnsupportedAutomaticMemoryEntities(tx, userId, [entity.id])
+      )).resolves.toBe(1);
+      await expect(prisma.memoryEntity.findUniqueOrThrow({
+        where: { id: entity.id }
+      })).resolves.toMatchObject({ state: "RETRACTED" });
+      await expect(prisma.$transaction((tx) =>
+        materializeMemoryCandidateEntityIdentity(tx, {
+          adjudicatedEntityId: null,
+          candidate: productCandidate(
+            "I still own it.",
+            entityCandidate({
+              contextEntityId: entity.id,
+              mention: "it",
+              mentionKind: "PRONOMINAL"
+            })
+          ),
+          userId
+        })
+      )).rejects.toThrow(/memory_fact_candidate_invalid/u);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("enforces owner-consistent entity-backed product identity in PostgreSQL", async () => {
+    const userId = await createOwner("subject-owner");
+    const foreignUserId = await createOwner("subject-owner-foreign");
+    try {
+      const foreignFact = await createExplicitFact(
+        foreignUserId,
+        "Foreign product root."
+      );
+      const foreignEntityId = await createSupportedAliasRoot({
+        alias: "foreignbook",
+        canonicalKey: "entity:v3:product-device:foreignbook",
+        displayName: "ForeignBook",
+        entityType: "DEVICE",
+        fact: foreignFact,
+        userId: foreignUserId
+      });
+      const scope = await prisma.memoryScope.create({
+        data: { scopeType: "GLOBAL_USER", userId }
+      });
+      await expect(prisma.memoryFact.create({
+        data: {
+          canonicalKey: `slot:v3:entity:${foreignEntityId}:product_status:_`,
+          category: "about_you",
+          dimensionKey: null,
+          identityKind: "SLOT",
+          identityVersion: "slot-v3",
+          predicateKey: "product_status",
+          scopeId: scope.id,
+          state: "ORPHANED",
+          subjectEntityId: foreignEntityId,
+          subjectKey: `entity:${foreignEntityId}`,
+          userId
+        }
+      })).rejects.toThrow();
+      await expect(prisma.memoryFact.create({
+        data: {
+          canonicalKey: "slot:v3:entity:missing:product_status:_",
+          category: "about_you",
+          dimensionKey: null,
+          identityKind: "SLOT",
+          identityVersion: "slot-v3",
+          predicateKey: "product_status",
+          scopeId: scope.id,
+          state: "ORPHANED",
+          subjectEntityId: null,
+          subjectKey: "entity:missing",
+          userId
+        }
+      })).rejects.toThrow();
+    } finally {
+      await cleanupOwner(foreignUserId);
       await cleanupOwner(userId);
     }
   });

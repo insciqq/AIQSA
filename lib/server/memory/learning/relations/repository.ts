@@ -8,7 +8,7 @@ import type {
 } from "../../coordinator/types";
 import {
   loadPersonalMemoryEvidenceSnapshots,
-  memoryPersonalFactEvidencePredicate
+  memoryExactVNextDirectAuthorityPredicate
 } from "../../persistence/eligibility";
 import { memorySha256 } from "../../persistence/lexical";
 import {
@@ -30,6 +30,10 @@ import {
   decodeMemoryRelationProviderDecision,
   type MemoryRelationProviderResult
 } from "./resolver";
+import {
+  decodeStoredMemorySemanticFrame,
+  decodeStoredResolvedMemorySemanticAdjudication
+} from "../extraction/adjudication";
 
 type RelationReader = PrismaClient | Prisma.TransactionClient;
 
@@ -37,7 +41,6 @@ type RelationVersionRow = Readonly<{
   canonicalKey: string;
   dimensionKey: string | null;
   directness: "DIRECT" | "INFERRED" | "PARAPHRASED";
-  displayText: string;
   expectedAt: Date | null;
   expiresAt: Date | null;
   factId: string;
@@ -46,6 +49,8 @@ type RelationVersionRow = Readonly<{
   observedAt: Date | null;
   occurredAt: Date | null;
   predicateKey: string | null;
+  semanticAdjudication: Prisma.JsonValue | null;
+  semanticFrame: Prisma.JsonValue | null;
   sourceMode: "AUTOMATIC" | "EXPLICIT";
   state: "ACTIVE" | "PENDING_RELATION";
   structuredValue: Prisma.JsonValue;
@@ -204,7 +209,6 @@ function snapshotVersion(
     canonicalKey: row.canonicalKey,
     dimensionKey: row.dimensionKey,
     directness: row.directness,
-    displayText: row.displayText,
     entities: Object.freeze(entities
       .filter(({ factVersionId }) => factVersionId === row.versionId)
       .map(({ canonicalKey, entityType, role }) =>
@@ -217,6 +221,10 @@ function snapshotVersion(
     observedAt: iso(row.observedAt),
     occurredAt: iso(row.occurredAt),
     predicateKey: row.predicateKey,
+    semanticAdjudication: decodeStoredResolvedMemorySemanticAdjudication(
+      row.semanticAdjudication
+    ),
+    semanticFrame: decodeStoredMemorySemanticFrame(row.semanticFrame),
     ref,
     sourceMode: row.sourceMode,
     state: row.state,
@@ -231,12 +239,13 @@ function snapshotVersion(
 }
 
 const versionSelect = Prisma.sql`
-  version."id" AS "versionId", version."factId", version."displayText",
+  version."id" AS "versionId", version."factId",
   version."structuredValue", version."sourceMode"::text AS "sourceMode",
   version."state"::text AS "state", version."directness"::text AS "directness",
   version."observedAt",
   version."occurredAt", version."expectedAt", version."expiresAt",
   version."validFrom", version."validTo", version."systemFrom",
+  version."semanticFrame", version."semanticAdjudication",
   version."supersedesVersionId", version."mergedIntoVersionId", fact."canonicalKey",
   fact."identityKind"::text AS "identityKind", fact."subjectKey",
   fact."predicateKey", fact."dimensionKey"
@@ -270,7 +279,7 @@ async function loadPreparedRelation(
       AND version."structuredValue" IS NOT NULL
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
       AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-      AND ${memoryPersonalFactEvidencePredicate(job.userId)}
+      AND ${memoryExactVNextDirectAuthorityPredicate(job.userId)}
   `);
   const pendingFact = pendingFacts[0];
   if (!pendingFact) {
@@ -350,7 +359,14 @@ async function loadPreparedRelation(
             FROM "MemoryFactVersionEntity" AS pending_entity
             INNER JOIN "MemoryFactVersionEntity" AS active_entity
               ON active_entity."userId" = pending_entity."userId"
-              AND active_entity."entityId" = pending_entity."entityId"
+              AND aiqsa_memory_entity_root_id(
+                active_entity."userId", active_entity."entityId"
+              ) = aiqsa_memory_entity_root_id(
+                pending_entity."userId", pending_entity."entityId"
+              )
+              AND aiqsa_memory_entity_root_id(
+                pending_entity."userId", pending_entity."entityId"
+              ) IS NOT NULL
               AND active_entity."role" = 'SUBJECT'::"MemoryEntityLinkRole"
             WHERE pending_entity."userId" = pending_version."userId"
               AND pending_entity."factVersionId" = pending_version."id"
@@ -358,7 +374,7 @@ async function loadPreparedRelation(
               AND active_entity."factVersionId" = version."id"
           )
         )
-        AND ${memoryPersonalFactEvidencePredicate(job.userId)}
+        AND ${memoryExactVNextDirectAuthorityPredicate(job.userId)}
       ORDER BY
         CASE WHEN active_fact."subjectKey" IS NOT DISTINCT FROM pending_fact."subjectKey"
           THEN 0 ELSE 1 END,
@@ -400,7 +416,7 @@ async function loadPreparedRelation(
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-      AND ${memoryPersonalFactEvidencePredicate(job.userId)}
+      AND ${memoryExactVNextDirectAuthorityPredicate(job.userId)}
   `);
   const pending = pendingRows[0];
   const current = currentRows[0];
@@ -420,24 +436,14 @@ async function loadPreparedRelation(
   const evidenceRows = await loadPersonalMemoryEvidenceSnapshots(
     db,
     job.userId,
-    [targetId]
+    [targetId],
+    { exactVNext: true }
   );
   const sourceEvidence = evidenceRows.find(({ messageId }) =>
     messageId === job.sourceMessageId);
   if (!sourceEvidence) {
     return { reason: "relation_source_missing", status: "TERMINAL" };
   }
-  const source = await db.memoryEvidence.findFirst({
-    select: { safeExcerpt: true },
-    where: {
-      id: sourceEvidence.id,
-      userId: job.userId
-    }
-  });
-  if (!source || source.safeExcerpt.length > 2_000) {
-    return { reason: "relation_source_missing", status: "TERMINAL" };
-  }
-
   const relatedRows = await db.$queryRaw<RelationVersionRow[]>(Prisma.sql`
     SELECT ${versionSelect}
     FROM "MemoryFactVersion" AS version
@@ -477,7 +483,14 @@ async function loadPreparedRelation(
           FROM "MemoryFactVersionEntity" AS candidate_entity
           INNER JOIN "MemoryFactVersionEntity" AS pending_entity
             ON pending_entity."userId" = candidate_entity."userId"
-            AND pending_entity."entityId" = candidate_entity."entityId"
+            AND aiqsa_memory_entity_root_id(
+              pending_entity."userId", pending_entity."entityId"
+            ) = aiqsa_memory_entity_root_id(
+              candidate_entity."userId", candidate_entity."entityId"
+            )
+            AND aiqsa_memory_entity_root_id(
+              candidate_entity."userId", candidate_entity."entityId"
+            ) IS NOT NULL
           WHERE candidate_entity."userId" = version."userId"
             AND candidate_entity."factVersionId" = version."id"
             AND pending_entity."factVersionId" = ${pending.versionId}
@@ -492,7 +505,7 @@ async function loadPreparedRelation(
             pending_version."normalizedSearchText", ''
           ))
       )
-      AND ${memoryPersonalFactEvidencePredicate(job.userId)}
+      AND ${memoryExactVNextDirectAuthorityPredicate(job.userId)}
     ORDER BY
       CASE WHEN version."id" = ${current.versionId} THEN 0 ELSE 1 END,
       CASE WHEN version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
@@ -511,8 +524,10 @@ async function loadPreparedRelation(
       entity."canonicalKey", entity."entityType"
     FROM "MemoryFactVersionEntity" AS link
     INNER JOIN "MemoryEntity" AS entity
-      ON entity."userId" = link."userId" AND entity."id" = link."entityId"
-      AND entity."state" = 'ACTIVE'::"MemoryEntityState"
+      ON entity."userId" = link."userId"
+      AND entity."id" = aiqsa_memory_entity_root_id(
+        link."userId", link."entityId"
+      )
     WHERE link."userId" = ${job.userId}
       AND link."factVersionId" IN (${Prisma.join(versionIds)})
     ORDER BY link."factVersionId", link."role", entity."canonicalKey"
@@ -596,8 +611,7 @@ async function loadPreparedRelation(
       sourceHash: job.sourceHash,
       sourceMessageId: job.sourceMessageId!,
       sourceRevision: job.sourceRevision
-    }),
-    sourceText: source.safeExcerpt
+    })
   });
   return {
     prepared: Object.freeze({ snapshot, snapshotHash: relationSnapshotHash(snapshot) }),

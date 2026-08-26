@@ -25,7 +25,8 @@ import {
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
-  type MemoryFactExtractionInput
+  type MemoryFactExtractionInput,
+  type MemoryFactExtractionPlan
 } from "../extraction/contract";
 import { decodeMemoryFactExtractionV1 } from "../extraction/decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "../extraction/prompt";
@@ -212,7 +213,42 @@ async function claimJob(jobId: string): Promise<MemoryJobClaim> {
   };
 }
 
+async function loadExecutionAuthority(): Promise<Readonly<{
+  connectionId: string;
+  credentialId: string;
+  credentialVersionId: string;
+  providerModelId: string;
+}>> {
+  const [authority] = await prisma.$queryRaw<Array<{
+    connectionId: string;
+    credentialId: string;
+    credentialVersionId: string;
+    providerModelId: string;
+  }>>(Prisma.sql`
+    SELECT model."id" AS "providerModelId",
+      connection."id" AS "connectionId",
+      credential."id" AS "credentialId",
+      credential."activeVersionId" AS "credentialVersionId"
+    FROM "ProviderModel" AS model
+    INNER JOIN "ProviderConnection" AS connection
+      ON connection."id" = model."connectionId"
+    INNER JOIN "ProviderCredential" AS credential
+      ON credential."connectionId" = connection."id"
+      AND credential."id" = connection."defaultCredentialId"
+    WHERE credential."activeVersionId" IS NOT NULL
+    ORDER BY model."id"
+    LIMIT 1
+  `);
+  if (!authority) throw new Error("memory_test_execution_authority_missing");
+  return authority;
+}
+
 async function createSucceededBinding(input: Readonly<{
+  extractionStage?: Readonly<{
+    input: MemoryFactExtractionInput;
+    keepPending?: boolean;
+    plan: MemoryFactExtractionPlan;
+  }>;
   inputHash: string;
   jobId: string;
   outputHash: string;
@@ -226,40 +262,114 @@ async function createSucceededBinding(input: Readonly<{
   const id = `memory-decision-binding-${randomUUID()}`;
   const completedAt = new Date();
   const createdAt = new Date(completedAt.getTime() - 1_000);
-  await prisma.memoryExecutionBinding.create({
-    data: {
-      acceptedOutputHash: input.outputHash,
-      completedAt,
-      createdAt,
-      destinationFingerprint: "d".repeat(64),
-      id,
-      inputHash: input.inputHash,
-      logicalRole: input.role,
-      memoryJobId: input.jobId,
-      ordinal: 0,
-      ownerType: "JOB",
-      pipelineVersion: input.pipelineVersion,
-      policyVersion: input.policyVersion,
-      promptVersion: input.promptVersion,
-      providerId: "openai_compatible",
-      recoverableUntil: completedAt,
-      relationsDetachedAt: completedAt,
-      schemaVersion: input.schemaVersion,
-      secretFreeExecutionSnapshot: {},
-      startedAt: createdAt,
-      state: "SUCCEEDED",
-      usageCompleteness: "UNAVAILABLE",
-      userId: input.userId
+  const stagedExtraction = input.extractionStage;
+  const authority = stagedExtraction ? await loadExecutionAuthority() : null;
+  const recoverableUntil = stagedExtraction?.keepPending
+    ? new Date(completedAt.getTime() + 86_400_000)
+    : completedAt;
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: stagedExtraction ? null : input.outputHash,
+        completedAt: stagedExtraction ? null : completedAt,
+        connectionId: authority?.connectionId,
+        createdAt,
+        credentialId: authority?.credentialId,
+        credentialVersionId: authority?.credentialVersionId,
+        destinationFingerprint: "d".repeat(64),
+        id,
+        inputHash: input.inputHash,
+        logicalRole: input.role,
+        memoryJobId: input.jobId,
+        ordinal: 0,
+        ownerType: "JOB",
+        pipelineVersion: input.pipelineVersion,
+        policyVersion: input.policyVersion,
+        promptVersion: input.promptVersion,
+        providerId: "openai_compatible",
+        providerModelId: authority?.providerModelId,
+        recoverableUntil,
+        relationsDetachedAt: stagedExtraction ? null : completedAt,
+        schemaVersion: input.schemaVersion,
+        secretFreeExecutionSnapshot: {},
+        startedAt: createdAt,
+        state: stagedExtraction ? "RUNNING" : "SUCCEEDED",
+        usageCompleteness: "UNAVAILABLE",
+        userId: input.userId
+      }
+    });
+    if (stagedExtraction) {
+      const source = stagedExtraction.input.messages.find((message) =>
+        message.evidenceEligible &&
+        message.id === stagedExtraction.input.source.sourceMessageId);
+      if (!source) throw new Error("memory_extraction_stage_source_missing");
+      const executionId = memorySha256({
+        bindingId: id,
+        domain: "aiqsa.memory.fact-extraction-execution",
+        jobId: input.jobId,
+        userId: input.userId,
+        version: 1
+      });
+      await tx.memoryFactExtractionExecution.create({
+        data: {
+          acceptedOutput: {
+            candidateOrdinals: stagedExtraction.plan.candidateOrdinals,
+            candidates: stagedExtraction.plan.candidates,
+            rejections: stagedExtraction.plan.rejections
+          } as Prisma.InputJsonValue,
+          acceptedOutputHash: input.outputHash,
+          contextBindings: stagedExtraction.input.contextRefs.map((context) => ({
+            entityId: context.entityId,
+            kind: context.kind,
+            ref: context.ref,
+            source: context.source
+          })) as Prisma.InputJsonValue,
+          createdAt,
+          executionBindingId: id,
+          id: executionId,
+          inputHash: input.inputHash,
+          memoryJobId: input.jobId,
+          recoverableUntil,
+          sourceMessageContentHash: source.contentHash,
+          sourceMessageId: source.id,
+          userId: input.userId
+        }
+      });
+      await tx.memoryExecutionBinding.update({
+        data: {
+          acceptedOutputHash: input.outputHash,
+          completedAt,
+          ...(stagedExtraction.keepPending ? {} : {
+            connectionId: null,
+            credentialId: null,
+            credentialVersionId: null,
+            providerModelId: null,
+            relationsDetachedAt: completedAt
+          }),
+          state: "SUCCEEDED"
+        },
+        where: { id }
+      });
+      if (!stagedExtraction.keepPending) {
+        await tx.memoryFactExtractionExecution.update({
+          data: {
+            acceptedOutput: Prisma.DbNull,
+            appliedAt: completedAt,
+            contextBindings: Prisma.DbNull
+          },
+          where: { id: executionId }
+        });
+      }
     }
-  });
-  await prisma.usageEvent.create({
-    data: {
-      memoryExecutionBindingId: id,
-      modelId: "memory-decision-model-v1",
-      provider: "openai_compatible",
-      providerModelId: "memory-decision-model-v1",
-      userId: input.userId
-    }
+    await tx.usageEvent.create({
+      data: {
+        memoryExecutionBindingId: id,
+        modelId: "memory-decision-model-v1",
+        provider: "openai_compatible",
+        providerModelId: "memory-decision-model-v1",
+        userId: input.userId
+      }
+    });
   });
   return id;
 }
@@ -352,6 +462,7 @@ async function createCandidate(input: Readonly<{
     version: 1
   });
   const bindingId = await createSucceededBinding({
+    extractionStage: { input: extractionInput, plan },
     inputHash: extractionInput.inputHash,
     jobId: claim.id,
     outputHash: plan.outputHash,
@@ -838,6 +949,11 @@ describe("Prisma Memory fact consolidation", () => {
         name: MEMORY_FACT_EXTRACTION_TOOL_NAME
       }], bPrepared.input);
       const bBindingId = await createSucceededBinding({
+        extractionStage: {
+          input: bPrepared.input,
+          keepPending: true,
+          plan: bPlan
+        },
         inputHash: bPrepared.input.inputHash,
         jobId: bClaim.id,
         outputHash: bPlan.outputHash,
@@ -893,17 +1009,28 @@ describe("Prisma Memory fact consolidation", () => {
         },
         where: { id: bClaim.id }
       });
-      await expect(prisma.$transaction(async (tx) => {
-        const settings = await lockMemorySettings(tx, userId, true);
-        return extractionRepository().apply(
-          tx,
-          settings,
-          bClaim,
-          bPlan,
-          bBindingId,
-          new Date()
-        );
-      })).resolves.toBe("STALE");
+      const staleApplyAt = new Date();
+      let staleApplyResult: string | null = null;
+      await expect(coordinator.commitJobSuccess({
+        acceptedResultHash: bPlan.outputHash,
+        apply: async (tx, exactClaim) => {
+          const settings = await lockMemorySettings(tx, userId, true);
+          staleApplyResult = await extractionRepository().apply(
+            tx,
+            settings,
+            exactClaim,
+            bPlan,
+            bBindingId,
+            staleApplyAt
+          );
+        },
+        claim: bClaim,
+        now: staleApplyAt,
+        stage: "fact_extraction_stale"
+      })).resolves.toBe(true);
+      expect(staleApplyResult).toBe("STALE");
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: bClaim.id } }))
+        .resolves.toMatchObject({ state: "SUCCEEDED" });
       await expect(prisma.memoryCandidate.findUnique({
         where: { id: bPlan.candidates[0]!.id }
       })).resolves.toBeNull();

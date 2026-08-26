@@ -4,9 +4,14 @@ import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemoryCreateInput
 } from "../../../contracts/memory";
+import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { memoryExecutionSha256 } from "../execution/canonical";
-import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
+import {
+  createPrismaMemoryMutationAuthorizationRepository,
+  memoryMutationNonceHash,
+  memoryTargetAuthorizationPayloadHash
+} from "../persistence/authorizations";
 import {
   createPrismaMemoryFactRepository,
   type MemoryFactSaveInput
@@ -164,13 +169,14 @@ async function createStatementClassificationReceipt(
   execution: Readonly<{
     mutationAuthorizationId: string;
     userId: string;
-  }>
+  }>,
+  normalizedStatement: string = statement
 ): Promise<ManualStatementClassification> {
   const executionId = randomUUID();
   const inputHash = memoryStatementClassificationInputHash(statement);
   const decision = {
     category: "preferences" as const,
-    normalizedStatement: statement,
+    normalizedStatement,
     reasonCode: "response_preference" as const,
     responsePreference: true,
     sensitivity: "NORMAL" as const,
@@ -581,6 +587,106 @@ describe("Prisma explicit Memory API", () => {
         query: "Я ПРЕДПОЧИТАЮ ОТВЕТЫ О ЁЛКАХ НА РУССКОМ ЯЗЫКЕ.",
         state: "RETRACTED"
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("persists a hash-bound exact correction through classifier and database guards", async () => {
+    const userId = await createActiveUser("exact-correction-projection");
+    const initialService = service();
+    const exactStatement = "Use visual summaries for deployment reports.";
+    const normalizedStatement = "Prefer visual deployment summaries.";
+    try {
+      const created = await createMemory(
+        initialService,
+        userId,
+        "Use text-only summaries for deployment reports.",
+        "nonce-exact-correction-source"
+      );
+      const factId = created.response.memory.id;
+      const expectedVersionId = created.response.memory.currentVersionId!;
+      const exactStatementHash = memorySha256(exactStatement);
+      const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
+        action: "EDIT",
+        expectedTargetVersionId: expectedVersionId,
+        replacementStatementHash: exactStatementHash,
+        targetFactId: factId
+      });
+      const now = new Date();
+      const authorization = await createPrismaMemoryMutationAuthorizationRepository(prisma)
+        .mint(userId, {
+          action: "EDIT",
+          authorizedPayloadHash,
+          confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+          expectedTargetVersionId: expectedVersionId,
+          expiresAt: new Date(now.getTime() + 60_000),
+          nonceHash: memoryMutationNonceHash(
+            userId,
+            `exact-correction:${randomUUID()}`
+          ),
+          requestId: randomUUID(),
+          targetFactId: factId
+        }, now);
+      const chat = await prisma.chat.create({
+        data: { title: "Exact correction", userId }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Apply the confirmed exact correction."),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const run = await prisma.modelRun.create({
+        data: {
+          chatId: chat.id,
+          modelId: "exact-correction-test-model",
+          normalizedRequest: {},
+          provider: "exact-correction-test-provider",
+          status: "complete",
+          userId,
+          userMessageId: userMessage.id
+        }
+      });
+      const exactClassifier: MemoryStatementClassifier = {
+        async classify(statement, options) {
+          const execution = options?.execution;
+          if (!execution) throw new Error("exact_correction_execution_missing");
+          return createStatementClassificationReceipt(
+            statement,
+            execution,
+            normalizedStatement
+          );
+        }
+      };
+      const exactService = service(undefined, exactClassifier);
+
+      const corrected = await exactService.update(userId, factId, {
+        expectedVersionId,
+        mutationAuthorizationId: authorization.id,
+        statement: exactStatement
+      }, {
+        exactStatementHash,
+        modelRunId: run.id,
+        persistedToolCallId: null
+      });
+
+      expect(corrected.memory).toMatchObject({
+        displayText: exactStatement,
+        sourceMode: "EXPLICIT"
+      });
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: corrected.memory.currentVersionId! }
+      })).resolves.toMatchObject({
+        displayText: exactStatement,
+        safetyClassificationReasonCode: "response_preference",
+        safetyClassificationState: "CLASSIFIED"
+      });
+      await expect(prisma.memoryEvidence.findFirstOrThrow({
+        where: { factVersionId: corrected.memory.currentVersionId!, userId }
+      })).resolves.toMatchObject({ safeExcerpt: exactStatement });
     } finally {
       await cleanupUser(userId);
     }

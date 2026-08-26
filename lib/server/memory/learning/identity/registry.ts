@@ -7,6 +7,7 @@ import {
   normalizeMemoryProposition,
   normalizeMemorySemanticText
 } from "./normalization";
+import type { MemorySemanticFrame } from "../extraction/contract";
 
 export const MEMORY_SLOT_PREDICATES = Object.freeze([
   "product_status",
@@ -17,6 +18,10 @@ export const MEMORY_SLOT_PREDICATES = Object.freeze([
   "preference",
   "constraint",
   "routine"
+] as const);
+
+export const MEMORY_PREFERENCE_DIMENSION_PREFIXES = Object.freeze([
+  "category", "format", "interaction", "topic"
 ] as const);
 
 export type MemorySlotPredicate = (typeof MEMORY_SLOT_PREDICATES)[number];
@@ -106,13 +111,6 @@ function text(value: string | null, maxLength = 512): string | null {
   return value === null ? null : normalizeMemorySemanticText(value, maxLength);
 }
 
-function groundedLabel(sourceText: string, value: string | null): boolean {
-  const source = normalizeMemorySemanticText(sourceText, 2_000)
-    ?.toLocaleLowerCase("und");
-  const label = text(value)?.toLocaleLowerCase("und");
-  return Boolean(source && label && source.includes(label));
-}
-
 function component(namespace: string, value: string | null): string {
   if (value === null) invalid();
   return normalizeMemoryIdentityComponent(namespace, value) ?? invalid();
@@ -154,7 +152,7 @@ function normalizedDimension(
   if (separator <= 0 || separator === raw.length - 1) return null;
   const prefix = raw.slice(0, separator).toLocaleLowerCase("und");
   const allowed = predicate === "preference"
-    ? new Set(["category", "format", "interaction", "topic"])
+    ? new Set<string>(MEMORY_PREFERENCE_DIMENSION_PREFIXES)
     : predicate === "constraint"
       ? new Set(["accessibility", "availability", "dietary", "limit", "resource", "topic"])
       : new Set(["activity", "schedule", "workflow"]);
@@ -204,7 +202,7 @@ function productSubject(proposal: MemoryIdentityProposal): string | null {
 export function resolveMemoryIdentity(input: Readonly<{
   identity: MemoryIdentityProposal;
   memoryType: string;
-  sourceText: string;
+  semanticFrame: MemorySemanticFrame;
   statement: string;
   value: MemoryValueProposal;
 }>): ResolvedMemoryIdentity {
@@ -213,17 +211,14 @@ export function resolveMemoryIdentity(input: Readonly<{
     !(MEMORY_SLOT_PREDICATES as readonly string[]).includes(
       input.identity.predicateKey
     )) return fallback();
+  // Historical status can remain a source-grounded proposition but never
+  // acquires the current SLOT identity. All other authority fields are
+  // admitted by the semantic boundary (and, when required, adjudication).
+  if (input.semanticFrame.temporalPerspective === "FORMER") return fallback();
   const predicate = input.identity.predicateKey as MemorySlotPredicate;
   const value = input.value;
 
   if (predicate === "product_status") {
-    if (!groundedLabel(
-      input.sourceText,
-      input.identity.subject.qualifiers.model ??
-        input.identity.subject.canonicalLabel
-    )) {
-      invalid("memory_fact_product_identity_unsupported");
-    }
     const subjectKey = productSubject(input.identity);
     if (!subjectKey || value.state === null || !productStates.has(value.state) ||
       !onlyFields(value, ["state"])) invalid();
@@ -237,15 +232,11 @@ export function resolveMemoryIdentity(input: Readonly<{
   }
 
   if (predicate === "residence") {
-    if (value.place !== null && !groundedLabel(input.sourceText, value.place)) {
-      invalid("memory_fact_residence_identity_unsupported");
-    }
     if (input.identity.subject.entityType !== "PERSON_SELF" ||
       value.place === null || value.kind === null ||
-      !residenceKinds.has(value.kind) || !onlyFields(value, ["kind", "place"]) ||
-      /(?:\bpreviously\b|\bused to\b|\bformer(?:ly)?\b|(?:^|[^\p{L}])раньше(?:$|[^\p{L}]))/iu.test(
-        input.sourceText
-      )) return fallback();
+      !residenceKinds.has(value.kind) || !onlyFields(value, ["kind", "place"])) {
+      return fallback();
+    }
     const placeKey = `place:${component("residence-place", value.place)}`;
     const dimensionKey = value.kind === "primary"
       ? "primary"
@@ -270,10 +261,6 @@ export function resolveMemoryIdentity(input: Readonly<{
   }
 
   if (predicate === "employment_status") {
-    if (input.identity.dimensionKey !== null &&
-      !groundedLabel(input.sourceText, input.identity.dimensionKey)) {
-      invalid("memory_fact_employment_identity_unsupported");
-    }
     if (input.identity.subject.entityType !== "PERSON_SELF" ||
       value.state === null || !employmentStates.has(value.state) ||
       !onlyFields(value, ["role", "state"])) return fallback();
@@ -299,10 +286,6 @@ export function resolveMemoryIdentity(input: Readonly<{
   if (predicate === "goal_status" || predicate === "project_status") {
     const expectedType = predicate === "goal_status" ? "GOAL" : "PROJECT";
     const states = predicate === "goal_status" ? goalStates : projectStates;
-    if (input.identity.subject.canonicalLabel !== null &&
-      !groundedLabel(input.sourceText, input.identity.subject.canonicalLabel)) {
-      invalid("memory_fact_subject_identity_unsupported");
-    }
     if (input.identity.subject.entityType !== expectedType ||
       input.identity.subject.canonicalLabel === null || value.state === null ||
       !states.has(value.state) || !onlyFields(value, ["state"])) {
@@ -329,17 +312,18 @@ export function resolveMemoryIdentity(input: Readonly<{
   if (!dimensionKey) return fallback();
   if (predicate === "preference") {
     const normalizedValue = text(value.value);
-    if (!normalizedValue || !onlyFields(value, ["strength", "value"]) ||
-      (value.strength !== null && !preferenceStrengths.has(value.strength))) {
+    if (!normalizedValue || !onlyFields(value, ["strength", "value"])) {
       return fallback();
     }
+    const strength = value.strength !== null &&
+      preferenceStrengths.has(value.strength) ? value.strength : null;
     return slotResult({
       category: "preferences",
       dimensionKey,
       predicateKey: predicate,
       structuredValue: {
         schema: "preference-v1",
-        strength: value.strength,
+        strength,
         value: normalizedValue
       },
       subjectKey: "person:self"
@@ -380,57 +364,4 @@ export function resolveMemoryIdentity(input: Readonly<{
     },
     subjectKey: "person:self"
   });
-}
-
-const productStatusEvidence: Readonly<Record<string, RegExp>> = Object.freeze({
-  borrowed: /(?:\bborrowed\b|(?:^|[^\p{L}])(?:одолжил[аи]?|взял[аи]?\s+у)(?:$|[^\p{L}]))/iu,
-  cancelled: /(?:\bcancel(?:led|ed)\b|(?:^|[^\p{L}])отменил[аи]?(?:$|[^\p{L}]))/iu,
-  considering: /(?:\bconsider(?:ing)?\b|\bthinking\s+(?:of|about)\b|(?:^|[^\p{L}])думаю\s+(?:купить|о покупке)(?:$|[^\p{L}]))/iu,
-  no_longer_owned: /(?:\bno longer own\b|(?:^|[^\p{L}])больше\s+не\s+владею(?:$|[^\p{L}]))/iu,
-  ordered: /(?:\bordered\b|(?:^|[^\p{L}])заказал[аи]?(?:$|[^\p{L}]))/iu,
-  owned: /(?:\bi\s+(?:bought|purchased|own|got)\b|\bmy\s+new\b|(?:^|[^\p{L}])я\s+(?:купил[аи]?|приобр[её]л[аи]?|получил[аи]?|владею)(?:$|[^\p{L}])|(?:^|[^\p{L}])мо[йяе]\s+нов)/iu,
-  planned: /(?:\bplan(?:ning)?\s+to\s+(?:buy|purchase)\b|(?:^|[^\p{L}])планирую\s+купить(?:$|[^\p{L}]))/iu,
-  returned: /(?:\breturned\b|(?:^|[^\p{L}])вернул[аи]?(?:$|[^\p{L}]))/iu,
-  shared: /(?:\bshared\b|(?:^|[^\p{L}])общ(?:ий|ая|ее)(?:$|[^\p{L}]))/iu,
-  sold: /(?:\bsold\b|(?:^|[^\p{L}])продал[аи]?(?:$|[^\p{L}]))/iu,
-  work_device: /(?:\bwork\s+(?:device|laptop|phone|computer)\b|(?:^|[^\p{L}])рабоч(?:ий|ая|ее)(?:$|[^\p{L}]))/iu
-});
-
-export function memoryProductStatusEvidenceIsExplicit(
-  state: string,
-  sourceText: string
-): boolean {
-  return productStatusEvidence[state]?.test(sourceText) ?? false;
-}
-
-export function memorySourceLooksNonAuthoritative(sourceText: string): boolean {
-  const text = sourceText.normalize("NFKC");
-  const possessiveOwnership = /(?:\bmy\s+new\b|(?:^|[^\p{L}])мо[йяе]\s+нов)/iu.test(text);
-  return (
-    /^\s*(?:assistant|system|tool|web|model|ассистент|система|инструмент|веб)\s*:/iu.test(text) ||
-    /(?:\bif\b|\bwould\b|\bhypothetically\b|(?:^|[^\p{L}])(?:если|допустим)(?:$|[^\p{L}]))/iu.test(text) ||
-    /(?:\bmy\s+(?:brother|sister|friend)\b|(?:^|[^\p{L}])у\s+(?:брата|сестры|друга|подруги)(?:$|[^\p{L}]))/iu.test(text) ||
-    (/[?？]\s*$/u.test(text.trim()) && !possessiveOwnership)
-  );
-}
-
-/** A first-person fragment copied inside a quotation remains quoted source
- * data, not direct user authority. This intentionally rejects ambiguous
- * self-quotation; an explicit Saved Memory action remains available. */
-export function memoryEvidenceLooksNonAuthoritative(
-  sourceText: string,
-  evidenceQuote: string
-): boolean {
-  if (memorySourceLooksNonAuthoritative(sourceText)) return true;
-  const start = sourceText.indexOf(evidenceQuote);
-  if (start < 0) return true;
-  const before = sourceText.slice(0, start);
-  const after = sourceText.slice(start + evidenceQuote.length);
-  const trimmed = evidenceQuote.trim();
-  const selfDelimited =
-    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
-    (trimmed.startsWith("“") && trimmed.endsWith("”")) ||
-    (trimmed.startsWith("«") && trimmed.endsWith("»"));
-  const enclosed = /["“«]\s*$/u.test(before) && /^\s*["”»]/u.test(after);
-  return selfDelimited || enclosed;
 }

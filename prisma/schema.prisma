@@ -334,6 +334,7 @@ enum MemorySourceDependencyKind {
 enum MemoryEntityState {
   ACTIVE
   MERGED
+  RETRACTED
 }
 
 enum MemoryEntityAliasSupportKind {
@@ -449,6 +450,18 @@ enum MemoryExecutionState {
   FAILED
   CANCELLED
   OUTCOME_UNKNOWN
+}
+
+enum MemoryFactExtractionCandidateOutcome {
+  PENDING
+  APPLIED
+  REPLAY
+  REINFORCED
+  MERGED
+  SUPERSEDED
+  REJECTED
+  STALE
+  RETRYABLE_FAILED
 }
 
 enum MemoryUsageCompleteness {
@@ -3718,7 +3731,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v1") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v2") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String
@@ -3828,6 +3841,11 @@ model ChatMemoryDigest {
   redactionState           MemoryRedactionState
   state                    MemoryHistoryItemState   @default(ACTIVE)
   pipelineVersion          String                   @db.VarChar(64)
+  sourceFingerprint        String?                  @db.VarChar(64)
+  inputFingerprint         String?                  @db.VarChar(64)
+  rebuildPolicyVersion     String?                  @db.VarChar(64)
+  updateMode               String?                  @db.VarChar(32)
+  incrementalDepth         Int                      @default(0)
   sourceProjectionVersion  String                   @db.VarChar(64)
   safetyPolicyVersion      String                   @db.VarChar(256)
   createdAt                DateTime                 @default(now())
@@ -3969,6 +3987,7 @@ model MemoryFact {
   identityKind     MemoryFactIdentityKind?
   identityVersion  String?                 @db.VarChar(64)
   subjectKey       String?                 @db.VarChar(256)
+  subjectEntityId  String?
   predicateKey     String?                 @db.VarChar(64)
   dimensionKey     String?                 @db.VarChar(256)
   category         String                  @db.VarChar(64)
@@ -3990,6 +4009,7 @@ model MemoryFact {
   @@index([userId, scopeId, state])
   @@index([userId, currentVersionId])
   @@index([userId, movedToFactId])
+  @@index([userId, subjectEntityId, predicateKey, dimensionKey])
 }
 
 model MemoryFactVersion {
@@ -4017,6 +4037,8 @@ model MemoryFactVersion {
   sourceTimezone                 String?                         @db.VarChar(64)
   temporalResolverVersion        String?                         @db.VarChar(64)
   temporalResolutionEvidence     Json?
+  semanticFrame                  Json?
+  semanticAdjudication           Json?
   confidence                     Float
   importance                     Float
   directness                     MemoryDirectness
@@ -4105,6 +4127,53 @@ model MemorySynthesisExecution {
   @@index([userId, appliedAt, createdAt])
 }
 
+/// Recovery-only staging for one strict automatic-fact extraction result.
+/// Provider reasoning and raw response envelopes never enter this owner. The
+/// decoded packet is cleared after every candidate has a durable outcome.
+model MemoryFactExtractionExecution {
+  id                       String    @id @default(uuid())
+  userId                   String
+  memoryJobId              String
+  executionBindingId       String
+  sourceMessageId          String
+  sourceMessageContentHash String    @db.VarChar(128)
+  inputHash                String    @db.VarChar(128)
+  acceptedOutputHash       String    @db.VarChar(128)
+  acceptedOutput           Json?
+  contextBindings          Json?
+  recoverableUntil         DateTime
+  createdAt                DateTime  @default(now())
+  appliedAt                DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, memoryJobId])
+  @@unique([userId, executionBindingId])
+  @@index([userId, appliedAt, recoverableUntil])
+  @@index([userId, sourceMessageId, appliedAt])
+}
+
+/// Content-free idempotency and recovery evidence for each provider packet
+/// ordinal, including candidates rejected by strict decoding.
+model MemoryFactExtractionCandidateReceipt {
+  id                     String                               @id
+  userId                 String
+  extractionExecutionId  String
+  candidateOrdinal       Int
+  candidateFingerprint   String                               @db.VarChar(128)
+  outcome                MemoryFactExtractionCandidateOutcome @default(PENDING)
+  reasonCode             String?                              @db.VarChar(64)
+  resultingFactId        String?
+  resultingFactVersionId String?
+  resultingEvidenceId    String?
+  createdAt              DateTime                             @default(now())
+  updatedAt              DateTime                             @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@unique([userId, extractionExecutionId, candidateOrdinal], map: "MemoryFactExtractReceipt_user_execution_ordinal_key")
+  @@unique([userId, extractionExecutionId, candidateFingerprint], map: "MemoryFactExtractReceipt_user_execution_fingerprint_key")
+  @@index([userId, outcome, updatedAt])
+}
+
 /// Durable, owner-scoped reservation for the single optional semantic call
 /// shared by all ambiguity resolution originating from one source message.
 /// The result contains only the strict decoded decision and execution receipt
@@ -4175,16 +4244,17 @@ model MemoryFactVersionSourceDependency {
 }
 
 model MemoryEntity {
-  id           String            @id @default(uuid())
-  userId       String
-  canonicalKey String            @db.VarChar(256)
-  entityType   String            @db.VarChar(64)
-  displayName  String            @db.VarChar(256)
-  state        MemoryEntityState @default(ACTIVE)
-  mergedIntoId String?
-  languageCode String?           @db.VarChar(35)
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @default(now()) @updatedAt
+  id            String            @id @default(uuid())
+  userId        String
+  canonicalKey  String            @db.VarChar(256)
+  entityType    String            @db.VarChar(64)
+  displayName   String            @db.VarChar(256)
+  state         MemoryEntityState @default(ACTIVE)
+  mergedIntoId  String?
+  languageCode  String?           @db.VarChar(35)
+  automaticOnly Boolean           @default(false)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @default(now()) @updatedAt
 
   @@unique([userId, id])
   @@unique([userId, canonicalKey])
@@ -4470,6 +4540,7 @@ model MemoryJob {
   memoryRevisionSnapshot   Int
   idempotencyFingerprint   String         @db.VarChar(128)
   acceptedResultHash       String?        @db.VarChar(128)
+  operationalCounters      Json?
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @default(now()) @updatedAt
   completedAt              DateTime?
@@ -4694,7 +4765,7 @@ model ModelRunMemoryItem {
   finalScore                     Float
   selectionReason                String               @db.VarChar(128)
   decayTouchedAt                 DateTime?
-  decayTouchPolicyVersion        String?               @db.VarChar(64)
+  decayTouchPolicyVersion        String?              @db.VarChar(64)
   createdAt                      DateTime             @default(now())
 
   @@unique([userId, id])

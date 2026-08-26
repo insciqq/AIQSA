@@ -4,6 +4,7 @@ import {
   type MemorySummary
 } from "../../../contracts/memory";
 import { MemoryPersistenceError } from "../persistence/errors";
+import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import { memorySha256 } from "../persistence/lexical";
 import {
   createExplicitMemoryService,
@@ -599,6 +600,80 @@ describe("explicit Memory service", () => {
         sourceMode: "EXPLICIT"
       })
     }));
+  });
+
+  it("preserves a hash-bound exact correction while retaining classifier safety", async () => {
+    const authorizations = authorizationRepository();
+    const facts = factRepository();
+    const exactStatement = "  Use the frozen replacement exactly.  ";
+    const normalizedStatement = "Use the frozen replacement exactly.";
+    const classifier: MemoryStatementClassifier = {
+      classify: vi.fn(async () => ({
+        acceptedOutputHash: "a".repeat(64),
+        category: "preferences" as const,
+        executionId: "classification-execution-1",
+        inputHash: "b".repeat(64),
+        normalizedStatement,
+        reasonCode: "response_preference" as const,
+        responsePreference: true,
+        sensitivity: "NORMAL" as const,
+        storageDecision: "ALLOW" as const
+      }))
+    };
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizations,
+      clock: () => NOW,
+      factRepository: facts,
+      readRepository: readRepository(),
+      scopeRepository: scopeRepository(),
+      statementClassifier: classifier
+    });
+    const exactStatementHash = memorySha256(exactStatement);
+
+    await service.update("user-1", "fact-1", {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-exact-correction",
+      statement: exactStatement
+    }, {
+      exactStatementHash,
+      modelRunId: "run-1",
+      persistedToolCallId: null
+    });
+
+    expect(authorizations.resolveForUse).toHaveBeenCalledWith("user-1", {
+      action: "EDIT",
+      authorizationId: "authorization-exact-correction",
+      authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
+        action: "EDIT",
+        expectedTargetVersionId: "version-1",
+        replacementStatementHash: exactStatementHash,
+        targetFactId: "fact-1"
+      }),
+      expectedTargetVersionId: "version-1",
+      targetFactId: "fact-1"
+    });
+    expect(facts.edit).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      evidence: expect.objectContaining({ safeExcerpt: exactStatement }),
+      value: expect.objectContaining({
+        displayText: exactStatement,
+        safetyClassification: expect.objectContaining({
+          decision: expect.objectContaining({ normalizedStatement }),
+          displayProjection: "EXACT_INPUT",
+          inputStatement: exactStatement,
+          kind: "STATEMENT"
+        })
+      })
+    }));
+
+    await expect(service.update("user-1", "fact-1", {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-mismatched-correction",
+      statement: exactStatement
+    }, {
+      exactStatementHash: memorySha256("A different statement."),
+      modelRunId: "run-1"
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_contract_invalid"));
+    expect(authorizations.resolveForUse).toHaveBeenCalledOnce();
   });
 
   it("resolves an exact conflict snapshot once and conservatively labels corrections", async () => {

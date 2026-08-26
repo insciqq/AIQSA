@@ -9,7 +9,13 @@ import { memorySha256, normalizeMemorySearchText } from "../../persistence/lexic
 import {
   memoryFactDependenciesAreValid
 } from "../dependencies/repository";
-import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  type MemorySemanticAdjudication,
+  type MemorySemanticChangeIntent,
+  type MemorySemanticTemporalPerspective
+} from "../extraction/contract";
 import { createPrismaMemoryRelationHandler } from "./handler";
 import {
   decideMemoryFactRelation,
@@ -267,7 +273,16 @@ async function addExactEvidence(
   return id;
 }
 
+function fixturePrimaryValue(value: Prisma.InputJsonObject): string | null {
+  for (const key of ["state", "placeKey", "value"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string") return candidate;
+  }
+  return null;
+}
+
 async function createSlotVersion(input: Readonly<{
+  changeIntent?: MemorySemanticChangeIntent;
   classifierBindingId: string;
   correctionTargetVersionId?: string;
   directness?: "DIRECT" | "INFERRED" | "PARAPHRASED";
@@ -276,11 +291,14 @@ async function createSlotVersion(input: Readonly<{
   expiresAt?: Date;
   factId?: string;
   identity: SlotIdentity;
+  languageCode?: string;
   scopeId: string;
+  semanticOperation?: MemorySemanticAdjudication["operation"] | null;
   source: SourceFixture;
   sourceMode?: "AUTOMATIC" | "EXPLICIT";
   state: "ACTIVE" | "PENDING_RELATION";
   structuredValue: Prisma.InputJsonObject;
+  temporalPerspective?: MemorySemanticTemporalPerspective;
   userId: string;
 }>): Promise<VersionFixture> {
   const factId = input.factId ?? randomUUID();
@@ -290,6 +308,88 @@ async function createSlotVersion(input: Readonly<{
   const sourceMode = input.sourceMode ?? "AUTOMATIC";
   const sourceHash = memorySha256(input.source.text);
   await prisma.$transaction(async (tx) => {
+    let targetVersionId = input.correctionTargetVersionId ?? null;
+    if (targetVersionId === null && input.factId) {
+      targetVersionId = (await tx.memoryFact.findUnique({
+        select: { currentVersionId: true },
+        where: { id: input.factId }
+      }))?.currentVersionId ?? null;
+    }
+    if (targetVersionId === null && input.entityId) {
+      const [linked] = await tx.$queryRaw<Array<{ versionId: string }>>(Prisma.sql`
+        SELECT version."id" AS "versionId"
+        FROM "MemoryFactVersionEntity" AS link
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = link."userId"
+          AND version."id" = link."factVersionId"
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."systemTo" IS NULL
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId"
+          AND fact."id" = version."factId"
+          AND fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND fact."currentVersionId" = version."id"
+          AND fact."predicateKey" = ${input.identity.predicateKey}
+        WHERE link."userId" = ${input.userId}
+          AND link."entityId" = ${input.entityId}
+          AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
+        ORDER BY version."id"
+        LIMIT 1
+      `);
+      targetVersionId = linked?.versionId ?? null;
+    }
+    const targetValue = targetVersionId === null
+      ? null
+      : await tx.memoryFactVersion.findUnique({
+          select: { structuredValue: true },
+          where: { id: targetVersionId }
+        });
+    const samePrimaryValue = targetValue?.structuredValue !== null &&
+      typeof targetValue?.structuredValue === "object" &&
+      !Array.isArray(targetValue.structuredValue) &&
+      fixturePrimaryValue(targetValue.structuredValue as Prisma.InputJsonObject) ===
+        fixturePrimaryValue(input.structuredValue);
+    const defaultOperation: MemorySemanticAdjudication["operation"] | null =
+      targetVersionId === null
+        ? null
+        : input.correctionTargetVersionId
+          ? "MOVE_TO_DISTINCT_FACT"
+          : samePrimaryValue
+            ? "MERGE_NEW_INTO_TARGET"
+            : "SUPERSEDE_TARGET";
+    const semanticOperation = input.semanticOperation === undefined
+      ? defaultOperation
+      : input.semanticOperation;
+    const semanticFrame = {
+      assertionStatus: "ASSERTED",
+      changeIntent: input.changeIntent ?? (
+        input.correctionTargetVersionId
+          ? "CORRECTION"
+          : samePrimaryValue ? "NONE" : "STATE_CHANGE"
+      ),
+      memoryDirective: "NONE",
+      polarity: input.correctionTargetVersionId ? "CORRECTION" : "AFFIRMED",
+      speechAct: "ASSERTION",
+      subjectScope: "CURRENT_USER",
+      temporalPerspective: input.temporalPerspective ?? "CURRENT"
+    } as const;
+    const semanticAdjudication = input.state === "PENDING_RELATION" &&
+      targetVersionId !== null && semanticOperation !== null
+      ? {
+          assertionStatus: "ASSERTED",
+          candidateRef: `fixture-${versionId}`,
+          confidenceBand: "HIGH",
+          entailment: "ENTAILED",
+          entityRef: input.entityId ? "E1" : null,
+          operation: semanticOperation,
+          reasonCode: "stateful-fixture",
+          resolvedEntityId: input.entityId ?? null,
+          resolvedTargetVersionId: targetVersionId,
+          subjectScope: "CURRENT_USER",
+          targetRef: "F1",
+          temporalPerspective: input.temporalPerspective ?? "CURRENT"
+        } as const
+      : null;
     if (!input.factId) {
       await tx.memoryFact.create({
         data: {
@@ -339,12 +439,12 @@ async function createSlotVersion(input: Readonly<{
             versionId
           })
         } : {}),
-        languageCode: "en",
+        languageCode: input.languageCode ?? "en",
         modality: "STATE",
         normalizedSearchText: normalizeMemorySearchText(input.displayText),
         observedAt: input.source.observedAt,
         pipelineVersion: sourceMode === "AUTOMATIC"
-          ? "memory-fact-extraction-vnext-v2"
+          ? MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
           : "memory-relation-explicit-test-v1",
         safetyClassificationReasonCode: "ordinary_personal",
         safetyClassificationState: "CLASSIFIED",
@@ -353,6 +453,10 @@ async function createSlotVersion(input: Readonly<{
         safetyClassifierModelId: "memory-relation-fixture",
         safetyClassifierPolicyVersion: "memory-relation-test-v1",
         safetyClassifierProviderId: "memory-relation-fixture",
+        semanticAdjudication: semanticAdjudication === null
+          ? undefined
+          : semanticAdjudication,
+        semanticFrame,
         sensitivityClass: "NORMAL",
         sourceMode,
         state: input.state,
@@ -594,7 +698,7 @@ async function commitClaim(
 }
 
 describe("Prisma Memory fact relation lifecycle", () => {
-  it("preserves genuine MacBook history, merges representation, and recovers a landed apply", async () => {
+  it("[E03] preserves one multilingual product lifecycle and merges richer detail", async () => {
     const owner = await createOwner("macbook-lifecycle");
     const identity: SlotIdentity = {
       canonicalKey: "slot:v2:device:macbook-air:product_status:_",
@@ -603,28 +707,45 @@ describe("Prisma Memory fact relation lifecycle", () => {
       subjectKey: "device:macbook-air"
     };
     try {
+      const considered = await createSlotVersion({
+        ...owner,
+        displayText: "The user is considering an Apple laptop.",
+        identity,
+        languageCode: "es",
+        source: await createSource(
+          owner.userId,
+          "Estoy considerando un portátil Apple MacBook Air.",
+          at(0)
+        ),
+        state: "ACTIVE",
+        structuredValue: { state: "considering" }
+      });
       const ordered = await createSlotVersion({
         ...owner,
-        displayText: "The user ordered a MacBook Air.",
+        displayText: "Пользователь заказал MacBook Air.",
+        factId: considered.factId,
         identity,
-        source: await createSource(owner.userId, "I ordered a MacBook Air.", at(1)),
-        state: "ACTIVE",
+        languageCode: "ru",
+        source: await createSource(owner.userId, "Я заказал макбук Air.", at(1)),
+        state: "PENDING_RELATION",
         structuredValue: { state: "ordered" }
       });
+      await expect(resolveDirect(ordered, owner.userId, at(2)))
+        .resolves.toMatchObject({ decision: { operation: "SUPERSEDE_TARGET" } });
       const owned = await createSlotVersion({
         ...owner,
         displayText: "The user owns a MacBook Air.",
         factId: ordered.factId,
         identity,
-        source: await createSource(owner.userId, "I bought a MacBook Air.", at(2)),
+        source: await createSource(owner.userId, "I bought a MacBook Air.", at(3)),
         state: "PENDING_RELATION",
         structuredValue: { state: "owned" }
       });
 
       const ownedJob = await createRelationJob(owned, owner.userId);
-      const ownedClaim = await claimRelationJob(ownedJob, at(3));
-      const ownedResult = await executeClaim(ownedClaim, at(3));
-      await expect(commitClaim(ownedClaim, at(3), ownedResult)).resolves.toBe(true);
+      const ownedClaim = await claimRelationJob(ownedJob, at(4));
+      const ownedResult = await executeClaim(ownedClaim, at(4));
+      await expect(commitClaim(ownedClaim, at(4), ownedResult)).resolves.toBe(true);
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: ownedJob.id } }))
         .resolves.toMatchObject({ state: "SUCCEEDED" });
 
@@ -636,19 +757,21 @@ describe("Prisma Memory fact relation lifecycle", () => {
         source: await createSource(
           owner.userId,
           "My personal midnight MacBook Air has 24 GB RAM.",
-          at(4)
+          at(5)
         ),
         state: "PENDING_RELATION",
         structuredValue: {
           color: "midnight",
+          brand: "Apple",
           memory: "24 GB",
+          model: "MacBook Air",
           ownership: "personal",
           state: "owned"
         }
       });
       const richerJob = await createRelationJob(richer, owner.userId);
-      const richerClaim = await claimRelationJob(richerJob, at(5));
-      const richerResult = await executeClaim(richerClaim, at(5));
+      const richerClaim = await claimRelationJob(richerJob, at(6));
+      const richerResult = await executeClaim(richerClaim, at(6));
       expect(richerResult.stage).toBe("relation_merge_target_into_new");
 
       // Simulate a worker crash after the semantic transaction lands but
@@ -660,7 +783,7 @@ describe("Prisma Memory fact relation lifecycle", () => {
       const landedEventCount = await prisma.memoryEvent.count({
         where: { factVersionId: richer.versionId, operation: "MERGE", userId: owner.userId }
       });
-      await expect(commitClaim(richerClaim, at(5), richerResult)).resolves.toBe(true);
+      await expect(commitClaim(richerClaim, at(6), richerResult)).resolves.toBe(true);
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId: owner.userId }
       })).resolves.toMatchObject({ memoryRevision: landedRevision });
@@ -673,37 +796,29 @@ describe("Prisma Memory fact relation lifecycle", () => {
         displayText: "The user returned the MacBook Air.",
         factId: ordered.factId,
         identity,
-        source: await createSource(owner.userId, "I returned the MacBook Air.", at(6)),
+        source: await createSource(owner.userId, "I returned the MacBook Air.", at(7)),
         state: "PENDING_RELATION",
         structuredValue: { state: "returned" }
       });
-      await expect(resolveDirect(returned, owner.userId, at(7)))
-        .resolves.toMatchObject({ decision: { operation: "SUPERSEDE_TARGET" } });
-
-      const ownedAgain = await createSlotVersion({
-        ...owner,
-        displayText: "The user owns a MacBook Air again.",
-        factId: ordered.factId,
-        identity,
-        source: await createSource(owner.userId, "I bought a MacBook Air again.", at(8)),
-        state: "PENDING_RELATION",
-        structuredValue: { state: "owned" }
-      });
-      await expect(resolveDirect(ownedAgain, owner.userId, at(9)))
+      await expect(resolveDirect(returned, owner.userId, at(8)))
         .resolves.toMatchObject({ decision: { operation: "SUPERSEDE_TARGET" } });
 
       const fact = await prisma.memoryFact.findUniqueOrThrow({
         where: { id: ordered.factId }
       });
       expect(fact).toMatchObject({
-        currentVersionId: ownedAgain.versionId,
+        currentVersionId: returned.versionId,
         state: "ACTIVE"
       });
       const versions = await prisma.memoryFactVersion.findMany({
         where: { factId: ordered.factId, userId: owner.userId }
       });
       const byId = new Map(versions.map((version) => [version.id, version]));
-      expect(byId.get(ordered.versionId)).toMatchObject({ state: "SUPERSEDED" });
+      expect(byId.get(considered.versionId)).toMatchObject({ state: "SUPERSEDED" });
+      expect(byId.get(ordered.versionId)).toMatchObject({
+        state: "SUPERSEDED",
+        supersedesVersionId: considered.versionId
+      });
       expect(byId.get(owned.versionId)).toMatchObject({
         mergedIntoVersionId: richer.versionId,
         state: "MERGED",
@@ -714,13 +829,10 @@ describe("Prisma Memory fact relation lifecycle", () => {
         supersedesVersionId: null
       });
       expect(byId.get(returned.versionId)).toMatchObject({
-        state: "SUPERSEDED",
+        state: "ACTIVE",
         supersedesVersionId: richer.versionId
       });
-      expect(byId.get(ownedAgain.versionId)).toMatchObject({
-        state: "ACTIVE",
-        supersedesVersionId: returned.versionId
-      });
+      expect(new Set(versions.map(({ id }) => id)).size).toBe(5);
       await expect(prisma.memoryFactVersion.count({
         where: { factId: ordered.factId, state: "ACTIVE", userId: owner.userId }
       })).resolves.toBe(1);
@@ -729,7 +841,7 @@ describe("Prisma Memory fact relation lifecycle", () => {
         where: { userId: owner.userId }
       });
       expect(indexedRows).toEqual(expect.arrayContaining([
-        { factVersionId: ownedAgain.versionId }
+        { factVersionId: returned.versionId }
       ]));
       const indexedVersionIds = new Set(
         indexedRows.map(({ factVersionId }) => factVersionId)
@@ -756,7 +868,7 @@ describe("Prisma Memory fact relation lifecycle", () => {
       ]));
 
       await expect(prisma.memoryFactVersion.update({
-        data: { supersedesVersionId: ownedAgain.versionId },
+        data: { supersedesVersionId: returned.versionId },
         where: { id: richer.versionId }
       })).rejects.toThrow();
       await expect(prisma.memoryFactVersion.update({
@@ -1005,7 +1117,8 @@ describe("Prisma Memory fact relation lifecycle", () => {
         identity: residenceIdentity,
         source: await createSource(owner.userId, "I previously lived in Paris.", at(45)),
         state: "PENDING_RELATION",
-        structuredValue: { placeKey: "city:paris" }
+        structuredValue: { placeKey: "city:paris" },
+        temporalPerspective: "FORMER"
       });
       await expect(resolveDirect(parisHistory, owner.userId, at(46)))
         .resolves.toMatchObject({ decision: { operation: "CONFLICT" } });

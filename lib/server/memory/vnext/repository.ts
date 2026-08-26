@@ -11,8 +11,10 @@ import {
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "../learning/extraction/contract";
+import type { MemorySemanticAdjudication } from "../learning/extraction/contract";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import { memoryExactVNextDirectAuthorityPredicate } from
+  "../persistence/eligibility";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
 import {
   advanceMemoryMutation,
@@ -52,6 +54,33 @@ export type MemoryVNextCommitResult = Readonly<{
   attachedEvidence: number;
   createdVersions: number;
 }>;
+
+type ResolvedSemanticAdjudication = Readonly<
+  MemorySemanticAdjudication & {
+    resolvedEntityId: string | null;
+    resolvedTargetVersionId: string | null;
+  }
+>;
+
+function resolveSemanticAdjudication(
+  plan: MemoryFactExtractionPlan,
+  decision: MemorySemanticAdjudication | null
+): ResolvedSemanticAdjudication | null {
+  if (!decision) return null;
+  const target = decision.targetRef === null ? null : plan.input.contextRefs.find(
+    ({ ref }) => ref === decision.targetRef
+  );
+  const entity = decision.entityRef === null ? null : plan.input.contextRefs.find(
+    ({ ref }) => ref === decision.entityRef
+  );
+  if ((decision.targetRef !== null && !target?.source.factVersionId) ||
+    (decision.entityRef !== null && !entity?.entityId)) return null;
+  return {
+    ...decision,
+    resolvedEntityId: entity?.entityId ?? null,
+    resolvedTargetVersionId: target?.source.factVersionId ?? null
+  };
+}
 
 function exactEvidence(
   input: MemoryFactExtractionInput,
@@ -261,6 +290,7 @@ async function insertVersion(
     id: string;
     inputTimeZone: string;
     now: Date;
+    semanticAdjudication: ResolvedSemanticAdjudication | null;
     state: "ACTIVE" | "PENDING_RELATION";
     userId: string;
   }>
@@ -290,6 +320,10 @@ async function insertVersion(
       rawTemporalExpression: candidate.rawTemporalExpression,
       safetyClassificationState: "PENDING",
       sensitivityClass: "NORMAL",
+      semanticAdjudication: input.semanticAdjudication === null
+        ? Prisma.DbNull
+        : input.semanticAdjudication as Prisma.InputJsonValue,
+      semanticFrame: candidate.semanticFrame as Prisma.InputJsonValue,
       sourceMode: "AUTOMATIC",
       sourceTimezone: input.inputTimeZone,
       state: input.state,
@@ -404,7 +438,8 @@ async function createFirstOrReactivatedVersion(
   bindingId: string,
   now: Date,
   scopeId: string,
-  existingFact: LockedFact | null
+  existingFact: LockedFact | null,
+  semanticAdjudication: ResolvedSemanticAdjudication | null
 ): Promise<MemoryVNextCommitResult> {
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const factId = existingFact?.id ?? randomUUID();
@@ -423,6 +458,7 @@ async function createFirstOrReactivatedVersion(
         predicateKey: candidate.predicateKey,
         scopeId,
         state: "ACTIVE",
+        subjectEntityId: candidate.subjectEntityId ?? null,
         subjectKey: candidate.subjectKey,
         userId: settings.userId
       }
@@ -457,6 +493,7 @@ async function createFirstOrReactivatedVersion(
     id: factVersionId,
     inputTimeZone: plan.input.timeZone,
     now,
+    semanticAdjudication,
     state: "ACTIVE",
     userId: settings.userId
   });
@@ -539,7 +576,8 @@ async function createCrossFactRelationVersion(
   evidence: ExactEvidence,
   bindingId: string,
   now: Date,
-  scopeId: string
+  scopeId: string,
+  semanticAdjudication: ResolvedSemanticAdjudication | null
 ): Promise<MemoryVNextCommitResult> {
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const factId = randomUUID();
@@ -557,6 +595,7 @@ async function createCrossFactRelationVersion(
       predicateKey: candidate.predicateKey,
       scopeId,
       state: "CONFLICTED",
+      subjectEntityId: candidate.subjectEntityId ?? null,
       subjectKey: candidate.subjectKey,
       userId: settings.userId
     }
@@ -578,6 +617,7 @@ async function createCrossFactRelationVersion(
     id: factVersionId,
     inputTimeZone: plan.input.timeZone,
     now,
+    semanticAdjudication,
     state: "PENDING_RELATION",
     userId: settings.userId
   });
@@ -633,9 +673,10 @@ async function relatedContextTargetVersionId(
       AND fact."predicateKey" IS NOT DISTINCT FROM ${candidate.predicateKey}
       AND fact."dimensionKey" IS NOT DISTINCT FROM ${candidate.dimensionKey}
     WHERE link."userId" = ${userId}
-      AND link."entityId" IN (${Prisma.join(entityIds)})
+      AND aiqsa_memory_entity_root_id(link."userId", link."entityId")
+        IN (${Prisma.join(entityIds)})
       AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
-      AND ${memoryPersonalFactEvidencePredicate(userId)}
+      AND ${memoryExactVNextDirectAuthorityPredicate(userId)}
     ORDER BY version."id"
     LIMIT 2
   `);
@@ -649,7 +690,8 @@ async function createObservation(
   plan: MemoryFactExtractionPlan,
   candidate: MemoryExtractedCandidate,
   bindingId: string,
-  now: Date
+  now: Date,
+  decision: MemorySemanticAdjudication | null
 ): Promise<MemoryVNextCommitResult> {
   if (candidate.scope.type !== "GLOBAL_USER" || candidate.scope.targetId !== null ||
     candidate.directness !== "DIRECT" || candidate.sensitivity !== "NORMAL") {
@@ -678,6 +720,11 @@ async function createObservation(
   });
   if (replay) return { attachedEvidence: 0, createdVersions: 0 };
 
+  const semanticAdjudication = resolveSemanticAdjudication(plan, decision);
+  if (decision !== null && semanticAdjudication === null) {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
+
   const scope = await ensureGlobalMemoryScope(tx, settings);
   const fact = await lockedFact(
     tx,
@@ -698,14 +745,28 @@ async function createObservation(
       now
     );
     if (contextTarget !== null && candidate.identityKind === "SLOT") {
+      if (!semanticAdjudication ||
+        semanticAdjudication.resolvedTargetVersionId !== contextTarget ||
+        ![
+          "MERGE_NEW_INTO_TARGET",
+          "MERGE_TARGET_INTO_NEW",
+          "MOVE_TO_DISTINCT_FACT",
+          "SUPERSEDE_TARGET"
+        ].includes(semanticAdjudication.operation)) {
+        return { attachedEvidence: 0, createdVersions: 0 };
+      }
       return createCrossFactRelationVersion(
-        tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
-        scope.id
+      tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+        scope.id, semanticAdjudication
       );
     }
+    if (candidate.identityKind === "SLOT" && (
+      semanticAdjudication?.operation !== "NO_RELATION" ||
+      semanticAdjudication.resolvedTargetVersionId !== null
+    )) return { attachedEvidence: 0, createdVersions: 0 };
     return createFirstOrReactivatedVersion(
       tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
-      scope.id, null
+      scope.id, null, semanticAdjudication
     );
   }
   if (fact.state === "FORGOTTEN" || fact.state === "ORPHANED" ||
@@ -721,14 +782,19 @@ async function createObservation(
     if (fact.currentVersionId !== null) {
       return { attachedEvidence: 0, createdVersions: 0 };
     }
+    if (candidate.identityKind === "SLOT" &&
+      semanticAdjudication?.operation !== "NO_RELATION") {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
     return createFirstOrReactivatedVersion(
       tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
-      scope.id, fact
+      scope.id, fact, semanticAdjudication
     );
   }
 
   let active: StoredVersion | null = null;
   let expiredCurrent = false;
+  let expiredVersionId: string | null = null;
   if (fact.currentVersionId !== null) {
     active = await currentVersion(
       tx,
@@ -742,6 +808,7 @@ async function createObservation(
     }
     if (await materializeExpiredCurrent(tx, claim, fact, active, now)) {
       expiredCurrent = true;
+      expiredVersionId = active.id;
       active = null;
     }
   }
@@ -749,13 +816,40 @@ async function createObservation(
     if (!expiredCurrent && fact.state !== "EXPIRED") {
       throw new Error("memory_vnext_fact_pointer_invalid");
     }
+    const explicitlyObservedExpiredTarget =
+      semanticAdjudication?.resolvedTargetVersionId === expiredVersionId && [
+        "REINFORCE",
+        "MERGE_NEW_INTO_TARGET",
+        "MERGE_TARGET_INTO_NEW",
+        "SUPERSEDE_TARGET"
+      ].includes(semanticAdjudication.operation);
+    if (candidate.identityKind === "SLOT" &&
+      semanticAdjudication?.operation !== "NO_RELATION" &&
+      !explicitlyObservedExpiredTarget) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
     return createFirstOrReactivatedVersion(
       tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
-      scope.id, fact
+      scope.id, fact, semanticAdjudication
     );
   }
 
   if (sameValue(active, candidate)) {
+    const explicitTargetMatch =
+      semanticAdjudication?.resolvedTargetVersionId === active.id && [
+        "REINFORCE",
+        "MERGE_NEW_INTO_TARGET",
+        "MERGE_TARGET_INTO_NEW"
+      ].includes(semanticAdjudication.operation);
+    // A same-value row may have appeared after the bounded adjudication
+    // snapshot. Mechanical equality can safely converge its evidence without
+    // moving a pointer; different values still require an explicit fresh ref.
+    const concurrentSameValue = semanticAdjudication?.operation === "NO_RELATION" &&
+      semanticAdjudication.resolvedTargetVersionId === null;
+    if (candidate.identityKind === "SLOT" &&
+      !explicitTargetMatch && !concurrentSameValue) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
     await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
     await createEvent(
       tx,
@@ -792,6 +886,16 @@ async function createObservation(
   }
 
   if (candidate.identityKind !== "SLOT") {
+    return { attachedEvidence: 0, createdVersions: 0 };
+  }
+  if (!semanticAdjudication ||
+    semanticAdjudication.resolvedTargetVersionId !== active.id ||
+    ![
+      "MERGE_NEW_INTO_TARGET",
+      "MERGE_TARGET_INTO_NEW",
+      "MOVE_TO_DISTINCT_FACT",
+      "SUPERSEDE_TARGET"
+    ].includes(semanticAdjudication.operation)) {
     return { attachedEvidence: 0, createdVersions: 0 };
   }
   const pending = await matchingPendingVersion(
@@ -845,6 +949,7 @@ async function createObservation(
     id: pendingVersionId,
     inputTimeZone: plan.input.timeZone,
     now,
+    semanticAdjudication,
     state: "PENDING_RELATION",
     userId: settings.userId
   });
@@ -876,7 +981,8 @@ export async function commitMemoryVNextExtractionPlan(
   claim: MemoryJobClaim,
   plan: MemoryFactExtractionPlan,
   bindingId: string,
-  now: Date
+  now: Date,
+  semanticDecision: MemorySemanticAdjudication | null = null
 ): Promise<MemoryVNextCommitResult> {
   let attachedEvidence = 0;
   let createdVersions = 0;
@@ -888,7 +994,8 @@ export async function commitMemoryVNextExtractionPlan(
       plan,
       candidate,
       bindingId,
-      now
+      now,
+      semanticDecision
     );
     attachedEvidence += result.attachedEvidence;
     createdVersions += result.createdVersions;

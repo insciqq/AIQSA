@@ -31,6 +31,7 @@ import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/reposit
 import { createPrismaMemorySynthesisHandler } from "../synthesis/handler";
 import { reconcileMemorySynthesisWork } from "../synthesis/reconcile";
 import { MEMORY_SYNTHESIS_VERSIONS } from "../synthesis/provider";
+import { reconcileMemoryHistoryBackfills } from "../history/backfill";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -45,6 +46,7 @@ export const defaultMemoryCoordinatorRepository =
 
 type DefaultMemoryReconciliationWork = Readonly<{
   cutover?: () => Promise<unknown>;
+  historyBackfill?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
   relations?: () => Promise<unknown>;
   synthesis?: () => Promise<unknown>;
@@ -53,6 +55,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     cutover: () => createPrismaMemoryRetrievalCutoverRepository(prisma).reconcile(),
+    historyBackfill: () => reconcileMemoryHistoryBackfills(prisma),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
     relations: () => reconcileMemoryFactRelationJobs(prisma),
     synthesis: () => reconcileMemorySynthesisWork(
@@ -78,6 +81,7 @@ export async function reconcileDefaultMemoryWork(
   // durable shadow rebuild. It must never replay source content from this
   // periodic maintenance pass.
   await work.cutover?.();
+  await work.historyBackfill?.();
   await work.reclassification?.();
   await work.relations?.();
   await work.synthesis?.();

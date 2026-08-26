@@ -7,7 +7,7 @@ import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
 export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v2";
-export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v2";
+export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v3";
 export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v2";
 export const MEMORY_SYNTHESIS_RETRIEVAL_CONFIG_FINGERPRINT =
   "memory-synthesis-retrieval-none-v1";
@@ -45,6 +45,12 @@ export type MemorySynthesisSource = Readonly<{
 }>;
 
 export type MemorySynthesisBoundSource = MemorySynthesisSource & Readonly<{
+  entityRefs: readonly string[];
+  ref: string;
+}>;
+
+export type MemorySynthesisEntityBinding = Readonly<{
+  entityId: string;
   ref: string;
 }>;
 
@@ -56,6 +62,7 @@ export type MemorySynthesisCluster = Readonly<{
 
 export type MemorySynthesisPlan = Readonly<{
   clusters: readonly MemorySynthesisCluster[];
+  entityBindings: readonly MemorySynthesisEntityBinding[];
   sourceSetFingerprint: string;
   sourceSnapshotHash: string;
   sources: readonly MemorySynthesisBoundSource[];
@@ -118,12 +125,14 @@ export function memorySynthesisSourceSetFingerprint(input: Readonly<{
 
 export function memorySynthesisJobFingerprint(input: Readonly<{
   sourceSetFingerprint: string;
+  targetFactVersionId?: string;
   userId: string;
 }>): string {
   return memorySha256({
     domain: "aiqsa.memory.synthesis-job",
     pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
     sourceSetFingerprint: input.sourceSetFingerprint,
+    targetFactVersionId: input.targetFactVersionId,
     userId: input.userId,
     version: 2
   });
@@ -162,11 +171,11 @@ function diversityScore(sources: readonly MemorySynthesisBoundSource[]): number 
 /** Deterministic, bounded clustering is deliberately conservative. The model
  * may propose wording only inside one supplied cluster and cannot join sources
  * that the server did not already group. */
-export function buildMemorySynthesisPlan(input: Readonly<{
+function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
   boundary: Date;
   generation: number;
   sources: readonly MemorySynthesisSource[];
-}>): MemorySynthesisPlan | null {
+}>, minimumEligibleSources: number): MemorySynthesisPlan | null {
   if (!validDate(input.boundary) || !Number.isSafeInteger(input.generation) ||
     input.generation < 0) return null;
   const unique = new Map<string, MemorySynthesisSource>();
@@ -191,8 +200,19 @@ export function buildMemorySynthesisPlan(input: Readonly<{
     characters += source.displayText.length;
   }
   const selected = [...unique.values()];
-  if (selected.length < MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES) return null;
-  const bound = selected.map((source, index) => ({ ...source, ref: `S${index + 1}` }));
+  if (selected.length < minimumEligibleSources) return null;
+  const entityBindings = [...new Set(selected.flatMap(({ entityIds }) => entityIds))]
+    .sort()
+    .map((entityId, index) => Object.freeze({ entityId, ref: `E${index + 1}` }));
+  const entityRefById = new Map(entityBindings.map(({ entityId, ref }) => [entityId, ref]));
+  const bound = selected.map((source, index) => Object.freeze({
+    ...source,
+    entityRefs: Object.freeze(source.entityIds.flatMap((entityId) => {
+      const ref = entityRefById.get(entityId);
+      return ref ? [ref] : [];
+    })),
+    ref: `S${index + 1}`
+  }));
   const groups = new Map<string, Array<{
     anchorMs: number;
     key: string;
@@ -217,7 +237,7 @@ export function buildMemorySynthesisPlan(input: Readonly<{
   const clusters = [...groups.values()].flat()
     .filter(({ sources }) => sources.length >= MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES)
     .map(({ key, sources }) => ({
-      entityRefs: [...new Set(sources.flatMap(({ entityIds }) => entityIds))]
+      entityRefs: [...new Set(sources.flatMap(({ entityRefs }) => entityRefs))]
         .sort().slice(0, 8),
       key,
       sources: Object.freeze(sources)
@@ -233,6 +253,7 @@ export function buildMemorySynthesisPlan(input: Readonly<{
   });
   return Object.freeze({
     clusters: Object.freeze(clusters),
+    entityBindings: Object.freeze(entityBindings),
     sourceSetFingerprint,
     sourceSnapshotHash: memorySha256({
       clusters: clusters.map(({ key, sources }) => ({
@@ -240,9 +261,35 @@ export function buildMemorySynthesisPlan(input: Readonly<{
         refs: sources.map(({ ref }) => ref)
       })),
       domain: "aiqsa.memory.synthesis-source-snapshot",
+      entityBindings,
       sourceSetFingerprint,
       version: 1
     }),
     sources: Object.freeze(bound)
   });
+}
+
+export function buildMemorySynthesisPlan(input: Readonly<{
+  boundary: Date;
+  generation: number;
+  sources: readonly MemorySynthesisSource[];
+}>): MemorySynthesisPlan | null {
+  return buildMemorySynthesisPlanWithMinimum(
+    input,
+    MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES
+  );
+}
+
+/** A source invalidation may authorize one replacement attempt for only the
+ * affected cluster. It keeps every normal plan fence while lowering the
+ * corpus-wide scheduling threshold to the pattern's three-source minimum. */
+export function buildMemoryTargetedSynthesisPlan(input: Readonly<{
+  boundary: Date;
+  generation: number;
+  sources: readonly MemorySynthesisSource[];
+}>): MemorySynthesisPlan | null {
+  return buildMemorySynthesisPlanWithMinimum(
+    input,
+    MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES
+  );
 }

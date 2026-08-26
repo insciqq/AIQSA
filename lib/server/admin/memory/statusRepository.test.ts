@@ -7,6 +7,7 @@ function clientFixture(input: Readonly<{
   heartbeat?: Date | null;
   historyReindexing?: boolean;
   selectedEmbeddingProviderModelId?: string | null;
+  shadowRebuilding?: boolean;
   staleChunk?: boolean;
 }> = {}) {
   const heartbeat = input.heartbeat === undefined
@@ -34,18 +35,21 @@ function clientFixture(input: Readonly<{
     },
     memoryFactVersion: { findMany: vi.fn().mockResolvedValue([]) },
     memoryIndexGeneration: {
-      findMany: vi.fn().mockResolvedValue([{
-        chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
-        embeddingProviderModelId: null,
-        generation: 7,
-        id: "private-generation",
-        indexMode: "LEXICAL_ONLY",
-        languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
-        normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
-        retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
-        state: "ACTIVE",
-        userId: "private-owner"
-      }])
+      findMany: vi.fn(async (args: { where?: { state?: unknown } }) =>
+        args.where?.state
+          ? input.shadowRebuilding ? [{ userId: "private-owner" }] : []
+          : [{
+              chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+              embeddingProviderModelId: null,
+              generation: 7,
+              id: "private-generation",
+              indexMode: "LEXICAL_ONLY",
+              languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+              normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+              retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+              state: "ACTIVE",
+              userId: "private-owner"
+            }])
     },
     modelPolicy: {
       findUnique: vi.fn().mockResolvedValue({
@@ -174,6 +178,23 @@ describe("Prisma administrator Memory status repository", () => {
   it("reports an admitted bounded history reindex without offering a duplicate action", async () => {
     const repository = createPrismaAdminMemoryStatusRepository(
       clientFixture({ historyReindexing: true, staleChunk: true }),
+      vi.fn().mockResolvedValue(undefined)
+    );
+    const result = await repository.read(new Date("2026-08-21T08:00:00.000Z"));
+
+    expect(result.index).toMatchObject({
+      rebuildCandidates: [],
+      rebuilding: true,
+      requiresRebuild: true
+    });
+  });
+
+  it("keeps a shadow generation rebuilding between parent-job passes", async () => {
+    const repository = createPrismaAdminMemoryStatusRepository(
+      clientFixture({
+        selectedEmbeddingProviderModelId: "private-qwen-model",
+        shadowRebuilding: true
+      }),
       vi.fn().mockResolvedValue(undefined)
     );
     const result = await repository.read(new Date("2026-08-21T08:00:00.000Z"));

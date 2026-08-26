@@ -18,6 +18,8 @@ const output = {
   category: "preferences",
   categoryHint: null,
   confidenceBand: "HIGH",
+  entityMentions: [],
+  includePatterns: false,
   memoryUseful: false,
   pastChatsUseful: false,
   profileRequested: false,
@@ -50,6 +52,12 @@ describe("MemoryActionIntent service", () => {
     expect(request.userPrompt).toContain("current_user_message");
     expect(request.userPrompt).toContain("Please remember that I prefer tea.");
     expect(request.systemPrompt).toContain(
+      "Call the supplied MemoryActionIntent tool exactly once"
+    );
+    expect(request.systemPrompt).toContain(
+      "JSON null value, never the quoted string \"null\""
+    );
+    expect(request.systemPrompt).toContain(
       "LIST and SEARCH are explicit management actions over Saved Memories"
     );
     expect(request.systemPrompt).toContain(
@@ -65,6 +73,18 @@ describe("MemoryActionIntent service", () => {
     );
     expect(request.systemPrompt).toContain(
       "carry, use, or keep a personal fact or preference in future conversations"
+    );
+    expect(request.systemPrompt).toContain(
+      "A fact being stable, personal, useful, or phrased as a response preference is not itself a persistence directive"
+    );
+    expect(request.systemPrompt).toContain(
+      "'I prefer concise answers.' is a declarative fact and must be NONE"
+    );
+    expect(request.systemPrompt).toContain(
+      "Durability and scope language still do not create a persistence directive"
+    );
+    expect(request.systemPrompt).toContain(
+      "Это моё постоянное имя во всех разговорах"
     );
     expect(request.systemPrompt).toContain(
       "An inexact or multiply matching target is still UPDATE with HIGH confidence"
@@ -83,6 +103,18 @@ describe("MemoryActionIntent service", () => {
     );
     expect(request.systemPrompt).toContain(
       "memoryUseful false, pastChatsUseful false, applyResponsePreferences false"
+    );
+    expect(request.systemPrompt).toContain(
+      "A safety rejection never erases a direct first-party Memory action"
+    );
+    expect(request.systemPrompt).toContain(
+      "return action SAVE, confidenceBand HIGH, sensitivity SECRET"
+    );
+    expect(request.systemPrompt).toContain(
+      "statement must describe only the kind of secret"
+    );
+    expect(request.systemPrompt).toContain(
+      "explicitly described as the current user's own is first-party"
     );
     expect(request.systemPrompt).toContain(
       "retrievalMode TARGETED_CURRENT, temporalIntent CURRENT"
@@ -127,6 +159,47 @@ describe("MemoryActionIntent service", () => {
     const service = createMemoryActionIntentService({ execute });
     await expect(service.decide(context)).resolves.toMatchObject({ action: "SAVE" });
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores one exact quoted UPDATE replacement when the model shortens it", async () => {
+    const exact = "My cedar-grid reporting-format preference is visual summaries.";
+    const service = createMemoryActionIntentService({
+      execute: vi.fn(async () => ({
+        ...output,
+        action: "UPDATE",
+        reasonCode: "update_request",
+        replacementStatement:
+          "My cedar-grid reporting preference is visual summaries.",
+        statement: null,
+        targetQuery: "cedar-grid reporting preference"
+      }))
+    });
+
+    await expect(service.decide({
+      ...context,
+      currentUserMessage:
+        `Change my saved preference. Use this exact replacement statement: "${exact}"`
+    })).resolves.toMatchObject({ replacementStatement: exact });
+  });
+
+  it("does not substitute a semantically different quoted UPDATE span", async () => {
+    const replacementStatement = "I prefer detailed answers.";
+    const service = createMemoryActionIntentService({
+      execute: vi.fn(async () => ({
+        ...output,
+        action: "UPDATE",
+        reasonCode: "update_request",
+        replacementStatement,
+        statement: null,
+        targetQuery: "answer preference"
+      }))
+    });
+
+    await expect(service.decide({
+      ...context,
+      currentUserMessage:
+        "Change my saved preference from \"I prefer concise answers.\" to detailed answers."
+    })).resolves.toMatchObject({ replacementStatement });
   });
 
   it("fails closed for unavailable or invalid strict output", async () => {

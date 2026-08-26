@@ -68,7 +68,14 @@ export async function reconcileMemoryFactReclassificationJobs(
       AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."displayText" IS NOT NULL
       AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryReusableFactAuthorityPredicate(Prisma.sql`version."userId"`)}
+      AND ${memoryReusableFactAuthorityPredicate(
+        Prisma.sql`version."userId"`,
+        {
+          classification: "PENDING",
+          includePatterns: true,
+          lifecycle: "RECLASSIFICATION"
+        }
+      )}
     GROUP BY version."userId", settings."memoryGeneration", settings."memoryRevision"
   `);
   if (owners.length === 0) return 0;

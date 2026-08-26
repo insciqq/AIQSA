@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  memoryEntityAliasIsPronoun,
+  memoryEntityAliases,
   memoryEntityCanonicalKey,
   normalizeMemoryEntityAlias
 } from "./normalization";
@@ -10,12 +10,17 @@ import {
 } from "./resolver";
 
 describe("Memory entity normalization and resolution", () => {
-  it("normalizes exact aliases without transliteration and excludes pronouns", () => {
+  it("normalizes exact aliases without transliteration or language word lists", () => {
     expect(normalizeMemoryEntityAlias(" «MacBook Air» ")).toBe("macbook air");
     expect(normalizeMemoryEntityAlias("МАКБУК")).toBe("макбук");
     expect(normalizeMemoryEntityAlias("макбук")).not.toBe("macbook");
-    expect(normalizeMemoryEntityAlias("его")).toBeNull();
-    expect(memoryEntityAliasIsPronoun("it")).toBe(true);
+    expect(normalizeMemoryEntityAlias("его")).toBe("его");
+    expect(memoryEntityAliases({
+      aliases: ["it"],
+      canonicalLabel: "device",
+      mention: "it",
+      mentionKind: "PRONOMINAL"
+    })).toEqual([]);
   });
 
   it("keeps broad and specific product keys distinct", () => {

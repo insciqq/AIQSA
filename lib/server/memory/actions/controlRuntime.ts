@@ -29,19 +29,20 @@ import {
 import { memorySha256 } from "../persistence/lexical";
 import {
   buildMemoryActionIntentRequest,
+  preserveUniqueQuotedUpdateReplacement,
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v8";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v11";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v8",
-  promptVersion: "memory-control-prompt-v11",
+  policyVersion: "memory-control-policy-v11",
+  promptVersion: "memory-control-prompt-v16",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 5
+    version: 9
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
@@ -135,6 +136,9 @@ function providerRequest(
     parallelToolCalls: false,
     params: {
       ...model.defaultParams,
+      ...(model.adapterKind === "openrouter_chat_completions"
+        ? { reasoning: { enabled: false, exclude: true } }
+        : {}),
       background: false,
       maxOutputTokens,
       max_output_tokens: maxOutputTokens,
@@ -175,7 +179,7 @@ function decodeProviderResult(result: MemoryLearningProviderResult): MemoryActio
 }
 
 export function memoryControlIntentHash(intent: MemoryActionIntent): string {
-  return memoryExecutionSha256({ intent, version: 4 });
+  return memoryExecutionSha256({ intent, version: 5 });
 }
 
 export function memoryControlInputHash(context: MemoryActionIntentContext): string {
@@ -198,7 +202,7 @@ export function memoryControlAcceptedOutputHash(
   return memoryExecutionSha256({ inputHash, intentHash, version: 3 });
 }
 
-export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 4 as const;
+export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 6 as const;
 
 export type MemoryReadOnlyControlReuseProof = Readonly<{
   acceptedOutputHash: string;
@@ -295,8 +299,8 @@ export function createMemoryControlService(input: Readonly<{
           buildMemoryActionIntentRequest(requestInput.context),
           requestInput.signal
         );
-        const intent = decodeProviderResult(result);
-        if (!intent) {
+        const decodedIntent = decodeProviderResult(result);
+        if (!decodedIntent) {
           await input.execution.lifecycle.settle(requestInput.userId, binding.id, {
             acceptedOutputHash: null,
             errorCode: "memory_action_intent_invalid",
@@ -306,6 +310,10 @@ export function createMemoryControlService(input: Readonly<{
           });
           return { bindingId: binding.id, reason: "memory_action_intent_invalid", status: "UNAVAILABLE" };
         }
+        const intent = preserveUniqueQuotedUpdateReplacement(
+          decodedIntent,
+          requestInput.context.currentUserMessage
+        );
         const outputHash = memoryControlAcceptedOutputHash(
           inputHash,
           memoryControlIntentHash(intent)

@@ -65,6 +65,29 @@ describe("Memory job enqueue boundary", () => {
     expect(memoryJob.create).not.toHaveBeenCalled();
   });
 
+  it("keeps the current vNext extraction pipeline on that same source fence", async () => {
+    const memoryJob = {
+      create: vi.fn(),
+      findUnique: vi.fn()
+    };
+    const tx = { memoryJob } as unknown as MemoryTransaction;
+
+    await expect(enqueueMemoryJob(tx, settings, {
+      idempotencyFingerprint: "extract-v5-fingerprint",
+      kind: "EXTRACT_FACTS",
+      pipelineVersion: "memory-fact-extraction-vnext-v5",
+      source: {
+        activeLeafMessageId: "assistant-1",
+        branchGeneration: 0,
+        chatId: "chat-1",
+        sourceHash: "a".repeat(64),
+        sourceRevision: 0
+      }
+    })).rejects.toThrow("memory_input_invalid");
+    expect(memoryJob.findUnique).not.toHaveBeenCalled();
+    expect(memoryJob.create).not.toHaveBeenCalled();
+  });
+
   it("does not retroactively require source messages for legacy pipelines", async () => {
     const memoryJob = {
       create: vi.fn().mockResolvedValue({
@@ -83,6 +106,51 @@ describe("Memory job enqueue boundary", () => {
       pipelineVersion: "memory-fact-extraction-v1"
     })).resolves.toMatchObject({ created: true, id: "legacy-job" });
     expect(memoryJob.create).toHaveBeenCalledOnce();
+  });
+
+  it("allows a synthesis job to target one existing pattern", async () => {
+    const memoryJob = {
+      create: vi.fn().mockResolvedValue({
+        id: "targeted-synthesis-job",
+        memoryGenerationSnapshot: 0,
+        memoryRevisionSnapshot: 0,
+        state: "QUEUED"
+      }),
+      findUnique: vi.fn().mockResolvedValue(null)
+    };
+    const tx = { memoryJob } as unknown as MemoryTransaction;
+
+    await expect(enqueueMemoryJob(tx, settings, {
+      idempotencyFingerprint: "targeted-synthesis-fingerprint",
+      kind: "SYNTHESIZE_MEMORIES",
+      pipelineVersion: "memory-synthesis-v2",
+      targetFactVersionId: "pattern-version-1"
+    })).resolves.toMatchObject({
+      created: true,
+      id: "targeted-synthesis-job"
+    });
+    expect(memoryJob.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        targetFactVersionId: "pattern-version-1"
+      })
+    }));
+  });
+
+  it("rejects a target on job kinds without a target contract", async () => {
+    const memoryJob = {
+      create: vi.fn(),
+      findUnique: vi.fn()
+    };
+    const tx = { memoryJob } as unknown as MemoryTransaction;
+
+    await expect(enqueueMemoryJob(tx, settings, {
+      idempotencyFingerprint: "targeted-rebuild-fingerprint",
+      kind: "REBUILD_INDEX",
+      pipelineVersion: "memory-index-rebuild-v1",
+      targetFactVersionId: "pattern-version-1"
+    })).rejects.toThrow("memory_input_invalid");
+    expect(memoryJob.findUnique).not.toHaveBeenCalled();
+    expect(memoryJob.create).not.toHaveBeenCalled();
   });
 
   it("treats changed chat audit snapshots as the same per-message extraction job", async () => {

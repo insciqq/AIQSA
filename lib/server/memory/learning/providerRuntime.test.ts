@@ -4,6 +4,7 @@ import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import { ProviderSafeFetchError } from "../../providers/providerSafeFetch";
 import type { ProviderRunRequest } from "../../providers/types";
 import {
+  applyMemoryLearningReasoningBudget,
   createAcceptedMemoryLearningProvider,
   type MemoryLearningProviderFailure
 } from "./providerRuntime";
@@ -120,6 +121,106 @@ function evidence(runtime: ProviderExecutionSnapshot) {
 }
 
 describe("Memory learning provider runtime", () => {
+  it("adds provider-neutral headroom only for one forced strict reasoning tool", () => {
+    const base = snapshot();
+    const reasoningRuntime: ProviderExecutionSnapshot = {
+      ...base,
+      model: {
+        ...base.model,
+        capabilities: {
+          ...base.model.capabilities,
+          defaultMaxOutputTokens: 32_768,
+          defaultReasoningEffort: "high",
+          reasoning: true
+        },
+        defaultParams: {
+          maxTokens: 8_192,
+          reasoning: { enabled: true, effort: "high" }
+        }
+      }
+    };
+    const strictRequest: ProviderRunRequest = {
+      ...request(reasoningRuntime),
+      params: {
+        maxOutputTokens: 2_400,
+        max_output_tokens: 2_400,
+        reasoning: { enabled: true, effort: "high" },
+        stream: false
+      },
+      toolChoice: "required",
+      tools: [{
+        capability: "memory",
+        description: "Return a strict synthetic Memory result.",
+        inputSchema: { type: "object" },
+        name: "strict_memory_result",
+        strict: true
+      }]
+    };
+
+    const adjusted = applyMemoryLearningReasoningBudget(
+      reasoningRuntime,
+      strictRequest
+    );
+    expect(adjusted.params).toMatchObject({
+      maxOutputTokens: 8_192,
+      max_output_tokens: 8_192
+    });
+    expect(strictRequest.params).toMatchObject({
+      maxOutputTokens: 2_400,
+      max_output_tokens: 2_400
+    });
+    expect(applyMemoryLearningReasoningBudget(base, strictRequest)).toBe(strictRequest);
+    expect(applyMemoryLearningReasoningBudget(reasoningRuntime, {
+      ...strictRequest,
+      params: {
+        ...strictRequest.params,
+        reasoning: { enabled: false, effort: "none" }
+      }
+    }).params.maxOutputTokens).toBe(2_400);
+    expect(applyMemoryLearningReasoningBudget(reasoningRuntime, {
+      ...strictRequest,
+      tools: [{ ...strictRequest.tools![0]!, strict: undefined }]
+    })).toMatchObject({ params: { maxOutputTokens: 2_400 } });
+  });
+
+  it("never raises a forced reasoning tool above the configured model ceiling", () => {
+    const base = snapshot();
+    const reasoningRuntime: ProviderExecutionSnapshot = {
+      ...base,
+      model: {
+        ...base.model,
+        capabilities: {
+          ...base.model.capabilities,
+          defaultMaxOutputTokens: 16_384,
+          reasoning: true
+        },
+        defaultParams: {
+          maxTokens: 4_096,
+          reasoning: { enabled: true, effort: "high" }
+        }
+      }
+    };
+    const strictRequest: ProviderRunRequest = {
+      ...request(reasoningRuntime),
+      params: {
+        maxOutputTokens: 1_600,
+        max_output_tokens: 1_600,
+        reasoning: { enabled: true, effort: "high" }
+      },
+      toolChoice: "required",
+      tools: [{
+        capability: "memory",
+        description: "Return a strict synthetic Memory result.",
+        inputSchema: { type: "object" },
+        name: "strict_memory_result",
+        strict: true
+      }]
+    };
+
+    expect(applyMemoryLearningReasoningBudget(reasoningRuntime, strictRequest).params)
+      .toMatchObject({ maxOutputTokens: 4_096, max_output_tokens: 4_096 });
+  });
+
   it("share-locks the immutable no-auth target and returns one bounded result", async () => {
     const runtime = snapshot();
     const fixture = client();

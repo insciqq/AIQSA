@@ -9,6 +9,12 @@ import { createPrismaMemoryCoordinatorRepository } from
   "../coordinator/prismaRepository";
 import { MemoryCoordinatorRegistry } from "../coordinator/registry";
 import type { MemoryDeletionClaim } from "../coordinator/types";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_EXTRACTION_POLICY_VERSION,
+  MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
+  MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
+} from "../learning/extraction/contract";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createPrismaMemoryFeedbackRepository } from "../review/feedbackRepository";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
@@ -179,6 +185,8 @@ async function populateReusableMemory(
   const bindingId = randomUUID();
   const mutationAuthorizationId = randomUUID();
   const manualClassifierBindingId = randomUUID();
+  const entityId = randomUUID();
+  const aliasId = randomUUID();
   const executionInputHash = "1".repeat(64);
   const executionOutputHash = "2".repeat(64);
   const statement = "Пользователь предпочитает краткие технические ответы.";
@@ -289,6 +297,44 @@ async function populateReusableMemory(
         sourceProjectionVersion: "account-memory-test-v1",
         sourceType: "EXPLICIT_ACTION",
         stance: "SUPPORTS",
+        userId
+      }
+    });
+    await tx.memoryEntity.create({
+      data: {
+        canonicalKey: "entity:v3:concept:account-memory-fixture",
+        displayName: "Account Memory fixture",
+        entityType: "CONCEPT",
+        id: entityId,
+        userId
+      }
+    });
+    await tx.memoryEntityAlias.create({
+      data: {
+        confidence: 1,
+        displayAlias: "Account Memory fixture",
+        entityId,
+        id: aliasId,
+        normalizedAlias: "account memory fixture",
+        sourceKind: "EXPLICIT_FACT",
+        userId
+      }
+    });
+    await tx.memoryEntityAliasSupport.create({
+      data: {
+        aliasId,
+        factVersionId: versionId,
+        supportFingerprint: memorySha256({ aliasId, versionId }),
+        supportKind: "FACT_VERSION",
+        userId
+      }
+    });
+    await tx.memoryFactVersionEntity.create({
+      data: {
+        confidence: 1,
+        entityId,
+        factVersionId: versionId,
+        role: "SUBJECT",
         userId
       }
     });
@@ -473,6 +519,121 @@ async function populateReusableMemory(
   return { bindingId, factId, jobId, manualClassifierBindingId, versionId };
 }
 
+async function populatePendingFactExtraction(
+  userId: string,
+  provider: ProviderFixture,
+  now: Date
+): Promise<void> {
+  const chat = await prisma.chat.create({
+    data: { title: "Pending fact extraction", userId }
+  });
+  const sourceText = "Account deletion staging fixture.";
+  const sourceMessage = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: { parts: [{ text: sourceText, type: "text" }], version: 1 },
+      createdAt: now,
+      role: "user",
+      status: "complete",
+      updatedAt: now
+    }
+  });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: sourceMessage.id },
+    where: { id: chat.id }
+  });
+  const jobId = randomUUID();
+  const bindingId = randomUUID();
+  const executionId = randomUUID();
+  const outputHash = "7".repeat(64);
+  const recoverableUntil = new Date(now.getTime() + 24 * 60 * 60 * 1_000);
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryJob.create({
+      data: {
+        activeLeafMessageId: sourceMessage.id,
+        attemptCount: 1,
+        branchGeneration: 0,
+        chatId: chat.id,
+        id: jobId,
+        idempotencyFingerprint: memorySha256({ jobId, userId }),
+        kind: "EXTRACT_FACTS",
+        leaseExpiresAt: recoverableUntil,
+        leaseToken: randomUUID(),
+        memoryGenerationSnapshot: 0,
+        memoryRevisionSnapshot: 0,
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        sourceHash: memorySha256({ sourceMessageId: sourceMessage.id }),
+        sourceMessageId: sourceMessage.id,
+        sourceRevision: 0,
+        state: "CLAIMED",
+        userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        connectionId: provider.connectionId,
+        createdAt: now,
+        credentialId: provider.credentialId,
+        credentialVersionId: provider.credentialVersionId,
+        destinationFingerprint: "8".repeat(64),
+        id: bindingId,
+        inputHash: "9".repeat(64),
+        logicalRole: "MEMORY_FACT_EXTRACT",
+        memoryJobId: jobId,
+        ordinal: 0,
+        ownerType: "JOB",
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
+        promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
+        providerId: "openai_compatible",
+        providerModelId: provider.modelId,
+        schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+        secretFreeExecutionSnapshot: {},
+        startedAt: now,
+        state: "RUNNING",
+        userId
+      }
+    });
+    await tx.memoryFactExtractionExecution.create({
+      data: {
+        acceptedOutput: {
+          candidateOrdinals: [0],
+          candidates: [{ fixture: "strict-decoded-output" }],
+          rejections: []
+        },
+        acceptedOutputHash: outputHash,
+        contextBindings: [],
+        executionBindingId: bindingId,
+        id: executionId,
+        inputHash: "9".repeat(64),
+        memoryJobId: jobId,
+        recoverableUntil,
+        sourceMessageContentHash: memorySha256(sourceText),
+        sourceMessageId: sourceMessage.id,
+        userId
+      }
+    });
+    await tx.memoryFactExtractionCandidateReceipt.create({
+      data: {
+        candidateFingerprint: "a".repeat(64),
+        candidateOrdinal: 0,
+        extractionExecutionId: executionId,
+        id: randomUUID(),
+        userId
+      }
+    });
+    await tx.memoryExecutionBinding.update({
+      data: {
+        acceptedOutputHash: outputHash,
+        completedAt: now,
+        recoverableUntil,
+        state: "SUCCEEDED"
+      },
+      where: { id: bindingId }
+    });
+  });
+}
+
 function coordinatorFor(
   registry: MemoryCoordinatorRegistry,
   now: () => Date
@@ -539,6 +700,138 @@ describe("Prisma account Memory deletion", () => {
       await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(1);
     } finally {
       await cleanupOwner(userId);
+    }
+  });
+
+  it("inventories pending fact extraction staging and receipts as owned data", async () => {
+    const now = new Date();
+    const provider = await createProviderFixture(now);
+    const userId = await createOwner("disabled");
+    try {
+      await populatePendingFactExtraction(userId, provider, now);
+      await expect(prisma.memoryFactExtractionExecution.count({ where: { userId } }))
+        .resolves.toBe(1);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.count({
+        where: { userId }
+      })).resolves.toBe(1);
+      await expect(countAccountMemoryOwnedData(prisma, userId))
+        .resolves.toBeGreaterThanOrEqual(2);
+    } finally {
+      await cleanupOwner(userId);
+      await cleanupProvider(provider);
+    }
+  });
+
+  it("inventories dependency and entity provenance row-for-row", async () => {
+    const now = new Date();
+    const provider = await createProviderFixture(now);
+    const userId = await createOwner();
+    try {
+      const fixture = await populateReusableMemory(userId, provider, { now });
+      await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryEntityAlias.count({ where: { userId } }))
+        .resolves.toBe(1);
+      await expect(prisma.memoryEntityAliasSupport.count({ where: { userId } }))
+        .resolves.toBe(1);
+      await expect(prisma.memoryFactVersionEntity.count({ where: { userId } }))
+        .resolves.toBe(1);
+      const scope = await prisma.memoryScope.findFirstOrThrow({
+        where: { scopeType: "GLOBAL_USER", userId }
+      });
+      const sourceFactId = randomUUID();
+      const sourceVersionId = randomUUID();
+      const sourceEventId = randomUUID();
+      const sourceText = "Independent explicit dependency source.";
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
+        await tx.memoryFact.create({
+          data: {
+            canonicalKey: `proposition:v1:${memorySha256(sourceText)}`,
+            category: "about_you",
+            currentVersionId: sourceVersionId,
+            id: sourceFactId,
+            scopeId: scope.id,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryEvent.create({
+          data: {
+            actorType: "USER",
+            actorUserId: userId,
+            factId: sourceFactId,
+            factVersionId: sourceVersionId,
+            id: sourceEventId,
+            operation: "EXPLICIT_SAVE",
+            userId
+          }
+        });
+        await tx.memoryFactVersion.create({
+          data: {
+            category: "about_you",
+            confidence: 1,
+            createdByEventId: sourceEventId,
+            directness: "DIRECT",
+            displayText: sourceText,
+            factId: sourceFactId,
+            id: sourceVersionId,
+            importance: 0.8,
+            languageCode: "en",
+            modality: "EVENT",
+            normalizedSearchText: normalizeMemorySearchText(sourceText),
+            pipelineVersion: "account-memory-test-v1",
+            safetyClassificationReasonCode: "direct_fixture",
+            safetyClassificationState: "CLASSIFIED",
+            safetyClassifiedAt: now,
+            safetyClassifierExecutionId: fixture.manualClassifierBindingId,
+            safetyClassifierModelId: provider.modelId,
+            safetyClassifierPolicyVersion: "account-memory-test-v1",
+            safetyClassifierProviderId: "openai_compatible",
+            sensitivityClass: "NORMAL",
+            sourceMode: "EXPLICIT",
+            state: "ACTIVE",
+            structuredValue: { statement: sourceText },
+            userId
+          }
+        });
+        await tx.memoryEvidence.create({
+          data: {
+            factVersionId: sourceVersionId,
+            memoryEventId: sourceEventId,
+            observedAt: now,
+            safeExcerpt: sourceText,
+            safeSourceHash: memorySha256(sourceText),
+            safetyClass: "NORMAL",
+            sourceProjectionVersion: "account-memory-test-v1",
+            sourceType: "EXPLICIT_ACTION",
+            stance: "SUPPORTS",
+            userId
+          }
+        });
+      });
+      const beforeDependency = await countAccountMemoryOwnedData(prisma, userId);
+      await prisma.memoryFactVersionSourceDependency.create({
+        data: {
+          dependencyKind: "RELATION_CONTEXT",
+          sourceFactVersionId: sourceVersionId,
+          targetFactVersionId: fixture.versionId,
+          userId
+        }
+      });
+      await expect(countAccountMemoryOwnedData(prisma, userId))
+        .resolves.toBe(beforeDependency + 1);
+      const before = await countAccountMemoryOwnedData(prisma, userId);
+
+      await prisma.memoryFactVersionSourceDependency.deleteMany({ where: { userId } });
+      await prisma.memoryFactVersionEntity.deleteMany({ where: { userId } });
+      await prisma.memoryEntityAliasSupport.deleteMany({ where: { userId } });
+      await prisma.memoryEntity.deleteMany({ where: { userId } });
+
+      await expect(countAccountMemoryOwnedData(prisma, userId))
+        .resolves.toBe(before - 5);
+    } finally {
+      await cleanupOwner(userId);
+      await cleanupProvider(provider);
     }
   });
 

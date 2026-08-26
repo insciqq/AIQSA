@@ -35,7 +35,8 @@ export type OpenRouterChatRequestBody = Record<string, unknown> & {
   cache_control?: {
     type: "ephemeral";
   };
-  max_completion_tokens: number;
+  max_completion_tokens?: number;
+  max_tokens?: number;
   messages: OpenRouterMessage[];
   metadata: Record<string, string>;
   model: string;
@@ -326,13 +327,16 @@ function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions
   return mergeAdjacentOpenRouterMessages(messages);
 }
 
-function buildProviderRouting(params: OpenRouterParams): Record<string, unknown> {
+function buildProviderRouting(
+  params: OpenRouterParams,
+  requireParameters = false
+): Record<string, unknown> {
   return {
     ...(params.provider.order.length > 0 ? { order: params.provider.order } : {}),
     ...(params.provider.only.length > 0 ? { only: params.provider.only } : {}),
     allow_fallbacks: params.provider.allowFallbacks,
     data_collection: params.provider.dataCollection,
-    require_parameters: params.provider.requireParameters,
+    require_parameters: requireParameters || params.provider.requireParameters,
     sort: params.provider.sort,
     ...(params.provider.zdr ? { zdr: true } : {})
   };
@@ -378,12 +382,18 @@ function buildOpenRouterBody(input: {
   toolChoice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
 }): OpenRouterChatRequestBody {
+  const strictTools = input.toolChoice !== "none" && input.tools?.some((tool) => {
+    const fn = tool.function;
+    return fn && typeof fn === "object" && !Array.isArray(fn) &&
+      (fn as Record<string, unknown>).strict === true;
+  }) === true;
+  const maxTokens = Math.max(16, input.params.maxTokens);
   const body: OpenRouterChatRequestBody = {
-    max_completion_tokens: Math.max(16, input.params.maxTokens),
+    ...(strictTools ? { max_tokens: maxTokens } : { max_completion_tokens: maxTokens }),
     messages: input.messages,
     metadata: input.metadata,
     model: input.modelId,
-    provider: buildProviderRouting(input.params),
+    provider: buildProviderRouting(input.params, strictTools),
     session_id: providerPromptCacheKey(input.chatId),
     stream: input.stream
   };
@@ -414,7 +424,13 @@ function buildOpenRouterBody(input: {
   if (input.tools && input.tools.length > 0) {
     body.tools = input.tools;
     body.tool_choice = input.toolChoice ?? "auto";
-    body.parallel_tool_calls = input.parallelToolCalls === true;
+    // A single strict tool is already a bounded schema route. Omitting this
+    // optional flag keeps the request routable to strict-capable endpoints
+    // that do not advertise parallel tool calls; multiple tools retain the
+    // caller's exact sequential/parallel contract.
+    if (!strictTools || input.tools.length > 1) {
+      body.parallel_tool_calls = input.parallelToolCalls === true;
+    }
   }
 
   return body;

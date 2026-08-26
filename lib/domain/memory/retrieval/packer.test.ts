@@ -102,9 +102,14 @@ describe("Personal Memory context pack", () => {
 
   it("labels depth-one synthesis in a separate inferred-pattern section", () => {
     const pattern = ranked("pattern");
+    const patternPlan = planMemoryRetrieval({
+      currentUserText: "what pattern do I follow",
+      includePatterns: true,
+      now
+    });
     const pack = packMemoryPersonalContext({
       expanded: [expansion("pattern", false, "User tends to follow a repeatable workflow")],
-      plan,
+      plan: patternPlan,
       ranked: [{
         ...pattern,
         metadata: {

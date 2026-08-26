@@ -30,6 +30,17 @@ export type MemoryRetrievalHistorySafetyClass =
 
 export type MemoryRetrievalSourceKind = "EVENT" | "FACT" | "HISTORY";
 
+export type MemoryRetrievalEntityMention = Readonly<{
+  occurrenceIndex: number;
+  resolvedRef: string | null;
+  text: string;
+}>;
+
+export type MemoryDeterministicMatch =
+  | "EXACT_ALIAS_SINGLE_ROOT"
+  | "EXACT_TEXT"
+  | "PROFILE";
+
 export type MemoryRetrievalFilters = Readonly<{
   asOf: Date | null;
   from: Date | null;
@@ -43,7 +54,11 @@ export type MemoryRetrievalFilters = Readonly<{
 export type MemoryRetrievalPlan = Readonly<{
   /** Allows only the narrow query-independent response-preference projection. */
   applyResponsePreferences: boolean;
+  /** Exact query occurrences; resolved refs remain non-authoritative owner-scoped hints. */
+  entityMentions: readonly MemoryRetrievalEntityMention[];
   filters: MemoryRetrievalFilters;
+  /** Admits depth-one synthesis patterns for an explicitly authorized targeted query. */
+  includePatterns: boolean;
   lexicalQuery: string | null;
   mode: MemoryRetrievalMode;
   normalizedExactQuery: string;
@@ -57,9 +72,12 @@ export type MemoryRetrievalPlan = Readonly<{
 }>;
 
 export type MemoryRetrievalPlannerInput = Readonly<{
+  allowedEntityRefs?: readonly string[];
   applyResponsePreferences?: boolean;
   currentUserText: string;
+  entityMentions?: readonly MemoryRetrievalEntityMention[];
   filters?: Partial<MemoryRetrievalFilters>;
+  includePatterns?: boolean;
   mode?: MemoryRetrievalMode;
   now: Date;
   profileRequested?: boolean;
@@ -124,6 +142,7 @@ export type MemoryCandidateMetadata = Readonly<{
 }>;
 
 export type MemoryLaneCandidate = Readonly<{
+  deterministicMatch?: MemoryDeterministicMatch | null;
   entryId: string | null;
   hardFilterPassed: boolean;
   itemId: string;
@@ -145,6 +164,8 @@ export type MemoryRetrievalFeatureSnapshot = Readonly<{
     "SYSTEM_FROM" | null;
   decayFactor?: number;
   decayPolicyVersion?: string;
+  deterministicMatches?: readonly MemoryDeterministicMatch[];
+  directFactAuthority?: boolean;
   fusionVersion: string;
   laneCount: number;
   temporalFit: number;

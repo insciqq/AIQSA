@@ -60,6 +60,7 @@ export type MemoryFactSafetyClassificationInput =
   | Readonly<{
       acceptedOutputHash: string;
       decision: MemoryStatementClassificationDecision;
+      displayProjection: "CLASSIFIER_NORMALIZED" | "EXACT_INPUT";
       executionId: string;
       inputHash: string;
       inputStatement: string;
@@ -220,6 +221,8 @@ function validSafetyClassification(
   return sha256Pattern.test(value.acceptedOutputHash) &&
     sha256Pattern.test(value.inputHash) &&
     validPlaintext(value.inputStatement, 2_000) &&
+    (value.displayProjection === "CLASSIFIER_NORMALIZED" ||
+      value.displayProjection === "EXACT_INPUT") &&
     categoryPattern.test(canonicalCategory) &&
     validPlaintext(decision.normalizedStatement, 2_000) &&
     safetyReasonCodePattern.test(decision.reasonCode) &&
@@ -916,13 +919,16 @@ async function governedFactSafety(
       decision.sensitivity,
       input.value.sensitivityClass
     );
+    const expectedDisplayText = requested.displayProjection === "EXACT_INPUT"
+      ? requested.inputStatement
+      : decision.normalizedStatement;
     if (
       binding.ownerType !== "MUTATION_AUTHORIZATION" ||
       binding.mutationAuthorizationId !== input.authorization?.authorizationId ||
       binding.inputHash !== requested.inputHash || requested.inputHash !== inputHash ||
       binding.acceptedOutputHash !== requested.acceptedOutputHash ||
       requested.acceptedOutputHash !== acceptedOutputHash ||
-      decision.normalizedStatement !== input.value.displayText ||
+      expectedDisplayText !== input.value.displayText ||
       expectedCategory !== input.value.category ||
       !sensitivityCompatible ||
       (decision.responsePreference

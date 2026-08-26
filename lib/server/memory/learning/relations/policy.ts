@@ -1,7 +1,11 @@
 import { memorySha256 } from "../../persistence/lexical";
+import type {
+  MemorySemanticAdjudication,
+  MemorySemanticFrame
+} from "../extraction/contract";
 
 export const MEMORY_FACT_RELATION_PIPELINE_VERSION = "memory-fact-relation-v2";
-export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v2";
+export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v3";
 export const MEMORY_FACT_RELATION_PROMPT_VERSION = "memory-fact-relation-prompt-v1";
 export const MEMORY_FACT_RELATION_SCHEMA_VERSION = "memory-fact-relation-schema-v1";
 
@@ -19,7 +23,6 @@ export type MemoryRelationVersionSnapshot = Readonly<{
   canonicalKey: string;
   dimensionKey: string | null;
   directness: "DIRECT" | "INFERRED" | "PARAPHRASED";
-  displayText: string;
   entities: readonly Readonly<{
     canonicalKey: string;
     entityType: string;
@@ -33,6 +36,11 @@ export type MemoryRelationVersionSnapshot = Readonly<{
   observedAt: string | null;
   occurredAt: string | null;
   predicateKey: string | null;
+  semanticAdjudication: (MemorySemanticAdjudication & Readonly<{
+    resolvedEntityId: string | null;
+    resolvedTargetVersionId: string | null;
+  }>) | null;
+  semanticFrame: MemorySemanticFrame | null;
   ref: string;
   sourceMode: "AUTOMATIC" | "EXPLICIT";
   state: "ACTIVE" | "PENDING_RELATION";
@@ -95,7 +103,6 @@ export type MemoryRelationSnapshot = Readonly<{
     sourceMessageId: string;
     sourceRevision: number | null;
   }>;
-  sourceText: string;
 }>;
 
 export type MemoryRelationDecision = Readonly<{
@@ -228,19 +235,7 @@ function richness(value: unknown): number {
 function representationRichness(version: MemoryRelationVersionSnapshot): number {
   return richness(version.structuredValue) +
     [version.occurredAt, version.expectedAt, version.validFrom, version.validTo]
-      .filter((value) => value !== null).length +
-    Math.min(version.displayText.length, 512) / 512;
-}
-
-function explicitChangeSignal(sourceText: string): boolean {
-  return /(?:\b(?:actually|changed|instead|now|reopen(?:ed)?|restart(?:ed)?|again|no longer|formerly|currently)\b|(?:^|[^\p{L}])(?:теперь|сейчас|вообще-то|снова|возобновил|перезапустил|больше не|раньше)(?:$|[^\p{L}]))/iu
-    .test(sourceText);
-}
-
-function retrospectiveResidence(snapshot: MemoryRelationSnapshot): boolean {
-  return snapshot.pending.predicateKey === "residence" &&
-    /(?:\b(?:previously|used to|formerly)\b|(?:^|[^\p{L}])раньше(?:$|[^\p{L}]))/iu
-      .test(snapshot.sourceText);
+      .filter((value) => value !== null).length;
 }
 
 export function memorySlotTransitionAllowed(input: Readonly<{
@@ -311,6 +306,22 @@ function sharedSubjectEntity(
     role === "SUBJECT" && leftSubjects.has(canonicalKey));
 }
 
+function semanticAuthorityMatches(
+  pending: MemoryRelationVersionSnapshot,
+  current: MemoryRelationVersionSnapshot,
+  operations: ReadonlySet<MemorySemanticAdjudication["operation"]>
+): boolean {
+  const adjudication = pending.semanticAdjudication;
+  return adjudication !== null &&
+    adjudication.entailment === "ENTAILED" &&
+    adjudication.confidenceBand === "HIGH" &&
+    adjudication.subjectScope === "CURRENT_USER" &&
+    adjudication.assertionStatus === "ASSERTED" &&
+    adjudication.temporalPerspective !== "UNKNOWN" &&
+    adjudication.resolvedTargetVersionId === current.versionId &&
+    operations.has(adjudication.operation);
+}
+
 export function decideMemoryFactRelation(
   snapshot: MemoryRelationSnapshot,
   now = new Date()
@@ -325,6 +336,14 @@ export function decideMemoryFactRelation(
   }
   if (current.expiresAt !== null && new Date(current.expiresAt) <= now &&
     pending.factId === current.factId) {
+    if (!semanticAuthorityMatches(
+      pending,
+      current,
+      new Set(["SUPERSEDE_TARGET"])
+    )) {
+      return decision("CONFLICT", current.versionId,
+        "semantic_adjudication_missing");
+    }
     return decision("ACTIVATE_AFTER_EXPIRY", current.versionId,
       "expired_current_replaced");
   }
@@ -333,24 +352,35 @@ export function decideMemoryFactRelation(
     pending.predicateKey === null || pending.predicateKey !== current.predicateKey) {
     return decision("CONFLICT", current.versionId, "slot_identity_mismatch");
   }
-  if (retrospectiveResidence(snapshot)) {
+  if (pending.predicateKey === "residence" &&
+    pending.semanticFrame?.temporalPerspective === "FORMER") {
     return decision("CONFLICT", current.versionId, "retrospective_state_not_current");
   }
   const predicate = pending.predicateKey;
   const oldValue = primaryValue(predicate, current.structuredValue);
   const newValue = primaryValue(predicate, pending.structuredValue);
   if (oldValue === null || newValue === null) {
-    return decision("AMBIGUOUS", current.versionId, "unsupported_structured_value", 0);
+    return decision("CONFLICT", current.versionId, "unsupported_structured_value", 0);
   }
   if (pending.factId !== current.factId) {
     if (correction) {
-      return decision("MOVE_TO_DISTINCT_FACT", current.versionId,
-        "explicit_identity_correction");
+      return semanticAuthorityMatches(
+        pending,
+        current,
+        new Set(["MOVE_TO_DISTINCT_FACT"])
+      ) ? decision("MOVE_TO_DISTINCT_FACT", current.versionId,
+          "explicit_identity_correction")
+        : decision("CONFLICT", current.versionId,
+          "semantic_adjudication_missing");
     }
     const compatibleIdentity = pending.dimensionKey === current.dimensionKey &&
       (pending.subjectKey === current.subjectKey || sharedSubjectEntity(pending, current));
     return compatibleIdentity && oldValue === newValue &&
-      temporalCompatible(current, pending)
+      temporalCompatible(current, pending) && semanticAuthorityMatches(
+        pending,
+        current,
+        new Set(["MERGE_NEW_INTO_TARGET", "MERGE_TARGET_INTO_NEW"])
+      )
       ? mergeDecision(current, pending)
       : decision("CONFLICT", current.versionId, "cross_fact_relation_unproven");
   }
@@ -358,14 +388,31 @@ export function decideMemoryFactRelation(
     return decision("CONFLICT", current.versionId, "slot_identity_mismatch");
   }
   if (oldValue === newValue && temporalCompatible(current, pending)) {
+    if (!semanticAuthorityMatches(
+      pending,
+      current,
+      new Set([
+        "REINFORCE", "MERGE_NEW_INTO_TARGET", "MERGE_TARGET_INTO_NEW"
+      ])
+    )) return decision("CONFLICT", current.versionId,
+      "semantic_adjudication_missing");
     return mergeDecision(current, pending);
   }
   if (current.sourceMode === "EXPLICIT" && pending.sourceMode === "AUTOMATIC") {
     return decision("CONFLICT", current.versionId, "explicit_current_conflict");
   }
+  if (!semanticAuthorityMatches(
+    pending,
+    current,
+    new Set(["SUPERSEDE_TARGET"])
+  )) {
+    return decision("CONFLICT", current.versionId, "semantic_adjudication_missing");
+  }
+  const changeIntent = pending.semanticFrame?.changeIntent ?? "UNKNOWN";
   if (memorySlotTransitionAllowed({
     correction,
-    explicitSignal: explicitChangeSignal(snapshot.sourceText) ||
+    explicitSignal: changeIntent === "STATE_CHANGE" ||
+      changeIntent === "CORRECTION" || changeIntent === "REOPEN" ||
       predicate === "residence" ||
       (["constraint", "routine"].includes(predicate) &&
         (pending.directness === "DIRECT" || pending.sourceMode === "EXPLICIT")),
@@ -376,7 +423,7 @@ export function decideMemoryFactRelation(
     return decision("SUPERSEDE_TARGET", current.versionId,
       correction ? "explicit_correction" : "allowed_state_transition");
   }
-  return decision("AMBIGUOUS", current.versionId, "transition_not_deterministic", 0);
+  return decision("CONFLICT", current.versionId, "transition_not_deterministic", 0);
 }
 
 export function relationSnapshotHash(snapshot: MemoryRelationSnapshot): string {
@@ -387,6 +434,6 @@ export function relationSnapshotHash(snapshot: MemoryRelationSnapshot): string {
     promptVersion: MEMORY_FACT_RELATION_PROMPT_VERSION,
     schemaVersion: MEMORY_FACT_RELATION_SCHEMA_VERSION,
     snapshot,
-    version: 2
+    version: 3
   });
 }
