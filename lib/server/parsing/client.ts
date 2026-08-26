@@ -1,4 +1,5 @@
 import type { ParserEngineConfig } from "./config";
+import { parseRetryAfterMs } from "../retryAfter";
 import { DocumentParserError, isDocumentParserError } from "./errors";
 import { normalizeDoclingResponse, normalizeTikaResponse } from "./normalization";
 import { normalizedFileExtension } from "./routing";
@@ -92,11 +93,23 @@ async function readBoundedJson(
   }
 }
 
-function httpError(status: number, engine: SidecarParserEngine): DocumentParserError {
+function httpError(
+  status: number,
+  engine: SidecarParserEngine,
+  headers: Headers
+): DocumentParserError {
+  const options = {
+    httpStatus: status,
+    retryAfterMs: parseRetryAfterMs(headers.get("retry-after"))
+  };
   if (status === 408 || status === 504) {
-    return new DocumentParserError("parser_timeout", engine);
+    return new DocumentParserError("parser_timeout", engine, options);
   }
-  return new DocumentParserError(status >= 500 ? "parser_unavailable" : "parser_rejected", engine);
+  return new DocumentParserError(
+    status === 429 || status >= 500 ? "parser_unavailable" : "parser_rejected",
+    engine,
+    options
+  );
 }
 
 function requestBody(input: SidecarParseInput, engine: SidecarParserEngine): BodyInit {
@@ -192,7 +205,7 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
     try {
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
-        throw httpError(response.status, this.#engine);
+        throw httpError(response.status, this.#engine, response.headers);
       }
 
       const value = await readBoundedJson(

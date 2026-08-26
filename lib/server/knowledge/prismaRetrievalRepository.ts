@@ -118,19 +118,28 @@ function embeddingTokens(value: unknown): number {
 function resultMetrics(value: unknown): Readonly<{
   contentHashes: readonly string[];
   retrievedTokens: number;
+  sourceAliases: readonly string[];
 }> {
-  if (!Array.isArray(value)) return { contentHashes: [], retrievedTokens: 0 };
+  if (!Array.isArray(value)) return { contentHashes: [], retrievedTokens: 0, sourceAliases: [] };
   const contentHashes: string[] = [];
+  const sourceAliases: string[] = [];
   let bytes = 0;
   for (const entry of value) {
     if (!record(entry)) continue;
     if (typeof entry.contentHash === "string" && /^[0-9a-f]{64}$/u.test(entry.contentHash)) {
       contentHashes.push(entry.contentHash);
     }
+    if (typeof entry.sourceAlias === "string" && /^S[1-9]\d{0,2}$/u.test(entry.sourceAlias)) {
+      sourceAliases.push(entry.sourceAlias);
+    }
     const includedTextBytes = nonNegativeInteger(entry.includedTextBytes);
     bytes += includedTextBytes ?? 0;
   }
-  return { contentHashes, retrievedTokens: Math.ceil(bytes / 4) };
+  return {
+    contentHashes,
+    retrievedTokens: Math.ceil(bytes / 4),
+    sourceAliases: [...new Set(sourceAliases)].sort()
+  };
 }
 
 function passageDocumentContext(
@@ -329,6 +338,7 @@ export function createPrismaKnowledgeRetrievalStore(
       let retrievedTokens = 0;
       let totalEmbeddingTokens = 0;
       const priorContentHashes: string[] = [];
+      const priorSourceAliases: string[] = [];
       for (const receipt of receipts) {
         cumulativeCandidates += receipt.candidateCount;
         latencyMs += receipt.durationMs;
@@ -339,6 +349,7 @@ export function createPrismaKnowledgeRetrievalStore(
         evidenceCount += Array.isArray(receipt.results) ? receipt.results.length : 0;
         retrievedTokens += result.retrievedTokens;
         priorContentHashes.push(...result.contentHashes);
+        priorSourceAliases.push(...result.sourceAliases);
       }
       const usage: KnowledgeBudgetUsage = {
         cumulativeCandidates,
@@ -357,23 +368,29 @@ export function createPrismaKnowledgeRetrievalStore(
         invocationOrdinal: summary.invocationOrdinal,
         policy,
         priorContentHashes: [...new Set(priorContentHashes)],
+        priorSourceAliases: [...new Set(priorSourceAliases)].sort(),
         stopReason: knowledgeBudgetStopReason(policy, usage),
         usage
       };
     },
     async hybridSearch(input): Promise<KnowledgeHybridSearchResult> {
       if (
-        input.vectors.length > KNOWLEDGE_SCOPE_MAX_BINDINGS ||
+        input.vectors.length > KNOWLEDGE_SCOPE_MAX_BINDINGS * 2 ||
         input.vectors.some((entry) =>
           entry.bindingOrdinal < 0 || entry.bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
           !entry.knowledgeBaseId || !entry.indexGenerationId ||
           entry.vector.length !== entry.targetDimension ||
           entry.vector.some((value) => !Number.isFinite(value))) ||
-        new Set(input.vectors.map((entry) => entry.bindingOrdinal)).size !== input.vectors.length
+        [...input.vectors.reduce((counts, entry) => counts.set(
+          entry.bindingOrdinal,
+          (counts.get(entry.bindingOrdinal) ?? 0) + 1
+        ), new Map<number, number>()).values()].some((count) => count > 2)
       ) throw new Error("knowledge_query_vector_invalid");
       const result = await executeKnowledgeRetrievalCore(client, {
+        ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
+        excludedContentHashes: input.excludedContentHashes,
         query: input.query,
         resultLimit: input.resultLimit,
         runId: input.runId,
@@ -400,6 +417,7 @@ export function createPrismaKnowledgeRetrievalStore(
           fileName: passage.fileName,
           ftsRank: passage.ftsRank,
           ftsScore: passage.ftsScore,
+          ...(passage.expandedContext ? { expandedContext: passage.expandedContext } : {}),
           fusedScore: passage.fusedScore,
           headingPath: passage.headingPath,
           knowledgeBaseId: passage.knowledgeBaseId,

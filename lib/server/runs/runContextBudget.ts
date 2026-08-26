@@ -11,7 +11,10 @@ import {
   providerAttachmentTextLabel,
   truncateProviderAttachmentText
 } from "../providers/attachmentPayload";
-import { KNOWLEDGE_ANSWER_CONTRACT_V1 } from "../providers/personalContext";
+import {
+  KNOWLEDGE_ANSWER_CONTRACT_V1,
+  knowledgeToolLoopContract
+} from "../providers/personalContext";
 import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
 import type {
   NormalizedRunRequest,
@@ -357,7 +360,8 @@ export function applyProviderRequestContextBudget(input: Readonly<{
   const fixedExtraTokens =
     estimateApproxTokens(providerFacingSerializedTools(input.request, input.bridge)) +
     estimateApproxTokens(input.request.providerToolMessages ?? []) +
-    estimateApproxTokens(input.request.personalContext?.text ?? "");
+    estimateApproxTokens(input.request.personalContext?.text ?? "") +
+    estimateApproxTokens(knowledgeToolLoopContract(input.request) ?? "");
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {
     return {

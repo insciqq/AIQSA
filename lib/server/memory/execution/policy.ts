@@ -7,6 +7,7 @@ import {
   type ProviderAdmissionRole
 } from "../../providerRuntime/admission";
 import {
+  applySystemModelReasoningEffort,
   createSystemModelRoleResolver,
   type SystemModelRoleResolution
 } from "../../providerRuntime/systemModelRole";
@@ -106,33 +107,6 @@ function endpointOrigin(snapshot: ProviderExecutionSnapshot): string {
   } catch {
     return memoryExecutionFailure("memory_execution_target_unavailable");
   }
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function applySystemModelReasoningEffort(
-  snapshot: ProviderExecutionSnapshot,
-  reasoningEffort: string | null
-): ProviderExecutionSnapshot {
-  if (reasoningEffort === null) return snapshot;
-  const currentReasoning = record(snapshot.model.defaultParams.reasoning)
-    ? snapshot.model.defaultParams.reasoning
-    : {};
-  return {
-    ...snapshot,
-    model: {
-      ...snapshot.model,
-      defaultParams: {
-        ...snapshot.model.defaultParams,
-        reasoning: {
-          ...currentReasoning,
-          effort: reasoningEffort
-        }
-      }
-    }
-  };
 }
 
 function targetFor(

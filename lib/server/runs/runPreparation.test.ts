@@ -2412,6 +2412,7 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.context?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "knowledge-evidence:v2", purpose: "knowledge_evidence" })
     ]));
+    expect(prepared.providerRequest.toolChoice).toBeUndefined();
     expect(prepared.knowledgeAdmissionPlan?.answeringPlan?.route).toBe("full_context_v1");
   });
 
@@ -2491,6 +2492,7 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toContain(
       "search_knowledge"
     );
+    expect(prepared.providerRequest.toolChoice).toBe("required");
   });
 
   it("does not synthesize a hidden Knowledge query from conversation history", async () => {

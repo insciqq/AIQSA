@@ -186,7 +186,8 @@ export class DocumentParserBoundary {
         attempts.push(Object.freeze({
           engine: "native_pdf",
           errorCode: null,
-          outcome: "quality_failure"
+          outcome: "quality_failure",
+          reasonCode: native.reasonCode ?? "native_pdf_quality_failure"
         }));
       } catch (error) {
         if (input.signal?.aborted) throw abortReason(input.signal);

@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import {
+  MAX_EMBEDDING_BATCH_INPUTS,
+  MAX_EMBEDDING_INPUT_CHARS,
+  MAX_EMBEDDING_REQUEST_BYTES
+} from "../providers/embeddings";
+import {
   createKnowledgeFieldContextSegments,
   createKnowledgeTableDocumentContext,
   KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS,
@@ -13,6 +18,8 @@ import {
 } from "./documentContext";
 import {
   KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION,
+  KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import type {
@@ -25,9 +32,16 @@ export const KNOWLEDGE_CHUNK_MAX_TOKENS = 400;
 export const KNOWLEDGE_CHUNK_OVERLAP_TOKENS = 48;
 /** Hard defensive ceiling; v2 admission is token-oriented. */
 export const KNOWLEDGE_CHUNK_MAX_CHARS = 12_000;
+export const KNOWLEDGE_CHUNK_MAX_UTF8_BYTES = 48_000;
+export const KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS = 96;
 /** Legacy profile-1 character overlap retained for old immutable revisions. */
 export const KNOWLEDGE_CHUNK_OVERLAP_CHARS = 200;
 export const KNOWLEDGE_EMBEDDING_BATCH_SIZE = 64;
+export const KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS = 16_000;
+export const KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES = 48_000;
+export const KNOWLEDGE_FURNITURE_EDGE_FRACTION = 0.15;
+export const KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION = 0.5;
+export const KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT = 0.05;
 
 export type KnowledgeChunkPlanEntry = Readonly<{
   contentHash: string;
@@ -89,9 +103,25 @@ function normalizedContextValue(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
-export function approximateKnowledgeTokenCount(text: string): number {
+function legacyKnowledgeTokenCount(text: string): number {
   const lexical = text.match(/[\p{L}\p{M}\p{N}_]+|[^\s\p{L}\p{M}\p{N}_]/gu)?.length ?? 0;
   return Math.max(1, lexical);
+}
+
+export function approximateKnowledgeTokenCount(text: string): number {
+  const lexical = legacyKnowledgeTokenCount(text);
+  const utf8Bytes = Buffer.byteLength(text, "utf8");
+  const codePoints = [...text].length;
+  const longRuns = text.match(/\S{33,}/gu) ?? [];
+  const hostileRunEstimate = longRuns.reduce((total, run) =>
+    total + Math.ceil(Buffer.byteLength(run, "utf8") * 2 / 3), 0);
+  return Math.max(
+    1,
+    lexical,
+    Math.ceil(utf8Bytes / 3),
+    Math.ceil(codePoints / 2),
+    hostileRunEstimate
+  );
 }
 
 function tokenBoundaries(text: string): Array<{ end: number; start: number }> {
@@ -128,7 +158,7 @@ function splitTextByTokens(text: string): Array<{ text: string; tokenCount: numb
         continue;
       }
       const candidate = text.slice(start, midpoint);
-      if (approximateKnowledgeTokenCount(candidate) <= KNOWLEDGE_CHUNK_MAX_TOKENS) {
+      if (legacyKnowledgeTokenCount(candidate) <= KNOWLEDGE_CHUNK_MAX_TOKENS) {
         acceptedEnd = midpoint;
         low = midpoint + 1;
       } else {
@@ -149,7 +179,7 @@ function splitTextByTokens(text: string): Array<{ text: string; tokenCount: numb
 
     const value = text.slice(start, acceptedEnd).trim();
     if (!value) throw new KnowledgeChunkingError("chunking_failed");
-    const tokenCount = approximateKnowledgeTokenCount(value);
+    const tokenCount = legacyKnowledgeTokenCount(value);
     if (tokenCount > KNOWLEDGE_CHUNK_MAX_TOKENS || value.length > KNOWLEDGE_CHUNK_MAX_CHARS) {
       throw new KnowledgeChunkingError("chunking_failed");
     }
@@ -324,9 +354,15 @@ function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean
       .test(cell.text.normalize("NFKC").replace(/\s+/gu, " ").trim()));
 }
 
-function boundedChunkText(text: string): boolean {
+function boundedChunkText(text: string, currentSizing = false): boolean {
+  const maximumTokens = currentSizing
+    ? KNOWLEDGE_CHUNK_MAX_TOKENS - KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS - 4
+    : KNOWLEDGE_CHUNK_MAX_TOKENS;
+  const tokenCount = currentSizing
+    ? approximateKnowledgeTokenCount(text)
+    : legacyKnowledgeTokenCount(text);
   return Boolean(text.trim()) && text.length <= KNOWLEDGE_CHUNK_MAX_CHARS &&
-    approximateKnowledgeTokenCount(text) <= KNOWLEDGE_CHUNK_MAX_TOKENS;
+    tokenCount <= maximumTokens;
 }
 
 function renderedTableProjection(input: Readonly<{
@@ -367,10 +403,11 @@ function rangeContainsWholeCells(
 function splitProjectionPayload(
   prefix: string,
   payload: string,
-  maximumParts = KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS
+  maximumParts = KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS,
+  currentSizing = false
 ): readonly string[] | null {
   if (!payload.trim()) throw new KnowledgeChunkingError("chunking_failed");
-  if (prefix && !boundedChunkText(prefix)) return null;
+  if (prefix && !boundedChunkText(prefix, currentSizing)) return null;
   const result: string[] = [];
   let start = 0;
   while (start < payload.length) {
@@ -389,7 +426,7 @@ function splitProjectionPayload(
         continue;
       }
       const candidate = `${prefix}${payload.slice(start, midpoint).trim()}`;
-      if (boundedChunkText(candidate)) {
+      if (boundedChunkText(candidate, currentSizing)) {
         acceptedEnd = midpoint;
         low = midpoint + 1;
       } else {
@@ -425,6 +462,7 @@ type TableProjectionDraft = Readonly<{
 }>;
 
 function oversizedTableRowProjections(input: Readonly<{
+  currentSizing: boolean;
   grid: TableGrid;
   headerRowIndex: number | null;
   rowIndex: number;
@@ -448,7 +486,7 @@ function oversizedTableRowProjections(input: Readonly<{
       const cells = cellsForRange(input.grid, input.rowIndex, columnStart, columnEnd);
       if (cells.length === 0) continue;
       const candidate = renderedTableProjection({ ...input, columnEnd, columnStart });
-      if (!boundedChunkText(candidate) || cells.some((cell) =>
+      if (!boundedChunkText(candidate, input.currentSizing) || cells.some((cell) =>
         cell.text.length > KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS)) break;
       if (!rangeContainsWholeCells(input.grid, input.rowIndex, columnStart, columnEnd) ||
         input.headerRowIndex !== null && !rangeContainsWholeCells(
@@ -494,7 +532,12 @@ function oversizedTableRowProjections(input: Readonly<{
       : tableRowLine(input.grid, input.headerRowIndex, columnStart, columnEnd);
     const payload = targetCell.text;
     const prefix = header ? `${header}\n` : "";
-    const pieces = splitProjectionPayload(prefix, payload);
+    const pieces = splitProjectionPayload(
+      prefix,
+      payload,
+      KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS,
+      input.currentSizing
+    );
     if (!pieces) return null;
     const headerLineage = input.headerRowIndex === null
       ? Object.freeze([])
@@ -521,9 +564,7 @@ function oversizedTableRowProjections(input: Readonly<{
     }
     columnStart = columnEnd + 1;
   }
-  if (drafts.length < 2) {
-    throw new KnowledgeChunkingError("chunking_failed");
-  }
+  if (drafts.length === 0) return null;
   if (drafts.reduce((bytes, draft) => bytes + Buffer.byteLength(draft.text, "utf8"), 0) >
     KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES) return null;
   return Object.freeze(drafts);
@@ -560,7 +601,10 @@ function tableDocumentContext(
   }
 }
 
-function profile4TableSegments(block: KnowledgeNormalizedBlock): Segment[] {
+function profile4TableSegments(
+  block: KnowledgeNormalizedBlock,
+  currentSizing: boolean
+): Segment[] {
   const grid = tableGrid(block);
   const nonEmptyRows = Array.from({ length: grid.rowCount }, (_, rowIndex) => rowIndex)
     .filter((rowIndex) => Boolean(tableRowSignature(grid, rowIndex)));
@@ -591,7 +635,7 @@ function profile4TableSegments(block: KnowledgeNormalizedBlock): Segment[] {
       rowKind
     });
     const cells = cellsForRange(grid, rowIndex, 0, grid.columnCount - 1);
-    if (boundedChunkText(text) && Buffer.byteLength(text, "utf8") <=
+    if (boundedChunkText(text, currentSizing) && Buffer.byteLength(text, "utf8") <=
       KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES && cells.every((cell) =>
         cell.text.length <= KNOWLEDGE_TABLE_CONTEXT_CELL_MAX_CHARS)) {
       if (cells.length === 0) continue;
@@ -618,12 +662,15 @@ function profile4TableSegments(block: KnowledgeNormalizedBlock): Segment[] {
         pageEnd: block.locator.pageEnd,
         pageStart: block.locator.pageStart,
         text,
-        tokenCount: approximateKnowledgeTokenCount(text),
+        tokenCount: currentSizing
+          ? approximateKnowledgeTokenCount(text)
+          : legacyKnowledgeTokenCount(text),
         type: block.type
       }));
       continue;
     }
     const projections = oversizedTableRowProjections({
+      currentSizing,
       grid,
       headerRowIndex: activeHeaderRow,
       rowIndex,
@@ -656,7 +703,9 @@ function profile4TableSegments(block: KnowledgeNormalizedBlock): Segment[] {
       pageEnd: block.locator.pageEnd,
       pageStart: block.locator.pageStart,
       text: projection.text,
-      tokenCount: approximateKnowledgeTokenCount(projection.text),
+      tokenCount: currentSizing
+        ? approximateKnowledgeTokenCount(projection.text)
+        : legacyKnowledgeTokenCount(projection.text),
       type: block.type
     })));
   }
@@ -695,7 +744,7 @@ function profile2TableSegments(block: KnowledgeNormalizedBlock): Segment[] {
       : [...current, row];
     const text = candidateRows.join("\n");
     if (current.length > 0 && (
-      approximateKnowledgeTokenCount(text) > KNOWLEDGE_CHUNK_MAX_TOKENS ||
+      legacyKnowledgeTokenCount(text) > KNOWLEDGE_CHUNK_MAX_TOKENS ||
       text.length > KNOWLEDGE_CHUNK_MAX_CHARS
     )) {
       flush();
@@ -712,7 +761,7 @@ function furnitureKey(block: KnowledgeNormalizedBlock): string {
   return sha256(block.text.replace(/\s+/gu, " ").trim().toLowerCase());
 }
 
-function repeatedFurniture(blocks: readonly KnowledgeNormalizedBlock[]): Set<string> {
+function legacyRepeatedFurniture(blocks: readonly KnowledgeNormalizedBlock[]): Set<string> {
   const pagesByKey = new Map<string, Set<number>>();
   for (const block of blocks) {
     if (!block.text || block.text.length > 240 || block.type === "title" || block.type === "heading") continue;
@@ -721,7 +770,111 @@ function repeatedFurniture(blocks: readonly KnowledgeNormalizedBlock[]): Set<str
     pages.add(block.locator.pageStart);
     pagesByKey.set(key, pages);
   }
-  return new Set([...pagesByKey].filter(([, pages]) => pages.size >= 3).map(([key]) => key));
+  const keys = new Set([...pagesByKey]
+    .filter(([, pages]) => pages.size >= 3)
+    .map(([key]) => key));
+  return new Set(blocks.filter((block) => keys.has(furnitureKey(block))).map((block) => block.id));
+}
+
+type PageVerticalExtent = Readonly<{
+  maximum: number;
+  minimum: number;
+}>;
+
+function verticalExtents(
+  blocks: readonly KnowledgeNormalizedBlock[]
+): ReadonlyMap<string, PageVerticalExtent> {
+  const mutable = new Map<string, { maximum: number; minimum: number }>();
+  for (const block of blocks) {
+    for (const box of block.boundingBoxes) {
+      const key = `${box.page}:${box.coordinateOrigin}`;
+      const low = Math.min(box.top, box.bottom);
+      const high = Math.max(box.top, box.bottom);
+      const current = mutable.get(key);
+      if (current) {
+        current.minimum = Math.min(current.minimum, low);
+        current.maximum = Math.max(current.maximum, high);
+      } else {
+        mutable.set(key, { maximum: high, minimum: low });
+      }
+    }
+  }
+  return mutable;
+}
+
+function furniturePosition(
+  block: KnowledgeNormalizedBlock,
+  extents: ReadonlyMap<string, PageVerticalExtent>
+): Readonly<{ edge: "bottom" | "top"; position: number }> | null {
+  if (block.locator.pageStart !== block.locator.pageEnd || block.boundingBoxes.length === 0) {
+    return null;
+  }
+  const page = block.locator.pageStart;
+  if (block.boundingBoxes.some((box) => box.page !== page) ||
+    new Set(block.boundingBoxes.map((box) => box.coordinateOrigin)).size !== 1) {
+    return null;
+  }
+  const origin = block.boundingBoxes[0]!.coordinateOrigin;
+  const extent = extents.get(`${page}:${origin}`);
+  if (!extent || extent.maximum <= extent.minimum) return null;
+  const low = Math.min(...block.boundingBoxes.map((box) => Math.min(box.top, box.bottom)));
+  const high = Math.max(...block.boundingBoxes.map((box) => Math.max(box.top, box.bottom)));
+  const rawPosition = ((low + high) / 2 - extent.minimum) /
+    (extent.maximum - extent.minimum);
+  const position = origin === "top_left" ? rawPosition : 1 - rawPosition;
+  if (!Number.isFinite(position)) return null;
+  if (position <= KNOWLEDGE_FURNITURE_EDGE_FRACTION) return { edge: "top", position };
+  if (position >= 1 - KNOWLEDGE_FURNITURE_EDGE_FRACTION) {
+    return { edge: "bottom", position };
+  }
+  return null;
+}
+
+function conservativeRepeatedFurniture(
+  document: StoredKnowledgeNormalizedDocument
+): Set<string> {
+  const extents = verticalExtents(document.blocks);
+  const candidatesByKey = new Map<string, Array<Readonly<{
+    block: KnowledgeNormalizedBlock;
+    edge: "bottom" | "top";
+    position: number;
+  }>>>();
+  for (const block of document.blocks) {
+    if (!block.text || block.text.length > 240 ||
+      block.type === "title" || block.type === "heading" || block.type === "table" ||
+      block.type === "image" || block.table !== null) continue;
+    const position = furniturePosition(block, extents);
+    if (!position) continue;
+    const key = furnitureKey(block);
+    const candidates = candidatesByKey.get(key) ?? [];
+    candidates.push({ block, ...position });
+    candidatesByKey.set(key, candidates);
+  }
+
+  const requiredPageCount = Math.max(
+    3,
+    Math.ceil(document.pageCount * KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION)
+  );
+  const excluded = new Set<string>();
+  for (const candidates of candidatesByKey.values()) {
+    const pages = new Set(candidates.map(({ block }) => block.locator.pageStart));
+    const edges = new Set(candidates.map(({ edge }) => edge));
+    const positions = candidates.map(({ position }) => position);
+    if (pages.size < requiredPageCount || edges.size !== 1 ||
+      Math.max(...positions) - Math.min(...positions) >
+        KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT) continue;
+    for (const { block } of candidates) excluded.add(block.id);
+  }
+  return excluded;
+}
+
+function repeatedFurniture(
+  document: StoredKnowledgeNormalizedDocument,
+  profileVersion: number
+): Set<string> {
+  return profileVersion >= KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION
+    ? conservativeRepeatedFurniture(document)
+    : legacyRepeatedFurniture(document.blocks);
 }
 
 function fieldHeadingPath(
@@ -735,7 +888,8 @@ function fieldHeadingPath(
 
 function profile4FieldSegments(
   document: StoredKnowledgeNormalizedDocument,
-  group: KnowledgeNormalizedFieldGroup
+  group: KnowledgeNormalizedFieldGroup,
+  currentSizing: boolean
 ): Segment[] {
   const headingPath = fieldHeadingPath(document, group);
   const blockOrder = Math.min(group.readingOrder, Math.max(0, document.blocks.length - 1));
@@ -775,7 +929,7 @@ function profile4FieldSegments(
   const ambiguousCellSegments = (
     cell: KnowledgeNormalizedFieldGroup["cells"][number]
   ): Segment[] => {
-    const parts = splitProjectionPayload("", cell.text, 256);
+    const parts = splitProjectionPayload("", cell.text, 256, currentSizing);
     if (!parts) return untypedSegments(cell.text);
     const candidates = candidateCellIds(cell.id);
     const reasons = Object.freeze(["ambiguous_role" as const]);
@@ -817,7 +971,9 @@ function profile4FieldSegments(
         pageEnd: group.locator.pageEnd,
         pageStart: group.locator.pageStart,
         text,
-        tokenCount: approximateKnowledgeTokenCount(text),
+        tokenCount: currentSizing
+          ? approximateKnowledgeTokenCount(text)
+          : legacyKnowledgeTokenCount(text),
         type: "table" as const
       });
     });
@@ -835,7 +991,7 @@ function profile4FieldSegments(
     throw new KnowledgeChunkingError("chunking_failed");
   }
   return fields.flatMap((field): readonly Segment[] => {
-    if (!boundedChunkText(field.text)) {
+    if (!boundedChunkText(field.text, currentSizing)) {
       return field.cellIds.flatMap((cellId) => {
         const cell = cells.get(cellId);
         return cell ? ambiguousCellSegments(cell) : [];
@@ -851,7 +1007,9 @@ function profile4FieldSegments(
       pageEnd: group.locator.pageEnd,
       pageStart: group.locator.pageStart,
       text: field.text,
-      tokenCount: approximateKnowledgeTokenCount(field.text),
+      tokenCount: currentSizing
+        ? approximateKnowledgeTokenCount(field.text)
+        : legacyKnowledgeTokenCount(field.text),
       type: "table"
     })];
   });
@@ -862,10 +1020,11 @@ function structuralSegments(
   profileVersion: number
 ): Segment[] {
   const blocks = document.blocks;
-  const excluded = repeatedFurniture(blocks);
+  const excluded = repeatedFurniture(document, profileVersion);
   const result: Segment[] = [];
+  const currentSizing = profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION;
   const fieldGroupsByReadingOrder = new Map<number, KnowledgeNormalizedFieldGroup[]>();
-  if (profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION) {
+  if (profileVersion >= KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION) {
     for (const group of document.fieldGroups) {
       const groups = fieldGroupsByReadingOrder.get(group.readingOrder) ?? [];
       groups.push(group);
@@ -874,14 +1033,14 @@ function structuralSegments(
   }
   for (let readingOrder = 0; readingOrder <= blocks.length; readingOrder += 1) {
     for (const group of fieldGroupsByReadingOrder.get(readingOrder) ?? []) {
-      result.push(...profile4FieldSegments(document, group));
+      result.push(...profile4FieldSegments(document, group, currentSizing));
     }
     const block = blocks[readingOrder];
     if (!block) continue;
-    if (!block.text || excluded.has(furnitureKey(block)) || block.type === "image") continue;
+    if (!block.text || excluded.has(block.id) || block.type === "image") continue;
     if (block.type === "table") {
-      result.push(...(profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION
-        ? block.table ? profile4TableSegments(block) : profile3TableSegments(block)
+      result.push(...(profileVersion >= KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION
+        ? block.table ? profile4TableSegments(block, currentSizing) : profile3TableSegments(block)
         : profileVersion >= KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
           ? profile3TableSegments(block)
           : profile2TableSegments(block)));
@@ -921,7 +1080,7 @@ function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
       sameHeading(current.headingPath, segment.headingPath) &&
       current.layoutKind === "body" && segment.layoutKind === "body" &&
       !cannotMerge.has(current.type) && !cannotMerge.has(segment.type) &&
-      approximateKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
+      legacyKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
       candidateText.length <= KNOWLEDGE_CHUNK_MAX_CHARS;
     if (canMerge) {
       current = Object.freeze({
@@ -934,7 +1093,7 @@ function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
         pageEnd: Math.max(current.pageEnd, segment.pageEnd),
         pageStart: Math.min(current.pageStart, segment.pageStart),
         text: candidateText,
-        tokenCount: approximateKnowledgeTokenCount(candidateText),
+        tokenCount: legacyKnowledgeTokenCount(candidateText),
         type: current.type
       });
     } else {
@@ -949,7 +1108,8 @@ function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
 function contextPrefix(
   document: StoredKnowledgeNormalizedDocument,
   segment: Segment,
-  withLayoutEvidence: boolean
+  withLayoutEvidence: boolean,
+  currentSizing: boolean
 ): string {
   const layout = !withLayoutEvidence
     ? []
@@ -977,7 +1137,124 @@ function contextPrefix(
       ? `page ${segment.pageStart}`
       : `pages ${segment.pageStart}–${segment.pageEnd}`}`
   ].filter((value): value is string => Boolean(value));
-  return parts.join("\n").slice(0, 1_024);
+  const value = parts.join("\n").slice(0, 1_024);
+  if (!currentSizing || approximateKnowledgeTokenCount(value) <=
+    KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS) return value;
+  let low = 1;
+  let high = value.length;
+  let acceptedEnd = 0;
+  while (low <= high) {
+    const midpoint = codePointSafeEnd(value, Math.floor((low + high) / 2));
+    if (midpoint < 1) {
+      low += 1;
+      continue;
+    }
+    const candidate = value.slice(0, midpoint).trimEnd();
+    if (candidate && approximateKnowledgeTokenCount(candidate) <=
+      KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS) {
+      acceptedEnd = midpoint;
+      low = midpoint + 1;
+    } else {
+      high = midpoint - 1;
+    }
+  }
+  if (acceptedEnd < 1) throw new KnowledgeChunkingError("chunking_failed");
+  let semanticEnd = acceptedEnd;
+  const minimumBreak = Math.floor(acceptedEnd * 0.6);
+  for (let index = acceptedEnd; index > minimumBreak; index -= 1) {
+    if (/\s/u.test(value[index - 1] ?? "")) {
+      semanticEnd = index;
+      break;
+    }
+  }
+  return value.slice(0, semanticEnd).trimEnd();
+}
+
+function currentEmbeddingText(prefix: string, text: string): string {
+  return prefix ? `${prefix}\n\n${text}` : text;
+}
+
+function currentEmbeddingInputFits(prefix: string, text: string): boolean {
+  const embeddingText = currentEmbeddingText(prefix, text);
+  return embeddingText.length <= Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) &&
+    Buffer.byteLength(embeddingText, "utf8") <= KNOWLEDGE_CHUNK_MAX_UTF8_BYTES &&
+    approximateKnowledgeTokenCount(embeddingText) <= KNOWLEDGE_CHUNK_MAX_TOKENS;
+}
+
+function currentOverlapStart(text: string, start: number, end: number): number {
+  const boundaries = tokenBoundaries(text.slice(start, end));
+  let overlapStart = end;
+  for (let index = boundaries.length - 1; index >= 0; index -= 1) {
+    const candidate = start + boundaries[index]!.start;
+    if (approximateKnowledgeTokenCount(text.slice(candidate, end)) >
+      KNOWLEDGE_CHUNK_OVERLAP_TOKENS) break;
+    overlapStart = candidate;
+  }
+  return overlapStart > start && overlapStart < end ? overlapStart : end;
+}
+
+function fitCurrentEmbeddingSegments(
+  document: StoredKnowledgeNormalizedDocument,
+  segment: Segment,
+  withLayoutEvidence: boolean
+): Segment[] {
+  const prefix = contextPrefix(document, segment, withLayoutEvidence, true);
+  if (currentEmbeddingInputFits(prefix, segment.text)) {
+    return [Object.freeze({
+      ...segment,
+      tokenCount: approximateKnowledgeTokenCount(segment.text)
+    })];
+  }
+  if (segment.documentContext !== null) {
+    throw new KnowledgeChunkingError("chunking_failed");
+  }
+  const parts: Segment[] = [];
+  let start = 0;
+  while (start < segment.text.length) {
+    while (start < segment.text.length && /\s/u.test(segment.text[start] ?? "")) start += 1;
+    if (start >= segment.text.length) break;
+    let low = start + 1;
+    let high = Math.min(segment.text.length, start + KNOWLEDGE_CHUNK_MAX_CHARS);
+    let acceptedEnd = start;
+    while (low <= high) {
+      const midpoint = codePointSafeEnd(segment.text, Math.floor((low + high) / 2));
+      if (midpoint <= start) {
+        low += 1;
+        continue;
+      }
+      if (currentEmbeddingInputFits(prefix, segment.text.slice(start, midpoint))) {
+        acceptedEnd = midpoint;
+        low = midpoint + 1;
+      } else {
+        high = midpoint - 1;
+      }
+    }
+    if (acceptedEnd <= start) throw new KnowledgeChunkingError("chunking_failed");
+    if (acceptedEnd < segment.text.length) {
+      const minimumBreak = start + Math.floor((acceptedEnd - start) * 0.6);
+      for (let index = acceptedEnd; index > minimumBreak; index -= 1) {
+        if (/\s/u.test(segment.text[index - 1] ?? "")) {
+          acceptedEnd = index;
+          break;
+        }
+      }
+    }
+    const text = segment.text.slice(start, acceptedEnd).trim();
+    if (!text || !currentEmbeddingInputFits(prefix, text)) {
+      throw new KnowledgeChunkingError("chunking_failed");
+    }
+    parts.push(Object.freeze({
+      ...segment,
+      text,
+      tokenCount: approximateKnowledgeTokenCount(text)
+    }));
+    if (acceptedEnd >= segment.text.length) break;
+    start = segment.type === "table"
+      ? acceptedEnd
+      : currentOverlapStart(segment.text, start, acceptedEnd);
+  }
+  if (parts.length === 0) throw new KnowledgeChunkingError("chunking_failed");
+  return parts;
 }
 
 function planEntry(
@@ -985,10 +1262,16 @@ function planEntry(
   segment: Segment,
   index: number,
   withContext: boolean,
-  withLayoutEvidence: boolean
+  withLayoutEvidence: boolean,
+  currentSizing: boolean
 ): KnowledgeChunkPlanEntry {
-  const prefix = withContext ? contextPrefix(document, segment, withLayoutEvidence) : "";
+  const prefix = withContext
+    ? contextPrefix(document, segment, withLayoutEvidence, currentSizing)
+    : "";
   const embeddingText = prefix ? `${prefix}\n\n${segment.text}` : segment.text;
+  if (currentSizing && !currentEmbeddingInputFits(prefix, segment.text)) {
+    throw new KnowledgeChunkingError("chunking_failed");
+  }
   return Object.freeze({
     contentHash: sha256(JSON.stringify({
       blockIds: segment.blockIds,
@@ -1009,7 +1292,9 @@ function planEntry(
     sourceBlockIds: Object.freeze([...segment.blockIds]),
     sourceBlockStart: segment.blockStart,
     text: segment.text,
-    tokenCount: segment.tokenCount
+    tokenCount: currentSizing
+      ? approximateKnowledgeTokenCount(segment.text)
+      : segment.tokenCount
   });
 }
 
@@ -1067,7 +1352,7 @@ function legacyCharacterSegments(document: StoredKnowledgeNormalizedDocument): S
         pageEnd: group.page,
         pageStart: group.page,
         text: value,
-        tokenCount: approximateKnowledgeTokenCount(value),
+        tokenCount: legacyKnowledgeTokenCount(value),
         type: "paragraph"
       }));
       if (end >= text.length) break;
@@ -1084,13 +1369,23 @@ export function chunkKnowledgeDocument(input: Readonly<{
   profileVersion: number;
 }>): KnowledgeChunkPlanEntry[] {
   if (
-    ![1, 2, 3, KNOWLEDGE_CHUNKING_PROFILE_VERSION].includes(input.profileVersion) ||
+    ![1, 2, 3, 4, 5, KNOWLEDGE_CHUNKING_PROFILE_VERSION].includes(input.profileVersion) ||
     !Number.isSafeInteger(input.maxChunks) || input.maxChunks < 1
   ) throw new KnowledgeChunkingError("chunking_failed");
 
-  const segments = input.profileVersion === 1
+  const structural = input.profileVersion === 1
     ? legacyCharacterSegments(input.document)
     : mergeStructuralSegments(structuralSegments(input.document, input.profileVersion));
+  const currentSizing = input.profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION;
+  const withLayoutEvidence = input.profileVersion >=
+    KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION;
+  const segments = currentSizing
+    ? structural.flatMap((segment) => fitCurrentEmbeddingSegments(
+        input.document,
+        segment,
+        withLayoutEvidence
+      ))
+    : structural;
   if (segments.length === 0) throw new KnowledgeChunkingError("chunking_failed");
   if (segments.length > input.maxChunks) {
     throw new KnowledgeChunkingError("knowledge_chunk_limit_exceeded");
@@ -1100,19 +1395,65 @@ export function chunkKnowledgeDocument(input: Readonly<{
     segment,
     index,
     input.profileVersion >= 2,
-    input.profileVersion >= KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
+    withLayoutEvidence,
+    currentSizing
   ));
 }
 
 export function knowledgeEmbeddingBatches(
-  chunks: readonly KnowledgeChunkPlanEntry[]
+  chunks: readonly KnowledgeChunkPlanEntry[],
+  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION
 ): Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> {
-  const batches: Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> = [];
-  for (let offset = 0; offset < chunks.length; offset += KNOWLEDGE_EMBEDDING_BATCH_SIZE) {
-    batches.push(Object.freeze({
-      batchIndex: Math.floor(offset / KNOWLEDGE_EMBEDDING_BATCH_SIZE),
-      chunks: Object.freeze(chunks.slice(offset, offset + KNOWLEDGE_EMBEDDING_BATCH_SIZE))
-    }));
+  if (profileVersion < KNOWLEDGE_CHUNKING_PROFILE_VERSION) {
+    const legacyBatches: Array<Readonly<{
+      batchIndex: number;
+      chunks: readonly KnowledgeChunkPlanEntry[];
+    }>> = [];
+    for (let offset = 0; offset < chunks.length; offset += KNOWLEDGE_EMBEDDING_BATCH_SIZE) {
+      legacyBatches.push(Object.freeze({
+        batchIndex: Math.floor(offset / KNOWLEDGE_EMBEDDING_BATCH_SIZE),
+        chunks: Object.freeze(chunks.slice(offset, offset + KNOWLEDGE_EMBEDDING_BATCH_SIZE))
+      }));
+    }
+    return legacyBatches;
   }
+  if (profileVersion !== KNOWLEDGE_CHUNKING_PROFILE_VERSION) {
+    throw new KnowledgeChunkingError("chunking_failed");
+  }
+  const batches: Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> = [];
+  let current: KnowledgeChunkPlanEntry[] = [];
+  let currentTokens = 0;
+  let currentBytes = 0;
+  const flush = () => {
+    if (current.length === 0) return;
+    batches.push(Object.freeze({
+      batchIndex: batches.length,
+      chunks: Object.freeze(current)
+    }));
+    current = [];
+    currentTokens = 0;
+    currentBytes = 0;
+  };
+  for (const chunk of chunks) {
+    const tokens = approximateKnowledgeTokenCount(chunk.embeddingText);
+    const bytes = Buffer.byteLength(chunk.embeddingText, "utf8");
+    if (!chunk.embeddingText.trim() || chunk.embeddingText.length >
+      Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) ||
+      tokens > KNOWLEDGE_CHUNK_MAX_TOKENS || bytes > KNOWLEDGE_CHUNK_MAX_UTF8_BYTES) {
+      throw new KnowledgeChunkingError("chunking_failed");
+    }
+    const exceedsBatch = current.length >= Math.min(
+      KNOWLEDGE_EMBEDDING_BATCH_SIZE,
+      MAX_EMBEDDING_BATCH_INPUTS
+    ) || currentTokens + tokens > KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS ||
+      currentBytes + bytes > KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES ||
+      Buffer.byteLength(JSON.stringify([...current, chunk].map((item) => item.embeddingText)),
+        "utf8") > MAX_EMBEDDING_REQUEST_BYTES;
+    if (exceedsBatch) flush();
+    current.push(chunk);
+    currentTokens += tokens;
+    currentBytes += bytes;
+  }
+  flush();
   return batches;
 }

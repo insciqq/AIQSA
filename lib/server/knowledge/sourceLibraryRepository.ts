@@ -942,6 +942,8 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
         const artifacts = await tx.knowledgeSourceIndexArtifact.findMany({
           select: {
             id: true,
+            normalizedTextByteSize: true,
+            normalizedTextChecksum: true,
             normalizedTextStorageKey: true,
             state: true
           },
@@ -952,6 +954,9 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
         });
         const failed = artifacts.filter(({ state }) => state === "failed");
         for (const artifact of failed) {
+          const normalizedAvailable = artifact.normalizedTextStorageKey !== null &&
+            artifact.normalizedTextByteSize !== null &&
+            artifact.normalizedTextChecksum !== null;
           await tx.knowledgeSourceIndexArtifact.update({
             data: {
               attemptCount: 0,
@@ -966,7 +971,7 @@ export function createPrismaKnowledgeSourceLibraryRepository(client: PrismaClien
                   sourceId,
                   sourceVersionId
                 }),
-              processingStage: "queued",
+              processingStage: normalizedAvailable ? "chunking" : "queued",
               processingStartedAt: null,
               readyAt: null,
               state: "pending",

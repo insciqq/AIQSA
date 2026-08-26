@@ -105,7 +105,7 @@ function outcome(value: unknown): KnowledgeRetrievalOutcome | null {
   return value === "base_empty" || value === "base_indexing" ||
     value === "budget_exhausted" || value === "complete" ||
     value === "embedding_model_unavailable" || value === "source_location_unavailable" ||
-    value === "zero_above_threshold"
+    value === "no_relevant_evidence" || value === "zero_above_threshold"
     ? value
     : null;
 }
@@ -284,6 +284,9 @@ function decodePassage(
       : decodeKnowledgeDocumentContext(value.documentContext);
   const documentVersionId = boundedString(value.documentVersionId, 512);
   const documentVersionNumber = nonNegativeInteger(value.documentVersionNumber);
+  const expandedContext = value.expandedContext === undefined
+    ? undefined
+    : boundedString(value.expandedContext, 64 * 1024, true);
   const fileName = boundedString(value.fileName, 1_024);
   const ftsRank = nullablePositiveRank(value.ftsRank);
   const ftsScore = nullableFiniteNumber(value.ftsScore);
@@ -356,6 +359,7 @@ function decodePassage(
     !chunkId || chunkIndex === null || !documentId || !documentVersionId ||
     documentContext === null && value.documentContext !== null ||
     (documentVersionNumber === null || documentVersionNumber < 1) || !fileName ||
+    expandedContext === null ||
     ftsRank === undefined || ftsScore === undefined || fusedScore === null || fusedScore < 0 ||
     !handle || !decodeKnowledgeCitationHandle(handle) ||
     includedText === null ||
@@ -404,6 +408,7 @@ function decodePassage(
     ...(documentContext !== undefined ? { documentContext } : {}),
     documentVersionId,
     documentVersionNumber,
+    ...(expandedContext !== undefined ? { expandedContext } : {}),
     fileName,
     ftsRank,
     ftsScore,
@@ -449,8 +454,8 @@ export function decodeKnowledgeRetrievedPassageForVersion(
 }
 
 type KnowledgeProviderEvidence = Pick<KnowledgeRetrievalEvidence,
-  "budget" | "discovery" | "exact" | "failureCode" | "outcome" | "results" |
-  "scopeAliases"> &
+  "budget" | "discovery" | "embeddingExecutions" | "exact" | "failureCode" | "outcome" |
+  "results" | "scopeAliases"> &
   Partial<Pick<KnowledgeRetrievalEvidence, "version">>;
 
 function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): string {
@@ -520,6 +525,8 @@ function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): str
       "No further private Knowledge evidence was read because a safe retrieval boundary was reached. Answer only from evidence already available and state any material coverage limitation plainly.",
     embedding_model_unavailable:
       "Knowledge retrieval could not embed the query: embedding_model_unavailable.",
+    no_relevant_evidence:
+      "No relevant Knowledge evidence was found. Do not infer or invent an answer from Knowledge.",
     source_location_unavailable:
       "The requested location was not found inside that admitted Source. Use another exact heading, page, or evidence handle; do not guess.",
     zero_above_threshold:
@@ -652,6 +659,10 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
       ] : []),
       "Evidence:",
       result.includedText,
+      ...(result.expandedContext ? [
+        "Related same-Source context (each labeled segment is independent evidence):",
+        result.expandedContext
+      ] : []),
       `--- END SOURCE EVIDENCE ${result.handle} ---`
     ].join("\n");
   });
@@ -669,6 +680,16 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
         ).join("\n")
     ] : []),
     evidence.budget?.stopReason
+      ? ""
+      : "For a request with several rows, fields, or items, verify each one independently. " +
+        "The requested label and value must occur together inside the primary Evidence section, " +
+        "one labeled related-context segment, or one listed complete atomic row; never combine " +
+        "fields across those segments. Call search_knowledge again with one exact missing " +
+        "item per query. When earlier evidence identifies the relevant Source, pass only its " +
+        "exact [S…] alias in sourceAliases. Do not finalize or declare insufficient evidence " +
+        "until each such source-scoped follow-up has been attempted while budget remains; a " +
+        "nearby or similarly named row is not a substitute.",
+    evidence.budget?.stopReason
       ? "No further private Knowledge retrieval should be requested. State any material coverage limitation plainly."
       : ""
   ].filter(Boolean).join("\n\n");
@@ -680,11 +701,18 @@ export function knowledgeToolResultText(evidence: KnowledgeProviderEvidence): st
   }
   if (evidence.version === KNOWLEDGE_RESULT_VERSION) {
     const text = sourceBoundKnowledgeToolResultText(evidence);
-    return evidence.failureCode === "partial_sources_ready"
-      ? `${text}\n\nCoverage limitation: partial_sources_ready. Some selected Knowledge ` +
-          "sources were still processing or unavailable, so this bounded result covers only " +
-          "the ready subset."
-      : text;
+    const limitations = [
+      ...(evidence.failureCode === "partial_sources_ready" ? [
+        "Coverage limitation: partial_sources_ready. Some selected Knowledge sources were " +
+          "still processing or unavailable, so this bounded result covers only the ready subset."
+      ] : []),
+      ...(evidence.failureCode === "semantic_retrieval_unavailable" ||
+        evidence.embeddingExecutions.some((execution) => execution.status === "error") ? [
+        "Coverage limitation: semantic_retrieval_unavailable. Retrieval used lexical, metadata, " +
+          "and exact evidence only; do not infer unavailable semantic matches."
+      ] : [])
+    ];
+    return limitations.length > 0 ? `${text}\n\n${limitations.join("\n\n")}` : text;
   }
   throw new Error("knowledge_result_version_unsupported");
 }
@@ -1249,7 +1277,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
       result.documentVersionId !== read.resolvedSource.sourceVersionId)
   );
   const retrievalCompleted = decodedOutcome === "base_empty" || decodedOutcome === "complete" ||
-    decodedOutcome === "zero_above_threshold";
+    decodedOutcome === "no_relevant_evidence" || decodedOutcome === "zero_above_threshold";
   const embeddingDegraded = Boolean(failureCode) || failedEmbeddingOrdinals.size > 0;
   const deterministicRead = operation === "read_source";
   const deterministicExact = operation === "find_exact";
@@ -1338,6 +1366,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (decodedOutcome === "complete" && decodedResults.length === 0 && !deterministicDiscovery) ||
     (decodedOutcome !== "complete" && decodedResults.length !== 0) ||
     (decodedOutcome === "base_empty" && candidateCount !== 0) ||
+    (decodedOutcome === "no_relevant_evidence" && candidateCount !== 0) ||
     (decodedOutcome === "budget_exhausted" && (
       decodedResults.length !== 0 || budget?.stopReason == null
     )) ||
@@ -1348,6 +1377,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (decodedOutcome === "embedding_model_unavailable" &&
       !decodedEmbeddings.some((entry) =>
         entry.status === "error") && !failureCode) ||
+    (failureCode === "semantic_retrieval_unavailable" && failedEmbeddingOrdinals.size === 0) ||
     (decodedOutcome === "source_location_unavailable" && (
       operation !== "read_source" || candidateCount !== 0 || decodedResults.length !== 0 ||
       decodedEmbeddings.length !== 0

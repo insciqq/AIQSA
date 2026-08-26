@@ -9,6 +9,7 @@ import {
 import {
   inspectPdfForModelProcessing,
   PDF_MODEL_BATCH_PAGE_COUNT,
+  PDF_MODEL_VISION_BATCH_PAGE_COUNT,
   preparePdfModelBatch,
   type PdfModelProcessingMode,
   type PreparedPdfBatch
@@ -21,6 +22,7 @@ import {
   normalizeProviderExecutionSnapshot,
   type ProviderExecutionSnapshot
 } from "../providers/runtimeFactory";
+import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "./knowledgeProfile";
 import type {
   ProviderAttachment,
   ProviderRunRequest,
@@ -65,6 +67,7 @@ export type KnowledgeModelPdfParser = Readonly<{
 
 type AttemptRepository = ReturnType<typeof createKnowledgeModelPdfAttemptRepository>;
 type AcceptedExecutor = ReturnType<typeof createAcceptedProviderRequestExecutor>;
+type PdfVisionDetail = "auto" | "original";
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
@@ -76,9 +79,12 @@ function digestPreparedBatch(input: Readonly<{
   profileRevisionId: string;
   prompt: string;
   snapshot: ProviderExecutionSnapshot;
+  visionDetail: PdfVisionDetail;
 }>): string {
   const hash = createHash("sha256");
-  hash.update("knowledge-model-pdf-request-v1\0", "utf8");
+  hash.update(input.visionDetail === "original"
+    ? "knowledge-model-pdf-request-v2\0"
+    : "knowledge-model-pdf-request-v1\0", "utf8");
   hash.update(input.mode, "utf8");
   hash.update("\0", "utf8");
   hash.update(input.profileRevisionId, "utf8");
@@ -88,15 +94,32 @@ function digestPreparedBatch(input: Readonly<{
   hash.update(input.snapshot.credentialVersionId ?? "", "utf8");
   hash.update("\0", "utf8");
   hash.update(input.prompt, "utf8");
+  if (input.visionDetail === "original") {
+    hash.update("\0original", "utf8");
+  }
   if (input.batch.kind === "pdf") {
     hash.update(input.batch.bytes);
   } else {
-    for (const image of input.batch.images) hash.update(image.bytes);
+    for (const image of input.batch.images) {
+      if (input.visionDetail === "original") {
+        hash.update("\0", "utf8");
+        hash.update(JSON.stringify({
+          height: image.height,
+          mimeType: image.mimeType,
+          page: image.page,
+          width: image.width
+        }), "utf8");
+      }
+      hash.update(image.bytes);
+    }
   }
   return hash.digest("hex");
 }
 
-function attachments(batch: PreparedPdfBatch): ProviderAttachment[] {
+function attachments(
+  batch: PreparedPdfBatch,
+  visionDetail: PdfVisionDetail
+): ProviderAttachment[] {
   if (batch.kind === "pdf") {
     return [{
       base64Data: batch.bytes.toString("base64"),
@@ -116,19 +139,29 @@ function attachments(batch: PreparedPdfBatch): ProviderAttachment[] {
       status: "ready"
     }];
   }
-  return batch.images.map((image) => ({
-    byteSize: image.bytes.byteLength,
-    dataUrl: `data:image/png;base64,${image.bytes.toString("base64")}`,
-    extractedText: null,
-    fileName: `page-${String(image.page).padStart(6, "0")}.png`,
-    id: `knowledge-pdf-page-${image.page}`,
-    kind: "image",
-    metadata: {
-      image: { height: image.height, sourcePage: image.page, width: image.width }
-    },
-    mimeType: "image/png",
-    status: "ready"
-  }));
+  return batch.images.map((image) => {
+    const pageName = `page-${String(image.page).padStart(6, "0")}`;
+    return {
+      byteSize: image.bytes.byteLength,
+      dataUrl: `data:${image.mimeType};base64,${image.bytes.toString("base64")}`,
+      extractedText: null,
+      fileName: `${pageName}.${
+        image.mimeType === "image/png" ? "png" : "jpg"
+      }`,
+      id: `knowledge-pdf-page-${image.page}`,
+      kind: "image",
+      metadata: {
+        image: {
+          detail: visionDetail,
+          height: image.height,
+          sourcePage: image.page,
+          width: image.width
+        }
+      },
+      mimeType: image.mimeType,
+      status: "ready"
+    };
+  });
 }
 
 function providerRequest(input: Readonly<{
@@ -136,10 +169,9 @@ function providerRequest(input: Readonly<{
   mode: PdfModelProcessingMode;
   prompt: string;
   snapshot: ProviderExecutionSnapshot;
+  visionDetail: PdfVisionDetail;
 }>): ProviderRunRequest {
-  const files = attachments(input.batch);
-  const responsesAdapter = input.snapshot.model.adapterKind === "openai_responses_native" ||
-    input.snapshot.model.adapterKind === "openai_responses_compatible";
+  const files = attachments(input.batch, input.visionDetail);
   const declaredOutput = input.snapshot.model.capabilities.defaultMaxOutputTokens;
   const maxOutputTokens = typeof declaredOutput === "number" &&
     Number.isSafeInteger(declaredOutput) && declaredOutput > 0
@@ -163,7 +195,6 @@ function providerRequest(input: Readonly<{
       maxOutputTokens,
       maxTokens: maxOutputTokens,
       max_output_tokens: maxOutputTokens,
-      ...(responsesAdapter ? { reasoning: { effort: "none", summary: "none" } } : {}),
       store: false,
       stream: false
     },
@@ -179,7 +210,8 @@ function providerRequest(input: Readonly<{
 function validSnapshot(
   input: Parameters<KnowledgeModelPdfParser["parse"]>[0]
 ): ProviderExecutionSnapshot {
-  if (input.parserProfileVersion !== 1 ||
+  if (![1, 2, 3, 4, KNOWLEDGE_PDF_PARSER_PROFILE_VERSION]
+    .includes(input.parserProfileVersion) ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
     throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
@@ -244,10 +276,19 @@ export function createKnowledgeModelPdfParser(
         throw modelFailure(error);
       }
       const settled: SettledKnowledgeModelPdfBatch[] = [];
+      const highFidelityVision = input.mode === "system_model_vision" &&
+        input.parserProfileVersion >= 3;
+      const adaptiveHighFidelityVision = highFidelityVision &&
+        input.parserProfileVersion >= 4;
+      const visionDetail: PdfVisionDetail = input.mode === "system_model_vision" &&
+        input.parserProfileVersion >= 5 ? "original" : "auto";
+      const batchPageCount = highFidelityVision
+        ? PDF_MODEL_VISION_BATCH_PAGE_COUNT
+        : PDF_MODEL_BATCH_PAGE_COUNT;
       for (let pageStart = 1, batchIndex = 0; pageStart <= pageCount;
-        pageStart += PDF_MODEL_BATCH_PAGE_COUNT, batchIndex += 1) {
+        pageStart += batchPageCount, batchIndex += 1) {
         if (input.signal?.aborted) throw abortReason(input.signal);
-        const pageEnd = Math.min(pageCount, pageStart + PDF_MODEL_BATCH_PAGE_COUNT - 1);
+        const pageEnd = Math.min(pageCount, pageStart + batchPageCount - 1);
         let prepared: PreparedPdfBatch;
         try {
           prepared = await prepare({
@@ -256,7 +297,11 @@ export function createKnowledgeModelPdfParser(
             pageEnd,
             pageStart,
             ...(input.signal ? { signal: input.signal } : {})
-          }, { maxPages: input.maxPages });
+          }, {
+            maxPages: input.maxPages,
+            visionQuality: adaptiveHighFidelityVision ? "adaptive_high_fidelity"
+              : highFidelityVision ? "high_fidelity" : "legacy"
+          });
         } catch (error) {
           if (input.signal?.aborted) throw abortReason(input.signal);
           throw modelFailure(error);
@@ -264,7 +309,10 @@ export function createKnowledgeModelPdfParser(
         const prompt = modelPdfTranscriptionPrompt({
           mode: input.mode,
           pageEnd,
-          pageStart
+          pageStart,
+          promptVersion: input.parserProfileVersion >= 5
+            ? 3
+            : input.parserProfileVersion >= 3 ? 2 : 1
         });
         const identity: KnowledgeModelPdfAttemptIdentity = {
           artifactId: input.artifactId,
@@ -277,7 +325,8 @@ export function createKnowledgeModelPdfParser(
             mode: input.mode,
             profileRevisionId: input.profileRevisionId,
             prompt,
-            snapshot
+            snapshot,
+            visionDetail
           }),
           sourceVersionId: input.sourceVersionId
         };
@@ -305,7 +354,8 @@ export function createKnowledgeModelPdfParser(
             batch: prepared,
             mode: input.mode,
             prompt,
-            snapshot
+            snapshot,
+            visionDetail
           }), {
             ...(input.signal ? { signal: input.signal } : {}),
             timeoutMs: 300_000

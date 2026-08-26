@@ -517,5 +517,30 @@ describe("Prisma Knowledge Source Library", () => {
       processingStage: "queued",
       state: "pending"
     });
+
+    await prisma.knowledgeSourceIndexArtifact.update({
+      data: {
+        errorCode: "chunking_failed",
+        normalizedTextByteSize: 2_048,
+        normalizedTextChecksum: normalizedChecksum,
+        processingStage: null,
+        state: "failed"
+      },
+      where: { id: artifact.id }
+    });
+    await expect(repository.reprocess(
+      fixture.ownerUserId,
+      fixture.sourceId,
+      new Date()
+    )).resolves.toEqual({ kind: "ok" });
+    await expect(prisma.knowledgeSourceIndexArtifact.findUniqueOrThrow({
+      where: { id: artifact.id }
+    })).resolves.toMatchObject({
+      errorCode: null,
+      normalizedTextByteSize: 2_048,
+      normalizedTextChecksum: normalizedChecksum,
+      processingStage: "chunking",
+      state: "pending"
+    });
   });
 });

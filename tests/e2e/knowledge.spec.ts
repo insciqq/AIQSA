@@ -283,7 +283,7 @@ async function installKnowledgeFixture(page: Page) {
     await route.fulfill({ json, status });
   }
 
-  await page.route("**/api/me/knowledge-bases**", async (route) => {
+  await page.route(/\/api\/me\/knowledge-(?:bases|uploads)(?:\/|$)/u, async (route) => {
     const request = route.request();
     const method = request.method();
     const path = new URL(request.url()).pathname;
@@ -351,7 +351,7 @@ async function installKnowledgeFixture(page: Page) {
           state: "queued",
           transport: {
             kind: "proxy",
-            uploadUrl: `/api/me/knowledge-bases/base-e2e/upload-batches/${batchId}/items/upload-item-${uploadBatches.length + 1}-${index + 1}/content?attempt=1`
+            uploadUrl: `/api/me/knowledge-uploads/base-e2e/${batchId}/upload-item-${uploadBatches.length + 1}-${index + 1}/content?attempt=1`
           },
           updatedAt: timestamp,
           uploadedBytes: 0
@@ -363,7 +363,7 @@ async function installKnowledgeFixture(page: Page) {
       return;
     }
     const uploadPath = path.match(
-      /^\/api\/me\/knowledge-bases\/base-e2e\/upload-batches\/([^/]+)\/items\/([^/]+)(?:\/(start|content|settle|retry))?$/u
+      /^\/api\/me\/knowledge-uploads\/base-e2e\/([^/]+)\/([^/]+)(?:\/(start|content|settle|retry))?$/u
     );
     if (uploadPath) {
       const batch = uploadBatches.find((candidate) => candidate.id === uploadPath[1]);

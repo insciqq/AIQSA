@@ -1998,7 +1998,9 @@ async function recoverCheckpointedToolLoop(
         toolChoice: completedToolRounds >= toolBudgets.maxToolRounds ||
           priorToolCalls >= toolBudgets.maxToolCalls
           ? "none"
-          : "auto",
+          : completedToolRounds === 0 && providerRequest.toolChoice === "required"
+            ? "required"
+            : "auto",
         tools
       }, round);
     }

@@ -983,7 +983,7 @@ describe("AdminPanel", () => {
       profile: adminKnowledgeProfileFixture(),
       retrieval: {
         candidateLimit: 40,
-        resultLimit: 8
+        resultLimit: 16
       }
     };
     let knowledgeGets = 0;

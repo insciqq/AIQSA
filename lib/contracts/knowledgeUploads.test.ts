@@ -18,7 +18,7 @@ function item(overrides: Record<string, unknown> = {}) {
     id: "item-1",
     sourceId: null,
     state: "queued",
-    transport: { kind: "proxy", uploadUrl: "/api/me/knowledge-bases/base-1/upload-batches/batch-1/items/item-1/content" },
+    transport: { kind: "proxy", uploadUrl: "/api/me/knowledge-uploads/base-1/batch-1/item-1/content" },
     updatedAt: "2026-08-18T10:00:00.000Z",
     uploadedBytes: 0,
     ...overrides

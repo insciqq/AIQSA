@@ -27,6 +27,8 @@ Installation model recommendation and internal system utility selection are sepa
 
 Authenticate before consuming uploads. Validate complete multipart size, extension/MIME/content shape, parser bounds, ownership, and settled private-object metadata before a file becomes usable. Expensive processing is represented by durable claimed work; a request does not own a long-running in-memory queue.
 
+A settled Knowledge upload reports the state of the exact ingestion artifact created for that upload, independent of a current ready artifact or later background reindexing for another Profile. Reused content is an immediate terminal upload result. Historical upload rows without an artifact binding resolve the earliest deterministically ordered artifact of their exact Source Version; they never select by most-recent update time.
+
 Attachment and Knowledge objects remain private. Reads occur only after current ownership/capability checks, and client errors omit filenames, storage keys, checksums, bytes, extracted text, parser bodies, and adapter failures. Retention and deletion use idempotent durable obligations rather than best-effort request cleanup.
 
 An attachment's original private object remains available independently of background extraction state. A run admitted for Direct PDF input may materialize that object before extraction settles, but only through a bounded read followed by recorded-size and SHA-256 validation; the provider-facing projection excludes storage and integrity fields. Local-extraction routes consume only ready usable text and do not read the original PDF for answer execution.

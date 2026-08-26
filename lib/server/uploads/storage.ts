@@ -545,6 +545,45 @@ function publicS3Endpoint(value: string | undefined): string | null {
   return parsed.toString().replace(/\/$/u, "");
 }
 
+// S3-compatible servers may reject a single aws-chunked frame at 16 MiB even
+// though the complete object is valid and much larger. A framework proxy can
+// legitimately coalesce the request body into one Uint8Array, so normalize the
+// transport chunks here instead of relying on upstream stream boundaries.
+const S3_UPLOAD_STREAM_CHUNK_BYTES = 8 * 1_024 * 1_024;
+
+function createBoundedS3UploadBody(input: StoredObjectStreamInput): Readonly<{
+  body: Readable;
+  observedBytes(): number;
+}> {
+  let observedBytes = 0;
+  const source = input.body as unknown as AsyncIterable<Uint8Array>;
+
+  async function* chunks(): AsyncGenerator<Buffer> {
+    for await (const chunk of source) {
+      observedBytes += chunk.byteLength;
+      if (observedBytes > input.byteSize) {
+        throw new StoredObjectTooLargeError({
+          maxBytes: input.byteSize,
+          observedBytes
+        });
+      }
+
+      const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      for (let offset = 0; offset < bytes.byteLength; offset += S3_UPLOAD_STREAM_CHUNK_BYTES) {
+        yield bytes.subarray(
+          offset,
+          Math.min(offset + S3_UPLOAD_STREAM_CHUNK_BYTES, bytes.byteLength)
+        );
+      }
+    }
+  }
+
+  return {
+    body: Readable.from(chunks()),
+    observedBytes: () => observedBytes
+  };
+}
+
 export function createS3StorageAdapter(env: Record<string, string | undefined> = process.env): StorageAdapter {
   const bucket = env.S3_BUCKET;
   const endpoint = env.S3_ENDPOINT;
@@ -712,25 +751,10 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
       if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
         throw new RangeError("invalid_stored_object_stream_size");
       }
-      let observedBytes = 0;
-      const meter = new Transform({
-        transform(chunk: Buffer, _encoding, callback) {
-          observedBytes += chunk.byteLength;
-          callback(
-            observedBytes > input.byteSize
-              ? new StoredObjectTooLargeError({
-                  maxBytes: input.byteSize,
-                  observedBytes
-                })
-              : null,
-            chunk
-          );
-        }
-      });
-      const body = Readable.from(input.body as unknown as AsyncIterable<Uint8Array>).pipe(meter);
+      const upload = createBoundedS3UploadBody(input);
       try {
         const command = new PutObjectCommand({
-          Body: body,
+          Body: upload.body,
           Bucket: bucket,
           ContentLength: input.byteSize,
           ContentType: input.contentType,
@@ -738,7 +762,7 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
         });
         if (input.signal) await client.send(command, { abortSignal: input.signal });
         else await client.send(command);
-        if (observedBytes !== input.byteSize) throw new Error("stored_object_size_mismatch");
+        if (upload.observedBytes() !== input.byteSize) throw new Error("stored_object_size_mismatch");
       } catch (error) {
         if (input.signal?.aborted) throw abortReason(input.signal);
         throw error;

@@ -1,16 +1,37 @@
+import { EventEmitter } from "node:events";
+import type { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { imageOnlyPdfInputProbeFixture } from "../providers/pdfInputProbe";
 import { parseNativeTextPdf } from "./nativePdf";
 
-function tinyPdf(content: string): Buffer {
-  const stream = `BT /F1 12 Tf ${content} ET\n`;
+function generatedPdf(
+  pageStreams: readonly string[],
+  input: Readonly<{ imagePages?: readonly number[]; width?: number }> = {}
+): Buffer {
+  const width = input.width ?? 720;
+  const fontReference = 3 + pageStreams.length * 2;
+  const hasImages = (input.imagePages?.length ?? 0) > 0;
+  const imageReference = fontReference + 1;
+  const imagePages = new Set(input.imagePages ?? []);
+  const pageReferences = pageStreams.map((_, index) => 3 + index * 2);
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 240] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    `<< /Type /Pages /Kids [${pageReferences.map((value) => `${value} 0 R`).join(" ")}] /Count ${pageStreams.length} >>`
   ];
+  for (const [index, stream] of pageStreams.entries()) {
+    const pageReference = pageReferences[index]!;
+    const imageResource = imagePages.has(index + 1)
+      ? ` /XObject << /Im1 ${imageReference} 0 R >>`
+      : "";
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} 800] /Resources << /Font << /F1 ${fontReference} 0 R >>${imageResource} >> /Contents ${pageReference + 1} 0 R >>`,
+      `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`
+    );
+  }
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  if (hasImages) {
+    objects.push("<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n0\nendstream");
+  }
   let pdf = "%PDF-1.4\n";
   const offsets: number[] = [0];
   for (let index = 0; index < objects.length; index += 1) {
@@ -26,6 +47,24 @@ function tinyPdf(content: string): Buffer {
   return Buffer.from(pdf);
 }
 
+function textStream(rows: readonly Readonly<{ text: string; x: number; y: number }>[]): string {
+  return [
+    "BT /F1 12 Tf",
+    ...rows.map((row) =>
+      `1 0 0 1 ${row.x} ${row.y} Tm (${row.text.replace(/[()\\]/gu, "\\$&")}) Tj`),
+    "ET"
+  ].join("\n");
+}
+
+function workerMessage(message: unknown): Worker {
+  const worker = new EventEmitter() as EventEmitter & {
+    terminate: () => Promise<number>;
+  };
+  worker.terminate = async () => 0;
+  queueMicrotask(() => worker.emit("message", message));
+  return worker as unknown as Worker;
+}
+
 const limits = {
   maxBlocks: 100,
   maxCharacters: 10_000,
@@ -34,28 +73,57 @@ const limits = {
 };
 
 describe("native PDF classification and geometry", () => {
-  it("keeps horizontally separated native text in one attributable table row", async () => {
+  it("keeps a simple single-column text PDF on the native fast path", async () => {
+    const rows = Array.from({ length: 5 }, (_, index) => ({
+      text: `A complete single column sentence number ${index + 1} with enough ordinary searchable text.`,
+      x: 40,
+      y: 720 - index * 36
+    }));
     const parsed = await parseNativeTextPdf({
-      bytes: tinyPdf("40 140 Td (Metric) Tj 160 0 Td (6.7) Tj"),
+      bytes: generatedPdf([textStream(rows)]),
       fileName: "fixture.pdf",
       mimeType: "application/pdf"
     }, limits);
 
     expect(parsed.classification).toBe("native_text");
+    expect(parsed.reasonCode).toBeNull();
     expect(parsed.document).toMatchObject({
       engine: "native_pdf",
       pageCount: 1,
       status: "complete"
     });
-    expect(parsed.document?.blocks).toEqual([
-      expect.objectContaining({
-        isTable: true,
-        page: 1,
-        table: expect.objectContaining({ columnCount: 2, rowCount: 1 }),
-        text: "Metric\t6.7",
-        type: "table"
-      })
-    ]);
+    expect(parsed.document?.blocks).toHaveLength(5);
+  });
+
+  it("routes a deterministic two-column PDF away from the native fast path", async () => {
+    const rows = Array.from({ length: 5 }, (_, index) => [
+      { text: `Left column sentence ${index + 1} continues here`, x: 40, y: 720 - index * 36 },
+      { text: `Right column sentence ${index + 1} continues here`, x: 390, y: 720 - index * 36 }
+    ]).flat();
+    const parsed = await parseNativeTextPdf({
+      bytes: generatedPdf([textStream(rows)]),
+      fileName: "two-columns.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(parsed.document).toBeNull();
+    expect(parsed.reasonCode).toBe("native_pdf_possible_multi_column");
+  });
+
+  it("routes a multi-row visual table to layout-aware fallback", async () => {
+    const rows = Array.from({ length: 5 }, (_, row) => [
+      { text: `Metric-${row}`, x: 40, y: 720 - row * 36 },
+      { text: `Actual-${row}`, x: 300, y: 720 - row * 36 },
+      { text: `Reference-${row}`, x: 520, y: 720 - row * 36 }
+    ]).flat();
+    const parsed = await parseNativeTextPdf({
+      bytes: generatedPdf([textStream(rows)]),
+      fileName: "table.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(parsed.document).toBeNull();
+    expect(parsed.reasonCode).toBe("native_pdf_possible_multi_column");
   });
 
   it("classifies an image-only PDF without manufacturing local text", async () => {
@@ -66,12 +134,125 @@ describe("native PDF classification and geometry", () => {
       mimeType: fixture.mimeType
     }, limits);
 
-    expect(parsed).toEqual({ classification: "image_only", document: null });
+    expect(parsed).toEqual({
+      classification: "image_only",
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text"
+    });
+  });
+
+  it("does not accept a scanned page merely because it has a digital footer", async () => {
+    const stream = [
+      "q 720 0 0 800 0 0 cm /Im1 Do Q",
+      textStream([{ text: "Page 1", x: 330, y: 20 }])
+    ].join("\n");
+    const parsed = await parseNativeTextPdf({
+      bytes: generatedPdf([stream], { imagePages: [1] }),
+      fileName: "scan-with-footer.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(parsed.document).toBeNull();
+    expect(parsed.reasonCode).toBe("native_pdf_image_heavy_low_text");
+  });
+
+  it("turns visual-group overflow into explicit fallback instead of truncating text", async () => {
+    const cells = Array.from({ length: 33 }, (_, index) => ({
+      text: `C${index.toString().padStart(2, "0")}`,
+      x: 20 + index * 42,
+      y: 500
+    }));
+    const parsed = await parseNativeTextPdf({
+      bytes: generatedPdf([textStream(cells)], { width: 1_440 }),
+      fileName: "wide-table.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(parsed.document).toBeNull();
+    expect(parsed.reasonCode).toBe("native_pdf_visual_group_overflow");
+  });
+
+  it("rejects an excessively fragmented visual text layer", async () => {
+    const rows = Array.from({ length: 16 }, (_, index) => ({
+      text: `R${index.toString().padStart(2, "0")}`,
+      x: 40,
+      y: 760 - index * 34
+    }));
+    const parsed = await parseNativeTextPdf({
+      bytes: generatedPdf([textStream(rows)]),
+      fileName: "fragmented.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(parsed.document).toBeNull();
+    expect(parsed.reasonCode).toBe("native_pdf_excessive_fragmentation");
+  });
+
+  it("rejects a worker projection that reports many control/replacement characters", async () => {
+    const text = "Readable sentence with enough ordinary text for density checks.";
+    const box = {
+      bottom: 690,
+      coordinateOrigin: "bottom_left",
+      left: 40,
+      page: 1,
+      right: 400,
+      top: 710
+    };
+    const parsed = await parseNativeTextPdf({
+      bytes: Buffer.from("%PDF-deterministic-worker-projection"),
+      fileName: "bad-text-layer.pdf",
+      mimeType: "application/pdf"
+    }, {
+      ...limits,
+      createWorker: () => workerMessage({
+        ok: true,
+        result: {
+          classification: "native_text",
+          pageCount: 1,
+          pages: [{
+            characterCount: text.length,
+            imageCount: 0,
+            invalidCharacterCount: 5,
+            invisibleText: false,
+            maxVisualGroupCount: 1,
+            multiGroupRowCount: 0,
+            page: 1,
+            rowCount: 1,
+            shortRowCount: 0
+          }],
+          rows: [{ box, cells: [{ box, text }], page: 1, text }],
+          visualGroupOverflow: false
+        }
+      })
+    });
+
+    expect(parsed.document).toBeNull();
+    expect(parsed.reasonCode).toBe("native_pdf_invalid_text_characters");
+  });
+
+  it("keeps a repeated header/footer fixture eligible for downstream furniture handling", async () => {
+    const pages = Array.from({ length: 3 }, (_, index) => textStream([
+      { text: "Example organization handbook", x: 40, y: 770 },
+      {
+        text: `Substantive single column body on page ${index + 1} with searchable document content.`,
+        x: 40,
+        y: 400
+      },
+      { text: "Internal use only", x: 40, y: 25 }
+    ]));
+    const parsed = await parseNativeTextPdf({
+      bytes: generatedPdf(pages),
+      fileName: "repeated-furniture.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(parsed.reasonCode).toBeNull();
+    expect(parsed.document).toMatchObject({ pageCount: 3, status: "complete" });
   });
 
   it("rejects native output beyond the configured character bound", async () => {
     await expect(parseNativeTextPdf({
-      bytes: tinyPdf("40 140 Td (Metric) Tj"),
+      bytes: generatedPdf([textStream([{ text: "Metric", x: 40, y: 140 }])]),
       fileName: "fixture.pdf",
       mimeType: "application/pdf"
     }, { ...limits, maxCharacters: 3 })).rejects.toMatchObject({

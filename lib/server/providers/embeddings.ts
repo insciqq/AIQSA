@@ -21,6 +21,7 @@ import {
   type ProviderCredentialSource
 } from "./providerCredentialSource";
 import { createProviderSafeFetch } from "./providerSafeFetch";
+import { parseRetryAfterMs } from "../retryAfter";
 
 export const MAX_EMBEDDING_BATCH_INPUTS = 128;
 export const MAX_EMBEDDING_INPUT_CHARS = 131_072;
@@ -66,9 +67,23 @@ export type EmbeddingErrorCode =
   | "embedding_response_vector_invalid";
 
 export class EmbeddingAdapterError extends Error {
-  constructor(readonly code: EmbeddingErrorCode) {
+  readonly httpStatus: number | null;
+  readonly retryAfterMs: number | null;
+
+  constructor(
+    readonly code: EmbeddingErrorCode,
+    options: Readonly<{ httpStatus?: number; retryAfterMs?: number | null }> = {}
+  ) {
     super(code);
     this.name = "EmbeddingAdapterError";
+    this.httpStatus = Number.isSafeInteger(options.httpStatus) &&
+      Number(options.httpStatus) >= 100 && Number(options.httpStatus) <= 599
+      ? Number(options.httpStatus)
+      : null;
+    this.retryAfterMs = Number.isSafeInteger(options.retryAfterMs) &&
+      Number(options.retryAfterMs) > 0
+      ? Number(options.retryAfterMs)
+      : null;
   }
 }
 
@@ -305,7 +320,10 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
           signal: timeout.signal
         });
         if (!response.ok) {
-          throw new EmbeddingAdapterError("embedding_provider_http_error");
+          throw new EmbeddingAdapterError("embedding_provider_http_error", {
+            httpStatus: response.status,
+            retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
+          });
         }
         let parsed: unknown;
         try {

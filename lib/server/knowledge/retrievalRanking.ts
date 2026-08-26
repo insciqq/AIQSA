@@ -3,8 +3,10 @@ import type { KnowledgeDocumentContextV1 } from "./documentContext";
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
 export const KNOWLEDGE_RANKING_CANDIDATE_MAX = 1_000;
-export const KNOWLEDGE_DIVERSE_SOURCE_LIMIT = 4;
-export const KNOWLEDGE_MULTI_SOURCE_PRIMARY_LIMIT = 3;
+export const KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR = 0.1;
+export const KNOWLEDGE_METADATA_RELEVANCE_FLOOR = 0.45;
+export const KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR = 0.65;
+export const KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND = 0.08;
 
 export type KnowledgeRetrievalLane =
   | "document_lexical"
@@ -84,14 +86,18 @@ export type KnowledgeRerankerBindingEvidence =
       version: 1;
     }>;
 
-const laneWeights: Readonly<Record<KnowledgeRetrievalLane, number>> = Object.freeze({
-  document_lexical: 0.7,
+export const KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS: Readonly<
+  Record<KnowledgeRetrievalLane, number>
+> = Object.freeze({
+  // Document and section matches are coarse routing evidence. Even together at
+  // rank 1 they must not outrank a direct passage match retained at rank 40.
+  document_lexical: 0.25,
   exact: 2.6,
   metadata: 1.2,
   neighbor: 0.25,
   passage_lexical: 1.3,
   passage_semantic: 1.15,
-  section_lexical: 0.9
+  section_lexical: 0.4
 });
 
 function clamp(value: number, minimum = 0, maximum = 1): number {
@@ -109,10 +115,38 @@ function primaryCandidate(candidate: KnowledgeRetrievalCandidate): boolean {
   return candidate.signals.some((signal) => signal.lane !== "neighbor");
 }
 
+export function knowledgeCandidateSignalEligible(signal: KnowledgeCandidateSignal): boolean {
+  switch (signal.lane) {
+    case "exact":
+      return true;
+    case "document_lexical":
+    case "passage_lexical":
+    case "section_lexical":
+      return signal.rawScore >= KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR;
+    case "metadata":
+      return signal.rawScore >= KNOWLEDGE_METADATA_RELEVANCE_FLOOR;
+    case "passage_semantic":
+      return signal.rawScore >= KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR &&
+        signal.vectorDistance !== null &&
+        1 - signal.vectorDistance >= KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR;
+    case "neighbor":
+      return false;
+  }
+}
+
+function relevanceEligibleCandidate(
+  candidate: KnowledgeRetrievalCandidate
+): KnowledgeRetrievalCandidate | null {
+  const signals = candidate.signals.filter(knowledgeCandidateSignalEligible);
+  return signals.length > 0
+    ? Object.freeze({ ...candidate, signals: Object.freeze(signals) })
+    : null;
+}
+
 export function fuseKnowledgeCandidates(
   candidates: readonly KnowledgeRetrievalCandidate[]
 ): KnowledgeRankedCandidate[] {
-  const maximum = Object.values(laneWeights)
+  const maximum = Object.values(KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS)
     .reduce((sum, weight) => sum + weight / (KNOWLEDGE_RRF_K + 1), 0);
   return candidates.map((candidate): KnowledgeRankedCandidate => {
     const bestByLane = new Map<KnowledgeRetrievalLane, KnowledgeCandidateSignal>();
@@ -124,7 +158,8 @@ export function fuseKnowledgeCandidates(
       }
     }
     const fusedScore = clamp([...bestByLane.values()].reduce((sum, signal) =>
-      sum + laneWeights[signal.lane] / (KNOWLEDGE_RRF_K + signal.rank), 0) / maximum);
+      sum + KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS[signal.lane] /
+        (KNOWLEDGE_RRF_K + signal.rank), 0) / maximum);
     return Object.freeze({
       ...candidate,
       fusedScore
@@ -181,34 +216,36 @@ export function selectSourceDiverseKnowledgeCandidates(input: Readonly<{
   candidates: readonly KnowledgeRankedCandidate[];
   resultLimit: number;
 }>): KnowledgeRankedCandidate[] {
-  const ranked = input.candidates.filter(primaryCandidate);
-  const sourceCount = new Set(ranked.map(sourceKey)).size;
-  const perSourceLimit = sourceCount >= 2
-    ? KNOWLEDGE_MULTI_SOURCE_PRIMARY_LIMIT
-    : input.resultLimit;
-  const selected: KnowledgeRankedCandidate[] = [];
   const selectedChunks = new Set<string>();
   const selectedContent = new Set<string>();
-  const selectedSources = new Set<string>();
-  const counts = new Map<string, number>();
-  const add = (candidate: KnowledgeRankedCandidate): boolean => {
-    const source = sourceKey(candidate);
-    if (selected.length >= input.resultLimit || selectedChunks.has(candidate.chunkId) ||
-      selectedContent.has(candidate.contentHash) ||
-      (counts.get(source) ?? 0) >= perSourceLimit) return false;
-    selected.push(candidate);
+  const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
+    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
+      return false;
+    }
     selectedChunks.add(candidate.chunkId);
     selectedContent.add(candidate.contentHash);
-    selectedSources.add(source);
-    counts.set(source, (counts.get(source) ?? 0) + 1);
     return true;
-  };
-
-  for (const candidate of ranked) {
-    if (selectedSources.size >= KNOWLEDGE_DIVERSE_SOURCE_LIMIT) break;
-    if (!selectedSources.has(sourceKey(candidate))) add(candidate);
+  });
+  const selected: KnowledgeRankedCandidate[] = [];
+  const counts = new Map<string, number>();
+  while (selected.length < input.resultLimit && remaining.length > 0) {
+    const strongest = remaining[0]!;
+    const strongestSourceCount = counts.get(sourceKey(strongest)) ?? 0;
+    const bandFloor = strongest.fusedScore * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
+    const alternative = remaining
+      .filter((candidate) =>
+        candidate.fusedScore >= bandFloor &&
+        (counts.get(sourceKey(candidate)) ?? 0) < strongestSourceCount)
+      .sort((left, right) =>
+        (counts.get(sourceKey(left)) ?? 0) - (counts.get(sourceKey(right)) ?? 0) ||
+        right.fusedScore - left.fusedScore ||
+        left.chunkId.localeCompare(right.chunkId))[0];
+    const chosen = alternative ?? strongest;
+    remaining.splice(remaining.indexOf(chosen), 1);
+    selected.push(chosen);
+    const source = sourceKey(chosen);
+    counts.set(source, (counts.get(source) ?? 0) + 1);
   }
-  for (const candidate of ranked) add(candidate);
   return selected;
 }
 
@@ -220,7 +257,11 @@ export function rankKnowledgeCandidates(input: Readonly<{
   ranked: readonly KnowledgeRankedCandidate[];
   selected: readonly KnowledgeRankedCandidate[];
 }>> {
-  const ranked = Object.freeze(fuseKnowledgeCandidates(input.candidates));
+  const eligible = input.candidates.flatMap((candidate) => {
+    const accepted = relevanceEligibleCandidate(candidate);
+    return accepted ? [accepted] : [];
+  });
+  const ranked = Object.freeze(fuseKnowledgeCandidates(eligible));
   const order = Object.freeze(ranked.map((candidate) => candidate.chunkId));
   const selected = Object.freeze(selectSourceDiverseKnowledgeCandidates({
     candidates: ranked,

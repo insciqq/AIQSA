@@ -89,6 +89,7 @@ enum KnowledgeRunOutcome {
   base_empty
   base_indexing
   embedding_model_unavailable
+  no_relevant_evidence
   source_location_unavailable
   budget_exhausted
   structured_clarification_required
@@ -1408,37 +1409,40 @@ model KnowledgeUploadBatch {
 }
 
 model KnowledgeUploadItem {
-  id                 String                   @id @default(uuid())
+  id                 String                        @id @default(uuid())
   batchId            String
-  clientFileId       String                   @db.VarChar(128)
-  attemptNumber      Int                      @default(1)
+  clientFileId       String                        @db.VarChar(128)
+  attemptNumber      Int                           @default(1)
   fileName           String
   declaredMimeType   String
   normalizedMimeType String
   declaredByteSize   Int
-  checksumHint       String?                  @db.Char(64)
+  checksumHint       String?                       @db.Char(64)
   storageKey         String?
   transport          KnowledgeUploadTransport
   multipartUploadId  String?
   sessionExpiresAt   DateTime
-  state              KnowledgeUploadItemState @default(QUEUED)
-  uploadedByteSize   Int                      @default(0)
-  errorCode          String?                  @db.VarChar(64)
+  state              KnowledgeUploadItemState      @default(QUEUED)
+  uploadedByteSize   Int                           @default(0)
+  errorCode          String?                       @db.VarChar(64)
   sourceId           String?
   sourceVersionId    String?
+  sourceArtifactId   String?
   documentId         String?
   documentVersionId  String?
   settledAt          DateTime?
   cancelledAt        DateTime?
-  createdAt          DateTime                 @default(now())
-  updatedAt          DateTime                 @updatedAt
-  batch              KnowledgeUploadBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+  batch              KnowledgeUploadBatch          @relation(fields: [batchId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   parts              KnowledgeUploadPart[]
+  sourceArtifact     KnowledgeSourceIndexArtifact? @relation("KnowledgeUploadItemSourceArtifact", fields: [sourceVersionId, sourceArtifactId], references: [sourceVersionId, id], onDelete: SetNull, onUpdate: Restrict)
 
   @@unique([batchId, clientFileId])
   @@unique([batchId, id])
   @@index([storageKey])
   @@index([sourceId])
+  @@index([sourceVersionId, sourceArtifactId], map: "KnowledgeUploadItem_source_artifact_idx")
   @@index([state, sessionExpiresAt, updatedAt, id])
 }
 
@@ -1622,6 +1626,7 @@ model KnowledgeSourceIndexArtifact {
   hierarchicalIndexes      KnowledgeHierarchicalIndexArtifact[]
   snapshotSources          KnowledgeBaseSnapshotSource[]
   sourceVersion            KnowledgeSourceVersion                  @relation(fields: [sourceVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  uploadItems              KnowledgeUploadItem[]                   @relation("KnowledgeUploadItemSourceArtifact")
   v1GenerationMaps         KnowledgeV1GenerationArtifactMap[]
 
   @@unique([sourceVersionId, profileRevisionId])

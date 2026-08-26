@@ -5,6 +5,7 @@ import {
   ProviderAdmissionError,
   type ProviderAdmissionRole
 } from "./admission";
+import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 
 export const SYSTEM_MODEL_ABSENT = "system_model_absent" as const;
 export const SYSTEM_MODEL_UNAVAILABLE = "system_model_unavailable" as const;
@@ -29,6 +30,33 @@ type SystemModelRolePrisma = AdmissionPrisma & Pick<
 >;
 
 type RoleLoader = typeof loadInstallationAnswerProviderRole;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function applySystemModelReasoningEffort(
+  snapshot: ProviderExecutionSnapshot,
+  reasoningEffort: string | null
+): ProviderExecutionSnapshot {
+  if (reasoningEffort === null) return snapshot;
+  const currentReasoning = record(snapshot.model.defaultParams.reasoning)
+    ? snapshot.model.defaultParams.reasoning
+    : {};
+  return {
+    ...snapshot,
+    model: {
+      ...snapshot.model,
+      defaultParams: {
+        ...snapshot.model.defaultParams,
+        reasoning: {
+          ...currentReasoning,
+          effort: reasoningEffort
+        }
+      }
+    }
+  };
+}
 
 export function createSystemModelRoleResolver(
   db: SystemModelRolePrisma,

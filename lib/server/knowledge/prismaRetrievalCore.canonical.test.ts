@@ -45,6 +45,8 @@ function row(input: Readonly<{
   sourceVersionId: string;
   text?: string;
   versionNumber?: number;
+  rawScore?: number;
+  vectorDistance?: number;
 }>) {
   return {
     baseName: input.baseName,
@@ -65,13 +67,13 @@ function row(input: Readonly<{
     laneRank: input.laneRank ?? 1,
     layoutKind: input.layoutKind ?? "body",
     page: 1,
-    rawScore: 1,
+    rawScore: input.rawScore ?? 1,
     sectionId: "section-1",
     sourceArtifactId: input.artifactId,
     sourceName: input.sourceName ?? "Shared name",
     text: input.text ?? "Canonical source evidence.",
-    vectorDistance: null,
-    vectorMode: null
+    vectorDistance: input.vectorDistance ?? null,
+    vectorMode: input.lane === "passage_semantic" ? "ann" : null
   };
 }
 
@@ -102,6 +104,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 40,
+    excludedContentHashes: [],
     query: "canonical source evidence",
     resultLimit: 8,
     runId: "run-1",
@@ -112,16 +115,137 @@ async function execute(
 }
 
 describe("Prisma retrieval core canonical Source identity", () => {
-  it("enforces the fixed focused limits and fails closed without vector rows", async () => {
+  it("enforces fixed limits while treating a scope without vector rows as available lexical work", async () => {
     const admitted = scope(0, "Base A", "base-a");
     const client = mockClient([admitted], []);
 
     await expect(execute(client, { candidateLimit: 39 })).rejects.toThrow(
       "knowledge_retrieval_request_invalid"
     );
-    await expect(execute(mockClient([{ ...admitted, eligibleRows: 0 }], []))).rejects.toThrow(
-      "knowledge_retrieval_vector_unavailable"
+    await expect(execute(mockClient([admitted], []), { resultLimit: 16 }))
+      .resolves.toMatchObject({ candidateCount: 0, passages: [] });
+    await expect(execute(mockClient([admitted], []), { resultLimit: 9 })).rejects.toThrow(
+      "knowledge_retrieval_request_invalid"
     );
+    await expect(execute(mockClient([{ ...admitted, eligibleRows: 0 }], []), {
+      vectors: []
+    })).resolves.toMatchObject({
+      bindingCount: 1,
+      candidateCount: 0,
+      passages: [],
+      vectorSearchEvidence: [{ eligibleRows: 0, mode: "unavailable" }]
+    });
+  });
+
+  it("routes identifier and date values through the ordinary set-based exact lane", async () => {
+    const client = mockClient([scope(0, "Policies", "base-policies")], [row({
+      artifactId: "artifact-policy",
+      baseName: "Policies",
+      bindingOrdinal: 0,
+      chunkId: "chunk-policy",
+      knowledgeBaseId: "base-policies",
+      lane: "exact",
+      sourceId: "source-policy",
+      sourceVersionId: "version-policy",
+      text: "The requested policy evidence."
+    })]);
+
+    const result = await execute(client, {
+      anchorQuery: "What changed in SAFE-2718 on 2026-08-20?",
+      query: "policy event details",
+      vectors: []
+    });
+
+    expect(client.$queryRaw).toHaveBeenCalledOnce();
+    const query = client.$queryRaw.mock.calls[0]![0] as {
+      strings: readonly string[];
+      values: readonly unknown[];
+    };
+    const queryText = sqlText(query);
+    expect(queryText).toContain("exact_query_values AS MATERIALIZED");
+    expect(queryText).toContain("exact_match_frequencies AS MATERIALIZED");
+    expect(queryText).toContain('PARTITION BY exact_match."bindingOrdinal", exact_match."normalizedValue"');
+    expect(queryText).toContain('sum(1.0 / exact_match."matchFrequency")');
+    expect(queryText).toContain("KnowledgeArtifactExactEntry");
+    expect(queryText).toContain("unnest(");
+    expect(queryText).toContain('"modelSimpleQuery"');
+    expect(queryText).toContain('"anchorSimpleQuery"');
+    expect(query.values).toEqual(expect.arrayContaining(["safe-2718", "2026-08-20"]));
+    expect(result.passages).toHaveLength(1);
+    expect(result.passages[0]).toMatchObject({
+      chunkId: "chunk-policy",
+      signals: [{ exactKind: "identifier", lane: "exact", rank: 1, rawScore: 1 }]
+    });
+    expect(result.vectorSearchEvidence).toMatchObject([{
+      candidateCount: 0,
+      mode: "unavailable"
+    }]);
+  });
+
+  it("filters a weak nearest neighbor before fusion and returns an empty ranking", async () => {
+    const result = await execute(mockClient([scope(0, "Policies", "base-policies")], [row({
+      artifactId: "artifact-policy",
+      baseName: "Policies",
+      bindingOrdinal: 0,
+      chunkId: "chunk-weak",
+      knowledgeBaseId: "base-policies",
+      lane: "passage_semantic",
+      rawScore: 0.2,
+      sourceId: "source-policy",
+      sourceVersionId: "version-policy",
+      vectorDistance: 0.8
+    })]));
+
+    expect(result).toMatchObject({
+      candidateCount: 0,
+      candidateCounts: { 0: 0 },
+      passages: [],
+      rankingEvidence: { candidateOrder: [] }
+    });
+  });
+
+  it("returns novel evidence on later calls without reattaching excluded prior context", async () => {
+    const admitted = scope(0, "Policies", "base-policies");
+    const client = mockClient([admitted], [
+      row({
+        artifactId: "artifact-policy",
+        baseName: "Policies",
+        bindingOrdinal: 0,
+        chunkId: "chunk-prior",
+        chunkIndex: 0,
+        contentHash: "a".repeat(64),
+        knowledgeBaseId: "base-policies",
+        lane: "exact",
+        sourceId: "source-policy",
+        sourceVersionId: "version-policy"
+      }),
+      row({
+        artifactId: "artifact-policy",
+        baseName: "Policies",
+        bindingOrdinal: 0,
+        chunkId: "chunk-novel",
+        chunkIndex: 1,
+        contentHash: "b".repeat(64),
+        knowledgeBaseId: "base-policies",
+        laneRank: 2,
+        sourceId: "source-policy",
+        sourceVersionId: "version-policy"
+      })
+    ]);
+
+    const result = await execute(client, {
+      excludedContentHashes: ["a".repeat(64)]
+    });
+
+    expect(result).toMatchObject({
+      candidateCount: 1,
+      passages: [{ chunkId: "chunk-novel" }],
+      rankingEvidence: { candidateOrder: ["chunk-novel"] }
+    });
+    expect(result.passages[0]).not.toHaveProperty("expandedContext");
+    await expect(execute(client, {
+      excludedContentHashes: ["not-a-content-hash"]
+    })).rejects.toThrow("knowledge_retrieval_exclusion_invalid");
   });
 
   it("returns one non-inflated candidate for the same artifact admitted through Bases A+B", async () => {
@@ -267,6 +391,13 @@ describe("Prisma retrieval core canonical Source identity", () => {
       `neighbor."documentContext"->'locator'->>'rowId' =`
     );
     expect(neighborSql).toContain(
+      `neighbor."documentContext"->'locator'->>'blockId' =`
+    );
+    expect(neighborSql).toContain(
+      `(neighbor."documentContext"->'locator'->>'rowIndex')::integer`
+    );
+    expect(neighborSql).toContain("BETWEEN 1 AND");
+    expect(neighborSql).toContain(
       `neighbor."documentContext"->'locator'->>'fieldGroupId' =`
     );
   });
@@ -326,6 +457,138 @@ describe("Prisma retrieval core canonical Source identity", () => {
       ].join("\n\n")
     });
     expect(result.passages[0]?.expandedContext).not.toContain("Must not leak");
+  });
+
+  it("attaches a bounded local-first window including independently selected rows from the same table", async () => {
+    const common = {
+      artifactId: "artifact-table",
+      baseName: "Metrics",
+      bindingOrdinal: 0,
+      knowledgeBaseId: "base-metrics",
+      layoutKind: "table_row" as const,
+      sourceId: "source-metrics",
+      sourceVersionId: "version-metrics"
+    };
+    const tableContext = (blockId: string, rowIndex: number) =>
+      createKnowledgeTableDocumentContext({
+        blockId,
+        cells: [{ columnEnd: 1, columnStart: 0, text: `row-${rowIndex}` }],
+        headerLineage: [],
+        rowIndex
+      });
+    const result = await execute(mockClient([scope(0, "Metrics", "base-metrics")], [
+      row({
+        ...common,
+        chunkId: "row-4",
+        chunkIndex: 4,
+        contentHash: "f".repeat(64),
+        documentContext: tableContext("table-a", 4),
+        lane: "exact",
+        text: "Primary row."
+      }),
+      ...[0, 1, 2, 3, 5, 6, 7, 8, 9].map((rowIndex) => row({
+        ...common,
+        chunkId: `row-${rowIndex}`,
+        chunkIndex: rowIndex,
+        contentHash: String(rowIndex).repeat(64),
+        documentContext: tableContext("table-a", rowIndex),
+        lane: rowIndex === 6 ? "passage_lexical" : "neighbor",
+        laneRank: rowIndex === 6 ? 40 : 1,
+        text: `Complete row ${rowIndex}.`
+      })),
+      row({
+        ...common,
+        chunkId: "other-table-row",
+        chunkIndex: 3,
+        contentHash: "a".repeat(64),
+        documentContext: tableContext("table-b", 3),
+        lane: "neighbor",
+        text: "Other table must not leak."
+      })
+    ]));
+
+    expect(result.passages).toHaveLength(2);
+    const primary = result.passages.find((passage) => passage.chunkId === "row-4");
+    expect(primary?.expandedContext).toBe([
+      "Previous complete row in the same table:\nComplete row 0.",
+      "Previous complete row in the same table:\nComplete row 1.",
+      "Previous complete row in the same table:\nComplete row 2.",
+      "Previous complete row in the same table:\nComplete row 3.",
+      "Next complete row in the same table:\nComplete row 5.",
+      "Next complete row in the same table:\nComplete row 6.",
+      "Next complete row in the same table:\nComplete row 7.",
+      "Next complete row in the same table:\nComplete row 8."
+    ].join("\n\n"));
+    expect(primary?.expandedContext).toContain("Complete row 6");
+    expect(primary?.expandedContext).not.toContain("Complete row 9");
+    expect(primary?.expandedContext).not.toContain("Other table must not leak");
+  });
+
+  it("supplements a selected table Source with independently eligible rows below the global pool", async () => {
+    const targetContext = createKnowledgeTableDocumentContext({
+      blockId: "table-a",
+      cells: [{ columnEnd: 1, columnStart: 0, text: "Target A" }],
+      headerLineage: [],
+      rowIndex: 1
+    });
+    const supplementalContext = createKnowledgeTableDocumentContext({
+      blockId: "table-b",
+      cells: [{ columnEnd: 1, columnStart: 0, text: "Target B" }],
+      headerLineage: [],
+      rowIndex: 0
+    });
+    const target = {
+      artifactId: "artifact-target",
+      baseName: "Metrics",
+      bindingOrdinal: 0,
+      knowledgeBaseId: "base-metrics",
+      layoutKind: "table_row" as const,
+      sourceId: "source-target",
+      sourceVersionId: "version-target"
+    };
+    const result = await execute(mockClient([scope(0, "Metrics", "base-metrics")], [
+      row({
+        ...target,
+        chunkId: "target-primary",
+        contentHash: "d".repeat(64),
+        documentContext: targetContext,
+        lane: "exact",
+        laneRank: 1,
+        text: "Primary matching row."
+      }),
+      ...Array.from({ length: 40 }, (_, index) => row({
+        artifactId: `artifact-distractor-${index}`,
+        baseName: "Metrics",
+        bindingOrdinal: 0,
+        chunkId: `distractor-${index}`,
+        contentHash: index.toString(16).padStart(64, "0"),
+        knowledgeBaseId: "base-metrics",
+        lane: "exact",
+        laneRank: index + 2,
+        sourceId: `source-distractor-${index}`,
+        sourceVersionId: `version-distractor-${index}`
+      })),
+      row({
+        ...target,
+        chunkId: "target-supplemental",
+        chunkIndex: 10,
+        contentHash: "e".repeat(64),
+        documentContext: supplementalContext,
+        laneRank: 40,
+        rawScore: 0.11,
+        text: "Independently matching complete row."
+      })
+    ]));
+
+    expect(result.candidateCount).toBe(40);
+    expect(result.rankingEvidence.candidateOrder).not.toContain("target-supplemental");
+    expect(result.passages.find((passage) => passage.chunkId === "target-primary"))
+      .toMatchObject({
+        expandedContext: [
+          "Additional independently matched complete row from the same Source:",
+          "Independently matching complete row."
+        ].join("\n")
+      });
   });
 
   it("caps the canonical RRF pool at forty chunks inside the one focused operation", async () => {

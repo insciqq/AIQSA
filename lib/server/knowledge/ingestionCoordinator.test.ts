@@ -117,4 +117,99 @@ describe("Knowledge ingestion coordinator", () => {
     expect(retryLater).not.toHaveBeenCalled();
     expect(settleFailed).not.toHaveBeenCalled();
   });
+
+  it("persists the full retry window before exhausting one stage", async () => {
+    const baseNow = new Date("2026-08-26T00:00:00.000Z");
+    const queued = Array.from({ length: 6 }, (_, index) => claim(`retry-${index + 1}`, index + 1));
+    const retryLater = vi.fn(async (_input: { nextAttemptAt: Date }) => true);
+    const settleFailed = vi.fn(async () => true);
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: 1,
+      now: () => baseNow,
+      process: async () => {
+        throw new KnowledgeIngestionError("embedding_unavailable", true);
+      },
+      repository: {
+        claim: vi.fn(async () => queued.shift() ?? null),
+        heartbeat: vi.fn(async () => true),
+        reconcile: vi.fn(async () => false),
+        retryLater,
+        settleFailed
+      }
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(retryLater.mock.calls.map(([input]) =>
+      input.nextAttemptAt.getTime() - baseNow.getTime()
+    )).toEqual([2_000, 10_000, 30_000, 120_000, 300_000]);
+    expect(settleFailed).toHaveBeenCalledOnce();
+    expect(settleFailed).toHaveBeenCalledWith(expect.objectContaining({
+      sourceVersionId: "version-retry-6"
+    }));
+  });
+
+  it("honors a valid provider retry delay above the local minimum", async () => {
+    const baseNow = new Date("2026-08-26T00:00:00.000Z");
+    const failure = new KnowledgeIngestionError(
+      "embedding_unavailable",
+      true,
+      75_000
+    );
+    const retryLater = vi.fn(async () => true);
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: 1,
+      now: () => baseNow,
+      process: async () => {
+        throw failure;
+      },
+      repository: {
+        claim: vi.fn()
+          .mockResolvedValueOnce(claim("rate-limited", 1))
+          .mockResolvedValueOnce(null),
+        heartbeat: vi.fn(async () => true),
+        reconcile: vi.fn(async () => false),
+        retryLater,
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(retryLater).toHaveBeenCalledWith(expect.objectContaining({
+      nextAttemptAt: new Date(baseNow.getTime() + 75_000)
+    }));
+  });
+
+  it("bounds an excessive provider retry delay", async () => {
+    const baseNow = new Date("2026-08-26T00:00:00.000Z");
+    const failure = new KnowledgeIngestionError(
+      "embedding_rate_limited",
+      true,
+      24 * 60 * 60_000
+    );
+    const retryLater = vi.fn(async () => true);
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: 1,
+      now: () => baseNow,
+      process: async () => {
+        throw failure;
+      },
+      repository: {
+        claim: vi.fn()
+          .mockResolvedValueOnce(claim("bounded-rate-limit", 1))
+          .mockResolvedValueOnce(null),
+        heartbeat: vi.fn(async () => true),
+        reconcile: vi.fn(async () => false),
+        retryLater,
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(retryLater).toHaveBeenCalledWith(expect.objectContaining({
+      nextAttemptAt: new Date(baseNow.getTime() + 15 * 60_000)
+    }));
+  });
 });

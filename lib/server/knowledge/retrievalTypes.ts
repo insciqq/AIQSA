@@ -41,7 +41,11 @@ export const KNOWLEDGE_RESULT_VERSIONS = Object.freeze([
 ] as const);
 export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 3_000;
 export const KNOWLEDGE_CANDIDATE_LIMIT = 40;
-export const KNOWLEDGE_RESULT_LIMIT = 8;
+/** Broad map-stage recall. Source-scoped reduce calls intentionally stay
+ * smaller so later rounds trade breadth for row-level precision. */
+export const KNOWLEDGE_RESULT_LIMIT = 16;
+export const KNOWLEDGE_SCOPED_RESULT_LIMIT = 8;
+export const KNOWLEDGE_PRIOR_CONTENT_HASH_MAX = 256;
 export const KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES = 48 * 1024;
 export const KNOWLEDGE_SCOPE_MAX_BINDINGS = 128;
 export const KNOWLEDGE_SCOPE_MAX_SOURCES = 999;
@@ -86,6 +90,7 @@ export type KnowledgeRetrievalOutcome =
   | "budget_exhausted"
   | "complete"
   | "embedding_model_unavailable"
+  | "no_relevant_evidence"
   | "source_location_unavailable"
   | "zero_above_threshold";
 

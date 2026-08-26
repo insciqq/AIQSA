@@ -29,9 +29,22 @@ export type KnowledgeIngestionCoordinatorRepository = Readonly<{
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_INTERVAL_MS = 1_000;
 const DEFAULT_LEASE_MS = 30_000;
-const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_MAX_PARALLEL = 2;
-const RETRY_DELAYS_MS = [1_000, 5_000] as const;
+const MAX_RETRY_AFTER_MS = 15 * 60_000;
+const RETRY_DELAYS_MS = [2_000, 10_000, 30_000, 120_000, 300_000] as const;
+
+function retryDelayMs(attemptCount: number, retryAfterMs: number | null): number {
+  const localDelay = RETRY_DELAYS_MS[
+    Math.min(Math.max(attemptCount - 1, 0), RETRY_DELAYS_MS.length - 1)
+  ] ?? RETRY_DELAYS_MS.at(-1)!;
+  if (
+    retryAfterMs === null ||
+    !Number.isSafeInteger(retryAfterMs) ||
+    retryAfterMs <= 0
+  ) return localDelay;
+  return Math.max(localDelay, Math.min(retryAfterMs, MAX_RETRY_AFTER_MS));
+}
 
 export class KnowledgeIngestionCoordinator {
   readonly #heartbeatMs: number;
@@ -145,9 +158,7 @@ export class KnowledgeIngestionCoordinator {
         ? error
         : new KnowledgeIngestionError("knowledge_ingestion_failed", true);
       if (failure.retryable && claim.attemptCount < this.#maxAttempts) {
-        const delay = RETRY_DELAYS_MS[
-          Math.min(claim.attemptCount - 1, RETRY_DELAYS_MS.length - 1)
-        ] ?? RETRY_DELAYS_MS.at(-1)!;
+        const delay = retryDelayMs(claim.attemptCount, failure.retryAfterMs);
         const now = this.#now();
         await this.#repository.retryLater({
           ...identity,

@@ -322,11 +322,9 @@ async function itemProjection(
       transport = {
         kind: "proxy",
         uploadUrl: [
-          "/api/me/knowledge-bases",
+          "/api/me/knowledge-uploads",
           encodeURIComponent(batch.knowledgeBaseId),
-          "upload-batches",
           encodeURIComponent(batch.id),
-          "items",
           encodeURIComponent(item.id),
           "content"
         ].join("/") + `?attempt=${item.attemptNumber}`

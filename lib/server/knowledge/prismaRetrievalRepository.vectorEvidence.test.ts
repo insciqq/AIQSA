@@ -44,6 +44,7 @@ describe("Prisma Knowledge vector evidence projection", () => {
     const store = createPrismaKnowledgeRetrievalStore({} as never);
     const result = await store.hybridSearch({
       candidateLimit: 8,
+      excludedContentHashes: [],
       operation: operation as KnowledgeOperationKind,
       query: "local deterministic query",
       resultLimit: 4,
@@ -54,5 +55,66 @@ describe("Prisma Knowledge vector evidence projection", () => {
 
     expect(result.vectorSearchEvidence).toHaveLength(expectedLength);
     expect(executeKnowledgeRetrievalCore).toHaveBeenCalledOnce();
+  });
+
+  it("preserves expanded same-Source context produced by the retrieval core", async () => {
+    vi.mocked(executeKnowledgeRetrievalCore).mockResolvedValue({
+      bindingCount: 1,
+      candidateCount: 1,
+      candidateCounts: { 0: 1 },
+      canonicalSourceProvenance: [],
+      passages: [{
+        annRank: null,
+        baseName: "Policies",
+        bindingOrdinal: 0,
+        chunkId: "chunk-1",
+        chunkIndex: 1,
+        contentHash: "a".repeat(64),
+        documentId: "source-1",
+        documentVersionId: "version-1",
+        documentVersionNumber: 1,
+        expandedContext: "Next complete row in the same table:\nRelated row.",
+        fileName: "policy.pdf",
+        ftsRank: 1,
+        ftsScore: 1,
+        fusedScore: 1,
+        headingPath: ["Policy"],
+        knowledgeBaseId: "base-1",
+        layoutKind: "table_row",
+        page: 1,
+        sectionId: "section-1",
+        signals: [{
+          exactKind: null,
+          lane: "passage_lexical",
+          rank: 1,
+          rawScore: 1,
+          vectorDistance: null,
+          vectorMode: null
+        }],
+        sourceArtifactId: "artifact-1",
+        sourceName: "Policy",
+        text: "Primary row.",
+        vectorDistance: null,
+        vectorScore: null
+      }],
+      rankingEvidence: {} as never,
+      vectorSearchEvidence
+    });
+
+    const store = createPrismaKnowledgeRetrievalStore({} as never);
+    const result = await store.hybridSearch({
+      candidateLimit: 8,
+      excludedContentHashes: [],
+      operation: "automatic_search",
+      query: "policy row",
+      resultLimit: 4,
+      runId: "run-1",
+      userId: "user-1",
+      vectors: []
+    });
+
+    expect(result.passages[0]?.expandedContext).toBe(
+      "Next complete row in the same table:\nRelated row."
+    );
   });
 });

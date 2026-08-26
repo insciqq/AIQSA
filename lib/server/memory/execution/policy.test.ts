@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { applySystemModelReasoningEffort } from "../../providerRuntime/systemModelRole";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
-import { applySystemModelReasoningEffort } from "./policy";
 
 function snapshot(defaultParams: Record<string, unknown>): ProviderExecutionSnapshot {
   return {

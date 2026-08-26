@@ -241,7 +241,10 @@ describe("OpenAI-compatible embeddings", () => {
   });
 
   it("does not retry or fall back after an upstream failure", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", { status: 503 }));
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", {
+      headers: { "retry-after": "75" },
+      status: 503
+    }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
       connection: openRouterConnection,
       model: embeddingModel(),
@@ -250,8 +253,32 @@ describe("OpenAI-compatible embeddings", () => {
     });
 
     await expect(adapter.embed({ mode: "document", texts: ["one"] }))
-      .rejects.toMatchObject({ code: "embedding_provider_http_error" });
+      .rejects.toMatchObject({
+        code: "embedding_provider_http_error",
+        httpStatus: 503,
+        retryAfterMs: 75_000
+      });
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a permanent upstream status without retaining its response body", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("private invalid request", {
+      headers: { "retry-after": "not-a-delay" },
+      status: 400
+    }));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection,
+      model: embeddingModel(),
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .rejects.toMatchObject({
+        code: "embedding_provider_http_error",
+        httpStatus: 400,
+        retryAfterMs: null
+      });
   });
 
   it("does not classify upstream timeout text as the configured deadline", async () => {

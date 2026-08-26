@@ -6,6 +6,7 @@ import {
   newKnowledgeUploadSettlementIds,
   type KnowledgeUploadAdmissionItem
 } from "./uploadRepository";
+import { projectKnowledgeUploadBatch, type KnowledgeUploadServiceDeps } from "./uploadService";
 
 type Fixture = Readonly<{
   baseId: string;
@@ -17,6 +18,8 @@ type Fixture = Readonly<{
 const duplicateChecksum = "a".repeat(64);
 const distinctChecksum = "b".repeat(64);
 const fixtureConnectionId = "knowledge-upload-test-connection-v1";
+const fixtureFailedProfileId = "knowledge-upload-test-failed-profile-v1";
+const fixtureFailedProfileRevisionId = "knowledge-upload-test-failed-profile-revision-v1";
 const fixtureMismatchedProfileId = "knowledge-upload-test-mismatched-profile-v1";
 const fixtureMismatchedProfileRevisionId = "knowledge-upload-test-mismatched-profile-revision-v1";
 const fixtureProfileId = "knowledge-upload-test-profile-v1";
@@ -108,6 +111,35 @@ async function createFixture(): Promise<Fixture> {
         revisionNumber: 1,
         targetDimension: 1024,
         vectorSpaceFingerprint: "f".repeat(64)
+      }
+    });
+  }
+  await prisma.knowledgeIndexProfile.upsert({
+    create: { id: fixtureFailedProfileId },
+    update: {},
+    where: { id: fixtureFailedProfileId }
+  });
+  const existingFailedRevision = await prisma.knowledgeIndexProfileRevision.findUnique({
+    select: { id: true },
+    where: { id: fixtureFailedProfileRevisionId }
+  });
+  if (!existingFailedRevision) {
+    await prisma.knowledgeIndexProfileRevision.create({
+      data: {
+        activatedAt: new Date(0),
+        chunkingProfileVersion: 3,
+        egressPolicy: {},
+        embeddingConfiguration: {},
+        embeddingProviderModelId: fixtureProviderModelId,
+        executionAuthority: "installation",
+        id: fixtureFailedProfileRevisionId,
+        preflightCheckedAt: new Date(0),
+        preflightStatus: "ready",
+        profileConfiguration: {},
+        profileId: fixtureFailedProfileId,
+        revisionNumber: 1,
+        targetDimension: 1024,
+        vectorSpaceFingerprint: "9".repeat(64)
       }
     });
   }
@@ -410,10 +442,126 @@ describe("durable Knowledge upload batches", () => {
     expect(upload).toMatchObject({
       documentId: null,
       documentVersionId: null,
+      sourceArtifactId: ids.sourceArtifactId,
       sourceId: ids.sourceId,
+      sourceVersionId: ids.sourceVersionId,
       state: "PROCESSING",
       storageKey: null
     });
+  });
+
+  it("projects the upload-created artifact instead of a newer artifact from another profile", async () => {
+    const batchId = randomUUID();
+    const itemId = randomUUID();
+    const item = admission({ batchId, itemId });
+    await repository.createBatch({
+      batchId,
+      clientBatchId: `batch-artifact-status-${batchId}`,
+      items: [item],
+      knowledgeBaseId: fixture.baseId,
+      userId: fixture.ownerUserId
+    });
+    await repository.markStored({
+      attemptNumber: 1,
+      batchId,
+      itemId,
+      knowledgeBaseId: fixture.baseId,
+      storageKey: item.storageKey,
+      userId: fixture.ownerUserId
+    });
+    const ids = newKnowledgeUploadSettlementIds();
+    await expect(repository.settle({
+      ...ids,
+      attemptNumber: 1,
+      batchId,
+      byteSize: 12,
+      checksum: "7".repeat(64),
+      fileName: "artifact-status.md",
+      itemId,
+      knowledgeBaseId: fixture.baseId,
+      mimeType: "text/markdown",
+      normalizedTextStorageKey: `knowledge/${ids.sourceVersionId}/normalized-v2.json`,
+      now: new Date(),
+      userId: fixture.ownerUserId
+    })).resolves.toMatchObject({ kind: "created", sourceId: ids.sourceId });
+
+    const staleIds = newKnowledgeUploadSettlementIds();
+    await expect(repository.settle({
+      ...staleIds,
+      attemptNumber: 2,
+      batchId,
+      byteSize: 12,
+      checksum: "7".repeat(64),
+      fileName: "artifact-status.md",
+      itemId,
+      knowledgeBaseId: fixture.baseId,
+      mimeType: "text/markdown",
+      normalizedTextStorageKey: `knowledge/${staleIds.sourceVersionId}/normalized-v2.json`,
+      now: new Date(),
+      userId: fixture.ownerUserId
+    })).resolves.toEqual({ kind: "conflict" });
+    await expect(prisma.knowledgeUploadItem.findUnique({
+      select: { sourceArtifactId: true, sourceVersionId: true },
+      where: { id: itemId }
+    })).resolves.toEqual({
+      sourceArtifactId: ids.sourceArtifactId,
+      sourceVersionId: ids.sourceVersionId
+    });
+
+    const later = Date.now() + 60_000;
+    await prisma.knowledgeSourceIndexArtifact.createMany({
+      data: [{
+        chunkCount: 1,
+        createdAt: new Date(later),
+        embeddedPassageCount: 1,
+        normalizedTextByteSize: 20,
+        normalizedTextChecksum: "8".repeat(64),
+        normalizedTextStorageKey: `knowledge/${ids.sourceVersionId}/old-ready.json`,
+        pageCount: 1,
+        profileRevisionId: fixtureMismatchedProfileRevisionId,
+        readyAt: new Date(later),
+        sourceVersionId: ids.sourceVersionId,
+        state: "ready",
+        updatedAt: new Date(later)
+      }, {
+        createdAt: new Date(later + 1_000),
+        errorCode: "parser_unavailable",
+        profileRevisionId: fixtureFailedProfileRevisionId,
+        sourceVersionId: ids.sourceVersionId,
+        state: "failed",
+        updatedAt: new Date(later + 1_000)
+      }]
+    });
+
+    const batch = await repository.getBatch(fixture.ownerUserId, fixture.baseId, batchId);
+    expect(batch?.items[0]?.sourceState?.versionStates).toEqual([
+      expect.objectContaining({ id: ids.sourceVersionId, state: "pending" })
+    ]);
+    const projected = await projectKnowledgeUploadBatch({
+      storage: {}
+    } as unknown as KnowledgeUploadServiceDeps, batch!, {
+      config: { maxBatchFiles: 100, multipartPartBytes: 8_388_608, sessionSeconds: 900 },
+      now: new Date()
+    });
+    expect(projected.items[0]).toMatchObject({
+      failureCode: null,
+      state: "processing"
+    });
+    expect(projected.items[0]).not.toHaveProperty("sourceArtifactId");
+    expect(projected.items[0]).not.toHaveProperty("sourceVersionId");
+
+    await prisma.knowledgeUploadItem.update({
+      data: { sourceArtifactId: null },
+      where: { id: itemId }
+    });
+    const legacyBatch = await repository.getBatch(
+      fixture.ownerUserId,
+      fixture.baseId,
+      batchId
+    );
+    expect(legacyBatch?.items[0]?.sourceState?.versionStates).toEqual([
+      expect.objectContaining({ id: ids.sourceVersionId, state: "pending" })
+    ]);
   });
 
   it("marks an exact ready duplicate as reused without creating ingestion work", async () => {

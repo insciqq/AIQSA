@@ -189,7 +189,9 @@ export async function runProviderToolLoop(
       const toolChoice = progress.toolRounds >= input.budgets.maxToolRounds ||
         progress.toolCalls >= input.budgets.maxToolCalls
         ? "none"
-        : "auto";
+        : progress.toolRounds === 0 && input.initialRequest.toolChoice === "required"
+          ? "required"
+          : "auto";
       const roundRequest = await input.prepareRequest?.({
         ...input.initialRequest,
         parallelToolCalls: input.parallelToolCalls,

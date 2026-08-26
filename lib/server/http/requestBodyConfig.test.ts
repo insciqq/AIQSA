@@ -1,12 +1,15 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AUTH_REQUEST_BODY_MAX_BYTES,
   DEFAULT_JSON_REQUEST_BODY_MAX_BYTES,
   DEFAULT_UPLOAD_MAX_CONCURRENCY,
   DEFAULT_UPLOAD_MULTIPART_OVERHEAD_BYTES,
-  getRequestBodyConfig
+  getRequestBodyConfig,
+  MAX_UPLOAD_MULTIPART_OVERHEAD_BYTES
 } from "./requestBodyConfig";
-import { DEFAULT_UPLOAD_MAX_BYTES } from "../uploads/validation";
+import { DEFAULT_UPLOAD_MAX_BYTES, MAX_UPLOAD_MAX_BYTES } from "../uploads/validation";
 
 describe("request body configuration", () => {
   it("uses documented defaults", () => {
@@ -56,5 +59,16 @@ describe("request body configuration", () => {
       uploadMultipartMaxBytes:
         DEFAULT_UPLOAD_MAX_BYTES + DEFAULT_UPLOAD_MULTIPART_OVERHEAD_BYTES
     });
+  });
+
+  it("keeps the Next proxy forwarding cap at the complete hard-ceiling upload envelope", async () => {
+    const configUrl = pathToFileURL(resolve(process.cwd(), "next.config.mjs")).href;
+    const loaded = await import(/* @vite-ignore */ configUrl) as {
+      default: { experimental?: { proxyClientMaxBodySize?: unknown } };
+    };
+
+    expect(loaded.default.experimental?.proxyClientMaxBodySize).toBe(
+      MAX_UPLOAD_MAX_BYTES + MAX_UPLOAD_MULTIPART_OVERHEAD_BYTES
+    );
   });
 });

@@ -109,7 +109,7 @@ describe("OpenAI Responses adapter", () => {
             fileName: "chart.png",
             id: "image-1",
             kind: "image",
-            metadata: {},
+            metadata: { image: { detail: "original" } },
             mimeType: "image/png",
             status: "ready"
           },
@@ -159,7 +159,7 @@ describe("OpenAI Responses adapter", () => {
     ]);
     expect(preview.body.input.at(-1)?.content).toEqual([
       { text: "Find one concise fact.", type: "input_text" },
-      { detail: "auto", image_url: "[image data url omitted]", type: "input_image" },
+      { detail: "original", image_url: "[image data url omitted]", type: "input_image" },
       {
         file_data: "[base64 PDF data omitted]",
         filename: "[attachment filename omitted]",

@@ -189,6 +189,30 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
   });
 }
 
+async function claimFixtureArtifact(
+  repository: ReturnType<typeof createPrismaKnowledgeSourceIngestionRepository>,
+  artifactId: string,
+  input: Readonly<{ claimToken: string; now: Date; staleBefore: Date }>
+) {
+  for (let ordinal = 0; ordinal < 10; ordinal += 1) {
+    const claim = await repository.claim({
+      ...input,
+      claimToken: ordinal === 0 ? input.claimToken : `${input.claimToken}-${ordinal}`
+    });
+    if (!claim || claim.artifact.id === artifactId) return claim;
+    // A running disposable coordinator may create another profile artifact
+    // for this fixture-owned Source. Keep this test scoped to its exact pin.
+    await repository.settleFailed({
+      artifactId: claim.artifact.id,
+      claimToken: claim.claimToken,
+      errorCode: "knowledge_ingestion_failed",
+      now: input.now,
+      sourceVersionId: claim.sourceVersionId
+    });
+  }
+  throw new Error("knowledge_fixture_artifact_not_claimed");
+}
+
 describe("Prisma Knowledge Source ingestion claims", () => {
   // Keep the fixture invisible to an ordinary dev worker sharing the
   // disposable database. The repository under test receives this explicit
@@ -205,7 +229,7 @@ describe("Prisma Knowledge Source ingestion claims", () => {
     await prisma.$disconnect();
   });
 
-  it("admits one worker, preserves its checkpoint across restart, and fences the stale lease", async () => {
+  it("releases every successful stage for an immediate stage-local claim and fences stale workers", async () => {
     const repository = createPrismaKnowledgeSourceIngestionRepository(prisma);
     const initialStaleBefore = new Date(now.getTime() - 60_000);
     const claims = await Promise.all([
@@ -223,23 +247,44 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       state: "queued"
     });
 
+    const parsingDueAt = new Date(now.getTime() + 1_000);
     await expect(repository.advanceSourceToParsing({
       artifactId: first.artifact.id,
       claimToken: first.claimToken,
-      now: new Date(now.getTime() + 1_000),
+      now: parsingDueAt,
       sourceVersionId: first.sourceVersionId
     })).resolves.toBe(true);
+    await expect(prisma.knowledgeSourceIndexArtifact.findUniqueOrThrow({
+      select: {
+        attemptCount: true,
+        claimedAt: true,
+        claimToken: true,
+        errorCode: true,
+        nextAttemptAt: true,
+        processingStage: true,
+        state: true
+      },
+      where: { id: fixture.artifactId }
+    })).resolves.toEqual({
+      attemptCount: 0,
+      claimedAt: null,
+      claimToken: null,
+      errorCode: null,
+      nextAttemptAt: parsingDueAt,
+      processingStage: "parsing",
+      state: "processing"
+    });
 
     const restartedRepository = createPrismaKnowledgeSourceIngestionRepository(prisma);
-    const restartNow = new Date(now.getTime() + 120_000);
-    const restarted = await restartedRepository.claim({
+    const restartNow = parsingDueAt;
+    const restarted = await claimFixtureArtifact(restartedRepository, fixture.artifactId, {
       claimToken: "worker-after-restart",
       now: restartNow,
-      staleBefore: new Date(now.getTime() + 60_000)
+      staleBefore: new Date(restartNow.getTime() - 60_000)
     });
     expect(restarted).toMatchObject({
       artifact: { id: fixture.artifactId },
-      attemptCount: 2,
+      attemptCount: 1,
       sourceVersionId: fixture.sourceVersionId,
       state: "parsing"
     });
@@ -259,7 +304,7 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       select: { attemptCount: true, claimToken: true, processingStage: true, state: true },
       where: { id: fixture.artifactId }
     })).resolves.toEqual({
-      attemptCount: 2,
+      attemptCount: 1,
       claimToken: "worker-after-restart",
       processingStage: "parsing",
       state: "processing"
@@ -352,12 +397,13 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       now: new Date(restartNow.getTime() + 1)
     })).rejects.toEqual(new KnowledgeModelPdfAttemptError("pdf_processing_ambiguous"));
 
+    const chunkingDueAt = new Date(restartNow.getTime() + 2_000);
     await expect(restartedRepository.completeParsing({
       ...work,
       normalizedTextByteSize: 64,
       normalizedTextChecksum: "c".repeat(64),
       normalizedTextStorageKey: "knowledge/test/normalized.json",
-      now: new Date(restartNow.getTime() + 2_000),
+      now: chunkingDueAt,
       pageCount: 1,
       warningCodes: []
     })).resolves.toBe(true);
@@ -372,6 +418,27 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       select: { state: true },
       where: { id: uncertain.attemptId }
     })).resolves.toEqual({ state: "ambiguous" });
+    const chunking = await claimFixtureArtifact(restartedRepository, fixture.artifactId, {
+      claimToken: "worker-chunking",
+      now: chunkingDueAt,
+      staleBefore: new Date(chunkingDueAt.getTime() - 60_000)
+    });
+    expect(chunking).toMatchObject({
+      artifact: { id: fixture.artifactId },
+      attemptCount: 1,
+      sourceVersionId: fixture.sourceVersionId,
+      state: "chunking"
+    });
+    const chunkingWork = {
+      artifactId: chunking!.artifact.id,
+      claimToken: chunking!.claimToken,
+      sourceVersionId: chunking!.sourceVersionId
+    };
+    await expect(restartedRepository.completeChunking({
+      ...work,
+      chunkCount: 1,
+      now: new Date(chunkingDueAt.getTime() + 1)
+    })).resolves.toBe(false);
     const chunk = {
       contentHash: "d".repeat(64),
       contextPrefix: "",
@@ -389,22 +456,39 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       tokenCount: 4
     };
     await expect(restartedRepository.persistHierarchicalIndex({
-      ...work,
+      ...chunkingWork,
       chunks: [chunk],
       document: null,
       now: new Date(restartNow.getTime() + 3_000)
     })).resolves.toBe(true);
+    const embeddingDueAt = new Date(restartNow.getTime() + 4_000);
     await expect(restartedRepository.completeChunking({
-      ...work,
+      ...chunkingWork,
       chunkCount: 1,
-      now: new Date(restartNow.getTime() + 4_000)
+      now: embeddingDueAt
     })).resolves.toBe(true);
+    const embedding = await claimFixtureArtifact(restartedRepository, fixture.artifactId, {
+      claimToken: "worker-embedding",
+      now: embeddingDueAt,
+      staleBefore: new Date(embeddingDueAt.getTime() - 60_000)
+    });
+    expect(embedding).toMatchObject({
+      artifact: { id: fixture.artifactId },
+      attemptCount: 1,
+      sourceVersionId: fixture.sourceVersionId,
+      state: "embedding"
+    });
+    const embeddingWork = {
+      artifactId: embedding!.artifact.id,
+      claimToken: embedding!.claimToken,
+      sourceVersionId: embedding!.sourceVersionId
+    };
     await expect(restartedRepository.completedBatchIndexes(
       fixture.artifactId,
       fixture.sourceVersionId
     )).resolves.toEqual([]);
     await expect(restartedRepository.persistEmbeddingBatch({
-      ...work,
+      ...embeddingWork,
       batch: {
         batchIndex: 0,
         chunks: [{ ...chunk, vector: Array<number>(1_024).fill(0) }],
@@ -439,5 +523,119 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       modelId: "embedding-upstream",
       providerModelId: null
     });
+    await expect(restartedRepository.activateSourceVersion({
+      ...embeddingWork,
+      expectedChunkCount: 1,
+      now: new Date(embeddingDueAt.getTime() + 2_000)
+    })).resolves.toBe("activated");
+    await expect(prisma.knowledgeSourceIndexArtifact.findUniqueOrThrow({
+      select: {
+        attemptCount: true,
+        claimedAt: true,
+        claimToken: true,
+        errorCode: true,
+        processingStage: true,
+        state: true
+      },
+      where: { id: fixture.artifactId }
+    })).resolves.toEqual({
+      attemptCount: 0,
+      claimedAt: null,
+      claimToken: null,
+      errorCode: null,
+      processingStage: null,
+      state: "ready"
+    });
+  });
+
+  it("persists retry scheduling across repository restart without consuming another stage budget", async () => {
+    const retryNow = new Date("2097-03-02T00:00:00.000Z");
+    const retryFixture = await createFixture(retryNow);
+    try {
+      await prisma.knowledgeSourceIndexArtifact.update({
+        data: { processingStage: "embedding", state: "pending" },
+        where: { id: retryFixture.artifactId }
+      });
+      const repository = createPrismaKnowledgeSourceIngestionRepository(prisma);
+      const first = await claimFixtureArtifact(repository, retryFixture.artifactId, {
+        claimToken: "embedding-attempt-1",
+        now: retryNow,
+        staleBefore: new Date(retryNow.getTime() - 60_000)
+      });
+      expect(first).toMatchObject({ attemptCount: 1, state: "embedding" });
+
+      const secondDueAt = new Date(retryNow.getTime() + 2_000);
+      await expect(repository.retryLater({
+        artifactId: retryFixture.artifactId,
+        claimToken: first!.claimToken,
+        errorCode: "embedding_unavailable",
+        nextAttemptAt: secondDueAt,
+        now: retryNow,
+        sourceVersionId: retryFixture.sourceVersionId
+      })).resolves.toBe(true);
+      await expect(prisma.knowledgeSourceIndexArtifact.findUniqueOrThrow({
+        select: {
+          attemptCount: true,
+          claimedAt: true,
+          claimToken: true,
+          errorCode: true,
+          nextAttemptAt: true,
+          processingStage: true,
+          state: true
+        },
+        where: { id: retryFixture.artifactId }
+      })).resolves.toEqual({
+        attemptCount: 1,
+        claimedAt: null,
+        claimToken: null,
+        errorCode: null,
+        nextAttemptAt: secondDueAt,
+        processingStage: "embedding",
+        state: "processing"
+      });
+
+      const restarted = createPrismaKnowledgeSourceIngestionRepository(prisma);
+      await expect(claimFixtureArtifact(restarted, retryFixture.artifactId, {
+        claimToken: "too-early",
+        now: new Date(secondDueAt.getTime() - 1),
+        staleBefore: new Date(secondDueAt.getTime() - 60_001)
+      })).resolves.toBeNull();
+      const second = await claimFixtureArtifact(restarted, retryFixture.artifactId, {
+        claimToken: "embedding-attempt-2",
+        now: secondDueAt,
+        staleBefore: new Date(secondDueAt.getTime() - 60_000)
+      });
+      expect(second).toMatchObject({ attemptCount: 2, state: "embedding" });
+
+      const thirdDueAt = new Date(secondDueAt.getTime() + 10_000);
+      await expect(restarted.retryLater({
+        artifactId: retryFixture.artifactId,
+        claimToken: second!.claimToken,
+        errorCode: "embedding_unavailable",
+        nextAttemptAt: thirdDueAt,
+        now: secondDueAt,
+        sourceVersionId: retryFixture.sourceVersionId
+      })).resolves.toBe(true);
+      const third = await claimFixtureArtifact(
+        createPrismaKnowledgeSourceIngestionRepository(prisma),
+        retryFixture.artifactId,
+        {
+          claimToken: "embedding-attempt-3",
+          now: thirdDueAt,
+          staleBefore: new Date(thirdDueAt.getTime() - 60_000)
+        }
+      );
+      expect(third).toMatchObject({ attemptCount: 3, state: "embedding" });
+      await expect(prisma.knowledgeSourceIndexArtifact.findUniqueOrThrow({
+        select: { errorCode: true, processingStage: true, state: true },
+        where: { id: retryFixture.artifactId }
+      })).resolves.toEqual({
+        errorCode: null,
+        processingStage: "embedding",
+        state: "processing"
+      });
+    } finally {
+      await cleanupFixture(retryFixture);
+    }
   });
 });

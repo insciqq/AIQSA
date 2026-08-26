@@ -18,10 +18,13 @@ import {
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const CALL_ID = "22222222-2222-4222-8222-222222222222";
+const FOLLOW_UP_CALL_ID = "22222222-2222-4222-8222-222222222223";
 const MESSAGE_ID = "33333333-3333-4333-8333-333333333333";
 const PROFILE_ID = "44444444-4444-4444-8444-444444444444";
 const RESERVATION_ID = "55555555-5555-4555-8555-555555555555";
 const LEASE_TOKEN = "66666666-6666-4666-8666-666666666666";
+const FOLLOW_UP_RESERVATION_ID = "55555555-5555-4555-8555-555555555556";
+const FOLLOW_UP_LEASE_TOKEN = "66666666-6666-4666-8666-666666666667";
 const SOURCE_ID = "99999999-9999-4999-8999-999999999999";
 const NOW = new Date("2026-08-19T12:00:00.000Z");
 const LEASE = new Date("2026-08-19T12:05:00.000Z");
@@ -162,7 +165,12 @@ function repositoryHarness(options: Readonly<{
 }> = {}) {
   const rows: KnowledgeBudgetReservationPersistenceRow[] = [];
   const lockQueries: unknown[] = [];
-  const uuidValues = [RESERVATION_ID, LEASE_TOKEN];
+  const uuidValues = [
+    RESERVATION_ID,
+    LEASE_TOKEN,
+    FOLLOW_UP_RESERVATION_ID,
+    FOLLOW_UP_LEASE_TOKEN
+  ];
   const create = vi.fn(async (args: unknown) => {
     const data = (args as { data: Record<string, unknown> }).data;
     const row = persistenceRow({
@@ -507,6 +515,46 @@ describe("Knowledge budget reservation Prisma repository", () => {
         focused: createKnowledgeFocusedRequest({ currentUserMessage: "Different query" })!
       }
     })).resolves.toMatchObject({ kind: "conflict", reason: "idempotency_conflict" });
+  });
+
+  it("reserves a source-scoped automatic follow-up after a broad search", async () => {
+    const harness = repositoryHarness();
+    const broad = await harness.repository.reserve({
+      estimate,
+      idempotencyKey: "run:one:operation:one",
+      modelRunToolCallId: CALL_ID,
+      operationRequest: requestInput,
+      originalQuerySha256: "a".repeat(64),
+      runId: RUN_ID,
+      userId: "owner-one"
+    });
+    expect(broad).toMatchObject({ kind: "admitted" });
+
+    const followUp = await harness.repository.reserve({
+      estimate,
+      idempotencyKey: "run:one:operation:two",
+      modelRunToolCallId: FOLLOW_UP_CALL_ID,
+      operationRequest: {
+        operation: "automatic_search",
+        profileRevisionId: PROFILE_ID,
+        query: "Missing row label",
+        resolvedSourceIds: [SOURCE_ID],
+        sourceAliases: ["S1"]
+      },
+      originalQuerySha256: "a".repeat(64),
+      runId: RUN_ID,
+      userId: "owner-one"
+    });
+
+    expect(followUp).toMatchObject({
+      kind: "admitted",
+      record: {
+        modelRunToolCallId: FOLLOW_UP_CALL_ID,
+        operationRequest: { sourceAliases: ["S1"] },
+        reservation: { operationOrdinal: 2, state: "reserved" }
+      }
+    });
+    expect(harness.create).toHaveBeenCalledTimes(2);
   });
 
   it("expires stale pre-dispatch work and makes stale dispatched work ambiguous", async () => {

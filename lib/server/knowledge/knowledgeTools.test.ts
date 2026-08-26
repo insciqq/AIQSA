@@ -18,17 +18,57 @@ describe("Knowledge request parsing", () => {
       capability: "knowledge",
       inputSchema: {
         additionalProperties: false,
-        required: ["query"]
+        required: ["query", "sourceAliases"]
       },
       name: KNOWLEDGE_SEARCH_TOOL_NAME,
       strict: true
     });
+    expect(knowledgeRetrievalTool.description).toContain(
+      "Copy every discriminating proper name, identifier, date, number, unit"
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      "Do not translate, synonymize, generalize, or reformat"
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      "even when the user does not explicitly say to consult Knowledge"
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      "search one item at a time and make another call for every requested item"
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      "Pass sourceAliases as [] on the first search"
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      "Before declaring a multi-item request unsupported"
+    );
+    expect(knowledgeRetrievalTool.description).toContain("character-for-character");
+    expect(knowledgeRetrievalTool.description).toContain("leading zeroes");
+    expect(knowledgeRetrievalTool.description).toContain(
+      "retain the exact supported operands and units"
+    );
+    expect(knowledgeRetrievalTool.description).toContain("report ambiguity instead of guessing");
     expect(parseKnowledgeExecutionRequest({
-      arguments: { query: "Что сказано about SLA 99.9%?" },
+      arguments: { query: "Что сказано about SLA 99.9%?", sourceAliases: [] },
       name: KNOWLEDGE_SEARCH_TOOL_NAME
     })).toEqual({
       operation: "automatic_search",
       query: "Что сказано about SLA 99.9%?",
+      sourceAliases: []
+    });
+    expect(parseKnowledgeExecutionRequest({
+      arguments: { query: "SLA 99.9%", sourceAliases: ["S2"] },
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    })).toEqual({
+      operation: "automatic_search",
+      query: "SLA 99.9%",
+      sourceAliases: ["S2"]
+    });
+    expect(parseKnowledgeExecutionRequest({
+      arguments: { query: "  SLA\u00a099.9％  ", sourceAliases: [] },
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    })).toEqual({
+      operation: "automatic_search",
+      query: "SLA 99.9%",
       sourceAliases: []
     });
     for (const arguments_ of [
@@ -37,7 +77,10 @@ describe("Knowledge request parsing", () => {
       { query: "  " },
       { baseIds: ["base-1"], query: "SLA" },
       { candidateLimit: 40, query: "SLA" },
-      { query: "x".repeat(3_001) }
+      { query: "SLA\u0000hidden", sourceAliases: [] },
+      { query: "x".repeat(3_001), sourceAliases: [] },
+      { query: "SLA", sourceAliases: ["S0"] },
+      { query: "SLA", sourceAliases: ["S1", "S1"] }
     ]) {
       expect(parseKnowledgeExecutionRequest({
         arguments: arguments_,

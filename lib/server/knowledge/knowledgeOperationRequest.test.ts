@@ -44,6 +44,21 @@ describe("Knowledge operation request", () => {
     expect(canonicalKnowledgeOperationRequestV2(request)).not.toContain("planner");
   });
 
+  it("persists a source-scoped automatic follow-up", () => {
+    const request = createKnowledgeOperationRequestV2({
+      ...envelope("automatic_search", ["S1"]),
+      phaseOrdinal: 2,
+      query: "Missing row label"
+    });
+
+    expect(request).toMatchObject({
+      operation: "automatic_search",
+      query: "Missing row label",
+      sourceAliases: ["S1"]
+    });
+    expect(knowledgeOperationTargetSourceIds(request)).toEqual([SOURCE_ID]);
+  });
+
   it("decodes the three separately authorized internal primitives", () => {
     const exact = createKnowledgeOperationRequestV2({
       ...envelope("find_exact", ["S1"]),
@@ -91,6 +106,10 @@ describe("Knowledge operation request", () => {
       ...envelope("automatic_search"),
       focused,
       subqueryOrdinal: 1
+    })).toBeNull();
+    expect(decodeKnowledgeOperationRequestV2({
+      ...envelope("automatic_search", ["S1"]),
+      focused
     })).toBeNull();
   });
 });

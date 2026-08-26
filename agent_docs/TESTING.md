@@ -56,14 +56,15 @@ Knowledge changes use small co-located tests through the same narrow, hermetic, 
 
 - tenant, Project, direct-Source, Base, and `All my knowledge` scope isolation;
 - one canonical Source vote across overlapping Bases;
-- the sole strict `search_knowledge({ query })` descriptor, Unicode/code-point bounds, and rejection of hidden controls;
+- the sole strict `search_knowledge({ query, sourceAliases })` descriptor, Unicode/code-point bounds, rejection of hidden controls, an empty alias list on the broad first call, and later narrowing only to previously disclosed Sources;
 - no generated focused request on new runs, plus read/recovery compatibility for accepted historical focused runs;
 - Search, Knowledge, MCP, attachments, Assistants, and Personal Memory context remain independently composable;
-- one query embedding per compatible Profile and one hybrid repository operation per accepted Knowledge call;
+- one query embedding per compatible Profile and one hybrid repository operation per accepted Knowledge call, with at most sixteen broad-map results and eight Source-scoped reduce results;
 - installation-scoped Knowledge-search limits (default `12`, bounded `1..32`), pre-I/O rejection of the next over-budget call, authority/egress rechecks, and bounded timeout;
-- mandatory vector and `simple`/English/Russian lexical lanes fail closed together;
-- weighted reciprocal-rank fusion, fixed Source diversity, content deduplication, and same-Source neighbor bounds;
-- completed result replay in execution/recovery and normal continuation after zero candidates;
+- normal hybrid retrieval plus classified query-embedding degradation to exact, metadata, and `simple`/English/Russian lexical lanes, while database, authority, SQL, and invariant failures remain visible;
+- named relevance eligibility before weighted reciprocal-rank fusion, exact preservation, weak-nearest-neighbor rejection, content deduplication, cross-call evidence novelty, soft Source diversity, and same-Source neighbor bounds;
+- completed result replay in execution/recovery and normal `no_relevant_evidence` continuation after every generated candidate is ineligible;
+- real PostgreSQL `pg_trgm` evidence for query-first containment-like metadata matching, including beginning, middle, and irrelevant stored values;
 - exact checkpoint-delivered handle binding, Source Version/locator attribution, ordinary Markdown, and no second generation;
 - distinct processing, partial-ready, zero-candidate, insufficient-evidence, retrieval, provider, and contract outcomes;
 - embedding-free Source-local reads, bounded exact search, and metadata-only discovery;

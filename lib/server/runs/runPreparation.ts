@@ -1600,6 +1600,9 @@ export async function prepareRun(
 
   const budgetAnsweringRequest = (plan: KnowledgeAnsweringPlan | undefined) => {
     const fullContext = plan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
+    const requiresInitialKnowledgeCall = Boolean(
+      plan && !fullContext && knowledgeRequested
+    );
     const clientTools = baseNormalizedRequest.toolMode === "none"
       ? []
       : [
@@ -1613,6 +1616,7 @@ export async function prepareRun(
     const unbudgeted: ProviderRunRequest = {
       ...normalized,
       attachments,
+      ...(requiresInitialKnowledgeCall ? { toolChoice: "required" as const } : {}),
       ...(clientTools.length > 0 ? { tools: clientTools } : {})
     };
     const withEvidence = fullContext

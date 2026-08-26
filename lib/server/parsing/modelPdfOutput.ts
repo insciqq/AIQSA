@@ -11,7 +11,7 @@ import type {
 
 export const MODEL_PDF_OUTPUT_MAX_CHARACTERS_PER_BATCH = 500_000;
 export const MODEL_PDF_OUTPUT_MAX_LINES_PER_PAGE = 20_000;
-export const MODEL_PDF_PROMPT_VERSION = 1;
+export const MODEL_PDF_PROMPT_VERSION = 3;
 
 export type DecodedModelPdfPage = Readonly<{
   page: number;
@@ -34,6 +34,7 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
   mode: PdfModelProcessingMode;
   pageEnd: number;
   pageStart: number;
+  promptVersion?: 1 | 2 | 3;
 }>): string {
   const sections: string[] = [];
   for (let page = input.pageStart; page <= input.pageEnd; page += 1) {
@@ -42,12 +43,24 @@ export function modelPdfTranscriptionPrompt(input: Readonly<{
   const attachmentDescription = input.mode === "system_model_direct_pdf"
     ? `The attached PDF contains original pages ${input.pageStart}-${input.pageEnd} in order.`
     : `The attached images are original pages ${input.pageStart}-${input.pageEnd} in order.`;
+  const promptVersion = input.promptVersion ?? MODEL_PDF_PROMPT_VERSION;
   return [
     "Faithfully transcribe the attached document pages for a private search index.",
     attachmentDescription,
     "Do not summarize, interpret, correct, calculate, or omit content.",
     "Preserve headings, labels, values, units, footnotes, and reading order.",
     "Write table rows as tab-separated cells. Keep a label and its value on the same row.",
+    ...(promptVersion >= 2 ? [
+      "Transcribe every visible row and every non-empty table cell, including repeated labels, " +
+        "small print, decimal separators, signs, and superscripts; never replace content with " +
+        "ellipsis, ditto marks, or a summary.",
+      "Read each number character by character. If a character truly cannot be read, write " +
+        "[ILLEGIBLE] at that exact position instead of guessing a value."
+    ] : []),
+    ...(promptVersion >= 3 && input.mode === "system_model_vision" ? [
+      "Inspect the supplied original-detail page image at full resolution before transcribing. " +
+        "Zoom into dense tables, scans, and small labels instead of relying on a reduced overview."
+    ] : []),
     "For an empty page, write [BLANK PAGE].",
     "Return only the following page sections, once each and in this exact order:",
     sections.join("\n")

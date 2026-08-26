@@ -283,6 +283,16 @@ export async function buildAndPersistKnowledgeHierarchicalIndex(
     sourceName: source.sourceName,
     tags: source.tags
   });
+  if (plan.exactIndex.truncated) {
+    console.warn(JSON.stringify({
+      candidateCount: plan.exactIndex.candidateCount,
+      event: "knowledge_hierarchical_exact_index_truncated",
+      reasonCode: "exact_index_truncated",
+      retainedCount: plan.exactIndex.retainedCount,
+      sourceArtifactId: source.sourceArtifactId,
+      sourceVersionId: source.sourceVersionId
+    }));
+  }
   return persistPlan(tx, { now: input.now, plan, sourceVersionId: source.sourceVersionId });
 }
 

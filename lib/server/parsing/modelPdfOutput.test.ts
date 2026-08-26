@@ -24,11 +24,19 @@ function output(): string {
 
 describe("model PDF transcription contract", () => {
   it("uses deterministic page markers and preserves TSV and Markdown table cells", () => {
-    expect(modelPdfTranscriptionPrompt({
+    const prompt = modelPdfTranscriptionPrompt({
       mode: "system_model_direct_pdf",
       pageEnd: 2,
       pageStart: 1
-    })).toContain(modelPdfPageStartMarker(2));
+    });
+    expect(prompt).toContain(modelPdfPageStartMarker(2));
+    expect(prompt).toContain("every non-empty table cell");
+    expect(modelPdfTranscriptionPrompt({
+      mode: "system_model_direct_pdf",
+      pageEnd: 2,
+      pageStart: 1,
+      promptVersion: 1
+    })).not.toContain("every non-empty table cell");
     const pages = decodeModelPdfBatchOutput({
       mode: "system_model_direct_pdf",
       pageEnd: 2,
