@@ -21,6 +21,23 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../lib/domain/content";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
+import {
+  MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS,
+  MEMORY_CONTEXT_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_PACKER_VERSION,
+  MEMORY_CONTEXT_TARGET_TOKENS,
+  MEMORY_RETRIEVAL_FUSION_VERSION,
+  MEMORY_RETRIEVAL_LANE_LIMITS,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES,
+  MEMORY_RETRIEVAL_PIPELINE_VERSION,
+  MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR
+} from "../../lib/domain/memory/retrieval/config";
 import { createAdminMemoryEgressService } from
   "../../lib/server/admin/memory/egressService";
 import { createPrismaAuthSessionStore } from "../../lib/server/auth/prismaSessions";
@@ -53,7 +70,9 @@ import {
   LONGMEMEVAL_S_SHA256,
   assertBenchmarkBaseUrl,
   assertBenchmarkDatabaseUrl,
+  buildLongMemEvalBaselineManifest,
   decodeLongMemEvalDataset,
+  evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
   mapConcurrentOrdered,
   parseLongMemEvalDate,
@@ -61,8 +80,10 @@ import {
   sanitizeLongMemEvalRetrievalAudit,
   selectLongMemEvalCases,
   type LongMemEvalCase,
+  type LongMemEvalComponentMetrics,
   type LongMemEvalRetrievalAudit
 } from "./contract";
+import { redactLongMemEvalDebugArtifact } from "./debug";
 
 const execFile = promisify(execFileCallback);
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
@@ -74,6 +95,27 @@ const evaluatorPath = resolve(upstreamRoot, "src/evaluation/evaluate_qa.py");
 const benchmarkEmailSuffix = "@longmemeval.benchmark.invalid";
 const qualificationSystemModelId = "gpt-5.6-sol";
 const qualificationSystemReasoningEffort = "medium";
+const activeMemoryRetrievalConfiguration = Object.freeze({
+  aggregationContextHardCapTokens: MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
+  aggregationContextTargetTokens: MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS,
+  aggregationHistoryCandidatesToReranker:
+    MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
+  aggregationPreFusionCandidates:
+    MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
+  aggregationRankedCandidates: MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
+  automaticFactLearning: false,
+  contextPackerVersion: MEMORY_CONTEXT_PACKER_VERSION,
+  fusionVersion: MEMORY_RETRIEVAL_FUSION_VERSION,
+  laneLimits: MEMORY_RETRIEVAL_LANE_LIMITS,
+  pipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
+  rerankerScoreFloor: MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR,
+  targetedContextHardCapTokens: MEMORY_CONTEXT_HARD_CAP_TOKENS,
+  targetedContextTargetTokens: MEMORY_CONTEXT_TARGET_TOKENS,
+  targetedHistoryCandidatesToReranker:
+    MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES,
+  targetedPreFusionCandidates: MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
+  targetedRankedCandidates: MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES
+});
 const terminalRunStatuses = new Set(["cancelled", "complete", "error"]);
 const activeJobStates = new Set<MemoryJobState>([
   "CLAIMED",
@@ -127,6 +169,7 @@ type ExecutionAggregate = Readonly<{
   costMicros: number;
   count: number;
   inputTokens: number;
+  latencyClassCounts: Readonly<Record<string, number>>;
   outputTokens: number;
   peakConcurrency: number;
   role: string;
@@ -145,6 +188,8 @@ type CaseSummary = Readonly<{
     runMs: number;
     totalTokens: number;
   }>;
+  componentEvaluation: LongMemEvalComponentMetrics;
+  embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
   history: Readonly<{
     activeChunks: number;
     assistantTurnsWithoutProductProvenance: number;
@@ -404,6 +449,18 @@ function aggregateJobs(
     left.kind.localeCompare(right.kind) || left.state.localeCompare(right.state));
 }
 
+function executionLatencyClass(
+  startedAt: Date | null,
+  completedAt: Date | null
+): "FROM_1S_TO_5S" | "FROM_5S_TO_30S" | "GE_30S" | "LT_1S" | "UNKNOWN" {
+  if (!startedAt || !completedAt || completedAt < startedAt) return "UNKNOWN";
+  const durationMs = completedAt.getTime() - startedAt.getTime();
+  if (durationMs < 1_000) return "LT_1S";
+  if (durationMs < 5_000) return "FROM_1S_TO_5S";
+  if (durationMs < 30_000) return "FROM_5S_TO_30S";
+  return "GE_30S";
+}
+
 function aggregateExecutions(
   executions: readonly Readonly<{
     completedAt: Date | null;
@@ -424,10 +481,14 @@ function aggregateExecutions(
   for (const execution of executions) {
     const key = `${execution.logicalRole}:${execution.state}`;
     const current = counts.get(key);
+    const latencyClassCounts = { ...(current?.latencyClassCounts ?? {}) };
+    const latencyClass = executionLatencyClass(execution.startedAt, execution.completedAt);
+    latencyClassCounts[latencyClass] = (latencyClassCounts[latencyClass] ?? 0) + 1;
     counts.set(key, {
       costMicros: (current?.costMicros ?? 0) + (execution.estimatedCostMicros ?? 0),
       count: (current?.count ?? 0) + 1,
       inputTokens: (current?.inputTokens ?? 0) + (execution.inputTokens ?? 0),
+      latencyClassCounts,
       outputTokens: (current?.outputTokens ?? 0) + (execution.outputTokens ?? 0),
       peakConcurrency: 0,
       role: execution.logicalRole,
@@ -1202,6 +1263,39 @@ async function runQuestion(
   });
 }
 
+async function loadPackedComponentEvaluation(
+  prisma: PrismaClient,
+  input: Readonly<{
+    answerSessionIds: readonly string[];
+    chatIds: readonly string[];
+    haystackSessionIds: readonly string[];
+    retrievalAttemptId: string;
+    userId: string;
+  }>
+): Promise<LongMemEvalComponentMetrics> {
+  const items = await prisma.memoryRetrievalAttemptItem.findMany({
+    orderBy: { ordinal: "asc" },
+    select: { ordinal: true, sourceChatIdSnapshot: true },
+    where: { attemptId: input.retrievalAttemptId, userId: input.userId }
+  });
+  const candidates = items.flatMap((item) => {
+    if (!item.sourceChatIdSnapshot) return [];
+    const sessionIndex = input.chatIds.indexOf(item.sourceChatIdSnapshot);
+    const sessionId = sessionIndex < 0
+      ? null
+      : input.haystackSessionIds[sessionIndex] ?? null;
+    return sessionId ? [{
+      evidenceHandle: `packed-${item.ordinal}`,
+      sessionId
+    }] : [];
+  });
+  return evaluateLongMemEvalComponentMetrics({
+    answerSessionIds: input.answerSessionIds,
+    candidates,
+    k: 20
+  });
+}
+
 function debugSessionReference(
   sourceChatId: string | null,
   chatIds: readonly string[],
@@ -1440,7 +1534,8 @@ async function writeMemoryDebugArtifact(
     .update(input.entry.questionId)
     .digest("hex")
     .slice(0, 16)}.json`;
-  await writeJsonAtomic(resolve(input.outputDirectory, artifactName), {
+  await writeJsonAtomic(resolve(input.outputDirectory, artifactName),
+    redactLongMemEvalDebugArtifact({
     answerBinding,
     attempt: {
       ...attempt,
@@ -1469,9 +1564,9 @@ async function writeMemoryDebugArtifact(
     question: input.entry.question,
     questionId: input.entry.questionId,
     retrievalExecutions,
-    version: 2,
-    warning: "Contains raw benchmark Memory context. Keep this ignored 0600 artifact local."
-  });
+    version: 3,
+    warning: "Contains secret-screened benchmark Memory context. Keep this ignored 0600 artifact local."
+  }));
   emit("memory_debug_written", {
     artifact: artifactName,
     questionId: input.entry.questionId
@@ -1483,7 +1578,10 @@ async function assertExecutionModels(
   prisma: PrismaClient,
   userId: string,
   roles: ProviderRoles
-): Promise<readonly ExecutionAggregate[]> {
+): Promise<Readonly<{
+  aggregates: readonly ExecutionAggregate[];
+  embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
+}>> {
   const executions = await prisma.memoryExecutionBinding.findMany({
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
@@ -1514,7 +1612,16 @@ async function assertExecutionModels(
     !rolesUsed.has("MEMORY_QUERY_EMBED")) {
     throw new Error("longmemeval_required_utility_role_missing");
   }
-  return aggregateExecutions(executions);
+  const oneItemEmbeddingRequests = successful.filter(({ logicalRole }) =>
+    embeddingRoles.has(logicalRole)).length;
+  const batchSizes: Record<string, number> = {};
+  if (oneItemEmbeddingRequests > 0) batchSizes["1"] = oneItemEmbeddingRequests;
+  const embeddingBatchSizeDistribution: Readonly<Record<string, number>> =
+    Object.freeze(batchSizes);
+  return Object.freeze({
+    aggregates: aggregateExecutions(executions),
+    embeddingBatchSizeDistribution
+  });
 }
 
 async function runCase(
@@ -1582,6 +1689,16 @@ async function runCase(
         options.runTimeoutMs
       )
     );
+    const componentEvaluation = await withFailureCode(
+      "longmemeval_component_evaluation_failed",
+      () => loadPackedComponentEvaluation(prisma, {
+        answerSessionIds: entry.answerSessionIds,
+        chatIds: imported.chatIds,
+        haystackSessionIds: entry.haystackSessionIds,
+        retrievalAttemptId: answer.debugLocator.retrievalAttemptId,
+        userId: identity.userId
+      })
+    );
     if (options.debugMemory) {
       await withFailureCode(
         "longmemeval_memory_debug_failed",
@@ -1595,7 +1712,7 @@ async function runCase(
         })
       );
     }
-    const [jobs, executions] = await withFailureCode(
+    const [jobs, executionEvidence] = await withFailureCode(
       "longmemeval_evidence_audit_failed",
       () => Promise.all([
         sourceJobs(prisma, identity.userId),
@@ -1606,6 +1723,9 @@ async function runCase(
       hypothesis: answer.hypothesis,
       summary: Object.freeze({
         answer: answer.summary,
+        componentEvaluation,
+        embeddingBatchSizeDistribution:
+          executionEvidence.embeddingBatchSizeDistribution,
         history: Object.freeze({
           activeChunks: hybrid.activeChunks,
           assistantTurnsWithoutProductProvenance:
@@ -1622,7 +1742,7 @@ async function runCase(
         questionId: entry.questionId,
         questionType: entry.questionType,
         retrieval: answer.retrieval,
-        utilityExecutions: executions
+        utilityExecutions: executionEvidence.aggregates
       })
     });
   } catch (error) {
@@ -1759,11 +1879,13 @@ async function main(): Promise<void> {
     }
     const completedAt = new Date();
     await writeJsonAtomic(summaryPath, {
+      activeMemoryRetrievalConfiguration,
       answerModel: {
         provider: "codex-lb",
         reasoningEffort: qualificationSystemReasoningEffort,
         upstreamModelId: qualificationSystemModelId
       },
+      baseline: buildLongMemEvalBaselineManifest(selection),
       completedAt: completedAt.toISOString(),
       dataset: {
         cases: allCases.length,
@@ -1791,7 +1913,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 3,
+      version: 4,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: 16,

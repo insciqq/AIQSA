@@ -1714,8 +1714,24 @@ describe("Personal Memory v1 run admission", () => {
       itemType: "FACT_VERSION"
     }]);
     expect(result.budgetSnapshot).toMatchObject({
+      componentMetrics: {
+        candidatesRetainedAfterRejoin: 1,
+        candidatesRetainedAfterReranker: 1,
+        candidatesSentToReranker: 1,
+        packedEvidenceItems: 1,
+        plannerFallbackUsed: false,
+        rawRoundExpansions: 0,
+        rerankerFallbackUsed: false,
+        selectedSourceChats: 0,
+        temporalParserState: "NOT_AVAILABLE",
+        uniqueEvidenceRootsAfterFusion: 0,
+        uniqueEvidenceRootsBeforeFusion: 1,
+        version: "memory-retrieval-component-metrics-v1"
+      },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
+    expect(JSON.stringify((result.budgetSnapshot as Record<string, unknown>)
+      .componentMetrics)).not.toContain("Explain this clearly");
     expect(result.outcome).toBe("USED");
     expect(result.items?.some(({ itemType }) => itemType === "RECALL_CHUNK")).toBe(false);
     expect(result.items?.some((item) =>

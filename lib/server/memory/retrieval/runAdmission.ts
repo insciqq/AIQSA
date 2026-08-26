@@ -78,6 +78,8 @@ import {
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
   "memory-run-retrieval-admission-v11";
+export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
+  "memory-retrieval-component-metrics-v1";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -153,6 +155,7 @@ type MemoryAdmissionDeadline = Readonly<{
 }>;
 
 type UtilityEvidence = Readonly<{
+  externalCall: boolean;
   reason: string | null;
   role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
@@ -532,10 +535,114 @@ function utilityEvidence(
   result: MemoryControlResult | MemoryRunAggregationResult |
     MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
 ): UtilityEvidence {
-  if (!result) return { reason: null, role, state: "SKIPPED" };
+  if (!result) return { externalCall: false, reason: null, role, state: "SKIPPED" };
   return result.status === "READY"
-    ? { reason: null, role, state: "READY" }
-    : { reason: result.reason, role, state: "UNAVAILABLE" };
+    ? { externalCall: utilityUsedExternal(result), reason: null, role, state: "READY" }
+    : {
+        externalCall: utilityUsedExternal(result),
+        reason: result.reason,
+        role,
+        state: "UNAVAILABLE"
+      };
+}
+
+function incrementCount(target: Record<string, number>, key: string): void {
+  target[key] = (target[key] ?? 0) + 1;
+}
+
+function queryVariantCounts(plan: MemoryRetrievalPlan): Readonly<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  const seen = new Set<string>();
+  const add = (kind: string, value: string | null) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    counts[kind] = 1;
+  };
+  add("CONTROL_NORMALIZED", plan.queryPresent ? plan.normalizedQuery : null);
+  add("EXACT_NORMALIZED", plan.normalizedExactQuery);
+  add("LEXICAL", plan.lexicalQuery);
+  return Object.freeze(counts);
+}
+
+function memoryRetrievalComponentEvidence(input: Readonly<{
+  control: MemoryControlResult;
+  dynamicFused: readonly MemoryRankedCandidate[];
+  expanded: readonly MemoryExpandedCandidate[];
+  laneResults: MemoryLocalRetrievalResult["laneResults"];
+  pack: MemoryContextPack;
+  plan: MemoryRetrievalPlan;
+  preparedTokens: number;
+  queryEmbedding: MemoryRunQueryEmbeddingResult | null;
+  relevance: MemoryRunRerankResult | null;
+  relevanceInput: readonly MemoryRelevanceCandidate[];
+  relevant: readonly MemoryRankedCandidate[];
+  rejoinedRelevant: readonly MemoryRankedCandidate[];
+  selectedCore: readonly MemoryCoreCandidate[];
+  selectedDynamic: readonly MemoryRankedCandidate[];
+  utilityExecutions: readonly UtilityEvidence[];
+}>): Readonly<Record<string, unknown>> {
+  const candidateCountsByLane: Record<string, number> = {};
+  const beforeFusionRoots = new Set<string>();
+  for (const result of input.laneResults) {
+    candidateCountsByLane[result.lane] = result.candidates.length;
+    for (const candidate of result.candidates) {
+      beforeFusionRoots.add(candidate.metadata.dedupeKey);
+    }
+  }
+  const packedKeys = new Set(input.pack.items.map((item) =>
+    `${item.itemType}:${item.itemId}`));
+  const selectedSourceChats = new Set(
+    [...input.selectedCore.map(({ candidate }) => candidate), ...input.selectedDynamic]
+      .filter((candidate) => packedKeys.has(`${candidate.itemType}:${candidate.itemId}`))
+      .flatMap((candidate) => candidate.metadata.sourceChatId
+        ? [candidate.metadata.sourceChatId]
+        : [])
+  );
+  const utilityCallCounts: Record<string, number> = {};
+  const utilityFailureReasonCounts: Record<string, number> = {};
+  for (const utility of input.utilityExecutions) {
+    if (utility.externalCall) incrementCount(utilityCallCounts, utility.role);
+    if (utility.state === "UNAVAILABLE" && utility.reason) {
+      incrementCount(utilityFailureReasonCounts, utility.reason);
+    }
+  }
+  const digestHits = input.expanded.filter((candidate) =>
+    candidate.projectionKind === "CHAT_DIGEST_SAFE_TEXT").length;
+  const rawChunkExpansions = input.expanded.filter((candidate) =>
+    candidate.itemType === "RECALL_CHUNK" &&
+    candidate.projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT").length;
+  return Object.freeze({
+    candidateCountsByLane,
+    candidatesRetainedAfterReranker: input.relevant.length,
+    candidatesRetainedAfterRejoin: input.rejoinedRelevant.length,
+    candidatesSentToReranker: input.relevanceInput.length,
+    digestHits,
+    embeddingBatchSizeDistribution: utilityCallCounts.MEMORY_QUERY_EMBED
+      ? { "1": utilityCallCounts.MEMORY_QUERY_EMBED }
+      : {},
+    packedEvidenceItems: input.pack.items.length,
+    packedEvidenceTokens: input.preparedTokens,
+    plannerFallbackUsed: input.control.status !== "READY",
+    queryVariantCounts: queryVariantCounts(input.plan),
+    rawChunkExpansions,
+    rawRoundExpansions: 0,
+    rerankerFallbackUsed: input.relevanceInput.length > 0 &&
+      input.relevance?.status !== "READY",
+    safetyFindingCounts: {},
+    safetyMetricsState: "QUERY_ONLY_BASELINE",
+    selectedSourceChats: selectedSourceChats.size,
+    temporalFilteredCandidateCount: 0,
+    temporalParserConfidence: null,
+    temporalParserState: "NOT_AVAILABLE",
+    temporalParserType: null,
+    temporalUnrestrictedCandidateCount: 0,
+    uniqueEvidenceRootsAfterFusion: new Set(input.dynamicFused.map((candidate) =>
+      candidate.metadata.dedupeKey)).size,
+    uniqueEvidenceRootsBeforeFusion: beforeFusionRoots.size,
+    utilityCallCounts,
+    utilityFailureReasonCounts,
+    version: MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION
+  });
 }
 
 function relevanceEvidence(
@@ -1547,6 +1654,23 @@ export function createMemoryRunRetrievalService(
         ...actionEvidence,
         ...aggregationPlanEvidence(aggregation, aggregationGuide),
         candidateCount: pack.candidateCount,
+        componentMetrics: memoryRetrievalComponentEvidence({
+          control,
+          dynamicFused,
+          expanded,
+          laneResults: local.laneResults,
+          pack,
+          plan,
+          preparedTokens,
+          queryEmbedding,
+          relevance,
+          relevanceInput,
+          relevant,
+          rejoinedRelevant,
+          selectedCore,
+          selectedDynamic,
+          utilityExecutions
+        }),
         coreCount: selectedCore.length,
         laneCount: local.laneResults.length,
         lexicalFailures: local.lexicalFailures,
