@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_LANE_ORDER,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   type MemoryRetrievalLane
@@ -56,5 +57,31 @@ describe("Memory retrieval lane scheduler", () => {
       .toEqual({ FACT_PROFILE: 20 });
     expect(() => allocateMemoryRetrievalLaneLimits(["FACT_PROFILE", "FACT_VECTOR"]))
       .toThrow("memory_retrieval_lane_contract_invalid");
+  });
+
+  it("gives aggregation history lanes a larger bounded ceiling", () => {
+    const targetedHistory = [
+      "HISTORY_RECALL_EXACT",
+      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_VECTOR"
+    ] as const;
+    expect(allocateMemoryRetrievalLaneLimits(targetedHistory)).toEqual({
+      HISTORY_RECALL_EXACT: 4,
+      HISTORY_RECALL_FTS_SIMPLE: 6,
+      HISTORY_RECALL_VECTOR: 6
+    });
+    const aggregationHistoryLanes = [
+      "HISTORY_RECALL_EXACT",
+      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_VECTOR"
+    ] as const;
+    expect(allocateMemoryRetrievalLaneLimits(aggregationHistoryLanes, true)).toEqual({
+      HISTORY_RECALL_EXACT: 8,
+      HISTORY_RECALL_FTS_SIMPLE: 40,
+      HISTORY_RECALL_VECTOR: 120
+    });
+    expect(Object.values(allocateMemoryRetrievalLaneLimits(aggregationHistoryLanes, true))
+      .reduce((sum, value) => sum + (value ?? 0), 0))
+      .toBeLessThanOrEqual(MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES);
   });
 });

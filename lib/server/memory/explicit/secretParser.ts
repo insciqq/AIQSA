@@ -28,6 +28,7 @@ const ASCII_DIGITS = "0123456789";
 const ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const TOKEN_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}+/_=-.`;
 const BASE64URL_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}_-`;
+const ASCII_HEXADECIMAL = `${ASCII_DIGITS}abcdefABCDEF`;
 const PEM_BEGIN = "-----BEGIN ";
 const PEM_PRIVATE_KEY_SUFFIX = "PRIVATE KEY";
 
@@ -46,8 +47,27 @@ function everyCharacter(value: string, characters: string): boolean {
   return true;
 }
 
+function isCanonicalUuid(value: string): boolean {
+  if (value.length !== 36) return false;
+  const hyphenOffsets = new Set([8, 13, 18, 23]);
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    if (hyphenOffsets.has(index)) {
+      if (character !== "-") return false;
+    } else if (!ASCII_HEXADECIMAL.includes(character)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isAsciiDigit(character: string | undefined): boolean {
   return character !== undefined && ASCII_DIGITS.includes(character);
+}
+
+function isAsciiAlphanumeric(character: string | undefined): boolean {
+  return character !== undefined &&
+    (ASCII_DIGITS.includes(character) || ASCII_LETTERS.includes(character));
 }
 
 function isRecoveryGroup(value: string): boolean {
@@ -188,27 +208,28 @@ function knownToken(value: string): boolean {
 }
 
 function hasRecoveryCode(value: string): boolean {
-  const words: string[] = [];
-  let current = "";
-  const flush = () => {
-    if (current) words.push(current);
-    current = "";
-  };
-  for (const character of value) {
-    if (ASCII_DIGITS.includes(character) || ASCII_LETTERS.includes(character)) {
-      current += character;
-    } else {
-      flush();
+  // Four arbitrary four-letter prose words are not a recognizable recovery
+  // code. Require the explicit grouped format instead of discarding ordinary
+  // text such as "user said they were" as secret-tainted.
+  for (let start = 0; start < value.length; start += 1) {
+    if (isAsciiAlphanumeric(value[start - 1])) continue;
+    let cursor = start;
+    let valid = true;
+    for (let ordinal = 0; ordinal < 4; ordinal += 1) {
+      if (!isRecoveryGroup(value.slice(cursor, cursor + 4))) {
+        valid = false;
+        break;
+      }
+      cursor += 4;
+      if (ordinal < 3) {
+        if (value[cursor] !== "-") {
+          valid = false;
+          break;
+        }
+        cursor += 1;
+      }
     }
-  }
-  flush();
-  for (let index = 0; index + 3 < words.length; index += 1) {
-    if (isRecoveryGroup(words[index] ?? "") &&
-      isRecoveryGroup(words[index + 1] ?? "") &&
-      isRecoveryGroup(words[index + 2] ?? "") &&
-      isRecoveryGroup(words[index + 3] ?? "")) {
-      return true;
-    }
+    if (valid && !isAsciiAlphanumeric(value[cursor])) return true;
   }
   return false;
 }
@@ -286,6 +307,11 @@ function shannonEntropy(value: string): number {
 }
 
 function highEntropy(value: string): boolean {
+  // UUIDs are public structural identifiers throughout AIQSA. Their random
+  // hex distribution can cross the generic entropy threshold, but that does
+  // not make a canonical UUID a credential. Keep this exclusion exact so an
+  // opaque token merely containing or extending a UUID remains screened.
+  if (isCanonicalUuid(value)) return false;
   let compact = "";
   for (const character of value) {
     if (character !== "-" && character !== "_" && character !== "=" && character !== ".") {

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadMemoryRunPresentationStatuses } from "./runProjection";
 
 describe("loadMemoryRunPresentationStatuses", () => {
-  it("projects only a bounded unavailable state for failed-safe or degraded receipts", async () => {
+  it("distinguishes limited Memory use from a failed-safe unavailable receipt", async () => {
     const findRuns = vi.fn(async () => [
       { id: "run-failed" },
       { id: "run-used" },
@@ -11,9 +11,10 @@ describe("loadMemoryRunPresentationStatuses", () => {
     const findMany = vi.fn(async () => [
       Object.assign({ modelRunId: "run-failed" }, {
         degradationCode: "private-code",
+        outcome: "FAILED_SAFE",
         retrievalAttemptId: "private-attempt-id"
       }),
-      { modelRunId: "run-degraded" }
+      { modelRunId: "run-degraded", outcome: "DEGRADED" }
     ]);
 
     const statuses = await loadMemoryRunPresentationStatuses({
@@ -36,7 +37,7 @@ describe("loadMemoryRunPresentationStatuses", () => {
       }
     });
     expect(findMany).toHaveBeenCalledWith({
-      select: { modelRunId: true },
+      select: { modelRunId: true, outcome: true },
       where: {
         modelRunId: { in: ["run-failed", "run-used", "run-degraded"] },
         outcome: { in: ["DEGRADED", "FAILED_SAFE"] },
@@ -45,7 +46,7 @@ describe("loadMemoryRunPresentationStatuses", () => {
     });
     expect([...statuses]).toEqual([
       ["run-failed", "UNAVAILABLE"],
-      ["run-degraded", "UNAVAILABLE"]
+      ["run-degraded", "LIMITED"]
     ]);
     expect(JSON.stringify([...statuses])).not.toContain("private-");
   });

@@ -33,16 +33,16 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v11";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v13";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v11",
-  promptVersion: "memory-control-prompt-v16",
+  policyVersion: "memory-control-policy-v13",
+  promptVersion: "memory-control-prompt-v18",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 9
+    version: 11
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });

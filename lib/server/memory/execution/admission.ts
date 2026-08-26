@@ -372,8 +372,16 @@ export function createPrismaMemoryExecutionAdmission(
           });
           assertMemoryExecutionBindingLink(binding, snapshot, source, sourceSnapshot);
         }
+        // Wall clocks can step backwards by a few milliseconds while many
+        // provider calls are completing. Preserve the durable state-machine
+        // ordering instead of letting harmless clock skew violate the DB
+        // shape constraint.
+        const startedAt = new Date(Math.max(
+          now.getTime(),
+          binding.createdAt.getTime()
+        ));
         const started = await tx.memoryExecutionBinding.updateMany({
-          data: { startedAt: now, state: "RUNNING" },
+          data: { startedAt, state: "RUNNING" },
           where: {
             id: binding.id,
             relationsDetachedAt: null,
@@ -388,7 +396,7 @@ export function createPrismaMemoryExecutionAdmission(
           bindingId: binding.id,
           owner: storedMemoryExecutionOwner(binding),
           snapshot,
-          startedAt: now
+          startedAt
         };
       });
     }

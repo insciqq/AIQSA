@@ -8,8 +8,10 @@ import {
   executeMemoryRetrievalLaneTasks,
   MEMORY_CORE_MAX_FACTS,
   MEMORY_RETRIEVAL_FUSION_VERSION,
-  MEMORY_RETRIEVAL_LANE_LIMITS,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
+  memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
   type MemoryCoreCandidate,
   type MemoryDeterministicMatch,
@@ -48,7 +50,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v7";
+  "memory-local-retrieval-repository-v9";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -628,7 +630,9 @@ function historyPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
 }
 
 function historyDigestPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
-  if (plan.mode !== "HISTORY_OVERVIEW" ||
+  const digestMode = plan.mode === "HISTORY_OVERVIEW" ||
+    plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH";
+  if (!digestMode ||
     !plan.filters.sourceKinds.includes("HISTORY")) return Prisma.sql`FALSE`;
   const scope = plan.filters.scopeType === null
     ? Prisma.sql`TRUE`
@@ -1532,7 +1536,8 @@ function recentSql(
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
   limit: number
 ): Prisma.Sql {
-  if (!plan.recencyRequested && plan.mode !== "HISTORY_OVERVIEW") {
+  if (!plan.recencyRequested && plan.mode !== "HISTORY_OVERVIEW" &&
+    !plan.aggregationRequested) {
     throw new Error("memory_retrieval_lane_invalid");
   }
   const eligible = itemType === "FACT_VERSION"
@@ -1600,7 +1605,8 @@ function allocatedLimit(
   lane: MemoryRetrievalLane
 ): number {
   const limit = allocation[lane];
-  if (!Number.isSafeInteger(limit) || !limit || limit < 1 || limit > MEMORY_RETRIEVAL_LANE_LIMITS[lane]) {
+  if (!Number.isSafeInteger(limit) || !limit || limit < 1 ||
+    limit > memoryRetrievalLaneLimit(lane, true)) {
     throw new Error("memory_retrieval_lane_contract_invalid");
   }
   return limit;
@@ -1843,6 +1849,82 @@ function digestExpansionSql(
   `;
 }
 
+function aggregationSessionScore(candidates: readonly MemoryRankedCandidate[]): number {
+  const top = candidates.slice(0, 3).map(({ finalScore }) => finalScore);
+  const best = Math.max(...top);
+  const average = top.reduce((sum, value) => sum + value, 0) / top.length;
+  return Math.min(1, best + average * 0.1);
+}
+
+function aggregationSessionLaneRanks(
+  candidates: readonly MemoryRankedCandidate[]
+): MemoryRankedCandidate["laneRanks"] {
+  const laneRanks: Partial<Record<MemoryRetrievalLane, number>> = {};
+  for (const candidate of candidates) {
+    for (const [lane, rank] of Object.entries(candidate.laneRanks) as
+      Array<[MemoryRetrievalLane, number]>) {
+      laneRanks[lane] = Math.min(laneRanks[lane] ?? rank, rank);
+    }
+  }
+  return laneRanks;
+}
+
+export function selectMemoryAggregationSessionRepresentatives(
+  candidates: readonly MemoryRankedCandidate[]
+): readonly MemoryRankedCandidate[] {
+  type SourceGroup = Readonly<{
+    candidates: readonly MemoryRankedCandidate[];
+    firstIndex: number;
+    sourceChatId: string;
+  }>;
+  const groups = new Map<string, {
+    candidates: MemoryRankedCandidate[];
+    firstIndex: number;
+    sourceChatId: string;
+  }>();
+  candidates.forEach((candidate, index) => {
+    if (candidate.itemType !== "RECALL_CHUNK" || !candidate.metadata.sourceChatId) return;
+    const sourceChatId = candidate.metadata.sourceChatId;
+    const group = groups.get(sourceChatId);
+    if (group) group.candidates.push(candidate);
+    else groups.set(sourceChatId, { candidates: [candidate], firstIndex: index, sourceChatId });
+  });
+  return ([...groups.values()] as SourceGroup[])
+    .sort((left, right) =>
+      aggregationSessionScore(right.candidates) -
+        aggregationSessionScore(left.candidates) ||
+      left.firstIndex - right.firstIndex ||
+      left.sourceChatId.localeCompare(right.sourceChatId))
+    .slice(0, MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS)
+    .map((group) => {
+      const representative = group.candidates[0]!;
+      const laneRanks = aggregationSessionLaneRanks(group.candidates);
+      return {
+        ...representative,
+        featureSnapshot: {
+          ...representative.featureSnapshot,
+          laneCount: Object.keys(laneRanks).length
+        },
+        finalScore: aggregationSessionScore(group.candidates),
+        laneRanks
+      };
+    });
+}
+
+function aggregationDigestCandidatesSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  sourceChatIds: readonly string[]
+): Prisma.Sql {
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)})
+    SELECT ${candidateColumns(Prisma.sql`0.0::double precision`)}
+    FROM eligible
+    WHERE eligible."sourceChatId" IN (${valuesSql(sourceChatIds)})
+    ORDER BY eligible."sourceChatId", eligible."itemId"
+  `;
+}
+
 function validPlan(plan: MemoryRetrievalPlan): boolean {
   const requestedKinds = plan.filters.sourceKinds;
   const facts = requestedKinds.includes("FACT") || requestedKinds.includes("EVENT");
@@ -1865,6 +1947,9 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
             plan.temporalIntent !== "HISTORICAL"
           : !plan.profileRequested && !facts && history && !plan.recencyRequested;
   return typeof plan.applyResponsePreferences === "boolean" &&
+    typeof plan.aggregationRequested === "boolean" &&
+    (!plan.aggregationRequested || plan.mode === "PAST_CHAT_SEARCH" ||
+      plan.mode === "HISTORY_OVERVIEW") &&
     Array.isArray(plan.entityMentions) && plan.entityMentions.length <= 8 &&
     plan.entityMentions.every((mention) =>
       typeof mention.text === "string" && mention.text.trim() === mention.text &&
@@ -1918,7 +2003,9 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
     ): Promise<readonly MemoryExpandedCandidate[]> {
       if (
         snapshot.status !== "READY" ||
-        candidates.length > MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES ||
+        candidates.length > (plan.aggregationRequested
+          ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
+          : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES) ||
         new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
           candidates.length || candidates.some((candidate) => !validToken(candidate.itemId))
       ) throw new Error("memory_expansion_contract_invalid");
@@ -1933,7 +2020,8 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (factIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
         currentFactExpansionSql(snapshot, plan, factIds)));
       if (chunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
-        plan.mode === "HISTORY_OVERVIEW"
+        plan.mode === "HISTORY_OVERVIEW" ||
+          plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
           ? digestExpansionSql(snapshot, plan, chunkIds)
           : chunkExpansionSql(snapshot, plan, chunkIds)));
       const decoded = (await Promise.all(queries)).flat().map(decodeExpanded);
@@ -1944,6 +2032,50 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         const value = byKey.get(`${candidate.itemType}:${candidate.itemId}`);
         return value ? [value] : [];
       });
+    },
+
+    async projectAggregationSessions(
+      snapshot: MemoryLocalRetrievalSnapshot,
+      plan: MemoryRetrievalPlan,
+      candidates: readonly MemoryRankedCandidate[]
+    ): Promise<readonly MemoryRankedCandidate[]> {
+      if (
+        snapshot.status !== "READY" ||
+        !plan.aggregationRequested || plan.mode !== "PAST_CHAT_SEARCH" ||
+        candidates.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+        new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
+          candidates.length ||
+        candidates.some((candidate) => !validToken(candidate.itemId))
+      ) throw new Error("memory_aggregation_projection_contract_invalid");
+      const facts = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION");
+      const representatives = selectMemoryAggregationSessionRepresentatives(candidates);
+      if (representatives.length === 0) return facts;
+      const sourceChatIds = representatives.map(({ metadata }) => metadata.sourceChatId!);
+      const rows = await client.$queryRaw<CandidateRow[]>(
+        aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds)
+      );
+      const bySource = new Map<string, CandidateRow>();
+      for (const row of rows) {
+        const metadata = decodeMetadata(row);
+        if (row.itemType !== "RECALL_CHUNK" || !metadata.sourceChatId ||
+          bySource.has(metadata.sourceChatId)) {
+          throw new Error("memory_aggregation_projection_result_invalid");
+        }
+        bySource.set(metadata.sourceChatId, row);
+      }
+      const history = representatives.flatMap((representative) => {
+        const sourceChatId = representative.metadata.sourceChatId;
+        const row = sourceChatId ? bySource.get(sourceChatId) : undefined;
+        if (!row) return [];
+        return [{
+          ...representative,
+          entryId: null,
+          itemId: row.itemId,
+          metadata: decodeMetadata(row),
+          selectionReason: `${representative.selectionReason}+aggregation_session_digest`
+        } satisfies MemoryRankedCandidate];
+      });
+      return [...facts, ...history];
     },
 
     snapshot(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalSnapshot> {
@@ -1965,7 +2097,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const enabled = [...lexicalLanes, ...vectorLanes];
       if (enabled.length === 0) return emptyResult(snapshot, core,
         input.vector ? "DISABLED" : "NOT_CONFIGURED");
-      const allocation = allocateMemoryRetrievalLaneLimits(enabled);
+      const allocation = allocateMemoryRetrievalLaneLimits(
+        enabled,
+        input.plan.aggregationRequested
+      );
       const tasks: Array<Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number]> = [];
       const lexical = pushLexicalTasks(tasks, client, snapshot, input.plan, allocation);
       const vectorEvidence: MemoryVectorLaneEvidence[] = [];

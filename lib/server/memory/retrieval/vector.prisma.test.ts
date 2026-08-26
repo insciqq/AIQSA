@@ -529,6 +529,28 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       });
   }, 60_000);
 
+  it("retrieves into an Excluded request chat without admitting it as a source", async () => {
+    const requestChat = await prisma.chat.create({
+      data: {
+        memoryMode: "EXCLUDED",
+        title: "Memory vector excluded request",
+        userId: exactFixture.userId
+      }
+    });
+    const base = searchInput(exactFixture);
+
+    const result = await createPrismaMemoryVectorRepository(prisma).search({
+      ...base,
+      eligibility: { ...base.eligibility, chatId: requestChat.id }
+    });
+
+    expect(result.status).toBe("READY");
+    if (result.status !== "READY") throw new Error(result.reason);
+    expect(result.hits).toHaveLength(5);
+    expect(result.hits.every((hit) => hit.itemId.includes("memory-vector-exact")))
+      .toBe(true);
+  }, 60_000);
+
   it("proves the production HNSW plan, bounded exact plan, and pinned database profile", async () => {
     const versions = await prisma.$queryRaw<Array<{
       pgvector: string;

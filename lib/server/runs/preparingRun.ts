@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { MemoryReceiptOutcome } from "@prisma/client";
 import {
+  MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS,
+  MEMORY_CONTEXT_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_MAX_ITEMS,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_PLANNER_VERSION,
   type MemoryRetrievalItemType,
@@ -11,8 +15,13 @@ import type { NormalizedRunRequest } from "../providers/types";
 
 export const MEMORY_PREPARING_ATTEMPT_TTL_MS = 10 * 60_000;
 export const MEMORY_PREPARING_BASE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024;
-export const MEMORY_PREPARING_CONTEXT_MAX_TOKENS = 1_800;
-export const MEMORY_PREPARING_ITEM_LIMIT = 13;
+export const MEMORY_PREPARING_CONTEXT_MAX_TOKENS = MEMORY_CONTEXT_HARD_CAP_TOKENS;
+export const MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS =
+  MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS;
+export const MEMORY_PREPARING_ITEM_LIMIT = MEMORY_CONTEXT_MAX_ITEMS;
+export const MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT =
+  MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS;
+export const MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS = 4_096;
 export const MEMORY_PREPARING_QUERY_PLANNER_VERSION =
   MEMORY_RETRIEVAL_PLANNER_VERSION;
 export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION =
@@ -293,9 +302,21 @@ export function validateMemoryPreparingAttemptResult(
   const context = input.preparedContext ?? null;
   if (
     !isRecord(input.budgetSnapshot) ||
-    !boundedJson(input.budgetSnapshot, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES) ||
-    items.length > MEMORY_PREPARING_ITEM_LIMIT
+    !boundedJson(input.budgetSnapshot, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES)
   ) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  const budgetPlan = isRecord(input.budgetSnapshot.plan)
+    ? input.budgetSnapshot.plan
+    : null;
+  const aggregationRequested = budgetPlan?.aggregationRequested === true;
+  const contextMaxTokens = aggregationRequested
+    ? MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS
+    : MEMORY_PREPARING_CONTEXT_MAX_TOKENS;
+  const itemLimit = aggregationRequested
+    ? MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT
+    : MEMORY_PREPARING_ITEM_LIMIT;
+  if (items.length > itemLimit) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   if (input.degradationCode !== undefined && input.degradationCode !== null &&
@@ -322,7 +343,7 @@ export function validateMemoryPreparingAttemptResult(
     Buffer.byteLength(context.text, "utf8") > MEMORY_PREPARING_CONTEXT_MAX_BYTES ||
     !Number.isSafeInteger(context.approxTokens) ||
     context.approxTokens < 0 ||
-    context.approxTokens > MEMORY_PREPARING_CONTEXT_MAX_TOKENS
+    context.approxTokens > contextMaxTokens
   )) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
@@ -343,7 +364,7 @@ export function validateMemoryPreparingAttemptResult(
     if (
       !target ||
       item.exactSafeText.length === 0 ||
-      item.exactSafeText.length > 4_000 ||
+      item.exactSafeText.length > MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS ||
       !safeSelectionReason.test(item.selectionReason) ||
       !Number.isFinite(item.finalScore) ||
       item.finalScore < 0 ||

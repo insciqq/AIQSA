@@ -899,8 +899,10 @@ async function resolveChunk(
   const projection = itemProjection(input);
   const feature = record(input.featureSnapshot);
   const retrievalMode = feature?.retrievalMode;
+  const digestMode = retrievalMode === "HISTORY_OVERVIEW" ||
+    retrievalMode === "PAST_CHAT_SEARCH" && feature?.aggregationRequested === true;
   if (projection.kind === "CHAT_DIGEST_SAFE_TEXT") {
-    if (projection.supportingItemId === null || retrievalMode !== "HISTORY_OVERVIEW") {
+    if (projection.supportingItemId === null || !digestMode) {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
     }
     const row = await resolveDigestRow(
@@ -955,7 +957,7 @@ async function resolveChunk(
     };
   }
   if (projection.kind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" ||
-    projection.supportingItemId !== null || retrievalMode === "HISTORY_OVERVIEW") {
+    projection.supportingItemId !== null || digestMode) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
   const row = await resolveChunkRow(tx, authority, input.recallChunkId);

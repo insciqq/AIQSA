@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
   type MemoryDeletionOperation,
@@ -28,7 +28,9 @@ import type {
 
 const JOB_CURSOR = "memory-job";
 const DELETION_CURSOR = "memory-delete";
-const JOB_COMMIT_TRANSACTION_ATTEMPTS = 3;
+const JOB_COMMIT_TRANSACTION_ATTEMPTS = 8;
+const JOB_COMMIT_RETRY_BASE_DELAY_MS = 25;
+const JOB_COMMIT_RETRY_MAX_DELAY_MS = 500;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 
@@ -39,7 +41,16 @@ function rollbackSafeTransactionConflict(error: unknown): boolean {
     typeof error.meta === "object" &&
     error.meta !== null &&
     "code" in error.meta &&
-    error.meta.code === "40001";
+    (error.meta.code === "40001" || error.meta.code === "40P01");
+}
+
+async function waitForJobCommitRetry(retryOrdinal: number): Promise<void> {
+  const ceiling = Math.min(
+    JOB_COMMIT_RETRY_MAX_DELAY_MS,
+    JOB_COMMIT_RETRY_BASE_DELAY_MS * (2 ** Math.max(0, retryOrdinal - 1))
+  );
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, randomInt(1, ceiling + 1)));
 }
 
 type JobClaimRow = Omit<MemoryJobClaim, "recoveredLease"> & {
@@ -439,9 +450,12 @@ async function commitJobSuccessWithAuthority(
   tx: Prisma.TransactionClient,
   input: CommitJobTransitionInput
 ): Promise<boolean> {
-  if (input.claim.kind === "RESOLVE_FACT_RELATIONS") {
-    await lockMemorySettings(tx, input.claim.userId, true);
-  }
+  // Serialize the short per-user commit phase before taking source/job locks.
+  // Otherwise source validation takes a shared settings lock and the apply
+  // closure later upgrades it, allowing concurrent jobs to form a lock-upgrade
+  // deadlock. Provider execution remains parallel; only durable mutation is
+  // ordered here.
+  await lockMemorySettings(tx, input.claim.userId, false);
   const sourceMatches = await memorySourceJobSnapshotMatches(
     tx,
     input.claim,
@@ -655,6 +669,7 @@ export async function preflightPrismaMemoryJobLifecycle(
 }
 
 export type MemoryCoordinatorRepositoryOptions = Readonly<{
+  jobCommitRetryDelay?: (retryOrdinal: number) => Promise<void>;
   preflightJobLifecycle?: () => Promise<void>;
 }>;
 
@@ -850,7 +865,10 @@ export function createPrismaMemoryCoordinatorRepository(
           if (
             attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS - 1 &&
             rollbackSafeTransactionConflict(error)
-          ) continue;
+          ) {
+            await (options.jobCommitRetryDelay ?? waitForJobCommitRetry)(attempt + 1);
+            continue;
+          }
           if (error instanceof MemoryCoordinatorError) throw error;
           throw new MemoryCoordinatorError("memory_job_commit_failed", false);
         }

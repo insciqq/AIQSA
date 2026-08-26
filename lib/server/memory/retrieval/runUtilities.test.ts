@@ -3,12 +3,20 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution";
 import type { PrismaMemoryExecutionService } from "../execution";
 import {
   createMemoryRunUtilityService,
+  MEMORY_AGGREGATION_MAX_ATTEMPTS,
+  MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
+  MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
   MEMORY_RERANK_MAX_ATTEMPTS,
   type MemoryRunUtilityService
 } from "./runUtilities";
 import {
+  memoryRunUtilityPromptCharacters,
   MemoryRunUtilityProviderCallError,
+  MEMORY_AGGREGATION_TOOL_NAME,
+  MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
   MEMORY_RERANK_TOOL_NAME,
+  type MemoryRerankUtilityProviderInput,
+  type MemoryRunUtilityProviderInput,
   type MemoryRunUtilityProvider
 } from "./runUtilityRuntime";
 import {
@@ -40,6 +48,13 @@ const currentHistoryRerankCandidate = Object.freeze({
   lifecycleState: null,
   temporalReason: "current" as const
 });
+
+function rerankInput(
+  input: MemoryRunUtilityProviderInput
+): MemoryRerankUtilityProviderInput {
+  if ("kind" in input) throw new Error("unexpected_aggregation_input");
+  return input;
+}
 
 function snapshot(
   role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
@@ -383,6 +398,405 @@ describe("Memory run utility execution", () => {
     ]);
   });
 
+  it("globally groups grounded individual and aggregate quantities before a count", async () => {
+    const log: string[] = [];
+    const bound = execution(log);
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async (
+        _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
+        input: Parameters<MemoryRunUtilityProvider["run"]>[1]
+      ) => {
+        expect(input).toMatchObject({ kind: "AGGREGATE", role: "MEMORY_RERANK" });
+        expect("kind" in input ? input.evidence.map(({ handle }) => handle) : [])
+          .toEqual(["i0", "i1", "i2", "i3"]);
+        return {
+          providerResponseId: "response-aggregation",
+          toolCalls: [{
+            arguments: {
+              groups: [{
+                item_handles: ["i0", "i1"],
+                occurrence: "release Alpha",
+                quantity: 1,
+                quantity_evidence: "release Alpha",
+                role: "MEMBER"
+              }, {
+                item_handles: ["i2"],
+                occurrence: "two Beta releases",
+                quantity: 2,
+                quantity_evidence: "two Beta releases",
+                role: "MEMBER"
+              }, {
+                item_handles: ["i3"],
+                occurrence: "launch day",
+                quantity: 0,
+                quantity_evidence: null,
+                role: "BOUNDARY"
+              }],
+              operation: "COUNT",
+              resolution: "RESOLVED"
+            },
+            id: "call-aggregation",
+            name: MEMORY_AGGREGATION_TOOL_NAME
+          }],
+          usage: {
+            cachedInputTokens: 0,
+            inputTokens: 80,
+            outputTokens: 30,
+            reasoningTokens: 0,
+            totalTokens: 110
+          }
+        };
+      })
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider
+    });
+
+    const result = await service.aggregate({
+      ...baseInput(),
+      evidence: [{
+        handle: "i0",
+        occurredFrom: "2026-01-03T00:00:00.000Z",
+        occurredTo: null,
+        sourceKind: "HISTORY",
+        text: "The user completed release Alpha."
+      }, {
+        handle: "i1",
+        occurredFrom: "2026-01-04T00:00:00.000Z",
+        occurredTo: null,
+        sourceKind: "HISTORY",
+        text: "A later chat also referenced release Alpha."
+      }, {
+        handle: "i2",
+        occurredFrom: "2026-01-08T00:00:00.000Z",
+        occurredTo: null,
+        sourceKind: "HISTORY",
+        text: "The user completed two Beta releases."
+      }, {
+        handle: "i3",
+        occurredFrom: "2026-01-10T00:00:00.000Z",
+        occurredTo: null,
+        sourceKind: "HISTORY",
+        text: "The user marked launch day."
+      }],
+      query: "How many releases were completed before launch day?"
+    });
+
+    expect(result).toEqual({
+      bindingId: "binding-MEMORY_RERANK",
+      plan: {
+        groups: [{
+          itemHandles: ["i0", "i1"],
+          occurrence: "release Alpha",
+          quantity: 1,
+          quantityEvidence: "release Alpha",
+          role: "MEMBER"
+        }, {
+          itemHandles: ["i2"],
+          occurrence: "two Beta releases",
+          quantity: 2,
+          quantityEvidence: "two Beta releases",
+          role: "MEMBER"
+        }, {
+          itemHandles: ["i3"],
+          occurrence: "launch day",
+          quantity: 0,
+          quantityEvidence: null,
+          role: "BOUNDARY"
+        }],
+        operation: "COUNT",
+        resolution: "RESOLVED"
+      },
+      status: "READY"
+    });
+    expect(bound.admission.bind).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ ordinal: 8, role: "MEMORY_RERANK" })
+    );
+  });
+
+  it("rejects a quantity that conflicts with its exact evidence and retries only that output", async () => {
+    const executionService = {
+      admission: {
+        bind: vi.fn(async (_userId: string, input: { ordinal: number }) => ({
+          id: `binding-${input.ordinal}`
+        })),
+        start: vi.fn(async (_userId: string, bindingId: string) => ({
+          bindingId,
+          snapshot: snapshot("MEMORY_RERANK")
+        }))
+      },
+      lifecycle: {
+        settle: vi.fn(async () => ({})),
+        withAuthorizedResultCommit: vi.fn(async (
+          _userId: string,
+          _input: unknown,
+          apply: () => Promise<unknown>
+        ) => apply())
+      }
+    } as unknown as PrismaMemoryExecutionService;
+    const provider: MemoryRunUtilityProvider = {
+      run: vi.fn(async () => ({
+        providerResponseId: "response-invalid",
+        toolCalls: [{
+          arguments: {
+            groups: [{
+              item_handles: ["i0"],
+              occurrence: "12 completed releases",
+              quantity: 7,
+              quantity_evidence: "12 completed releases",
+              role: "MEMBER"
+            }],
+            operation: "COUNT",
+            resolution: "RESOLVED"
+          },
+          id: "call-invalid",
+          name: MEMORY_AGGREGATION_TOOL_NAME
+        }],
+        usage: {
+          cachedInputTokens: 0,
+          inputTokens: 20,
+          outputTokens: 10,
+          reasoningTokens: 0,
+          totalTokens: 30
+        }
+      }))
+    };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider
+    });
+
+    const result = await service.aggregate({
+      ...baseInput(),
+      evidence: [{
+        handle: "i0",
+        occurredFrom: null,
+        occurredTo: null,
+        sourceKind: "HISTORY",
+        text: "The user reported 12 completed releases."
+      }],
+      query: "How many releases were completed?"
+    });
+
+    expect(result).toMatchObject({
+      reason: "memory_run_utility_output_invalid",
+      status: "UNAVAILABLE"
+    });
+    expect(provider.run).toHaveBeenCalledTimes(MEMORY_AGGREGATION_MAX_ATTEMPTS);
+    expect(executionService.admission.bind).toHaveBeenNthCalledWith(
+      1,
+      "user-1",
+      expect.objectContaining({ ordinal: 8 })
+    );
+    expect(executionService.admission.bind).toHaveBeenNthCalledWith(
+      2,
+      "user-1",
+      expect.objectContaining({ ordinal: 9 })
+    );
+  });
+
+  it("reranks a broad history aggregation in three concurrent governed batches", async () => {
+    const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
+      id: `binding-${input.ordinal}`
+    }));
+    const executionService = {
+      admission: {
+        bind,
+        start: vi.fn(async (_userId: string, bindingId: string) => ({
+          bindingId,
+          snapshot: snapshot("MEMORY_RERANK")
+        }))
+      },
+      lifecycle: {
+        settle: vi.fn(async () => ({})),
+        withAuthorizedResultCommit: vi.fn(async (
+          _userId: string,
+          _input: unknown,
+          apply: () => Promise<unknown>
+        ) => apply())
+      }
+    } as unknown as PrismaMemoryExecutionService;
+    let active = 0;
+    let peak = 0;
+    const providerRun = vi.fn(async (
+      _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
+      input: Parameters<MemoryRunUtilityProvider["run"]>[1]
+    ) => {
+        const rerank = rerankInput(input);
+        active += 1;
+        peak = Math.max(peak, active);
+        await Promise.resolve();
+        active -= 1;
+        return {
+          providerResponseId: `response-${rerank.candidates[0]?.handle}`,
+          toolCalls: [{
+            arguments: {
+              decisions: rerank.candidates.map((candidate) => ({
+                applicable: true,
+                current: true,
+                handle: candidate.handle,
+                reason_code: "SUPPORTING_CONTEXT",
+                relevance_score: 0.9
+              }))
+            },
+            id: `call-${rerank.candidates[0]?.handle}`,
+            name: MEMORY_RERANK_TOOL_NAME
+          }],
+          usage: {
+            cachedInputTokens: 0,
+            inputTokens: 100,
+            outputTokens: 50,
+            reasoningTokens: 0,
+            totalTokens: 150
+          }
+        };
+      });
+    const provider: MemoryRunUtilityProvider = { run: providerRun };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider
+    });
+    const candidates = Array.from({ length: 60 }, (_, index) => ({
+      ...currentHistoryRerankCandidate,
+      authorityLevel: "PAST_CHAT" as const,
+      current: true,
+      handle: `c${index}`,
+      occurredFrom: null,
+      occurredTo: null,
+      sensitivityClass: "NORMAL" as const,
+      sourceKind: "HISTORY" as const,
+      text: `Safe digest for an unrelated project milestone ${index}.`
+    }));
+
+    const result = await service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates,
+      profileRequested: false,
+      query: "Which project milestones did I mention across our chats?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    expect(result).toMatchObject({ bindingId: "binding-2", status: "READY" });
+    expect(result.status === "READY" ? result.decisions.map(({ handle }) => handle) : [])
+      .toEqual(candidates.map(({ handle }) => handle));
+    expect(providerRun).toHaveBeenCalledTimes(3);
+    expect(providerRun.mock.calls.map((call) => rerankInput(call[1]).candidates.length))
+      .toEqual([
+        MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
+        MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
+        MEMORY_RERANK_AGGREGATION_BATCH_SIZE
+      ]);
+    expect(bind).toHaveBeenCalledTimes(3);
+    expect(bind.mock.calls.map((call) => call[1].ordinal))
+      .toEqual([2, 4, 6]);
+    expect(peak).toBe(3);
+  });
+
+  it("partitions aggregation reranking by the complete structured prompt limit", async () => {
+    const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
+      id: `binding-${input.ordinal}`
+    }));
+    const executionService = {
+      admission: {
+        bind,
+        start: vi.fn(async (_userId: string, bindingId: string) => ({
+          bindingId,
+          snapshot: snapshot("MEMORY_RERANK")
+        }))
+      },
+      lifecycle: {
+        settle: vi.fn(async () => ({})),
+        withAuthorizedResultCommit: vi.fn(async (
+          _userId: string,
+          _input: unknown,
+          apply: () => Promise<unknown>
+        ) => apply())
+      }
+    } as unknown as PrismaMemoryExecutionService;
+    const promptSizes: number[] = [];
+    const providerRun = vi.fn(async (
+      _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
+      input: Parameters<MemoryRunUtilityProvider["run"]>[1]
+    ) => {
+      const rerank = rerankInput(input);
+      promptSizes.push(memoryRunUtilityPromptCharacters(input));
+      return {
+        providerResponseId: `response-${rerank.candidates[0]?.handle}`,
+        toolCalls: [{
+          arguments: {
+            decisions: rerank.candidates.map((candidate) => ({
+              applicable: true,
+              current: true,
+              handle: candidate.handle,
+              reason_code: "SUPPORTING_CONTEXT",
+              relevance_score: 0.9
+            }))
+          },
+          id: `call-${rerank.candidates[0]?.handle}`,
+          name: MEMORY_RERANK_TOOL_NAME
+        }],
+        usage: {
+          cachedInputTokens: 0,
+          inputTokens: 100,
+          outputTokens: 50,
+          reasoningTokens: 0,
+          totalTokens: 150
+        }
+      };
+    });
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider: { run: providerRun }
+    });
+    const candidates = Array.from({ length: 60 }, (_, index) => ({
+      ...currentHistoryRerankCandidate,
+      authorityLevel: "PAST_CHAT" as const,
+      current: true,
+      handle: `c${index}`,
+      occurredFrom: null,
+      occurredTo: null,
+      sensitivityClass: "NORMAL" as const,
+      sourceKind: "HISTORY" as const,
+      text: `Digest ${index}: `.padEnd(4_000, "x")
+    }));
+
+    const result = await service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates,
+      profileRequested: false,
+      query: "Which deployment rehearsals did I mention across our chats?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    expect(result).toMatchObject({ bindingId: "binding-2", status: "READY" });
+    expect(providerRun.mock.calls.length).toBeGreaterThan(3);
+    expect(providerRun.mock.calls.length)
+      .toBeLessThanOrEqual(MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
+    expect(providerRun.mock.calls.flatMap((call) =>
+      rerankInput(call[1]).candidates.map((candidate) => candidate.handle)
+    )).toEqual(candidates.map((candidate) => candidate.handle));
+    expect(promptSizes.every((size) =>
+      size <= MEMORY_RERANK_MAX_PROMPT_CHARACTERS
+    )).toBe(true);
+    expect(bind.mock.calls.map((call) => call[1].ordinal))
+      .toEqual(promptSizes.map((_, index) => {
+        const denseOrdinal = 2 + index * MEMORY_RERANK_MAX_ATTEMPTS;
+        return denseOrdinal >= 8
+          ? denseOrdinal + MEMORY_AGGREGATION_MAX_ATTEMPTS
+          : denseOrdinal;
+      }));
+  });
+
   it("binds and dispatches distinct ordinary and broad-profile rerank inputs", async () => {
     const log: string[] = [];
     const bound = execution(log);
@@ -715,6 +1129,42 @@ describe("Memory run utility execution", () => {
       })),
       profileRequested: false,
       query: "Which facts apply?"
+    })).resolves.toEqual({
+      reason: "memory_utility_input_blocked",
+      status: "UNAVAILABLE"
+    });
+    expect(bound.admission.bind).not.toHaveBeenCalled();
+    expect(provider.run).not.toHaveBeenCalled();
+  });
+
+  it("blocks a sixty-first aggregation candidate before binding or provider I/O", async () => {
+    const log: string[] = [];
+    const bound = execution(log);
+    const provider = { run: vi.fn() } as unknown as MemoryRunUtilityProvider;
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: bound.value,
+      provider
+    });
+
+    await expect(service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates: Array.from({ length: 61 }, (_, index) => ({
+        ...currentHistoryRerankCandidate,
+        authorityLevel: "PAST_CHAT" as const,
+        current: true,
+        handle: `c${index}`,
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL" as const,
+        sourceKind: "HISTORY" as const,
+        text: `History candidate ${index}`
+      })),
+      profileRequested: false,
+      query: "Which events happened across my chats?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
     })).resolves.toEqual({
       reason: "memory_utility_input_blocked",
       status: "UNAVAILABLE"

@@ -1,0 +1,63 @@
+name: aiqsa-memory-benchmark-second
+
+services:
+  app:
+    container_name: aiqsa-memory-benchmark-second-app
+    environment:
+      AIQSA_APP_BASE_URL: http://localhost:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}
+      AIQSA_MEMORY_BENCHMARK_TARGET: longmemeval
+      AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "1000"
+      AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: "64"
+      AIQSA_MEMORY_JOB_PARALLELISM: "16"
+      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "16"
+      DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
+    ports: !override
+      - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}:3000"
+
+  docling:
+    container_name: aiqsa-memory-benchmark-second-docling
+
+  tika:
+    container_name: aiqsa-memory-benchmark-second-tika
+
+  toolhive-runtime:
+    container_name: aiqsa-memory-benchmark-second-toolhive
+    profiles: ["benchmark-disabled"]
+    user: "65532:65532"
+    volumes: !override []
+
+  postgres:
+    container_name: aiqsa-memory-benchmark-second-postgres
+    environment:
+      POSTGRES_DB: aiqsa_memory_benchmark
+      POSTGRES_PASSWORD: aiqsa-memory-benchmark-dev-password
+      POSTGRES_USER: aiqsa_benchmark
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiqsa_benchmark -d aiqsa_memory_benchmark"]
+    ports: !override
+      - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_POSTGRES_PORT:-55437}:5432"
+
+  minio:
+    container_name: aiqsa-memory-benchmark-second-minio
+    ports: !override
+      - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_MINIO_PORT:-19100}:9000"
+      - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_MINIO_CONSOLE_PORT:-19101}:9001"
+
+  minio-init:
+    container_name: aiqsa-memory-benchmark-second-minio-init
+
+networks:
+  default:
+    name: aiqsa-memory-benchmark-second-default
+  mcp-control:
+    name: aiqsa-memory-benchmark-second-mcp-control
+    internal: true
+  parser-control:
+    name: aiqsa-memory-benchmark-second-parser-control
+    internal: true
+
+volumes:
+  minio_dev_data:
+    name: aiqsa-memory-benchmark-second-minio
+  postgres_dev_data:
+    name: aiqsa-memory-benchmark-second-postgres

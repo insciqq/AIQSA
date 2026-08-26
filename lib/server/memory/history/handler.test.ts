@@ -15,6 +15,10 @@ import {
   applyMemoryHistoryClassifications,
   createMemoryHistoryIndexHandler
 } from "./handler";
+import {
+  MemoryChatDigestError,
+  MemoryChatDigestOutputError
+} from "./digest";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import type { MemoryHistoryIndexRepository } from "./repository";
 
@@ -306,7 +310,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       occurredFrom: "2026-08-10T10:00:00.000Z",
       occurredTo: "2026-08-10T10:01:00.000Z",
       openLoops: ["Confirm rollout"],
-      rebuildPolicyVersion: "memory-chat-digest-rebuild-v2",
+      rebuildPolicyVersion: "memory-chat-digest-rebuild-v3",
       safeDigestText: "Summary: Deployment options were compared.",
       sourceChunkIds: ["chunk-stable", "chunk-tail"],
       sourceFingerprint: "f".repeat(64),
@@ -414,6 +418,108 @@ describe("Memory INDEX_HISTORY handler", () => {
     );
   });
 
+  it("commits safe chunks when only the derived digest output is invalid", async () => {
+    const currentClaim = claim();
+    const currentPlan = plan([chunk("chunk-safe", 0)]);
+    const apply = vi.fn(async () => undefined);
+    const authorizeResults = vi.fn(async () => undefined);
+    const classificationExecution = {
+      acceptedOutputHash: "a".repeat(64),
+      bindingId: "safe-chunk-classification"
+    };
+    const classifier = {
+      classify: vi.fn(async () => ({
+        decisions: [{ chunkId: "chunk-safe", sensitivity: "NORMAL" as const }],
+        executions: [classificationExecution],
+        policyVersion: "memory-history-safety-policy-test"
+      }))
+    };
+    const executionContext = context();
+    const handler = createMemoryHistoryIndexHandler({
+      authorizeResults,
+      classifier,
+      digestGenerator: {
+        generate: vi.fn(async () => {
+          throw new MemoryChatDigestOutputError("aggregate_limit");
+        })
+      },
+      repository: {
+        apply,
+        preflight: vi.fn(async () => ({ status: "READY" as const })),
+        prepare: vi.fn(async () => ({ plan: currentPlan }))
+      } as unknown as MemoryHistoryIndexRepository
+    });
+
+    const result = await handler.execute(currentClaim, executionContext);
+
+    expect(result).toMatchObject({
+      operationalCounters: {
+        digestFullRebuild: 0,
+        digestIncremental: 0,
+        digestNoop: 0
+      },
+      stage: "lexical_ready:digest_aggregate_limit"
+    });
+    expect(classifier.classify).toHaveBeenCalledTimes(1);
+    expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
+      "source_snapshot",
+      "safety_classification",
+      "digest_generation",
+      "lexical_apply"
+    ]);
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
+    };
+    await result.apply?.(tx as never, currentClaim);
+    expect(authorizeResults).toHaveBeenCalledWith(
+      tx,
+      { userId: source.userId },
+      source.userId,
+      currentClaim.id,
+      [classificationExecution]
+    );
+    expect(apply).toHaveBeenCalledWith(
+      tx,
+      currentClaim,
+      expect.objectContaining({
+        digest: null,
+        digestPolicyVersion:
+          "memory-chat-digest-output-degraded-v1:aggregate_limit"
+      }),
+      new Date("2026-08-10T12:00:00.000Z")
+    );
+  });
+
+  it("does not mask a digest provider or authority failure", async () => {
+    const currentClaim = claim();
+    const currentPlan = plan([chunk("chunk-safe", 0)]);
+    const apply = vi.fn(async () => undefined);
+    const handler = createMemoryHistoryIndexHandler({
+      classifier: {
+        classify: vi.fn(async () => ({
+          decisions: [{ chunkId: "chunk-safe", sensitivity: "NORMAL" as const }],
+          policyVersion: "memory-history-safety-policy-test"
+        }))
+      },
+      digestGenerator: {
+        generate: vi.fn(async () => {
+          throw new MemoryChatDigestError("memory_chat_digest_unavailable");
+        })
+      },
+      repository: {
+        apply,
+        preflight: vi.fn(async () => ({ status: "READY" as const })),
+        prepare: vi.fn(async () => ({ plan: currentPlan }))
+      } as unknown as MemoryHistoryIndexRepository
+    });
+
+    await expect(handler.execute(currentClaim, context())).rejects.toMatchObject({
+      code: "memory_history_classification_unavailable",
+      retryable: true
+    });
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("does not invoke digest classification for a fingerprint no-op", async () => {
     const currentClaim = claim();
     const currentPlan = plan([chunk("chunk-stable", 0)]);
@@ -432,7 +538,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       occurredFrom: "2026-08-10T10:00:00.000Z",
       occurredTo: "2026-08-10T10:01:00.000Z",
       openLoops: [],
-      rebuildPolicyVersion: "memory-chat-digest-rebuild-v2",
+      rebuildPolicyVersion: "memory-chat-digest-rebuild-v3",
       safeDigestText: "Summary: Existing safe digest.",
       sourceChunkIds: ["chunk-stable"],
       sourceFingerprint: "f".repeat(64),

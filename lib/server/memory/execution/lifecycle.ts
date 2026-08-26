@@ -483,13 +483,17 @@ export function createPrismaMemoryExecutionLifecycle(
       }
       const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
       assertMemoryExecutionBindingLineage(binding, snapshot);
+      const completedAt = new Date(Math.max(
+        now.getTime(),
+        (binding.startedAt ?? binding.createdAt).getTime()
+      ));
       const recoverableUntil = binding.state === "PENDING"
-        ? now
-        : new Date(now.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS);
+        ? completedAt
+        : new Date(completedAt.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS);
       const updated = await tx.memoryExecutionBinding.updateMany({
         data: {
           acceptedOutputHash: input.acceptedOutputHash,
-          completedAt: now,
+          completedAt,
           errorCode: input.errorCode,
           providerResponseId: input.providerResponseId,
           recoverableUntil,
@@ -557,19 +561,23 @@ export function createPrismaMemoryExecutionLifecycle(
       }
       const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
       assertMemoryExecutionBindingLineage(binding, snapshot);
+      const completedAt = new Date(Math.max(
+        now.getTime(),
+        (binding.startedAt ?? binding.createdAt).getTime()
+      ));
       const recoverableUntil = new Date(
-        now.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS
+        completedAt.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS
       );
       await persist(tx, {
         bindingId: binding.id,
-        completedAt: now,
+        completedAt,
         recoverableUntil,
         replayed: false
       });
       const updated = await tx.memoryExecutionBinding.updateMany({
         data: {
           acceptedOutputHash: input.acceptedOutputHash,
-          completedAt: now,
+          completedAt,
           errorCode: input.errorCode,
           providerResponseId: input.providerResponseId,
           recoverableUntil,
@@ -719,10 +727,14 @@ export function createPrismaMemoryExecutionLifecycle(
           return memoryExecutionFailure("memory_execution_usage_invalid");
         }
         await assertDurableUsage(tx, binding, usageFromBinding(binding));
+        const completedAt = new Date(Math.max(
+          now.getTime(),
+          (binding.startedAt ?? binding.createdAt).getTime()
+        ));
         const updated = await tx.memoryExecutionBinding.updateMany({
           data: {
             acceptedOutputHash: input.acceptedOutputHash,
-            completedAt: now,
+            completedAt,
             errorCode: input.errorCode,
             state: input.state,
             ...usageData(input.usage)

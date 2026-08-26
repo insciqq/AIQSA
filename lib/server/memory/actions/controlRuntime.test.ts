@@ -10,6 +10,7 @@ import {
 
 const profileIntent: MemoryActionIntent = {
   action: "NONE",
+  aggregationRequested: false,
   applyResponsePreferences: false,
   category: null,
   categoryHint: null,
@@ -39,12 +40,12 @@ const profileIntent: MemoryActionIntent = {
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v11");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v13");
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v11",
-      policyVersion: "memory-control-policy-v11",
-      promptVersion: "memory-control-prompt-v16",
-      schemaVersion: "memory-action-intent-v7"
+      pipelineVersion: "memory-control-v13",
+      policyVersion: "memory-control-policy-v13",
+      promptVersion: "memory-control-prompt-v18",
+      schemaVersion: "memory-action-intent-v8"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(6);
   });
