@@ -33,6 +33,8 @@ import {
 import {
   createPrismaMemoryChatDigestGenerator,
   MEMORY_CHAT_DIGEST_VERSIONS,
+  MemoryChatDigestOutputError,
+  type MemoryChatDigestGenerationResult,
   type MemoryChatDigestGenerator
 } from "./digest";
 import {
@@ -56,6 +58,31 @@ export type MemoryHistoryIndexHandlerDependencies = Readonly<{
   probeAuthority?: (userId: string) => Promise<void>;
   repository: MemoryHistoryIndexRepository;
 }>;
+
+const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
+  "memory-chat-digest-output-degraded-v1";
+
+function degradedMemoryChatDigest(
+  error: MemoryChatDigestOutputError
+): Readonly<{
+  generated: MemoryChatDigestGenerationResult;
+  stage: string;
+}> {
+  return {
+    generated: {
+      classificationRequired: false,
+      digest: null,
+      executions: [],
+      policyVersion:
+        `${MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION}:${error.reason}`,
+      work: {
+        digestSegmentsProcessed: 0,
+        digestSourceChunksProcessed: 0
+      }
+    },
+    stage: `lexical_ready:digest_${error.reason}`
+  };
+}
 
 function authorityGate(error: unknown) {
   if (error instanceof MemoryExecutionError) {
@@ -267,6 +294,7 @@ export function createMemoryHistoryIndexHandler(
       if (context.signal.aborted) throw context.signal.reason;
       await context.setStage("safety_classification");
       let plan: MemoryHistoryIndexPlan;
+      let completionStage = "lexical_ready";
       try {
         const classification = await dependencies.classifier.classify(
           prepared.plan.chunks.filter((chunk) =>
@@ -280,23 +308,35 @@ export function createMemoryHistoryIndexHandler(
         let executionResults = [...(classification.executions ?? [])];
         if (dependencies.digestGenerator) {
           await context.setStage("digest_generation");
-          const generated = await dependencies.digestGenerator.generate(
-            plan.source,
-            plan.chunks,
-            { jobId: claim.id, signal: context.signal, userId: claim.userId }
-          );
+          let generated: MemoryChatDigestGenerationResult;
+          try {
+            generated = await dependencies.digestGenerator.generate(
+              plan.source,
+              plan.chunks,
+              { jobId: claim.id, signal: context.signal, userId: claim.userId }
+            );
+          } catch (error) {
+            if (!(error instanceof MemoryChatDigestOutputError)) throw error;
+            const degraded = degradedMemoryChatDigest(error);
+            generated = degraded.generated;
+            completionStage = degraded.stage;
+          }
           executionResults.push(...generated.executions);
-          const digestSafety = generated.digest && generated.classificationRequired
-            ? await dependencies.classifier.classify([{
-                id: generated.digest.id,
-                safeProjectedText: generated.digest.safeDigestText
-              }], {
-                execution: { jobId: claim.id, userId: claim.userId },
-                signal: context.signal
-              })
-            : null;
-          if (digestSafety) executionResults.push(...(digestSafety.executions ?? []));
-          plan = attachMemoryChatDigest(plan, generated, digestSafety);
+          if (generated.digest) {
+            const digestSafety = generated.classificationRequired
+              ? await dependencies.classifier.classify([{
+                  id: generated.digest.id,
+                  safeProjectedText: generated.digest.safeDigestText
+                }], {
+                  execution: { jobId: claim.id, userId: claim.userId },
+                  signal: context.signal
+                })
+              : null;
+            if (digestSafety) executionResults.push(...(digestSafety.executions ?? []));
+            plan = attachMemoryChatDigest(plan, generated, digestSafety);
+          } else {
+            plan = attachMemoryChatDigest(plan, generated, null);
+          }
         } else {
           plan = attachMemoryChatDigest(plan, {
             classificationRequired: false,
@@ -338,7 +378,7 @@ export function createMemoryHistoryIndexHandler(
             );
           },
           operationalCounters: historyOperationalCounters(plan),
-          stage: "lexical_ready"
+          stage: completionStage
         };
       } catch (error) {
         if (context.signal.aborted) throw context.signal.reason;

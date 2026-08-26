@@ -9,7 +9,7 @@ import type {
 } from "./contracts";
 import { MEMORY_RETRIEVAL_MODES, MEMORY_TEMPORAL_INTENTS } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v11";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v12";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
@@ -191,6 +191,10 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     typeof input.applyResponsePreferences !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
+  if (input.aggregationRequested !== undefined &&
+    typeof input.aggregationRequested !== "boolean") {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
   if (input.includePatterns !== undefined && typeof input.includePatterns !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
@@ -208,6 +212,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   const mode = inferredMode(input, filters, profileRequested);
   const temporalIntent = inferredTemporalIntent(input, filters, mode);
   const includePatterns = input.includePatterns === true;
+  const aggregationRequested = input.aggregationRequested === true;
   if (
     !MEMORY_RETRIEVAL_MODES.includes(mode) ||
     !MEMORY_TEMPORAL_INTENTS.includes(temporalIntent) ||
@@ -217,9 +222,12 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
       filters,
       profileRequested,
       input.recencyRequested === true
-    ) || includePatterns && mode !== "TARGETED_CURRENT"
+    ) || includePatterns && mode !== "TARGETED_CURRENT" ||
+    aggregationRequested && mode !== "PAST_CHAT_SEARCH" &&
+      mode !== "HISTORY_OVERVIEW"
   ) throw new Error("memory_retrieval_plan_invalid");
   return {
+    aggregationRequested,
     applyResponsePreferences,
     entityMentions,
     filters,

@@ -33,16 +33,38 @@ import {
 import {
   createAcceptedMemoryRunUtilityProvider,
   memoryRunUtilityProviderEvidence,
+  memoryRunUtilityPromptCharacters,
   MemoryRunUtilityProviderCallError,
+  MEMORY_AGGREGATION_TOOL_NAME,
+  MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
   MEMORY_RERANK_TOOL_NAME,
-  type MemoryRunUtilityProvider
+  type MemoryAggregationUtilityProviderInput,
+  type MemoryRerankUtilityProviderInput,
+  type MemoryRunUtilityProvider,
+  type MemoryRunUtilityProviderInput
 } from "./runUtilityRuntime";
+import {
+  MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY,
+  MEMORY_AGGREGATION_OPERATIONS,
+  MEMORY_AGGREGATION_RESOLUTIONS,
+  MEMORY_AGGREGATION_ROLES,
+  type MemoryAggregationPlan
+} from "./aggregation";
 
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v11";
+  "memory-multilingual-relevance-v18";
+export const MEMORY_AGGREGATION_PIPELINE_VERSION =
+  "memory-evidence-aggregation-v2";
 export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
+export const MEMORY_RERANK_AGGREGATION_BATCH_SIZE = 20;
+export const MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES = 60;
+export const MEMORY_RERANK_AGGREGATION_MAX_BATCHES = 5;
+export const MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES = 3;
+export const MEMORY_AGGREGATION_MAX_ATTEMPTS = 2;
+export const MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS = 24;
+export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 8;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
@@ -54,21 +76,50 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v11",
-  promptVersion: "memory-relevance-prompt-v10",
+  policyVersion: "memory-relevance-policy-v15",
+  promptVersion: "memory-relevance-prompt-v14",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
-    maxCandidates: 30,
-    maxAttempts: MEMORY_RERANK_MAX_ATTEMPTS,
+    aggregationBatchSize: MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
+    aggregationBatchMaxPromptCharacters: MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
+    maxAggregationBatches: MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
+    maxAggregationCandidates: MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
+    maxTargetedCandidates: 30,
+    maxAttemptsPerBatch: MEMORY_RERANK_MAX_ATTEMPTS,
+    maxAggregationTotalCharacters: 240_000,
+    maxParallelAggregationBatches: MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES,
     maxOutputTokens: 4_096,
-    maxTotalCharacters: 32_000,
+    maxTargetedTotalCharacters: 32_000,
     completePerCandidateDecisions: true,
     profileInventoryPostcondition: true,
     lifecycleTemporalModes: true,
     openRouterReasoning: "disabled_for_interactive_deadline",
-    version: 11
+    aggregationAware: true,
+    aggregationCandidateSelection: "session_score_then_distinct_source_first",
+    aggregationRoleAssignment: "separate_global_evidence_planner",
+    version: 18
   }),
   schemaVersion: "memory-relevance-result-v5"
+});
+
+const aggregationVersions: MemoryExecutionVersions = Object.freeze({
+  pipelineVersion: MEMORY_AGGREGATION_PIPELINE_VERSION,
+  policyVersion: "memory-evidence-aggregation-policy-v2",
+  promptVersion: "memory-evidence-aggregation-prompt-v2",
+  retrievalConfigFingerprint: memoryExecutionSha256({
+    completeEvidenceView: true,
+    exactOccurrenceGrounding: true,
+    exactQuantityEvidenceGrounding: true,
+    maxAttempts: MEMORY_AGGREGATION_MAX_ATTEMPTS,
+    maxEvidenceItems: MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS,
+    maxOutputTokens: 4_096,
+    operationSet: MEMORY_AGGREGATION_OPERATIONS,
+    resolutionSet: MEMORY_AGGREGATION_RESOLUTIONS,
+    roleSet: MEMORY_AGGREGATION_ROLES,
+    serverComputedMemberCount: "sum_grounded_quantities",
+    version: 2
+  }),
+  schemaVersion: "memory-evidence-aggregation-result-v2"
 });
 
 export type MemoryRunUtilityUnavailable = Readonly<{
@@ -91,6 +142,14 @@ export type MemoryRunRerankResult =
   | Readonly<{
       bindingId: string;
       decisions: readonly MemoryRunRerankDecision[];
+      status: "READY";
+    }>;
+
+export type MemoryRunAggregationResult =
+  | MemoryRunUtilityUnavailable
+  | Readonly<{
+      bindingId: string;
+      plan: MemoryAggregationPlan;
       status: "READY";
     }>;
 
@@ -137,12 +196,23 @@ type QueryEmbeddingBaseInput = Readonly<{
 );
 
 export type MemoryRunUtilityService = Readonly<{
+  aggregate(input: UtilityBaseInput & Readonly<{
+    evidence: readonly Readonly<{
+      handle: string;
+      occurredFrom: string | null;
+      occurredTo: string | null;
+      sourceKind: "EVENT" | "FACT" | "HISTORY";
+      text: string;
+    }>[];
+    query: string;
+  }>): Promise<MemoryRunAggregationResult>;
   embedQuery(input: QueryEmbeddingBaseInput & Readonly<{
     profile: MemoryVectorProfile;
     purpose?: "ACTION_TARGET" | "RETRIEVAL";
     query: string;
   }>): Promise<MemoryRunQueryEmbeddingResult>;
   rerank(input: UtilityBaseInput & Readonly<{
+    aggregationRequested?: boolean;
     candidates: readonly Readonly<{
       authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
       current: boolean;
@@ -190,6 +260,94 @@ const uncertainEmbeddingErrors = new Set([
 
 function unavailable(reason: string, bindingId?: string): MemoryRunUtilityUnavailable {
   return { ...(bindingId ? { bindingId } : {}), reason, status: "UNAVAILABLE" };
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  run: (value: T, index: number) => Promise<R>
+): Promise<readonly R[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new Error("memory_run_utility_concurrency_invalid");
+  }
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await run(values[index]!, index);
+      }
+    }
+  ));
+  return results;
+}
+
+function rerankProviderInput(
+  input: Parameters<MemoryRunUtilityService["rerank"]>[0],
+  candidates: MemoryRerankUtilityProviderInput["candidates"]
+): MemoryRerankUtilityProviderInput {
+  return {
+    aggregationRequested: input.aggregationRequested === true,
+    candidates,
+    profileRequested: input.profileRequested,
+    query: input.query,
+    retrievalMode: input.retrievalMode,
+    role: "MEMORY_RERANK",
+    temporalIntent: input.temporalIntent
+  };
+}
+
+function aggregationProviderInput(
+  input: Parameters<MemoryRunUtilityService["aggregate"]>[0]
+): MemoryAggregationUtilityProviderInput {
+  return {
+    evidence: input.evidence,
+    kind: "AGGREGATE",
+    query: input.query,
+    role: "MEMORY_RERANK"
+  };
+}
+
+function partitionAggregationRerankCandidates(
+  input: Parameters<MemoryRunUtilityService["rerank"]>[0]
+): readonly MemoryRerankUtilityProviderInput["candidates"][] | null {
+  const batches: MemoryRerankUtilityProviderInput["candidates"][] = [];
+  let current: MemoryRerankUtilityProviderInput["candidates"] = [];
+  for (const candidate of input.candidates) {
+    const proposed = [...current, candidate];
+    const request = rerankProviderInput(input, proposed);
+    const exceedsBatchSize = proposed.length > MEMORY_RERANK_AGGREGATION_BATCH_SIZE;
+    const exceedsPromptLimit = memoryRunUtilityPromptCharacters(request) >
+      MEMORY_RERANK_MAX_PROMPT_CHARACTERS;
+    if (!exceedsBatchSize && !exceedsPromptLimit) {
+      current = proposed;
+      continue;
+    }
+    if (current.length < 1) return null;
+    batches.push(current);
+    current = [candidate];
+    if (memoryRunUtilityPromptCharacters(
+      rerankProviderInput(input, current)
+    ) > MEMORY_RERANK_MAX_PROMPT_CHARACTERS) return null;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches.length <= MEMORY_RERANK_AGGREGATION_MAX_BATCHES
+    ? batches
+    : null;
+}
+
+function rerankBatchFirstOrdinal(batchIndex: number): number {
+  if (!Number.isSafeInteger(batchIndex) || batchIndex < 0 ||
+    batchIndex >= MEMORY_RERANK_AGGREGATION_MAX_BATCHES) {
+    throw new Error("memory_rerank_batch_ordinal_invalid");
+  }
+  const denseOrdinal = 2 + batchIndex * MEMORY_RERANK_MAX_ATTEMPTS;
+  return denseOrdinal >= MEMORY_AGGREGATION_PRIMARY_ORDINAL
+    ? denseOrdinal + MEMORY_AGGREGATION_MAX_ATTEMPTS
+    : denseOrdinal;
 }
 
 function unavailableReason(error: unknown): string {
@@ -366,6 +524,115 @@ function decodeRerank(
     decision.reasonCode !== "DIRECT_RELEVANCE" ||
     decision.relevanceScore <= MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR)) return null;
   return decisions;
+}
+
+function decodeAggregation(
+  calls: Awaited<ReturnType<MemoryRunUtilityProvider["run"]>>["toolCalls"],
+  evidence: MemoryAggregationUtilityProviderInput["evidence"]
+): MemoryAggregationPlan | null {
+  const call = calls?.[0];
+  if (
+    calls?.length !== 1 ||
+    call?.name !== MEMORY_AGGREGATION_TOOL_NAME ||
+    !isRecord(call.arguments) ||
+    !exactKeys(call.arguments, ["groups", "operation", "resolution"]) ||
+    !Array.isArray(call.arguments.groups) ||
+    call.arguments.groups.length > 30 ||
+    typeof call.arguments.operation !== "string" ||
+    !MEMORY_AGGREGATION_OPERATIONS.some((value) =>
+      value === call.arguments.operation) ||
+    typeof call.arguments.resolution !== "string" ||
+    !MEMORY_AGGREGATION_RESOLUTIONS.some((value) =>
+      value === call.arguments.resolution)
+  ) return null;
+  if (call.arguments.resolution === "NOT_APPLICABLE" &&
+    call.arguments.groups.length !== 0) return null;
+  if (call.arguments.resolution === "RESOLVED" &&
+    call.arguments.groups.length === 0) return null;
+
+  const byHandle = new Map(evidence.map((item) => [item.handle, item]));
+  const seenGroups = new Set<string>();
+  const groups: MemoryAggregationPlan["groups"][number][] = [];
+  for (const value of call.arguments.groups) {
+    if (
+      !isRecord(value) ||
+      !exactKeys(value, [
+        "item_handles",
+        "occurrence",
+        "quantity",
+        "quantity_evidence",
+        "role"
+      ]) ||
+      !Array.isArray(value.item_handles) ||
+      value.item_handles.length < 1 ||
+      value.item_handles.length > 8 ||
+      value.item_handles.some((handle) => typeof handle !== "string") ||
+      new Set(value.item_handles).size !== value.item_handles.length ||
+      typeof value.occurrence !== "string" ||
+      value.occurrence.length < 1 ||
+      value.occurrence.length > 256 ||
+      value.occurrence !== value.occurrence.trim() ||
+      value.occurrence.includes("\u0000") ||
+      /[\r\n]/u.test(value.occurrence) ||
+      typeof value.quantity !== "number" ||
+      !Number.isSafeInteger(value.quantity) ||
+      value.quantity < 0 ||
+      value.quantity > MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY ||
+      value.quantity_evidence !== null && (
+        typeof value.quantity_evidence !== "string" ||
+        value.quantity_evidence.length < 1 ||
+        value.quantity_evidence.length > 256 ||
+        value.quantity_evidence !== value.quantity_evidence.trim() ||
+        value.quantity_evidence.includes("\u0000") ||
+        /[\r\n]/u.test(value.quantity_evidence)
+      ) ||
+      typeof value.role !== "string" ||
+      !MEMORY_AGGREGATION_ROLES.some((role) => role === value.role)
+    ) return null;
+    const occurrence = value.occurrence;
+    const items = value.item_handles.map((handle) => byHandle.get(handle));
+    const member = value.role === "MEMBER" || value.role === "MEMBER_AND_BOUNDARY";
+    const quantityEvidence = value.quantity_evidence;
+    if (
+      items.some((item) => !item) ||
+      member !== (value.quantity > 0) ||
+      member !== (quantityEvidence !== null) ||
+      call.arguments.operation !== "COUNT" && member && value.quantity !== 1 ||
+      !items.some((item) => item!.text.includes(occurrence) && (
+        quantityEvidence === null || item!.text.includes(quantityEvidence)
+      ))
+    ) return null;
+    if (value.quantity > 1 && quantityEvidence !== null) {
+      const explicitIntegers = [...quantityEvidence.matchAll(/\d+/gu)]
+        .map((match) => Number(match[0]))
+        .filter(Number.isSafeInteger);
+      if (explicitIntegers.length > 0 && !explicitIntegers.includes(value.quantity)) {
+        return null;
+      }
+    }
+    const itemHandles = [...value.item_handles].sort((left, right) =>
+      left.localeCompare(right));
+    const groupKey = `${value.role}:${occurrence.normalize("NFKC")
+      .toLocaleLowerCase("und")}:${itemHandles.join(",")}`;
+    if (seenGroups.has(groupKey)) return null;
+    seenGroups.add(groupKey);
+    groups.push({
+      itemHandles,
+      occurrence,
+      quantity: value.quantity,
+      quantityEvidence,
+      role: value.role as MemoryAggregationPlan["groups"][number]["role"]
+    });
+  }
+  const totalQuantity = groups.reduce((total, group) => total + group.quantity, 0);
+  if (!Number.isSafeInteger(totalQuantity)) return null;
+  if (call.arguments.operation === "COUNT" &&
+    call.arguments.resolution === "RESOLVED" && totalQuantity < 1) return null;
+  return {
+    groups,
+    operation: call.arguments.operation as MemoryAggregationPlan["operation"],
+    resolution: call.arguments.resolution as MemoryAggregationPlan["resolution"]
+  };
 }
 
 async function bindAndStart(
@@ -558,6 +825,81 @@ export function createMemoryRunUtilityService(
   deps: MemoryRunUtilityDependencies
 ): MemoryRunUtilityService {
   return Object.freeze({
+    async aggregate(input) {
+      const handles = input.evidence.map((item) => item.handle);
+      const request = aggregationProviderInput(input);
+      if (
+        !validSafeQuery(input.query) ||
+        input.evidence.length < 1 ||
+        input.evidence.length > MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS ||
+        new Set(handles).size !== handles.length ||
+        input.evidence.some((item, index) =>
+          item.handle !== `i${index}` ||
+          item.text.length < 1 ||
+          item.text.length > 4_000 ||
+          item.text.includes("\u0000") ||
+          memoryExplicitStatementContainsSecret(item.text) ||
+          !["EVENT", "FACT", "HISTORY"].includes(item.sourceKind) ||
+          [item.occurredFrom, item.occurredTo].some((value) =>
+            value !== null && (
+              value.length < 1 || value.length > 64 ||
+              !Number.isFinite(Date.parse(value))
+            ))
+        ) ||
+        memoryRunUtilityPromptCharacters(request) >
+          MEMORY_RERANK_MAX_PROMPT_CHARACTERS
+      ) return unavailable("memory_utility_input_blocked");
+
+      const inputHash = memoryExecutionSha256({
+        domain: "aiqsa.memory.evidence-aggregation-input",
+        evidence: input.evidence.map((item) => ({
+          handle: item.handle,
+          occurredFrom: item.occurredFrom,
+          occurredTo: item.occurredTo,
+          sourceKind: item.sourceKind,
+          textHash: memorySha256(item.text)
+        })),
+        queryHash: memorySha256(input.query),
+        version: 2
+      });
+      let result = await runTextUtility(
+        deps,
+        input,
+        request,
+        "MEMORY_RERANK",
+        MEMORY_AGGREGATION_PRIMARY_ORDINAL,
+        aggregationVersions,
+        inputHash,
+        null,
+        (calls) => decodeAggregation(calls, input.evidence)
+      );
+      if (
+        result.status !== "READY" &&
+        result.reason === "memory_run_utility_output_invalid" &&
+        result.snapshotHash !== undefined &&
+        !input.signal.aborted
+      ) {
+        result = await runTextUtility(
+          deps,
+          input,
+          request,
+          "MEMORY_RERANK",
+          MEMORY_AGGREGATION_PRIMARY_ORDINAL + 1,
+          aggregationVersions,
+          inputHash,
+          result.snapshotHash,
+          (calls) => decodeAggregation(calls, input.evidence)
+        );
+      }
+      return result.status === "READY"
+        ? {
+            bindingId: result.bindingId,
+            plan: result.output,
+            status: "READY"
+          }
+        : unavailable(result.reason, result.bindingId);
+    },
+
     async embedQuery(input) {
       if (!validSafeQuery(input.query)) return unavailable("memory_utility_input_blocked");
       const purpose = input.purpose ?? "RETRIEVAL";
@@ -667,6 +1009,7 @@ export function createMemoryRunUtilityService(
     },
 
     async rerank(input) {
+      const aggregationRequested = input.aggregationRequested === true;
       const totalCharacters = input.candidates.reduce(
         (total, candidate) => total + candidate.text.length,
         0
@@ -680,8 +1023,10 @@ export function createMemoryRunUtilityService(
         !["CURRENT", "HISTORICAL", "AS_OF", "BETWEEN", "ANY"]
           .includes(input.temporalIntent) ||
         input.candidates.length < 1 ||
-        input.candidates.length > 30 ||
-        totalCharacters > 32_000 ||
+        input.candidates.length > (aggregationRequested
+          ? MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES
+          : 30) ||
+        totalCharacters > (aggregationRequested ? 240_000 : 32_000) ||
         new Set(handles).size !== handles.length ||
         input.candidates.some((candidate, index) =>
           candidate.handle !== `c${index}` ||
@@ -693,82 +1038,95 @@ export function createMemoryRunUtilityService(
         ) || input.profileRequested && input.candidates.some((candidate) =>
           !candidate.current || candidate.sourceKind === "HISTORY")
       ) return unavailable("memory_utility_input_blocked");
-      const inputHash = memoryExecutionSha256({
-        candidates: input.candidates.map((candidate) => ({
-          authorityLevel: candidate.authorityLevel,
-          current: candidate.current,
-          directness: candidate.directness,
-          handle: candidate.handle,
-          historical: candidate.historical,
-          lifecycleState: candidate.lifecycleState,
-          occurredFrom: candidate.occurredFrom,
-          occurredTo: candidate.occurredTo,
-          sensitivityClass: candidate.sensitivityClass,
-          sourceKind: candidate.sourceKind,
-          temporalReason: candidate.temporalReason,
-          textHash: memorySha256(candidate.text)
-        })),
-        domain: "aiqsa.memory.relevance-input",
-        profileRequested: input.profileRequested,
-        queryHash: memorySha256(input.query),
-        retrievalMode: input.retrievalMode,
-        temporalIntent: input.temporalIntent,
-        version: 6
-      });
-      let result = await runTextUtility(
-        deps,
-        input,
-        {
-          candidates: input.candidates,
-          profileRequested: input.profileRequested,
-          query: input.query,
-          retrievalMode: input.retrievalMode,
-          role: "MEMORY_RERANK",
-          temporalIntent: input.temporalIntent
-        },
-        "MEMORY_RERANK",
-        2,
-        rerankVersions,
-        inputHash,
-        null,
-        (calls) => decodeRerank(calls, handles, input.profileRequested)
-      );
-      // A structurally invalid settled response is safe to retry once: the
-      // reranker has no side effects, and each attempt receives its own
-      // durable execution binding/usage record.  Provider uncertainty,
-      // transport failure, cancellation, or policy drift is never replayed.
-      if (
-        result.status !== "READY" &&
-        result.reason === "memory_run_utility_output_invalid" &&
-        result.snapshotHash !== undefined &&
-        !input.signal.aborted
-      ) {
-        result = await runTextUtility(
-          deps,
-          input,
-          {
-            candidates: input.candidates,
+      const candidateBatches = aggregationRequested
+        ? partitionAggregationRerankCandidates(input)
+        : memoryRunUtilityPromptCharacters(rerankProviderInput(
+            input,
+            input.candidates
+          )) <= MEMORY_RERANK_MAX_PROMPT_CHARACTERS
+          ? [input.candidates]
+          : null;
+      if (!candidateBatches) return unavailable("memory_utility_input_blocked");
+      const results = await mapWithConcurrency(
+        candidateBatches,
+        MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES,
+        async (candidates, batchIndex) => {
+          const batchHandles = candidates.map((candidate) => candidate.handle);
+          const inputHash = memoryExecutionSha256({
+            aggregationBatchCount: candidateBatches.length,
+            aggregationBatchIndex: batchIndex,
+            aggregationRequested,
+            candidates: candidates.map((candidate) => ({
+              authorityLevel: candidate.authorityLevel,
+              current: candidate.current,
+              directness: candidate.directness,
+              handle: candidate.handle,
+              historical: candidate.historical,
+              lifecycleState: candidate.lifecycleState,
+              occurredFrom: candidate.occurredFrom,
+              occurredTo: candidate.occurredTo,
+              sensitivityClass: candidate.sensitivityClass,
+              sourceKind: candidate.sourceKind,
+              temporalReason: candidate.temporalReason,
+              textHash: memorySha256(candidate.text)
+            })),
+            domain: "aiqsa.memory.relevance-input",
             profileRequested: input.profileRequested,
-            query: input.query,
+            queryHash: memorySha256(input.query),
             retrievalMode: input.retrievalMode,
-            role: "MEMORY_RERANK",
-            temporalIntent: input.temporalIntent
-          },
-          "MEMORY_RERANK",
-          3,
-          rerankVersions,
-          inputHash,
-          result.snapshotHash,
-          (calls) => decodeRerank(calls, handles, input.profileRequested)
-        );
+            temporalIntent: input.temporalIntent,
+            version: 10
+          });
+          const firstOrdinal = rerankBatchFirstOrdinal(batchIndex);
+          let result = await runTextUtility(
+            deps,
+            input,
+            rerankProviderInput(input, candidates),
+            "MEMORY_RERANK",
+            firstOrdinal,
+            rerankVersions,
+            inputHash,
+            null,
+            (calls) => decodeRerank(calls, batchHandles, input.profileRequested)
+          );
+          // A structurally invalid settled response is safe to retry once: the
+          // reranker has no side effects, and each attempt receives its own
+          // durable execution binding/usage record. Provider uncertainty,
+          // transport failure, cancellation, or policy drift is never replayed.
+          if (
+            result.status !== "READY" &&
+            result.reason === "memory_run_utility_output_invalid" &&
+            result.snapshotHash !== undefined &&
+            !input.signal.aborted
+          ) {
+            result = await runTextUtility(
+              deps,
+              input,
+              rerankProviderInput(input, candidates),
+              "MEMORY_RERANK",
+              firstOrdinal + 1,
+              rerankVersions,
+              inputHash,
+              result.snapshotHash,
+              (calls) => decodeRerank(calls, batchHandles, input.profileRequested)
+            );
+          }
+          return result;
+        }
+      );
+      const failed = results.find((result) => result.status !== "READY");
+      if (failed?.status === "UNAVAILABLE") {
+        return unavailable(failed.reason, failed.bindingId);
       }
-      return result.status === "READY"
+      const ready = results.filter((result) => result.status === "READY");
+      const bindingId = ready[0]?.bindingId;
+      return bindingId && ready.length === results.length
         ? {
-            bindingId: result.bindingId,
-            decisions: result.output,
+            bindingId,
+            decisions: ready.flatMap((result) => result.output),
             status: "READY"
           }
-        : unavailable(result.reason, result.bindingId);
+        : unavailable("memory_run_utility_unavailable");
     }
   });
 }

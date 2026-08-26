@@ -4,6 +4,7 @@ import { encryptProviderCredentialSecret } from "../../providers/credentialSecre
 import {
   createAcceptedMemoryRunUtilityProvider,
   memoryRunUtilityProviderEvidence,
+  MEMORY_AGGREGATION_TOOL_NAME,
   MEMORY_RERANK_TOOL_NAME
 } from "./runUtilityRuntime";
 
@@ -156,6 +157,7 @@ describe("Memory run utility provider runtime", () => {
         expect(JSON.stringify(body)).toContain(
           "A different detail about the same project or event is NOT_RELEVANT"
         );
+        expect(JSON.stringify(body)).toContain("temporal boundary");
         expect(JSON.stringify(body)).toContain('\\"profile_requested\\":false');
         expect(JSON.stringify(body)).not.toContain("SENSITIVE");
         if (adapterKind === "openrouter_chat_completions") {
@@ -277,7 +279,7 @@ describe("Memory run utility provider runtime", () => {
     }
   );
 
-  it("serializes ordinary and broad-profile requests into distinct provider payloads", async () => {
+  it("serializes ordinary, profile, and aggregation requests distinctly", async () => {
     const fixture = client();
     const requestBodies: string[] = [];
     const decision = JSON.stringify({
@@ -341,13 +343,113 @@ describe("Memory run utility provider runtime", () => {
       { ...input, profileRequested: true, retrievalMode: "CURRENT_PROFILE" },
       new AbortController().signal
     );
+    await provider.run(
+      evidence,
+      {
+        ...input,
+        aggregationRequested: true,
+        profileRequested: false,
+        retrievalMode: "PAST_CHAT_SEARCH",
+        temporalIntent: "ANY"
+      },
+      new AbortController().signal
+    );
 
-    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies).toHaveLength(3);
     expect(requestBodies[0]).toContain('\\"profile_requested\\":false');
+    expect(requestBodies[0]).toContain('\\"aggregation_requested\\":false');
     expect(requestBodies[0]).toContain("Cross-language paraphrases count as direct relevance");
     expect(requestBodies[0]).toContain("Как меня зовут?");
     expect(requestBodies[1]).toContain('\\"profile_requested\\":true');
     expect(requestBodies[1]).not.toBe(requestBodies[0]);
+    expect(requestBodies[2]).toContain('\\"aggregation_requested\\":true');
+    expect(requestBodies[2]).toContain(
+      "retain each distinct applicable source needed to combine the answer"
+    );
+  });
+
+  it("uses a distinct global evidence-planning contract for bounded aggregation", async () => {
+    const fixture = client();
+    const output = JSON.stringify({
+      groups: [{
+        item_handles: ["i0"],
+        occurrence: "release Alpha",
+        quantity: 1,
+        quantity_evidence: "release Alpha",
+        role: "MEMBER"
+      }, {
+        item_handles: ["i1"],
+        occurrence: "launch day",
+        quantity: 0,
+        quantity_evidence: null,
+        role: "BOUNDARY"
+      }],
+      operation: "COUNT",
+      resolution: "RESOLVED"
+    });
+    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
+      const body = typeof init?.body === "string"
+        ? JSON.parse(init.body) as Record<string, unknown>
+        : {};
+      expect(JSON.stringify(body)).toContain("one MEMBER group for each distinct");
+      expect(JSON.stringify(body)).toContain("explicitly states a cardinality");
+      expect(JSON.stringify(body)).toContain("quantity_evidence");
+      expect(JSON.stringify(body)).toContain("MEMBER_AND_BOUNDARY");
+      expect(JSON.stringify(body)).toContain("release Alpha");
+      expect(body).toMatchObject({
+        max_output_tokens: 4_096,
+        text: {
+          format: {
+            name: MEMORY_AGGREGATION_TOOL_NAME,
+            strict: true,
+            type: "json_schema"
+          }
+        }
+      });
+      return new Response(JSON.stringify({
+        id: "response-aggregation",
+        output: [{
+          content: [{ text: output, type: "output_text" }],
+          id: "message-aggregation",
+          role: "assistant",
+          status: "completed",
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 }
+      }));
+    });
+    const provider = createAcceptedMemoryRunUtilityProvider(fixture.client, {
+      createFetch: () => fetchFn,
+      encryptionKey: () => KEY
+    });
+
+    await expect(provider.run(
+      memoryRunUtilityProviderEvidence(snapshot("openai_responses_compatible")),
+      {
+        evidence: [{
+          handle: "i0",
+          occurredFrom: "2026-01-01T00:00:00.000Z",
+          occurredTo: null,
+          sourceKind: "HISTORY",
+          text: "The user completed release Alpha."
+        }, {
+          handle: "i1",
+          occurredFrom: "2026-02-01T00:00:00.000Z",
+          occurredTo: null,
+          sourceKind: "HISTORY",
+          text: "The user described launch day."
+        }],
+        kind: "AGGREGATE",
+        query: "How many releases happened before launch day?",
+        role: "MEMORY_RERANK"
+      },
+      new AbortController().signal
+    )).resolves.toMatchObject({
+      providerResponseId: "response-aggregation",
+      toolCalls: [{ name: MEMORY_AGGREGATION_TOOL_NAME }],
+      usage: { inputTokens: 40, outputTokens: 20, totalTokens: 60 }
+    });
   });
 
   it("rejects a binding without admitted strict-output evidence", () => {

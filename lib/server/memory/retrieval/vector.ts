@@ -14,9 +14,9 @@ import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
-  "memory-personal-retrieval-v5-vector";
+  "memory-personal-retrieval-v7-vector";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v7-bounded-strategy-corpus";
+  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v9-wide-candidate-exploration";
 export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
   1024: 0.55,
   1536: 0.55
@@ -25,8 +25,8 @@ export const MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS = 5_000;
 export const MEMORY_HNSW_EF_SEARCH = 100;
 export const MEMORY_HNSW_MAX_SCAN_TUPLES = 20_000;
 export const MEMORY_HNSW_OVERFETCH_MULTIPLIER = 8;
-export const MEMORY_HNSW_MAX_CANDIDATES_PER_LANE = 200;
-export const MEMORY_VECTOR_MAX_RESULT_LIMIT = 50;
+export const MEMORY_HNSW_MAX_CANDIDATES_PER_LANE = 480;
+export const MEMORY_VECTOR_MAX_RESULT_LIMIT = 120;
 
 export type MemoryVectorDimension = 1_024 | 1_536;
 export type MemoryVectorStrategy = "EXACT" | "HNSW";
@@ -347,7 +347,9 @@ function commonPredicates(input: MemoryVectorSearchInput): Prisma.Sql[] {
       WHERE current_chat."userId" = ${input.userId}
         AND current_chat."id" = ${input.eligibility.chatId}
         AND current_chat."projectId" IS NULL
-        AND current_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+        AND current_chat."memoryMode" IN (
+          'NORMAL'::"MemoryChatMode", 'EXCLUDED'::"MemoryChatMode"
+        )
         AND current_chat."permanentDeletionAt" IS NULL
     )`);
   }

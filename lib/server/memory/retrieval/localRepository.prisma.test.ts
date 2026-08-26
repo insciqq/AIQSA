@@ -698,6 +698,7 @@ async function createChunk(input: Readonly<{
   occurredAt?: Date;
   safetyClass?: "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
   safeText: string;
+  sourceRevisionAtCreation?: number;
   state?: "ACTIVE" | "INVALIDATED";
   suppressionSnapshot: string;
   userId: string;
@@ -730,7 +731,7 @@ async function createChunk(input: Readonly<{
         safeProjectedText: input.safeText,
         safetyClass: input.safetyClass ?? "NORMAL",
         sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-        sourceRevisionAtCreation: 0,
+        sourceRevisionAtCreation: input.sourceRevisionAtCreation ?? 0,
         state,
         invalidatedAt: state === "INVALIDATED" ? fixtureNow : null,
         userId: input.userId
@@ -783,6 +784,7 @@ async function createDigestHistoryChat(input: Readonly<{
   chunkId: string;
   digestId: string;
   digestText: string;
+  safeChunkText: string;
 }>> {
   const source = await createChatWithLeaf({
     createdAt: input.occurredAt,
@@ -807,6 +809,7 @@ async function createDigestHistoryChat(input: Readonly<{
     messageId: source.messageId,
     occurredAt: input.occurredAt,
     safeText: input.safeChunkText,
+    sourceRevisionAtCreation: 1,
     suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
     userId: input.userId
   });
@@ -879,7 +882,8 @@ async function createDigestHistoryChat(input: Readonly<{
     chatId: source.chatId,
     chunkId,
     digestId,
-    digestText: input.digestText
+    digestText: input.digestText,
+    safeChunkText: input.safeChunkText
   };
 }
 
@@ -1387,8 +1391,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId,
         userText: "Summarize our deployment discussions."
       });
-      const histories = await Promise.all([
-        createDigestHistoryChat({
+      const histories = [
+        await createDigestHistoryChat({
           digestText: "Summary: The cedar deployment chat selected a blue-green rollout.",
           generationId,
           occurredAt: new Date("2026-07-10T09:00:00.000Z"),
@@ -1396,7 +1400,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
           title: "Cedar deployment",
           userId
         }),
-        createDigestHistoryChat({
+        await createDigestHistoryChat({
           digestText: "Summary: The birch deployment chat left the launch date open.",
           generationId,
           occurredAt: new Date("2026-07-11T09:00:00.000Z"),
@@ -1404,7 +1408,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
           title: "Birch deployment",
           userId
         }),
-        createDigestHistoryChat({
+        await createDigestHistoryChat({
           digestText: "Summary: The maple deployment chat assigned the rollback owner.",
           generationId,
           occurredAt: new Date("2026-07-12T09:00:00.000Z"),
@@ -1412,7 +1416,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
           title: "Maple deployment",
           userId
         })
-      ]);
+      ];
       const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
       const overviewPlan = planMemoryRetrieval({
         currentUserText: "Give me an overview of our deployment chats.",
@@ -1497,6 +1501,48 @@ describe("local Memory retrieval on PostgreSQL", () => {
           history.digestText
         );
       }
+
+      const aggregationPlan = planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: "Which deployment decisions appeared across chats?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: fixtureNow,
+        temporalIntent: "ANY"
+      });
+      const aggregation = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan: aggregationPlan,
+        userId
+      });
+      expect(aggregation.laneResults.map(({ lane }) => lane)).toEqual([
+        "HISTORY_RECALL_EXACT",
+        "HISTORY_RECALL_FTS_SIMPLE"
+      ]);
+      const aggregationRanked = fuseMemoryRetrievalCandidates(
+        aggregationPlan,
+        aggregation.laneResults,
+        fixtureNow
+      );
+      const aggregationSessions = await repository.projectAggregationSessions(
+        aggregation.snapshot,
+        aggregationPlan,
+        aggregationRanked
+      );
+      const aggregationExpanded = await repository.expand(
+        aggregation.snapshot,
+        aggregationPlan,
+        aggregationSessions
+      );
+      expect(aggregationExpanded).toHaveLength(3);
+      expect(aggregationExpanded.every(({ projectionKind, supportingItemId }) =>
+        projectionKind === "CHAT_DIGEST_SAFE_TEXT" &&
+        supportingItemId !== null)).toBe(true);
+      expect(new Set(aggregationExpanded.map(({ safeText }) => safeText))).toEqual(
+        new Set(histories.map(({ digestText }) => digestText))
+      );
     } finally {
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
       await prisma.user.deleteMany({ where: { id: userId } });

@@ -91,7 +91,7 @@ describe("Prisma memory coordinator repository preflight", () => {
     });
     const repository = createPrismaMemoryCoordinatorRepository({
       $transaction: transaction
-    } as never);
+    } as never, { jobCommitRetryDelay: async () => undefined });
 
     await expect(repository.commitJobSuccess({
       acceptedResultHash: "a".repeat(64),
@@ -106,6 +106,43 @@ describe("Prisma memory coordinator repository preflight", () => {
     expect(apply.mock.calls[0]?.[1]).toEqual(jobClaim());
     expect(apply.mock.calls[1]?.[1]).toEqual(jobClaim());
     expect(tx.memoryJob.updateMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("backs off and survives a sustained job-commit conflict burst", async () => {
+    const conflict = new Prisma.PrismaClientKnownRequestError("deadlock", {
+      clientVersion: "6.19.3",
+      code: "P2010",
+      meta: { code: "40P01" }
+    });
+    const delays: number[] = [];
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: "job-commit" }]),
+      memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    let attempts = 0;
+    const transaction = vi.fn(async (
+      consume: (value: typeof tx) => Promise<boolean>
+    ) => {
+      attempts += 1;
+      if (attempts < 8) throw conflict;
+      return consume(tx);
+    });
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: transaction
+    } as never, {
+      jobCommitRetryDelay: async (retryOrdinal) => {
+        delays.push(retryOrdinal);
+      }
+    });
+
+    await expect(repository.commitJobSuccess({
+      acceptedResultHash: "a".repeat(64),
+      claim: jobClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "consolidation_applied"
+    })).resolves.toBe(true);
+    expect(attempts).toBe(8);
+    expect(delays).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it("does not replay the commit closure after an ambiguous database failure", async () => {
@@ -209,6 +246,7 @@ describe("Prisma memory coordinator repository preflight", () => {
         stage: null,
         userId: "user-1"
       }],
+      [{ ownerStatus: "active", userId: "user-1" }],
       [{ memoryGeneration: 2, memoryRevision: 7 }],
       [{ id: "probe-1" }]
     ];
@@ -238,7 +276,7 @@ describe("Prisma memory coordinator repository preflight", () => {
       ownerUserId: "user-1",
       probeId: "probe-1"
     })).resolves.toBeUndefined();
-    expect(queryIndex).toBe(5);
+    expect(queryIndex).toBe(6);
     expect(executeIndex).toBe(3);
     expect(sawSucceeded).toBe(true);
     expect(memoryJob.count).toHaveBeenCalledWith({ where: { id: "probe-1" } });

@@ -37,12 +37,27 @@ describe("Memory coordinator policy", () => {
     });
   });
 
+  it("allows two owners to use sixteen jobs each without widening one owner", () => {
+    expect(loadMemoryCoordinatorPolicy({
+      AIQSA_MEMORY_JOB_PARALLELISM: "32",
+      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "16"
+    })).toMatchObject({
+      maxJobParallel: 32,
+      maxJobParallelPerUser: 16
+    });
+  });
+
   it.each([
     { AIQSA_MEMORY_JOB_PARALLELISM: "0" },
     { AIQSA_MEMORY_JOB_PARALLELISM: "1.5" },
     { AIQSA_MEMORY_JOB_PARALLELISM: " 2" },
     { AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "999" },
     { AIQSA_MEMORY_COORDINATOR_LEASE_MS: "900001" },
+    { AIQSA_MEMORY_JOB_PARALLELISM: "33" },
+    {
+      AIQSA_MEMORY_JOB_PARALLELISM: "32",
+      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "17"
+    },
     {
       AIQSA_MEMORY_JOB_PARALLELISM: "2",
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "3"

@@ -52,6 +52,8 @@ export type MemoryRetrievalFilters = Readonly<{
 }>;
 
 export type MemoryRetrievalPlan = Readonly<{
+  /** Requests bounded evidence breadth across multiple independent sources. */
+  aggregationRequested: boolean;
   /** Allows only the narrow query-independent response-preference projection. */
   applyResponsePreferences: boolean;
   /** Exact query occurrences; resolved refs remain non-authoritative owner-scoped hints. */
@@ -72,6 +74,7 @@ export type MemoryRetrievalPlan = Readonly<{
 }>;
 
 export type MemoryRetrievalPlannerInput = Readonly<{
+  aggregationRequested?: boolean;
   allowedEntityRefs?: readonly string[];
   applyResponsePreferences?: boolean;
   currentUserText: string;

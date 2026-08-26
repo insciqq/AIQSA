@@ -13,6 +13,8 @@ import {
 } from "./contract";
 
 export const MEMORY_HISTORY_BACKFILL_WINDOW = 4;
+export const MEMORY_HISTORY_BACKFILL_MAX_PARALLELISM = 16;
+export const MEMORY_HISTORY_BACKFILL_MAX_WINDOW = 64;
 const MEMORY_HISTORY_BACKFILL_OWNER_BATCH = 16;
 
 const activeJobStates = Object.freeze([
@@ -53,6 +55,25 @@ export type MemoryHistoryBackfillSeedResult = Readonly<{
   activeJobs: number;
   enqueuedJobs: number;
 }>;
+
+export function resolveMemoryHistoryBackfillWindow(
+  maxJobParallelPerUser: number
+): number {
+  if (!Number.isSafeInteger(maxJobParallelPerUser) || maxJobParallelPerUser < 1 ||
+    maxJobParallelPerUser > MEMORY_HISTORY_BACKFILL_MAX_PARALLELISM) {
+    throw new Error("memory_history_backfill_window_invalid");
+  }
+  // Keep a bounded backlog behind each per-user worker. History jobs have
+  // heterogeneous provider latency, so a window equal to worker parallelism
+  // drains to a few stragglers before the next reconciliation pass can seed
+  // work. The default four-job depth is retained as the queue depth per
+  // worker, while both configured worker parallelism and the backlog remain
+  // independently bounded.
+  return Math.min(
+    MEMORY_HISTORY_BACKFILL_MAX_WINDOW,
+    maxJobParallelPerUser * MEMORY_HISTORY_BACKFILL_WINDOW
+  );
+}
 
 let lastReconciledOwnerUserId: string | null = null;
 
@@ -185,8 +206,13 @@ async function reviveHistoryJob(
 export async function seedMemoryHistoryBackfill(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
-  options: Readonly<{ now?: Date }> = {}
+  options: Readonly<{ now?: Date; window?: number }> = {}
 ): Promise<MemoryHistoryBackfillSeedResult> {
+  const window = options.window ?? MEMORY_HISTORY_BACKFILL_WINDOW;
+  if (!Number.isSafeInteger(window) || window < 1 ||
+    window > MEMORY_HISTORY_BACKFILL_MAX_WINDOW) {
+    throw new Error("memory_history_backfill_window_invalid");
+  }
   if (!settings.useMemoryFacts || !settings.referenceChatHistory) {
     return Object.freeze({ activeJobs: 0, enqueuedJobs: 0 });
   }
@@ -198,7 +224,7 @@ export async function seedMemoryHistoryBackfill(
       userId: settings.userId
     }
   });
-  const capacity = Math.max(0, MEMORY_HISTORY_BACKFILL_WINDOW - activeJobs);
+  const capacity = Math.max(0, window - activeJobs);
   const candidates = await currentBackfillCandidates(tx, settings, capacity);
   const now = options.now ?? new Date();
   let enqueuedJobs = 0;
@@ -357,14 +383,19 @@ async function listBackfillOwners(
 }
 
 export async function reconcileMemoryHistoryBackfills(
-  client: PrismaClient = prisma
+  client: PrismaClient = prisma,
+  window = MEMORY_HISTORY_BACKFILL_WINDOW
 ): Promise<number> {
+  if (!Number.isSafeInteger(window) || window < 1 ||
+    window > MEMORY_HISTORY_BACKFILL_MAX_WINDOW) {
+    throw new Error("memory_history_backfill_window_invalid");
+  }
   const owners = await listBackfillOwners(client, MEMORY_HISTORY_BACKFILL_OWNER_BATCH);
   let enqueuedJobs = 0;
   for (const userId of owners) {
     try {
       const result = await withLockedMemoryTransaction(client, userId, (tx, settings) =>
-        seedMemoryHistoryBackfill(tx, settings));
+        seedMemoryHistoryBackfill(tx, settings, { window }));
       enqueuedJobs += result.enqueuedJobs;
     } catch {
       // A later coordinator pass retries owner-local reconciliation. Durable

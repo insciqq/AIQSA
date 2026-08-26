@@ -183,8 +183,11 @@ async function settleAbandonedBindings(
     if (target.embeddingState === "READY" && succeeded.acceptedOutputHash) {
       return { bindings, succeededHash: succeeded.acceptedOutputHash };
     }
-    await deps.repository.applyFailed(target, deps.now());
-    throw new MemoryCoordinatorError("memory_embedding_result_unavailable", false);
+    // The provider result is accounted but vectors are intentionally not kept
+    // in execution metadata. A crash or exhausted rollback-safe commit retry
+    // can therefore leave a succeeded binding with a still-pending target.
+    // Replaying this pure embedding computation under a new binding is safer
+    // than poisoning the entire index generation.
   }
   const uncertain = bindings.find((binding) =>
     binding.state === "RUNNING" || binding.state === "OUTCOME_UNKNOWN");
@@ -441,8 +444,12 @@ export function createMemoryItemEmbeddingHandler(
           )
         );
       } catch (error) {
-        await deps.repository.applyFailed(target, deps.now());
-        throw new MemoryCoordinatorError("memory_embedding_apply_rejected", false);
+        if (error instanceof MemoryCoordinatorError) throw error;
+        // Provider output has already been settled and accounted. An
+        // infrastructure failure in the authoritative DB commit must leave
+        // the target replayable; it is not evidence that the content or the
+        // index generation is invalid.
+        throw new MemoryCoordinatorError("memory_embedding_apply_retryable", true);
       }
       if (applied === "STALE") {
         await deps.repository.applyFailed(target, deps.now());

@@ -7,7 +7,7 @@ import {
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v7" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v8" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -125,6 +125,7 @@ const entityMentionSchema = z.strictObject({
 
 const memoryActionIntentWireSchema = z.strictObject({
   action: z.enum(MEMORY_ACTION_INTENT_ACTIONS),
+  aggregationRequested: z.boolean(),
   applyResponsePreferences: z.boolean(),
   category: categoryText,
   categoryHint: categoryText,
@@ -165,7 +166,7 @@ const memoryActionIntentSchema = memoryActionIntentWireSchema.superRefine((value
   const dynamicRetrievalRequested = value.memoryUseful || value.pastChatsUseful ||
     value.applyResponsePreferences || value.profileRequested;
   if ((value.action === "LIST" || value.action === "SEARCH") && (
-    dynamicRetrievalRequested || value.queryText !== null
+    dynamicRetrievalRequested || value.aggregationRequested || value.queryText !== null
   )) {
     context.addIssue({
       code: "custom",
@@ -199,6 +200,16 @@ const memoryActionIntentSchema = memoryActionIntentWireSchema.superRefine((value
       value.retrievalMode === "HISTORY_OVERVIEW") &&
       (!value.pastChatsUseful || value.memoryUseful)) {
     context.addIssue({ code: "custom", message: "chat modes require past chats" });
+  }
+  if (value.aggregationRequested && (
+    value.action !== "NONE" || !value.pastChatsUseful || value.profileRequested ||
+    (value.retrievalMode !== "PAST_CHAT_SEARCH" &&
+      value.retrievalMode !== "HISTORY_OVERVIEW")
+  )) {
+    context.addIssue({
+      code: "custom",
+      message: "aggregation requires a past-chat NONE answer retrieval"
+    });
   }
   if (value.retrievalMode === "PAST_CHAT_SEARCH" &&
     value.temporalIntent === "HISTORICAL") {
@@ -252,6 +263,10 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       description: "Use NONE for ordinary answers, including a broad personal-profile inventory. LIST is only explicit Saved Memories management, never an answer about what is known about the user.",
       enum: [...MEMORY_ACTION_INTENT_ACTIONS],
       type: "string"
+    },
+    aggregationRequested: {
+      description: "True only when the answer requires collecting, counting, comparing, ordering, or otherwise combining evidence from multiple separate prior chats or events.",
+      type: "boolean"
     },
     applyResponsePreferences: { type: "boolean" },
     category: {
@@ -340,6 +355,7 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
   },
   required: [
     "action",
+    "aggregationRequested",
     "applyResponsePreferences",
     "category",
     "categoryHint",
@@ -513,6 +529,11 @@ function normalizeSafePlannerHints(value: MemoryActionIntentWire): MemoryActionI
   const hintsAllowed = retrievalRequested && value.queryText !== null;
   return {
     ...value,
+    aggregationRequested: hintsAllowed && value.pastChatsUseful &&
+      (value.retrievalMode === "PAST_CHAT_SEARCH" ||
+        value.retrievalMode === "HISTORY_OVERVIEW")
+      ? value.aggregationRequested
+      : false,
     entityMentions: hintsAllowed ? value.entityMentions : [],
     includePatterns: hintsAllowed && value.memoryUseful && !value.profileRequested &&
       value.retrievalMode === "TARGETED_CURRENT" && value.temporalIntent === "CURRENT"

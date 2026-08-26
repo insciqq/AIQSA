@@ -5,6 +5,9 @@ import {
   MEMORY_CONTEXT_TARGET_TOKENS,
   MEMORY_DECAY_POLICY_VERSION,
   MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
+  MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES,
   MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
@@ -59,17 +62,22 @@ import {
 } from "./localRepository";
 import {
   createPrismaMemoryRunUtilityService,
+  type MemoryRunAggregationResult,
   type MemoryRunQueryEmbeddingResult,
   type MemoryRunRerankResult,
   type MemoryRunUtilityService
 } from "./runUtilities";
+import {
+  applyMemoryAggregationPlan,
+  type MemoryAggregationGuide
+} from "./aggregation";
 import {
   createPrismaMemoryVectorRepository,
   type MemoryVectorRepository
 } from "./vector";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v8";
+  "memory-run-retrieval-admission-v11";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -125,6 +133,7 @@ export type MemoryRunControlCache = {
   actionAttemptId?: string;
   actionResolved?: boolean;
   actionResult?: MemoryActionFeedback | null;
+  aggregationConsumedAttemptId?: string;
   admissionDeadlineAtMs?: number;
   control?: MemoryControlResult;
   controlAttemptId?: string;
@@ -132,7 +141,7 @@ export type MemoryRunControlCache = {
   controlReuseScopeHash?: string;
   readOnlyControlReuseAttemptId?: string;
   readOnlyControlReuseProof?: MemoryReadOnlyControlReuseProof;
-  rerankConsumed?: boolean;
+  rerankConsumedAttemptId?: string;
   settingsDriftFailedSafeAttemptId?: string;
   settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
 };
@@ -227,8 +236,7 @@ function readOnlyControlRetryProof(
     cache.controlReuseScopeHash !== reuseScopeHash ||
     cache.actionResolved !== true ||
     cache.actionAttemptId !== cache.controlAttemptId ||
-    (cache.actionResult ?? null) !== null ||
-    cache.rerankConsumed === true
+    (cache.actionResult ?? null) !== null
   ) return null;
   return createMemoryReadOnlyControlReuseProof({
     inputHash: cache.controlInputHash,
@@ -438,6 +446,7 @@ function attemptItems(
       exactSafeText: packed.exactSafeText,
       featureSnapshot: {
         ...candidate.featureSnapshot,
+        aggregationRequested: plan.aggregationRequested,
         finalScore: candidate.finalScore,
         projectionKind: packed.projectionKind,
         rrfScore: candidate.rrfScore,
@@ -462,8 +471,43 @@ function attemptItems(
   });
 }
 
+function memoryAggregationEvidence(
+  pack: MemoryContextPack,
+  core: readonly MemoryCoreCandidate[],
+  dynamic: readonly MemoryRankedCandidate[],
+  expanded: readonly MemoryExpandedCandidate[]
+): Parameters<MemoryRunUtilityService["aggregate"]>[0]["evidence"] {
+  const candidates = candidateMap(core, dynamic);
+  const expansions = new Map(expanded.map((entry) => [
+    `${entry.itemType}:${entry.itemId}`,
+    entry
+  ]));
+  return pack.items.map((item, index) => {
+    const key = `${item.itemType}:${item.itemId}`;
+    const candidate = candidates.get(key);
+    const expansion = expansions.get(key);
+    if (!candidate || !expansion) {
+      throw new Error("memory_aggregation_evidence_identity_invalid");
+    }
+    const occurredFrom = expansion.occurredFrom ?? candidate.metadata.occurredAt ??
+      candidate.metadata.validFrom ?? candidate.metadata.observedAt ??
+      candidate.metadata.systemFrom;
+    const occurredTo = expansion.occurredTo ?? candidate.metadata.validTo;
+    return {
+      handle: `i${index}`,
+      occurredFrom: occurredFrom?.toISOString() ?? null,
+      occurredTo: occurredTo?.toISOString() ?? null,
+      sourceKind: item.itemType === "RECALL_CHUNK"
+        ? "HISTORY" as const
+        : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const,
+      text: item.exactSafeText
+    };
+  });
+}
+
 function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknown>> {
   return {
+    aggregationRequested: plan.aggregationRequested,
     applyResponsePreferences: plan.applyResponsePreferences,
     entityMentions: plan.entityMentions,
     filterAsOf: plan.filters.asOf?.toISOString() ?? null,
@@ -485,7 +529,8 @@ function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknow
 
 function utilityEvidence(
   role: UtilityEvidence["role"],
-  result: MemoryControlResult | MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
+  result: MemoryControlResult | MemoryRunAggregationResult |
+    MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
 ): UtilityEvidence {
   if (!result) return { reason: null, role, state: "SKIPPED" };
   return result.status === "READY"
@@ -537,8 +582,35 @@ function relevanceEvidence(
   };
 }
 
+function aggregationPlanEvidence(
+  result: MemoryRunAggregationResult | null,
+  guide: MemoryAggregationGuide | null
+): Readonly<Record<string, unknown>> {
+  if (!result) return { aggregationState: "SKIPPED" };
+  if (result.status !== "READY") {
+    return {
+      aggregationReason: result.reason,
+      aggregationState: "UNAVAILABLE"
+    };
+  }
+  const groupCounts: Record<string, number> = {};
+  for (const group of result.plan.groups) {
+    groupCounts[group.role] = (groupCounts[group.role] ?? 0) + 1;
+  }
+  return {
+    aggregationBoundaryCount: guide?.boundaryCount ?? 0,
+    aggregationGroupCounts: groupCounts,
+    aggregationGuideFormat: guide?.format ?? null,
+    aggregationMemberCount: guide?.memberCount ?? 0,
+    aggregationOperation: result.plan.operation,
+    aggregationResolution: result.plan.resolution,
+    aggregationState: "READY"
+  };
+}
+
 function utilityUsedExternal(
-  result: MemoryControlResult | MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
+  result: MemoryControlResult | MemoryRunAggregationResult |
+    MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
 ): boolean {
   return Boolean(result && "bindingId" in result && result.bindingId);
 }
@@ -566,7 +638,8 @@ function admissionDeadlineAttempt(
   cache: MemoryRunControlCache,
   attemptId: string,
   utilities: readonly Readonly<{
-    result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null;
+    result: MemoryRunAggregationResult | MemoryRunQueryEmbeddingResult |
+      MemoryRunRerankResult | null;
     role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   }>[] = []
 ): MemoryPreparingAttemptResult {
@@ -603,7 +676,8 @@ function settingsDriftFailedSafeBudget(
   cache: MemoryRunControlCache,
   attemptId: string,
   utilities: readonly Readonly<{
-    result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null;
+    result: MemoryRunAggregationResult | MemoryRunQueryEmbeddingResult |
+      MemoryRunRerankResult | null;
     role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   }>[] = []
 ): Readonly<Record<string, unknown>> {
@@ -637,10 +711,61 @@ export type MemoryRelevanceCandidate = Readonly<{
   text: string;
 }>;
 
+function aggregationSessionOrder(
+  candidates: readonly MemoryRelevanceCandidate[]
+): readonly MemoryRelevanceCandidate[] {
+  type SourceGroup = {
+    candidates: MemoryRelevanceCandidate[];
+    firstIndex: number;
+    sourceChatId: string;
+  };
+  const facts = candidates.filter(({ sourceKind }) => sourceKind !== "HISTORY");
+  const groups = new Map<string, SourceGroup>();
+  candidates.forEach((candidate, index) => {
+    if (candidate.sourceKind !== "HISTORY") return;
+    const sourceChatId = candidate.candidate.metadata.sourceChatId ??
+      `missing-source:${candidate.candidate.itemId}`;
+    const group = groups.get(sourceChatId);
+    if (group) group.candidates.push(candidate);
+    else groups.set(sourceChatId, { candidates: [candidate], firstIndex: index, sourceChatId });
+  });
+  const selectedGroups = [...groups.values()].sort((left, right) => {
+    const score = (group: SourceGroup): number => {
+      const top = group.candidates.slice(0, 3)
+        .map(({ candidate }) => candidate.finalScore);
+      const best = Math.max(...top);
+      const average = top.reduce((sum, value) => sum + value, 0) / top.length;
+      return best + average * 0.1;
+    };
+    return score(right) - score(left) ||
+      left.firstIndex - right.firstIndex ||
+      left.sourceChatId.localeCompare(right.sourceChatId);
+  }).slice(0, MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS);
+
+  // Session relevance is estimated from its strongest chunk plus a small
+  // breadth signal. Give every selected session one semantic-review slot,
+  // then fill the remaining bounded pool by the original global rank. This
+  // avoids both a hard per-session chunk quota and domination by one verbose
+  // conversation before the strict relevance utility sees other sessions.
+  const selectedSources = new Set(selectedGroups.map(({ sourceChatId }) => sourceChatId));
+  const firstCandidates = selectedGroups.map(({ candidates: entries }) => entries[0]!);
+  const firstKeys = new Set(firstCandidates.map(({ candidate }) =>
+    `${candidate.itemType}:${candidate.itemId}`));
+  const repeats = candidates.filter((candidate) => {
+    if (candidate.sourceKind !== "HISTORY") return false;
+    const sourceChatId = candidate.candidate.metadata.sourceChatId ??
+      `missing-source:${candidate.candidate.itemId}`;
+    const key = `${candidate.candidate.itemType}:${candidate.candidate.itemId}`;
+    return selectedSources.has(sourceChatId) && !firstKeys.has(key);
+  });
+  return [...facts, ...firstCandidates, ...repeats];
+}
+
 export function memoryRelevanceCandidates(
   ranked: readonly MemoryRankedCandidate[],
   expanded: readonly MemoryExpandedCandidate[],
   options: Readonly<{
+    aggregationRequested?: boolean;
     recencyRequested?: boolean;
     temporalIntent?: MemoryRetrievalPlan["temporalIntent"];
   }> = {}
@@ -657,9 +782,10 @@ export function memoryRelevanceCandidates(
     // produce the exact same safe projection. For non-temporal plans, one copy
     // is sufficient evidence; removing later byte-for-byte copies before the
     // bounded reranker preserves room for distinct facts and history without
-    // fuzzy or semantic deduplication. Recency plans keep every occurrence
-    // because its timestamp is part of the evidence.
-    if (candidate.itemType === "RECALL_CHUNK" && !options.recencyRequested) {
+    // fuzzy or semantic deduplication. Recency and aggregation plans retain
+    // every source occurrence because its time/source identity is evidence.
+    if (candidate.itemType === "RECALL_CHUNK" &&
+      !options.recencyRequested && !options.aggregationRequested) {
       if (seenHistoryProjections.has(projection.safeText)) return [];
       seenHistoryProjections.add(projection.safeText);
     }
@@ -686,16 +812,24 @@ export function memoryRelevanceCandidates(
       text: projection.safeText
     }];
   });
+  const ordered = options.aggregationRequested
+    ? aggregationSessionOrder(projected)
+    : projected;
   let factCount = 0;
   let historyCount = 0;
-  const bounded = projected.filter((entry) => {
+  const historyLimit = options.aggregationRequested
+    ? MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES
+    : MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES;
+  const bounded = ordered.filter((entry) => {
     if (entry.candidate.itemType === "FACT_VERSION") {
       factCount += 1;
       return factCount <= 20;
     }
     historyCount += 1;
-    return historyCount <= 10;
-  }).slice(0, 30);
+    return historyCount <= historyLimit;
+  }).slice(0, options.aggregationRequested
+    ? MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES
+    : 30);
   return bounded.map((entry, index) => ({ ...entry, handle: `c${index}` }));
 }
 
@@ -729,7 +863,7 @@ export function applyMemoryRelevance(
       right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId));
   }
   const byHandle = new Map(candidates.map((entry) => [entry.handle, entry]));
-  return result.decisions.flatMap((decision) => {
+  const accepted = result.decisions.flatMap((decision) => {
     const entry = byHandle.get(decision.handle);
     if (!entry || !decision.applicable || !decision.current ||
       decision.relevanceScore <= MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR) return [];
@@ -759,6 +893,7 @@ export function applyMemoryRelevance(
     }
     return right.finalScore - left.finalScore || left.itemId.localeCompare(right.itemId);
   });
+  return accepted;
 }
 
 function degradationFor(
@@ -1012,6 +1147,7 @@ export function createMemoryRunRetrievalService(
       let plan: MemoryRetrievalPlan;
       try {
         plan = planMemoryRetrieval({
+          aggregationRequested: control.intent.aggregationRequested,
           allowedEntityRefs: controlRefs,
           applyResponsePreferences: preferencesRequested,
           currentUserText: control.intent.queryText,
@@ -1144,14 +1280,23 @@ export function createMemoryRunRetrievalService(
         `${candidate.itemType}:${candidate.itemId}`));
       const dynamicFused = fused.filter((candidate) =>
         !coreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
+      let dynamicCandidates: readonly MemoryRankedCandidate[] = dynamicFused;
       let expanded: readonly MemoryExpandedCandidate[] = [];
       let expansionFailed = false;
       if (dynamicFused.length > 0) {
         try {
-          expanded = await abortableRead(
-            repository.expand(local.snapshot, plan, dynamicFused),
-            signal
-          );
+          dynamicCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
+            ? await abortableRead(
+                repository.projectAggregationSessions(local.snapshot, plan, dynamicFused),
+                signal
+              )
+            : dynamicFused;
+          if (dynamicCandidates.length > 0) {
+            expanded = await abortableRead(
+              repository.expand(local.snapshot, plan, dynamicCandidates),
+              signal
+            );
+          }
         } catch {
           if (deadline.expired()) {
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
@@ -1169,24 +1314,30 @@ export function createMemoryRunRetrievalService(
         ? local.core.filter(isEligibleMemoryResponsePreferenceCore)
         : [];
       const relevanceInput = memoryRelevanceCandidates(
-        [...eligibleCore.map(({ candidate }) => candidate), ...dynamicFused],
+        [...eligibleCore.map(({ candidate }) => candidate), ...dynamicCandidates],
         [...eligibleCore.map(({ expansion }) => expansion), ...expanded],
         {
+          aggregationRequested: plan.aggregationRequested,
           recencyRequested: plan.recencyRequested,
           temporalIntent: plan.temporalIntent
         }
       );
       let relevance: MemoryRunRerankResult | null = null;
       if (relevanceInput.length > 0) {
-        if (controlCache.rerankConsumed) {
+        if (controlCache.rerankConsumedAttemptId === input.attemptId) {
           relevance = {
             reason: "memory_relevance_retry_budget_exhausted",
             status: "UNAVAILABLE"
           };
         } else if (options.utilities) {
-          controlCache.rerankConsumed = true;
+          // The outer preparing state machine owns at most two distinct
+          // retrieval attempts. A retry gets a new durable attempt owner, so
+          // its read-only rerank may execute once again without replaying an
+          // action or colliding with the first attempt's governed bindings.
+          controlCache.rerankConsumedAttemptId = input.attemptId;
           relevance = await options.utilities.rerank({
               attemptId: input.attemptId,
+              aggregationRequested: plan.aggregationRequested,
               candidates: relevanceInput.map(({ candidate: _candidate, ...candidate }) => candidate),
               profileRequested: plan.profileRequested,
               query: control.intent.queryText,
@@ -1308,7 +1459,7 @@ export function createMemoryRunRetrievalService(
             vectorState: local.vectorState
           });
       }
-      const degradationCode = degradationFor(
+      let degradationCode = degradationFor(
         local,
         queryEmbedding,
         relevance,
@@ -1322,15 +1473,79 @@ export function createMemoryRunRetrievalService(
         plan,
         ranked: selectedDynamic
       });
+      let aggregation: MemoryRunAggregationResult | null = null;
+      let aggregationGuide: MemoryAggregationGuide | null = null;
+      let preparedText = pack.text;
+      let preparedTokens = pack.approxTokens;
+      if (plan.aggregationRequested && pack.text && pack.items.length > 0) {
+        if (controlCache.aggregationConsumedAttemptId === input.attemptId) {
+          aggregation = {
+            reason: "memory_aggregation_retry_budget_exhausted",
+            status: "UNAVAILABLE"
+          };
+        } else if (options.utilities) {
+          controlCache.aggregationConsumedAttemptId = input.attemptId;
+          aggregation = await options.utilities.aggregate({
+            attemptId: input.attemptId,
+            evidence: memoryAggregationEvidence(
+              pack,
+              selectedCore,
+              selectedDynamic,
+              rejoined
+            ),
+            query: currentUserText,
+            signal,
+            userId: input.userId
+          }).catch(() => ({
+            reason: "memory_aggregation_unavailable",
+            status: "UNAVAILABLE" as const
+          }));
+          if (deadline.expired()) {
+            return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+              { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
+              { result: relevance, role: "MEMORY_RERANK" },
+              { result: aggregation, role: "MEMORY_RERANK" }
+            ]);
+          }
+        } else {
+          aggregation = {
+            reason: "memory_aggregation_unavailable",
+            status: "UNAVAILABLE"
+          };
+        }
+        if (aggregation.status === "READY") {
+          try {
+            aggregationGuide = applyMemoryAggregationPlan(pack, aggregation.plan);
+            preparedText = aggregationGuide.text;
+            preparedTokens = aggregationGuide.tokens;
+          } catch {
+            aggregation = {
+              bindingId: aggregation.bindingId,
+              reason: "memory_aggregation_context_invalid",
+              status: "UNAVAILABLE"
+            };
+          }
+        }
+        if (aggregation.status !== "READY") {
+          degradationCode ??= "memory_aggregation_unavailable";
+        } else if (aggregation.plan.resolution !== "RESOLVED") {
+          degradationCode ??= "memory_aggregation_unresolved";
+        }
+      }
       const utilityExecutions = [
         utilityEvidence("MEMORY_CONTROL", control),
         utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
-        utilityEvidence("MEMORY_RERANK", relevance)
+        utilityEvidence("MEMORY_RERANK", relevance),
+        ...(plan.aggregationRequested
+          ? [utilityEvidence("MEMORY_RERANK", aggregation)]
+          : [])
       ];
       const externalUtilityUsed = currentControlExternal ||
-        utilityUsedExternal(queryEmbedding) || utilityUsedExternal(relevance);
+        utilityUsedExternal(queryEmbedding) || utilityUsedExternal(relevance) ||
+        utilityUsedExternal(aggregation);
       const commonEvidence = {
         ...actionEvidence,
+        ...aggregationPlanEvidence(aggregation, aggregationGuide),
         candidateCount: pack.candidateCount,
         coreCount: selectedCore.length,
         laneCount: local.laneResults.length,
@@ -1350,7 +1565,7 @@ export function createMemoryRunRetrievalService(
         vectorEvidence: local.vectorEvidence,
         vectorState: local.vectorState
       } as const;
-      if (!pack.text || pack.items.length === 0) {
+      if (!preparedText || pack.items.length === 0) {
         return emptyAttempt(input.expected,
           querySecret ? "FAILED_SAFE" : "EMPTY",
           querySecret ? "query_secret_blocked" : degradationCode ?? "no_relevant_memory",
@@ -1364,7 +1579,7 @@ export function createMemoryRunRetrievalService(
           ...commonEvidence,
           hardCapTokens: pack.hardCapTokens,
           itemCount: items.length,
-          packedTokens: pack.approxTokens,
+          packedTokens: preparedTokens,
           packerVersion: pack.packerVersion,
           pipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
           schemaVersion: 2,
@@ -1374,7 +1589,7 @@ export function createMemoryRunRetrievalService(
         items,
         ...(degradationCode ? { degradationCode } : {}),
         outcome: degradationCode ? "DEGRADED" : "USED",
-        preparedContext: { approxTokens: pack.approxTokens, text: pack.text },
+        preparedContext: { approxTokens: preparedTokens, text: preparedText },
         ...(querySecret ? { queryHash: memorySha256(plan.normalizedQuery) } : {}),
         querySnapshot: querySecret || !plan.queryPresent ? null : plan.normalizedQuery
       };

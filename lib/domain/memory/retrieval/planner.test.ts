@@ -95,6 +95,27 @@ describe("language-agnostic Memory retrieval planning", () => {
     })).toThrow("memory_retrieval_filter_invalid");
   });
 
+  it("carries aggregation only on an explicit past-chat plan", () => {
+    expect(planMemoryRetrieval({ currentUserText: "count prior events", now }))
+      .toMatchObject({ aggregationRequested: false });
+    expect(planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "all deployment rehearsals completed before launch day",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    })).toMatchObject({
+      aggregationRequested: true,
+      mode: "PAST_CHAT_SEARCH"
+    });
+    expect(() => planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "current preference",
+      now
+    })).toThrow("memory_retrieval_plan_invalid");
+  });
+
   it("admits synthesis patterns only through an explicit targeted-current decision", () => {
     expect(planMemoryRetrieval({ currentUserText: "current workflow", now }))
       .toMatchObject({ includePatterns: false, mode: "TARGETED_CURRENT" });

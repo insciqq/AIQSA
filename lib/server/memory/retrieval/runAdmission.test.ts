@@ -31,6 +31,7 @@ import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } 
 
 const now = new Date("2026-08-13T10:00:00.000Z");
 const currentControlContract = Object.freeze({
+  aggregationRequested: false,
   retrievalMode: "TARGETED_CURRENT" as const,
   temporalAsOf: null,
   temporalFrom: null,
@@ -221,6 +222,9 @@ function repository(options: Readonly<{
   decayEnabled?: boolean;
   lexicalFailures?: readonly MemoryRetrievalLane[];
   lexicalState?: "DEGRADED" | "DISABLED" | "FAILED" | "READY";
+  projectAggregationSessions?: (
+    ranked: readonly MemoryRankedCandidate[]
+  ) => readonly MemoryRankedCandidate[];
   vectorState?: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
 }> = {}) {
   const activeIndexGenerationId = options.activeIndexGenerationId === undefined
@@ -248,6 +252,11 @@ function repository(options: Readonly<{
     `${entry.candidate.itemType}:${entry.candidate.itemId}`,
     entry.expansion
   ]));
+  const projectAggregationSessions = vi.fn(async (
+    _snapshot: unknown,
+    _plan: MemoryRetrievalPlan,
+    ranked: readonly MemoryRankedCandidate[]
+  ) => options.projectAggregationSessions?.(ranked) ?? ranked);
   const value = {
     expand: vi.fn(async (
       _snapshot: unknown,
@@ -278,10 +287,11 @@ function repository(options: Readonly<{
             supportingItemId: null
           };
     })),
+    projectAggregationSessions,
     retrieve,
     snapshot: vi.fn(async () => state)
   } as unknown as PrismaLocalMemoryRetrievalRepository;
-  return { retrieve, value };
+  return { projectAggregationSessions, retrieve, value };
 }
 
 function runInput(text: string, activeIndexGenerationId: string | null = "generation-1") {
@@ -300,6 +310,23 @@ const profile: MemoryVectorProfile = {
 
 function utilities(relevantHandles: readonly string[] | null): MemoryRunUtilityService {
   return {
+    aggregate: vi.fn(async (
+      input: Parameters<MemoryRunUtilityService["aggregate"]>[0]
+    ) => ({
+      bindingId: "binding-aggregation",
+      plan: {
+        groups: input.evidence.map((item) => ({
+          itemHandles: [item.handle],
+          occurrence: item.text,
+          quantity: 1,
+          quantityEvidence: item.text,
+          role: "MEMBER" as const
+        })),
+        operation: "COUNT" as const,
+        resolution: "RESOLVED" as const
+      },
+      status: "READY" as const
+    })),
     embedQuery: vi.fn(async () => ({ bindingId: "binding-embedding", profile,
       status: "READY" as const,
       vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0) })),
@@ -326,6 +353,7 @@ function retrievalOptions(
         bindingId: "binding-control",
         intent: {
           action: "NONE" as const,
+          aggregationRequested: false,
           applyResponsePreferences: true,
           category: null,
           categoryHint: null,
@@ -371,6 +399,7 @@ function intentOptions(overrides: Record<string, unknown>) {
         bindingId: "binding-control",
         intent: {
           action: "NONE" as const,
+          aggregationRequested: false,
           applyResponsePreferences: false,
           category: null,
           categoryHint: null,
@@ -717,6 +746,131 @@ describe("Personal Memory v1 run admission", () => {
     );
     expect(candidates.some(({ candidate }) => candidate.itemId === "fact-20")).toBe(false);
     expect(candidates.some(({ candidate }) => candidate.itemId === "history-10")).toBe(false);
+  });
+
+  it("retains sixty distinct history sources for an aggregation rerank", () => {
+    const history = Array.from({ length: 61 }, (_, index) => ({
+      ...rankedHistory(`aggregate-${index}`, "NORMAL"),
+      metadata: {
+        ...rankedHistory(`aggregate-${index}`, "NORMAL").metadata,
+        dedupeKey: `aggregate-source-${index}`,
+        sourceChatId: `aggregate-chat-${index}`
+      }
+    }));
+    const candidates = memoryRelevanceCandidates(
+      history,
+      history.map((candidate, index) => ({
+        ...expandedHistory(candidate.itemId),
+        safeText: "User: completed another matching rehearsal.",
+        sourceChatId: `aggregate-chat-${index}`
+      })),
+      { aggregationRequested: true }
+    );
+
+    expect(candidates).toHaveLength(60);
+    expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual(
+      Array.from({ length: 60 }, (_, index) => `aggregate-${index}`)
+    );
+  });
+
+  it("never restores history that the strict relevance model rejected", () => {
+    const history = ["direct", "coverage", "outdated"].map((id, index) => ({
+      ...rankedHistory(id, "NORMAL"),
+      metadata: {
+        ...rankedHistory(id, "NORMAL").metadata,
+        dedupeKey: `aggregate-${id}`,
+        sourceChatId: `aggregate-chat-${index}`
+      }
+    }));
+    const fact = core("unrelated-fact");
+    const candidates = memoryRelevanceCandidates(
+      [...history, fact.candidate],
+      [
+        ...history.map((candidate, index) => ({
+          ...expandedHistory(candidate.itemId),
+          sourceChatId: `aggregate-chat-${index}`
+        })),
+        fact.expansion
+      ],
+      { aggregationRequested: true }
+    );
+    const decisions = candidates.map((candidate) => {
+      switch (candidate.candidate.itemId) {
+        case "direct": return {
+          applicable: true,
+          current: true,
+          handle: candidate.handle,
+          reasonCode: "DIRECT_RELEVANCE" as const,
+          relevanceScore: 0.95
+        };
+        case "outdated": return {
+          applicable: false,
+          current: false,
+          handle: candidate.handle,
+          reasonCode: "OUTDATED" as const,
+          relevanceScore: 0.1
+        };
+        default: return {
+          applicable: false,
+          current: false,
+          handle: candidate.handle,
+          reasonCode: "NOT_RELEVANT" as const,
+          relevanceScore: 0.1
+        };
+      }
+    });
+    const result = {
+      bindingId: "binding-aggregation-coverage",
+      decisions,
+      status: "READY" as const
+    };
+    const plan = planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "List all matching events before the boundary event",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+
+    expect(applyMemoryRelevance(candidates, result, plan)).toMatchObject([
+      { itemId: "direct" }
+    ]);
+    expect(applyMemoryRelevance(candidates, result)).toMatchObject([
+      { itemId: "direct" }
+    ]);
+  });
+
+  it("reviews one candidate per strong source before globally ranked repeats", () => {
+    const history = Array.from({ length: 40 }, (_, index) => {
+      const sourceIndex = index % 4;
+      return {
+        ...rankedHistory(`source-${sourceIndex}-chunk-${Math.floor(index / 4)}`, "NORMAL"),
+        finalScore: 1 - index / 100,
+        metadata: {
+          ...rankedHistory(`source-${sourceIndex}-chunk-${Math.floor(index / 4)}`, "NORMAL")
+            .metadata,
+          dedupeKey: `source-${sourceIndex}-projection-${index}`,
+          sourceChatId: `source-chat-${sourceIndex}`
+        }
+      };
+    });
+    const candidates = memoryRelevanceCandidates(
+      history,
+      history.map((candidate) => ({
+        ...expandedHistory(candidate.itemId),
+        sourceChatId: candidate.metadata.sourceChatId
+      })),
+      { aggregationRequested: true }
+    );
+
+    expect(candidates).toHaveLength(40);
+    expect(candidates.slice(0, 4).map(({ candidate }) =>
+      candidate.metadata.sourceChatId)).toEqual([
+      "source-chat-0", "source-chat-1", "source-chat-2", "source-chat-3"
+    ]);
+    expect(candidates.filter(({ candidate }) =>
+      candidate.metadata.sourceChatId === "source-chat-0")).toHaveLength(10);
   });
 
   it("deduplicates only byte-identical history projections before bounded reranking", () => {
@@ -1313,7 +1467,7 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("consumes the bounded reranker retry budget once for the whole answer", async () => {
+  it("consumes the bounded reranker budget once per preparing attempt", async () => {
     const local = repository({ candidates: [laneCandidate("a")] });
     const options = retrievalOptions(["c0"]);
     const controlCache: MemoryRunControlCache = {};
@@ -1328,13 +1482,15 @@ describe("Personal Memory v1 run admission", () => {
       controlCache
     });
     expect(first.outcome).toBe("USED");
-    expect(retry).toMatchObject({
-      budgetSnapshot: { reason: "memory_control_retry_not_reused" },
-      outcome: "FAILED_SAFE"
-    });
-    expect(options.utilities.rerank).toHaveBeenCalledOnce();
+    expect(retry).toMatchObject({ outcome: "USED" });
+    expect(options.control.decide).toHaveBeenCalledOnce();
+    expect(options.utilities.rerank).toHaveBeenCalledTimes(2);
     expect(retry.budgetSnapshot).toMatchObject({
-      utilityEgressMode: "LOCAL_ONLY"
+      readOnlyControlReuse: {
+        sourceAttemptId: "attempt-1",
+        sourceBindingId: "binding-control"
+      },
+      utilityEgressMode: "CONSENTED_EXTERNAL"
     });
   });
 
@@ -1371,6 +1527,121 @@ describe("Personal Memory v1 run admission", () => {
     }));
     expect(options.utilities.embedQuery).toHaveBeenCalledOnce();
     expect(options.utilities.rerank).toHaveBeenCalledOnce();
+  });
+
+  it("propagates an explicit aggregation plan and a server-computed count", async () => {
+    const local = repository({
+      candidates: [
+        laneCandidate("release-alpha"),
+        laneCandidate("release-beta"),
+        laneCandidate("release-gamma"),
+        laneCandidate("release-delta"),
+        laneCandidate("launch-day")
+      ]
+    });
+    const aggregationUtilities = utilities(["c0", "c1", "c2", "c3", "c4"]);
+    vi.mocked(aggregationUtilities.aggregate).mockImplementation(async (input) => {
+      const group = (occurrence: string, role: "BOUNDARY" | "MEMBER") => ({
+        itemHandles: [input.evidence.find(({ text }) =>
+          text.includes(occurrence))!.handle],
+        occurrence,
+        quantity: role === "MEMBER" ? 1 : 0,
+        quantityEvidence: role === "MEMBER" ? occurrence : null,
+        role
+      });
+      return {
+        bindingId: "binding-aggregation",
+        plan: {
+          groups: [
+            group("release-alpha", "MEMBER"),
+            group("release-beta", "MEMBER"),
+            group("release-gamma", "MEMBER"),
+            group("release-delta", "MEMBER"),
+            group("launch-day", "BOUNDARY")
+          ],
+          operation: "COUNT",
+          resolution: "RESOLVED"
+        },
+        status: "READY"
+      };
+    });
+    const options = {
+      ...intentOptions({
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "completed releases",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+      }),
+      utilities: aggregationUtilities
+    };
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("How many releases happened before launch day?"));
+
+    expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
+      aggregationRequested: true,
+      retrievalMode: "PAST_CHAT_SEARCH"
+    }));
+    expect(local.projectAggregationSessions).toHaveBeenCalledOnce();
+    expect(options.utilities.aggregate).toHaveBeenCalledWith(expect.objectContaining({
+      evidence: expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining("release-alpha") }),
+        expect.objectContaining({ text: expect.stringContaining("launch-day") })
+      ]),
+      query: "How many releases happened before launch day?"
+    }));
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        aggregationBoundaryCount: 1,
+        aggregationMemberCount: 4,
+        aggregationOperation: "COUNT",
+        aggregationResolution: "RESOLVED",
+        plan: { aggregationRequested: true, mode: "PAST_CHAT_SEARCH" }
+      },
+      outcome: "USED"
+    });
+    expect(result.preparedContext?.text).toContain("distinct_members=4; boundary_events=1");
+    expect(result.preparedContext?.text).toContain("Counted or enumerated members:");
+    expect(result.preparedContext?.text).toContain("Boundary events:");
+  });
+
+  it("keeps the relevant source pack but degrades when global aggregation is unavailable", async () => {
+    const local = repository({ candidates: [laneCandidate("release-alpha")] });
+    const aggregationUtilities = utilities(["c0"]);
+    vi.mocked(aggregationUtilities.aggregate).mockResolvedValue({
+      reason: "memory_run_utility_provider_failed",
+      status: "UNAVAILABLE"
+    });
+    const options = {
+      ...intentOptions({
+        aggregationRequested: true,
+        memoryUseful: false,
+        pastChatsUseful: true,
+        retrievalMode: "PAST_CHAT_SEARCH",
+        temporalIntent: "ANY"
+      }),
+      utilities: aggregationUtilities
+    };
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Which releases did I complete?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        aggregationReason: "memory_run_utility_provider_failed",
+        aggregationState: "UNAVAILABLE",
+        degradationCode: "memory_aggregation_unavailable"
+      },
+      degradationCode: "memory_aggregation_unavailable",
+      items: [{ exactItemId: "release-alpha" }],
+      outcome: "DEGRADED"
+    });
+    expect(result.preparedContext?.text).toContain("release-alpha");
+    expect(result.preparedContext?.text).toContain(
+      "Combine every relevant listed event"
+    );
+    expect(result.preparedContext?.text).not.toContain("distinct_members=");
   });
 
   it("fails safe instead of throwing when a control decision violates planner semantics", async () => {

@@ -265,6 +265,15 @@ describe("Prisma Memory execution", () => {
         versions: VERSIONS
       })).resolves.toMatchObject({ id: first.id, replayed: true, state: "PENDING" });
 
+      // Simulate a small backwards wall-clock adjustment between binding and
+      // start. Execution timestamps must remain monotonic relative to their
+      // durable predecessor even when the process clock does not.
+      const monotonicFloor = new Date(INITIAL_NOW.getTime() + 100);
+      await prisma.memoryExecutionBinding.update({
+        data: { createdAt: monotonicFloor },
+        where: { id: first.id }
+      });
+
       const starters = await Promise.allSettled([
         service.admission.start(fixture.userId, first.id),
         service.admission.start(fixture.userId, first.id)
@@ -428,9 +437,9 @@ describe("Prisma Memory execution", () => {
         totalTokens: fakeResult.usage.totalTokens
       });
       expect(firstBinding).toMatchObject({
-        completedAt: INITIAL_NOW,
+        completedAt: monotonicFloor,
         logicalRole: "MEMORY_DOCUMENT_EMBED",
-        startedAt: INITIAL_NOW,
+        startedAt: monotonicFloor,
         userId: fixture.userId
       });
       expect(events.find(({ memoryExecutionBindingId }) =>

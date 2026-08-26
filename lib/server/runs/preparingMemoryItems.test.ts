@@ -279,24 +279,30 @@ describe("preparing Memory item finalization", () => {
       }
     } as unknown as Prisma.TransactionClient;
 
-    await expect(resolvePreparingMemoryItem(
-      tx,
-      { ...authority, indexGenerationId: "generation-1" },
-      "What do you know about me?",
-      {
+    for (const featureSnapshot of [undefined, {
+      aggregationRequested: false,
+      retrievalMode: "PAST_CHAT_SEARCH"
+    }]) {
+      await expect(resolvePreparingMemoryItem(
+        tx,
+        { ...authority, indexGenerationId: "generation-1" },
+        "What do you know about me?",
+        {
+          exactItemId: "chunk-1",
+          exactSafeText: "[2026-08-13] User:\nWe chose cedar deployment.\n\nAssistant:\nNoted.",
+          ...(featureSnapshot ? { featureSnapshot } : {}),
+          finalScore: 0.9,
+          itemType: "RECALL_CHUNK",
+          projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+          recallChunkId: "chunk-1",
+          selectionReason: "history_recall_exact"
+        }
+      )).resolves.toMatchObject({
         exactItemId: "chunk-1",
-        exactSafeText: "[2026-08-13] User:\nWe chose cedar deployment.\n\nAssistant:\nNoted.",
-        finalScore: 0.9,
-        itemType: "RECALL_CHUNK",
-        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
         recallChunkId: "chunk-1",
-        selectionReason: "history_recall_exact"
-      }
-    )).resolves.toMatchObject({
-      exactItemId: "chunk-1",
-      recallChunkId: "chunk-1",
-      sourceMessageIdsSnapshot: ["source-message"]
-    });
+        sourceMessageIdsSnapshot: ["source-message"]
+      });
+    }
     const historySql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
     expect(historySql).toContain('chunk."chunkingVersion" =');
     expect(historySql).toContain('chunk."sourceProjectionVersion" =');
@@ -308,7 +314,7 @@ describe("preparing Memory item finalization", () => {
     expect(historySql).toContain('negative_feedback."recallChunkId" =');
   });
 
-  it("rejoins an overview digest through all of its exact source messages", async () => {
+  it("rejoins an authorized overview or aggregation digest through exact sources", async () => {
     const digestText = "Summary: Cedar was selected for the deployment.";
     const digestMessageIds = Array.from(
       { length: 4_000 },
@@ -320,8 +326,8 @@ describe("preparing Memory item finalization", () => {
       contentHash: "anchor-content-hash",
       digestContentHash: "digest-content-hash",
       digestId: "digest-1",
-      digestPipelineVersion: "memory-chat-digest-v2",
-      digestSafetyPolicyVersion: "memory-chat-digest-policy-v2",
+      digestPipelineVersion: "memory-chat-digest-v3",
+      digestSafetyPolicyVersion: "memory-chat-digest-policy-v3",
       digestText,
       languageCode: "en",
       redactionState: "NOT_NEEDED",
@@ -341,14 +347,61 @@ describe("preparing Memory item finalization", () => {
       }
     } as unknown as Prisma.TransactionClient;
 
-    const resolved = await resolvePreparingMemoryItem(
-      tx,
+    for (const featureSnapshot of [{
+      aggregationRequested: false,
+      retrievalMode: "HISTORY_OVERVIEW"
+    }, {
+      aggregationRequested: true,
+      retrievalMode: "PAST_CHAT_SEARCH"
+    }]) {
+      const resolved = await resolvePreparingMemoryItem(
+        tx,
+        { ...authority, indexGenerationId: "generation-1" },
+        "Which milestones appeared across chats?",
+        {
+          exactItemId: "chunk-1",
+          exactSafeText: `[2026-08-13] ${digestText}`,
+          featureSnapshot,
+          finalScore: 0.9,
+          itemType: "RECALL_CHUNK",
+          projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+          recallChunkId: "chunk-1",
+          selectionReason: "history_recall_recent",
+          supportingItemId: "digest-1"
+        }
+      );
+      expect(resolved).toMatchObject({
+        exactItemId: "chunk-1",
+        featureSnapshot: { supportingItemId: "digest-1" },
+        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+        sourceSnapshot: { digestId: "digest-1", schemaVersion: 3 },
+        versionSnapshot: {
+          digestPipelineVersion: "memory-chat-digest-v3",
+          schemaVersion: 3
+        }
+      });
+      expect(resolved.sourceMessageIdsSnapshot).toEqual(digestMessageIds);
+    }
+    const digestSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
+    expect(digestSql).toContain('FROM "ChatMemoryDigestChunk" AS digest_anchor');
+    expect(digestSql).toContain('FROM "ChatMemoryDigestMessage" AS digest_source_message');
+    expect(digestSql).toContain('LEFT JOIN "ChatMemoryCheckpointMessage"');
+    expect(digestSql).toContain('source_chunk."chunkingVersion" <>');
+  });
+
+  it("rejects a digest in targeted past-chat retrieval", async () => {
+    const $queryRaw = vi.fn();
+    await expect(resolvePreparingMemoryItem(
+      { $queryRaw } as unknown as Prisma.TransactionClient,
       { ...authority, indexGenerationId: "generation-1" },
-      "Give me a history overview.",
+      "Where did we discuss Cedar?",
       {
         exactItemId: "chunk-1",
-        exactSafeText: `[2026-08-13] ${digestText}`,
-        featureSnapshot: { retrievalMode: "HISTORY_OVERVIEW" },
+        exactSafeText: "Summary: Cedar was discussed.",
+        featureSnapshot: {
+          aggregationRequested: false,
+          retrievalMode: "PAST_CHAT_SEARCH"
+        },
         finalScore: 0.9,
         itemType: "RECALL_CHUNK",
         projectionKind: "CHAT_DIGEST_SAFE_TEXT",
@@ -356,23 +409,8 @@ describe("preparing Memory item finalization", () => {
         selectionReason: "history_recall_recent",
         supportingItemId: "digest-1"
       }
-    );
-    expect(resolved).toMatchObject({
-      exactItemId: "chunk-1",
-      featureSnapshot: { supportingItemId: "digest-1" },
-      projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-      sourceSnapshot: { digestId: "digest-1", schemaVersion: 3 },
-      versionSnapshot: {
-        digestPipelineVersion: "memory-chat-digest-v2",
-        schemaVersion: 3
-      }
-    });
-    expect(resolved.sourceMessageIdsSnapshot).toEqual(digestMessageIds);
-    const digestSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
-    expect(digestSql).toContain('FROM "ChatMemoryDigestChunk" AS digest_anchor');
-    expect(digestSql).toContain('FROM "ChatMemoryDigestMessage" AS digest_source_message');
-    expect(digestSql).toContain('LEFT JOIN "ChatMemoryCheckpointMessage"');
-    expect(digestSql).toContain('source_chunk."chunkingVersion" <>');
+    )).rejects.toMatchObject({ code: "memory_attempt_item_invalid", retryable: false });
+    expect($queryRaw).not.toHaveBeenCalled();
   });
 
   it("still requires an exact active generation for dynamic fact items", async () => {
