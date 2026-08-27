@@ -717,7 +717,8 @@ describe("admin provider service", () => {
     const createDiscoveryClient = vi.fn(() => ({
       listEmbeddingModels,
       listModelEndpoints,
-      listModels
+      listModels,
+      listRerankModels: vi.fn(async () => [])
     }));
     const providers = createAdminProviderService({
       credentialTester: credentialTester(),

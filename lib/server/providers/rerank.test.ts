@@ -248,6 +248,115 @@ describe("OpenRouter reranker adapter", () => {
     }
   });
 
+  it("rejects an empty results array", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({ results: [] }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_response_invalid" });
+  });
+
+  it.each([400, 401, 402, 404, 413])(
+    "surfaces upstream HTTP %d as a typed provider error",
+    async (status) => {
+      const fetchFn = vi.fn<typeof fetch>(async () =>
+        new Response("failure", { status }));
+      await expect(adapter(fetchFn).rerank({
+        documents: [{ handle: "c0", text: "first" }],
+        query: "query"
+      })).rejects.toMatchObject({
+        code: "rerank_provider_http_error",
+        httpStatus: status,
+        retryAfterMs: null
+      });
+      expect(fetchFn).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("surfaces 429 with its retry-after hint without retrying", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("limited", {
+      headers: { "retry-after": "7" },
+      status: 429
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({
+      code: "rerank_provider_http_error",
+      httpStatus: 429,
+      retryAfterMs: 7_000
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the response header request ID when the body has none", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      model: "qwen/qwen3-reranker-8b",
+      results: [{ index: 0, relevance_score: 0.5 }]
+    }), {
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "header-request-id"
+      },
+      status: 200
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({
+      provider: null,
+      requestId: "header-request-id"
+    });
+  });
+
+  it("keeps the query and documents out of every thrown failure", async () => {
+    const privateQuery = "private-query-marker";
+    const privateDocument = "private-document-marker";
+    const failures: unknown[] = [];
+    for (const fetchFn of [
+      vi.fn<typeof fetch>(async () => new Response("denied", { status: 401 })),
+      vi.fn<typeof fetch>(async () => new Response("not json", { status: 200 })),
+      vi.fn<typeof fetch>(async () => { throw new Error("socket closed"); })
+    ]) {
+      failures.push(await adapter(fetchFn).rerank({
+        documents: [{ handle: "c0", text: privateDocument }],
+        instruction: privateQuery,
+        query: privateQuery
+      }).then(
+        () => {
+          throw new Error("expected_failure");
+        },
+        (error: unknown) => error
+      ));
+    }
+
+    for (const failure of failures) {
+      const serialized = JSON.stringify({
+        message: (failure as Error).message,
+        object: failure,
+        stack: (failure as Error).stack ?? ""
+      });
+      expect(serialized).not.toContain(privateQuery);
+      expect(serialized).not.toContain(privateDocument);
+    }
+  });
+
+  it("uses only the rerank endpoint and never falls back to chat completions", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response("unavailable", { status: 500 }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({
+      code: "rerank_provider_http_error",
+      httpStatus: 500
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(fetchFn.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://openrouter.ai/api/v1/rerank"
+    ]);
+  });
+
   it("rejects malformed usage without fabricating accounting", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response({
       results: [{ index: 0, relevance_score: 0.5 }],

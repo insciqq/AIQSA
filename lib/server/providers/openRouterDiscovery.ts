@@ -62,6 +62,9 @@ export type OpenRouterDiscoveryClient = {
     options?: { signal?: AbortSignal }
   ): Promise<OpenRouterDiscoveredEndpoint[]>;
   listModels(options?: { signal?: AbortSignal }): Promise<OpenRouterDiscoveredModel[]>;
+  listRerankModels(
+    options?: { signal?: AbortSignal }
+  ): Promise<OpenRouterDiscoveredModel[]>;
 };
 
 export type OpenRouterDiscoveryErrorCode =
@@ -370,6 +373,16 @@ export function createOpenRouterDiscoveryClient(input: {
     },
     async listModels(options) {
       return normalizeModels(await get("models/user", options?.signal));
+    },
+    async listRerankModels(options) {
+      // The upstream filter narrows the public catalog to the rerank output
+      // modality; the local re-check keeps catalog rows availability evidence
+      // only, so a loose or drifting upstream filter can never classify a
+      // non-rerank model as a reranker candidate.
+      const models = normalizeModels(
+        await get("models?output_modalities=rerank", options?.signal)
+      );
+      return models.filter((model) => model.outputModalities.includes("rerank"));
     }
   };
 }
