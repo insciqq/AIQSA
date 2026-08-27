@@ -27,8 +27,46 @@ describe("language-agnostic Memory retrieval planning", () => {
       lexicalQuery: "Какие ответы 我喜欢",
       normalizedExactQuery: "какие ответы — 我喜欢؟",
       normalizedQuery: "Какие ответы — 我喜欢؟",
+      originalSanitizedQuery: "Какие ответы — 我喜欢؟",
       queryPresent: true
     });
+    expect(plan.semanticQueryVariants).toEqual([
+      { kind: "ORIGINAL", text: "Какие ответы — 我喜欢؟" }
+    ]);
+    expect(plan.temporalQueryVariants).toEqual([
+      { kind: "UNRESTRICTED", text: "Какие ответы — 我喜欢؟" }
+    ]);
+  });
+
+  it("keeps the original first and adds a deduplicated planner rewrite", () => {
+    const plan = planMemoryRetrieval({
+      currentUserText: "What did I call the Helsinki project?",
+      entityMentions: [
+        { occurrenceIndex: 0, resolvedRef: null, text: "Aurora" }
+      ],
+      now,
+      semanticRewrite: "the Aurora codename for the Helsinki project"
+    });
+
+    expect(plan.originalSanitizedQuery).toBe("What did I call the Helsinki project?");
+    expect(plan.semanticQueryVariants).toEqual([
+      { kind: "ORIGINAL", text: "What did I call the Helsinki project?" },
+      { kind: "PLANNER_REWRITE", text: "the Aurora codename for the Helsinki project" },
+      { kind: "ENTITY_EXPANSION", text: "Aurora" }
+    ]);
+    expect(plan.lexicalQuery).toContain("What");
+    expect(plan.lexicalQuery).toContain("Aurora");
+  });
+
+  it("deduplicates an equivalent rewrite without replacing the original", () => {
+    const plan = planMemoryRetrieval({
+      currentUserText: "  My preferred editor  ",
+      now,
+      semanticRewrite: "my preferred editor"
+    });
+    expect(plan.semanticQueryVariants).toEqual([
+      { kind: "ORIGINAL", text: "My preferred editor" }
+    ]);
   });
 
   it("does not require lexical tokens to admit raw Unicode", () => {
@@ -175,6 +213,17 @@ describe("language-agnostic Memory retrieval planning", () => {
 
   it("treats only an empty normalized turn as absent", () => {
     expect(planMemoryRetrieval({ currentUserText: " \n\t ", now }).queryPresent).toBe(false);
+  });
+
+  it("admits the deterministic ANY fallback for a mixed fact/history plan", () => {
+    expect(planMemoryRetrieval({
+      currentUserText: "What did we decide?",
+      now,
+      temporalIntent: "ANY"
+    })).toMatchObject({
+      mode: "TARGETED_CURRENT",
+      temporalIntent: "ANY"
+    });
   });
 
   it("accepts only explicit absolute typed filters", () => {

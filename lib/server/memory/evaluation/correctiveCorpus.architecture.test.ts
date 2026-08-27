@@ -450,7 +450,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v15",
+      retrieval: "memory-personal-retrieval-v16",
       synthesis: [
         "memory-synthesis-v2",
         "memory-synthesis-policy-v2",

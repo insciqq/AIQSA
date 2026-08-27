@@ -24,6 +24,21 @@ export type MemorySecretParseResult = Readonly<{
   findings: readonly MemorySecretFinding[];
 }>;
 
+export type MemorySecretSpan = Readonly<{
+  end: number;
+  finding: MemorySecretFinding;
+  start: number;
+}>;
+
+export type MemorySecretRedactionResult = Readonly<{
+  containsSecret: boolean;
+  findings: readonly MemorySecretFinding[];
+  redactedText: string;
+  spans: readonly MemorySecretSpan[];
+}>;
+
+export const MEMORY_SECRET_REDACTION_PLACEHOLDER = "[REDACTED_SECRET]" as const;
+
 const ASCII_DIGITS = "0123456789";
 const ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const TOKEN_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}+/_=-.`;
@@ -91,6 +106,25 @@ function tokenRuns(value: string): string[] {
     if (allowed && start < 0) start = index;
     if ((!allowed || index === value.length) && start >= 0) {
       runs.push(value.slice(start, index));
+      start = -1;
+    }
+  }
+  return runs;
+}
+
+function tokenRunSpans(value: string): readonly Readonly<{
+  end: number;
+  start: number;
+  text: string;
+}>[] {
+  const runs: Array<Readonly<{ end: number; start: number; text: string }>> = [];
+  let start = -1;
+  for (let index = 0; index <= value.length; index += 1) {
+    const character = value[index];
+    const allowed = character !== undefined && TOKEN_CHARACTERS.includes(character);
+    if (allowed && start < 0) start = index;
+    if ((!allowed || index === value.length) && start >= 0) {
+      runs.push({ end: index, start, text: value.slice(start, index) });
       start = -1;
     }
   }
@@ -341,6 +375,242 @@ function findingList(value: string): MemorySecretFinding[] {
     if (check()) findings.push(finding);
   }
   return findings;
+}
+
+function privateKeySpans(value: string): readonly MemorySecretSpan[] {
+  const spans: MemorySecretSpan[] = [];
+  let offset = 0;
+  while (offset < value.length) {
+    const start = value.indexOf(PEM_BEGIN, offset);
+    if (start < 0) break;
+    const labelStart = start + PEM_BEGIN.length;
+    const labelEnd = value.indexOf("-----", labelStart);
+    if (labelEnd <= labelStart) {
+      offset = labelStart;
+      continue;
+    }
+    const label = value.slice(labelStart, labelEnd);
+    if (label !== PEM_PRIVATE_KEY_SUFFIX &&
+      !label.endsWith(` ${PEM_PRIVATE_KEY_SUFFIX}`)) {
+      offset = labelEnd + 5;
+      continue;
+    }
+    const beginEnd = labelEnd + 5;
+    const closing = `-----END ${label}-----`;
+    const closingStart = value.indexOf(closing, beginEnd);
+    // Without a trustworthy END marker there is no safe local boundary for
+    // the key body, including malformed single-line PEM. Redact the remainder
+    // rather than letting possible private material cross provider egress.
+    const end = closingStart >= 0 ? closingStart + closing.length : value.length;
+    spans.push({ end, finding: "PEM_PRIVATE_KEY", start });
+    offset = Math.max(end, beginEnd);
+  }
+  return spans;
+}
+
+function whitespaceTokenSpans(value: string): readonly Readonly<{
+  end: number;
+  start: number;
+  text: string;
+}>[] {
+  const spans: Array<Readonly<{ end: number; start: number; text: string }>> = [];
+  let start = -1;
+  for (let index = 0; index <= value.length; index += 1) {
+    const character = value[index];
+    const whitespace = character === undefined || character === " " ||
+      character === "\t" || character === "\n" || character === "\r";
+    if (!whitespace && start < 0) start = index;
+    if (whitespace && start >= 0) {
+      spans.push({ end: index, start, text: value.slice(start, index) });
+      start = -1;
+    }
+  }
+  return spans;
+}
+
+function credentialUrlSpans(value: string): readonly MemorySecretSpan[] {
+  const delimiters = "\t\n\r,.;:!?()[]{}<>\"'";
+  return whitespaceTokenSpans(value).flatMap((raw) => {
+    let start = raw.start;
+    let end = raw.end;
+    while (start < end && delimiters.includes(value[start] ?? "")) start += 1;
+    while (end > start && delimiters.includes(value[end - 1] ?? "")) end -= 1;
+    const token = value.slice(start, end);
+    if (!token.includes("://")) return [];
+    try {
+      const parsed = new URL(token);
+      return parsed.username.length > 0 && parsed.password.length > 0
+        ? [{ end, finding: "CREDENTIAL_URL" as const, start }]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function jwtSpans(value: string): readonly MemorySecretSpan[] {
+  return tokenRunSpans(value).flatMap((run) => {
+    const segments = run.text.split(".");
+    if (segments.length !== 3 ||
+      !base64UrlSegment(segments[0] ?? "", 8) ||
+      !base64UrlSegment(segments[1] ?? "", 8) ||
+      !base64UrlSegment(segments[2] ?? "", 8) ||
+      !looksLikeJsonObject(segments[0] ?? "") ||
+      !looksLikeJsonObject(segments[1] ?? "")) return [];
+    return [{ end: run.end, finding: "JSON_WEB_TOKEN" as const, start: run.start }];
+  });
+}
+
+function knownTokenSpans(value: string): readonly MemorySecretSpan[] {
+  return tokenRunSpans(value).flatMap((run) => {
+    const token = run.text;
+    const aws = token.startsWith("AKIA") && token.length === 20 &&
+      everyCharacter(token.slice(4), `${ASCII_DIGITS}ABCDEFGHIJKLMNOPQRSTUVWXYZ`);
+    const openAi = token.startsWith("sk-") && token.length >= 20 &&
+      everyCharacter(token.slice(3), TOKEN_CHARACTERS);
+    const github = token.startsWith("gh") && token.length >= 24 &&
+      "pousr".includes(token[2] ?? "") && token[3] === "_" &&
+      everyCharacter(token.slice(4), TOKEN_CHARACTERS);
+    return aws || openAi || github
+      ? [{ end: run.end, finding: "KNOWN_TOKEN" as const, start: run.start }]
+      : [];
+  });
+}
+
+function recoveryCodeSpans(value: string): readonly MemorySecretSpan[] {
+  const spans: MemorySecretSpan[] = [];
+  for (let start = 0; start < value.length; start += 1) {
+    if (isAsciiAlphanumeric(value[start - 1])) continue;
+    let cursor = start;
+    let valid = true;
+    for (let ordinal = 0; ordinal < 4; ordinal += 1) {
+      if (!isRecoveryGroup(value.slice(cursor, cursor + 4))) {
+        valid = false;
+        break;
+      }
+      cursor += 4;
+      if (ordinal < 3) {
+        if (value[cursor] !== "-") {
+          valid = false;
+          break;
+        }
+        cursor += 1;
+      }
+    }
+    if (valid && !isAsciiAlphanumeric(value[cursor])) {
+      spans.push({ end: cursor, finding: "RECOVERY_CODE", start });
+      start = cursor - 1;
+    }
+  }
+  return spans;
+}
+
+function paymentCardSpans(value: string): readonly MemorySecretSpan[] {
+  const spans: MemorySecretSpan[] = [];
+  for (let start = 0; start < value.length; start += 1) {
+    if (!isAsciiDigit(value[start]) || isAsciiDigit(value[start - 1])) continue;
+    let end = start;
+    let separators = 0;
+    while (end < value.length) {
+      const character = value[end];
+      if (isAsciiDigit(character)) {
+        end += 1;
+        continue;
+      }
+      if ((character === " " || character === "-") && separators < 8 &&
+        isAsciiDigit(value[end + 1])) {
+        separators += 1;
+        end += 1;
+        continue;
+      }
+      break;
+    }
+    const candidate = value.slice(start, end);
+    const digits = digitsOnly(candidate);
+    if (digits.length >= 13 && digits.length <= 19 && luhnValid(candidate)) {
+      spans.push({ end, finding: "PAYMENT_CARD", start });
+      start = end - 1;
+    }
+  }
+  return spans;
+}
+
+function highEntropySpans(value: string): readonly MemorySecretSpan[] {
+  return tokenRunSpans(value).flatMap((run) => highEntropy(run.text)
+    ? [{ end: run.end, finding: "HIGH_ENTROPY_TOKEN" as const, start: run.start }]
+    : []);
+}
+
+function secretSpans(value: string): readonly MemorySecretSpan[] {
+  const spans = [
+    ...privateKeySpans(value),
+    ...credentialUrlSpans(value),
+    ...jwtSpans(value),
+    ...knownTokenSpans(value),
+    ...recoveryCodeSpans(value),
+    ...paymentCardSpans(value),
+    ...highEntropySpans(value)
+  ];
+  const seen = new Set<string>();
+  return Object.freeze(spans.filter((span) => {
+    if (span.start < 0 || span.end <= span.start || span.end > value.length) return false;
+    const key = `${span.finding}:${span.start}:${span.end}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((left, right) => left.start - right.start || right.end - left.end ||
+    left.finding.localeCompare(right.finding)));
+}
+
+/**
+ * Redacts only locally recognized secret-shaped spans while retaining the
+ * surrounding query or statement verbatim. The richer cross-path Safety Lite
+ * policy owns detector actions; this primitive deliberately mirrors the
+ * current conservative parser so callers can create a provider-safe boundary
+ * without weakening existing write-path rejection.
+ */
+export function redactMemorySecrets(value: string): MemorySecretRedactionResult {
+  if (typeof value !== "string" || value.length === 0) {
+    return {
+      containsSecret: false,
+      findings: Object.freeze([]),
+      redactedText: typeof value === "string" ? value : "",
+      spans: Object.freeze([])
+    };
+  }
+  const spans = secretSpans(value);
+  const findings = MEMORY_SECRET_FINDINGS.filter((finding) =>
+    spans.some((span) => span.finding === finding));
+  if (spans.length === 0) {
+    return {
+      containsSecret: false,
+      findings: Object.freeze([]),
+      redactedText: value,
+      spans
+    };
+  }
+  const merged: Array<{ end: number; start: number }> = [];
+  for (const span of spans) {
+    const previous = merged[merged.length - 1];
+    if (previous && span.start < previous.end) {
+      previous.end = Math.max(previous.end, span.end);
+    } else {
+      merged.push({ end: span.end, start: span.start });
+    }
+  }
+  let cursor = 0;
+  let redactedText = "";
+  for (const span of merged) {
+    redactedText += value.slice(cursor, span.start) + MEMORY_SECRET_REDACTION_PLACEHOLDER;
+    cursor = span.end;
+  }
+  redactedText += value.slice(cursor);
+  return {
+    containsSecret: true,
+    findings: Object.freeze(findings),
+    redactedText,
+    spans
+  };
 }
 
 export function parseMemorySecret(value: string): MemorySecretParseResult {
