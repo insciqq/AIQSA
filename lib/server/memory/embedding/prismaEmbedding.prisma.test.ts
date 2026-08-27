@@ -32,10 +32,10 @@ import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
-  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import {
   memoryStatementClassificationDecision,
@@ -47,10 +47,13 @@ import { registerMemoryDeletionContributors } from "../purge/leaves";
 import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
+  MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
   MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
   memoryItemEmbeddingJobFingerprint
 } from "./contract";
 import { createPrismaMemoryItemEmbeddingHandler } from "./handler";
+import { createPrismaMemoryEmbeddingHandler } from "./compositeHandler";
+import { createPrismaMemoryEmbeddingBatchRepository } from "./batchRepository";
 import { createPrismaMemoryItemEmbeddingRepository } from "./repository";
 import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
 
@@ -339,7 +342,9 @@ async function saveLegacyExplicit(
   return saved;
 }
 
-async function createFixture() {
+async function createFixture(
+  options: Readonly<{ retrievalPipelineVersion?: string }> = {}
+) {
   const suffix = randomUUID();
   const userId = `memory-explicit-embedding-user-${suffix}`;
   const connectionId = `memory-explicit-embedding-connection-${suffix}`;
@@ -505,7 +510,8 @@ async function createFixture() {
       languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
       normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
       readyAt: INITIAL_NOW,
-      retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+      retrievalPipelineVersion: options.retrievalPipelineVersion ??
+        MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
       state: "READY",
       targetMemoryRevision: 0,
       userId,
@@ -565,6 +571,16 @@ function vectorResult() {
     usage: { inputTokens: 7, totalTokens: 7 },
     vectors: [vector]
   };
+}
+
+async function embeddingJobForEntry(userId: string, searchEntryId: string) {
+  const child = await prisma.memoryEmbeddingBatchItem.findFirstOrThrow({
+    select: { memoryJobId: true },
+    where: { searchEntryId, userId }
+  });
+  return prisma.memoryJob.findUniqueOrThrow({
+    where: { id: child.memoryJobId }
+  });
 }
 
 describe("Prisma explicit Memory vector enrichment", () => {
@@ -651,6 +667,407 @@ describe("Prisma explicit Memory vector enrichment", () => {
     }
   });
 
+  it("keeps legacy projection jobs on a pre-profile active generation", async () => {
+    const fixture = await createFixture({
+      retrievalPipelineVersion: "memory-personal-retrieval-v7-vector"
+    });
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    try {
+      const saved = await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer a legacy-compatible vector until shadow cutover.",
+        "embedding-pre-profile-generation"
+      );
+      const entry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: saved.memory.currentVersionId! }
+      });
+      await expect(prisma.memoryJob.findFirstOrThrow({
+        where: {
+          idempotencyFingerprint: {
+            startsWith: `memory-item-embed-v1:${entry.id}:`
+          },
+          pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+          userId: fixture.userId
+        }
+      })).resolves.toMatchObject({ kind: "EMBED_ITEMS", state: "QUEUED" });
+      await expect(prisma.memoryEmbeddingBatchItem.count({
+        where: { userId: fixture.userId }
+      })).resolves.toBe(0);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("embeds thirty-two eligible items in two durable provider requests", async () => {
+    const fixture = await createFixture();
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      const vector = Array.from(
+        { length: DIMENSION },
+        (_, index) => index === 0 ? 1 : 0
+      );
+      return {
+        model: embeddingConfiguration.upstreamModelId,
+        requestId: `embedding-batch-request-${randomUUID()}`,
+        usage: {
+          inputTokens: request.texts.length * 7,
+          totalTokens: request.texts.length * 7
+        },
+        vectors: request.texts.map(() => vector)
+      };
+    });
+    const authority = {
+      egressConsentMode: "PER_USER" as const,
+      now: () => new Date(INITIAL_NOW)
+    };
+    const runtime = {
+      resolve: vi.fn(async () => ({ adapter: { embed } }))
+    } as never;
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob(createPrismaMemoryEmbeddingHandler(
+      authority,
+      prisma,
+      { batch: { runtime }, legacy: { runtime } }
+    ));
+    const coordinator = new MemoryCoordinator({
+      now: () => new Date(INITIAL_NOW),
+      policy: {
+        heartbeatMs: 1_000,
+        jobRetryDelaysMs: [1],
+        leaseMs: 5_000,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: createPrismaMemoryCoordinatorRepository(prisma)
+    });
+    try {
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: INITIAL_NOW,
+          acceptedUtilityEgressFingerprint: fixture.policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      for (let index = 0; index < 32; index += 1) {
+        await saveExplicit(
+          explicit,
+          fixture.userId,
+          `I prefer benchmark-safe memory detail number ${index}.`,
+          `embedding-batch-${index}`
+        );
+      }
+
+      const parents = await prisma.memoryJob.findMany({
+        orderBy: { createdAt: "asc" },
+        where: {
+          kind: "EMBED_ITEMS",
+          pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+          userId: fixture.userId
+        }
+      });
+      const children = await prisma.memoryEmbeddingBatchItem.groupBy({
+        _count: { _all: true },
+        by: ["memoryJobId"],
+        orderBy: { memoryJobId: "asc" },
+        where: { userId: fixture.userId }
+      });
+      expect(parents).toHaveLength(2);
+      expect(children.map(({ _count }) => _count._all)).toEqual([16, 16]);
+
+      await coordinator.reconcileNow();
+
+      expect(embed).toHaveBeenCalledTimes(2);
+      expect(embed.mock.calls.map(([request]) => request.texts.length))
+        .toEqual([16, 16]);
+      await expect(prisma.memorySearchEntry.count({
+        where: { embeddingState: "READY", userId: fixture.userId }
+      })).resolves.toBe(32);
+      await expect(prisma.memoryExecutionBinding.count({
+        where: {
+          logicalRole: "MEMORY_DOCUMENT_EMBED",
+          memoryJobId: { in: parents.map(({ id }) => id) },
+          state: "SUCCEEDED",
+          userId: fixture.userId
+        }
+      })).resolves.toBe(2);
+      const settled = await prisma.memoryJob.findMany({
+        select: { operationalCounters: true, state: true },
+        where: { id: { in: parents.map(({ id }) => id) }
+        }
+      });
+      expect(settled).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          operationalCounters: expect.objectContaining({
+            embeddingBatchItems: 16,
+            embeddingProviderRequests: 1,
+            embeddingSettledItems: 16
+          }),
+          state: "SUCCEEDED"
+        })
+      ]));
+    } finally {
+      coordinator.stop();
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
+  it("keeps a queued batch live after its seed child is forgotten", async () => {
+    const fixture = await createFixture();
+    const { explicit, lifecycle } = memoryServices(fixture.classifierAuthority);
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      const vector = Array.from(
+        { length: DIMENSION },
+        (_, index) => index === 0 ? 1 : 0
+      );
+      return {
+        model: embeddingConfiguration.upstreamModelId,
+        requestId: `embedding-sparse-request-${randomUUID()}`,
+        usage: {
+          inputTokens: request.texts.length * 7,
+          totalTokens: request.texts.length * 7
+        },
+        vectors: request.texts.map(() => vector)
+      };
+    });
+    const authority = {
+      egressConsentMode: "PER_USER" as const,
+      now: () => new Date(INITIAL_NOW)
+    };
+    const runtime = {
+      resolve: vi.fn(async () => ({ adapter: { embed } }))
+    } as never;
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob(createPrismaMemoryEmbeddingHandler(
+      authority,
+      prisma,
+      { batch: { runtime }, legacy: { runtime } }
+    ));
+    const coordinator = new MemoryCoordinator({
+      now: () => new Date(INITIAL_NOW),
+      policy: {
+        heartbeatMs: 1_000,
+        jobRetryDelaysMs: [1],
+        leaseMs: 5_000,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: createPrismaMemoryCoordinatorRepository(prisma)
+    });
+    try {
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: INITIAL_NOW,
+          acceptedUtilityEgressFingerprint: fixture.policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      const seed = await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer the sparse batch seed detail.",
+        "embedding-sparse-seed"
+      );
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer the sparse batch retained detail alpha.",
+        "embedding-sparse-alpha"
+      );
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer the sparse batch retained detail beta.",
+        "embedding-sparse-beta"
+      );
+      const seedEntry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: seed.memory.currentVersionId! }
+      });
+      const parent = await embeddingJobForEntry(fixture.userId, seedEntry.id);
+      const authorization = await explicit.mintAuthorization(fixture.userId, {
+        action: "FORGET",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: seed.memory.currentVersionId!,
+        requestNonce: "embedding-sparse-forget",
+        targetFactId: seed.memory.id
+      });
+      await lifecycle.forget(fixture.userId, seed.memory.id, {
+        expectedVersionId: seed.memory.currentVersionId!,
+        mutationAuthorizationId: authorization.mutationAuthorizationId
+      });
+      await expect(prisma.memoryEmbeddingBatchItem.findMany({
+        orderBy: { ordinal: "asc" },
+        select: { ordinal: true },
+        where: { memoryJobId: parent.id }
+      })).resolves.toEqual([{ ordinal: 1 }, { ordinal: 2 }]);
+
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer the sparse batch appended detail gamma.",
+        "embedding-sparse-gamma"
+      );
+      await expect(prisma.memoryEmbeddingBatchItem.findMany({
+        orderBy: { ordinal: "asc" },
+        select: { ordinal: true },
+        where: { memoryJobId: parent.id }
+      })).resolves.toEqual([{ ordinal: 1 }, { ordinal: 2 }, { ordinal: 3 }]);
+      await expect(prisma.memoryJob.count({
+        where: {
+          kind: "EMBED_ITEMS",
+          pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+          userId: fixture.userId
+        }
+      })).resolves.toBe(1);
+
+      await coordinator.reconcileNow();
+
+      expect(embed).toHaveBeenCalledOnce();
+      expect(embed.mock.calls[0]?.[0].texts).toHaveLength(3);
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: parent.id }
+      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+      await expect(prisma.memoryEmbeddingBatchItem.count({
+        where: { memoryJobId: parent.id, state: "SETTLED" }
+      })).resolves.toBe(3);
+      await expect(prisma.memorySearchEntry.count({
+        where: { embeddingState: "READY", userId: fixture.userId }
+      })).resolves.toBe(3);
+      await expect(prisma.memorySearchEntry.count({
+        where: { id: seedEntry.id }
+      })).resolves.toBe(0);
+    } finally {
+      coordinator.stop();
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
+  it("resumes partial child settlement without repeating the provider request", async () => {
+    const fixture = await createFixture();
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    let clock = new Date(INITIAL_NOW);
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      const vector = Array.from(
+        { length: DIMENSION },
+        (_, index) => index === 0 ? 1 : 0
+      );
+      return {
+        model: embeddingConfiguration.upstreamModelId,
+        requestId: `embedding-partial-request-${randomUUID()}`,
+        usage: {
+          inputTokens: request.texts.length * 7,
+          totalTokens: request.texts.length * 7
+        },
+        vectors: request.texts.map(() => vector)
+      };
+    });
+    const authority = {
+      egressConsentMode: "PER_USER" as const,
+      now: () => new Date(clock)
+    };
+    const baseRepository = createPrismaMemoryEmbeddingBatchRepository(prisma);
+    let applyOrdinal = 0;
+    let failOnce = true;
+    const repository = {
+      ...baseRepository,
+      async applyResult(...args: Parameters<typeof baseRepository.applyResult>) {
+        applyOrdinal += 1;
+        if (failOnce && applyOrdinal === 2) {
+          failOnce = false;
+          throw new Error("test_partial_apply_crash");
+        }
+        return baseRepository.applyResult(...args);
+      }
+    };
+    const runtime = {
+      resolve: vi.fn(async () => ({ adapter: { embed } }))
+    } as never;
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob(createPrismaMemoryEmbeddingHandler(
+      authority,
+      prisma,
+      { batch: { repository, runtime }, legacy: { runtime } }
+    ));
+    const coordinator = new MemoryCoordinator({
+      now: () => new Date(clock),
+      policy: {
+        heartbeatMs: 1_000,
+        jobRetryDelaysMs: [1],
+        leaseMs: 5_000,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: createPrismaMemoryCoordinatorRepository(prisma)
+    });
+    try {
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: clock,
+          acceptedUtilityEgressFingerprint: fixture.policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer the partial recovery example alpha.",
+        "embedding-partial-alpha"
+      );
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer the partial recovery example beta.",
+        "embedding-partial-beta"
+      );
+      const parent = await prisma.memoryJob.findFirstOrThrow({
+        where: {
+          kind: "EMBED_ITEMS",
+          pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+          userId: fixture.userId
+        }
+      });
+
+      await coordinator.reconcileNow();
+
+      expect(embed).toHaveBeenCalledOnce();
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: parent.id }
+      })).resolves.toMatchObject({ state: "RETRYABLE_FAILED" });
+      const interrupted = await prisma.memoryEmbeddingBatchItem.findMany({
+        orderBy: { ordinal: "asc" },
+        select: { state: true },
+        where: { memoryJobId: parent.id }
+      });
+      expect(interrupted.map(({ state }) => state)).toEqual([
+        "SETTLED",
+        "RESULT_READY"
+      ]);
+
+      clock = new Date(clock.getTime() + 10);
+      await coordinator.reconcileNow();
+
+      expect(embed).toHaveBeenCalledOnce();
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: parent.id }
+      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+      await expect(prisma.memoryEmbeddingBatchItem.count({
+        where: { memoryJobId: parent.id, state: "SETTLED" }
+      })).resolves.toBe(2);
+      await expect(prisma.memorySearchEntry.count({
+        where: { embeddingState: "READY", userId: fixture.userId }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryExecutionBinding.count({
+        where: { memoryJobId: parent.id, state: "SUCCEEDED" }
+      })).resolves.toBe(1);
+    } finally {
+      coordinator.stop();
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
   it("keeps lexical recall available across consent, outage, rotation, and Forget races", async () => {
     const fixture = await createFixture();
     const { explicit, lifecycle, readRepository } = memoryServices(
@@ -679,13 +1096,15 @@ describe("Prisma explicit Memory vector enrichment", () => {
       now: () => new Date(clock)
     };
     const registry = new MemoryCoordinatorRegistry();
-    registry.registerJob(createPrismaMemoryItemEmbeddingHandler(
+    const runtime = {
+      resolve: vi.fn(async () => ({ adapter: { embed } }))
+    } as never;
+    registry.registerJob(createPrismaMemoryEmbeddingHandler(
       authority,
       prisma,
       {
-        runtime: {
-          resolve: vi.fn(async () => ({ adapter: { embed } }))
-        } as never
+        batch: { runtime },
+        legacy: { runtime }
       }
     ));
     const coordinator = new MemoryCoordinator({
@@ -711,12 +1130,10 @@ describe("Prisma explicit Memory vector enrichment", () => {
       const firstEntry = await prisma.memorySearchEntry.findFirstOrThrow({
         where: { factVersionId: first.memory.currentVersionId! }
       });
-      const firstJob = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          idempotencyFingerprint: { startsWith: "memory-item-embed-v1:" },
-          userId: fixture.userId
-        }
-      });
+      const firstJob = await embeddingJobForEntry(
+        fixture.userId,
+        firstEntry.id
+      );
       expect(firstEntry.embeddingState).toBe("PENDING");
       await expect(readRepository.search(fixture.userId, {
         query: "jasmine tea"
@@ -773,18 +1190,14 @@ describe("Prisma explicit Memory vector enrichment", () => {
       const outageEntry = await prisma.memorySearchEntry.findFirstOrThrow({
         where: { factVersionId: outage.memory.currentVersionId! }
       });
-      const outageJob = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `memory-item-embed-v1:${outageEntry.id}:`
-          },
-          userId: fixture.userId
-        }
-      });
+      const outageJob = await embeddingJobForEntry(
+        fixture.userId,
+        outageEntry.id
+      );
       await coordinator.reconcileNow();
       await expect(prisma.memorySearchEntry.findUniqueOrThrow({
         where: { id: outageEntry.id }
-      })).resolves.toMatchObject({ embeddingState: "FAILED" });
+      })).resolves.toMatchObject({ embeddingState: "PENDING" });
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: outageJob.id } }))
         .resolves.toMatchObject({ state: "RETRYABLE_FAILED" });
       await expect(readRepository.search(fixture.userId, { query: "aisle seats" }))
@@ -794,7 +1207,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
       const afterFailure = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId: fixture.userId }
       });
-      expect(afterFailure.memoryRevision).toBe(4);
+      expect(afterFailure.memoryRevision).toBe(3);
 
       const replacementCredentialVersionId =
         `memory-explicit-embedding-version-2-${randomUUID()}`;
@@ -853,7 +1266,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
         .toEqual([fixture.credentialVersionId, replacementCredentialVersionId]);
       expect(outageUsage.filter(({ memoryExecutionBindingId }) =>
         outageBindings.some(({ id }) => id === memoryExecutionBindingId))).toHaveLength(2);
-      expect(afterRetry.memoryRevision).toBe(5);
+      expect(afterRetry.memoryRevision).toBe(4);
       expect(await prisma.memoryIndexGeneration.count({
         where: { userId: fixture.userId }
       })).toBe(1);
@@ -869,14 +1282,10 @@ describe("Prisma explicit Memory vector enrichment", () => {
       const staleEntry = await prisma.memorySearchEntry.findFirstOrThrow({
         where: { factVersionId: stale.memory.currentVersionId! }
       });
-      const staleJob = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `memory-item-embed-v1:${staleEntry.id}:`
-          },
-          userId: fixture.userId
-        }
-      });
+      const staleJob = await embeddingJobForEntry(
+        fixture.userId,
+        staleEntry.id
+      );
       let announce!: () => void;
       const providerStarted = new Promise<void>((resolve) => {
         announce = resolve;

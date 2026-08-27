@@ -1,11 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { memoryCounterEffectFor } from "../../../../domain/memory/counters";
-import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint
-} from "../../embedding/contract";
-import { enqueueMemoryJob } from "../../persistence/jobs";
+import { enqueueMemoryEmbeddingBatchItem } from "../../embedding/enqueue";
 import { loadPersonalMemoryEvidenceSnapshots } from "../../persistence/eligibility";
 import {
   memorySha256,
@@ -361,10 +357,9 @@ async function ensureWinnerSearchEntry(
         select: { id: true }
       });
   if (embeddingState === "PENDING") {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(entry.id, triggerId),
-      kind: "EMBED_ITEMS",
-      pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+    await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+      entryId: entry.id,
+      triggerIdentity: triggerId
     });
   }
 }

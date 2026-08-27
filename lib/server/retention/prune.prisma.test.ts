@@ -133,25 +133,32 @@ async function createKnowledgePayloadFixture(
 }
 
 async function cleanupKnowledgePayloadFixture(input: Awaited<ReturnType<typeof createKnowledgePayloadFixture>>) {
-  await prisma.usageEvent.deleteMany({ where: { knowledgeBaseId: input.base.id } });
-  await prisma.knowledgeGenerationDocument.deleteMany({ where: { knowledgeBaseId: input.base.id } });
-  await prisma.knowledgeChunk.deleteMany({ where: { knowledgeBaseId: input.base.id } });
-  await prisma.knowledgeBase.update({
-    data: { activeIndexGenerationId: null },
-    where: { id: input.base.id }
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+    // Lock the fixture Base before removing coordinator-owned immutable
+    // projections so a disposable dev coordinator cannot race cleanup.
+    await tx.knowledgeBase.updateMany({
+      data: { activeIndexGenerationId: null },
+      where: { id: input.base.id }
+    });
+    await tx.knowledgeBaseSnapshotSource.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeBaseSnapshot.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.usageEvent.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeGenerationDocument.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeChunk.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeDocument.updateMany({
+      data: { currentVersionId: null },
+      where: { id: input.document.id }
+    });
+    await tx.knowledgeDocumentVersion.updateMany({
+      data: { ingestGenerationId: null },
+      where: { knowledgeBaseId: input.base.id }
+    });
+    await tx.knowledgeDocumentVersion.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeDocument.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeIndexGeneration.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+    await tx.knowledgeBase.deleteMany({ where: { id: input.base.id } });
   });
-  await prisma.knowledgeDocument.update({
-    data: { currentVersionId: null },
-    where: { id: input.document.id }
-  });
-  await prisma.knowledgeDocumentVersion.updateMany({
-    data: { ingestGenerationId: null },
-    where: { knowledgeBaseId: input.base.id }
-  });
-  await prisma.knowledgeDocumentVersion.deleteMany({ where: { knowledgeBaseId: input.base.id } });
-  await prisma.knowledgeDocument.deleteMany({ where: { knowledgeBaseId: input.base.id } });
-  await prisma.knowledgeIndexGeneration.deleteMany({ where: { knowledgeBaseId: input.base.id } });
-  await prisma.knowledgeBase.delete({ where: { id: input.base.id } });
 }
 
 describe("Prisma attachment retention outbox", () => {

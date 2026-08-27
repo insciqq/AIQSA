@@ -25,7 +25,7 @@ export const embeddingModelPresets: readonly EmbeddingModelPreset[] = Object.fre
     id: DEFAULT_EMBEDDING_MODEL_PRESET_ID,
     nativeDimension: 4_096,
     providerFamily: "openrouter",
-    queryInstructionTemplate: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: {text}",
+    queryInstructionTemplate: "Instruct: Given a retrieval query, retrieve relevant passages that answer the query\nQuery: {text}",
     supportsMrl: true,
     targetDimension: 1_536,
     upstreamModelId: "qwen/qwen3-embedding-8b"

@@ -41,6 +41,7 @@ function target(
       embeddingProviderModelId: pin.providerModelId,
       id: "generation-1",
       indexMode: "HYBRID",
+      retrievalPipelineVersion: "memory-personal-retrieval-v8-vector",
       vectorSpaceFingerprint: pin.vectorSpaceFingerprint
     },
     itemId: "version-1",

@@ -591,6 +591,15 @@ enum MemoryEmbeddingState {
   FAILED
 }
 
+enum MemoryEmbeddingBatchItemState {
+  PENDING
+  RESULT_READY
+  SETTLED
+  FAILED
+  STALE
+  OUTCOME_UNKNOWN
+}
+
 enum MemoryHistoryRunState {
   RUNNING
   COMPLETE
@@ -4527,6 +4536,35 @@ model MemorySearchEntry {
   @@index([userId, indexGenerationId, embeddingState])
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
+}
+
+model MemoryEmbeddingBatchItem {
+  id                  String                        @id @default(uuid())
+  userId              String
+  memoryJobId         String
+  ordinal             Int
+  indexGenerationId   String
+  searchEntryId       String
+  state               MemoryEmbeddingBatchItemState @default(PENDING)
+  triggerIdentityHash String                        @db.Char(64)
+  inputHash           String?                       @db.Char(64)
+  executionBindingId  String?
+  acceptedOutputHash  String?                       @db.Char(64)
+  resultVector        Json?
+  resultDimension     Int?
+  errorCode           String?                       @db.VarChar(64)
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @default(now()) @updatedAt
+  completedAt         DateTime?
+
+  @@unique([userId, id], map: "MemoryEmbeddingBatchItem_user_id_key")
+  @@unique([userId, memoryJobId, ordinal], map: "MemoryEmbeddingBatchItem_user_job_ordinal_key")
+  @@unique([userId, memoryJobId, searchEntryId], map: "MemoryEmbeddingBatchItem_user_job_entry_key")
+  @@unique([userId, searchEntryId, triggerIdentityHash], map: "MemoryEmbeddingBatchItem_user_entry_trigger_key")
+  @@index([userId, memoryJobId, state], map: "MemoryEmbeddingBatchItem_user_job_state_idx")
+  @@index([userId, searchEntryId, state], map: "MemoryEmbeddingBatchItem_user_entry_state_idx")
+  @@index([userId, indexGenerationId, state], map: "MemoryEmbeddingBatchItem_user_generation_state_idx")
+  @@index([executionBindingId])
 }
 
 model MemoryJob {

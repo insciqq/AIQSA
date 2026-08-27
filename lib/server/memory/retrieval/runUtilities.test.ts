@@ -305,22 +305,21 @@ describe("Memory run utility execution", () => {
   }) => {
     const log: string[] = [];
     const bound = execution(log);
+    const embed = vi.fn(async () => {
+      log.push("provider");
+      return {
+        model: "embedding-upstream-1",
+        requestId: "embedding-response-1",
+        usage: { inputTokens: 7, totalTokens: 7 },
+        vectors: [Array.from(
+          { length: 1_024 },
+          (_, index) => index === 0 ? 1 : 0
+        )]
+      };
+    });
     const embeddingRuntime = {
       resolve: vi.fn(async () => ({
-        adapter: {
-          embed: vi.fn(async () => {
-            log.push("provider");
-            return {
-              model: "embedding-upstream-1",
-              requestId: "embedding-response-1",
-              usage: { inputTokens: 7, totalTokens: 7 },
-              vectors: [Array.from(
-                { length: 1_024 },
-                (_, index) => index === 0 ? 1 : 0
-              )]
-            };
-          })
-        }
+        adapter: { embed }
       }))
     };
     const service = createMemoryRunUtilityService({
@@ -354,6 +353,14 @@ describe("Memory run utility execution", () => {
       ordinal,
       role: "MEMORY_QUERY_EMBED"
     }));
+    expect(embed).toHaveBeenCalledWith({
+      mode: "document",
+      signal: expect.any(AbortSignal),
+      texts: [expect.stringMatching(
+        /prior personal conversational evidence.*English, Russian, and mixed-language.*what did we discuss about postgres/su
+      )]
+    });
+    expect(JSON.stringify(embed.mock.calls)).not.toContain("web search");
   });
 
   it("uses one distinct governed query-embedding binding for each bounded job attempt", async () => {

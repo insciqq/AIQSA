@@ -185,6 +185,7 @@ async function purgeReusableAndPrivateMemory(
   await pruneUnreferencedMemoryEntities(tx, userId);
   await tx.memoryEvidence.deleteMany({ where: { userId } });
   await tx.memoryRetrievalAttemptItem.deleteMany({ where: { userId } });
+  await tx.memoryEmbeddingBatchItem.deleteMany({ where: { userId } });
   await tx.memorySearchEntry.deleteMany({ where: { userId } });
   await tx.memorySuppression.deleteMany({ where: { userId } });
   await tx.memoryPauseInterval.deleteMany({ where: { userId } });
@@ -349,6 +350,7 @@ export async function inspectAccountMemoryDeletionResiduals(
       UNION ALL SELECT 'receipts', COUNT(*)::integer FROM "MemoryOperationReceipt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'generations', COUNT(*)::integer FROM "MemoryIndexGeneration" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'search', COUNT(*)::integer FROM "MemorySearchEntry" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'embedding-batch-items', COUNT(*)::integer FROM "MemoryEmbeddingBatchItem" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'attempts', COUNT(*)::integer FROM "MemoryRetrievalAttempt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'attempt-items', COUNT(*)::integer FROM "MemoryRetrievalAttemptItem" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'run-bindings', COUNT(*)::integer FROM "ModelRunMemoryBinding" WHERE "userId" = ${input.userId}

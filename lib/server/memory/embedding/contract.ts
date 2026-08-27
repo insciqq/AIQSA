@@ -6,6 +6,23 @@ import { memoryExecutionSha256 } from "../execution/canonical";
 import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION = "memory-item-embed-v1";
+export const MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION = "memory-item-embed-v2";
+export const DEFAULT_MEMORY_EMBEDDING_BATCH_SIZE = 16;
+export const MAX_MEMORY_EMBEDDING_BATCH_SIZE = 128;
+
+export const MEMORY_EMBEDDING_PROFILE = Object.freeze({
+  documentProjectionVersion: "memory-document-projection-v2",
+  normalizationVersion: "memory-search-normalization-v2",
+  queryInstructionVersion: "memory-query-instruction-v2",
+  queryInstruction:
+    "Retrieve prior personal conversational evidence useful for answering the query. Match speakers, entities, dates, corrections, and exact details across English, Russian, and mixed-language text."
+});
+
+export const MEMORY_EMBEDDING_PROFILE_FINGERPRINT = memoryExecutionSha256({
+  domain: "aiqsa.memory.embedding-profile",
+  profile: MEMORY_EMBEDDING_PROFILE,
+  version: 2
+});
 
 export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
   pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
@@ -16,12 +33,26 @@ export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
   schemaVersion: "memory-document-embed-result-v1"
 });
 
+export const MEMORY_EMBEDDING_BATCH_VERSIONS = Object.freeze({
+  pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+  policyVersion: "memory-item-embed-policy-v2",
+  promptVersion: MEMORY_EMBEDDING_PROFILE.documentProjectionVersion,
+  retrievalConfigFingerprint:
+    "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v3-batched-profile-v2",
+  schemaVersion: "memory-document-embed-batch-result-v2"
+});
+
 const itemJobPrefix = "memory-item-embed-v1:";
+const batchJobPrefix = "memory-embed-batch-v2:";
 const uuidCapture =
   "([a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})";
 const hashCapture = "([a-f0-9]{64})";
 const itemJobPattern = new RegExp(
   `^${itemJobPrefix}${uuidCapture}:${hashCapture}$`,
+  "u"
+);
+const batchJobPattern = new RegExp(
+  `^${batchJobPrefix}${uuidCapture}:${hashCapture}$`,
   "u"
 );
 
@@ -32,6 +63,7 @@ export type MemoryItemEmbeddingGeneration = Readonly<{
   embeddingProviderModelId: string | null;
   id: string;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
+  retrievalPipelineVersion: string;
   vectorSpaceFingerprint: string | null;
 }>;
 
@@ -101,8 +133,39 @@ export function memoryItemEmbeddingJobFingerprint(
   );
 }
 
+export function memoryEmbeddingBatchTriggerHash(
+  entryId: string,
+  triggerIdentity: string
+): string {
+  return memorySha256({
+    domain: "aiqsa.memory.embedding-batch-trigger",
+    entryId,
+    triggerIdentity,
+    version: 2
+  });
+}
+
+export function memoryEmbeddingBatchJobFingerprint(
+  entryId: string,
+  triggerIdentity: string
+): string {
+  const candidate = `${batchJobPrefix}${entryId}:${
+    memoryEmbeddingBatchTriggerHash(entryId, triggerIdentity)
+  }`;
+  if (!batchJobPattern.test(candidate) || candidate.length > 128) {
+    throw new Error("memory_embedding_batch_job_identity_invalid");
+  }
+  return candidate;
+}
+
 export type MemoryEmbeddingJobIdentity = Readonly<{
   entryId: string;
+  pipelineVersion: string;
+  triggerHash: string;
+}>;
+
+export type MemoryEmbeddingBatchJobIdentity = Readonly<{
+  seedEntryId: string;
   pipelineVersion: string;
   triggerHash: string;
 }>;
@@ -116,6 +179,73 @@ export function parseMemoryEmbeddingJobFingerprint(
     pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
     triggerHash: item[2]!
   } : null;
+}
+
+export function parseMemoryEmbeddingBatchJobFingerprint(
+  value: string
+): MemoryEmbeddingBatchJobIdentity | null {
+  const batch = batchJobPattern.exec(value);
+  return batch ? {
+    pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+    seedEntryId: batch[1]!,
+    triggerHash: batch[2]!
+  } : null;
+}
+
+export function renderMemoryDocumentEmbeddingText(
+  target: MemoryItemEmbeddingTarget
+): string {
+  const projection = target.itemType === "FACT_VERSION"
+    ? "Authoritative personal memory fact"
+    : "Prior conversational evidence";
+  return `${projection}; preserve speaker attribution, entities, dates, corrections, and exact details.\nEvidence: ${target.normalizedSearchText}`;
+}
+
+export function renderMemoryQueryEmbeddingText(query: string): string {
+  return `Instruct: ${MEMORY_EMBEDDING_PROFILE.queryInstruction}\nQuery: ${query}`;
+}
+
+export type MemoryEmbeddingBatchInputItem = Readonly<{
+  ordinal: number;
+  target: MemoryItemEmbeddingTarget;
+  triggerIdentityHash: string;
+}>;
+
+export function memoryEmbeddingBatchInputHash(input: Readonly<{
+  dimension: number;
+  generationId: string;
+  items: readonly MemoryEmbeddingBatchInputItem[];
+}>): string {
+  return memoryExecutionSha256({
+    dimension: input.dimension,
+    domain: "aiqsa.memory.embedding-batch-input",
+    generationId: input.generationId,
+    items: input.items.map(({ ordinal, target, triggerIdentityHash }) => ({
+      entryId: target.entryId,
+      itemId: target.itemId,
+      itemType: target.itemType,
+      ordinal,
+      projectionHash: memorySha256(renderMemoryDocumentEmbeddingText(target)),
+      safeContentHash: target.safeContentHash,
+      triggerIdentityHash
+    })),
+    mode: "document",
+    profileFingerprint: MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
+    versions: MEMORY_EMBEDDING_BATCH_VERSIONS,
+    version: 2
+  });
+}
+
+export function memoryEmbeddingBatchOutputHash(input: Readonly<{
+  inputHash: string;
+  vectors: readonly (readonly number[])[];
+}>): string {
+  return memoryExecutionSha256({
+    domain: "aiqsa.memory.embedding-batch-output",
+    inputHash: input.inputHash,
+    vectors: input.vectors,
+    version: 2
+  });
 }
 
 export function memoryItemEmbeddingInputHash(

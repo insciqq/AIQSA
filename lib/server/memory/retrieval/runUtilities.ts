@@ -35,6 +35,10 @@ import type { MemoryExecutionOwner } from "../execution/owner";
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import { memorySha256 } from "../persistence/lexical";
 import {
+  MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
+  renderMemoryQueryEmbeddingText
+} from "../embedding/contract";
+import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES
 } from "../../../domain/memory/retrieval/config";
@@ -64,7 +68,7 @@ import {
 } from "./aggregation";
 
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
-  "memory-query-embedding-v1";
+  "memory-query-embedding-v2";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v20";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
@@ -90,10 +94,10 @@ export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 0;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
-  policyVersion: "memory-query-embedding-policy-v1",
-  promptVersion: "memory-query-embedding-prompt-v1",
+  policyVersion: "memory-query-embedding-policy-v2",
+  promptVersion: "memory-query-instruction-v2",
   retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
-  schemaVersion: "memory-query-embedding-result-v1"
+  schemaVersion: "memory-query-embedding-result-v2"
 });
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
@@ -1133,12 +1137,15 @@ export function createMemoryRunUtilityService(
       const purpose = input.purpose ?? "RETRIEVAL";
       const ordinal = queryEmbeddingOrdinal(input, purpose);
       if (ordinal === null) return unavailable("memory_utility_input_blocked");
+      const renderedQuery = renderMemoryQueryEmbeddingText(input.query);
       const inputHash = memoryExecutionSha256({
         domain: "aiqsa.memory.query-embedding-input",
+        embeddingProfileFingerprint: MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
         profile: input.profile,
         ...(purpose === "ACTION_TARGET" ? { purpose } : {}),
         queryHash: memorySha256(input.query),
-        version: purpose === "ACTION_TARGET" ? 2 : 1
+        renderedQueryHash: memorySha256(renderedQuery),
+        version: purpose === "ACTION_TARGET" ? 4 : 3
       });
       const started = await bindAndStart(
         deps,
@@ -1175,9 +1182,12 @@ export function createMemoryRunUtilityService(
       let result: EmbeddingResult;
       try {
         result = await runtime.adapter.embed({
-          mode: "query",
+          // The Memory instruction is part of the versioned Memory profile.
+          // Use document mode so a mutable provider-level query template
+          // cannot prepend a second, domain-inappropriate instruction.
+          mode: "document",
           signal: input.signal,
-          texts: [input.query]
+          texts: [renderedQuery]
         });
       } catch (error) {
         const uncertain = !(error instanceof EmbeddingAdapterError) ||

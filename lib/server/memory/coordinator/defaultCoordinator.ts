@@ -1,5 +1,6 @@
 import { prisma } from "../../prisma";
-import { createPrismaMemoryItemEmbeddingHandler } from "../embedding/handler";
+import { createPrismaMemoryEmbeddingHandler } from
+  "../embedding/compositeHandler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
@@ -97,7 +98,7 @@ export async function reconcileDefaultMemoryWork(
 
 // Provider-backed work validates current destination, credential, transport,
 // schema, and vector-space compatibility through the shared execution boundary.
-const defaultItemEmbeddingHandler = createPrismaMemoryItemEmbeddingHandler(
+const defaultItemEmbeddingHandler = createPrismaMemoryEmbeddingHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );

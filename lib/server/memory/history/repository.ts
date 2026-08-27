@@ -7,10 +7,7 @@ import {
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { prisma } from "../../prisma";
 import { MemoryCoordinatorError } from "../coordinator/errors";
-import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint
-} from "../embedding/contract";
+import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
 import type {
   MemoryJobClaim,
   MemoryJobDescriptor,
@@ -24,7 +21,6 @@ import {
   memoryDestructiveSourceCutoff,
   memorySourceIsInsidePause
 } from "../persistence/pauseIntervals";
-import { enqueueMemoryJob } from "../persistence/jobs";
 import {
   advanceMemoryMutation,
   lockMemorySettings,
@@ -1124,13 +1120,9 @@ async function enqueueChunkEmbedding(
   triggerIdentity: string
 ): Promise<void> {
   if (entry.embeddingState !== "PENDING") return;
-  await enqueueMemoryJob(tx, settings, {
-    idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
-      entry.id,
-      triggerIdentity
-    ),
-    kind: "EMBED_ITEMS",
-    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+  await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+    entryId: entry.id,
+    triggerIdentity
   });
 }
 

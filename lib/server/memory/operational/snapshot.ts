@@ -3,7 +3,7 @@ import { prisma } from "../../prisma";
 import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v1";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v2";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 
 type CountRow = Readonly<Record<string, string>>;
@@ -57,6 +57,13 @@ export type MemoryOperationalSnapshot = Readonly<{
     merged: number;
     retracted: number;
     reused: number;
+  }>;
+  embeddings: Readonly<{
+    batchItems: number;
+    failedItems: number;
+    providerRequests: number;
+    settledItems: number;
+    staleItems: number;
   }>;
   extraction: Readonly<{
     applyRetried: number;
@@ -385,7 +392,32 @@ export async function loadMemoryOperationalSnapshot(
               'digestFullRebuild')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
               AND "completedAt" < ${input.to}
-          )::text AS "digestFullRebuild"
+          )::text AS "digestFullRebuild",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'embeddingBatchItems')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "embeddingBatchItems",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'embeddingFailedItems')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "embeddingFailedItems",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'embeddingProviderRequests')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "embeddingProviderRequests",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'embeddingSettledItems')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "embeddingSettledItems",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'embeddingStaleItems')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "embeddingStaleItems"
       `),
       client.$queryRaw<GroupedCountRow[]>(Prisma.sql`
         SELECT family, code, COUNT(*)::text AS count
@@ -503,6 +535,13 @@ export async function loadMemoryOperationalSnapshot(
       merged: safeCount(counts.entitiesMerged),
       retracted: safeCount(counts.entitiesRetracted),
       reused: safeCount(counts.entitiesReused)
+    }),
+    embeddings: Object.freeze({
+      batchItems: safeCount(counts.embeddingBatchItems),
+      failedItems: safeCount(counts.embeddingFailedItems),
+      providerRequests: safeCount(counts.embeddingProviderRequests),
+      settledItems: safeCount(counts.embeddingSettledItems),
+      staleItems: safeCount(counts.embeddingStaleItems)
     }),
     extraction: Object.freeze({
       applyRetried: safeCount(counts.extractionApplyRetried),

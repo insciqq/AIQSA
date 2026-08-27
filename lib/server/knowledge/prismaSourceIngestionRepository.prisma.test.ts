@@ -150,20 +150,27 @@ async function createFixture(now: Date): Promise<Fixture> {
 async function cleanupFixture(fixture: Fixture): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+    // Fence the Base before deleting coordinator-owned projections. A
+    // disposable dev coordinator may create a shadow generation and its
+    // immutable snapshot while this stateful test is running.
+    await tx.knowledgeBase.updateMany({
+      data: { activeIndexGenerationId: null },
+      where: { id: fixture.baseId }
+    });
+    await tx.knowledgeBaseSnapshotSource.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
+    await tx.knowledgeBaseSnapshot.deleteMany({
+      where: { knowledgeBaseId: fixture.baseId }
+    });
     await tx.knowledgeSourceIndexArtifact.deleteMany({
       where: { sourceVersionId: fixture.sourceVersionId }
     });
     await tx.knowledgeBaseSource.deleteMany({
       where: { knowledgeBaseId: fixture.baseId, sourceId: fixture.sourceId }
     });
-    await tx.knowledgeBase.updateMany({
-      data: { activeIndexGenerationId: null },
-      where: { id: fixture.baseId }
-    });
-    // A concurrently running disposable worker may legitimately create a
-    // shadow generation for this fixture-owned Base. Detach the self-relation
-    // and remove only generations owned by that Base so cleanup stays
-    // order-independent without touching another fixture.
+    // Detach every fixture-owned generation, including any shadow generation,
+    // so cleanup stays order-independent without touching another fixture.
     await tx.knowledgeIndexGeneration.updateMany({
       data: {
         sourceBaseVersion: null,
