@@ -3,7 +3,8 @@ import { getSecretEncryptionKey } from "../secrets/envelope";
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import {
   createOpenRouterRerankAdapter,
-  type RerankAdapter
+  type RerankAdapter,
+  type RerankResponseValidation
 } from "../providers/rerank";
 import type {
   ProviderConnectionConfiguration,
@@ -99,6 +100,7 @@ function runtimeFromSnapshot(
   options: Readonly<{
     createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
     encryptionKey: () => Buffer;
+    validation?: RerankResponseValidation;
   }>
 ): AcceptedRerankerRuntimeBinding {
   const snapshot = normalizeProviderExecutionSnapshot(evidence.executionSnapshot);
@@ -120,7 +122,8 @@ function runtimeFromSnapshot(
         fetchFn: options.createFetch?.(snapshot.connection) ??
           createProviderSafeFetch({ configuration: snapshot.connection })
       },
-      secret: secretResolver(prisma, evidence, options.encryptionKey)
+      secret: secretResolver(prisma, evidence, options.encryptionKey),
+      ...(options.validation ? { validation: options.validation } : {})
     }),
     configuration,
     executionSnapshot: snapshot,
@@ -134,6 +137,7 @@ export function createPrismaRerankerRuntime(
   options: Readonly<{
     createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
     encryptionKey?: () => Buffer;
+    validation?: RerankResponseValidation;
   }> = {}
 ) {
   const encryptionKey = options.encryptionKey ?? getSecretEncryptionKey;
@@ -172,6 +176,7 @@ export function createAcceptedRerankerRuntime(
   options: Readonly<{
     createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
     encryptionKey?: () => Buffer;
+    validation?: RerankResponseValidation;
   }> = {}
 ) {
   const encryptionKey = options.encryptionKey ?? getSecretEncryptionKey;

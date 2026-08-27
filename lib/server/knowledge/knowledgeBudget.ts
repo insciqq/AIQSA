@@ -78,7 +78,10 @@ export type LegacyKnowledgeBudgetEvidence = Readonly<{
 
 export const DEFAULT_KNOWLEDGE_BUDGET_POLICY: KnowledgeBudgetPolicy = Object.freeze({
   estimatedEmbeddingCostMicrosPerThousandTokens: 100,
-  maxCumulativeCandidates: 480,
+  // Scales with the ranking-profile-v2 broad merged-pool maximum (96 per
+  // operation) so the hosted-rerank candidate pool does not starve the
+  // per-run cumulative candidate ceiling.
+  maxCumulativeCandidates: 1_152,
   maxEstimatedCostMicros: 30_000,
   maxLatencyMs: 360_000,
   maxOperations: 12,
@@ -142,7 +145,7 @@ export function knowledgeBudgetPolicyFromProfileConfiguration(
   return Object.freeze({
     estimatedEmbeddingCostMicrosPerThousandTokens:
       DEFAULT_KNOWLEDGE_BUDGET_POLICY.estimatedEmbeddingCostMicrosPerThousandTokens,
-    maxCumulativeCandidates: maximumKnowledgeSearches * 40,
+    maxCumulativeCandidates: maximumKnowledgeSearches * 96,
     maxEstimatedCostMicros: maximumKnowledgeSearches * 2_500,
     maxLatencyMs: maximumKnowledgeSearches * 30_000,
     maxOperations: maximumKnowledgeSearches,

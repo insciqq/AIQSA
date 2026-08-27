@@ -51,6 +51,13 @@ import {
 import {
   executeKnowledgeRetrievalCore
 } from "./prismaRetrievalCore";
+import { KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS } from "./hierarchicalIndex";
+import {
+  KnowledgeParentContextError,
+  type KnowledgeParentContextLoader,
+  type KnowledgeParentContextRow
+} from "./parentContextExpansion";
+import { decodeKnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import {
   decodeKnowledgeBudgetPolicy,
   estimatedKnowledgeEmbeddingCostMicros,
@@ -151,10 +158,26 @@ function passageDocumentContext(
   return decoded;
 }
 
+const PASSAGE_LAYOUT_KINDS = new Set<KnowledgeHybridPassage["layoutKind"]>([
+  "body",
+  "field_ambiguous",
+  "field_pair",
+  "table_ambiguous",
+  "table_row",
+  "table_row_projection"
+]);
+
+/** Structured layoutKind column first; the retired English contextPrefix
+ * markers remain decode-only compatibility for legacy rows. */
 function passageLayoutKind(
+  storedLayoutKind: string | null,
   contextPrefix: string,
   documentContext: KnowledgeDocumentContextV1 | null
 ): KnowledgeHybridPassage["layoutKind"] {
+  if (storedLayoutKind &&
+    PASSAGE_LAYOUT_KINDS.has(storedLayoutKind as KnowledgeHybridPassage["layoutKind"])) {
+    return storedLayoutKind as KnowledgeHybridPassage["layoutKind"];
+  }
   if (documentContext) return documentContext.locator.kind;
   const marker = contextPrefix.split("\n", 1)[0];
   if (marker === "Evidence layout: table_ambiguous_v1") return "table_ambiguous";
@@ -177,6 +200,7 @@ const SOURCE_READ_PASSAGE_SELECT = {
   documentContext: true,
   headingPath: true,
   id: true,
+  layoutKind: true,
   ordinal: true,
   page: true,
   sectionId: true,
@@ -198,6 +222,7 @@ type SourceReadPassageRow = SourceReadAnchor & Readonly<{
   contentHash: string;
   contextPrefix: string;
   id: string;
+  layoutKind: string | null;
   sourceName: string;
   text: string;
 }>;
@@ -267,10 +292,108 @@ function coherentSourceReadTableRow<T extends SourceReadPassageRow>(
   return Object.freeze(projected.map(({ row }) => row));
 }
 
+/**
+ * FR-14 canonical-section window loader. It re-resolves the ready compatible
+ * hierarchical index of each admitted source artifact with the same rule the
+ * retrieval SQL applies, then reads the bounded ordinal window of each hit's
+ * canonical section through the `KAPI_section_ordinal_idx` path — the exact
+ * shape the internal `read_source` service already uses. Structurally invalid
+ * persisted rows throw `KnowledgeParentContextError`,
+ * which the retrieval core degrades to atomic evidence with a content-free
+ * reason. Database/query failures deliberately propagate: they are not a
+ * parent-expansion outage and must never be hidden by the fallback path.
+ */
+export function createPrismaKnowledgeParentContextLoader(
+  client: Pick<RetrievalPrisma, "knowledgeArtifactPassageIndex" | "knowledgeSourceIndexArtifact">
+): KnowledgeParentContextLoader {
+  return async (requests) => {
+    if (requests.length === 0) return new Map();
+    const byArtifact = new Map(requests.map((request) => [request.sourceArtifactId, request]));
+    const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
+      select: {
+        hierarchicalIndexes: {
+          orderBy: { schemaVersion: "desc" },
+          select: { id: true },
+          take: 1,
+          where: {
+            schemaVersion: { in: [...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS] },
+            state: "ready"
+          }
+        },
+        id: true,
+        sourceVersionId: true
+      },
+      where: { id: { in: [...byArtifact.keys()] }, state: "ready" }
+    });
+    const indexByArtifact = new Map(artifacts.flatMap((artifact) => {
+      const request = byArtifact.get(artifact.id);
+      const indexArtifactId = artifact.hierarchicalIndexes[0]?.id;
+      return request && indexArtifactId && artifact.sourceVersionId === request.documentVersionId
+        ? [[artifact.id, indexArtifactId] as const]
+        : [];
+    }));
+    const scoped = requests.flatMap((request) => {
+      const indexArtifactId = indexByArtifact.get(request.sourceArtifactId);
+      return indexArtifactId ? [{ indexArtifactId, request }] : [];
+    });
+    if (scoped.length === 0) return new Map();
+    const rows = await client.knowledgeArtifactPassageIndex.findMany({
+      orderBy: { ordinal: "asc" },
+      select: {
+        contentHash: true,
+        contextPrefix: true,
+        documentContext: true,
+        id: true,
+        indexArtifactId: true,
+        layoutKind: true,
+        ordinal: true,
+        sectionId: true,
+        text: true
+      },
+      where: {
+        OR: scoped.map((entry) => ({
+          indexArtifactId: entry.indexArtifactId,
+          ordinal: { gte: entry.request.fromOrdinal, lte: entry.request.toOrdinal },
+          sectionId: entry.request.sectionId
+        }))
+      }
+    });
+    const windows = new Map<string, KnowledgeParentContextRow[]>();
+    for (const entry of scoped) {
+      const window: KnowledgeParentContextRow[] = [];
+      for (const row of rows) {
+        if (row.indexArtifactId !== entry.indexArtifactId ||
+          row.sectionId !== entry.request.sectionId ||
+          row.ordinal < entry.request.fromOrdinal ||
+          row.ordinal > entry.request.toOrdinal) continue;
+        const documentContext = row.documentContext === null
+          ? null
+          : decodeKnowledgeDocumentContext(row.documentContext);
+        if (row.documentContext !== null && documentContext === null) {
+          throw new KnowledgeParentContextError("parent_context_rows_invalid");
+        }
+        window.push({
+          contentHash: row.contentHash.trim(),
+          documentContext,
+          id: row.id,
+          layoutKind:
+            passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext) ?? "body",
+          ordinal: row.ordinal,
+          sectionId: row.sectionId,
+          text: row.text
+        });
+      }
+      if (window.length > 0) windows.set(entry.request.chunkId, window);
+    }
+    return windows;
+  };
+}
+
 export function createPrismaKnowledgeRetrievalStore(
   client: RetrievalPrisma
 ): KnowledgeRetrievalStore {
   const hierarchical = createPrismaKnowledgeHierarchicalRetrievalRepository(client);
+  const parentContextLoader = createPrismaKnowledgeParentContextLoader(client);
   return {
     async budgetState(input): Promise<KnowledgeBudgetState | null> {
       const expectedToolNames = Prisma.sql`ARRAY[${Prisma.join(
@@ -391,7 +514,12 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
         excludedContentHashes: input.excludedContentHashes,
+        // FR-14/FR-15: child-to-parent expansion applies only to automatic
+        // search results; bounded exact reads and metadata discovery never
+        // expand, and receipt replay short-circuits before this call.
+        ...(input.operation === "automatic_search" ? { parentContextLoader } : {}),
         query: input.query,
+        ...(input.rerank ? { rerank: input.rerank } : {}),
         resultLimit: input.resultLimit,
         runId: input.runId,
         ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
@@ -418,11 +546,13 @@ export function createPrismaKnowledgeRetrievalStore(
           ftsRank: passage.ftsRank,
           ftsScore: passage.ftsScore,
           ...(passage.expandedContext ? { expandedContext: passage.expandedContext } : {}),
+          ...(passage.expansion ? { expansion: passage.expansion } : {}),
           fusedScore: passage.fusedScore,
           headingPath: passage.headingPath,
           knowledgeBaseId: passage.knowledgeBaseId,
           layoutKind: passage.layoutKind,
           page: passage.page,
+          ...(passage.rerankScore !== undefined ? { rerankScore: passage.rerankScore } : {}),
           sectionId: passage.sectionId,
           signalProvenance: passage.signals,
           sourceArtifactId: passage.sourceArtifactId,
@@ -432,6 +562,7 @@ export function createPrismaKnowledgeRetrievalStore(
           vectorScore: passage.vectorScore
         })),
         rankingEvidence: result.rankingEvidence,
+        ...(result.rerankerBinding ? { rerankerBinding: result.rerankerBinding } : {}),
         vectorSearchEvidence:
           input.operation === "find_exact" || input.operation === "discover_sources"
             ? []
@@ -490,6 +621,7 @@ export function createPrismaKnowledgeRetrievalStore(
         headingPath: true,
         id: true,
         indexArtifactId: true,
+        layoutKind: true,
         ordinal: true,
         page: true,
         sectionId: true,
@@ -555,7 +687,7 @@ export function createPrismaKnowledgeRetrievalStore(
           headingPath: anchor.headingPath,
           knowledgeBaseId: binding.profileBinding.id,
           layoutKind: hit.field === "body"
-            ? passageLayoutKind(anchor.contextPrefix, documentContext)
+            ? passageLayoutKind(anchor.layoutKind, anchor.contextPrefix, documentContext)
             : "body",
           page: hit.page ?? anchor.page,
           sectionId: hit.sectionId ?? anchor.sectionId,
@@ -874,7 +1006,7 @@ export function createPrismaKnowledgeRetrievalStore(
             fusedScore: 1 / (60 + rank),
             headingPath: row.headingPath,
             knowledgeBaseId: input.binding.knowledgeBaseId,
-            layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
+            layoutKind: passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext),
             page: row.page,
             sectionId: row.sectionId,
             sourceArtifactId: input.sourceArtifactId,
@@ -938,7 +1070,7 @@ export function createPrismaKnowledgeRetrievalStore(
           fusedScore: 1 / (60 + rank),
           headingPath: row.headingPath,
           knowledgeBaseId: input.binding.knowledgeBaseId,
-          layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
+          layoutKind: passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext),
           page: row.page,
           sectionId: row.sectionId,
           sourceArtifactId: input.sourceArtifactId,
@@ -1084,7 +1216,11 @@ export function createPrismaKnowledgeRetrievalStore(
             ? { exact: receipt.readReceipt }
             : receipt.operation === "discover_sources"
               ? { discovery: receipt.readReceipt }
-              : {};
+              : receipt.operation === "automatic_search" &&
+                  record(receipt.readReceipt) &&
+                  receipt.readReceipt.rerankerBinding !== undefined
+                ? { rerankerBinding: receipt.readReceipt.rerankerBinding }
+                : {};
       return decodeKnowledgeRetrievalEvidence({
         ...common,
         ...operationReceipt,
@@ -1425,15 +1561,26 @@ export function createPrismaKnowledgeRetrievalStore(
         receiptCount > 1) {
         throw new Error("knowledge_operation_receipt_invalid");
       }
+      // Legacy planner-era ranking fields stay rejected; only the current
+      // content-free hosted reranker execution evidence (V2) may be written,
+      // and only with an automatic-search receipt.
+      const rerankerBinding = input.evidence.rerankerBinding === undefined
+        ? undefined
+        : decodeKnowledgeRerankerBindingEvidenceV2(input.evidence.rerankerBinding);
+      const rerankScoresAllowed = Boolean(rerankerBinding &&
+        (rerankerBinding.status === "complete" || rerankerBinding.status === "partial"));
       if (input.evidence.postRerankOrder !== undefined ||
         input.evidence.preRerankOrder !== undefined ||
-        input.evidence.rerankerBinding !== undefined || input.evidence.threshold !== undefined ||
+        rerankerBinding === null || input.evidence.threshold !== undefined ||
+        rerankerBinding &&
+          (input.evidence.operation ?? "automatic_search") !== "automatic_search" ||
         input.evidence.budget && (
           "noveltyRatio" in input.evidence.budget ||
           "lowNoveltyStreak" in input.evidence.budget.usage
         ) ||
         input.evidence.results.some((result) =>
-          result.confidence !== undefined || result.rerankScore !== undefined)) {
+          result.confidence !== undefined ||
+          result.rerankScore !== undefined && !rerankScoresAllowed)) {
         throw new Error("knowledge_legacy_ranking_write_forbidden");
       }
       if (input.evidence.results.some((result) =>
@@ -1653,6 +1800,12 @@ export function createPrismaKnowledgeRetrievalStore(
                     : {}),
                   expanded: entry.result.textTruncated,
                   excerptBytes: entry.result.includedTextBytes,
+                  // Content-free FR-14 expansion facts only; expanded text
+                  // ships through providerText/results exactly like the
+                  // pre-existing neighbor context.
+                  ...(entry.result.expansion
+                    ? { expansion: entry.result.expansion }
+                    : {}),
                   ...(entry.result.layoutKind
                     ? { layoutKind: entry.result.layoutKind }
                     : {}),
@@ -1701,6 +1854,11 @@ export function createPrismaKnowledgeRetrievalStore(
           degradedFlags.add(`retrieval_${input.evidence.outcome}`);
         }
         if (input.evidence.budget?.stopReason) degradedFlags.add("budget_exhausted");
+        if (rerankerBinding?.status === "degraded") {
+          degradedFlags.add("knowledge_reranker_degraded");
+        } else if (rerankerBinding?.status === "partial") {
+          degradedFlags.add("knowledge_reranker_partial");
+        }
         await tx.knowledgeRetrievalSession.update({
           data: {
             degradedFlags: [...degradedFlags].sort(),
@@ -1750,7 +1908,9 @@ export function createPrismaKnowledgeRetrievalStore(
               ? {
                   readReceipt: json(evidence.read ?? evidence.exact ?? evidence.discovery)
                 }
-              : {}),
+              : rerankerBinding
+                ? { readReceipt: json({ rerankerBinding }) }
+                : {}),
           }
         });
         if (evidenceItems.length > 0) {

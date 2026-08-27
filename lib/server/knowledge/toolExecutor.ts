@@ -17,7 +17,6 @@ import {
   knowledgeToolResultText
 } from "./toolResult";
 import {
-  KNOWLEDGE_CANDIDATE_LIMIT,
   KNOWLEDGE_EXECUTION_TOOL_NAMES,
   KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
   KNOWLEDGE_QUERY_MAX_CHARACTERS,
@@ -31,6 +30,7 @@ import {
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactSearchRequest,
   type KnowledgeExactSearchResult,
+  type KnowledgeHybridPassage,
   type KnowledgeHybridSearchResult,
   type KnowledgeRetrievalEvidence,
   type KnowledgeRetrievalOutcome,
@@ -70,6 +70,20 @@ import {
   type KnowledgeDocumentLocatorV1
 } from "./documentContext";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
+import { KNOWLEDGE_LANE_CANDIDATE_LIMIT } from "./retrievalRanking";
+import {
+  createKnowledgeRerankStage,
+  knowledgeRerankerDisabledEvidence,
+  knowledgeRerankerUnavailableEvidence,
+  type KnowledgeRerankExecutor
+} from "./rerankExecution";
+import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
+import { knowledgeTokenizerEvidenceLabel } from "./tokenizer/knowledgeTokenCounter";
+import {
+  fitKnowledgeParentExpansionsToByteBudget,
+  knowledgeParentExpansionEvidence
+} from "./parentContextExpansion";
 
 export { knowledgeRetrievalTool } from "./knowledgeTools";
 
@@ -103,6 +117,10 @@ export type KnowledgeRetrievalStore = Readonly<{
     excludedContentHashes: readonly string[];
     operation: KnowledgeOperationKind;
     query: string;
+    rerank?: Readonly<{
+      executor: KnowledgeRerankExecutor;
+      signal?: AbortSignal;
+    }>;
     resultLimit: number;
     runId: string;
     sourceIds?: readonly string[];
@@ -301,6 +319,18 @@ function completedResult(
   };
 }
 
+/** Content-free tokenizer identity derived from the accepted embedding
+ * snapshot; recorded next to the vector-space fingerprint that already
+ * carries the index-profile identity. Never fails the operation. */
+function bindingTokenizerProfile(binding: KnowledgeAcceptedBinding): string | null {
+  try {
+    const snapshot = normalizeProviderExecutionSnapshot(binding.embeddingExecutionSnapshot);
+    return knowledgeTokenizerEvidenceLabel(snapshot.model.upstreamModelId);
+  } catch {
+    return null;
+  }
+}
+
 function baseEvidence(
   bindings: readonly KnowledgeAcceptedBinding[],
   candidateCounts: Readonly<Record<number, number>> = {},
@@ -314,6 +344,7 @@ function baseEvidence(
   return bindings.map((binding) => {
     const candidateCount = candidateCounts[binding.ordinal] ?? 0;
     const vectorSearch = vectorByBinding.get(binding.ordinal);
+    const tokenizerProfile = bindingTokenizerProfile(binding);
     return {
       baseContentRevision: binding.baseContentRevision,
       baseName: binding.baseName,
@@ -326,6 +357,7 @@ function baseEvidence(
         ? "indexing"
         : candidateCount === 0 && !readyWhenEmpty ? "empty" : "ready",
       targetDimension: binding.targetDimension,
+      ...(tokenizerProfile ? { tokenizerProfile } : {}),
       ...(vectorSearch ? { vectorSearch } : {}),
       vectorSpaceFingerprint: binding.vectorSpaceFingerprint
     };
@@ -414,8 +446,9 @@ function includedPassages(
   const sourceAliasByArtifact = primarySourceAliasesByArtifact(aliases);
   const selected: KnowledgeRetrievedPassageEvidence[] = [];
   const pendingExpandedContext: Array<string | null> = [];
+  const pendingExpansion: Array<KnowledgeHybridPassage["expansion"] | null> = [];
   let retainedExcerptBytes = 0;
-  for (const { expandedContext, text, ...passage } of passages) {
+  for (const { expandedContext, expansion, text, ...passage } of passages) {
     const sourceTextBytes = Buffer.byteLength(text, "utf8");
     if (sourceTextBytes > excerptBudgetBytes) {
       if (selected.length === 0) throw new Error("knowledge_evidence_item_too_large");
@@ -438,10 +471,53 @@ function includedPassages(
       textTruncated: false
     });
     pendingExpandedContext.push(expandedContext || null);
+    pendingExpansion.push(expansion ?? null);
     retainedExcerptBytes += sourceTextBytes;
   }
+  // FR-14 trim order: every atomic hit above is already packed and is never
+  // dropped in favor of expansion — expanded context competes only for the
+  // leftover bytes. Unit-bearing expansions shrink unit-by-unit with
+  // per-source round-robin fairness before any expansion drops entirely;
+  // legacy whole-string context keeps its historical all-or-nothing attach.
   let remainingContextBytes = excerptBudgetBytes - retainedExcerptBytes;
+  const unitEntries = selected.flatMap((passage, index) => {
+    const expansion = pendingExpansion[index];
+    return expansion && expansion.units.length > 0
+      ? [{
+          key: String(index),
+          sourceKey: [
+            passage.documentId,
+            passage.documentVersionId,
+            passage.sourceArtifactId ?? ""
+          ].join("\u001f"),
+          units: expansion.units
+        }]
+      : [];
+  });
+  const fitted = unitEntries.length > 0
+    ? fitKnowledgeParentExpansionsToByteBudget({
+        entries: unitEntries,
+        maximumBytes: Math.max(0, remainingContextBytes)
+      })
+    : null;
+  if (fitted) {
+    for (const kept of fitted.values()) {
+      if (kept.units.length > 0) {
+        remainingContextBytes -= Buffer.byteLength(kept.text, "utf8");
+      }
+    }
+  }
   return selected.map((passage, index) => {
+    const expansion = pendingExpansion[index];
+    if (expansion) {
+      const kept = fitted?.get(String(index));
+      const units = kept?.units ?? [];
+      return {
+        ...passage,
+        ...(units.length > 0 ? { expandedContext: kept!.text } : {}),
+        expansion: knowledgeParentExpansionEvidence(expansion, units)
+      };
+    }
     const expandedContext = pendingExpandedContext[index];
     if (!expandedContext) return passage;
     const expandedContextBytes = Buffer.byteLength(expandedContext, "utf8");
@@ -835,10 +911,15 @@ function validBindings(bindings: readonly KnowledgeAcceptedBinding[]): boolean {
 export function createKnowledgeToolExecutor(input: Readonly<{
   budgetReservations?: KnowledgeBudgetReservationRepository;
   embeddingRuntime: KnowledgeEmbeddingRuntimeResolver;
+  /**
+   * Installation reranker role for hosted reranking. When omitted, retrieval
+   * stays fully deterministic and no reranker evidence is recorded.
+   */
+  rerankerRuntime?: KnowledgeRerankerRuntimeResolver;
   store: KnowledgeRetrievalStore;
 }>): KnowledgeToolExecutor {
   const staticPolicy = Object.freeze({
-    candidateLimit: KNOWLEDGE_CANDIDATE_LIMIT,
+    candidateLimit: KNOWLEDGE_LANE_CANDIDATE_LIMIT,
     resultLimit: KNOWLEDGE_RESULT_LIMIT
   });
 
@@ -1475,6 +1556,20 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         }
       }
 
+      // FR-4/FR-15: the installation reranker role is resolved and pinned per
+      // accepted operation. Recovery replays the stored receipt above and
+      // never reaches this resolution, so an accepted operation is immutable.
+      const rerankResolution = input.rerankerRuntime
+        ? await input.rerankerRuntime.resolve()
+        : null;
+      const rerankExecutor: KnowledgeRerankExecutor | null =
+        rerankResolution?.kind === "ready"
+          ? createKnowledgeRerankStage({
+              adapter: rerankResolution.adapter,
+              pin: rerankResolution.pin,
+              query: request.query
+            })
+          : null;
       const search = await input.store.hybridSearch({
         ...(anchorQuery ? { anchorQuery } : {}),
         ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
@@ -1482,6 +1577,14 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         excludedContentHashes: budgetState.priorContentHashes,
         operation: request.operation,
         query: request.query,
+        ...(rerankExecutor
+          ? {
+              rerank: {
+                executor: rerankExecutor,
+                ...(options?.signal ? { signal: options.signal } : {})
+              }
+            }
+          : {}),
         resultLimit,
         runId,
         ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}),
@@ -1497,6 +1600,19 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ranking.candidateOrder.length !== search.candidateCount ||
         (search.candidateCount > 0 && search.passages.length === 0)) {
         throw new Error("knowledge_hybrid_ranking_invalid");
+      }
+      const rerankerBinding: KnowledgeRerankerBindingEvidenceV2 | undefined =
+        rerankResolution === null
+          ? undefined
+          : rerankResolution.kind === "absent"
+            ? knowledgeRerankerDisabledEvidence()
+            : rerankResolution.kind === "unavailable"
+              ? knowledgeRerankerUnavailableEvidence({
+                  selectedProviderModelId: rerankResolution.selectedProviderModelId
+                })
+              : search.rerankerBinding;
+      if (rerankResolution?.kind === "ready" && !rerankerBinding) {
+        throw new Error("knowledge_reranker_evidence_missing");
       }
       const remainingRetrievedTokens = Math.max(
         1,
@@ -1542,6 +1658,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         operation: request.operation,
         outcome: retrievalOutcome,
         query: request.query,
+        ...(rerankerBinding ? { rerankerBinding } : {}),
         resultLimit,
         results: retrievalOutcome === "complete" ? results : [],
         scopeAliases: evidenceAliases(aliases, results, scopedBindings),

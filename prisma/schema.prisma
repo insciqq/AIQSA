@@ -1716,7 +1716,6 @@ model KnowledgeArtifactDocumentIndex {
   tags                String[]                           @default([])
   tagsText            String                             @default("")
   languages           String[]                           @default([])
-  languageConfig      String                             @db.VarChar(16)
   documentType        String                             @db.VarChar(255)
   pageCount           Int
   summary             String                             @default("")
@@ -1729,8 +1728,6 @@ model KnowledgeArtifactDocumentIndex {
   metadataText        String                             @default("")
   contentHash         String                             @db.Char(64)
   simpleSearchVector  Unsupported("tsvector")?
-  englishSearchVector Unsupported("tsvector")?
-  russianSearchVector Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KADI_index_artifact_fkey")
 }
@@ -1750,7 +1747,6 @@ model KnowledgeArtifactSectionIndex {
   entities            String[]                           @default([])
   entitiesText        String                             @default("")
   languages           String[]                           @default([])
-  languageConfig      String                             @db.VarChar(16)
   passageStart        Int
   passageEnd          Int
   fileName            String
@@ -1760,8 +1756,6 @@ model KnowledgeArtifactSectionIndex {
   tagsText            String                             @default("")
   contentHash         String                             @db.Char(64)
   simpleSearchVector  Unsupported("tsvector")?
-  englishSearchVector Unsupported("tsvector")?
-  russianSearchVector Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KASI_index_artifact_fkey")
   passages            KnowledgeArtifactPassageIndex[]
@@ -1784,6 +1778,9 @@ model KnowledgeArtifactPassageIndex {
   text                String
   contextPrefix       String                             @default("")
   documentContext     Json?
+  /// Structured layout identity for current builds; legacy rows resolve layout
+  /// from documentContext or the retired contextPrefix markers at read time.
+  layoutKind          String?                            @db.VarChar(32)
   fileName            String
   sourceName          String
   documentTitle       String                             @default("")
@@ -1791,7 +1788,6 @@ model KnowledgeArtifactPassageIndex {
   tags                String[]                           @default([])
   tagsText            String                             @default("")
   languages           String[]                           @default([])
-  languageConfig      String                             @db.VarChar(16)
   contentHash         String                             @db.Char(64)
   embeddingTextHash   String                             @db.Char(64)
   sourceBlockStart    Int
@@ -1799,8 +1795,6 @@ model KnowledgeArtifactPassageIndex {
   sourceBlockIds      String[]                           @default([])
   tokenCount          Int
   simpleSearchVector  Unsupported("tsvector")?
-  englishSearchVector Unsupported("tsvector")?
-  russianSearchVector Unsupported("tsvector")?
   createdAt           DateTime                           @default(now())
   indexArtifact       KnowledgeHierarchicalIndexArtifact @relation(fields: [indexArtifactId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "KAPI_index_artifact_fkey")
   section             KnowledgeArtifactSectionIndex      @relation(fields: [indexArtifactId, sectionId], references: [indexArtifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeArtifactPassageIndex_section_fkey")

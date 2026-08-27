@@ -189,7 +189,6 @@ async function createFixture(): Promise<Fixture> {
       documentType: "application/octet-stream",
       fileName: "opaque-reference.bin",
       indexArtifactId: hierarchyId,
-      languageConfig: "english",
       pageCount: 3,
       sourceName: "Exact policy source"
     }
@@ -201,7 +200,6 @@ async function createFixture(): Promise<Fixture> {
       id: sectionId,
       indexArtifactId: hierarchyId,
       label: "Opaque section",
-      languageConfig: "english",
       ordinal: 0,
       page: 1,
       pageEnd: 3,
@@ -216,7 +214,6 @@ async function createFixture(): Promise<Fixture> {
       fileName: "opaque-reference.bin",
       id,
       indexArtifactId: hierarchyId,
-      languageConfig: "english",
       ordinal,
       page: ordinal + 1,
       pageEnd: ordinal + 1,
@@ -420,7 +417,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
     const fixture = await createFixture();
     try {
       const result = await executeKnowledgeRetrievalCore(prisma, {
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "Find SAFE-2718 from 2026-08-20 in policy.pdf under \"Release Schedule\"",
         resultLimit: 16,
@@ -446,7 +443,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       })]);
 
       const discriminating = await executeKnowledgeRetrievalCore(prisma, {
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "SAFE-2718 2026-08-20",
         resultLimit: 8,
@@ -463,7 +460,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const anchored = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "What changed for SAFE-2718 on 2026-08-20?",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "policy event details",
         resultLimit: 8,
@@ -477,7 +474,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const anchorLexical = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "Find the opaque beta evidence",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "policy event details",
         resultLimit: 8,
@@ -491,7 +488,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const modelLexical = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "unrelated current request framing",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "Find the opaque alpha evidence",
         resultLimit: 8,
@@ -505,7 +502,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const semanticFusion = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "second latent concept",
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "first latent concept",
         resultLimit: 8,
@@ -534,7 +531,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       for (const query of ["acme invoice", "invoice 2024"]) {
         const metadata = await executeKnowledgeRetrievalCore(prisma, {
-          candidateLimit: 40,
+          candidateLimit: 64,
           excludedContentHashes: [],
           query,
           resultLimit: 8,
@@ -551,7 +548,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       }
 
       await expect(executeKnowledgeRetrievalCore(prisma, {
-        candidateLimit: 40,
+        candidateLimit: 64,
         excludedContentHashes: [],
         query: "quarterly report",
         resultLimit: 8,
