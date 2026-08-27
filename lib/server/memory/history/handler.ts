@@ -35,6 +35,15 @@ import {
   type MemoryChatDigestGenerator
 } from "./digest";
 import {
+  createPrismaMemoryContextualKeyGenerator,
+  type MemoryContextualKeyGenerationResult,
+  type MemoryContextualKeyGenerator
+} from "./contextualKeys";
+import {
+  applyMemoryRecallRoundContextualKeys,
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION
+} from "./rounds";
+import {
   createPrismaMemoryHistoryIndexRepository,
   type MemoryHistoryIndexRepository
 } from "./repository";
@@ -51,6 +60,7 @@ export type MemoryHistoryIndexHandlerDependencies = Readonly<{
     }>[]
   ) => Promise<void>;
   classifier?: MemoryHistorySafetyClassifier;
+  contextualKeyGenerator?: MemoryContextualKeyGenerator;
   digestGenerator?: MemoryChatDigestGenerator;
   repository: MemoryHistoryIndexRepository;
 }>;
@@ -149,10 +159,31 @@ export function applyMemoryHistoryClassifications(
       safetyClass: "NORMAL" as const
     };
   });
+  const chunksById = new Map(chunks.map((chunk) => [chunk.id, chunk] as const));
+  const rounds = plan.rounds.map((round) => {
+    const parent = chunksById.get(round.parentChunkId);
+    if (!parent) {
+      throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
+    }
+    return parent.publicationState === "SUPPRESSED"
+      ? {
+          ...round,
+          publicationState: "SUPPRESSED" as const,
+          redactionReasonCodes: parent.redactionReasonCodes,
+          redactionState: "EXCLUDED" as const,
+          safetyClass: "SECRET_TAINTED" as const
+        }
+      : {
+          ...round,
+          publicationState: "ACTIVE" as const,
+          safetyClass: "NORMAL" as const
+        };
+  });
   return {
     ...plan,
     classificationPolicyVersion: classification.policyVersion,
     chunks,
+    rounds,
     preparedResultHash: plan.resultHash,
     resultHash: memoryHistoryIndexResultHash(
       plan.source,
@@ -166,8 +197,70 @@ export function applyMemoryHistoryClassifications(
         digestPolicyVersion: null,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
+        rebuiltRoundIds: plan.rebuiltRoundIds,
         reusedChunkIds: plan.reusedChunkIds,
+        reusedRoundIds: plan.reusedRoundIds,
+        rounds,
         work: plan.work
+      }
+    )
+  };
+}
+
+export function attachMemoryContextualKeys(
+  plan: MemoryHistoryIndexPlan,
+  generated: MemoryContextualKeyGenerationResult,
+  targetRoundIds: readonly string[]
+): MemoryHistoryIndexPlan {
+  const targets = new Set(targetRoundIds);
+  const fallback = new Set(generated.fallbackRoundIds);
+  if (
+    generated.policyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
+    targets.size !== targetRoundIds.length ||
+    generated.providerRequests < 0 ||
+    !Number.isSafeInteger(generated.providerRequests) ||
+    generated.outputs.some((output) => !targets.has(output.roundId)) ||
+    generated.fallbackRoundIds.some((id) => !targets.has(id))
+  ) {
+    throw new MemoryCoordinatorError("memory_contextual_key_invalid", true);
+  }
+  const rounds = applyMemoryRecallRoundContextualKeys(
+    plan.rounds,
+    generated.outputs,
+    generated.policyVersion
+  );
+  const generatedIds = new Set(rounds.flatMap((round) =>
+    targets.has(round.id) && round.contextualKeyState === "GENERATED"
+      ? [round.id]
+      : []));
+  const work = {
+    ...plan.work,
+    contextualProviderRequests: generated.providerRequests,
+    contextualRoundsFallback: targetRoundIds.filter((id) =>
+      fallback.has(id) || !generatedIds.has(id)).length,
+    contextualRoundsGenerated: generatedIds.size
+  };
+  return {
+    ...plan,
+    rounds,
+    work,
+    resultHash: memoryHistoryIndexResultHash(
+      plan.source,
+      plan.chunks,
+      plan.suppressionIdentitySnapshot,
+      plan.classificationPolicyVersion,
+      plan.timeZone,
+      {
+        checkpointMessages: plan.checkpointMessages,
+        digest: plan.digest,
+        digestPolicyVersion: plan.digestPolicyVersion,
+        incremental: plan.incremental,
+        rebuiltChunkIds: plan.rebuiltChunkIds,
+        rebuiltRoundIds: plan.rebuiltRoundIds,
+        reusedChunkIds: plan.reusedChunkIds,
+        reusedRoundIds: plan.reusedRoundIds,
+        rounds,
+        work
       }
     )
   };
@@ -220,7 +313,10 @@ function attachMemoryChatDigest(
         digestPolicyVersion,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
+        rebuiltRoundIds: plan.rebuiltRoundIds,
         reusedChunkIds: plan.reusedChunkIds,
+        reusedRoundIds: plan.reusedRoundIds,
+        rounds: plan.rounds,
         work
       }
     )
@@ -252,13 +348,19 @@ function historyOperationalCounters(
     digestNoop,
     digestSegmentsProcessed: plan.work.digestSegmentsProcessed,
     digestSourceChunksProcessed: plan.work.digestSourceChunksProcessed,
+    contextualProviderRequests: plan.work.contextualProviderRequests,
+    contextualRoundsFallback: plan.work.contextualRoundsFallback,
+    contextualRoundsGenerated: plan.work.contextualRoundsGenerated,
     historyChunksBuilt: plan.work.chunksBuilt,
     historyChunksReplaced: plan.work.chunksReplaced,
     historyChunksReused: plan.work.chunksReused,
     historyMessageContentRowsLoaded: plan.work.messageContentRowsLoaded,
     historyMessagesProjected: plan.work.messagesProjected,
     historyModelRunRowsLoaded: plan.work.modelRunRowsLoaded,
-    historyPathMetadataRowsRead: plan.work.pathMetadataRowsRead
+    historyPathMetadataRowsRead: plan.work.pathMetadataRowsRead,
+    historyRoundsBuilt: plan.work.roundsBuilt,
+    historyRoundsReplaced: plan.work.roundsReplaced,
+    historyRoundsReused: plan.work.roundsReused
   });
 }
 
@@ -298,6 +400,38 @@ export function createMemoryHistoryIndexHandler(
         );
         plan = applyMemoryHistoryClassifications(prepared.plan, classification);
         let executionResults = [...(classification.executions ?? [])];
+        const contextualTargets = plan.rounds.flatMap((round) =>
+          round.publicationState === "ACTIVE" &&
+          round.contextualKeyState === "RAW_FALLBACK"
+            ? [round.id]
+            : []);
+        if (dependencies.contextualKeyGenerator && contextualTargets.length > 0) {
+          await context.setStage("contextual_key_generation");
+          let generated: MemoryContextualKeyGenerationResult;
+          try {
+            generated = await dependencies.contextualKeyGenerator.generate(
+              plan.rounds,
+              contextualTargets,
+              {
+                jobId: claim.id,
+                signal: context.signal,
+                userId: claim.userId
+              }
+            );
+          } catch (error) {
+            if (context.signal.aborted) throw context.signal.reason;
+            generated = {
+              executions: [],
+              fallbackRoundIds: contextualTargets,
+              outputs: [],
+              policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+              providerRequests: 0
+            };
+            completionStage = "lexical_ready:contextual_unavailable";
+          }
+          executionResults.push(...generated.executions);
+          plan = attachMemoryContextualKeys(plan, generated, contextualTargets);
+        }
         if (dependencies.digestGenerator) {
           await context.setStage("digest_generation");
           let generated: MemoryChatDigestGenerationResult;
@@ -399,6 +533,7 @@ export function createPrismaMemoryHistoryIndexHandler(
   _classifier?: MemoryHistorySafetyClassifier,
   options: Readonly<{
     authority?: MemoryExecutionAuthorityDependencies;
+    contextualKeyGenerator?: MemoryContextualKeyGenerator;
     digestGenerator?: MemoryChatDigestGenerator;
     structuredProvider?: MemoryStructuredOutputProvider;
   }> = {}
@@ -435,6 +570,16 @@ export function createPrismaMemoryHistoryIndexHandler(
               authority,
               provider: options.structuredProvider
             })
+          }
+        : {}),
+    ...(options.contextualKeyGenerator
+      ? { contextualKeyGenerator: options.contextualKeyGenerator }
+      : governed
+        ? {
+            contextualKeyGenerator: createPrismaMemoryContextualKeyGenerator(
+              client,
+              { authority, provider: options.structuredProvider }
+            )
           }
         : {}),
     repository: createPrismaMemoryHistoryIndexRepository(client)

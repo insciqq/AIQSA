@@ -13,6 +13,10 @@ import {
   purgeMemoryFeedbackInvalidSource
 } from "../review/purge";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "./rounds";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
@@ -34,6 +38,7 @@ type HistoryTargetIds = Readonly<{
   candidateIds: readonly string[];
   chunkIds: readonly string[];
   digestIds: readonly string[];
+  roundIds: readonly string[];
 }>;
 
 export type MemoryHistoryPurgeProgress = Readonly<{
@@ -99,6 +104,22 @@ async function targetIds(
         )
       ORDER BY chunk."id"
     `);
+    const rounds = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT DISTINCT round."id"
+      FROM "MemoryRecallRound" AS round
+      LEFT JOIN "MemoryRecallRoundMessage" AS source_message
+        ON source_message."userId" = round."userId"
+        AND source_message."roundId" = round."id"
+      LEFT JOIN "Message" AS message
+        ON message."chatId" = source_message."chatId"
+        AND message."id" = source_message."messageId"
+      WHERE round."userId" = ${userId}
+        AND (
+          round."createdAt" <= ${barrier.createdAt}
+          OR message."createdAt" <= ${barrier.sourceCreatedAtCutoff}
+        )
+      ORDER BY round."id"
+    `);
     const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT DISTINCT digest."id"
       FROM "ChatMemoryDigest" AS digest
@@ -116,7 +137,8 @@ async function targetIds(
     return {
       candidateIds: [],
       chunkIds: chunks.map(({ id }) => id),
-      digestIds: digests.map(({ id }) => id)
+      digestIds: digests.map(({ id }) => id),
+      roundIds: rounds.map(({ id }) => id)
     };
   }
   if (selection.kind === "SOURCE") {
@@ -185,6 +207,67 @@ async function targetIds(
         )
       ORDER BY chunk."id"
     `);
+    const selectedParent = chunks.length > 0
+      ? Prisma.sql`round."parentChunkId" IN (${Prisma.join(chunks.map(({ id }) => id))}) OR`
+      : Prisma.empty;
+    const rounds = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT round."id"
+      FROM "MemoryRecallRound" AS round
+      LEFT JOIN "Chat" AS chat
+        ON chat."userId" = round."userId" AND chat."id" = round."chatId"
+      LEFT JOIN "MemoryRecallChunk" AS parent
+        ON parent."userId" = round."userId" AND parent."id" = round."parentChunkId"
+      WHERE round."userId" = ${userId}
+        AND round."chatId" = ${selection.chatId}
+        AND (
+          ${selectedParent}
+          round."state" <> 'ACTIVE'::"MemoryHistoryItemState"
+          OR chat."id" IS NULL
+          OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
+          OR round."projectionVersion" <> ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+          OR round."contextualKeyPolicyVersion" <> ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+          OR round."sourceProjectionVersion" <> ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+          OR parent."id" IS NULL
+          OR parent."state" <> 'ACTIVE'::"MemoryHistoryItemState"
+          OR NOT EXISTS (
+            SELECT 1 FROM "MemoryRecallRoundMessage" AS source_map
+            WHERE source_map."userId" = round."userId"
+              AND source_map."chatId" = round."chatId"
+              AND source_map."roundId" = round."id"
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM "MemoryRecallRoundMessage" AS source_map
+            LEFT JOIN "Message" AS source_message
+              ON source_message."chatId" = source_map."chatId"
+              AND source_message."id" = source_map."messageId"
+            WHERE source_map."userId" = round."userId"
+              AND source_map."chatId" = round."chatId"
+              AND source_map."roundId" = round."id"
+              AND (
+                source_message."id" IS NULL
+                OR source_message."updatedAt" <> source_map."sourceMessageUpdatedAt"
+                OR NOT EXISTS (
+                  WITH RECURSIVE active_path AS (
+                    SELECT message."id", message."parentMessageId"
+                    FROM "Message" AS message
+                    WHERE message."chatId" = chat."id"
+                      AND message."id" = chat."activeLeafMessageId"
+                    UNION ALL
+                    SELECT ancestor."id", ancestor."parentMessageId"
+                    FROM active_path AS child
+                    INNER JOIN "Message" AS ancestor
+                      ON ancestor."chatId" = chat."id"
+                      AND ancestor."id" = child."parentMessageId"
+                  )
+                  SELECT 1 FROM active_path
+                  WHERE active_path."id" = source_map."messageId"
+                )
+              )
+          )
+        )
+      ORDER BY round."id"
+    `);
     const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT candidate."id"
       FROM "MemoryCandidate" AS candidate
@@ -224,7 +307,8 @@ async function targetIds(
     return {
       candidateIds: candidates.map(({ id }) => id),
       chunkIds: chunks.map(({ id }) => id),
-      digestIds: digests.map(({ id }) => id)
+      digestIds: digests.map(({ id }) => id),
+      roundIds: rounds.map(({ id }) => id)
     };
   }
 
@@ -251,6 +335,30 @@ async function targetIds(
     WHERE chunk."userId" = ${userId}
       AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
     ORDER BY chunk."id"
+  `);
+  const rounds = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT DISTINCT round."id"
+    FROM "MemoryRecallRound" AS round
+    INNER JOIN "MemoryRecallRoundMessage" AS source_message
+      ON source_message."userId" = round."userId"
+      AND source_message."roundId" = round."id"
+    INNER JOIN "MemorySuppression" AS suppression
+      ON suppression."userId" = source_message."userId"
+      AND (
+        suppression."scope" = 'ALL'::"MemorySuppressionScope"
+        OR (
+          suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+          AND suppression."sourceChatId" = source_message."chatId"
+          AND suppression."sourceMessageId" = source_message."messageId"
+          AND (
+            suppression."sourceBranchGeneration" IS NULL
+            OR suppression."sourceBranchGeneration" = round."branchGeneration"
+          )
+        )
+      )
+    WHERE round."userId" = ${userId}
+      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+    ORDER BY round."id"
   `);
   const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT DISTINCT candidate."id"
@@ -296,7 +404,8 @@ async function targetIds(
   return {
     candidateIds: candidates.map(({ id }) => id),
     chunkIds: chunks.map(({ id }) => id),
-    digestIds: digests.map(({ id }) => id)
+    digestIds: digests.map(({ id }) => id),
+    roundIds: rounds.map(({ id }) => id)
   };
 }
 
@@ -304,6 +413,9 @@ function targetPredicate(ids: HistoryTargetIds): Prisma.Sql {
   const predicates: Prisma.Sql[] = [];
   if (ids.chunkIds.length > 0) {
     predicates.push(Prisma.sql`item."recallChunkId" IN (${Prisma.join([...ids.chunkIds])})`);
+  }
+  if (ids.roundIds.length > 0) {
+    predicates.push(Prisma.sql`item."recallRoundId" IN (${Prisma.join([...ids.roundIds])})`);
   }
   return predicates.length === 0
     ? Prisma.sql`FALSE`
@@ -601,10 +713,16 @@ export async function purgeMemoryHistorySelection(
   while (true) {
     const ids = await targetIds(tx, userId, selection);
     if (ids.candidateIds.length === 0 && ids.chunkIds.length === 0 &&
-      ids.digestIds.length === 0) break;
+      ids.digestIds.length === 0 && ids.roundIds.length === 0) break;
     await settleAttemptItems(tx, userId, ids);
     await tx.memorySearchEntry.deleteMany({
-      where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
+      where: {
+        OR: [
+          { recallChunkId: { in: [...ids.chunkIds] } },
+          { recallRoundId: { in: [...ids.roundIds] } }
+        ],
+        userId
+      }
     });
     if (ids.digestIds.length > 0) {
       await tx.chatMemoryDigestChunk.deleteMany({
@@ -615,6 +733,14 @@ export async function purgeMemoryHistorySelection(
       });
       await tx.chatMemoryDigest.deleteMany({
         where: { id: { in: [...ids.digestIds] }, userId }
+      });
+    }
+    if (ids.roundIds.length > 0) {
+      await tx.memoryRecallRoundMessage.deleteMany({
+        where: { roundId: { in: [...ids.roundIds] }, userId }
+      });
+      await tx.memoryRecallRound.deleteMany({
+        where: { id: { in: [...ids.roundIds] }, userId }
       });
     }
     if (ids.chunkIds.length > 0) {
@@ -650,16 +776,28 @@ export async function inspectMemoryHistoryPurge(
       ? await inspectMemoryFeedbackInvalidSource(tx, userId, selection.chatId, ids)
       : await inspectMemoryFeedbackHistoryClear(tx, userId, ids);
   const historyItemCount = ids.candidateIds.length + ids.chunkIds.length +
-    ids.digestIds.length;
+    ids.digestIds.length + ids.roundIds.length;
   let referenceCount = 0;
   let searchCount = 0;
   if (historyItemCount > 0) {
     [referenceCount, searchCount] = await Promise.all([
       tx.memoryRetrievalAttemptItem.count({
-        where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
+        where: {
+          OR: [
+            { recallChunkId: { in: [...ids.chunkIds] } },
+            { recallRoundId: { in: [...ids.roundIds] } }
+          ],
+          userId
+        }
       }),
       tx.memorySearchEntry.count({
-        where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
+        where: {
+          OR: [
+            { recallChunkId: { in: [...ids.chunkIds] } },
+            { recallRoundId: { in: [...ids.roundIds] } }
+          ],
+          userId
+        }
       })
     ]);
   }

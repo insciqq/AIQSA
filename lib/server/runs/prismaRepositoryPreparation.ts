@@ -1865,6 +1865,7 @@ export async function completePreparingRunAttemptWithClient(
           laneRanks: json(item.laneRanks),
           ordinal,
           recallChunkId: item.recallChunkId,
+          recallRoundId: item.recallRoundId,
           selectionReason: item.selectionReason,
           sourceBranchGenerationSnapshot: item.sourceBranchGenerationSnapshot,
           sourceChatIdSnapshot: item.sourceChatIdSnapshot,
@@ -2113,6 +2114,7 @@ async function loadAndValidatePreparingAttemptItems(
       laneRanks: true,
       ordinal: true,
       recallChunkId: true,
+      recallRoundId: true,
       selectionReason: true,
       sourceBranchGenerationSnapshot: true,
       sourceChatIdSnapshot: true,
@@ -2163,16 +2165,26 @@ async function loadAndValidatePreparingAttemptItems(
       item.itemType === "FACT_VERSION" &&
       item.factVersionId !== null &&
       item.recallChunkId === null &&
+      item.recallRoundId === null &&
       item.exactItemId === item.factVersionId
     ) {
       candidate = { ...common, factVersionId: item.factVersionId, itemType: "FACT_VERSION" };
     } else if (
       item.itemType === "RECALL_CHUNK" &&
       item.recallChunkId !== null &&
+      item.recallRoundId === null &&
       item.factVersionId === null &&
       item.exactItemId === item.recallChunkId
     ) {
       candidate = { ...common, itemType: "RECALL_CHUNK", recallChunkId: item.recallChunkId };
+    } else if (
+      item.itemType === "RECALL_ROUND" &&
+      item.recallRoundId !== null &&
+      item.recallChunkId === null &&
+      item.factVersionId === null &&
+      item.exactItemId === item.recallRoundId
+    ) {
+      candidate = { ...common, itemType: "RECALL_ROUND", recallRoundId: item.recallRoundId };
     } else {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
     }
@@ -2188,6 +2200,7 @@ async function loadAndValidatePreparingAttemptItems(
       item.exactItemId !== resolved.exactItemId ||
       item.factVersionId !== resolved.factVersionId ||
       item.recallChunkId !== resolved.recallChunkId ||
+      item.recallRoundId !== resolved.recallRoundId ||
       item.sourceChatIdSnapshot !== resolved.sourceChatIdSnapshot ||
       item.sourceBranchGenerationSnapshot !== resolved.sourceBranchGenerationSnapshot ||
       item.sourceRevisionSnapshot !== resolved.sourceRevisionSnapshot ||
@@ -2833,6 +2846,7 @@ export async function finalizePreparingRunWithClient(
           laneRanks: json(item.laneRanks),
           ordinal: item.ordinal,
           recallChunkId: item.recallChunkId,
+          recallRoundId: item.recallRoundId,
           selectionReason: item.selectionReason,
           sourceBranchGenerationSnapshot: item.sourceBranchGenerationSnapshot,
           sourceChatIdSnapshot: item.sourceChatIdSnapshot,

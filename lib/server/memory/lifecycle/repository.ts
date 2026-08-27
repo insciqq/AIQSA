@@ -864,11 +864,19 @@ async function applyAllReusableDeletionFence(
   await tx.memorySearchEntry.deleteMany({
     where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
   });
+  await tx.memoryRecallRound.updateMany({
+    data: { invalidatedAt: now, state: "INVALIDATED" },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
+      userId: settings.userId
+    }
+  });
   await tx.memoryRecallChunk.updateMany({
     data: { invalidatedAt: now, state: "INVALIDATED" },
     where: {
       createdAt: { lte: barrier.createdAt },
-      state: "ACTIVE",
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
       userId: settings.userId
     }
   });
@@ -1112,11 +1120,21 @@ export function createPrismaMemoryLifecycleRepository(
           }
         });
         await tx.memorySearchEntry.deleteMany({
-          where: { recallChunkId: { not: null }, userId }
+          where: {
+            OR: [
+              { recallChunkId: { not: null } },
+              { recallRoundId: { not: null } }
+            ],
+            userId
+          }
+        });
+        await tx.memoryRecallRound.updateMany({
+          data: { invalidatedAt: input.now, state: "INVALIDATED" },
+          where: { state: { in: ["ACTIVE", "SUPPRESSED"] }, userId }
         });
         await tx.memoryRecallChunk.updateMany({
           data: { invalidatedAt: input.now, state: "INVALIDATED" },
-          where: { state: "ACTIVE", userId }
+          where: { state: { in: ["ACTIVE", "SUPPRESSED"] }, userId }
         });
         await tx.chatMemoryCheckpoint.updateMany({
           data: {

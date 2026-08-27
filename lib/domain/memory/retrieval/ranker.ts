@@ -37,6 +37,10 @@ function validUnit(value: number): boolean {
 
 function validMetadata(value: MemoryCandidateMetadata): boolean {
   return value.dedupeKey.length > 0 && value.dedupeKey.length <= 256 &&
+    (value.evidenceRootHash === undefined || value.evidenceRootHash === null ||
+      /^[a-f0-9]{64}$/u.test(value.evidenceRootHash)) &&
+    (value.parentChunkId === undefined || value.parentChunkId === null ||
+      value.parentChunkId.length > 0 && value.parentChunkId.length <= 256) &&
     validUnit(value.confidence) && validUnit(value.importance) &&
     validUnit(value.scopeAffinity) && validUnit(value.temperatureScore) &&
     [value.expectedAt, value.expiresAt, value.lastConfirmedAt, value.lastUsedAt,
@@ -72,6 +76,7 @@ function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetad
     left.directness === right.directness && left.dimensionKey === right.dimensionKey &&
     left.entityIds.length === right.entityIds.length &&
     left.entityIds.every((id, index) => id === right.entityIds[index]) &&
+    (left.evidenceRootHash ?? null) === (right.evidenceRootHash ?? null) &&
     sameDate(left.expectedAt, right.expectedAt) && sameDate(left.expiresAt, right.expiresAt) &&
     left.factId === right.factId &&
     left.historical === right.historical &&
@@ -86,6 +91,7 @@ function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetad
     sameDate(left.occurredTo, right.occurredTo) &&
     sameDate(left.observedAt, right.observedAt) && sameDate(left.occurredAt, right.occurredAt) &&
     left.pinned === right.pinned && left.predicateKey === right.predicateKey &&
+    (left.parentChunkId ?? null) === (right.parentChunkId ?? null) &&
     left.relationDepth === right.relationDepth &&
     left.scopeAffinity === right.scopeAffinity && left.scopeType === right.scopeType &&
     left.sensitivityClass === right.sensitivityClass &&
@@ -168,7 +174,9 @@ function boundedCandidates(
       if (
         candidate.lane !== result.lane || !candidate.hardFilterPassed ||
         !candidate.itemId || candidate.itemId.length > 256 ||
-        !["FACT_VERSION", "RECALL_CHUNK"].includes(candidate.itemType) ||
+        !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND"].includes(
+          candidate.itemType
+        ) ||
         (result.lane === "FACT_PROFILE" && candidate.itemType !== "FACT_VERSION") ||
         !Number.isFinite(candidate.rawScore) || !validMetadata(candidate.metadata)
       ) continue;
@@ -177,17 +185,28 @@ function boundedCandidates(
   }
   const bounded: MemoryLaneCandidate[] = [];
   for (const lane of MEMORY_RETRIEVAL_LANE_ORDER) {
-    const seen = new Set<string>();
+    const laneCandidates: MemoryLaneCandidate[] = [];
+    const seen = new Map<string, number>();
+    const laneLimit = memoryRetrievalLaneLimit(lane, plan.aggregationRequested);
     for (const candidate of byLane.get(lane) ?? []) {
-      const key = candidateKey(candidate);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      bounded.push(candidate);
-      if (
-        seen.size >= memoryRetrievalLaneLimit(lane, plan.aggregationRequested) ||
-        bounded.length >= candidateCeiling
-      ) break;
+      const key = candidate.itemType === "FACT_VERSION"
+        ? candidateKey(candidate)
+        : memoryRetrievalEvidenceRootKey(candidate);
+      const previousIndex = seen.get(key);
+      if (previousIndex !== undefined) {
+        const previous = laneCandidates[previousIndex]!;
+        if (candidate.itemType === "RECALL_ROUND" &&
+          previous.itemType !== "RECALL_ROUND") {
+          laneCandidates[previousIndex] = candidate;
+        }
+        continue;
+      }
+      if (laneCandidates.length >= laneLimit ||
+        bounded.length + laneCandidates.length >= candidateCeiling) continue;
+      seen.set(key, laneCandidates.length);
+      laneCandidates.push(candidate);
     }
+    bounded.push(...laneCandidates);
     if (bounded.length >= candidateCeiling) break;
   }
   return bounded;
@@ -206,9 +225,9 @@ export function memoryRetrievalEvidenceRootKey(
   // The same projection reached through several lanes is one piece of
   // evidence, while byte-identical projections from different conversations
   // remain independent source roots.
-  return candidate.itemType === "RECALL_CHUNK"
+  return candidate.itemType !== "FACT_VERSION"
     ? `history:${candidate.metadata.sourceChatId ?? "missing-source"}:` +
-      candidate.metadata.dedupeKey
+      (candidate.metadata.evidenceRootHash ?? candidate.metadata.dedupeKey)
     : `fact:${candidate.metadata.dedupeKey}`;
 }
 
@@ -250,7 +269,7 @@ export function fuseMemoryRetrievalCandidates(
           (MEMORY_RETRIEVAL_RRF_K + rank)
     });
   }
-  const ranked = [...aggregates.entries()].flatMap(([key, aggregate]) => {
+  const itemRanked = [...aggregates.entries()].flatMap(([key, aggregate]) => {
     if (invalidKeys.has(key)) return [];
     const laneCount = Object.keys(aggregate.laneRanks).length;
     return [{
@@ -284,13 +303,63 @@ export function fuseMemoryRetrievalCandidates(
     left.itemType.localeCompare(right.itemType) ||
     left.itemId.localeCompare(right.itemId)
   );
-  const dedupe = new Set<string>();
-  return ranked.filter((candidate) => {
-    const key = memoryRetrievalEvidenceRootKey(candidate);
-    if (dedupe.has(key)) return false;
-    dedupe.add(key);
-    return true;
-  }).slice(0, plan.aggregationRequested
+  const byEvidenceRoot = new Map<string, MemoryRankedCandidate>();
+  for (const candidate of itemRanked) {
+    const root = memoryRetrievalEvidenceRootKey(candidate);
+    const previous = byEvidenceRoot.get(root);
+    if (!previous) {
+      byEvidenceRoot.set(root, candidate);
+      continue;
+    }
+    // Fact-root behavior remains first-wins. Equivalent history projections
+    // instead contribute their distinct lane evidence once and select the
+    // authoritative round representation over its parent chunk.
+    if (candidate.itemType === "FACT_VERSION" ||
+      previous.itemType === "FACT_VERSION") continue;
+    const representative = candidate.itemType === "RECALL_ROUND" &&
+        previous.itemType !== "RECALL_ROUND"
+      ? candidate
+      : previous;
+    const laneRanks: Partial<Record<MemoryRetrievalLane, number>> = {
+      ...previous.laneRanks
+    };
+    for (const lane of MEMORY_RETRIEVAL_LANE_ORDER) {
+      const nextRank = candidate.laneRanks[lane];
+      if (nextRank === undefined) continue;
+      laneRanks[lane] = Math.min(laneRanks[lane] ?? nextRank, nextRank);
+    }
+    const rrfScore = MEMORY_RETRIEVAL_LANE_ORDER.reduce((sum, lane) => {
+      const rank = laneRanks[lane];
+      return rank === undefined
+        ? sum
+        : sum + MEMORY_RETRIEVAL_LANE_WEIGHTS[lane] /
+          (MEMORY_RETRIEVAL_RRF_K + rank);
+    }, 0);
+    const deterministicMatches = deterministicMatchOrder.filter((match) =>
+      previous.featureSnapshot.deterministicMatches?.includes(match) ||
+      candidate.featureSnapshot.deterministicMatches?.includes(match));
+    byEvidenceRoot.set(root, {
+      ...representative,
+      featureSnapshot: {
+        ...representative.featureSnapshot,
+        deterministicMatches,
+        laneCount: Object.keys(laneRanks).length
+      },
+      finalScore: rrfScore,
+      laneRanks,
+      rrfScore,
+      selectionReason: selectionReason(laneRanks)
+    });
+  }
+  return [...byEvidenceRoot.values()].sort((left, right) =>
+    right.finalScore - left.finalScore ||
+    right.featureSnapshot.temporalFit - left.featureSnapshot.temporalFit ||
+    right.featureSnapshot.authorityRank - left.featureSnapshot.authorityRank ||
+    Number(right.itemType === "RECALL_ROUND") -
+      Number(left.itemType === "RECALL_ROUND") ||
+    left.itemType.localeCompare(right.itemType) ||
+    left.itemId.localeCompare(right.itemId)
+  ).slice(0, plan.aggregationRequested
     ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
     : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES);
 }

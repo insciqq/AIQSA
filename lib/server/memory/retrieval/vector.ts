@@ -9,9 +9,16 @@ import { prisma } from "../../prisma";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
-import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
+import {
+  memoryHistoryChunkSourceAuthorityPredicate,
+  memoryHistoryRoundSourceAuthorityPredicate
+} from "../persistence/pauseIntervals";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
   "memory-personal-retrieval-v8-vector";
@@ -32,7 +39,7 @@ export type MemoryVectorDimension = 1_024 | 1_536;
 export type MemoryVectorStrategy = "EXACT" | "HNSW";
 export type CurrentMemorySearchItemType = Extract<
   MemorySearchItemType,
-  "FACT_VERSION" | "RECALL_CHUNK"
+  "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND"
 >;
 
 export type MemoryVectorProfile = Readonly<{
@@ -242,7 +249,8 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
   const historySafety = new Set(["NORMAL", "SENSITIVE"]);
   const itemTypes = new Set<CurrentMemorySearchItemType>([
     "FACT_VERSION",
-    "RECALL_CHUNK"
+    "RECALL_CHUNK",
+    "RECALL_ROUND"
   ]);
   const sourceChatIds = input.eligibility.sourceChatIds;
   const squaredNorm = input.vector.reduce((total, value) => total + value * value, 0);
@@ -392,6 +400,31 @@ function optionalHistoryPredicates(input: MemoryVectorSearchInput): Prisma.Sql[]
   return predicates;
 }
 
+function optionalRoundPredicates(input: MemoryVectorSearchInput): Prisma.Sql[] {
+  const eligibility = input.eligibility;
+  const predicates: Prisma.Sql[] = [];
+  if (eligibility.sourceChatIds) {
+    predicates.push(Prisma.sql`round."chatId" IN (${valuesSql(
+      eligibility.sourceChatIds
+    )})`);
+  }
+  if (eligibility.sourceFolderId) {
+    predicates.push(Prisma.sql`round."sourceFolderId" = ${eligibility.sourceFolderId}`);
+  }
+  if (eligibility.sourceAssistantId) {
+    predicates.push(
+      Prisma.sql`round."sourceAssistantId" = ${eligibility.sourceAssistantId}`
+    );
+  }
+  if (eligibility.occurredFrom) {
+    predicates.push(Prisma.sql`round."occurredTo" >= ${eligibility.occurredFrom}`);
+  }
+  if (eligibility.occurredTo) {
+    predicates.push(Prisma.sql`round."occurredFrom" <= ${eligibility.occurredTo}`);
+  }
+  return predicates;
+}
+
 function factConversationFeedbackPredicate(input: MemoryVectorSearchInput): Prisma.Sql {
   if (!input.eligibility.chatId) return Prisma.sql`TRUE`;
   return Prisma.sql`NOT EXISTS (
@@ -432,6 +465,29 @@ function chunkConversationFeedbackPredicate(input: MemoryVectorSearchInput): Pri
       AND NOT EXISTS (
         SELECT 1
         FROM "MemoryFeedback" AS feedback_retraction
+        WHERE feedback_retraction."userId" = negative_feedback."userId"
+          AND feedback_retraction."feedbackType" = 'RETRACT'::"MemoryFeedbackType"
+          AND feedback_retraction."retractsFeedbackId" = negative_feedback."id"
+          AND feedback_retraction."contentPurgedAt" IS NULL
+      )
+  )`;
+}
+
+function roundConversationFeedbackPredicate(input: MemoryVectorSearchInput): Prisma.Sql {
+  if (!input.eligibility.chatId) return Prisma.sql`TRUE`;
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1
+    FROM "MemoryFeedback" AS negative_feedback
+    INNER JOIN "ModelRun" AS negative_run
+      ON negative_run."userId" = negative_feedback."userId"
+      AND negative_run."id" = negative_feedback."modelRunId"
+    WHERE negative_feedback."userId" = entry."userId"
+      AND negative_feedback."feedbackType" = 'NOT_USEFUL'::"MemoryFeedbackType"
+      AND negative_feedback."recallRoundId" = round."id"
+      AND negative_feedback."contentPurgedAt" IS NULL
+      AND negative_run."chatId" = ${input.eligibility.chatId}
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryFeedback" AS feedback_retraction
         WHERE feedback_retraction."userId" = negative_feedback."userId"
           AND feedback_retraction."feedbackType" = 'RETRACT'::"MemoryFeedbackType"
           AND feedback_retraction."retractsFeedbackId" = negative_feedback."id"
@@ -628,6 +684,103 @@ function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   };
 }
 
+function roundEligibility(input: MemoryVectorSearchInput): EligibilitySql {
+  const allowed = valuesSql(input.eligibility.allowedHistorySafety);
+  const optional = optionalRoundPredicates(input);
+  return {
+    itemId: Prisma.sql`entry."recallRoundId"`,
+    joins: commonJoins(),
+    predicates: [
+      ...commonPredicates(input),
+      Prisma.sql`entry."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"`,
+      Prisma.sql`EXISTS (
+        SELECT 1
+        FROM "UserMemorySettings" AS history_settings
+        INNER JOIN "MemoryIndexGeneration" AS round_generation
+          ON round_generation."userId" = history_settings."userId"
+          AND round_generation."id" = entry."indexGenerationId"
+          AND round_generation."roundProjectionVersion" =
+            ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+          AND round_generation."contextualKeyPolicyVersion" =
+            ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+        INNER JOIN "MemoryRecallRound" AS round
+          ON round."userId" = history_settings."userId"
+          AND round."id" = entry."recallRoundId"
+        INNER JOIN "MemoryRecallChunk" AS parent_chunk
+          ON parent_chunk."userId" = round."userId"
+          AND parent_chunk."id" = round."parentChunkId"
+        INNER JOIN "Chat" AS source_chat
+          ON source_chat."userId" = round."userId"
+          AND source_chat."id" = round."chatId"
+        INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+          ON checkpoint."userId" = round."userId"
+          AND checkpoint."chatId" = round."chatId"
+        WHERE history_settings."userId" = entry."userId"
+          AND history_settings."useMemoryFacts" = TRUE
+          AND history_settings."referenceChatHistory" = TRUE
+          AND entry."safeContentHash" = round."contextualSearchHash"
+          AND round."state" = 'ACTIVE'::"MemoryHistoryItemState"
+          AND round."projectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+          AND round."contextualKeyPolicyVersion" =
+            ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+          AND round."sourceProjectionVersion" =
+            ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+          AND round."safetyClass"::text IN (${allowed})
+          AND round."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+          AND parent_chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+          AND parent_chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+          AND parent_chunk."sourceProjectionVersion" =
+            ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+          AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND source_chat."projectId" IS NULL
+          AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+          AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+          AND ${memoryHistoryRoundSourceAuthorityPredicate({
+            chat: "source_chat",
+            checkpoint: "checkpoint"
+          })}
+          AND ${roundConversationFeedbackPredicate(input)}
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemorySuppression" AS suppression
+            LEFT JOIN "MemoryRecallRoundMessage" AS round_message
+              ON round_message."userId" = round."userId"
+              AND round_message."roundId" = round."id"
+              AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+              AND suppression."sourceChatId" = round_message."chatId"
+              AND suppression."sourceMessageId" = round_message."messageId"
+            WHERE suppression."userId" = round."userId"
+              AND (suppression."expiresAt" IS NULL
+                OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+              AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+                round_message."messageId" IS NOT NULL
+                AND (suppression."sourceBranchGeneration" IS NULL OR
+                  suppression."sourceBranchGeneration" = round."branchGeneration")
+              ))
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemorySourceBarrier" AS barrier
+            WHERE barrier."userId" = round."userId"
+              AND barrier."kind" IN (
+                'HISTORY_INDEX'::"MemorySourceBarrierKind",
+                'ALL_REUSABLE'::"MemorySourceBarrierKind"
+              )
+              AND barrier."explicitOverrideAllowed" = FALSE
+              AND (round."createdAt" <= barrier."createdAt" OR EXISTS (
+                SELECT 1 FROM "MemoryRecallRoundMessage" AS barrier_source
+                INNER JOIN "Message" AS barrier_message
+                  ON barrier_message."chatId" = barrier_source."chatId"
+                  AND barrier_message."id" = barrier_source."messageId"
+                WHERE barrier_source."userId" = round."userId"
+                  AND barrier_source."roundId" = round."id"
+                  AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+              ))
+          )
+          AND ${Prisma.join(optional.length > 0 ? optional : [Prisma.sql`TRUE`], " AND ")}
+      )`
+    ]
+  };
+}
+
 function eligibilitySql(
   input: MemoryVectorSearchInput,
   itemType: CurrentMemorySearchItemType
@@ -635,6 +788,7 @@ function eligibilitySql(
   switch (itemType) {
     case "FACT_VERSION": return factEligibility(input);
     case "RECALL_CHUNK": return chunkEligibility(input);
+    case "RECALL_ROUND": return roundEligibility(input);
   }
 }
 

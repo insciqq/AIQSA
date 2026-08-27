@@ -148,7 +148,56 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v12");
+    expect(pack.packerVersion).toBe("memory-context-packer-v13");
+  });
+
+  it("packs a recall-round hit only from its authoritative raw projection", () => {
+    const base = ranked("round-1", true);
+    const candidate: MemoryRankedCandidate = {
+      ...base,
+      itemType: "RECALL_ROUND",
+      metadata: {
+        ...base.metadata,
+        evidenceRootHash: "a".repeat(64),
+        parentChunkId: "parent-chunk-1"
+      }
+    };
+    const rawRound = "User: We selected cedar.\n\nAssistant: Acknowledged.";
+    const pack = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion("round-1", true, rawRound),
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        supportingItemId: "parent-chunk-1"
+      }],
+      plan: pastChatPlan,
+      ranked: [candidate]
+    });
+
+    expect(pack.items).toMatchObject([{
+      evidenceType: "raw_round",
+      exactSafeText: rawRound,
+      itemId: "round-1",
+      projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      supportingItemId: "parent-chunk-1"
+    }]);
+    expect(renderedEvidence(pack)).toMatchObject([{
+      evidence_type: "raw_round",
+      raw_safe_evidence: rawRound,
+      speaker_scope: "mixed_conversation"
+    }]);
+
+    const missingParent = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion("round-1", true, rawRound),
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT"
+      }],
+      plan: pastChatPlan,
+      ranked: [candidate]
+    });
+    expect(missingParent.items).toEqual([]);
+    expect(missingParent.omissionCounts.unsafe_expansion_shape).toBe(1);
   });
 
   it("labels depth-one synthesis in a separate inferred-pattern section", () => {

@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { memoryCounterEffectFor } from "../../../domain/memory/counters";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
@@ -86,7 +87,7 @@ async function invalidateAffectedHistory(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent,
   now: Date
-): Promise<Readonly<{ chunks: number; digest: number }>> {
+): Promise<Readonly<{ chunks: number; digest: number; rounds: number }>> {
   const invalidateAll = event.snapshot.memoryMode !== "NORMAL" ||
     event.snapshot.activeLeafMessageId === null ||
     event.previous.folderId !== event.snapshot.folderId ||
@@ -137,6 +138,38 @@ async function invalidateAffectedHistory(
           )
         ORDER BY chunk."id"
       `;
+  const roundParentPredicate = chunks.length > 0
+    ? Prisma.sql`round."parentChunkId" IN (${Prisma.join(chunks.map(({ id }) => id))}) OR`
+    : Prisma.empty;
+  const rounds = invalidateAll
+    ? await tx.memoryRecallRound.findMany({
+        select: { id: true },
+        where: {
+          chatId: event.snapshot.id,
+          state: { in: ["ACTIVE", "SUPPRESSED"] },
+          userId: event.snapshot.userId
+        }
+      })
+    : await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT round."id"
+        FROM "MemoryRecallRound" AS round
+        WHERE round."userId" = ${event.snapshot.userId}
+          AND round."chatId" = ${event.snapshot.id}
+          AND round."state" IN (
+            'ACTIVE'::"MemoryHistoryItemState",
+            'SUPPRESSED'::"MemoryHistoryItemState"
+          )
+          AND (
+            ${roundParentPredicate}
+            NOT EXISTS (
+              SELECT 1 FROM "MemoryRecallChunk" AS parent
+              WHERE parent."userId" = round."userId"
+                AND parent."id" = round."parentChunkId"
+                AND parent."state" = 'ACTIVE'::"MemoryHistoryItemState"
+            )
+          )
+        ORDER BY round."id"
+      `);
   const activeDigest = await tx.chatMemoryDigest.findFirst({
     select: { id: true },
     where: {
@@ -151,16 +184,29 @@ async function invalidateAffectedHistory(
       where: { id: activeDigest.id }
     });
   }
-  if (chunks.length === 0) {
-    return { chunks: 0, digest: Number(activeDigest !== null) };
+  if (chunks.length === 0 && rounds.length === 0) {
+    return { chunks: 0, digest: Number(activeDigest !== null), rounds: 0 };
   }
 
   await tx.memorySearchEntry.deleteMany({
     where: {
-      recallChunkId: { in: chunks.map((chunk) => chunk.id) },
+      OR: [
+        { recallChunkId: { in: chunks.map((chunk) => chunk.id) } },
+        { recallRoundId: { in: rounds.map((round) => round.id) } }
+      ],
       userId: event.snapshot.userId
     }
   });
+  if (rounds.length > 0) {
+    await tx.memoryRecallRound.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        id: { in: rounds.map((round) => round.id) },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: event.snapshot.userId
+      }
+    });
+  }
   await tx.memoryRecallChunk.updateMany({
     data: { invalidatedAt: now, state: "INVALIDATED" },
     where: {
@@ -169,7 +215,11 @@ async function invalidateAffectedHistory(
       userId: event.snapshot.userId
     }
   });
-  return { chunks: chunks.length, digest: Number(activeDigest !== null) };
+  return {
+    chunks: chunks.length,
+    digest: Number(activeDigest !== null),
+    rounds: rounds.length
+  };
 }
 
 async function settleVisibleMutationCounter(
@@ -316,10 +366,11 @@ export async function applyMemoryHistorySourceMutation(
     if (!retainsVisibleHistoryWhilePaused(settings, event)) {
       const now = new Date();
       const invalidated = await invalidateAffectedHistory(tx, event, now);
-      if (invalidated.chunks > 0 || invalidated.digest > 0) {
+      if (invalidated.chunks > 0 || invalidated.digest > 0 || invalidated.rounds > 0) {
         await settleVisibleMutationCounter(tx, settings, event);
         if (!permanentDelete && (
-          invalidated.chunks > 0 || event.snapshot.memoryMode !== "NORMAL"
+          invalidated.chunks > 0 || invalidated.rounds > 0 ||
+            event.snapshot.memoryMode !== "NORMAL"
         )) {
           const deletion = await enqueueMemoryDeletion(tx, settings, {
             operation: "SOURCE_PURGE",

@@ -340,6 +340,98 @@ describe("preparing Memory item finalization", () => {
     expect(historySql).toContain('negative_feedback."recallChunkId" =');
   });
 
+  it("freezes an authoritative raw round with its exact parent and source map", async () => {
+    const rawSafeText = "User: We selected cedar.\n\nAssistant: Acknowledged.";
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [{
+      branchGeneration: 5,
+      chatId: "source-chat",
+      contentHash: "c".repeat(64),
+      contextualKeyPolicyVersion: "memory-contextual-narrative-key-v1",
+      contextualKeyState: "GENERATED",
+      evidenceRootHash: "e".repeat(64),
+      languageCode: "en",
+      parentChunkId: "parent-chunk-1",
+      projectionVersion: "memory-recall-round-projection-v1",
+      redactionState: "NOT_NEEDED",
+      safeText: rawSafeText,
+      safetyClass: "NORMAL",
+      sourceAssistantId: null,
+      sourceFolderId: null,
+      sourceRevision: 9,
+      state: "ACTIVE"
+    }]);
+    const tx = {
+      $queryRaw,
+      memoryRecallRoundMessage: {
+        findMany: vi.fn(async () => [
+          { messageId: "source-user" },
+          { messageId: "source-assistant" }
+        ])
+      }
+    } as unknown as Prisma.TransactionClient;
+
+    const resolved = await resolvePreparingMemoryItem(
+      tx,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What did we select?",
+      {
+        exactItemId: "round-1",
+        exactSafeText: rawSafeText,
+        featureSnapshot: {
+          aggregationRequested: false,
+          retrievalMode: "PAST_CHAT_SEARCH"
+        },
+        finalScore: 0.9,
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        recallRoundId: "round-1",
+        selectionReason: "history_recall_vector",
+        supportingItemId: "parent-chunk-1"
+      }
+    );
+
+    expect(resolved).toMatchObject({
+      exactItemId: "round-1",
+      itemType: "RECALL_ROUND",
+      recallChunkId: null,
+      recallRoundId: "round-1",
+      sourceBranchGenerationSnapshot: 5,
+      sourceContentHashSnapshot: "c".repeat(64),
+      sourceMessageIdsSnapshot: ["source-user", "source-assistant"],
+      sourceRevisionSnapshot: 9,
+      sourceSnapshot: {
+        evidenceRootHash: "e".repeat(64),
+        parentChunkId: "parent-chunk-1",
+        supportingItemId: "parent-chunk-1"
+      },
+      versionSnapshot: {
+        contextualKeyState: "GENERATED",
+        projectionVersion: "memory-recall-round-projection-v1"
+      }
+    });
+    const sql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
+    expect(sql).toContain("'RECALL_ROUND'::\"MemorySearchItemType\"");
+    expect(sql).toContain('round."contextualKeyPolicyVersion" =');
+    expect(sql).toContain('parent."chunkingVersion" =');
+    expect(sql).toContain('negative_feedback."recallRoundId" =');
+
+    await expect(resolvePreparingMemoryItem(
+      tx,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What did we select?",
+      {
+        exactItemId: "round-1",
+        exactSafeText: rawSafeText,
+        finalScore: 0.9,
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        recallRoundId: "round-1",
+        selectionReason: "history_recall_vector",
+        supportingItemId: "different-parent"
+      }
+    )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
+  });
+
   it("rejoins an authorized overview or aggregation digest through exact sources", async () => {
     const digestText = "Summary: Cedar was selected for the deployment.";
     const digestMessageIds = Array.from(

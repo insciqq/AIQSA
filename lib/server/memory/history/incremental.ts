@@ -84,7 +84,7 @@ export function planMemoryHistoryTailUpdate(input: Readonly<{
           0,
           commonPathMessageCount - MEMORY_HISTORY_DIVERGENCE_REWIND_MESSAGES
         )
-      : Math.max(0, commonPathMessageCount - 2);
+      : Math.max(0, commonPathMessageCount - 4);
   const currentOrdinals = new Map(
     input.currentMessages.map((message, ordinal) => [message.messageId, ordinal])
   );

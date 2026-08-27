@@ -50,3 +50,15 @@ export function memoryChunkConversationFeedbackPredicate(
     Prisma.sql`negative_feedback."recallChunkId" = ${chunkId}`
   );
 }
+
+export function memoryRoundConversationFeedbackPredicate(
+  userId: string,
+  chatId: string,
+  roundId: Prisma.Sql = Prisma.sql`round."id"`
+): Prisma.Sql {
+  return memoryConversationFeedbackPredicate(
+    userId,
+    chatId,
+    Prisma.sql`negative_feedback."recallRoundId" = ${roundId}`
+  );
+}

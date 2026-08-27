@@ -7,6 +7,10 @@ import {
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../../memory/history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../../memory/history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../../memory/history/sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../../memory/history/rounds";
 import { memoryPersonalFactEvidencePredicate } from "../../memory/persistence/eligibility";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
@@ -49,18 +53,22 @@ function boundedLabel(value: string): string {
 
 function generationConfigurationCurrent(generation: Readonly<{
   chunkingVersion: string;
+  contextualKeyPolicyVersion: string | null;
   embeddingProviderModelId: string | null;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
   languageProfile: string;
   normalizationVersion: string;
   retrievalPipelineVersion: string;
+  roundProjectionVersion: string | null;
   state: string;
 }>, embeddingProviderModelId: string | null): boolean {
   if (
     generation.state !== "ACTIVE" ||
     generation.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
+    generation.contextualKeyPolicyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
     generation.languageProfile !== MEMORY_LEXICAL_LANGUAGE_PROFILE ||
-    generation.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION
+    generation.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
+    generation.roundProjectionVersion !== MEMORY_RECALL_ROUND_PROJECTION_VERSION
   ) {
     return false;
   }
@@ -142,6 +150,7 @@ export function createPrismaAdminMemoryStatusRepository(
           : client.memoryIndexGeneration.findMany({
               select: {
                 chunkingVersion: true,
+                contextualKeyPolicyVersion: true,
                 embeddingProviderModelId: true,
                 generation: true,
                 id: true,
@@ -149,6 +158,7 @@ export function createPrismaAdminMemoryStatusRepository(
                 languageProfile: true,
                 normalizationVersion: true,
                 retrievalPipelineVersion: true,
+                roundProjectionVersion: true,
                 state: true,
                 userId: true
               },

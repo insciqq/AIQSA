@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryJobClaim } from "../coordinator/types";
+import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import type { MemoryHistorySafetyClassifier } from "./classifier";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
@@ -22,6 +23,10 @@ import {
   MemoryChatDigestOutputError
 } from "./digest";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "./rounds";
 import type { MemoryHistoryIndexRepository } from "./repository";
 
 const source: MemoryHistoryIndexSourceIdentity = Object.freeze({
@@ -91,10 +96,55 @@ function chunk(id: string, ordinal: number): MemoryHistoryIndexPlan["chunks"][nu
   };
 }
 
-function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndexPlan {
+function round(
+  id: string,
+  parentChunkId: string,
+  ordinal: number
+): MemoryHistoryIndexPlan["rounds"][number] {
+  const rawSafeText = `User: contextual history ${ordinal}\n\nAssistant: acknowledged`;
+  return {
+    approxTokens: 8,
+    branchGeneration: source.branchGeneration,
+    chatId: source.chatId,
+    contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+    contextualKeyState: "RAW_FALLBACK",
+    contextualNarrativeText: rawSafeText,
+    contextualSearchHash: memorySha256(rawSafeText.toLocaleLowerCase("und")),
+    contextualSearchText: rawSafeText.toLocaleLowerCase("und"),
+    contentHash: memorySha256({ id, rawSafeText }),
+    evidenceRootHash: memorySha256({ id, type: "evidence-root" }),
+    folderId: null,
+    groupId: `turn-${ordinal}`,
+    groupKind: "TURN",
+    id,
+    languageCode: "en",
+    messageJoins: [],
+    occurredFrom: "2026-08-10T10:00:00.000Z",
+    occurredTo: "2026-08-10T10:01:00.000Z",
+    ordinal,
+    parentChunkId,
+    projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+    publicationState: "ACTIVE",
+    rawSafeText,
+    redactionReasonCodes: [],
+    redactionState: "NOT_NEEDED",
+    safetyClass: "NORMAL",
+    sourceAssistantId: null,
+    sourceContentHash: source.sourceHash,
+    sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+    sourceRevision: source.sourceRevision,
+    userId: source.userId
+  };
+}
+
+function plan(
+  chunks: MemoryHistoryIndexPlan["chunks"] = [],
+  rounds: MemoryHistoryIndexPlan["rounds"] = []
+): MemoryHistoryIndexPlan {
   const suppressionIdentitySnapshot = "b".repeat(64);
   const checkpointMessages: MemoryHistoryIndexPlan["checkpointMessages"] = [];
   const rebuiltChunkIds = chunks.map(({ id }) => id);
+  const rebuiltRoundIds = rounds.map(({ id }) => id);
   const incremental = {
     commonPathMessageCount: 0,
     mode: "FULL_REBUILD" as const,
@@ -110,6 +160,9 @@ function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndex
       checkpointMessages,
       incremental,
       rebuiltChunkIds,
+      rebuiltRoundIds,
+      reusedRoundIds: [],
+      rounds,
       work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
     }
   );
@@ -122,8 +175,11 @@ function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndex
     incremental,
     preparedResultHash: resultHash,
     rebuiltChunkIds,
+    rebuiltRoundIds,
     resultHash,
     reusedChunkIds: [],
+    reusedRoundIds: [],
+    rounds,
     source,
     suppressionIdentitySnapshot,
     timeZone: "UTC",
@@ -255,6 +311,91 @@ describe("Memory INDEX_HISTORY handler", () => {
         classificationPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
         preparedResultHash: currentPlan.resultHash,
         resultHash: result.acceptedResultHash
+      }),
+      new Date("2026-08-10T12:00:00.000Z")
+    );
+  });
+
+  it("retries active raw-fallback contextual keys and authorizes the output", async () => {
+    const currentClaim = claim();
+    const parent = chunk("chunk-round-parent", 0);
+    const projectedRound = round("round-1", parent.id, 0);
+    const rebuilt = plan([parent], [projectedRound]);
+    const currentPlan: MemoryHistoryIndexPlan = {
+      ...rebuilt,
+      rebuiltRoundIds: [],
+      reusedRoundIds: [projectedRound.id]
+    };
+    const apply = vi.fn(async () => undefined);
+    const authorizeResults = vi.fn(async () => undefined);
+    const contextualKeyGenerator = {
+      generate: vi.fn(async () => ({
+        executions: [{
+          acceptedOutputHash: "c".repeat(64),
+          bindingId: "contextual-generation"
+        }],
+        fallbackRoundIds: [],
+        outputs: [{
+          roundId: projectedRound.id,
+          statements: ["User contextual history 0"]
+        }],
+        policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION as
+          typeof MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+        providerRequests: 1
+      }))
+    };
+    const executionContext = context();
+    const handler = createMemoryHistoryIndexHandler({
+      authorizeResults,
+      contextualKeyGenerator,
+      repository: {
+        apply,
+        preflight: vi.fn(async () => ({ status: "READY" as const })),
+        prepare: vi.fn(async () => ({ plan: currentPlan }))
+      } as unknown as MemoryHistoryIndexRepository
+    });
+
+    const result = await handler.execute(currentClaim, executionContext);
+
+    expect(contextualKeyGenerator.generate).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: projectedRound.id })]),
+      [projectedRound.id],
+      expect.objectContaining({ jobId: currentClaim.id, userId: source.userId })
+    );
+    expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
+      "source_snapshot",
+      "safety_classification",
+      "contextual_key_generation",
+      "lexical_apply"
+    ]);
+    expect(result.operationalCounters).toMatchObject({
+      contextualProviderRequests: 1,
+      contextualRoundsFallback: 0,
+      contextualRoundsGenerated: 1,
+      historyRoundsBuilt: 0
+    });
+    await result.apply?.({
+      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
+    } as never, currentClaim);
+    expect(authorizeResults).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      source.userId,
+      currentClaim.id,
+      [{
+        acceptedOutputHash: "c".repeat(64),
+        bindingId: "contextual-generation"
+      }]
+    );
+    expect(apply).toHaveBeenCalledWith(
+      expect.anything(),
+      currentClaim,
+      expect.objectContaining({
+        rounds: [expect.objectContaining({
+          contextualKeyState: "GENERATED",
+          contextualNarrativeText: "User contextual history 0",
+          id: projectedRound.id
+        })]
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );

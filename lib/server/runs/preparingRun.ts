@@ -81,6 +81,11 @@ export type MemoryPreparingItemInput = MemoryPreparingItemInputBase & (
       itemType: "RECALL_CHUNK";
       recallChunkId: string;
     }>
+  | Readonly<{
+      exactItemId: string;
+      itemType: "RECALL_ROUND";
+      recallRoundId: string;
+    }>
 );
 
 export type MemoryPreparingItemTarget = Readonly<{
@@ -88,6 +93,7 @@ export type MemoryPreparingItemTarget = Readonly<{
   factVersionId: string | null;
   itemType: MemoryRetrievalItemType;
   recallChunkId: string | null;
+  recallRoundId: string | null;
 }>;
 
 export function memoryPreparingItemTarget(
@@ -101,7 +107,8 @@ export function memoryPreparingItemTarget(
           exactItemId,
           factVersionId: item.factVersionId,
           itemType: "FACT_VERSION",
-          recallChunkId: null
+          recallChunkId: null,
+          recallRoundId: null
         }
       : null;
   }
@@ -111,7 +118,18 @@ export function memoryPreparingItemTarget(
       exactItemId: item.exactItemId,
       factVersionId: null,
       itemType: "RECALL_CHUNK",
-      recallChunkId: item.recallChunkId
+      recallChunkId: item.recallChunkId,
+      recallRoundId: null
+    };
+  }
+  if (item.itemType === "RECALL_ROUND" && "recallRoundId" in item &&
+    item.recallRoundId && item.exactItemId === item.recallRoundId) {
+    return {
+      exactItemId: item.exactItemId,
+      factVersionId: null,
+      itemType: "RECALL_ROUND",
+      recallChunkId: null,
+      recallRoundId: item.recallRoundId
     };
   }
   return null;
@@ -435,7 +453,8 @@ export function validateMemoryPreparingAttemptResult(
       (item.projectionKind !== undefined &&
         item.projectionKind !== "CHAT_DIGEST_SAFE_TEXT" &&
         item.projectionKind !== "FACT_DISPLAY_TEXT" &&
-        item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT") ||
+        item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
+        item.projectionKind !== "RECALL_ROUND_RAW_SAFE_TEXT") ||
       (item.supportingItemId !== undefined && item.supportingItemId !== null &&
         (item.supportingItemId.length === 0 || item.supportingItemId.length > 256)) ||
       (item.laneRanks !== undefined && (

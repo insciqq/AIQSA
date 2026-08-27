@@ -132,6 +132,7 @@ function refFor(
       factVersionId: target.versionId,
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      recallRoundId: null,
       sourceChatId: null,
       sourceMessageIds: []
     }
@@ -155,6 +156,7 @@ function refForIdentity(
       factVersionId: versionId,
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      recallRoundId: null,
       sourceChatId: null,
       sourceMessageIds: []
     }

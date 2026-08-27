@@ -443,14 +443,14 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-extraction-prompt-v25",
         "memory-fact-extraction-schema-v5"
       ],
-      history: "memory-history-incremental-v4",
+      history: "memory-history-incremental-v5",
       relation: [
         "memory-fact-relation-v2",
         "memory-fact-relation-policy-v3",
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v18",
+      retrieval: "memory-personal-retrieval-v19",
       synthesis: [
         "memory-synthesis-v2",
         "memory-synthesis-policy-v2",

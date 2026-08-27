@@ -596,9 +596,12 @@ function attemptItems(
       selectionReason: candidate.selectionReason,
       supportingItemId: packed.supportingItemId
     } as const;
-    return packed.itemType === "FACT_VERSION"
-      ? { ...base, factVersionId: packed.itemId, itemType: "FACT_VERSION" }
-      : { ...base, itemType: "RECALL_CHUNK", recallChunkId: packed.itemId };
+    if (packed.itemType === "FACT_VERSION") {
+      return { ...base, factVersionId: packed.itemId, itemType: "FACT_VERSION" };
+    }
+    return packed.itemType === "RECALL_CHUNK"
+      ? { ...base, itemType: "RECALL_CHUNK", recallChunkId: packed.itemId }
+      : { ...base, itemType: "RECALL_ROUND", recallRoundId: packed.itemId };
   });
 }
 
@@ -628,7 +631,7 @@ function memoryAggregationEvidence(
       handle: `i${index}`,
       occurredFrom: occurredFrom?.toISOString() ?? null,
       occurredTo: occurredTo?.toISOString() ?? null,
-      sourceKind: item.itemType === "RECALL_CHUNK"
+      sourceKind: item.itemType !== "FACT_VERSION"
         ? "HISTORY" as const
         : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const,
       text: item.exactSafeText
@@ -778,7 +781,9 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     plannerFallbackUsed: input.plannerFallbackReason !== null,
     queryVariantCounts: queryVariantCounts(input.plan),
     rawChunkExpansions,
-    rawRoundExpansions: 0,
+    rawRoundExpansions: input.expanded.filter((candidate) =>
+      candidate.itemType === "RECALL_ROUND" &&
+      candidate.projectionKind === "RECALL_ROUND_RAW_SAFE_TEXT").length,
     rerankerFallbackUsed: input.relevanceInput.length > 0 &&
       (input.relevance?.status === "READY"
         ? input.relevanceInput.some(({ handle }) => !rerankerDecisionHandles.has(handle))
@@ -1072,11 +1077,11 @@ export function memoryRelevanceCandidates(
   const projected = ranked.flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
-    const sourceKind = candidate.itemType === "RECALL_CHUNK"
+    const sourceKind = candidate.itemType !== "FACT_VERSION"
       ? "HISTORY" as const
       : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const;
     return [{
-      authorityLevel: candidate.itemType === "RECALL_CHUNK"
+      authorityLevel: candidate.itemType !== "FACT_VERSION"
         ? "PAST_CHAT" as const
         : candidate.metadata.sourceMode === "EXPLICIT" ? "SAVED" as const : "LEARNED" as const,
       candidate,

@@ -7,6 +7,10 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
 import { loadMemoryRunSources } from "./runProjection";
 
 function client() {
@@ -38,6 +42,8 @@ function client() {
     memoryScope: { findMany: vi.fn(async () => [{ id: "global-scope-1" }]) },
     memoryRecallChunk: { findMany: vi.fn(async () => []) },
     memoryRecallChunkMessage: { findMany: vi.fn(async () => []) },
+    memoryRecallRound: { findMany: vi.fn(async () => []) },
+    memoryRecallRoundMessage: { findMany: vi.fn(async () => []) },
     memorySuppression: { findMany: vi.fn(async (): Promise<Array<{
       sourceBranchGeneration: number | null;
       sourceChatId: string | null;
@@ -123,6 +129,8 @@ function historyClient(overrides: Readonly<{
       messageId: "source-message-1",
       sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
+    memoryRecallRound: { findMany: vi.fn(async () => []) },
+    memoryRecallRoundMessage: { findMany: vi.fn(async () => []) },
     memorySuppression: { findMany: vi.fn(async (): Promise<Array<{
       sourceBranchGeneration: number | null;
       sourceChatId: string | null;
@@ -200,6 +208,100 @@ describe("answer Memory source projection", () => {
       });
       expect(sources.get("run-1")).toBeUndefined();
     }
+  });
+
+  it("projects a frozen recall round and mints the exact round source target", async () => {
+    const database = historyClient();
+    const updatedAt = new Date("2026-08-21T04:00:00.000Z");
+    database.modelRunMemoryItem.findMany.mockResolvedValue([{
+      bindingId: "binding-1",
+      factVersionId: null,
+      featureSnapshot: {
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        supportingItemId: "private-chunk-1"
+      },
+      includedText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
+      itemType: "RECALL_ROUND",
+      recallChunkId: null,
+      recallRoundId: "private-round-1",
+      sourceBranchGenerationSnapshot: 4,
+      sourceChatIdSnapshot: "source-chat-1",
+      sourceContentHashSnapshot: "r".repeat(64),
+      sourceMessageIdsSnapshot: ["source-message-1"],
+      sourceRevisionSnapshot: 3
+    }] as never);
+    database.memoryRecallRound.findMany.mockResolvedValueOnce([{
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      contentHash: "r".repeat(64),
+      contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+      contextualKeyState: "GENERATED",
+      id: "private-round-1",
+      occurredTo: updatedAt,
+      parentChunkId: "private-chunk-1",
+      projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 3,
+      state: "ACTIVE"
+    }] as never);
+    database.memoryRecallRoundMessage.findMany.mockResolvedValueOnce([{
+      chatId: "source-chat-1",
+      messageId: "source-message-1",
+      roundId: "private-round-1",
+      sourceMessageUpdatedAt: updatedAt
+    }] as never);
+    const key = randomBytes(32);
+    const refs = createMemoryClientRefService({ encryptionKey: () => key });
+
+    const sources = await loadMemoryRunSources(database as never, {
+      clientRefs: refs,
+      runIds: ["run-1"],
+      userId: "user-1"
+    });
+    const projected = sources.get("run-1")?.[0];
+    expect(projected).toMatchObject({
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+      date: updatedAt.toISOString(),
+      sourceType: "PAST_CHAT",
+      text: "User: We selected cedar.\n\nAssistant: Acknowledged."
+    });
+    if (!projected?.memoryRef) throw new Error("missing round source fixture");
+    expect(refs.resolve("user-1", projected.memoryRef, "OPEN_SOURCE", new Date()))
+      .toMatchObject({
+        target: {
+          exactItemId: "private-round-1",
+          itemType: "RECALL_ROUND",
+          recallChunkId: null,
+          recallRoundId: "private-round-1",
+          sourceChatId: "source-chat-1",
+          sourceMessageIds: ["source-message-1"]
+        }
+      });
+
+    database.memoryRecallRound.findMany.mockResolvedValueOnce([{
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      contentHash: "r".repeat(64),
+      contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+      contextualKeyState: "GENERATED",
+      id: "private-round-1",
+      occurredTo: updatedAt,
+      parentChunkId: "private-chunk-1",
+      projectionVersion: "memory-recall-round-projection-stale",
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 3,
+      state: "ACTIVE"
+    }] as never);
+    const stale = await loadMemoryRunSources(database as never, {
+      clientRefs: refs,
+      runIds: ["run-1"],
+      userId: "user-1"
+    });
+    expect(stale.get("run-1")).toBeUndefined();
   });
 
   it("does not project forgotten past-chat text or mint a usable ref", async () => {

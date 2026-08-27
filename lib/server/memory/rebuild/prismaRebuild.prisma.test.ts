@@ -41,6 +41,7 @@ import {
   memoryHistorySourceDeletionHandler
 } from "../history/purge";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import { applyMemoryHistorySourceMutation } from "../history/sourceLifecycle";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
@@ -77,6 +78,7 @@ import {
 import { createMemoryRebuildHandler } from "./handler";
 import { parseMemoryRebuildJobFingerprint } from "./contract";
 import { createPrismaMemoryRebuildRepository } from "./repository";
+import { wakeCurrentMemoryShadowRebuildInTransaction } from "./wake";
 
 const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 111));
 const keyring = MemorySuppressionKeyring.parse(
@@ -1509,6 +1511,101 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       await expect(prisma.memoryJob.findUniqueOrThrow({
         where: { id: blocker.id }
       })).resolves.toMatchObject({ state: "SUCCEEDED" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("does not cut over between bounded history-backfill windows", async () => {
+    const userId = await createOwner("history-backfill-cutover");
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Pending history projection", userId }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Remember the cedar decision."),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("The cedar decision is recorded."),
+          parentMessageId: userMessage.id,
+          role: "assistant",
+          status: "complete"
+        }
+      });
+      const sourceContentHash = memorySha256({
+        assistantMessageId: assistantMessage.id,
+        userMessageId: userMessage.id
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: assistantMessage.id, memorySourceRevision: 1 },
+        where: { id: chat.id }
+      });
+      await prisma.chatMemoryCheckpoint.create({
+        data: {
+          activeLeafMessageId: assistantMessage.id,
+          branchGeneration: 0,
+          chatId: chat.id,
+          lastIndexedMessageId: assistantMessage.id,
+          pipelineVersion: "memory-history-incremental-v4",
+          sourceContentHash,
+          sourceRevision: 1,
+          status: "READY",
+          userId
+        }
+      });
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await rebuild.admit(userId, {
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: "history-backfill-cutover" }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      const rebuildJob = await prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      });
+      const identity = parseMemoryRebuildJobFingerprint(
+        rebuildJob.idempotencyFingerprint
+      );
+      if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+
+      await processRebuildJob(admitted.jobId, rebuild);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({
+        activeIndexGenerationId: before.activeIndexGenerationId,
+        memoryGeneration: before.memoryGeneration,
+        memoryRevision: before.memoryRevision
+      });
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: identity.generationId }
+      })).resolves.toMatchObject({ state: "CATCHING_UP" });
+
+      await prisma.chatMemoryCheckpoint.update({
+        data: { pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION },
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      });
+      await withLockedMemoryTransaction(prisma, userId, async (tx) => {
+        await wakeCurrentMemoryShadowRebuildInTransaction(tx, userId);
+      });
+      await processRebuildJob(admitted.jobId, rebuild);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({
+        activeIndexGenerationId: identity.generationId,
+        memoryGeneration: before.memoryGeneration + 1,
+        memoryRevision: before.memoryRevision + 1
+      });
     } finally {
       await cleanupOwner(userId);
     }

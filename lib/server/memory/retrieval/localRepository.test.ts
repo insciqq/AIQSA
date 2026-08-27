@@ -203,11 +203,67 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain("matched_navigation");
     expect(sql).toContain("FROM matched_navigation AS navigation");
     expect(sql).toContain('navigation."searchVectorSimple"');
-    expect(sql).toContain('navigation."itemId" = eligible."itemId"');
+    expect(sql).toContain('navigation."sourceChatId" = eligible."sourceChatId"');
+    expect(sql).toContain("(eligible.\"itemType\" = 'RECALL_ROUND'");
+    expect(sql).toContain('eligible."searchVectorSimple"');
     expect(sql.indexOf("matched_navigation AS MATERIALIZED")).toBeLessThan(
       sql.indexOf("\n    digest_navigation AS MATERIALIZED")
     );
     expect(sql).not.toContain('digest."safeDigestText" AS "safeText"');
+  });
+
+  it("expands a contextual round hit only to bounded authoritative raw evidence", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      currentUserText: "What did we select?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const retrieved = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+    const base = sessionCandidate(
+      "round-1",
+      "source-chat-1",
+      0.8,
+      { HISTORY_RECALL_VECTOR: 1 }
+    );
+    mocked.$queryRaw.mockResolvedValueOnce([{
+      itemId: "round-1",
+      itemType: "RECALL_ROUND",
+      occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
+      occurredTo: new Date("2026-08-09T10:01:00.000Z"),
+      projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      safeText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
+      sourceChatId: "source-chat-1",
+      supportingItemId: "parent-chunk-1"
+    }] as never);
+
+    await expect(repository.expand(retrieved.snapshot, plan, [{
+      ...base,
+      itemType: "RECALL_ROUND"
+    }])).resolves.toEqual([{
+      itemId: "round-1",
+      itemType: "RECALL_ROUND",
+      occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
+      occurredTo: new Date("2026-08-09T10:01:00.000Z"),
+      projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      safeText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
+      sourceChatId: "source-chat-1",
+      supportingItemId: "parent-chunk-1"
+    }]);
+    const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
+      .strings?.join("?") ?? "";
+    expect(expansionSql).toContain('round."rawSafeText"');
+    expect(expansionSql).toContain('round."parentChunkId" AS "supportingItemId"');
+    expect(expansionSql).not.toContain('round."contextualNarrativeText" AS "safeText"');
   });
 
   it("runs candidate lanes for generic and recognizable-secret direct input", async () => {

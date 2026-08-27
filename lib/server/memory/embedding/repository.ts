@@ -19,12 +19,19 @@ import {
   memoryRedactionHasMeaningfulRemainder,
   redactMemorySecrets
 } from "../explicit/safety";
-import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
+import {
+  memoryHistoryChunkSourceAuthorityPredicate,
+  memoryHistoryRoundSourceAuthorityPredicate
+} from "../persistence/pauseIntervals";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
 import {
   memoryItemEmbeddingGenerationMatchesPin,
   type MemoryItemEmbeddingPin,
@@ -43,8 +50,9 @@ type BaseTargetRow = Readonly<{
   factVersionId: string | null;
   generationId: string;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
-  itemType: "FACT_VERSION" | "RECALL_CHUNK";
+  itemType: "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND";
   recallChunkId: string | null;
+  recallRoundId: string | null;
   referenceChatHistory: boolean;
   retrievalPipelineVersion: string;
   safeContentHash: string;
@@ -123,6 +131,7 @@ async function loadBaseTarget(
       entry."itemType"::text AS "itemType",
       entry."factVersionId",
       entry."recallChunkId",
+      entry."recallRoundId",
       entry."normalizedSearchText",
       entry."safeContentHash",
       entry."embeddingState"::text AS "embeddingState",
@@ -156,7 +165,8 @@ async function loadBaseTarget(
       AND entry."id" = ${entryId}
       AND entry."itemType" IN (
         'FACT_VERSION'::"MemorySearchItemType",
-        'RECALL_CHUNK'::"MemorySearchItemType"
+        'RECALL_CHUNK'::"MemorySearchItemType",
+        'RECALL_ROUND'::"MemorySearchItemType"
       )
       AND (
         (
@@ -187,7 +197,7 @@ async function loadFactTarget(
   store: TargetQueryStore,
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
-  if (!row.factVersionId || row.recallChunkId) return null;
+  if (!row.factVersionId || row.recallChunkId || row.recallRoundId) return null;
   const rows = await store.$queryRaw<FactTargetRow[]>(Prisma.sql`
     SELECT
       fact."id" AS "factId",
@@ -264,7 +274,8 @@ async function loadRecallChunkTarget(
   store: TargetQueryStore,
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
-  if (!row.referenceChatHistory || !row.recallChunkId || row.factVersionId) {
+  if (!row.referenceChatHistory || !row.recallChunkId || row.factVersionId ||
+    row.recallRoundId) {
     return null;
   }
   const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
@@ -341,6 +352,102 @@ async function loadRecallChunkTarget(
   };
 }
 
+async function loadRecallRoundTarget(
+  store: TargetQueryStore,
+  row: BaseTargetRow
+): Promise<MemoryItemEmbeddingTarget | null> {
+  if (!row.referenceChatHistory || !row.recallRoundId || row.factVersionId ||
+    row.recallChunkId) return null;
+  const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
+    SELECT
+      round."id" AS "itemId",
+      round."contextualSearchText" AS "safeText",
+      round."contextualSearchHash" AS "sourceContentHash"
+    FROM "MemoryRecallRound" AS round
+    INNER JOIN "MemoryIndexGeneration" AS generation
+      ON generation."userId" = round."userId"
+      AND generation."id" = ${row.generationId}
+      AND generation."roundProjectionVersion" =
+        ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+      AND generation."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+    INNER JOIN "MemoryRecallChunk" AS parent_chunk
+      ON parent_chunk."userId" = round."userId"
+      AND parent_chunk."id" = round."parentChunkId"
+    INNER JOIN "Chat" AS chat
+      ON chat."userId" = round."userId"
+      AND chat."id" = round."chatId"
+      AND chat."projectId" IS NULL
+      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = round."userId"
+      AND checkpoint."chatId" = round."chatId"
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+    WHERE round."userId" = ${row.userId}
+      AND round."id" = ${row.recallRoundId}
+      AND round."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND round."projectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+      AND round."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND round."sourceProjectionVersion" =
+        ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND round."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND round."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND parent_chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND parent_chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND parent_chunk."sourceProjectionVersion" =
+        ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND parent_chunk."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND parent_chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND ${memoryHistoryRoundSourceAuthorityPredicate({
+        chat: "chat",
+        checkpoint: "checkpoint"
+      })}
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        LEFT JOIN "MemoryRecallRoundMessage" AS source_message
+          ON source_message."userId" = round."userId"
+          AND source_message."roundId" = round."id"
+          AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+          AND suppression."sourceChatId" = source_message."chatId"
+          AND suppression."sourceMessageId" = source_message."messageId"
+        WHERE suppression."userId" = round."userId"
+          AND (suppression."expiresAt" IS NULL OR
+            suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+            source_message."messageId" IS NOT NULL
+            AND (suppression."sourceBranchGeneration" IS NULL OR
+              suppression."sourceBranchGeneration" = round."branchGeneration")
+          ))
+      )
+    LIMIT 1
+  `);
+  const current = rows[0];
+  if (!current) return null;
+  const normalizedSearchText = normalizeMemorySearchText(current.safeText);
+  if (normalizedSearchText !== row.normalizedSearchText ||
+    current.sourceContentHash !== row.safeContentHash) return null;
+  return {
+    embeddingState: row.embeddingState,
+    entryId: row.entryId,
+    generation: generationFrom(row),
+    itemId: current.itemId,
+    itemType: "RECALL_ROUND",
+    normalizedSearchText,
+    recallRoundId: current.itemId,
+    safeContentHash: current.sourceContentHash,
+    selectedEmbeddingProviderModelId: row.selectedEmbeddingProviderModelId,
+    userId: row.userId
+  };
+}
+
 async function loadCurrentTarget(
   store: TargetQueryStore,
   userId: string,
@@ -351,6 +458,7 @@ async function loadCurrentTarget(
   switch (row.itemType) {
     case "FACT_VERSION": return loadFactTarget(store, row);
     case "RECALL_CHUNK": return loadRecallChunkTarget(store, row);
+    case "RECALL_ROUND": return loadRecallRoundTarget(store, row);
   }
 }
 
@@ -400,6 +508,11 @@ function exactTargetPredicate(target: MemoryItemEmbeddingTarget): Prisma.Sql {
       return Prisma.sql`
         "itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
         AND "recallChunkId" = ${target.recallChunkId}
+      `;
+    case "RECALL_ROUND":
+      return Prisma.sql`
+        "itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
+        AND "recallRoundId" = ${target.recallRoundId}
       `;
   }
 }

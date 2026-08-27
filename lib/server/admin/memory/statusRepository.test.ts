@@ -1,11 +1,16 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../../memory/history/rounds";
 import { MEMORY_LEXICAL_CHUNKING_VERSION, MEMORY_LEXICAL_LANGUAGE_PROFILE, MEMORY_LEXICAL_NORMALIZATION_VERSION, MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION } from "../../memory/persistence/lexical";
 import { createPrismaAdminMemoryStatusRepository } from "./statusRepository";
 
 function clientFixture(input: Readonly<{
   heartbeat?: Date | null;
   historyReindexing?: boolean;
+  roundConfigurationStale?: boolean;
   selectedEmbeddingProviderModelId?: string | null;
   shadowRebuilding?: boolean;
   staleChunk?: boolean;
@@ -40,6 +45,9 @@ function clientFixture(input: Readonly<{
           ? input.shadowRebuilding ? [{ userId: "private-owner" }] : []
           : [{
               chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+              contextualKeyPolicyVersion: input.roundConfigurationStale
+                ? null
+                : MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
               embeddingProviderModelId: null,
               generation: 7,
               id: "private-generation",
@@ -47,6 +55,9 @@ function clientFixture(input: Readonly<{
               languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
               normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
               retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+              roundProjectionVersion: input.roundConfigurationStale
+                ? null
+                : MEMORY_RECALL_ROUND_PROJECTION_VERSION,
               state: "ACTIVE",
               userId: "private-owner"
             }])
@@ -154,6 +165,23 @@ describe("Prisma administrator Memory status repository", () => {
       expectedMemoryRevision: 4,
       expectedSettingsRevision: 3,
       operation: "REINDEX_HISTORY",
+      userId: "private-owner"
+    }]);
+  });
+
+  it("starts a shadow rebuild when the active generation lacks round pins", async () => {
+    const repository = createPrismaAdminMemoryStatusRepository(
+      clientFixture({ roundConfigurationStale: true }),
+      vi.fn().mockResolvedValue(undefined)
+    );
+    const result = await repository.read(new Date("2026-08-21T08:00:00.000Z"));
+
+    expect(result.index.requiresRebuild).toBe(true);
+    expect(result.index.rebuildCandidates).toEqual([{
+      embeddingDeploymentId: null,
+      expectedMemoryRevision: 4,
+      expectedSettingsRevision: 3,
+      operation: "REBUILD_SEARCH_INDEX",
       userId: "private-owner"
     }]);
   });

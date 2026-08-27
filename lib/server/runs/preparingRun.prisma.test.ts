@@ -2691,6 +2691,7 @@ describe("PREPARING run orchestration", () => {
                   factVersionId: fact.versionId,
                   itemType: "FACT_VERSION" as const,
                   recallChunkId: null,
+                  recallRoundId: null,
                   sourceChatId: null,
                   sourceMessageIds: []
                 },
@@ -2715,6 +2716,7 @@ describe("PREPARING run orchestration", () => {
                   factVersionId: null,
                   itemType: "RECALL_CHUNK" as const,
                   recallChunkId: history.chunkId,
+                  recallRoundId: null,
                   sourceChatId: history.sourceChatId,
                   sourceMessageIds: [history.sourceMessageId]
                 },

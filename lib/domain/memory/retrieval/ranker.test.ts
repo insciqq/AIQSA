@@ -237,6 +237,80 @@ describe("relative-rank Memory fusion", () => {
     expect(ranked).toHaveLength(1);
   });
 
+  it("groups an exact message-set root and prefers the raw round representation", () => {
+    const evidenceRootHash = "a".repeat(64);
+    const chunk = {
+      ...historyCandidate("chunk-1", 0.8),
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+    };
+    const roundBase = historyCandidate("round-1", 0.9);
+    const round = {
+      ...roundBase,
+      itemType: "RECALL_ROUND" as const,
+      metadata: {
+        ...roundBase.metadata,
+        evidenceRootHash,
+        parentChunkId: "chunk-1",
+        sourceChatId: "chat-shared-root"
+      }
+    };
+    const ranked = fuseMemoryRetrievalCandidates(pastChatPlan, [{
+      candidates: [{
+        ...chunk,
+        metadata: {
+          ...chunk.metadata,
+          evidenceRootHash,
+          sourceChatId: "chat-shared-root"
+        }
+      }],
+      lane: "HISTORY_RECALL_FTS_SIMPLE"
+    }, {
+      candidates: [round],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]).toMatchObject({
+      featureSnapshot: { laneCount: 2 },
+      itemId: "round-1",
+      itemType: "RECALL_ROUND",
+      laneRanks: {
+        HISTORY_RECALL_FTS_SIMPLE: 1,
+        HISTORY_RECALL_VECTOR: 1
+      }
+    });
+  });
+
+  it("does not spend one lane's bounded slots twice on an equivalent history root", () => {
+    const evidenceRootHash = "b".repeat(64);
+    const chunk = historyCandidate("chunk-same-lane", 0.9);
+    const roundBase = historyCandidate("round-same-lane", 0.8);
+    const other = historyCandidate("other-root", 0.7);
+    const sourceChatId = "chat-same-lane";
+    const ranked = fuseMemoryRetrievalCandidates(pastChatPlan, [{
+      candidates: [{
+        ...chunk,
+        metadata: { ...chunk.metadata, evidenceRootHash, sourceChatId }
+      }, {
+        ...roundBase,
+        itemType: "RECALL_ROUND" as const,
+        metadata: {
+          ...roundBase.metadata,
+          evidenceRootHash,
+          parentChunkId: chunk.itemId,
+          sourceChatId
+        }
+      }, other],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual([
+      "round-same-lane",
+      "other-root"
+    ]);
+    expect(ranked[0]?.laneRanks).toEqual({ HISTORY_RECALL_VECTOR: 1 });
+  });
+
   it("runs for every non-empty query and only skips the empty query", () => {
     expect(fuseMemoryRetrievalCandidates(plan, [{
       lane: "FACT_VECTOR", candidates: [candidate("vector", "FACT_VECTOR", 0.8)]

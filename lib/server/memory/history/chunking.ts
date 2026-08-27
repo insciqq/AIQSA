@@ -328,14 +328,25 @@ function splitGroup(
 }
 
 function groupIsSafe(group: MemoryHistoryRecallTurnGroup): boolean {
+  const [first, second] = group.messages;
+  const turnShape = group.kind === "TURN" &&
+    group.messages.length === 2 &&
+    first?.role === "user" &&
+    second?.role === "assistant" &&
+    group.userMessageId === first.id &&
+    group.assistantMessageId === second.id;
+  const standaloneShape = group.kind === "STANDALONE" &&
+    group.messages.length === 1 &&
+    ((first?.role === "user" && group.userMessageId === first.id &&
+      group.assistantMessageId === null) ||
+      (first?.role === "assistant" && group.assistantMessageId === first.id &&
+        group.userMessageId === null));
+  const assistant = group.messages.find((message) => message.role === "assistant");
   if (
-    group.messages.length !== 2 ||
-    group.messages[0].role !== "user" ||
-    group.messages[1].role !== "assistant" ||
-    group.userMessageId !== group.messages[0].id ||
-    group.assistantMessageId !== group.messages[1].id ||
-    group.messages[0].provenance.assistantId !== null ||
-    group.sourceAssistantId !== group.messages[1].provenance.assistantId ||
+    (!turnShape && !standaloneShape) ||
+    group.messages.some((message) =>
+      message.role === "user" && message.provenance.assistantId !== null) ||
+    group.sourceAssistantId !== (assistant?.provenance.assistantId ?? null) ||
     group.messages.some((message) =>
       !sha256Pattern.test(message.contentHash) ||
       memorySha256(message.safeText) !== message.safeTextHash ||

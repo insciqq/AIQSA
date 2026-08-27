@@ -77,7 +77,7 @@ type MemoryItemEmbeddingTargetBase = Readonly<{
   entryId: string;
   generation: MemoryItemEmbeddingGeneration;
   itemId: string;
-  itemType: "FACT_VERSION" | "RECALL_CHUNK";
+  itemType: "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND";
   safeContentHash: string;
   normalizedSearchText: string;
   selectedEmbeddingProviderModelId: string | null;
@@ -95,9 +95,15 @@ export type MemoryRecallChunkEmbeddingTarget = MemoryItemEmbeddingTargetBase & R
   recallChunkId: string;
 }>;
 
+export type MemoryRecallRoundEmbeddingTarget = MemoryItemEmbeddingTargetBase & Readonly<{
+  itemType: "RECALL_ROUND";
+  recallRoundId: string;
+}>;
+
 export type MemoryItemEmbeddingTarget =
   | MemoryFactEmbeddingTarget
-  | MemoryRecallChunkEmbeddingTarget;
+  | MemoryRecallChunkEmbeddingTarget
+  | MemoryRecallRoundEmbeddingTarget;
 
 export type MemoryItemEmbeddingPin = Readonly<{
   configurationFingerprint: string;

@@ -24,6 +24,7 @@ export type MemoryClientRefTarget = Readonly<{
   factVersionId: string | null;
   itemType: MemorySearchItemType;
   recallChunkId: string | null;
+  recallRoundId: string | null;
   sourceChatId: string | null;
   sourceMessageIds: readonly string[];
 }>;
@@ -82,20 +83,25 @@ function validOperations(
 function validTarget(value: unknown): value is MemoryClientRefTarget {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const target = value as Record<string, unknown>;
-  if (Object.keys(target).length !== 7 ||
+  if (Object.keys(target).length !== 8 ||
     !boundedIdentifier(target.exactItemId) ||
-    (target.itemType !== "FACT_VERSION" && target.itemType !== "RECALL_CHUNK") ||
+    (target.itemType !== "FACT_VERSION" && target.itemType !== "RECALL_CHUNK" &&
+      target.itemType !== "RECALL_ROUND") ||
     !(target.factVersionId === null || boundedIdentifier(target.factVersionId)) ||
     !(target.factId === null || boundedIdentifier(target.factId)) ||
     !(target.recallChunkId === null || boundedIdentifier(target.recallChunkId)) ||
+    !(target.recallRoundId === null || boundedIdentifier(target.recallRoundId)) ||
     !(target.sourceChatId === null || boundedIdentifier(target.sourceChatId)) ||
     !Array.isArray(target.sourceMessageIds) || target.sourceMessageIds.length > 50 ||
     !target.sourceMessageIds.every(boundedIdentifier)) return false;
   return target.itemType === "FACT_VERSION"
     ? target.factId !== null && target.factVersionId === target.exactItemId &&
-      target.recallChunkId === null
-    : target.factId === null && target.recallChunkId === target.exactItemId &&
-      target.factVersionId === null;
+      target.recallChunkId === null && target.recallRoundId === null
+    : target.itemType === "RECALL_CHUNK"
+      ? target.factId === null && target.recallChunkId === target.exactItemId &&
+        target.recallRoundId === null && target.factVersionId === null
+      : target.factId === null && target.recallRoundId === target.exactItemId &&
+        target.recallChunkId === null && target.factVersionId === null;
 }
 
 function decodePayload(value: unknown): MemoryClientRefPayload | null {
