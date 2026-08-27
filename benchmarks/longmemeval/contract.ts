@@ -105,6 +105,7 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   aggregationRequested: boolean | null;
   aggregationResolution: string | null;
   aggregationState: string | null;
+  budgetProfile: string | null;
   candidateCountsByLane: Readonly<Record<string, number>>;
   candidatesRetainedAfterRejoin: number | null;
   candidatesRetainedAfterReranker: number | null;
@@ -118,6 +119,7 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   omissionCounts: Readonly<Record<string, number>>;
   packedTokens: number | null;
   plannerFallbackUsed: boolean | null;
+  providerTokenLimit: number | null;
   queryVariantCounts: Readonly<Record<string, number>>;
   rawChunkExpansions: number | null;
   rawRoundExpansions: number | null;
@@ -290,6 +292,7 @@ export function sanitizeLongMemEvalRetrievalAudit(
       : null,
     aggregationResolution: uppercaseCode(budget.aggregationResolution),
     aggregationState: uppercaseCode(budget.aggregationState),
+    budgetProfile: uppercaseCode(budget.budgetProfile),
     candidateCountsByLane: sanitizedCounts(component.candidateCountsByLane),
     candidatesRetainedAfterRejoin:
       nonNegativeInteger(component.candidatesRetainedAfterRejoin),
@@ -308,6 +311,7 @@ export function sanitizeLongMemEvalRetrievalAudit(
     plannerFallbackUsed: typeof component.plannerFallbackUsed === "boolean"
       ? component.plannerFallbackUsed
       : null,
+    providerTokenLimit: nonNegativeInteger(budget.providerTokenLimit),
     queryVariantCounts: sanitizedCounts(component.queryVariantCounts),
     rawChunkExpansions: nonNegativeInteger(component.rawChunkExpansions),
     rawRoundExpansions: nonNegativeInteger(component.rawRoundExpansions),

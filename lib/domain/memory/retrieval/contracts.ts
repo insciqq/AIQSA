@@ -200,6 +200,29 @@ export const MEMORY_SAFE_PROJECTION_KINDS = [
 
 export type MemorySafeProjectionKind = (typeof MEMORY_SAFE_PROJECTION_KINDS)[number];
 
+export type MemoryPackedEvidenceType =
+  | "current_fact"
+  | "digest"
+  | "historical_fact"
+  | "pattern"
+  | "raw_chunk"
+  | "raw_round";
+
+export type MemoryPackedSourceAuthority =
+  | "derived_pattern"
+  | "learned_from_user"
+  | "past_chat"
+  | "user_saved";
+
+export type MemoryPackedSpeakerScope =
+  | "derived"
+  | "mixed_conversation"
+  | "user";
+
+export type MemoryPackedStatus = "current" | "historical" | "superseded";
+
+export type MemoryContextBudgetProfile = "COMPLEX" | "PAST_CHAT" | "SIMPLE";
+
 export type MemoryExpandedCandidate = Readonly<{
   itemId: string;
   itemType: MemoryRetrievalItemType;
@@ -212,26 +235,44 @@ export type MemoryExpandedCandidate = Readonly<{
 }>;
 
 export type MemoryPackedItem = Readonly<{
+  derived: boolean;
+  documentTime: string | null;
+  eventTimeEnd: string | null;
+  eventTimeStart: string | null;
+  evidenceHandle: string;
+  evidenceType: MemoryPackedEvidenceType;
   exactSafeText: string;
   finalScore: number;
   itemId: string;
   itemType: MemoryRetrievalItemType;
+  lastConfirmedAt: string | null;
+  observedAt: string | null;
   projectionKind: MemorySafeProjectionKind;
+  rawSafeText: string;
+  retrievalReason: "exact" | "fused" | "profile" | "semantic_sort";
   section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "PATTERN";
+  sourceAuthority: MemoryPackedSourceAuthority;
   sourceChatId: string | null;
+  sourceSessionHandle: string | null;
+  speakerScope: MemoryPackedSpeakerScope;
+  status: MemoryPackedStatus;
   supportingItemId: string | null;
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   tier: "CORE" | "DYNAMIC";
+  validFrom: string | null;
+  validTo: string | null;
 }>;
 
 export type MemoryContextPack = Readonly<{
   approxTokens: number;
+  budgetProfile: MemoryContextBudgetProfile;
   candidateCount: number;
   coreTokens: number;
   hardCapTokens: number;
   items: readonly MemoryPackedItem[];
   omissionCounts: Readonly<Record<string, number>>;
   packerVersion: string;
+  providerTokenLimit: number | null;
   targetTokens: number;
   text: string | null;
 }>;

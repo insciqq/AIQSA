@@ -35,6 +35,7 @@ import type {
   MemoryPreparingSettingsSnapshot
 } from "../../runs/preparingRun";
 import { MemoryPreparingRunConflictError } from "../../runs/preparingRun";
+import { normalizedRequestPersonalContextTokenLimit } from "../../runs/runContextBudget";
 import {
   boundedMemoryAdmissionDeadlineMs,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
@@ -292,6 +293,7 @@ function baseBudget(
 ): Readonly<Record<string, unknown>> {
   return {
     admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,
+    budgetProfile: "SIMPLE",
     hardCapTokens: MEMORY_CONTEXT_HARD_CAP_TOKENS,
     itemCount: 0,
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
@@ -299,6 +301,7 @@ function baseBudget(
     reason,
     schemaVersion: 2,
     settingsRevision: snapshot.settings.settingsRevision,
+    providerTokenLimit: null,
     targetTokens: MEMORY_CONTEXT_TARGET_TOKENS,
     utilityEgressMode: "LOCAL_ONLY",
     ...extras
@@ -450,9 +453,22 @@ function attemptItems(
       featureSnapshot: {
         ...candidate.featureSnapshot,
         aggregationRequested: plan.aggregationRequested,
+        derived: packed.derived,
+        documentTime: packed.documentTime,
+        eventTimeEnd: packed.eventTimeEnd,
+        eventTimeStart: packed.eventTimeStart,
+        evidenceHandle: packed.evidenceHandle,
+        evidenceType: packed.evidenceType,
         finalScore: candidate.finalScore,
+        lastConfirmedAt: packed.lastConfirmedAt,
+        observedAt: packed.observedAt,
         projectionKind: packed.projectionKind,
+        retrievalReason: packed.retrievalReason,
         rrfScore: candidate.rrfScore,
+        sourceAuthority: packed.sourceAuthority,
+        sourceSessionHandle: packed.sourceSessionHandle,
+        speakerScope: packed.speakerScope,
+        status: packed.status,
         supportingItemId: packed.supportingItemId,
         temporalReason: packed.temporalReason,
         historical: candidate.metadata.historical,
@@ -460,7 +476,9 @@ function attemptItems(
         lifecycleState: candidate.metadata.lifecycleState,
         retrievalMode: plan.mode,
         temporalIntent: plan.temporalIntent,
-        tier: packed.tier
+        tier: packed.tier,
+        validFrom: packed.validFrom,
+        validTo: packed.validTo
       },
       finalScore: candidate.finalScore,
       laneRanks: candidate.laneRanks,
@@ -1560,6 +1578,7 @@ export function createMemoryRunRetrievalService(
       const pack = packMemoryPersonalContext({
         core: selectedCore,
         expanded: dynamicExpanded,
+        maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
         plan,
         ranked: selectedDynamic
       });
@@ -1636,6 +1655,7 @@ export function createMemoryRunRetrievalService(
       const commonEvidence = {
         ...actionEvidence,
         ...aggregationPlanEvidence(aggregation, aggregationGuide),
+        budgetProfile: pack.budgetProfile,
         candidateCount: pack.candidateCount,
         componentMetrics: memoryRetrievalComponentEvidence({
           control,
@@ -1659,7 +1679,11 @@ export function createMemoryRunRetrievalService(
         lexicalFailures: local.lexicalFailures,
         lexicalState: local.lexicalState,
         omissionCounts: pack.omissionCounts,
+        hardCapTokens: pack.hardCapTokens,
+        packedTokens: preparedTokens,
+        packerVersion: pack.packerVersion,
         plan: planEvidence(plan),
+        providerTokenLimit: pack.providerTokenLimit,
         ...relevanceEvidence(
           relevanceInput,
           relevance,
@@ -1670,7 +1694,8 @@ export function createMemoryRunRetrievalService(
         utilityEgressMode: externalUtilityUsed ? "CONSENTED_EXTERNAL" : "LOCAL_ONLY",
         utilityExecutions,
         vectorEvidence: local.vectorEvidence,
-        vectorState: local.vectorState
+        vectorState: local.vectorState,
+        targetTokens: pack.targetTokens
       } as const;
       if (!preparedText || pack.items.length === 0) {
         return emptyAttempt(input.expected,
@@ -1684,11 +1709,13 @@ export function createMemoryRunRetrievalService(
         budgetSnapshot: {
           admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,
           ...commonEvidence,
+          budgetProfile: pack.budgetProfile,
           hardCapTokens: pack.hardCapTokens,
           itemCount: items.length,
           packedTokens: preparedTokens,
           packerVersion: pack.packerVersion,
           pipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
+          providerTokenLimit: pack.providerTokenLimit,
           schemaVersion: 2,
           settingsRevision: input.expected.settings.settingsRevision,
           targetTokens: pack.targetTokens

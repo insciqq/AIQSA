@@ -1558,6 +1558,39 @@ describe("Personal Memory v1 run admission", () => {
     expect(options.utilities.rerank).toHaveBeenCalledOnce();
   });
 
+  it("clamps the prepared reader pack to the admitted model context envelope", async () => {
+    const local = repository({ candidates: [laneCandidate("past-chat-bounded")] });
+    const options = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH"
+    });
+    const base = runInput("What did we discuss?");
+    const result = await createMemoryRunRetrievalService(local.value, options).retrieve({
+      ...base,
+      normalizedRequest: {
+        ...base.normalizedRequest,
+        modelCapabilities: {
+          ...base.normalizedRequest.modelCapabilities,
+          contextWindow: 2_000,
+          defaultMaxOutputTokens: 0
+        }
+      }
+    });
+    const budget = result.budgetSnapshot as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      budgetSnapshot: { budgetProfile: "PAST_CHAT" },
+      outcome: "USED"
+    });
+    expect(budget.providerTokenLimit).toEqual(expect.any(Number));
+    expect(Number(budget.providerTokenLimit)).toBeLessThan(10_000);
+    expect(budget.hardCapTokens).toBe(budget.providerTokenLimit);
+    expect(budget.targetTokens).toBe(budget.providerTokenLimit);
+    expect(result.preparedContext!.approxTokens)
+      .toBeLessThanOrEqual(Number(budget.providerTokenLimit));
+  });
+
   it("propagates an explicit aggregation plan and a server-computed count", async () => {
     const local = repository({
       candidates: [

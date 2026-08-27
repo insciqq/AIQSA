@@ -5,10 +5,17 @@ import {
   validateMemoryPreparingAttemptResult
 } from "./preparingRun";
 
-function usedAttempt(aggregationRequested: boolean, approxTokens: number) {
+function usedAttempt(
+  budgetProfile: "COMPLEX" | "PAST_CHAT" | "SIMPLE",
+  approxTokens: number,
+  hardCapTokens: number
+) {
   return {
     budgetSnapshot: {
-      plan: { aggregationRequested },
+      budgetProfile,
+      hardCapTokens,
+      plan: { aggregationRequested: budgetProfile === "COMPLEX" },
+      providerTokenLimit: null,
       schemaVersion: 2
     },
     items: [{
@@ -36,37 +43,70 @@ function attemptItems(length: number) {
 }
 
 describe("Memory preparing context ceiling", () => {
-  it("admits the larger ceiling only for an explicit aggregation plan", () => {
+  it("admits each declared adaptive profile up to its bounded ceiling", () => {
     expect(() => validateMemoryPreparingAttemptResult(
-      usedAttempt(true, 10_000)
+      usedAttempt("SIMPLE", 10_000, 10_000)
     )).not.toThrow();
     expect(() => validateMemoryPreparingAttemptResult(
-      usedAttempt(false, 5_001)
-    )).toThrow(MemoryPreparingRunConflictError);
-  });
-
-  it("rejects aggregation context above its bounded ceiling", () => {
+      usedAttempt("PAST_CHAT", 16_000, 16_000)
+    )).not.toThrow();
     expect(() => validateMemoryPreparingAttemptResult(
-      usedAttempt(true, 10_001)
+      usedAttempt("COMPLEX", 32_000, 32_000)
+    )).not.toThrow();
+  });
+
+  it("rejects context above its declared or universal ceiling", () => {
+    expect(() => validateMemoryPreparingAttemptResult(
+      usedAttempt("PAST_CHAT", 16_001, 16_000)
+    )).toThrow(MemoryPreparingRunConflictError);
+    expect(() => validateMemoryPreparingAttemptResult(
+      usedAttempt("COMPLEX", 32_001, 32_001)
     )).toThrow(MemoryPreparingRunConflictError);
   });
 
-  it("admits the aggregation item ceiling without widening ordinary retrieval", () => {
-    const aggregation = usedAttempt(true, 1_024);
+  it("admits the complex item ceiling without widening ordinary retrieval", () => {
+    const aggregation = usedAttempt("COMPLEX", 1_024, 32_000);
     expect(() => validateMemoryPreparingAttemptResult({
       ...aggregation,
-      items: attemptItems(24)
+      items: attemptItems(40)
     })).not.toThrow();
     expect(() => validateMemoryPreparingAttemptResult({
       ...aggregation,
-      budgetSnapshot: { plan: { aggregationRequested: false }, schemaVersion: 2 },
+      budgetSnapshot: {
+        budgetProfile: "SIMPLE",
+        hardCapTokens: 10_000,
+        plan: { aggregationRequested: false },
+        schemaVersion: 2
+      },
       items: attemptItems(21)
     })).toThrow(MemoryPreparingRunConflictError);
   });
 
-  it("admits a safe 4k projection plus its bounded rendered source prefix", () => {
+  it("rejects a cap that exceeds the admitted provider envelope", () => {
+    const accepted = usedAttempt("SIMPLE", 1_000, 1_000);
+    expect(() => validateMemoryPreparingAttemptResult({
+      ...accepted,
+      budgetSnapshot: {
+        ...accepted.budgetSnapshot,
+        providerTokenLimit: 999
+      }
+    })).toThrow(MemoryPreparingRunConflictError);
+  });
+
+  it("rejects a declared cap above the selected profile", () => {
+    const accepted = usedAttempt("SIMPLE", 1_000, 10_000);
+    expect(() => validateMemoryPreparingAttemptResult({
+      ...accepted,
+      budgetSnapshot: {
+        ...accepted.budgetSnapshot,
+        hardCapTokens: 10_001
+      }
+    })).toThrow(MemoryPreparingRunConflictError);
+  });
+
+  it("admits a safe 4k source projection", () => {
     const maximum = "x".repeat(MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS);
-    const accepted = usedAttempt(true, 1_024);
+    const accepted = usedAttempt("COMPLEX", 1_024, 32_000);
     expect(() => validateMemoryPreparingAttemptResult({
       ...accepted,
       items: [{ ...accepted.items[0]!, exactSafeText: maximum }],

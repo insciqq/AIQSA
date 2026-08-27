@@ -244,6 +244,7 @@ describe("LongMemEval adapter contract", () => {
       aggregationOperation: "COUNT",
       aggregationResolution: "RESOLVED",
       aggregationState: "READY",
+      budgetProfile: "COMPLEX",
       componentMetrics: {
         candidateCountsByLane: {
           FACT_EXACT: 4,
@@ -285,6 +286,7 @@ describe("LongMemEval adapter contract", () => {
         mode: "PAST_CHAT_SEARCH",
         normalizedQuery: "private query"
       },
+      providerTokenLimit: 48_000,
       reason: "no_relevant_memory",
       relevanceAcceptedCount: 5,
       relevanceCandidateCount: 10,
@@ -301,6 +303,7 @@ describe("LongMemEval adapter contract", () => {
       aggregationRequested: true,
       aggregationResolution: "RESOLVED",
       aggregationState: "READY",
+      budgetProfile: "COMPLEX",
       candidateCountsByLane: { FACT_EXACT: 4, HISTORY_RECALL_VECTOR: 6 },
       candidatesRetainedAfterRejoin: 4,
       candidatesRetainedAfterReranker: 5,
@@ -314,6 +317,7 @@ describe("LongMemEval adapter contract", () => {
       omissionCounts: { history_limit: 2 },
       packedTokens: 2_300,
       plannerFallbackUsed: false,
+      providerTokenLimit: 48_000,
       queryVariantCounts: { CONTROL_NORMALIZED: 1, EXACT_NORMALIZED: 1 },
       rawChunkExpansions: 8,
       rawRoundExpansions: 0,
