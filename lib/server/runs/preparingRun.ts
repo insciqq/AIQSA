@@ -3,8 +3,13 @@ import type { MemoryReceiptOutcome } from "@prisma/client";
 import {
   MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
   MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS,
+  MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS,
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
   MEMORY_CONTEXT_MAX_ITEMS,
+  MEMORY_CONTEXT_PAST_CHAT_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_PAST_CHAT_TARGET_TOKENS,
+  MEMORY_CONTEXT_TARGET_TOKENS,
+  MEMORY_CONTEXT_UNIVERSAL_HARD_CAP_TOKENS,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_PLANNER_VERSION,
   type MemoryRetrievalItemType,
@@ -29,7 +34,9 @@ export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION =
 
 const safeCode = /^[a-z][a-z0-9_]{0,63}$/u;
 const safeSelectionReason = /^[a-z][a-z0-9_.:+-]{0,127}$/u;
-const MEMORY_PREPARING_CONTEXT_MAX_BYTES = 64 * 1024;
+// Structured evidence can approach the universal 32k-token ceiling while
+// JSON escaping and multibyte text make a token-derived byte ceiling unsafe.
+const MEMORY_PREPARING_CONTEXT_MAX_BYTES = 512 * 1024;
 const MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES = 64 * 1024;
 const MEMORY_PREPARING_SAFE_QUERY_MAX_LENGTH = 2_000;
 
@@ -310,10 +317,65 @@ export function validateMemoryPreparingAttemptResult(
     ? input.budgetSnapshot.plan
     : null;
   const aggregationRequested = budgetPlan?.aggregationRequested === true;
-  const contextMaxTokens = aggregationRequested
-    ? MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS
-    : MEMORY_PREPARING_CONTEXT_MAX_TOKENS;
-  const itemLimit = aggregationRequested
+  const budgetProfile = input.budgetSnapshot.budgetProfile;
+  if (budgetProfile !== undefined && budgetProfile !== "SIMPLE" &&
+    budgetProfile !== "PAST_CHAT" && budgetProfile !== "COMPLEX") {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  const declaredHardCap = input.budgetSnapshot.hardCapTokens;
+  const declaredTarget = input.budgetSnapshot.targetTokens;
+  const providerTokenLimit = input.budgetSnapshot.providerTokenLimit;
+  const profileLimits = budgetProfile === "COMPLEX"
+    ? {
+        hardCapTokens: MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
+        targetTokens: MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS
+      }
+    : budgetProfile === "PAST_CHAT"
+      ? {
+          hardCapTokens: MEMORY_CONTEXT_PAST_CHAT_HARD_CAP_TOKENS,
+          targetTokens: MEMORY_CONTEXT_PAST_CHAT_TARGET_TOKENS
+        }
+      : budgetProfile === "SIMPLE"
+        ? {
+            hardCapTokens: MEMORY_CONTEXT_HARD_CAP_TOKENS,
+            targetTokens: MEMORY_CONTEXT_TARGET_TOKENS
+          }
+        : null;
+  if (
+    (declaredHardCap !== undefined && (
+      typeof declaredHardCap !== "number" ||
+      !Number.isSafeInteger(declaredHardCap) ||
+      declaredHardCap < 0 ||
+      declaredHardCap > MEMORY_CONTEXT_UNIVERSAL_HARD_CAP_TOKENS
+    )) ||
+    (declaredTarget !== undefined && (
+      typeof declaredTarget !== "number" ||
+      !Number.isSafeInteger(declaredTarget) ||
+      declaredTarget < 0 ||
+      declaredTarget > MEMORY_CONTEXT_UNIVERSAL_HARD_CAP_TOKENS
+    )) ||
+    (typeof declaredHardCap === "number" &&
+      typeof declaredTarget === "number" && declaredTarget > declaredHardCap) ||
+    (profileLimits !== null && typeof declaredHardCap === "number" &&
+      declaredHardCap > profileLimits.hardCapTokens) ||
+    (profileLimits !== null && typeof declaredTarget === "number" &&
+      declaredTarget > profileLimits.targetTokens) ||
+    (providerTokenLimit !== undefined && providerTokenLimit !== null && (
+      typeof providerTokenLimit !== "number" ||
+      !Number.isSafeInteger(providerTokenLimit) ||
+      providerTokenLimit < 0
+    )) ||
+    (typeof declaredHardCap === "number" &&
+      typeof providerTokenLimit === "number" && declaredHardCap > providerTokenLimit)
+  ) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  const contextMaxTokens = typeof declaredHardCap === "number"
+    ? declaredHardCap
+    : aggregationRequested || budgetProfile === "COMPLEX"
+      ? MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS
+      : MEMORY_PREPARING_CONTEXT_MAX_TOKENS;
+  const itemLimit = aggregationRequested || budgetProfile === "COMPLEX"
     ? MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT
     : MEMORY_PREPARING_ITEM_LIMIT;
   if (items.length > itemLimit) {
@@ -397,8 +459,10 @@ export function dormantMemoryAttemptResult(
   const disabled = !settings.useMemoryFacts && !settings.referenceChatHistory;
   return Object.freeze({
     budgetSnapshot: Object.freeze({
+      budgetProfile: "SIMPLE",
       hardCapTokens: MEMORY_PREPARING_CONTEXT_MAX_TOKENS,
       itemCount: 0,
+      providerTokenLimit: null,
       schemaVersion: 1
     }),
     items: Object.freeze([]),

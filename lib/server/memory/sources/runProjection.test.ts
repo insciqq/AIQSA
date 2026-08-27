@@ -49,6 +49,12 @@ function client() {
     modelRunMemoryItem: { findMany: vi.fn(async () => [{
       bindingId: "binding-1",
       factVersionId: "private-version-1",
+      featureSnapshot: {
+        documentTime: "internal-document-time-sentinel",
+        evidenceHandle: "internal-evidence-handle-sentinel",
+        sourceAuthority: "user_saved",
+        sourceSessionHandle: "internal-session-handle-sentinel"
+      },
       includedText: "I prefer exact, concise answers.",
       itemType: "FACT_VERSION",
       recallChunkId: null,
@@ -162,6 +168,9 @@ describe("answer Memory source projection", () => {
     const serialized = JSON.stringify(sources.get("run-1"));
     expect(serialized).not.toContain("private-fact-1");
     expect(serialized).not.toContain("private-version-1");
+    expect(serialized).not.toContain("internal-document-time-sentinel");
+    expect(serialized).not.toContain("internal-evidence-handle-sentinel");
+    expect(serialized).not.toContain("internal-session-handle-sentinel");
   });
 
   it("projects history only when both persisted projection versions are current", async () => {

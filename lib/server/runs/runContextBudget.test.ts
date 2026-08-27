@@ -8,10 +8,15 @@ import {
   MEMORY_ACTION_NO_COMMIT_RESULT,
   memoryActionAnswerContract
 } from "../providers/memoryActionAnswer";
+import {
+  MEMORY_READER_CONTRACT_V1,
+  PERSONAL_CONTEXT_HEADING
+} from "../providers/personalContext";
 import type { ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import {
   applyProviderRequestContextBudget,
+  normalizedRequestPersonalContextTokenLimit,
   providerFacingSerializedTools,
   UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS
 } from "./runContextBudget";
@@ -52,6 +57,59 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 
 describe("provider request context budget", () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it("derives the future Memory ceiling from the admitted model envelope", () => {
+    const input = request({
+      context: {
+        messages: [{
+          content: { blocks: [{ text: "current question", type: "text" }] },
+          id: "current",
+          role: "user"
+        }, {
+          content: { blocks: [{ text: "private skill context", type: "text" }] },
+          id: "skill-context:current",
+          purpose: "skill_context",
+          role: "user"
+        }],
+        mode: "branch_path"
+      },
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 10_000 },
+      prompt: { developer: "trusted developer", system: "trusted system" }
+    });
+    const limits = calculateContextBudgetLimits({ contextWindow: 10_000 });
+    const expected = Math.max(0,
+      limits.budgetTokens -
+      estimateApproxTokens("trusted system") -
+      estimateApproxTokens("trusted developer") -
+      estimateApproxTokens(MEMORY_READER_CONTRACT_V1) -
+      estimateApproxTokens({ blocks: [{ text: "private skill context", type: "text" }] }) -
+      estimateApproxTokens({ blocks: [{ text: "current question", type: "text" }] })
+    );
+
+    expect(normalizedRequestPersonalContextTokenLimit(input)).toBe(expected);
+    expect(normalizedRequestPersonalContextTokenLimit(request({
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: undefined }
+    }))).toBeNull();
+  });
+
+  it("counts the trusted Memory reader contract in the final provider fence", () => {
+    const withoutMemory = request();
+    const withMemory = request({
+      personalContext: {
+        approxTokens: 1,
+        itemCount: 1,
+        memoryGeneration: 1,
+        memoryRevision: 1,
+        mode: "prefetched",
+        text: `${PERSONAL_CONTEXT_HEADING}\n{}`
+      }
+    });
+
+    expect(applyProviderRequestContextBudget({ request: withoutMemory }))
+      .toMatchObject({ ok: true });
+    expect(applyProviderRequestContextBudget({ request: withMemory }))
+      .toMatchObject({ error: { code: "context_too_large" }, ok: false });
+  });
 
   it("keeps a near-budget ordinary answer dispatchable when Memory result truth replaces the reserve", () => {
     const committed = {

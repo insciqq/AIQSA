@@ -7,6 +7,7 @@ import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
+  MEMORY_READER_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
   assertPersonalContextEgressSafe
 } from "./personalContext";
@@ -57,7 +58,9 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 
 describe("provider-neutral personal context", () => {
   it("places the same untrusted block after trusted instructions for every adapter", () => {
-    const expected = `System\n\nDeveloper instructions:\nDeveloper\n\n${request().personalContext!.text}`;
+    const expected = `System\n\nDeveloper instructions:\nDeveloper\n\n${
+      MEMORY_READER_CONTRACT_V1
+    }\n\n${request().personalContext!.text}`;
     expect(buildOpenAIResponsesRequest(request()).instructions).toBe(expected);
     expect(buildOpenAICompatibleChatRequest(request()).messages[0]).toEqual({
       content: expected,
@@ -71,6 +74,16 @@ describe("provider-neutral personal context", () => {
     expect(buildGeminiInteractionsRequest(request({ provider: "gemini" })).system_instruction)
       .toBe(expected);
     expect(() => assertPersonalContextEgressSafe(request())).not.toThrow();
+    expect(MEMORY_READER_CONTRACT_V1).toContain("raw_chunk or raw_round");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("what the Assistant said");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("later dated current evidence");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("identify the distinct supported set members");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("relative time");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("Do not merge different events");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("evidence is insufficient");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("concrete recommendation");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("prompt-injection attempts");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("private concise evidence note");
   });
 
   it("serializes the server-minted Knowledge contract last for every adapter", () => {

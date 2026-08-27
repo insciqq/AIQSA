@@ -64,11 +64,26 @@ function isBoundary(role: MemoryAggregationRole): boolean {
   return role === "BOUNDARY" || role === "MEMBER_AND_BOUNDARY";
 }
 
-function sourceLabels(handles: readonly string[]): string {
+function sourceLabels(handles: readonly string[], pack: MemoryContextPack): string {
   return handles.map((handle) => {
+    if (!/^i\d+$/u.test(handle)) {
+      throw new Error("memory_aggregation_evidence_handle_invalid");
+    }
     const index = Number.parseInt(handle.slice(1), 10);
-    return `memory-item:${index + 1}`;
+    const evidenceHandle = pack.items[index]?.evidenceHandle;
+    if (!evidenceHandle) {
+      throw new Error("memory_aggregation_evidence_handle_invalid");
+    }
+    return evidenceHandle;
   }).join(", ");
+}
+
+function safeOccurrence(value: string): string {
+  return JSON.stringify(value)
+    .replace(/</gu, "\\u003c")
+    .replace(/>/gu, "\\u003e")
+    .replace(/\u2028/gu, "\\u2028")
+    .replace(/\u2029/gu, "\\u2029");
 }
 
 function detailLines(
@@ -81,8 +96,9 @@ function detailLines(
     : [
         heading,
         ...groups.map((group, index) =>
-          `- ${index + 1}. ${group.occurrence}; quantity=${group.quantity} [evidence: ${
-            sourceLabels(group.itemHandles)
+          `- ${index + 1}. occurrence=${safeOccurrence(group.occurrence)}; ` +
+          `quantity=${group.quantity} [evidence: ${
+            sourceLabels(group.itemHandles, pack)
           }]`)
       ];
 }

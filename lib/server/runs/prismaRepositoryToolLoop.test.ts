@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
+import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
 
@@ -417,6 +418,47 @@ describe("provider dispatch recovery request loading", () => {
       runId: "run-one",
       userId: "owner-one"
     })).resolves.toEqual(fullContextRequest);
+  });
+
+  it("round-trips the exact frozen structured Personal Memory pack", async () => {
+    const memoryText = [
+      PERSONAL_CONTEXT_HEADING,
+      '<aiqsa_memory_evidence version="2">',
+      '{"aggregation_requested":false,"budget_profile":"past_chat"}',
+      "EVIDENCE_ITEMS_JSONL",
+      '{"document_time":"2026-08-27T00:00:00.000Z","evidence_handle":"M1","raw_safe_evidence":"frozen evidence","source_session_handle":"S1","status":"current"}',
+      "</aiqsa_memory_evidence>"
+    ].join("\n");
+    const frozenRequest: NormalizedRunRequest = {
+      ...normalizedRequest,
+      personalContext: {
+        approxTokens: 64,
+        itemCount: 1,
+        memoryGeneration: 7,
+        memoryRevision: 11,
+        mode: "prefetched",
+        text: memoryText
+      }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      modelRun: {
+        findUnique: vi.fn(async () => ({
+          chat: { projectId: null, userId: "owner-one" },
+          chatId: "chat-one",
+          modelId: "model-one",
+          normalizedRequest: frozenRequest,
+          provider: "provider-one"
+        }))
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+
+    const loaded = await operations.loadProviderDispatchRecoveryRequest!({
+      runId: "run-one",
+      userId: "owner-one"
+    });
+
+    expect(loaded).toEqual(frozenRequest);
+    expect(loaded?.personalContext?.text).toBe(memoryText);
   });
 
   it("rejects a full-context recovery request without its exact evidence envelope", async () => {

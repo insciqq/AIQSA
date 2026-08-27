@@ -13,6 +13,8 @@ import {
 } from "../providers/attachmentPayload";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
+  MEMORY_READER_CONTRACT_V1,
   knowledgeToolLoopContract
 } from "../providers/personalContext";
 import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
@@ -158,6 +160,49 @@ export function applyRunContextBudget(input: Readonly<{
     contextTruncation: truncation,
     ok: true
   };
+}
+
+/** Returns the bounded room for a future Personal Memory block after the
+ * admitted model's output reserve, safety margin, trusted prompt, current
+ * message, and non-droppable internal context. Provider-specific attachments
+ * and serialized tools remain subject to the final exact request budget. */
+export function normalizedRequestPersonalContextTokenLimit(
+  request: NormalizedRunRequest
+): number | null {
+  const contextWindow = request.modelCapabilities.contextWindow;
+  if (!Number.isFinite(contextWindow) || Number(contextWindow) <= 0) return null;
+  const limits = calculateContextBudgetLimits({
+    contextWindow: Number(contextWindow),
+    maxOutputTokens: maxOutputTokensForBudget(
+      request.params,
+      request.modelCapabilities,
+      request.provider
+    ),
+    provider: request.provider
+  });
+  const promptTokens = estimateApproxTokens(request.prompt.system ?? "") +
+    estimateApproxTokens(request.prompt.developer ?? "") +
+    estimateApproxTokens(MEMORY_READER_CONTRACT_V1) +
+    (request.prompt.memoryActionAnswerResult
+      ? estimateApproxTokens(memoryActionAnswerContract(
+          request.prompt.memoryActionAnswerResult
+        ))
+      : 0) +
+    (request.prompt.knowledgeAnswerContract === 1
+      ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
+      : 0) +
+    (request.knowledgePlan.mode !== "none"
+      ? estimateApproxTokens(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1)
+      : 0);
+  const contextMessages = request.context?.messages ?? [];
+  const internalTokens = contextMessages
+    .filter((message) => message.purpose !== undefined)
+    .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+  const currentMessage = contextMessages
+    .filter((message) => message.purpose === undefined)
+    .at(-1);
+  const currentTokens = estimateApproxTokens(currentMessage?.content ?? request.content);
+  return Math.max(0, limits.budgetTokens - promptTokens - internalTokens - currentTokens);
 }
 
 function cumulativeTruncationSummary(
@@ -361,6 +406,7 @@ export function applyProviderRequestContextBudget(input: Readonly<{
     estimateApproxTokens(providerFacingSerializedTools(input.request, input.bridge)) +
     estimateApproxTokens(input.request.providerToolMessages ?? []) +
     estimateApproxTokens(input.request.personalContext?.text ?? "") +
+    (input.request.personalContext ? estimateApproxTokens(MEMORY_READER_CONTRACT_V1) : 0) +
     estimateApproxTokens(knowledgeToolLoopContract(input.request) ?? "");
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {
