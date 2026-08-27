@@ -9,8 +9,11 @@ import {
 } from "../identity/registry";
 import {
   resolveMemoryTemporal,
-  type MemoryTemporalProposal
+  type MemoryTemporalProposal,
+  type ResolvedMemoryTemporal
 } from "../temporal/resolver";
+import { memoryLocalDateTimeParts } from
+  "../../../../domain/memory/temporal/calendar";
 import {
   MEMORY_FACT_DURABLE_CATEGORIES,
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
@@ -533,6 +536,29 @@ function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
     frame.polarity === "UNKNOWN";
 }
 
+function resolvedLocalDate(instant: string, timeZone: string): string {
+  const parts = memoryLocalDateTimeParts(new Date(instant), timeZone);
+  return `${String(parts.year).padStart(4, "0")}-` +
+    `${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function temporalDisplayText(
+  statement: string,
+  temporal: ResolvedMemoryTemporal,
+  timeZone: string
+): string {
+  if (temporal.rawExpression === null) return statement;
+  const fields = [
+    temporal.occurredAt ? `event_date=${resolvedLocalDate(temporal.occurredAt, timeZone)}` : null,
+    temporal.expectedAt ? `expected_date=${resolvedLocalDate(temporal.expectedAt, timeZone)}` : null,
+    temporal.validFrom ? `valid_from=${resolvedLocalDate(temporal.validFrom, timeZone)}` : null,
+    temporal.validTo ? `valid_to=${resolvedLocalDate(temporal.validTo, timeZone)}` : null
+  ].filter((value): value is string => value !== null);
+  if (fields.length === 0) return statement;
+  const rendered = `${statement} [${fields.join("; ")}]`;
+  return rendered.length <= 2_000 ? rendered : statement;
+}
+
 function decodeObservation(
   value: unknown,
   input: MemoryFactExtractionInput
@@ -615,7 +641,7 @@ function decodeObservation(
     coreSalience: "NONE",
     dimensionKey: resolvedIdentity.dimensionKey,
     directness: "DIRECT",
-    displayText: statement,
+    displayText: temporalDisplayText(statement, temporal, input.timeZone),
     dependencies,
     entities: parsedEntities.entities,
     evidence,

@@ -131,16 +131,23 @@ describe("Memory chat digests", () => {
       .toBe(true);
     const segments = partitionMemoryChatDigestSourceChunks(selected);
     expect(segments.map((segment) => segment.length)).toEqual([24, 5]);
-    const request = buildMemoryChatDigestRequest(segments[0]!);
-    expect(request.name).toBe("memory_chat_digest_v3");
+    const request = buildMemoryChatDigestRequest(segments[0]!, "Europe/Moscow");
+    expect(request.name).toBe("memory_chat_digest_v4");
     expect(request.userPrompt.length).toBeLessThan(32_000);
     expect(request.systemPrompt).toContain("untrusted quoted data");
     expect(request.systemPrompt).toContain("user-authored events");
     expect(request.systemPrompt).toContain("incidental");
     expect(request.systemPrompt).toContain("each distinct item");
+    expect(request.systemPrompt).toContain("absolute ISO date");
+    expect(request.systemPrompt).toContain("occurred_from/occurred_to");
+    expect(request.systemPrompt).toContain("supplied time_zone");
+    expect(JSON.parse(request.userPrompt)).toMatchObject({
+      time_zone: "Europe/Moscow"
+    });
     const incremental = buildIncrementalMemoryChatDigestRequest(
       "Summary: Earlier deployment constraints.",
-      segments[1]!
+      segments[1]!,
+      "Europe/Moscow"
     );
     expect(incremental.userPrompt).toContain("previous_digest");
   });
@@ -153,8 +160,18 @@ describe("Memory chat digests", () => {
       summary: "The chat compared deployment options.",
       topics: ["Deployment", "Rollout"]
     });
-    const first = materializeMemoryChatDigest({ chunks: selected, content, source });
-    const retry = materializeMemoryChatDigest({ chunks: selected, content, source });
+    const first = materializeMemoryChatDigest({
+      chunks: selected,
+      content,
+      source,
+      timeZone: "UTC"
+    });
+    const retry = materializeMemoryChatDigest({
+      chunks: selected,
+      content,
+      source,
+      timeZone: "UTC"
+    });
 
     expect(first).toEqual(retry);
     expect(first.id).toMatch(/^[a-f0-9]{64}$/u);
@@ -164,7 +181,7 @@ describe("Memory chat digests", () => {
     expect(first.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(first.updateMode).toBe("FULL_REBUILD");
     expect(first.safeDigestText).toContain("Summary:");
-    expect(MEMORY_CHAT_DIGEST_PIPELINE_VERSION).toBe("memory-chat-digest-v3");
+    expect(MEMORY_CHAT_DIGEST_PIPELINE_VERSION).toBe("memory-chat-digest-v4");
 
     expectDigestOutputInvalid({
       decisions: [],
@@ -190,7 +207,8 @@ describe("Memory chat digests", () => {
         summary: "Early constraints and the late rollout were discussed.",
         topics: ["Early constraints", "Late rollout"]
       }),
-      source
+      source,
+      timeZone: "UTC"
     });
     const findFirst = vi.fn(async () => ({
       activeLeafMessageId: source.activeLeafMessageId,
@@ -228,6 +246,7 @@ describe("Memory chat digests", () => {
     const result = await generator.generate(source, chunks, {
       jobId: "job-1",
       signal: new AbortController().signal,
+      timeZone: "UTC",
       userId: source.userId
     });
 
@@ -287,6 +306,7 @@ describe("Memory chat digests", () => {
     const first = await buildHierarchicalMemoryChatDigest(
       covered,
       "d".repeat(64),
+      "Europe/Moscow",
       execute
     );
 
@@ -304,6 +324,7 @@ describe("Memory chat digests", () => {
     const rebuilt = await buildHierarchicalMemoryChatDigest(
       edited,
       "e".repeat(64),
+      "Europe/Moscow",
       execute
     );
     expect(rebuilt.content.topics).toEqual(["Late rollout"]);
@@ -316,21 +337,34 @@ describe("Memory chat digests", () => {
     const previous = {
       chunkIds: prefix.map(({ id }) => id),
       incrementalDepth: 7,
-      sourceFingerprint: memoryChatDigestSourceFingerprint(prefix)
+      sourceFingerprint: memoryChatDigestSourceFingerprint(prefix, "UTC")
     };
 
-    expect(planMemoryChatDigestUpdate({ chunks: current, previous })).toMatchObject({
+    expect(planMemoryChatDigestUpdate({
+      chunks: current,
+      previous,
+      timeZone: "UTC"
+    })).toMatchObject({
       delta: [expect.objectContaining({ id: "chunk-29" })],
       mode: "INCREMENTAL",
-      sourceFingerprint: memoryChatDigestSourceFingerprint(current)
+      sourceFingerprint: memoryChatDigestSourceFingerprint(current, "UTC")
     });
     expect(planMemoryChatDigestUpdate({
       chunks: current,
-      previous: { ...previous, incrementalDepth: 31 }
+      previous: { ...previous, incrementalDepth: 31 },
+      timeZone: "UTC"
     }).mode).toBe("FULL_REBUILD");
     expect(planMemoryChatDigestUpdate({
       chunks: [chunk(0, { id: "edited-early-chunk" }), ...current.slice(1)],
-      previous
+      previous,
+      timeZone: "UTC"
     }).mode).toBe("FULL_REBUILD");
+    expect(planMemoryChatDigestUpdate({
+      chunks: current,
+      previous,
+      timeZone: "Europe/Moscow"
+    }).mode).toBe("FULL_REBUILD");
+    expect(memoryChatDigestSourceFingerprint(current, "UTC"))
+      .not.toBe(memoryChatDigestSourceFingerprint(current, "Europe/Moscow"));
   });
 });

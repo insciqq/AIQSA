@@ -10,8 +10,12 @@ import type {
   MemoryTemporalIntent
 } from "./contracts";
 import { MEMORY_RETRIEVAL_MODES, MEMORY_TEMPORAL_INTENTS } from "./contracts";
+import {
+  parseMemoryTemporalQuery,
+  type MemoryTemporalQueryParseResult
+} from "./temporal";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v13";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v14";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
@@ -126,11 +130,12 @@ function semanticVariants(
 
 function temporalVariants(
   originalSanitizedQuery: string,
-  intent: MemoryTemporalIntent
+  intent: MemoryTemporalIntent,
+  temporalQuery: MemoryTemporalQueryParseResult
 ): readonly MemoryTemporalQueryVariant[] {
   if (!originalSanitizedQuery) return Object.freeze([]);
   const variants: MemoryTemporalQueryVariant[] = [];
-  if (intent === "AS_OF" || intent === "BETWEEN") {
+  if (intent === "AS_OF" || intent === "BETWEEN" || temporalQuery.state === "MATCHED") {
     variants.push(Object.freeze({ kind: "FILTERED", text: originalSanitizedQuery }));
   }
   variants.push(Object.freeze({ kind: "UNRESTRICTED", text: originalSanitizedQuery }));
@@ -222,7 +227,9 @@ function validModeContract(
 
 /**
  * Produces only bounded syntax-level query material. It intentionally performs
- * no language, intent, punctuation, spelling, topic, entity, or date inference.
+ * no general language, topic, spelling, or semantic intent inference. The one
+ * deliberate language-aware exception is the bounded deterministic EN/RU
+ * calendar parser carried beside, never instead of, the original query.
  * Every non-empty Unicode query is eligible; a null lexical projection merely
  * means PostgreSQL FTS has no token to consume while vector and recency lanes
  * still run with the normalized raw query.
@@ -258,6 +265,11 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     throw new Error("memory_retrieval_plan_invalid");
   }
   const normalizedQuery = boundedUnicode(input.currentUserText);
+  const temporalQuery = parseMemoryTemporalQuery({
+    now: input.now,
+    query: normalizedQuery,
+    timeZone: input.timeZone ?? "UTC"
+  });
   const normalizedRewrite = boundedUnicode(input.semanticRewrite ?? "");
   const entityMentions = entityMentionsFor(input, [
     input.currentUserText,
@@ -303,6 +315,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     recencyRequested: input.recencyRequested === true,
     semanticQueryVariants,
     temporalIntent,
-    temporalQueryVariants: temporalVariants(normalizedQuery, temporalIntent)
+    temporalQuery,
+    temporalQueryVariants: temporalVariants(normalizedQuery, temporalIntent, temporalQuery)
   };
 }

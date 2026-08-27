@@ -1593,6 +1593,95 @@ describe("local Memory retrieval on PostgreSQL", () => {
     }
   });
 
+  it("merges owner-scoped filtered and unrestricted temporal recall through rejoin", async () => {
+    const userId = await createOwner("memory-temporal-owner");
+    const foreignUserId = await createOwner("memory-temporal-foreign");
+    try {
+      const generationId = await activateLexicalGeneration(userId);
+      const foreignGenerationId = await activateLexicalGeneration(foreignUserId);
+      const current = await createChatWithLeaf({
+        sourceRevision: 0,
+        title: "Current temporal request",
+        userId,
+        userText: "What happened yesterday?"
+      });
+      const inside = await createDigestHistoryChat({
+        digestText: "Summary: The cedar rehearsal completed successfully.",
+        generationId,
+        occurredAt: new Date("2026-08-09T09:00:00.000Z"),
+        safeChunkText: "User:\nThe cedar rehearsal completed successfully.",
+        title: "Cedar temporal hit",
+        userId
+      });
+      const outside = await createDigestHistoryChat({
+        digestText: "Summary: The birch rehearsal established the fallback procedure.",
+        generationId,
+        occurredAt: new Date("2026-06-01T09:00:00.000Z"),
+        safeChunkText: "User:\nThe birch rehearsal established the fallback procedure.",
+        title: "Birch temporal fallback",
+        userId
+      });
+      const foreign = await createDigestHistoryChat({
+        digestText: "Summary: Foreign temporal evidence must remain isolated.",
+        generationId: foreignGenerationId,
+        occurredAt: new Date("2026-08-09T10:00:00.000Z"),
+        safeChunkText: "User:\nForeign temporal evidence must remain isolated.",
+        title: "Foreign temporal hit",
+        userId: foreignUserId
+      });
+      const plan = planMemoryRetrieval({
+        currentUserText: "What happened yesterday?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: fixtureNow,
+        temporalIntent: "ANY",
+        timeZone: "UTC"
+      });
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const result = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan,
+        userId
+      });
+      const filtered = result.laneResults.find(({ lane }) =>
+        lane === "HISTORY_RECALL_TEMPORAL_FILTERED");
+      const unrestricted = result.laneResults.find(({ lane }) =>
+        lane === "HISTORY_RECALL_TEMPORAL_UNRESTRICTED");
+      expect(filtered?.candidates.map(({ itemId }) => itemId)).toEqual([inside.chunkId]);
+      expect(unrestricted?.candidates.map(({ itemId }) => itemId)).toEqual([
+        inside.chunkId,
+        outside.chunkId
+      ]);
+      expect(result.laneResults.flatMap(({ candidates }) =>
+        candidates.map(({ itemId }) => itemId))).not.toContain(foreign.chunkId);
+
+      const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
+      expect(ranked.map(({ itemId }) => itemId)).toEqual([
+        inside.chunkId,
+        outside.chunkId
+      ]);
+      const expanded = await repository.expand(result.snapshot, plan, ranked);
+      expect(expanded.map(({ itemId }) => itemId)).toEqual([
+        inside.chunkId,
+        outside.chunkId
+      ]);
+
+      await prisma.memoryRecallChunk.update({
+        data: { invalidatedAt: fixtureNow, state: "INVALIDATED" },
+        where: { id: outside.chunkId }
+      });
+      const rejoined = await repository.expand(result.snapshot, plan, ranked);
+      expect(rejoined.map(({ itemId }) => itemId)).toEqual([inside.chunkId]);
+    } finally {
+      await prisma.memoryDeletionOutbox.deleteMany({
+        where: { userId: { in: [userId, foreignUserId] } }
+      });
+      await prisma.user.deleteMany({ where: { id: { in: [userId, foreignUserId] } } });
+    }
+  });
+
   it("keeps matching legacy folder, assistant, and chat facts dormant", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const result = await repository.retrieve({
@@ -1751,9 +1840,10 @@ describe("local Memory retrieval on PostgreSQL", () => {
       ranked
     );
     const pack = packMemoryPersonalContext({ expanded, plan: historicalPlan, ranked });
-    expect(pack.text).toContain("Current user facts:");
-    expect(pack.text).toContain("Historical user memory:");
-    expect(pack.text).toContain("[2025-07-01] The user ordered a MacBook Air");
+    expect(pack.text).toContain('"evidence_type":"current_fact"');
+    expect(pack.text).toContain('"evidence_type":"historical_fact"');
+    expect(pack.text).toContain('"document_time":"2025-07-01T00:00:00.000Z"');
+    expect(pack.text).toContain('"raw_safe_evidence":"The user ordered a MacBook Air');
     expect(pack.text).not.toContain("duplicate MacBook representation");
     expect(pack.text).not.toContain("expired MacBook");
   });

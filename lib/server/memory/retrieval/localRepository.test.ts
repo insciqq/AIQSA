@@ -435,6 +435,63 @@ describe("local Memory retrieval repository", () => {
     expect(mocked.$queryRaw).not.toHaveBeenCalled();
   });
 
+  it("creates a bounded hard temporal lane plus a time-unrestricted fallback", async () => {
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const result = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "What happened yesterday?",
+        now,
+        timeZone: "UTC"
+      }),
+      userId: "user-1"
+    });
+    const lanes = result.laneResults.map(({ lane }) => lane);
+    expect(lanes).toContain("FACT_TEMPORAL_FILTERED");
+    expect(lanes).toContain("FACT_TEMPORAL_UNRESTRICTED");
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain('eligible."occurredAt"');
+    expect(sql).toContain("CASE WHEN");
+    expect(sql).toContain("IS NOT NULL AND TRUE");
+    expect(sql).toMatch(/IS NOT NULL AND \(\(.+>/su);
+    expect(sql).toContain('0.0::double precision AS "rawScore"');
+    expect(sql).toMatch(/ORDER BY COALESCE\(.+\) DESC, eligible\."itemId"/su);
+    expect(sql).not.toContain('message."content"');
+  });
+
+  it("keeps medium and ambiguous temporal interpretations non-excluding", async () => {
+    const mediumMocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const medium = await createPrismaLocalMemoryRetrievalRepository(mediumMocked.client)
+      .retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "on February 10", now }),
+        userId: "user-1"
+      });
+    expect(medium.laneResults.map(({ lane }) => lane)).toEqual(expect.arrayContaining([
+      "FACT_TEMPORAL_FILTERED",
+      "FACT_TEMPORAL_UNRESTRICTED"
+    ]));
+    expect((mediumMocked.laneSql.join("\n").match(/IS NOT NULL AND TRUE/gu) ?? []).length)
+      .toBeGreaterThanOrEqual(2);
+
+    const ambiguousMocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const ambiguous = await createPrismaLocalMemoryRetrievalRepository(ambiguousMocked.client)
+      .retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "03/04/2025", now }),
+        userId: "user-1"
+      });
+    expect(ambiguous.laneResults.map(({ lane }) => lane)
+      .some((lane) => lane.includes("TEMPORAL"))).toBe(false);
+  });
+
   it("adds a bounded recent lane only for an explicit System-plan recency request", async () => {
     const withoutRecency = mockClient(snapshotRow({ referenceChatHistory: false }));
     const ordinary = await createPrismaLocalMemoryRetrievalRepository(withoutRecency.client)

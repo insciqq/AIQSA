@@ -12,7 +12,7 @@ import { MEMORY_PREFERENCE_DIMENSION_PREFIXES } from "../identity/registry";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v23");
+      .toBe("memory-fact-extraction-prompt-v24");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -65,6 +65,8 @@ describe("Memory semantic-frame extraction prompt", () => {
       "does not explicitly supply a stable category, format, interaction, or topic dimension",
       "never invent a SLOT dimension",
       "structured temporal normalization",
+      "target_message.created_at in time_zone",
+      "preserving the exact original wording",
       "PRONOMINAL, ELLIPSIS, UNKNOWN",
       "no prose or hidden rationale"
     ]) {

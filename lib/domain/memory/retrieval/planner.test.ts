@@ -256,6 +256,49 @@ describe("language-agnostic Memory retrieval planning", () => {
     })).toThrow("memory_retrieval_filter_invalid");
   });
 
+  it("adds deterministic temporal and unrestricted variants without model authority", () => {
+    const temporal = planMemoryRetrieval({
+      currentUserText: "What happened yesterday?",
+      now: new Date("2026-01-01T01:30:00.000Z"),
+      temporalIntent: "ANY",
+      timeZone: "America/Los_Angeles"
+    });
+    expect(temporal.temporalQuery).toMatchObject({
+      confidence: "HIGH",
+      expressionType: "RELATIVE_DAY",
+      matchedExpressionCount: 1,
+      state: "MATCHED"
+    });
+    expect(temporal.temporalQuery.interval?.from?.toISOString())
+      .toBe("2025-12-30T08:00:00.000Z");
+    expect(temporal.temporalQueryVariants).toEqual([
+      { kind: "FILTERED", text: "What happened yesterday?" },
+      { kind: "UNRESTRICTED", text: "What happened yesterday?" }
+    ]);
+    expect(temporal.temporalQuery).not.toHaveProperty("text");
+    expect(temporal.temporalQuery).not.toHaveProperty("query");
+  });
+
+  it("keeps medium and ambiguous temporal parsing fail-open", () => {
+    const medium = planMemoryRetrieval({
+      currentUserText: "on February 10",
+      now,
+      temporalIntent: "ANY"
+    });
+    expect(medium.temporalQuery).toMatchObject({ confidence: "MEDIUM", state: "MATCHED" });
+    expect(medium.temporalQueryVariants.map(({ kind }) => kind))
+      .toEqual(["FILTERED", "UNRESTRICTED"]);
+
+    const ambiguous = planMemoryRetrieval({
+      currentUserText: "03/04/2025",
+      now,
+      temporalIntent: "ANY"
+    });
+    expect(ambiguous.temporalQuery).toMatchObject({ state: "AMBIGUOUS", interval: null });
+    expect(ambiguous.temporalQueryVariants.map(({ kind }) => kind))
+      .toEqual(["UNRESTRICTED"]);
+  });
+
   it("validates every explicit retrieval mode against source and temporal intent", () => {
     const facts = { sourceKinds: ["FACT", "EVENT"] as const };
     const history = { sourceKinds: ["HISTORY"] as const };

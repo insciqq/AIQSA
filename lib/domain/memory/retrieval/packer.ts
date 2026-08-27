@@ -119,8 +119,9 @@ function documentDate(
   expansion: MemoryExpandedCandidate
 ): Date | null {
   return candidate.itemType === "FACT_VERSION"
-    ? candidate.metadata.occurredAt ?? candidate.metadata.validFrom ??
-      candidate.metadata.observedAt ?? candidate.metadata.systemFrom
+    ? candidate.metadata.occurredAt ?? candidate.metadata.expectedAt ??
+      candidate.metadata.validFrom ?? candidate.metadata.observedAt ??
+      candidate.metadata.systemFrom
     : expansion.occurredFrom ?? candidate.metadata.occurredFrom;
 }
 
@@ -304,7 +305,8 @@ function chronologyTime(
 ): number | null {
   const value = candidate.itemType === "FACT_VERSION"
     ? candidate.metadata.validFrom ?? candidate.metadata.occurredAt ??
-      candidate.metadata.observedAt ?? candidate.metadata.systemFrom ??
+      candidate.metadata.expectedAt ?? candidate.metadata.observedAt ??
+      candidate.metadata.systemFrom ??
       candidate.metadata.lastConfirmedAt
     : expansion.occurredFrom ?? candidate.metadata.occurredFrom;
   return value?.getTime() ?? null;
@@ -327,9 +329,12 @@ function packedItem(input: Readonly<{
     derived: expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT" ||
       candidate.metadata.sourceAuthority === "SYNTHESIS",
     documentTime: iso(documentTime),
-    eventTimeEnd: fact ? iso(candidate.metadata.occurredTo) : null,
+    eventTimeEnd: fact ? iso(candidate.metadata.occurredTo ??
+      (candidate.metadata.modality === "EVENT" ? candidate.metadata.validTo : null)) : null,
     eventTimeStart: fact
-      ? iso(candidate.metadata.occurredAt ?? candidate.metadata.occurredFrom)
+      ? iso(candidate.metadata.occurredAt ?? candidate.metadata.occurredFrom ??
+        candidate.metadata.expectedAt ??
+        (candidate.metadata.modality === "EVENT" ? candidate.metadata.validFrom : null))
       : null,
     evidenceHandle: input.evidenceHandle,
     evidenceType: evidenceType(candidate, expansion),

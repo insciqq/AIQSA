@@ -326,7 +326,7 @@ describe("preparing Memory item finalization", () => {
       contentHash: "anchor-content-hash",
       digestContentHash: "digest-content-hash",
       digestId: "digest-1",
-      digestPipelineVersion: "memory-chat-digest-v3",
+      digestPipelineVersion: "memory-chat-digest-v4",
       digestSafetyPolicyVersion: "memory-chat-digest-policy-v3",
       digestText,
       languageCode: "en",
@@ -376,7 +376,7 @@ describe("preparing Memory item finalization", () => {
         projectionKind: "CHAT_DIGEST_SAFE_TEXT",
         sourceSnapshot: { digestId: "digest-1", schemaVersion: 3 },
         versionSnapshot: {
-          digestPipelineVersion: "memory-chat-digest-v3",
+          digestPipelineVersion: "memory-chat-digest-v4",
           schemaVersion: 3
         }
       });

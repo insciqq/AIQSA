@@ -9,6 +9,7 @@ import type {
   MemoryTemporalIntent
 } from "../../../contracts/memoryRetrieval";
 import type { MemoryRetrievalLane } from "./config";
+import type { MemoryTemporalQueryParseResult } from "./temporal";
 
 export {
   MEMORY_RETRIEVAL_MODES,
@@ -93,6 +94,8 @@ export type MemoryRetrievalPlan = Readonly<{
   /** Bounded, deterministic bundle. ORIGINAL is always first when a query exists. */
   semanticQueryVariants: readonly MemorySemanticQueryVariant[];
   temporalIntent: MemoryTemporalIntent;
+  /** Local deterministic interpretation; it cannot be removed by model planning. */
+  temporalQuery: MemoryTemporalQueryParseResult;
   temporalQueryVariants: readonly MemoryTemporalQueryVariant[];
 }>;
 
@@ -110,6 +113,8 @@ export type MemoryRetrievalPlannerInput = Readonly<{
   recencyRequested?: boolean;
   semanticRewrite?: string | null;
   temporalIntent?: MemoryTemporalIntent;
+  /** Accepted request zone; UTC is the deterministic fallback. */
+  timeZone?: string;
 }>;
 
 export type MemoryMatchedEntityRole = "MENTION" | "OBJECT" | "SUBJECT";

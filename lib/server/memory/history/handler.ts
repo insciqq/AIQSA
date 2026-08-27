@@ -158,6 +158,7 @@ export function applyMemoryHistoryClassifications(
       chunks,
       plan.suppressionIdentitySnapshot,
       classification.policyVersion,
+      plan.timeZone,
       {
         checkpointMessages: plan.checkpointMessages,
         digest: null,
@@ -211,6 +212,7 @@ function attachMemoryChatDigest(
       plan.chunks,
       plan.suppressionIdentitySnapshot,
       plan.classificationPolicyVersion,
+      plan.timeZone,
       {
         checkpointMessages: plan.checkpointMessages,
         digest,
@@ -313,7 +315,12 @@ export function createMemoryHistoryIndexHandler(
             generated = await dependencies.digestGenerator.generate(
               plan.source,
               plan.chunks,
-              { jobId: claim.id, signal: context.signal, userId: claim.userId }
+              {
+                jobId: claim.id,
+                signal: context.signal,
+                timeZone: plan.timeZone,
+                userId: claim.userId
+              }
             );
           } catch (error) {
             if (!(error instanceof MemoryChatDigestOutputError)) throw error;

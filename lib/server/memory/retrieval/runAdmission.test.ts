@@ -483,6 +483,78 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
+  it("anchors temporal planning in the accepted zone and emits content-free lane metrics", async () => {
+    const filteredBase = factLaneCandidate("temporal-hit", 1);
+    const unrestrictedBase = factLaneCandidate("temporal-fallback", 0.5);
+    const local = repository({
+      candidates: [{
+        ...filteredBase,
+        lane: "FACT_TEMPORAL_FILTERED",
+        metadata: {
+          ...filteredBase.metadata,
+          occurredAt: new Date("2026-08-12T12:00:00.000Z")
+        }
+      }, {
+        ...unrestrictedBase,
+        lane: "FACT_TEMPORAL_UNRESTRICTED",
+        metadata: {
+          ...unrestrictedBase.metadata,
+          occurredAt: new Date("2026-07-01T12:00:00.000Z")
+        }
+      }]
+    });
+    const input = runInput("What happened yesterday?");
+    input.normalizedRequest = {
+      ...input.normalizedRequest,
+      prompt: {
+        ...input.normalizedRequest.prompt,
+        baseline: {
+          source: "standard_chat",
+          timeZone: "America/Los_Angeles",
+          timeZoneSource: "client"
+        }
+      }
+    };
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      retrievalOptions(null)
+    ).retrieve(input);
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        temporalQuery: expect.objectContaining({
+          confidence: "HIGH",
+          expressionType: "RELATIVE_DAY",
+          state: "MATCHED"
+        }),
+        temporalQueryVariants: [
+          { kind: "FILTERED", text: "What happened yesterday?" },
+          { kind: "UNRESTRICTED", text: "What happened yesterday?" }
+        ]
+      })
+    }));
+    const budget = result.budgetSnapshot as Record<string, unknown>;
+    expect(budget.componentMetrics).toMatchObject({
+      temporalFilteredCandidateCount: 1,
+      temporalParserConfidence: "HIGH",
+      temporalParserState: "MATCHED",
+      temporalParserType: "RELATIVE_DAY",
+      temporalUnrestrictedCandidateCount: 1
+    });
+    expect(budget.plan).toMatchObject({
+      temporalQuery: {
+        confidence: "HIGH",
+        expressionCount: 1,
+        state: "MATCHED",
+        type: "RELATIVE_DAY"
+      }
+    });
+    const metricsJson = JSON.stringify(budget.componentMetrics);
+    expect(metricsJson).not.toContain("What happened yesterday");
+    expect(metricsJson).not.toContain("America/Los_Angeles");
+    expect(metricsJson).not.toContain("user-1");
+  });
+
   it("times out optional query embedding without hiding lexical evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
@@ -1974,10 +2046,10 @@ describe("Personal Memory v1 run admission", () => {
         rawRoundExpansions: 0,
         rerankerFallbackUsed: false,
         selectedSourceChats: 0,
-        temporalParserState: "NOT_AVAILABLE",
+        temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v3"
+        version: "memory-retrieval-component-metrics-v4"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });

@@ -1958,7 +1958,9 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
 
     psqlScalar(database, `
       UPDATE "KnowledgeStrategyExecution"
-      SET state = 'running', "startedAt" = CURRENT_TIMESTAMP, "updatedAt" = CURRENT_TIMESTAMP
+      SET state = 'running',
+          "startedAt" = GREATEST(CURRENT_TIMESTAMP, "createdAt"),
+          "updatedAt" = GREATEST(CURRENT_TIMESTAMP, "createdAt")
       WHERE id = 'knowledge-h4-execution';
       UPDATE "KnowledgeStrategyExecution"
       SET "processedPassageCount" = 1, "processedSetHash" = repeat('4', 64),
