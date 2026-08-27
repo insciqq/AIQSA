@@ -14,10 +14,9 @@ import type {
 import { prisma } from "../../prisma";
 import type { MemoryJobClaim } from "../coordinator/types";
 import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint,
   type MemoryItemEmbeddingPin
 } from "../embedding/contract";
+import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
 import {
   advanceMemoryMutation,
   ensureActiveLexicalGeneration,
@@ -748,17 +747,13 @@ async function applyFullSetDiff(
   let failed = false;
   for (const entry of pending) {
     if (entry.embeddingState === "READY") continue;
-    const queued = await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
-        entry.id,
-        memorySha256({
-          generationId: generation.id,
-          safeContentHash: entry.safeContentHash,
-          version: "memory-shadow-entry-v1"
-        })
-      ),
-      kind: "EMBED_ITEMS",
-      pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+    const queued = await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+      entryId: entry.id,
+      triggerIdentity: memorySha256({
+        generationId: generation.id,
+        safeContentHash: entry.safeContentHash,
+        version: "memory-shadow-entry-v2"
+      })
     });
     if (["CANCELLED", "STALE", "TERMINAL_FAILED"].includes(queued.state)) {
       failed = true;
@@ -1114,13 +1109,25 @@ export function createPrismaMemoryRebuildRepository(
         }>>(Prisma.sql`
           SELECT DISTINCT job."errorCode", job."id", job."state"::text AS "state"
           FROM "MemoryJob" AS job
-          INNER JOIN "MemorySearchEntry" AS entry
-            ON entry."userId" = job."userId"
-            AND entry."indexGenerationId" = ${generation.id}
-            AND job."idempotencyFingerprint" LIKE
-              ('memory-item-embed-v1:' || entry."id" || ':%')
           WHERE job."userId" = ${userId}
             AND job."kind" = 'EMBED_ITEMS'::"MemoryJobKind"
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM "MemorySearchEntry" AS entry
+                WHERE entry."userId" = job."userId"
+                  AND entry."indexGenerationId" = ${generation.id}
+                  AND job."idempotencyFingerprint" LIKE
+                    ('memory-item-embed-v1:' || entry."id" || ':%')
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM "MemoryEmbeddingBatchItem" AS child
+                WHERE child."userId" = job."userId"
+                  AND child."memoryJobId" = job."id"
+                  AND child."indexGenerationId" = ${generation.id}
+              )
+            )
         `);
     const childFailure = childJobs.find(({ state }) =>
       ["CANCELLED", "STALE", "TERMINAL_FAILED"].includes(state));
@@ -1376,13 +1383,21 @@ export function createPrismaMemoryRebuildRepository(
                 'RETRYABLE_FAILED'::"MemoryJobState",
                 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
               )
-              AND EXISTS (
-                SELECT 1
-                FROM "MemorySearchEntry" AS entry
-                WHERE entry."userId" = job."userId"
-                  AND entry."indexGenerationId" = ${identity.generationId}
-                  AND job."idempotencyFingerprint" LIKE
-                    ('memory-item-embed-v1:' || entry."id" || ':%')
+              AND (
+                EXISTS (
+                  SELECT 1 FROM "MemorySearchEntry" AS entry
+                  WHERE entry."userId" = job."userId"
+                    AND entry."indexGenerationId" = ${identity.generationId}
+                    AND job."idempotencyFingerprint" LIKE
+                      ('memory-item-embed-v1:' || entry."id" || ':%')
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM "MemoryEmbeddingBatchItem" AS child
+                  WHERE child."userId" = job."userId"
+                    AND child."memoryJobId" = job."id"
+                    AND child."indexGenerationId" = ${identity.generationId}
+                )
               )
         `);
         await tx.memorySearchEntry.deleteMany({

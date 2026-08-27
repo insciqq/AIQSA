@@ -10,11 +10,7 @@ import {
   requireActiveMemoryIndex,
   type LockedMemorySettings
 } from "../persistence/transaction";
-import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint
-} from "../embedding/contract";
-import { enqueueMemoryJob } from "../persistence/jobs";
+import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
@@ -255,13 +251,9 @@ export async function ensureClassifiedSearchEntry(
     select: { embeddingState: true, id: true }
   });
   if (entry.embeddingState === "PENDING") {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
-        entry.id,
-        triggerIdentity
-      ),
-      kind: "EMBED_ITEMS",
-      pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+    await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+      entryId: entry.id,
+      triggerIdentity
     });
   }
 }

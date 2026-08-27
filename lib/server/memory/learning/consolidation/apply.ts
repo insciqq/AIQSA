@@ -1,11 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { MemoryJobClaim } from "../../coordinator/types";
-import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint
-} from "../../embedding/contract";
-import { enqueueMemoryJob } from "../../persistence/jobs";
+import { enqueueMemoryEmbeddingBatchItem } from "../../embedding/enqueue";
 import {
   memorySha256,
   normalizeMemorySearchText
@@ -353,13 +349,9 @@ async function enqueueDerivedWork(
   searchEntry: Readonly<{ embeddingState: string; id: string }> | null
 ): Promise<void> {
   if (searchEntry?.embeddingState === "PENDING") {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
-        searchEntry.id,
-        decisionId
-      ),
-      kind: "EMBED_ITEMS",
-      pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+    await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+      entryId: searchEntry.id,
+      triggerIdentity: decisionId
     });
   }
   void candidate;

@@ -63,6 +63,11 @@ describe("Memory operational PostgreSQL contracts", () => {
           operationalCounters: {
             digestIncremental: 1,
             digestNoop: 2,
+            embeddingBatchItems: 16,
+            embeddingFailedItems: 1,
+            embeddingProviderRequests: 1,
+            embeddingSettledItems: 14,
+            embeddingStaleItems: 1,
             historyChunksBuilt: 3,
             historyChunksReplaced: 4,
             historyMessagesProjected: 5
@@ -80,6 +85,13 @@ describe("Memory operational PostgreSQL contracts", () => {
         digestIncremental: 1,
         digestNoop: 2,
         messagesProjected: 5
+      });
+      expect(snapshot.embeddings).toEqual({
+        batchItems: 16,
+        failedItems: 1,
+        providerRequests: 1,
+        settledItems: 14,
+        staleItems: 1
       });
       expect(snapshot.latencies).toContainEqual({
         p50Ms: 2_000,

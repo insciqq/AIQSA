@@ -11,7 +11,10 @@ import type {
 } from "../coordinator/types";
 import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
-import type { MemoryItemEmbeddingPin } from "../embedding/contract";
+import {
+  MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+  type MemoryItemEmbeddingPin
+} from "../embedding/contract";
 import {
   currentMemoryAdminDestinations,
   memoryAdminDestinationsFingerprint
@@ -1826,20 +1829,24 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         "hybrid-success-c"
       );
       await processRebuildJob(admitted.jobId, repository);
-      const [caughtUp, pending, embeddingJobCount] = await Promise.all([
-        prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
-        prisma.memorySearchEntry.findMany({
-          orderBy: { id: "asc" },
-          where: { indexGenerationId: identity.generationId, userId }
-        }),
-        prisma.memoryJob.count({
-          where: {
-            idempotencyFingerprint: { startsWith: "memory-item-embed-v1:" },
-            kind: "EMBED_ITEMS",
-            userId
-          }
-        })
-      ]);
+      const [caughtUp, pending, embeddingJobCount, embeddingChildCount] =
+        await Promise.all([
+          prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
+          prisma.memorySearchEntry.findMany({
+            orderBy: { id: "asc" },
+            where: { indexGenerationId: identity.generationId, userId }
+          }),
+          prisma.memoryJob.count({
+            where: {
+              kind: "EMBED_ITEMS",
+              pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+              userId
+            }
+          }),
+          prisma.memoryEmbeddingBatchItem.count({
+            where: { indexGenerationId: identity.generationId, userId }
+          })
+        ]);
       expect(caughtUp).toMatchObject({
         activeIndexGenerationId: before.activeIndexGenerationId,
         memoryGeneration: before.memoryGeneration,
@@ -1848,7 +1855,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(pending).toHaveLength(3);
       expect(pending.every(({ embeddingState }) => embeddingState === "PENDING"))
         .toBe(true);
-      expect(embeddingJobCount).toBe(3);
+      expect(embeddingJobCount).toBe(1);
+      expect(embeddingChildCount).toBe(3);
 
       const embeddingRepository = createPrismaMemoryItemEmbeddingRepository(prisma);
       const vector = Array.from(

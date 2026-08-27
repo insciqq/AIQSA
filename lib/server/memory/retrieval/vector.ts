@@ -14,9 +14,9 @@ import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
-  "memory-personal-retrieval-v7-vector";
+  "memory-personal-retrieval-v8-vector";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v9-wide-candidate-exploration";
+  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v10-memory-profile-v2";
 export const MEMORY_VECTOR_MINIMUM_SIMILARITY = Object.freeze({
   1024: 0.55,
   1536: 0.55

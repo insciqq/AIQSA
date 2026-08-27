@@ -42,6 +42,7 @@ type BaseTargetRow = Readonly<{
   itemType: "FACT_VERSION" | "RECALL_CHUNK";
   recallChunkId: string | null;
   referenceChatHistory: boolean;
+  retrievalPipelineVersion: string;
   safeContentHash: string;
   normalizedSearchText: string;
   selectedEmbeddingProviderModelId: string | null;
@@ -101,6 +102,7 @@ function generationFrom(row: BaseTargetRow) {
     embeddingProviderModelId: row.embeddingProviderModelId,
     id: row.generationId,
     indexMode: row.indexMode,
+    retrievalPipelineVersion: row.retrievalPipelineVersion,
     vectorSpaceFingerprint: row.vectorSpaceFingerprint
   } as const;
 }
@@ -126,6 +128,7 @@ async function loadBaseTarget(
       generation."embeddingProviderModelId",
       generation."embeddingConfigurationFingerprint",
       generation."embeddingDimension",
+      generation."retrievalPipelineVersion",
       generation."vectorSpaceFingerprint",
       settings."embeddingProviderModelId" AS "selectedEmbeddingProviderModelId",
       settings."referenceChatHistory"
@@ -360,6 +363,8 @@ function sameTarget(
     left.generation.embeddingConfigurationFingerprint ===
       right.generation.embeddingConfigurationFingerprint &&
     left.generation.embeddingDimension === right.generation.embeddingDimension &&
+    left.generation.retrievalPipelineVersion ===
+      right.generation.retrievalPipelineVersion &&
     left.generation.vectorSpaceFingerprint ===
       right.generation.vectorSpaceFingerprint;
 }

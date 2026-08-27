@@ -19,7 +19,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "59b5d30a3f752bd0b2c5c7848397efd0d11c4537b698209db9b15d55a00ea1c4";
+  "659f894cbd6ffc5fd62d08287b90956e14c7969f34db2b3b80d7e1b9c7c33887";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";

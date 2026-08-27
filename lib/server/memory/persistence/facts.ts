@@ -11,10 +11,7 @@ import {
 } from "../../../contracts/memoryActionIntent";
 import { memoryDerivativePlaintextAllowed } from "../../../domain/memory/safety";
 import { prisma } from "../../prisma";
-import {
-  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
-  memoryItemEmbeddingJobFingerprint
-} from "../embedding/contract";
+import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   memoryControlAcceptedOutputHash,
@@ -30,7 +27,6 @@ import {
   type MemoryMutationAuthorizationUse
 } from "./authorizations";
 import { memoryPersistenceFailure } from "./errors";
-import { enqueueMemoryJob } from "./jobs";
 import {
   memorySha256,
   memoryStableJson,
@@ -675,13 +671,9 @@ async function enqueueItemEmbedding(
   ) {
     return;
   }
-  await enqueueMemoryJob(tx, settings, {
-    idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
-      searchEntry.id,
-      input.idempotencyFingerprint
-    ),
-    kind: "EMBED_ITEMS",
-    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+  await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+    entryId: searchEntry.id,
+    triggerIdentity: input.idempotencyFingerprint
   });
 }
 

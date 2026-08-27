@@ -26,6 +26,7 @@ services:
       # Public deterministic development material; never use this keyring for
       # an installation or any non-disposable data.
       AIQSA_MEMORY_EGRESS_CONSENT_MODE: ADMIN
+      AIQSA_MEMORY_EMBEDDING_BATCH_SIZE: ${AIQSA_MEMORY_EMBEDDING_BATCH_SIZE:-16}
       AIQSA_MEMORY_FINGERPRINT_KEYRING: current=v1,v1=CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo=
       # Next dev retains substantially more tracing state per background pass
       # than the standalone production worker. Explicit kicks remain immediate.
