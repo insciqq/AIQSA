@@ -148,7 +148,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v13");
+    expect(pack.packerVersion).toBe("memory-context-packer-v14");
   });
 
   it("packs a recall-round hit only from its authoritative raw projection", () => {
@@ -230,6 +230,39 @@ describe("Personal Memory context pack", () => {
       section: "PATTERN"
     }]);
     expect(pack.text).toContain('"evidence_type":"pattern"');
+  });
+
+  it("labels MEDIUM facts as non-authoritative supporting observations", () => {
+    const supporting = ranked("supporting");
+    const pack = packMemoryPersonalContext({
+      expanded: [expansion(
+        "supporting",
+        false,
+        "The user may usually choose cedar layouts."
+      )],
+      plan,
+      ranked: [{
+        ...supporting,
+        metadata: {
+          ...supporting.metadata,
+          confidence: 0.6,
+          coreEligible: false,
+          coreSalience: "NONE",
+          sourceAuthority: "DIRECT_AUTOMATIC",
+          sourceMode: "AUTOMATIC"
+        }
+      }]
+    });
+
+    expect(pack.items).toMatchObject([{
+      evidenceType: "supporting_observation",
+      section: "FACT",
+      sourceAuthority: "supporting_observation",
+      tier: "DYNAMIC"
+    }]);
+    expect(pack.text).toContain(
+      "supporting_observation is lower-authority context only"
+    );
   });
 
   it("accepts a reranked response preference while preserving its Core contract", () => {

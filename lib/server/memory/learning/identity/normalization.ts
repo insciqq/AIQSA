@@ -59,6 +59,33 @@ export function memoryPropositionCanonicalKey(statement: string): string | null 
     : null;
 }
 
+/** MEDIUM observations live in a disjoint proposition namespace. Their own
+ * lifecycle pointer makes them retrievable, while key separation prevents a
+ * supporting observation from colliding with or mutating an authoritative
+ * HIGH/explicit proposition or SLOT. */
+export function memorySupportingPropositionCanonicalKey(input: Readonly<{
+  expectedAt: string | null;
+  occurredAt: string | null;
+  statement: string;
+  validFrom: string | null;
+  validTo: string | null;
+}>): string | null {
+  const proposition = normalizeMemoryProposition(input.statement);
+  return proposition
+    ? `prop:v1:${memorySha256({
+        domain: "aiqsa.memory.supporting-proposition-v1",
+        proposition,
+        temporalIdentity: {
+          expectedAt: input.expectedAt,
+          occurredAt: input.occurredAt,
+          validFrom: input.validFrom,
+          validTo: input.validTo
+        },
+        version: 1
+      })}`
+    : null;
+}
+
 export function memorySlotCanonicalKey(input: Readonly<{
   dimensionKey: string | null;
   predicateKey: string;

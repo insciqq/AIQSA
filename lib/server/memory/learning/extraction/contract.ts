@@ -5,11 +5,11 @@ import type { MemoryTextLanguage } from "../../history/language";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
 
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
-  "memory-fact-extraction-vnext-v6";
+  "memory-fact-extraction-vnext-v7";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v9";
+  "memory-fact-extraction-policy-v10";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v25";
+  "memory-fact-extraction-prompt-v26";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -18,11 +18,12 @@ export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
   "memory-fact-source-projection-v5";
 export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 
-// Context-dependent interpretation is disabled until every accepted
-// dependency can be persisted and revalidated. The provider therefore sees
-// exactly one immutable direct-user target message.
-export const MEMORY_FACT_MAX_INPUT_MESSAGES = 1;
-export const MEMORY_FACT_MAX_INPUT_CHARACTERS = 16_000;
+// Context is a bounded non-authoritative aid. The final direct-user target is
+// the only evidence source; every admitted prior message is persisted as an
+// immutable dependency when a candidate actually relies on it.
+export const MEMORY_FACT_MAX_INPUT_MESSAGES = 6;
+export const MEMORY_FACT_MAX_INPUT_CHARACTERS = 8_000;
+export const MEMORY_FACT_MAX_PRIOR_TURN_GROUPS = 2;
 export const MEMORY_FACT_MAX_CONTEXT_MESSAGES = 6;
 export const MEMORY_FACT_MAX_CONTEXT_CHARACTERS = 8_000;
 export const MEMORY_FACT_MAX_CONTEXT_REFS = 8;
@@ -160,7 +161,8 @@ export const MEMORY_FACT_EXTRACTION_RETRIEVAL_CONFIG_FINGERPRINT =
     maxEvidencePerCandidate: MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE,
     maxInputCharacters: MEMORY_FACT_MAX_INPUT_CHARACTERS,
     maxInputMessages: MEMORY_FACT_MAX_INPUT_MESSAGES,
-    version: 2
+    maxPriorTurnGroups: MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
+    version: 3
   });
 
 export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =

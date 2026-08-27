@@ -242,12 +242,14 @@ export type MemoryPackedEvidenceType =
   | "historical_fact"
   | "pattern"
   | "raw_chunk"
-  | "raw_round";
+  | "raw_round"
+  | "supporting_observation";
 
 export type MemoryPackedSourceAuthority =
   | "derived_pattern"
   | "learned_from_user"
   | "past_chat"
+  | "supporting_observation"
   | "user_saved";
 
 export type MemoryPackedSpeakerScope =

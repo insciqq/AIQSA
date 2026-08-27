@@ -36,7 +36,7 @@ async function validateMessageDependency(
         userId
       },
       id: dependency.source.messageId,
-      role: "user",
+      role: { in: ["user", "assistant"] },
       status: "complete"
     }
   });

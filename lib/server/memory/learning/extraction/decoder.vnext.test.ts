@@ -7,12 +7,21 @@ import {
 } from "./contract";
 import { decodeMemoryFactExtraction } from "./decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
-import { memoryCandidateRequiresSemanticAdjudication } from "./adjudication";
+import {
+  memoryCandidateRequiresSemanticAdjudication,
+  memorySemanticAuthorityAdmitsCandidate
+} from "./adjudication";
+import { memoryPropositionCanonicalKey } from "../identity/normalization";
 
 function input(
   text: string,
   contextRefs: readonly MemoryFactContextRef[] = [],
-  redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = []
+  redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = [],
+  priorMessages: readonly Readonly<{
+    id: string;
+    role: "assistant" | "user";
+    text: string;
+  }>[] = []
 ): MemoryFactExtractionInput {
   const source = {
     activeLeafMessageId: "assistant-1",
@@ -28,7 +37,17 @@ function input(
     contextRefs,
     folderId: null,
     inputHash: "b".repeat(64),
-    messages: [{
+    messages: [...priorMessages.map((message, index) => ({
+      contentHash: memorySha256(message.text),
+      createdAt: `2026-08-25T09:0${index}:00.000Z`,
+      evidenceEligible: false,
+      id: message.id,
+      languageCode: "und" as const,
+      redactionSpans: [],
+      role: message.role,
+      text: message.text,
+      updatedAt: `2026-08-25T09:0${index}:00.000Z`
+    })), {
       contentHash: memorySha256(text),
       createdAt: "2026-08-25T10:00:00.000Z",
       evidenceEligible: true,
@@ -152,13 +171,18 @@ function decode(
   sourceText: string,
   observations: readonly unknown[],
   contextRefs: readonly MemoryFactContextRef[] = [],
-  redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = []
+  redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = [],
+  priorMessages: readonly Readonly<{
+    id: string;
+    role: "assistant" | "user";
+    text: string;
+  }>[] = []
 ) {
   return decodeMemoryFactExtraction([{
     arguments: { observations },
     id: "call-1",
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
-  }], input(sourceText, contextRefs, redactionSpans));
+  }], input(sourceText, contextRefs, redactionSpans, priorMessages));
 }
 
 describe("Memory v5 semantic-frame decoder", () => {
@@ -379,6 +403,16 @@ describe("Memory v5 semantic-frame decoder", () => {
   it("admits direct ordinary current-user relationship context", () => {
     const quote = "My spouse is Alex.";
     const plan = decode(quote, [observation(quote, {
+      entities: [{
+        aliases: [textRef("Alex")],
+        canonical_label: "Alex",
+        context_entity_ref: null,
+        entity_type: "PERSON",
+        mention: textRef("Alex"),
+        mention_kind: "NAMED",
+        qualifier_supports: [],
+        role: "SUBJECT"
+      }],
       memory_type: "STATE",
       statement: "The current user's spouse is Alex."
     })]);
@@ -387,9 +421,126 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(plan.candidates).toHaveLength(1);
     expect(plan.candidates[0]).toMatchObject({
       directness: "DIRECT",
+      entities: [expect.objectContaining({
+        canonicalLabel: "Alex",
+        entityType: "PERSON",
+        mention: "Alex",
+        role: "SUBJECT"
+      })],
+      identityKind: "PROPOSITION",
       sensitivity: "NORMAL",
       statement: "The current user's spouse is Alex."
     });
+  });
+
+  it("keeps MEDIUM output as a disjoint supporting proposition", () => {
+    const quote = "I usually choose cedar for document layouts.";
+    const statement = "The current user usually chooses cedar for document layouts.";
+    const plan = decode(quote, [observation(quote, {
+      confidence_band: "MEDIUM",
+      identity: {
+        dimension_key: "format:document layout",
+        mode: "SLOT",
+        predicate_key: "preference",
+        subject: {
+          canonical_label: null,
+          entity_type: "PERSON_SELF",
+          qualifiers: { brand: null, model: null }
+        }
+      },
+      memory_type: "PREFERENCE",
+      statement,
+      value: { ...nullValue, value: "cedar" }
+    })]);
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates[0]).toMatchObject({
+      confidence: 0.6,
+      confidenceBand: "MEDIUM",
+      coreEligible: false,
+      coreSalience: "NONE",
+      identityKind: "PROPOSITION",
+      predicateKey: null,
+      proposedValue: {
+        authority: "supporting",
+        schema: "supporting-observation-v1"
+      },
+      subjectKey: null
+    });
+    expect(plan.candidates[0]?.canonicalKey)
+      .not.toBe(memoryPropositionCanonicalKey(statement));
+    expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!))
+      .toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate(plan.candidates[0]!, null))
+      .toBe(true);
+  });
+
+  it("rejects LOW output and MEDIUM correction semantics", () => {
+    const quote = "I usually choose cedar.";
+    const result = decode(quote, [
+      observation(quote, { candidate_ref: "C1", confidence_band: "LOW" }),
+      observation(quote, {
+        candidate_ref: "C2",
+        confidence_band: "MEDIUM",
+        semantic_frame: {
+          ...frame,
+          change_intent: "CORRECTION",
+          polarity: "CORRECTION"
+        }
+      })
+    ]);
+    expect(result.candidates).toEqual([]);
+    expect(result.rejections).toEqual([
+      { candidateOrdinal: 0, reasonCode: "REJECT_LOW_CONFIDENCE" },
+      { candidateOrdinal: 1, reasonCode: "REJECT_UNSUPPORTED" }
+    ]);
+  });
+
+  it("uses assistant context only through a dependency, never as evidence", () => {
+    const assistantText = "Cedar is your preferred layout option.";
+    const target = "Yes, cedar is my preferred option.";
+    const context: MemoryFactContextRef = {
+      aliases: [],
+      displayName: null,
+      entityId: null,
+      entityType: null,
+      identitySubjectKey: null,
+      kind: "MESSAGE",
+      ref: "M1",
+      source: {
+        contentHash: memorySha256(assistantText),
+        factVersionId: null,
+        messageId: "assistant-prior",
+        messageUpdatedAt: "2026-08-25T09:00:00.000Z",
+        projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
+      },
+      text: assistantText
+    };
+    const accepted = decode(target, [observation(target, {
+      confidence_band: "MEDIUM",
+      dependency_refs: ["M1"],
+      memory_type: "PREFERENCE",
+      statement: "The current user prefers cedar as a layout option."
+    })], [context], [], [{
+      id: "assistant-prior",
+      role: "assistant",
+      text: assistantText
+    }]);
+    expect(accepted.candidates[0]?.dependencies).toEqual([
+      expect.objectContaining({ ref: "M1", source: context.source })
+    ]);
+    expect(accepted.candidates[0]?.evidence[0]?.messageId).toBe("message-1");
+
+    const assistantOnly = decode(target, [observation(assistantText)], [context], [], [{
+      id: "assistant-prior",
+      role: "assistant",
+      text: assistantText
+    }]);
+    expect(assistantOnly.candidates).toEqual([]);
+    expect(assistantOnly.rejections).toEqual([{
+      candidateOrdinal: 0,
+      reasonCode: "REJECT_UNSUPPORTED"
+    }]);
   });
 
   it("uses structural PRONOMINAL context and never writes it as an alias", () => {

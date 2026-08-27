@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
-  MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
+  MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  type MemoryFactExtractionInput
 } from "./contract";
 import {
   MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT,
+  memoryFactExtractionPromptPayload,
   memoryFactExtractionTool
 } from "./prompt";
 import { MEMORY_PREFERENCE_DIMENSION_PREFIXES } from "../identity/registry";
+import { memorySha256 } from "../../persistence/lexical";
 
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v25");
+      .toBe("memory-fact-extraction-prompt-v26");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -33,6 +37,9 @@ describe("Memory semantic-frame extraction prompt", () => {
   it("makes semantic authority and exact occurrences explicit", () => {
     for (const rule of [
       "zero-based exact occurrence index",
+      "target_message is the only evidence",
+      "assistant-role context message is never user testimony",
+      "copy that item's opaque context_ref into dependency_refs",
       "zero-based ordinal among identical exact-text matches",
       "never a character offset",
       "language-neutral semantic_frame",
@@ -64,6 +71,9 @@ describe("Memory semantic-frame extraction prompt", () => {
       "never infer or manufacture a missing preference dimension",
       "does not explicitly supply a stable category, format, interaction, or topic dimension",
       "never invent a SLOT dimension",
+      "MEDIUM observation must use PROPOSITION identity",
+      "cannot propose a SLOT, current-state change, or override",
+      "named third party as a distinct PERSON entity with role SUBJECT",
       "structured temporal normalization",
       "target_message.created_at in time_zone",
       "preserving the exact original wording",
@@ -76,5 +86,103 @@ describe("Memory semantic-frame extraction prompt", () => {
       expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT)
         .toContain(`${prefix}:<grounded dimension>`);
     }
+  });
+
+  it("labels prior message refs without duplicating them as evidence refs", () => {
+    const priorText = "The assistant suggested cedar.";
+    const targetText = "Yes, cedar is my preferred option.";
+    const source = {
+      activeLeafMessageId: "assistant-current",
+      branchGeneration: 1,
+      chatId: "chat-1",
+      memoryGenerationSnapshot: 1,
+      sourceHash: "a".repeat(64),
+      sourceMessageId: "user-current",
+      sourceRevision: 1,
+      userId: "user-1"
+    };
+    const input: MemoryFactExtractionInput = {
+      contextRefs: [{
+        aliases: [],
+        displayName: null,
+        entityId: null,
+        entityType: null,
+        identitySubjectKey: null,
+        kind: "MESSAGE",
+        ref: "M1",
+        source: {
+          contentHash: memorySha256(priorText),
+          factVersionId: null,
+          messageId: "assistant-prior",
+          messageUpdatedAt: "2026-08-27T09:00:00.000Z",
+          projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
+        },
+        text: priorText
+      }, {
+        aliases: ["Cedar"],
+        displayName: "Cedar choice",
+        entityId: "entity-1",
+        entityType: "OTHER",
+        identitySubjectKey: null,
+        kind: "FACT_VERSION",
+        ref: "F1",
+        source: {
+          contentHash: null,
+          factVersionId: "version-1",
+          messageId: null,
+          messageUpdatedAt: null,
+          projectionVersion: null
+        },
+        text: "The current saved option is cedar."
+      }],
+      folderId: null,
+      inputHash: "b".repeat(64),
+      messages: [{
+        contentHash: memorySha256(priorText),
+        createdAt: "2026-08-27T09:00:00.000Z",
+        evidenceEligible: false,
+        id: "assistant-prior",
+        languageCode: "en",
+        redactionSpans: [],
+        role: "assistant",
+        text: priorText,
+        updatedAt: "2026-08-27T09:00:00.000Z"
+      }, {
+        contentHash: memorySha256(targetText),
+        createdAt: "2026-08-27T10:00:00.000Z",
+        evidenceEligible: true,
+        id: source.sourceMessageId,
+        languageCode: "en",
+        redactionSpans: [],
+        role: "user",
+        text: targetText,
+        updatedAt: "2026-08-27T10:00:00.000Z"
+      }],
+      source,
+      sourceProjectionHash: "c".repeat(64),
+      sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+      suppressionIdentitySnapshot: "d".repeat(64),
+      timeZone: "UTC"
+    };
+
+    const payload = JSON.parse(memoryFactExtractionPromptPayload(input)) as {
+      context_after: unknown[];
+      context_before: Array<{ context_ref: string; role: string; text: string }>;
+      supplied_context_refs: Array<{ kind: string; ref: string }>;
+      target_message: { context_ref: null; text: string };
+    };
+    expect(payload.context_before).toEqual([expect.objectContaining({
+      context_ref: "M1",
+      role: "assistant",
+      text: priorText
+    })]);
+    expect(payload.context_after).toEqual([]);
+    expect(payload.supplied_context_refs).toEqual([
+      expect.objectContaining({ kind: "FACT_VERSION", ref: "F1" })
+    ]);
+    expect(payload.target_message).toMatchObject({
+      context_ref: null,
+      text: targetText
+    });
   });
 });

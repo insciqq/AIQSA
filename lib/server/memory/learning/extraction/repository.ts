@@ -12,7 +12,9 @@ import type {
 } from "../../coordinator/types";
 import {
   buildMemorySafeSourceSnapshot,
-  type MemoryHistorySourceMessageInput
+  type MemoryHistorySourceMessageInput,
+  type MemoryHistoryTaintSource,
+  type MemorySafeSourceSnapshot
 } from "../../history/sourceProjection";
 import { projectMemoryHistorySafeText } from "../../history/safety";
 import { memoryValueContainsRecognizedSecret } from "../../explicit/safety";
@@ -36,6 +38,7 @@ import {
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
+  MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
   memoryFactEvidenceFingerprint,
@@ -341,80 +344,172 @@ async function loadAdmission(
 
 function boundedContextMessages<T extends Readonly<{
   evidenceEligible: boolean;
+  id: string;
   text: string;
 }>>(
   messages: readonly T[]
 ): readonly T[] {
   const targetIndex = messages.findIndex((message) => message.evidenceEligible);
   const target = messages[targetIndex];
-  if (!target || target.text.length > MEMORY_FACT_MAX_INPUT_CHARACTERS ||
+  if (!target || targetIndex !== messages.length - 1 ||
+    messages.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
+    new Set(messages.map(({ id }) => id)).size !== messages.length ||
+    messages.reduce((sum, message) => sum + message.text.length, 0) >
+      MEMORY_FACT_MAX_INPUT_CHARACTERS ||
     messages.some((message, index) =>
       index !== targetIndex && message.evidenceEligible)) return [];
-  const selected = new Set([targetIndex]);
-  let characters = target.text.length;
-  for (let distance = 1; selected.size < MEMORY_FACT_MAX_INPUT_MESSAGES; distance += 1) {
-    const indexes = [targetIndex + distance, targetIndex - distance]
-      .filter((index) => index >= 0 && index < messages.length);
-    if (indexes.length === 0) break;
-    for (const index of indexes) {
-      if (selected.size >= MEMORY_FACT_MAX_INPUT_MESSAGES) break;
-      const message = messages[index]!;
-      if (characters + message.text.length > MEMORY_FACT_MAX_INPUT_CHARACTERS) continue;
-      selected.add(index);
-      characters += message.text.length;
-    }
-  }
-  return messages.filter((_message, index) => selected.has(index));
+  return messages;
 }
 
-async function loadBoundContext(
-  tx: MemoryTransaction,
-  job: MemoryJobDescriptor & MemoryFactSourceIdentity,
-  source: MemoryFactBoundSource
-): Promise<Readonly<{
-  activeLeafMessageId: string;
-  contextRefs: MemoryFactExtractionInput["contextRefs"];
-  messages: readonly MemoryHistorySourceMessageInput[];
-  timeZone: string;
-}>> {
-  const activeRun = await tx.modelRun.findFirst({
-    // The first completed run bound to the admitted leaf owns the temporal
-    // snapshot. A later recovery/replay row must not rewrite extraction input.
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: {
-      assistantId: true,
-      assistantMessageId: true,
-      id: true,
-      normalizedRequest: true,
-      status: true,
-      userMessageId: true
-    },
-    where: {
-      assistantMessageId: job.activeLeafMessageId,
-      chatId: source.chat.id,
-      status: "complete",
-      userId: source.chat.userId,
-      userMessageId: source.message.id
+/** Selects a contiguous suffix of at most two complete safe turn groups plus
+ * the final direct-user target. Older context is never allowed to jump over
+ * an excluded or tainted path message. */
+export function boundedMemoryFactContextMessageIds(
+  snapshot: MemorySafeSourceSnapshot,
+  targetMessageId: string
+): readonly string[] {
+  const target = snapshot.factEvidenceProjection.messages.find((message) =>
+    message.id === targetMessageId && message.role === "user");
+  const targetPathIndex = snapshot.activePathMessageIds.indexOf(targetMessageId);
+  if (!target || targetPathIndex < 0 ||
+    target.safeText.length > MEMORY_FACT_MAX_INPUT_CHARACTERS) return [];
+  const targetGroupIndex = snapshot.recallChunkProjection.turnGroups.findIndex(
+    (group) => group.messages.some(({ id }) => id === targetMessageId)
+  );
+  if (targetGroupIndex < 0) return [targetMessageId];
+
+  const pathIndexes = new Map(snapshot.activePathMessageIds.map((id, index) =>
+    [id, index] as const));
+  const selectedGroups: string[][] = [];
+  let cursor = targetPathIndex;
+  let characters = target.safeText.length;
+  let messageCount = 1;
+  for (
+    let groupIndex = targetGroupIndex - 1;
+    groupIndex >= 0 && selectedGroups.length < MEMORY_FACT_MAX_PRIOR_TURN_GROUPS;
+    groupIndex -= 1
+  ) {
+    const group = snapshot.recallChunkProjection.turnGroups[groupIndex]!;
+    const ids = group.messages.map(({ id }) => id);
+    const indexes = ids.map((id) => pathIndexes.get(id) ?? -1);
+    const contiguous = indexes.length > 0 &&
+      indexes.at(-1) === cursor - 1 &&
+      indexes.every((index, offset) => index === indexes[0]! + offset);
+    if (!contiguous) break;
+    const groupCharacters = group.messages.reduce(
+      (sum, message) => sum + message.safeText.length,
+      0
+    );
+    if (messageCount + ids.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
+      characters + groupCharacters > MEMORY_FACT_MAX_INPUT_CHARACTERS) break;
+    selectedGroups.unshift(ids);
+    cursor = indexes[0]!;
+    messageCount += ids.length;
+    characters += groupCharacters;
+  }
+  return [...selectedGroups.flat(), targetMessageId];
+}
+
+const MEMORY_FACT_CONTEXT_LOOKBACK_MESSAGES = MEMORY_FACT_MAX_INPUT_MESSAGES * 2;
+
+export function memoryAssistantContextRunIsEligible(
+  run: Readonly<{ status: string; userMessageId: string }> | null,
+  parentMessageId: string | null,
+  candidateCount: number
+): boolean {
+  return candidateCount === 1 && run?.status === "complete" &&
+    parentMessageId !== null && run.userMessageId === parentMessageId;
+}
+
+function contextSourceMessages(
+  rows: readonly MemoryFactSourceMessage[],
+  orderedIds: readonly string[],
+  runs: readonly Readonly<{
+    assistantId: string | null;
+    assistantMessageId: string | null;
+    id: string;
+    status: string;
+    userMessageId: string;
+  }>[],
+  ownedAssistantIds: ReadonlySet<string>
+): readonly MemoryHistorySourceMessageInput[] {
+  const byId = new Map(rows.map((row) => [row.id, row] as const));
+  const runsByAssistantMessage = new Map<string, typeof runs>();
+  for (const run of runs) {
+    if (!run.assistantMessageId) continue;
+    runsByAssistantMessage.set(run.assistantMessageId, [
+      ...(runsByAssistantMessage.get(run.assistantMessageId) ?? []),
+      run
+    ]);
+  }
+  const messages: MemoryHistorySourceMessageInput[] = [];
+  for (const [ordinal, id] of orderedIds.entries()) {
+    const row = byId.get(id);
+    if (!row) continue;
+    const parentMessageId = ordinal === 0 ? null : row.parentMessageId;
+    if (row.role === "user") {
+      messages.push({
+        ...row,
+        parentMessageId,
+        provenance: {
+          assistantId: null,
+          complete: true,
+          influencedByMessageIds: [],
+          modelRunId: null,
+          origin: "DIRECT_USER" as const,
+          taintSources: []
+        }
+      });
+      continue;
     }
-  });
-  const messages: readonly MemoryHistorySourceMessageInput[] = [{
-    ...source.message,
-    parentMessageId: null,
-    provenance: {
-      assistantId: null,
-      complete: true,
-      influencedByMessageIds: [],
-      modelRunId: null,
-      origin: "DIRECT_USER",
-      taintSources: []
+    if (row.role !== "assistant") {
+      messages.push({
+        ...row,
+        parentMessageId,
+        provenance: {
+          assistantId: null,
+          complete: true,
+          influencedByMessageIds: [],
+          modelRunId: null,
+          origin: "SYSTEM" as const,
+          taintSources: ["SYSTEM"] as readonly MemoryHistoryTaintSource[]
+        }
+      });
+      continue;
     }
-  }];
-  const rawContextRefs = await loadMemoryFactContextRefs(tx, {
-    activePathMessageIds: source.activePathMessageIds,
-    sourceMessageId: source.message.id,
-    userId: source.chat.userId
-  });
-  const contextRefs = rawContextRefs.flatMap((ref) => {
+    const candidates = runsByAssistantMessage.get(row.id) ?? [];
+    const run = candidates.length === 1 ? candidates[0]! : null;
+    const runMatchesParent = memoryAssistantContextRunIsEligible(
+      run,
+      row.parentMessageId,
+      candidates.length
+    );
+    const taintSources: readonly MemoryHistoryTaintSource[] =
+      run?.assistantId && !ownedAssistantIds.has(run.assistantId)
+        ? ["DEVELOPER"]
+        : [];
+    messages.push({
+      ...row,
+      parentMessageId,
+      provenance: {
+        assistantId: run?.assistantId && ownedAssistantIds.has(run.assistantId)
+          ? run.assistantId
+          : null,
+        complete: runMatchesParent,
+        influencedByMessageIds: runMatchesParent && run ? [run.userMessageId] : [],
+        modelRunId: run?.id ?? null,
+        origin: "VISIBLE_ASSISTANT" as const,
+        taintSources
+      }
+    });
+  }
+  return messages;
+}
+
+function safeMemoryFactContextRefs(
+  refs: MemoryFactExtractionInput["contextRefs"]
+): MemoryFactExtractionInput["contextRefs"] {
+  return refs.flatMap((ref) => {
     const text = projectMemoryHistorySafeText(ref.text);
     if (!text.eligible) return [];
     const displayName = ref.displayName === null
@@ -435,9 +530,121 @@ async function loadBoundContext(
       text: text.safeText
     }];
   });
+}
+
+async function loadBoundContext(
+  tx: MemoryTransaction,
+  job: MemoryJobDescriptor & MemoryFactSourceIdentity,
+  source: MemoryFactBoundSource
+): Promise<Readonly<{
+  activeLeafMessageId: string;
+  messages: readonly MemoryHistorySourceMessageInput[];
+  timeZone: string;
+}>> {
+  const targetIndex = source.activePathMessageIds.indexOf(source.message.id);
+  if (targetIndex < 0) {
+    return { activeLeafMessageId: source.message.id, messages: [], timeZone: "UTC" };
+  }
+  const candidateIds = source.activePathMessageIds.slice(
+    Math.max(0, targetIndex - MEMORY_FACT_CONTEXT_LOOKBACK_MESSAGES),
+    targetIndex + 1
+  );
+  const [activeRun, rows] = await Promise.all([
+    tx.modelRun.findFirst({
+    // The first completed run bound to the admitted leaf owns the temporal
+    // snapshot. A later recovery/replay row must not rewrite extraction input.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      assistantId: true,
+      assistantMessageId: true,
+      id: true,
+      normalizedRequest: true,
+      status: true,
+      userMessageId: true
+    },
+    where: {
+      assistantMessageId: job.activeLeafMessageId,
+      chatId: source.chat.id,
+      status: "complete",
+      userId: source.chat.userId,
+      userMessageId: source.message.id
+    }
+    }),
+    tx.message.findMany({
+      select: sourceMessageSelect,
+      where: { chatId: source.chat.id, id: { in: candidateIds } }
+    }) as Promise<MemoryFactSourceMessage[]>
+  ]);
+  const assistantMessageIds = rows
+    .filter(({ role }) => role === "assistant")
+    .map(({ id }) => id);
+  const runs = assistantMessageIds.length === 0
+    ? []
+    : await tx.modelRun.findMany({
+        select: {
+          assistantId: true,
+          assistantMessageId: true,
+          id: true,
+          status: true,
+          userMessageId: true
+        },
+        where: {
+          assistantMessageId: { in: assistantMessageIds },
+          chatId: source.chat.id,
+          userId: source.chat.userId
+        }
+      });
+  const runAssistantIds = [...new Set(runs.flatMap(({ assistantId }) =>
+    assistantId ? [assistantId] : []))];
+  const ownedAssistants = runAssistantIds.length === 0
+    ? []
+    : await tx.assistantDefinition.findMany({
+        select: { id: true },
+        where: {
+          archivedAt: null,
+          id: { in: runAssistantIds },
+          ownerUserId: source.chat.userId
+        }
+      });
+  const candidates = contextSourceMessages(
+    rows,
+    candidateIds,
+    runs,
+    new Set(ownedAssistants.map(({ id }) => id))
+  );
+  if (candidates.length !== candidateIds.length) {
+    return { activeLeafMessageId: source.message.id, messages: [], timeZone: "UTC" };
+  }
+  const candidateSnapshot = buildMemorySafeSourceSnapshot({
+    activeLeafMessageId: source.message.id,
+    branchGeneration: job.branchGeneration,
+    chatId: source.chat.id,
+    folderId: source.chat.folderId,
+    messages: candidates,
+    mode: "NORMAL",
+    sourceContentHash: memorySha256(candidates.map((message) => ({
+      content: message.content,
+      createdAt: new Date(message.createdAt).toISOString(),
+      id: message.id,
+      updatedAt: new Date(message.updatedAt).toISOString()
+    }))),
+    sourceRevision: job.sourceRevision,
+    timeZone: runTimeZone(activeRun?.normalizedRequest ?? null),
+    userId: source.chat.userId
+  });
+  const selectedIds = boundedMemoryFactContextMessageIds(
+    candidateSnapshot,
+    source.message.id
+  );
+  const selected = new Set(selectedIds);
+  const messages = candidates
+    .filter(({ id }) => selected.has(id))
+    .map((message, ordinal) => ({
+      ...message,
+      parentMessageId: ordinal === 0 ? null : message.parentMessageId
+    }));
   return {
     activeLeafMessageId: source.message.id,
-    contextRefs,
     messages,
     timeZone: runTimeZone(activeRun?.normalizedRequest ?? null)
   };
@@ -480,6 +687,7 @@ async function prepareWith(
   const source = await loadBoundSource(tx, job);
   if (!source) return { decision: staleDecision };
   const context = await loadBoundContext(tx, job, source);
+  if (context.messages.length === 0) return { decision: staleDecision };
   const safeSnapshot = buildMemorySafeSourceSnapshot({
     activeLeafMessageId: context.activeLeafMessageId,
     branchGeneration: job.branchGeneration,
@@ -532,9 +740,15 @@ async function prepareWith(
   if (!selected.some((message) => message.evidenceEligible)) {
     return { decision: staleDecision };
   }
+  const contextRefs = safeMemoryFactContextRefs(
+    await loadMemoryFactContextRefs(tx, {
+      messages: selected,
+      userId: source.chat.userId
+    })
+  );
   const sourceProjectionHash = memorySha256({
     baseProjectionHash: safeSnapshot.snapshotHash,
-    contextRefs: context.contextRefs,
+    contextRefs,
     messages: selected,
     projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
@@ -550,7 +764,7 @@ async function prepareWith(
     userId: source.chat.userId
   };
   const withoutInputHash: Omit<MemoryFactExtractionInput, "inputHash"> = {
-    contextRefs: context.contextRefs,
+    contextRefs,
     folderId: source.chat.folderId,
     messages: selected,
     source: sourceIdentity,

@@ -7,6 +7,7 @@ import {
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_RRF_K,
+  MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER,
   MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
   memoryRetrievalLaneLimit,
   type MemoryRetrievalLane
@@ -19,6 +20,8 @@ import type {
   MemoryRankedCandidate,
   MemoryRetrievalPlan
 } from "./contracts";
+import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from
+  "../../../contracts/memory";
 
 type Aggregate = Readonly<{
   candidate: MemoryLaneCandidate;
@@ -105,7 +108,26 @@ function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetad
     sameDate(left.validFrom, right.validFrom) && sameDate(left.validTo, right.validTo);
 }
 
+export function memoryCandidateIsSupportingObservation(
+  metadata: MemoryCandidateMetadata
+): boolean {
+  return metadata.sourceAuthority === "DIRECT_AUTOMATIC" &&
+    metadata.confidence === MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE;
+}
+
+export function memoryRetrievalAuthorityMultiplier(
+  metadata: MemoryCandidateMetadata
+): number {
+  if (memoryCandidateIsSupportingObservation(metadata)) {
+    return MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER;
+  }
+  return metadata.sourceAuthority === "SYNTHESIS"
+    ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
+    : 1;
+}
+
 function authorityRank(metadata: MemoryCandidateMetadata): number {
+  if (memoryCandidateIsSupportingObservation(metadata)) return 1;
   switch (metadata.sourceAuthority) {
     case "EXPLICIT": return 3;
     case "DIRECT_AUTOMATIC": return 2;
@@ -284,10 +306,8 @@ export function fuseMemoryRetrievalCandidates(
         temporalFit: temporalFit(plan, aggregate.candidate.metadata),
         tier: "DYNAMIC" as const
       },
-      finalScore: aggregate.rrfScore * (
-        aggregate.candidate.metadata.sourceAuthority === "SYNTHESIS"
-          ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
-          : 1
+      finalScore: aggregate.rrfScore * memoryRetrievalAuthorityMultiplier(
+        aggregate.candidate.metadata
       ),
       itemId: aggregate.candidate.itemId,
       itemType: aggregate.candidate.itemType,
