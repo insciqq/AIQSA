@@ -212,9 +212,11 @@ function requestedModelClasses(
   const classes = [...new Set(value ?? ["answer"])] as ProviderModelClass[];
   if (
     classes.length < 1 ||
-    classes.some((modelClass) => modelClass !== "answer" && modelClass !== "embedding") ||
+    classes.some((modelClass) => modelClass !== "answer" &&
+      modelClass !== "embedding" && modelClass !== "reranker") ||
     (family !== "openai" && family !== "openai_compatible" && family !== "openrouter") &&
-      classes.includes("embedding")
+      classes.includes("embedding") ||
+    family !== "openrouter" && classes.includes("reranker")
   ) {
     throw new AdminProviderCredentialTestError();
   }
@@ -278,7 +280,7 @@ export function createAdminProviderCredentialTester(
               throw new AdminProviderCredentialTestError();
             }
           };
-          const answerModels = classes.includes("answer")
+          const answerModels = classes.includes("answer") || classes.includes("reranker")
             ? await load(answerCatalogPath(input.family))
             : [];
           const embeddingModels = classes.includes("embedding")
@@ -287,8 +289,9 @@ export function createAdminProviderCredentialTester(
               : await load(answerCatalogPath(input.family))
             : [];
           const modelIdsByClass = {
-            answer: answerModels.map(({ id }) => id),
-            embedding: embeddingModels.map(({ id }) => id)
+            answer: classes.includes("answer") ? answerModels.map(({ id }) => id) : [],
+            embedding: embeddingModels.map(({ id }) => id),
+            reranker: classes.includes("reranker") ? answerModels.map(({ id }) => id) : []
           };
           const models = [...new Map(
             [...answerModels, ...embeddingModels].map((model) => [model.id, model])

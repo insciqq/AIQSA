@@ -25,6 +25,11 @@ import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   type MemoryVectorProfile
 } from "./vector";
+import {
+  RerankAdapterError,
+  type RerankRequest,
+  type RerankResult
+} from "../../providers/rerank";
 
 const profile: MemoryVectorProfile = Object.freeze({
   configurationFingerprint: "a".repeat(64),
@@ -59,7 +64,7 @@ function rerankInput(
 }
 
 function snapshot(
-  role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
+  role: "MEMORY_AGGREGATE" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
 ): MemorySecretFreeExecutionSnapshot {
   const embedding = role === "MEMORY_QUERY_EMBED";
   return {
@@ -130,9 +135,68 @@ function snapshot(
       vectorSpaceFingerprint: embedding ? profile.vectorSpaceFingerprint : null
     },
     requiresStrictStructuredOutput: !embedding,
-    utilityPolicyVersion: "memory-utility-egress-v1",
+    utilityPolicyVersion: "memory-utility-egress-v2",
     version: 2
   } as unknown as MemorySecretFreeExecutionSnapshot;
+}
+
+function dedicatedRerankerSnapshot(): MemorySecretFreeExecutionSnapshot {
+  const base = snapshot("MEMORY_RERANK");
+  return {
+    ...base,
+    providerExecutionSnapshot: {
+      ...base.providerExecutionSnapshot,
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://openrouter.ai/api/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 30_000
+      },
+      connectionDisplayName: "OpenRouter",
+      connectionId: "reranker-connection",
+      credentialId: "reranker-credential",
+      credentialVersionId: "reranker-credential-version",
+      model: {
+        adapterKind: "openrouter_rerank",
+        answerSelectable: false,
+        capabilities: {
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          streaming: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        modelClass: "reranker",
+        openRouterRouting: {
+          mode: "only_selected",
+          providers: ["Together"]
+        },
+        upstreamModelId: "qwen/qwen3-reranker-8b"
+      },
+      modelDisplayName: "Qwen3 Reranker 8B",
+      providerFamily: "openrouter",
+      providerModelId: "reranker-model"
+    },
+    requiresStrictStructuredOutput: false
+  } as MemorySecretFreeExecutionSnapshot;
+}
+
+function dedicatedCandidates(length: number) {
+  return Array.from({ length }, (_, index) => ({
+    ...currentHistoryRerankCandidate,
+    authorityLevel: "PAST_CHAT" as const,
+    current: true,
+    handle: `c${index}`,
+    occurredFrom: `2026-01-${String(index % 28 + 1).padStart(2, "0")}T00:00:00.000Z`,
+    occurredTo: null,
+    sensitivityClass: "NORMAL" as const,
+    speakerScope: "mixed_conversation" as const,
+    sourceKind: "HISTORY" as const,
+    text: `The user discussed release milestone ${index}.`
+  }));
 }
 
 function execution(log: string[]) {
@@ -178,6 +242,56 @@ function baseInput() {
     signal: new AbortController().signal,
     temporalIntent: "CURRENT" as const,
     userId: "user-1"
+  };
+}
+
+function dedicatedHarness(
+  run: (request: RerankRequest) => Promise<RerankResult>
+) {
+  const accepted = dedicatedRerankerSnapshot();
+  const rerank = vi.fn(run);
+  const resolve = vi.fn(async () => ({
+    adapter: { rerank },
+    configuration: accepted.providerExecutionSnapshot.model,
+    executionSnapshot: accepted.providerExecutionSnapshot,
+    provider: "openrouter",
+    providerModelId: "reranker-model"
+  }));
+  const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
+    id: `binding-${input.ordinal}`
+  }));
+  const executionService = {
+    admission: {
+      bind,
+      start: vi.fn(async (_userId: string, bindingId: string) => ({
+        bindingId,
+        snapshot: accepted
+      }))
+    },
+    lifecycle: {
+      settle: vi.fn(async () => ({})),
+      withAuthorizedResultCommit: vi.fn(async (
+        _userId: string,
+        _input: unknown,
+        apply: () => Promise<unknown>
+      ) => apply())
+    }
+  } as unknown as PrismaMemoryExecutionService;
+  const provider = { run: vi.fn() } as unknown as MemoryRunUtilityProvider;
+  return {
+    accepted,
+    bind,
+    executionService,
+    provider,
+    rerank,
+    resolve,
+    service: createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider,
+      rerankerRuntime: { resolve } as never,
+      resolveRerankPath: vi.fn(async () => "DEDICATED" as const)
+    })
   };
 }
 
@@ -374,6 +488,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
@@ -408,7 +523,7 @@ describe("Memory run utility execution", () => {
         _evidence: Parameters<MemoryRunUtilityProvider["run"]>[0],
         input: Parameters<MemoryRunUtilityProvider["run"]>[1]
       ) => {
-        expect(input).toMatchObject({ kind: "AGGREGATE", role: "MEMORY_RERANK" });
+        expect(input).toMatchObject({ kind: "AGGREGATE", role: "MEMORY_AGGREGATE" });
         expect("kind" in input ? input.evidence.map(({ handle }) => handle) : [])
           .toEqual(["i0", "i1", "i2", "i3"]);
         return {
@@ -487,7 +602,7 @@ describe("Memory run utility execution", () => {
     });
 
     expect(result).toEqual({
-      bindingId: "binding-MEMORY_RERANK",
+      bindingId: "binding-MEMORY_AGGREGATE",
       plan: {
         groups: [{
           itemHandles: ["i0", "i1"],
@@ -515,7 +630,7 @@ describe("Memory run utility execution", () => {
     });
     expect(bound.admission.bind).toHaveBeenCalledWith(
       "user-1",
-      expect.objectContaining({ ordinal: 8, role: "MEMORY_RERANK" })
+      expect.objectContaining({ ordinal: 0, role: "MEMORY_AGGREGATE" })
     );
   });
 
@@ -527,7 +642,7 @@ describe("Memory run utility execution", () => {
         })),
         start: vi.fn(async (_userId: string, bindingId: string) => ({
           bindingId,
-          snapshot: snapshot("MEMORY_RERANK")
+          snapshot: snapshot("MEMORY_AGGREGATE")
         }))
       },
       lifecycle: {
@@ -592,12 +707,12 @@ describe("Memory run utility execution", () => {
     expect(executionService.admission.bind).toHaveBeenNthCalledWith(
       1,
       "user-1",
-      expect.objectContaining({ ordinal: 8 })
+      expect.objectContaining({ ordinal: 0, role: "MEMORY_AGGREGATE" })
     );
     expect(executionService.admission.bind).toHaveBeenNthCalledWith(
       2,
       "user-1",
-      expect.objectContaining({ ordinal: 9 })
+      expect.objectContaining({ ordinal: 1, role: "MEMORY_AGGREGATE" })
     );
   });
 
@@ -673,6 +788,7 @@ describe("Memory run utility execution", () => {
       occurredFrom: null,
       occurredTo: null,
       sensitivityClass: "NORMAL" as const,
+      speakerScope: "mixed_conversation" as const,
       sourceKind: "HISTORY" as const,
       text: `Safe digest for an unrelated project milestone ${index}.`
     }));
@@ -698,7 +814,7 @@ describe("Memory run utility execution", () => {
       ));
     expect(bind).toHaveBeenCalledTimes(MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
     expect(bind.mock.calls.map((call) => call[1].ordinal))
-      .toEqual([2, 4, 6, 10, 12, 14, 16, 18, 20]);
+      .toEqual([2, 4, 6, 8, 10, 12, 14, 16, 18]);
     expect(peak).toBe(3);
   });
 
@@ -749,6 +865,7 @@ describe("Memory run utility execution", () => {
       occurredFrom: null,
       occurredTo: null,
       sensitivityClass: "NORMAL" as const,
+      speakerScope: "memory_record" as const,
       sourceKind: "FACT" as const,
       text: `Safe targeted fact ${index}.`
     }));
@@ -766,7 +883,7 @@ describe("Memory run utility execution", () => {
     expect(providerRun.mock.calls.map((call) => rerankInput(call[1]).candidates.length))
       .toEqual([20, 20, 20, 20]);
     expect(bound.admission.bind.mock.calls.map((call) => call[1].ordinal))
-      .toEqual([2, 4, 6, 10]);
+      .toEqual([2, 4, 6, 8]);
   });
 
   it("partitions aggregation reranking by the complete structured prompt limit", async () => {
@@ -834,6 +951,7 @@ describe("Memory run utility execution", () => {
       occurredFrom: null,
       occurredTo: null,
       sensitivityClass: "NORMAL" as const,
+      speakerScope: "mixed_conversation" as const,
       sourceKind: "HISTORY" as const,
       text: `Digest ${index}: `.padEnd(4_000, "x")
     }));
@@ -859,12 +977,8 @@ describe("Memory run utility execution", () => {
       size <= MEMORY_RERANK_MAX_PROMPT_CHARACTERS
     )).toBe(true);
     expect(bind.mock.calls.map((call) => call[1].ordinal))
-      .toEqual(promptSizes.map((_, index) => {
-        const denseOrdinal = 2 + index * MEMORY_RERANK_MAX_ATTEMPTS;
-        return denseOrdinal >= 8
-          ? denseOrdinal + MEMORY_AGGREGATION_MAX_ATTEMPTS
-          : denseOrdinal;
-      }));
+      .toEqual(promptSizes.map((_, index) =>
+        2 + index * MEMORY_RERANK_MAX_ATTEMPTS));
   });
 
   it("binds and dispatches distinct ordinary and broad-profile rerank inputs", async () => {
@@ -910,6 +1024,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL" as const,
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT" as const,
         text: "The user's name is Nebula."
       }],
@@ -995,6 +1110,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user's name is Nebula."
       }, {
@@ -1005,6 +1121,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user lives in Rostov."
       }],
@@ -1075,6 +1192,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user's name is Nebula."
       }, {
@@ -1085,6 +1203,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user lives in Rostov."
       }],
@@ -1135,6 +1254,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "mixed_conversation" as const,
         sourceKind: "HISTORY",
         text: "We discussed PostgreSQL migrations."
       }],
@@ -1161,6 +1281,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "mixed_conversation" as const,
         sourceKind: "HISTORY",
         text: "API key sk-abcdefghijklmnopqrstuvwxyz123456"
       }],
@@ -1195,6 +1316,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL" as const,
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT" as const,
         text: `Fact ${index}`
         })),
@@ -1230,6 +1352,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL" as const,
+        speakerScope: "mixed_conversation" as const,
         sourceKind: "HISTORY" as const,
         text: `History candidate ${index}`
         })),
@@ -1298,6 +1421,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
@@ -1407,6 +1531,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
@@ -1514,6 +1639,7 @@ describe("Memory run utility execution", () => {
           occurredFrom: null,
           occurredTo: null,
           sensitivityClass: "NORMAL",
+          speakerScope: "memory_record" as const,
           sourceKind: "FACT",
           text: "The user prefers concise replies."
         }],
@@ -1583,6 +1709,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
@@ -1628,6 +1755,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
@@ -1696,6 +1824,7 @@ describe("Memory run utility execution", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
       }],
@@ -1716,5 +1845,206 @@ describe("Memory run utility execution", () => {
         state: "FAILED"
       })
     );
+  });
+
+  it("uses one dedicated reranker request for the normal 60-candidate pool", async () => {
+    const harness = dedicatedHarness(async (request) => ({
+      model: "qwen/qwen3-reranker-8b",
+      provider: "Together",
+      requestId: "rerank-request-1",
+      scores: request.documents.map((document, index) => ({
+        handle: document.handle,
+        index,
+        relevanceScore: 1 - index / 100
+      })),
+      usage: { inputTokens: 320, searchUnits: 1, totalTokens: 320 }
+    }));
+    const candidates = dedicatedCandidates(60);
+
+    const result = await harness.service.rerank({
+      ...baseInput(),
+      candidates,
+      profileRequested: false,
+      query: "Which release milestones did I discuss?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    expect(result).toMatchObject({ bindingId: "binding-2", status: "READY" });
+    expect(result.status === "READY" ? result.decisions : []).toHaveLength(60);
+    expect(harness.rerank).toHaveBeenCalledOnce();
+    expect(harness.provider.run).not.toHaveBeenCalled();
+    const request = harness.rerank.mock.calls[0]?.[0];
+    expect(request?.documents).toHaveLength(60);
+    expect(request?.documents[0]).toEqual({
+      handle: "c0",
+      text: expect.stringMatching(
+        /^\[date_from=2026-01-01T00:00:00\.000Z date_to=open\]\n\[source=history speaker=mixed_conversation state=current lifecycle=not_applicable\]\n/u
+      )
+    });
+    expect(harness.resolve).toHaveBeenCalledWith({
+      connectionId: "reranker-connection",
+      credentialId: "reranker-credential",
+      credentialVersionId: "reranker-credential-version",
+      executionSnapshot: harness.accepted.providerExecutionSnapshot,
+      providerModelId: "reranker-model"
+    });
+    expect(harness.executionService.lifecycle.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-2",
+      expect.objectContaining({
+        errorCode: null,
+        providerResponseId: "rerank-request-1",
+        state: "SUCCEEDED",
+        usage: expect.objectContaining({
+          completeness: "COMPLETE",
+          inputTokens: 320,
+          outputTokens: 0,
+          totalTokens: 320
+        })
+      })
+    );
+  });
+
+  it("preserves dedicated partial scores without inventing authority metadata", async () => {
+    const harness = dedicatedHarness(async () => ({
+      model: "qwen/qwen3-reranker-8b",
+      provider: "Together",
+      requestId: "rerank-partial",
+      scores: [
+        { handle: "c2", index: 2, relevanceScore: 0.92 },
+        { handle: "c0", index: 0, relevanceScore: 0.41 }
+      ],
+      usage: { inputTokens: null, searchUnits: 1, totalTokens: null }
+    }));
+
+    await expect(harness.service.rerank({
+      ...baseInput(),
+      candidates: dedicatedCandidates(3),
+      profileRequested: false,
+      query: "query"
+    })).resolves.toEqual({
+      bindingId: "binding-2",
+      decisions: [{
+        applicable: null,
+        current: null,
+        handle: "c2",
+        reasonCode: "SCORE_ONLY",
+        relevanceScore: 0.92
+      }, {
+        applicable: null,
+        current: null,
+        handle: "c0",
+        reasonCode: "SCORE_ONLY",
+        relevanceScore: 0.41
+      }],
+      status: "READY"
+    });
+    expect(harness.executionService.lifecycle.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-2",
+      expect.objectContaining({
+        usage: expect.objectContaining({ completeness: "UNAVAILABLE" })
+      })
+    );
+  });
+
+  it("degrades a dedicated total outage without retry or generative substitution", async () => {
+    const harness = dedicatedHarness(async () => {
+      throw new RerankAdapterError("rerank_provider_http_error", {
+        httpStatus: 503
+      });
+    });
+
+    await expect(harness.service.rerank({
+      ...baseInput(),
+      candidates: dedicatedCandidates(60),
+      profileRequested: false,
+      query: "query"
+    })).resolves.toEqual({
+      bindingId: "binding-2",
+      reason: "memory_reranker_failed",
+      status: "UNAVAILABLE"
+    });
+    expect(harness.rerank).toHaveBeenCalledOnce();
+    expect(harness.provider.run).not.toHaveBeenCalled();
+    expect(harness.executionService.lifecycle.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-2",
+      expect.objectContaining({
+        acceptedOutputHash: null,
+        errorCode: "rerank_provider_http_error",
+        state: "FAILED"
+      })
+    );
+  });
+
+  it("splits the 180-candidate aggregation pool only at the dedicated envelope", async () => {
+    const harness = dedicatedHarness(async (request) => ({
+      model: "qwen/qwen3-reranker-8b",
+      provider: "Together",
+      requestId: `rerank-${request.documents[0]?.handle}`,
+      scores: request.documents.map((document, index) => ({
+        handle: document.handle,
+        index,
+        relevanceScore: 0.8
+      })),
+      usage: { inputTokens: 500, searchUnits: 1, totalTokens: 500 }
+    }));
+    const result = await harness.service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates: dedicatedCandidates(180),
+      profileRequested: false,
+      query: "Which milestones appeared across all chats?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    expect(result.status === "READY" ? result.decisions : []).toHaveLength(180);
+    expect(harness.rerank).toHaveBeenCalledTimes(2);
+    expect(harness.rerank.mock.calls.map(([request]) => request.documents.length))
+      .toEqual([96, 84]);
+    expect(harness.bind).toHaveBeenCalledTimes(2);
+    expect(harness.bind.mock.calls.map((call) =>
+      call[1].ordinal)).toEqual([2, 4]);
+  });
+
+  it("rejects a dedicated path bound to an answer snapshot before either provider runs", async () => {
+    const executionService = {
+      admission: {
+        bind: vi.fn(async () => ({ id: "binding-2" })),
+        start: vi.fn(async () => ({
+          bindingId: "binding-2",
+          snapshot: snapshot("MEMORY_RERANK")
+        }))
+      },
+      lifecycle: {
+        settle: vi.fn(async () => ({})),
+        withAuthorizedResultCommit: vi.fn()
+      }
+    } as unknown as PrismaMemoryExecutionService;
+    const provider = { run: vi.fn() } as unknown as MemoryRunUtilityProvider;
+    const rerankerRuntime = { resolve: vi.fn() };
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn() } as never,
+      execution: executionService,
+      provider,
+      rerankerRuntime: rerankerRuntime as never,
+      resolveRerankPath: vi.fn(async () => "DEDICATED" as const)
+    });
+
+    await expect(service.rerank({
+      ...baseInput(),
+      candidates: dedicatedCandidates(1),
+      profileRequested: false,
+      query: "query"
+    })).resolves.toEqual({
+      bindingId: "binding-2",
+      reason: "memory_reranker_binding_invalid",
+      status: "UNAVAILABLE"
+    });
+    expect(rerankerRuntime.resolve).not.toHaveBeenCalled();
+    expect(provider.run).not.toHaveBeenCalled();
   });
 });

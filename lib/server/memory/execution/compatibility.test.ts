@@ -74,8 +74,10 @@ describe("Memory execution compatibility", () => {
   it("keeps the bounded role and strict-output declarations", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_RERANK");
+    expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_AGGREGATE");
     expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_FACT_EXTRACT");
-    expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_RERANK");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_AGGREGATE");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_RERANK");
     expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_QUERY_EMBED");
   });
 

@@ -54,7 +54,8 @@ export const providerAdapterKinds = [
   "openai_responses_compatible",
   "openai_responses_native",
   "openai_embeddings_compatible",
-  "openrouter_chat_completions"
+  "openrouter_chat_completions",
+  "openrouter_rerank"
 ] as const;
 
 export type ProviderAdapterKind = (typeof providerAdapterKinds)[number];
@@ -66,7 +67,7 @@ export type ProviderFamily =
   | "openrouter";
 
 export type ProviderAuthenticationMode = "bearer" | "none";
-export type ProviderModelClass = "answer" | "embedding";
+export type ProviderModelClass = "answer" | "embedding" | "reranker";
 
 export type EmbeddingModelConfiguration = Readonly<{
   nativeDimension: number;
@@ -325,6 +326,7 @@ export function providerRequestEndpoint(
   adapterKind: ProviderAdapterKind
 ): string {
   const terminalPath = adapterKind === "openai_embeddings_compatible" ? "embeddings" :
+    adapterKind === "openrouter_rerank" ? "rerank" :
     adapterKind === "gemini_interactions_native" ? "interactions" :
     adapterKind.includes("responses") ? "responses" :
     adapterKind === "anthropic_messages" ? "messages" : "chat/completions";
@@ -377,7 +379,7 @@ function normalizeEmbeddingModelConfiguration(
   };
 }
 
-function embeddingCapabilitiesAreInert(capabilities: ProviderModelCapabilities): boolean {
+function nonAnswerCapabilitiesAreInert(capabilities: ProviderModelCapabilities): boolean {
   return !capabilities.backgroundStreaming &&
     !capabilities.defaultMaxOutputTokens &&
     !capabilities.nativeBackground &&
@@ -553,7 +555,8 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
 
   const adapterKind = value.adapterKind as ProviderAdapterKind;
   const modelClass = value.modelClass;
-  if (modelClass !== "answer" && modelClass !== "embedding") {
+  if (modelClass !== "answer" && modelClass !== "embedding" &&
+    modelClass !== "reranker") {
     throw new ProviderConfigurationError("provider_model_class_invalid");
   }
   const capabilities = normalizeProviderModelCapabilities(value.capabilities);
@@ -565,12 +568,23 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
       adapterKind !== "openai_embeddings_compatible" ||
       value.answerSelectable !== false ||
       !embedding ||
-      !embeddingCapabilitiesAreInert(capabilities) ||
+      !nonAnswerCapabilitiesAreInert(capabilities) ||
       Object.keys(rawDefaultParams).length > 0
     ) {
       throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
     }
-  } else if (adapterKind === "openai_embeddings_compatible" || embedding) {
+  } else if (modelClass === "reranker") {
+    if (
+      adapterKind !== "openrouter_rerank" ||
+      value.answerSelectable !== false ||
+      embedding ||
+      !nonAnswerCapabilitiesAreInert(capabilities) ||
+      Object.keys(rawDefaultParams).length > 0
+    ) {
+      throw new ProviderConfigurationError("provider_model_class_invalid");
+    }
+  } else if (adapterKind === "openai_embeddings_compatible" ||
+    adapterKind === "openrouter_rerank" || embedding) {
     throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
   }
   if (
@@ -598,10 +612,11 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const openRouterRouting = value.openRouterRouting === undefined
     ? undefined
     : normalizeOpenRouterRouting(value.openRouterRouting);
-  if ((adapterKind === "openrouter_chat_completions") !== Boolean(openRouterRouting)) {
+  if ((adapterKind === "openrouter_chat_completions" ||
+    adapterKind === "openrouter_rerank") !== Boolean(openRouterRouting)) {
     throw new ProviderConfigurationError("provider_routing_invalid");
   }
-  const defaultParams = openRouterRouting
+  const defaultParams = openRouterRouting && adapterKind === "openrouter_chat_completions"
     ? openRouterDefaultParams(rawDefaultParams, openRouterRouting)
     : rawDefaultParams;
   const responseTimeoutMs = normalizeProviderResponseTimeoutMs(

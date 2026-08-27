@@ -307,6 +307,79 @@ describe("admin provider draft tester", () => {
     expect(createFetch).toHaveBeenCalledOnce();
   });
 
+  it("checks reranker deployments with a bounded score-only probe", async () => {
+    const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => [{
+      id: "qwen/qwen3-reranker-8b",
+      inputModalities: ["text"],
+      name: "Qwen3 Reranker 8B",
+      outputModalities: ["text"],
+      pricing: {},
+      supportedParameters: []
+    }]);
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      id: "rerank-probe-1",
+      model: "qwen/qwen3-reranker-8b",
+      results: [
+        { index: 1, relevance_score: 0.95 },
+        { index: 0, relevance_score: 0.1 }
+      ],
+      usage: { prompt_tokens: 9, total_tokens: 9 }
+    }), { headers: { "content-type": "application/json" }, status: 200 }));
+    const createFetch = vi.fn(() => fetchFn);
+    const tester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery({ listModels }),
+      createFetch
+    });
+
+    const outcome = await tester.test(input({
+      model: {
+        adapterKind: "openrouter_rerank",
+        answerSelectable: false,
+        capabilities: {
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          streaming: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        modelClass: "reranker",
+        openRouterRouting: { mode: "automatic", providers: [] },
+        upstreamModelId: "qwen/qwen3-reranker-8b"
+      },
+      modelDisplayName: "Qwen3 Reranker 8B"
+    }));
+
+    expect(outcome).toMatchObject({
+      evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "verified"
+        },
+        detail: "ok",
+        upstreamModelId: "qwen/qwen3-reranker-8b"
+      },
+      status: "available"
+    });
+    expect(listModels).toHaveBeenCalledOnce();
+    expect(createFetch).toHaveBeenCalledOnce();
+    const [url, init] = fetchFn.mock.calls[0] ?? [];
+    expect(url).toBe("https://openrouter.ai/api/v1/rerank");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      documents: [
+        "A bounded unrelated provider check.",
+        "AIQSA reranker compatibility check."
+      ],
+      query: "AIQSA reranker compatibility check",
+      top_n: 2
+    });
+  });
+
   it("uses the credential-specific OpenRouter account catalog", async () => {
     const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
     const createDiscoveryClient = vi.fn(() => discovery({ listModels }));

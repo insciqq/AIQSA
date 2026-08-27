@@ -4,13 +4,18 @@ import {
   ProviderAdmissionError,
   type AdmissionPrisma,
   type EmbeddingProviderAdmissionRole,
-  type ProviderAdmissionRole
+  type ProviderAdmissionRole,
+  type RerankerProviderAdmissionRole
 } from "../../providerRuntime/admission";
 import {
   applySystemModelReasoningEffort,
   createSystemModelRoleResolver,
   type SystemModelRoleResolution
 } from "../../providerRuntime/systemModelRole";
+import {
+  createRerankerModelRoleResolver,
+  type RerankerModelRoleResolution
+} from "../../providerRuntime/rerankerModelRole";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { SearchProbeBinding } from "../../search/probeBinding";
 import type { LockedMemorySettings } from "../persistence/transaction";
@@ -23,7 +28,7 @@ import {
   type MemoryExecutionRole
 } from "./roles";
 
-export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v1";
+export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v2";
 
 type MemoryPolicyPrisma = AdmissionPrisma & Pick<
   Prisma.TransactionClient,
@@ -64,7 +69,8 @@ export type MemoryPolicyDestination =
     }>
   | Readonly<{
       code: "embedding_not_configured" | "embedding_unavailable" |
-        "system_model_absent" | "system_model_unavailable";
+        "reranker_model_unavailable" | "system_model_absent" |
+        "system_model_unavailable";
       kind: "UNAVAILABLE";
       role: MemoryExecutionRole;
       selectedProviderModelId: string | null;
@@ -75,6 +81,12 @@ export type ResolvedMemoryUtilityPolicy = Readonly<{
   fingerprint: string;
   policyVersion: typeof MEMORY_UTILITY_EGRESS_POLICY_VERSION;
   targets: ReadonlyMap<MemoryExecutionRole, ResolvedMemoryExecutionTarget>;
+}>;
+
+export type MemoryUtilityPolicyDependencies = Readonly<{
+  loadEmbeddingRole?: typeof loadEmbeddingProviderRole;
+  resolveRerankerRole?: () => Promise<RerankerModelRoleResolution>;
+  resolveSystemRole?: () => Promise<SystemModelRoleResolution>;
 }>;
 
 function exactAuthority(value: SearchProbeBinding | null | undefined): SafeTargetAuthority | null {
@@ -111,7 +123,8 @@ function endpointOrigin(snapshot: ProviderExecutionSnapshot): string {
 
 function targetFor(
   role: MemoryExecutionRole,
-  admitted: ProviderAdmissionRole | EmbeddingProviderAdmissionRole,
+  admitted: ProviderAdmissionRole | EmbeddingProviderAdmissionRole |
+    RerankerProviderAdmissionRole,
   policyRevision: number | null,
   reasoningEffort: string | null = null
 ): ResolvedMemoryExecutionTarget | null {
@@ -216,14 +229,21 @@ export function memoryVectorSpaceFingerprint(
 export async function resolveCurrentMemoryUtilityPolicy(
   db: MemoryPolicyPrisma,
   userId: string,
-  settings: Pick<LockedMemorySettings, "embeddingProviderModelId">
+  settings: Pick<LockedMemorySettings, "embeddingProviderModelId">,
+  dependencies: MemoryUtilityPolicyDependencies = {}
 ): Promise<ResolvedMemoryUtilityPolicy> {
-  const systemResolution = await createSystemModelRoleResolver(db).resolve();
+  const [systemResolution, rerankerResolution] = await Promise.all([
+    dependencies.resolveSystemRole?.() ??
+      createSystemModelRoleResolver(db).resolve(),
+    dependencies.resolveRerankerRole?.() ??
+      createRerankerModelRoleResolver(db).resolve()
+  ]);
   let embedding: EmbeddingProviderAdmissionRole | null = null;
   let embeddingUnavailable = false;
   if (settings.embeddingProviderModelId) {
     try {
-      embedding = await loadEmbeddingProviderRole(db, {
+      embedding = await (dependencies.loadEmbeddingRole ??
+        loadEmbeddingProviderRole)(db, {
         providerModelId: settings.embeddingProviderModelId,
         userId
       });
@@ -250,6 +270,55 @@ export async function resolveCurrentMemoryUtilityPolicy(
         kind: "UNAVAILABLE" as const,
         role,
         selectedProviderModelId: settings.embeddingProviderModelId
+      };
+    }
+
+    if (role === "MEMORY_RERANK") {
+      const dedicatedTarget = rerankerResolution.ok
+        ? targetFor(
+            role,
+            rerankerResolution.role,
+            rerankerResolution.policyVersion
+          )
+        : null;
+      if (dedicatedTarget) {
+        targets.set(role, dedicatedTarget);
+        return { kind: "AVAILABLE" as const, role, target: dedicatedTarget };
+      }
+      if (!rerankerResolution.ok &&
+        rerankerResolution.code === "reranker_model_unavailable") {
+        return {
+          code: "reranker_model_unavailable" as const,
+          kind: "UNAVAILABLE" as const,
+          role,
+          selectedProviderModelId: rerankerResolution.selectedProviderModelId
+        };
+      }
+
+      // A deliberately absent dedicated deployment retains the versioned
+      // generative compatibility path. A configured-but-broken deployment
+      // never falls through to a different model.
+      const compatibilityTarget = systemResolution.ok
+        ? targetFor(
+            role,
+            systemResolution.role,
+            systemResolution.policyVersion,
+            systemResolution.reasoningEffort
+          )
+        : null;
+      if (compatibilityTarget) {
+        targets.set(role, compatibilityTarget);
+        return { kind: "AVAILABLE" as const, role, target: compatibilityTarget };
+      }
+      return {
+        code: systemResolution.ok
+          ? "system_model_unavailable" as const
+          : systemFailure(systemResolution),
+        kind: "UNAVAILABLE" as const,
+        role,
+        selectedProviderModelId: systemResolution.ok
+          ? systemResolution.providerModelId
+          : null
       };
     }
 

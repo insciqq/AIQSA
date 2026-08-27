@@ -32,7 +32,7 @@ function policy(suffix = "a"): ResolvedMemoryUtilityPolicy {
   return {
     destinations,
     fingerprint: "f".repeat(64),
-    policyVersion: "memory-utility-egress-v1",
+    policyVersion: "memory-utility-egress-v2",
     targets: new Map(destinations.map((entry) => [entry.role, entry.target]))
   };
 }
@@ -106,6 +106,11 @@ describe("administrator Memory egress service", () => {
     ]);
     expect(before.destinations[1]).toMatchObject({
       destinations: ["System connection / System model"],
+      reviewRequired: true,
+      state: "AVAILABLE"
+    });
+    expect(before.destinations[3]).toMatchObject({
+      destinations: ["Reranker connection / Reranker model"],
       reviewRequired: true,
       state: "AVAILABLE"
     });

@@ -85,7 +85,8 @@ export function adminProviderAdapterLabel(kind: AdminProviderAdapterKind): strin
     openai_embeddings_compatible: "Embeddings (OpenAI-compatible)",
     openai_responses_compatible: "Responses (compatible)",
     openai_responses_native: "Responses (native OpenAI)",
-    openrouter_chat_completions: "OpenRouter Chat Completions"
+    openrouter_chat_completions: "OpenRouter Chat Completions",
+    openrouter_rerank: "OpenRouter Rerank"
   };
   return labels[kind];
 }

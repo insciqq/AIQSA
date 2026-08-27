@@ -66,6 +66,14 @@ export type EmbeddingProviderAdmissionRole = Readonly<{
   snapshot: ProviderExecutionSnapshot;
 }>;
 
+export type RerankerProviderAdmissionRole = Readonly<{
+  authority: SearchProbeBinding;
+  configuration: ProviderModelConfiguration;
+  credentialSource: "default" | "group" | "user";
+  provider: string;
+  snapshot: ProviderExecutionSnapshot;
+}>;
+
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
   /** `project` means installation/shared authority; it never consults the
@@ -134,6 +142,10 @@ type AnswerRoleInput = SharedRoleInput & Readonly<{
 
 type EmbeddingRoleInput = SharedRoleInput & Readonly<{
   modelClass: "embedding";
+}>;
+
+type RerankerRoleInput = SharedRoleInput & Readonly<{
+  modelClass: "reranker";
 }>;
 
 async function activeUserAuthority(
@@ -267,8 +279,13 @@ async function loadRole(
 ): Promise<EmbeddingProviderAdmissionRole>;
 async function loadRole(
   db: AdmissionPrisma,
-  input: AnswerRoleInput | EmbeddingRoleInput
-): Promise<ProviderAdmissionRole | EmbeddingProviderAdmissionRole> {
+  input: RerankerRoleInput
+): Promise<RerankerProviderAdmissionRole>;
+async function loadRole(
+  db: AdmissionPrisma,
+  input: AnswerRoleInput | EmbeddingRoleInput | RerankerRoleInput
+): Promise<ProviderAdmissionRole | EmbeddingProviderAdmissionRole |
+  RerankerProviderAdmissionRole> {
   const model = await db.providerModel.findFirst({
     include: {
       connection: true
@@ -347,7 +364,10 @@ async function loadRole(
     (input.modelClass === "embedding" &&
       (modelConfig.adapterKind !== "openai_embeddings_compatible" ||
         !modelConfig.embedding ||
-        modelConfig.embedding.providerFamily !== model.connection.family))
+        modelConfig.embedding.providerFamily !== model.connection.family)) ||
+    (input.modelClass === "reranker" &&
+      (model.connection.family !== "openrouter" ||
+        modelConfig.adapterKind !== "openrouter_rerank"))
   ) {
     throw new ProviderAdmissionError("model_not_available");
   }
@@ -468,6 +488,22 @@ async function loadRole(
       resolvedModel.modelClass !== "embedding" ||
       resolvedModel.adapterKind !== "openai_embeddings_compatible" ||
       !resolvedModel.embedding
+    ) {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    return {
+      authority,
+      configuration: resolvedModel,
+      credentialSource: credential.source,
+      provider: model.provider,
+      snapshot
+    };
+  }
+  if (input.modelClass === "reranker") {
+    if (
+      resolvedModel.adapterKind === "fake" ||
+      resolvedModel.modelClass !== "reranker" ||
+      resolvedModel.adapterKind !== "openrouter_rerank"
     ) {
       throw new ProviderAdmissionError("model_not_available");
     }
@@ -600,6 +636,35 @@ export async function loadInstallationAnswerProviderRole(
       modelClass: "answer",
       modelId: input.providerModelId,
       requireAnswerSelectable: true,
+      requireEntitlement: false
+    });
+  } catch (error) {
+    if (error instanceof ProviderConfigurationError ||
+      error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    throw error;
+  }
+}
+
+/** Resolve the installation-owned Memory reranker through the connection's
+ * exact default credential. It is deliberately a distinct model class and
+ * can never enter answer or embedding admission. */
+export async function loadInstallationRerankerProviderRole(
+  db: AdmissionPrisma,
+  input: { providerModelId: string }
+): Promise<RerankerProviderAdmissionRole> {
+  const model = await db.providerModel.findUnique({
+    select: { connectionId: true },
+    where: { id: input.providerModelId }
+  });
+  if (!model) throw new ProviderAdmissionError("model_not_available");
+  try {
+    return await loadRole(db, {
+      connectionId: model.connectionId,
+      credentialAuthority: { kind: "installation" },
+      modelClass: "reranker",
+      modelId: input.providerModelId,
       requireEntitlement: false
     });
   } catch (error) {

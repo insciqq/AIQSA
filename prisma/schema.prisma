@@ -175,6 +175,7 @@ enum ProviderRunRole {
 enum ProviderModelClass {
   answer
   embedding
+  reranker
 }
 
 enum ProviderCredentialSource {
@@ -941,17 +942,20 @@ model ModelPolicy {
 }
 
 model SystemModelPolicy {
-  id              String         @id
-  providerModelId String?
-  reasoningEffort String?        @db.VarChar(32)
-  version         Int            @default(1)
-  updatedByUserId String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  providerModel   ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
-  updatedBy       User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  id                      String         @id
+  providerModelId         String?
+  rerankerProviderModelId String?
+  reasoningEffort         String?        @db.VarChar(32)
+  version                 Int            @default(1)
+  updatedByUserId         String?
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+  providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
+  rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
+  updatedBy               User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([providerModelId])
+  @@index([rerankerProviderModelId])
   @@index([updatedByUserId])
 }
 
@@ -2132,6 +2136,7 @@ model ProviderModel {
   knowledgeRunBindings        KnowledgeRunBinding[]
   knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
+  memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])

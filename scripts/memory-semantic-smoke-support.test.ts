@@ -157,7 +157,7 @@ function strictExecutionSnapshot(role: "MEMORY_CONTROL" | "MEMORY_RERANK") {
     requiresStrictStructuredOutput: compatibility.requiresStrictStructuredOutput,
     role,
     target,
-    utilityPolicyVersion: "memory-utility-egress-v1"
+    utilityPolicyVersion: "memory-utility-egress-v2"
   });
 }
 

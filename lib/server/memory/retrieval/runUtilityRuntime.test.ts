@@ -260,6 +260,7 @@ describe("Memory run utility provider runtime", () => {
             occurredFrom: null,
             occurredTo: null,
             sensitivityClass: "NORMAL",
+            speakerScope: "memory_record" as const,
             sourceKind: "FACT",
             text: "The user's name is Nebula."
           }],
@@ -326,6 +327,7 @@ describe("Memory run utility provider runtime", () => {
         occurredFrom: null,
         occurredTo: null,
         sensitivityClass: "NORMAL" as const,
+        speakerScope: "memory_record" as const,
         sourceKind: "FACT" as const,
         text: "The user's name is Nebula."
       }],
@@ -442,7 +444,7 @@ describe("Memory run utility provider runtime", () => {
         }],
         kind: "AGGREGATE",
         query: "How many releases happened before launch day?",
-        role: "MEMORY_RERANK"
+        role: "MEMORY_AGGREGATE"
       },
       new AbortController().signal
     )).resolves.toMatchObject({

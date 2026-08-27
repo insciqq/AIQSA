@@ -1402,13 +1402,15 @@ async function lockMemoryAttemptTargets(
 const retrievalExecutionRoles = new Set([
   "MEMORY_CONTROL",
   "MEMORY_QUERY_EMBED",
-  "MEMORY_RERANK"
+  "MEMORY_RERANK",
+  "MEMORY_AGGREGATE"
 ]);
 
 const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ["MEMORY_CONTROL", new Set([0, 1])],
   ["MEMORY_QUERY_EMBED", new Set([1, 3])],
-  ["MEMORY_RERANK", new Set([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])]
+  ["MEMORY_RERANK", new Set(Array.from({ length: 18 }, (_, index) => index + 2))],
+  ["MEMORY_AGGREGATE", new Set([0, 1])]
 ]);
 
 export function validMemoryRetrievalExecutionSequence(
@@ -1417,7 +1419,7 @@ export function validMemoryRetrievalExecutionSequence(
   aggregationRequested = false
 ): boolean {
   if (profileRequested && aggregationRequested) return false;
-  if (bindings.length > (aggregationRequested ? 16 : 6)) return false;
+  if (bindings.length > (aggregationRequested ? 24 : 12)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
   if (new Set(positions).size !== positions.length || bindings.some((binding) =>
@@ -1426,30 +1428,16 @@ export function validMemoryRetrievalExecutionSequence(
   )) return false;
   const present = new Set(positions);
   if (!aggregationRequested && bindings.some((binding) =>
-    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal >= 4)) return false;
+    binding.logicalRole === "MEMORY_AGGREGATE" ||
+    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal >= 10)) return false;
   if (profileRequested && positions.some((position) =>
     position !== "MEMORY_CONTROL:0" &&
     position !== "MEMORY_RERANK:2" &&
     position !== "MEMORY_RERANK:3")) return false;
   return (
     (!present.has("MEMORY_CONTROL:1") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_QUERY_EMBED:1") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_QUERY_EMBED:3") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_RERANK:2") ||
-      (profileRequested
-        ? present.has("MEMORY_CONTROL:0")
-        : present.has("MEMORY_QUERY_EMBED:1"))) &&
-    (!present.has("MEMORY_RERANK:3") || present.has("MEMORY_RERANK:2")) &&
-    (!present.has("MEMORY_RERANK:4") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_RERANK:5") || present.has("MEMORY_RERANK:4")) &&
-    (!present.has("MEMORY_RERANK:6") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_RERANK:7") || present.has("MEMORY_RERANK:6")) &&
-    (!present.has("MEMORY_RERANK:8") || present.has("MEMORY_RERANK:2")) &&
-    (!present.has("MEMORY_RERANK:9") || present.has("MEMORY_RERANK:8")) &&
-    (!present.has("MEMORY_RERANK:10") || present.has("MEMORY_RERANK:6")) &&
-    (!present.has("MEMORY_RERANK:11") || present.has("MEMORY_RERANK:10")) &&
-    (!present.has("MEMORY_RERANK:12") || present.has("MEMORY_RERANK:10")) &&
-    (!present.has("MEMORY_RERANK:13") || present.has("MEMORY_RERANK:12"))
+    (!present.has("MEMORY_AGGREGATE:1") ||
+      present.has("MEMORY_AGGREGATE:0"))
   );
 }
 
@@ -1471,7 +1459,8 @@ export function validMemoryRerankRetrySettlement(
     state: string;
   }>[]
 ): boolean {
-  return [2, 4, 6, 8, 10, 12].every((primaryOrdinal) => {
+  const rerankValid = [2, 4, 6, 8, 10, 12, 14, 16, 18]
+    .every((primaryOrdinal) => {
     const retry = bindings.find((binding) =>
       binding.logicalRole === "MEMORY_RERANK" &&
       binding.ordinal === primaryOrdinal + 1);
@@ -1482,6 +1471,13 @@ export function validMemoryRerankRetrySettlement(
     return primary?.state === "FAILED" &&
       primary.errorCode === "memory_run_utility_output_invalid";
   });
+  const aggregationRetry = bindings.find((binding) =>
+    binding.logicalRole === "MEMORY_AGGREGATE" && binding.ordinal === 1);
+  if (!aggregationRetry) return rerankValid;
+  const aggregationPrimary = bindings.find((binding) =>
+    binding.logicalRole === "MEMORY_AGGREGATE" && binding.ordinal === 0);
+  return rerankValid && aggregationPrimary?.state === "FAILED" &&
+    aggregationPrimary.errorCode === "memory_run_utility_output_invalid";
 }
 
 type PreparingAttemptExecutionEvidence = Readonly<{

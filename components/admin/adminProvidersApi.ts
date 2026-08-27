@@ -69,7 +69,9 @@ function isModel(value: unknown): boolean {
     typeof value.enabled === "boolean" && typeof value.draftVersion === "number" &&
     record(value.draftConfig) && typeof value.draftConfig.adapterKind === "string" &&
     typeof value.draftConfig.answerSelectable === "boolean" &&
-    (value.draftConfig.modelClass === "answer" || value.draftConfig.modelClass === "embedding") &&
+    (value.draftConfig.modelClass === "answer" ||
+      value.draftConfig.modelClass === "embedding" ||
+      value.draftConfig.modelClass === "reranker") &&
     optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     typeof value.draftConfig.upstreamModelId === "string";
 }
@@ -433,7 +435,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_family_adapter_mismatch: "The selected protocol does not match this provider family.",
     provider_group_not_found: "This group no longer exists.",
     provider_model_not_found: "This model deployment no longer exists.",
-    provider_model_class_immutable: "A deployment cannot change between answer and embedding classes; add a new deployment instead.",
+    provider_model_class_immutable: "A deployment cannot change between answer, embedding, and reranker classes; add a new deployment instead.",
     provider_paid_test_confirmation_required: "Confirm the provider requests before running compatibility checks.",
     provider_revoke_confirmation_required: "This destructive credential action requires confirmation.",
     provider_refresh_failed: "The active compatibility checks hit a transient provider failure. Existing evidence was preserved.",
@@ -442,7 +444,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
   const blockerLabels: Record<string, string> = {
     assistant_revisions: "assistant revisions",
     installation_default: "installation default",
-    system_model: "system model role"
+    system_model: "utility model role"
   };
   const base = messages[error.code] ?? "The provider action could not be completed. Refresh and try again.";
   if (!error.blockers.length) return base;

@@ -213,6 +213,7 @@ test.describe("system model policy", () => {
       expectedVersion: initial.policy.version,
       providerModelId: fixture.modelId,
       reasoningEffort: "xhigh",
+      rerankerProviderModelId: null,
       userId: fixture.adminId
     });
     const resolved = await resolver.resolve();
@@ -267,6 +268,7 @@ test.describe("system model policy", () => {
       expectedVersion: selected.policy.version,
       providerModelId: null,
       reasoningEffort: null,
+      rerankerProviderModelId: null,
       userId: fixture.adminId
     });
     await expect(resolver.resolve()).resolves.toEqual({ code: SYSTEM_MODEL_ABSENT, ok: false });

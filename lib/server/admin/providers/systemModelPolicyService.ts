@@ -2,9 +2,11 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import {
   loadInstallationAnswerProviderRole,
+  loadInstallationRerankerProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 import {
   adminAnswerModelAvailable,
@@ -46,6 +48,7 @@ export class AdminSystemModelPolicyServiceError extends Error {
 }
 
 type RoleLoader = typeof loadInstallationAnswerProviderRole;
+type RerankerRoleLoader = typeof loadInstallationRerankerProviderRole;
 
 type ActiveRefresh = (input: Readonly<{
   confirmPaidRequest: true;
@@ -97,6 +100,25 @@ function serializeSystemModel(row: SystemModelRow) {
   };
 }
 
+function rerankerModelAvailable(row: AdminAnswerModelRow): boolean {
+  if (!row.enabled || row.activeVersion < 1 || row.activatedAt === null ||
+    row.activeConfig === null || !row.connection.enabled ||
+    row.connection.activeVersion < 1 || row.connection.activatedAt === null ||
+    row.connection.activeConfig === null) return false;
+  try {
+    const configuration = normalizeProviderModelConfiguration(row.activeConfig);
+    return configuration.modelClass === "reranker" &&
+      configuration.adapterKind === "openrouter_rerank" &&
+      configuration.answerSelectable === false;
+  } catch {
+    return false;
+  }
+}
+
+function serializeRerankerModel(row: AdminAnswerModelRow) {
+  return serializeAdminAnswerModel(row);
+}
+
 function supportsReasoningEffort(
   role: Awaited<ReturnType<RoleLoader>>,
   effort: string
@@ -111,17 +133,26 @@ export function createAdminSystemModelPolicyService(
   prisma: PrismaClient,
   dependencies: Readonly<{
     loadRole?: RoleLoader;
+    loadRerankerRole?: RerankerRoleLoader;
     refreshActive?: ActiveRefresh;
+    resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
   }> = {}
 ) {
   const loadRole = dependencies.loadRole ?? loadInstallationAnswerProviderRole;
   const resolveRole = dependencies.resolveRole ??
     createSystemModelRoleResolver(prisma, { loadRole }).resolve;
+  const loadRerankerRole = dependencies.loadRerankerRole ??
+    loadInstallationRerankerProviderRole;
+  const resolveRerankerRole = dependencies.resolveRerankerRole ??
+    createRerankerModelRoleResolver(prisma, {
+      loadRole: loadRerankerRole
+    }).resolve;
 
   return {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
-      const [policy, rows, resolution] = await Promise.all([
+      const [policy, rows, rerankerRows, resolution, rerankerResolution] =
+        await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
             providerModel: {
@@ -144,6 +175,9 @@ export function createAdminSystemModelPolicyService(
                   }
                 }
               }
+            },
+            rerankerProviderModel: {
+              include: { connection: true }
             },
             updatedBy: { select: { displayName: true, id: true } }
           },
@@ -176,7 +210,17 @@ export function createAdminSystemModelPolicyService(
           ],
           where: { modelClass: "answer" }
         }),
-        resolveRole()
+        prisma.providerModel.findMany({
+          include: { connection: true },
+          orderBy: [
+            { connection: { displayName: "asc" } },
+            { displayName: "asc" },
+            { id: "asc" }
+          ],
+          where: { modelClass: "reranker" }
+        }),
+        resolveRole(),
+        resolveRerankerRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const models = rows as SystemModelRow[];
@@ -184,8 +228,22 @@ export function createAdminSystemModelPolicyService(
         candidates: models
           .filter(adminAnswerModelAvailable)
           .map(serializeSystemModel),
+        rerankerCandidates: (rerankerRows as AdminAnswerModelRow[])
+          .filter(rerankerModelAvailable)
+          .map(serializeRerankerModel),
         policy: {
           reasoningEffort: policy.reasoningEffort,
+          rerankerModel: policy.rerankerProviderModel
+            ? {
+                ...serializeRerankerModel(
+                  policy.rerankerProviderModel as AdminAnswerModelRow
+                ),
+                available: rerankerResolution.ok &&
+                  rerankerResolution.providerModelId ===
+                    policy.rerankerProviderModelId &&
+                  rerankerResolution.policyVersion === policy.version
+              }
+            : null,
           systemModel: policy.providerModel
             ? {
                 ...serializeSystemModel(
@@ -316,9 +374,11 @@ export function createAdminSystemModelPolicyService(
     async update(input: Readonly<{
       expectedVersion: number;
       providerModelId: string | null;
+      rerankerProviderModelId: string | null;
       reasoningEffort: string | null;
       userId: string;
     }>): Promise<void> {
+      const rerankerProviderModelId = input.rerankerProviderModelId;
       try {
         await prisma.$transaction(async (tx) => {
           const policies = await tx.$queryRaw<Array<{ version: number }>>(Prisma.sql`
@@ -370,9 +430,25 @@ export function createAdminSystemModelPolicyService(
             }
           }
 
+          if (rerankerProviderModelId !== null) {
+            try {
+              await loadRerankerRole(tx, {
+                providerModelId: rerankerProviderModelId
+              });
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) {
+                throw new AdminSystemModelPolicyServiceError(
+                  "system_model_policy_target_unavailable"
+                );
+              }
+              throw error;
+            }
+          }
+
           await tx.systemModelPolicy.update({
             data: {
               providerModelId: input.providerModelId,
+              rerankerProviderModelId,
               reasoningEffort: input.reasoningEffort,
               updatedByUserId: input.userId,
               version: { increment: 1 }

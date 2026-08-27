@@ -63,6 +63,16 @@ function embeddingTargetAvailable(
   return Boolean(model && "modelClass" in model && model.modelClass === "embedding");
 }
 
+function rerankerTargetAvailable(policy: ResolvedMemoryUtilityPolicy): boolean {
+  const resolved = target(policy, "MEMORY_RERANK");
+  const model = resolved?.snapshot.model;
+  return Boolean(model && "modelClass" in model && (
+    model.modelClass === "reranker" && model.adapterKind === "openrouter_rerank" ||
+    model.modelClass === "answer" && model.capabilities.toolCalling === true &&
+      model.capabilities.structuredOutput === true
+  ));
+}
+
 function egressAccepted(
   settings: MemorySettingsPersistenceSnapshot,
   policy: ResolvedMemoryUtilityPolicy,
@@ -107,7 +117,8 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
   const controlAvailable = strictRoleAvailable("MEMORY_CONTROL");
   const extractionAvailable = strictRoleAvailable("MEMORY_FACT_EXTRACT");
   const consolidationAvailable = strictRoleAvailable("MEMORY_CONSOLIDATE");
-  const rerankerAvailable = strictRoleAvailable("MEMORY_RERANK");
+  const rerankerAvailable = rerankerTargetAvailable(input.policy) &&
+    accepted("MEMORY_RERANK");
   const synthesisTargetAvailable = strictRoleAvailable("MEMORY_SYNTHESIZE");
   const statementClassifierAvailable = strictRoleAvailable("MEMORY_STATEMENT_CLASSIFY");
   const historyClassifierAvailable = strictRoleAvailable("MEMORY_HISTORY_CLASSIFY");

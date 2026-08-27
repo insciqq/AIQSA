@@ -295,6 +295,14 @@ describe("Prisma admin provider repository", () => {
       ],
       status: "conflict"
     });
+    expect(db.systemModelPolicy.count).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { providerModelId: "model-1" },
+          { rerankerProviderModelId: "model-1" }
+        ]
+      }
+    });
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -1056,10 +1064,16 @@ describe("Prisma admin provider repository", () => {
     expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
       data: {
         providerModelId: null,
+        rerankerProviderModelId: null,
         updatedByUserId: null,
         version: { increment: 1 }
       },
-      where: { providerModelId: { in: ["model-1"] } }
+      where: {
+        OR: [
+          { providerModelId: { in: ["model-1"] } },
+          { rerankerProviderModelId: { in: ["model-1"] } }
+        ]
+      }
     });
     expect(db.accessGrant.deleteMany).toHaveBeenCalledWith({
       where: {
