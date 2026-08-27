@@ -10,6 +10,7 @@ import {
 } from "../lib/server/parsing";
 import { chunkKnowledgeDocument } from "../lib/server/knowledge/chunking";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "../lib/server/knowledge/indexProfile";
+import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "../lib/server/knowledge/tokenizer/knowledgeTokenCounter";
 import { getKnowledgeExtractionConfig } from "../lib/server/knowledge/knowledgeExtractionConfig";
 import {
   decodeKnowledgeNormalizedDocument,
@@ -464,7 +465,8 @@ async function availableSmoke(): Promise<void> {
       const chunks = chunkKnowledgeDocument({
         document: normalizedDocument,
         maxChunks: knowledgeExtractionConfig.maxChunksPerDocument,
-        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+        tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
       });
       const tableRowContextCount = chunks.filter(
         (chunk) => chunk.documentContext?.locator.kind === "table_row"

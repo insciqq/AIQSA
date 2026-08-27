@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { approximateKnowledgeTokenCount } from "./chunking";
 import { MAX_RERANK_DOCUMENT_CHARACTERS } from "../providers/rerank";
+import { qwen2BpeTokenCounter } from "./tokenizer/qwen2BpeTokenizer";
 import {
   formatKnowledgeRerankCandidate,
   KNOWLEDGE_RERANK_CANDIDATE_FORMATTER_VERSION,
@@ -8,8 +8,8 @@ import {
 } from "./rerankCandidateFormatter";
 
 describe("Knowledge rerank candidate formatter", () => {
-  it("is versioned with a bounded token budget", () => {
-    expect(KNOWLEDGE_RERANK_CANDIDATE_FORMATTER_VERSION).toBe(1);
+  it("is versioned with a bounded model-token budget", () => {
+    expect(KNOWLEDGE_RERANK_CANDIDATE_FORMATTER_VERSION).toBe(2);
     expect(KNOWLEDGE_RERANK_CANDIDATE_MAX_TOKENS).toBe(768);
   });
 
@@ -54,13 +54,13 @@ describe("Knowledge rerank candidate formatter", () => {
     expect(formatted).toContain("line one\nline two");
   });
 
-  it("bounds one candidate to the approximate 768-token budget", () => {
+  it("bounds one candidate to the 768 model-token budget", () => {
     const formatted = formatKnowledgeRerankCandidate({
       headingPath: ["Раздел ".repeat(60)],
       sourceName: "Very long source title ".repeat(50),
       text: "слово word 词 ".repeat(2_000)
     });
-    expect(approximateKnowledgeTokenCount(formatted))
+    expect(qwen2BpeTokenCounter().countTokens(formatted))
       .toBeLessThanOrEqual(KNOWLEDGE_RERANK_CANDIDATE_MAX_TOKENS);
     expect(formatted.length).toBeLessThanOrEqual(MAX_RERANK_DOCUMENT_CHARACTERS);
     expect(formatted.length).toBeGreaterThan(0);
@@ -74,7 +74,7 @@ describe("Knowledge rerank candidate formatter", () => {
       sourceName: "x".repeat(100_000),
       text: " "
     });
-    expect(approximateKnowledgeTokenCount(formatted))
+    expect(qwen2BpeTokenCounter().countTokens(formatted))
       .toBeLessThanOrEqual(KNOWLEDGE_RERANK_CANDIDATE_MAX_TOKENS);
     expect(formatted.trim().length).toBeGreaterThan(0);
   });

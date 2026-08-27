@@ -171,6 +171,9 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
   const knowledgeBaseId = boundedString(value.knowledgeBaseId, 512);
   const ordinal = nonNegativeInteger(value.ordinal);
   const vectorSpaceFingerprint = boundedString(value.vectorSpaceFingerprint, 64);
+  const tokenizerProfile = value.tokenizerProfile === undefined
+    ? undefined
+    : boundedString(value.tokenizerProfile, 128);
   const vectorSearch = value.vectorSearch === undefined
     ? undefined
     : decodeVectorSearch(value.vectorSearch) ?? null;
@@ -181,6 +184,7 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
     (value.state !== "empty" && value.state !== "indexing" && value.state !== "ready") ||
     (value.targetDimension !== 1024 && value.targetDimension !== 1536) ||
     !vectorSpaceFingerprint || !/^[0-9a-f]{64}$/u.test(vectorSpaceFingerprint) ||
+    tokenizerProfile === null ||
     vectorSearch === null ||
     vectorSearch !== undefined && (
       vectorSearch.bindingOrdinal !== ordinal || vectorSearch.targetDimension !== value.targetDimension
@@ -196,6 +200,7 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
     ordinal,
     state: value.state,
     targetDimension: value.targetDimension,
+    ...(tokenizerProfile ? { tokenizerProfile } : {}),
     ...(vectorSearch ? { vectorSearch } : {}),
     vectorSpaceFingerprint
   };

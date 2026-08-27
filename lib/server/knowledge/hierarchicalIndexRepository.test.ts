@@ -15,6 +15,7 @@ function overflowChunks(): KnowledgeChunkPlanEntry[] {
       embeddingTextHash: (index + 1).toString(16).padStart(64, "0"),
       headingPath: [],
       index,
+      layoutKind: "body" as const,
       page: index + 1,
       pageEnd: index + 1,
       sourceBlockEnd: index,

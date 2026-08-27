@@ -189,7 +189,6 @@ async function createFixture(): Promise<Fixture> {
       documentType: "application/octet-stream",
       fileName: "opaque-reference.bin",
       indexArtifactId: hierarchyId,
-      languageConfig: "english",
       pageCount: 3,
       sourceName: "Exact policy source"
     }
@@ -201,7 +200,6 @@ async function createFixture(): Promise<Fixture> {
       id: sectionId,
       indexArtifactId: hierarchyId,
       label: "Opaque section",
-      languageConfig: "english",
       ordinal: 0,
       page: 1,
       pageEnd: 3,
@@ -216,7 +214,6 @@ async function createFixture(): Promise<Fixture> {
       fileName: "opaque-reference.bin",
       id,
       indexArtifactId: hierarchyId,
-      languageConfig: "english",
       ordinal,
       page: ordinal + 1,
       pageEnd: ordinal + 1,

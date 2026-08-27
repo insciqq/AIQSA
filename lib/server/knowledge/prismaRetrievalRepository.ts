@@ -152,10 +152,26 @@ function passageDocumentContext(
   return decoded;
 }
 
+const PASSAGE_LAYOUT_KINDS = new Set<KnowledgeHybridPassage["layoutKind"]>([
+  "body",
+  "field_ambiguous",
+  "field_pair",
+  "table_ambiguous",
+  "table_row",
+  "table_row_projection"
+]);
+
+/** Structured layoutKind column first; the retired English contextPrefix
+ * markers remain decode-only compatibility for legacy rows. */
 function passageLayoutKind(
+  storedLayoutKind: string | null,
   contextPrefix: string,
   documentContext: KnowledgeDocumentContextV1 | null
 ): KnowledgeHybridPassage["layoutKind"] {
+  if (storedLayoutKind &&
+    PASSAGE_LAYOUT_KINDS.has(storedLayoutKind as KnowledgeHybridPassage["layoutKind"])) {
+    return storedLayoutKind as KnowledgeHybridPassage["layoutKind"];
+  }
   if (documentContext) return documentContext.locator.kind;
   const marker = contextPrefix.split("\n", 1)[0];
   if (marker === "Evidence layout: table_ambiguous_v1") return "table_ambiguous";
@@ -178,6 +194,7 @@ const SOURCE_READ_PASSAGE_SELECT = {
   documentContext: true,
   headingPath: true,
   id: true,
+  layoutKind: true,
   ordinal: true,
   page: true,
   sectionId: true,
@@ -199,6 +216,7 @@ type SourceReadPassageRow = SourceReadAnchor & Readonly<{
   contentHash: string;
   contextPrefix: string;
   id: string;
+  layoutKind: string | null;
   sourceName: string;
   text: string;
 }>;
@@ -494,6 +512,7 @@ export function createPrismaKnowledgeRetrievalStore(
         headingPath: true,
         id: true,
         indexArtifactId: true,
+        layoutKind: true,
         ordinal: true,
         page: true,
         sectionId: true,
@@ -559,7 +578,7 @@ export function createPrismaKnowledgeRetrievalStore(
           headingPath: anchor.headingPath,
           knowledgeBaseId: binding.profileBinding.id,
           layoutKind: hit.field === "body"
-            ? passageLayoutKind(anchor.contextPrefix, documentContext)
+            ? passageLayoutKind(anchor.layoutKind, anchor.contextPrefix, documentContext)
             : "body",
           page: hit.page ?? anchor.page,
           sectionId: hit.sectionId ?? anchor.sectionId,
@@ -878,7 +897,7 @@ export function createPrismaKnowledgeRetrievalStore(
             fusedScore: 1 / (60 + rank),
             headingPath: row.headingPath,
             knowledgeBaseId: input.binding.knowledgeBaseId,
-            layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
+            layoutKind: passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext),
             page: row.page,
             sectionId: row.sectionId,
             sourceArtifactId: input.sourceArtifactId,
@@ -942,7 +961,7 @@ export function createPrismaKnowledgeRetrievalStore(
           fusedScore: 1 / (60 + rank),
           headingPath: row.headingPath,
           knowledgeBaseId: input.binding.knowledgeBaseId,
-          layoutKind: passageLayoutKind(row.contextPrefix, documentContext),
+          layoutKind: passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext),
           page: row.page,
           sectionId: row.sectionId,
           sourceArtifactId: input.sourceArtifactId,

@@ -3,10 +3,24 @@ import type { EmbeddingProviderFamily } from "../../domain/embeddingModels";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 
 export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
-export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 6;
+/**
+ * Version 7: language-neutral embedding document format (source title, heading
+ * path, atomic evidence text only — no English labels, no page prose) and
+ * model-profile token counting (model-native Qwen2 BPE for the built-in Qwen3
+ * embedding profile, generic Unicode estimator otherwise). Bumping this
+ * version changes embedding text, so existing ready artifacts are reindexed
+ * through the safe profile-revision shadow lifecycle; version 6 and older
+ * behavior stays byte-identical for their immutable revisions.
+ */
+export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 7;
 export const KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION = 3;
 export const KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION = 4;
 export const KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION = 5;
+/** Profiles counting chunk budgets in (estimated or model) tokens. */
+export const KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION = 6;
+/** Profiles emitting the language-neutral embedding format with the
+ * deployment-resolved model token counter. */
+export const KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION = 7;
 
 export type KnowledgeIndexDimension = (typeof KNOWLEDGE_INDEX_DIMENSIONS)[number];
 
