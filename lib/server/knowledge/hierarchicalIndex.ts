@@ -142,10 +142,18 @@ function stableId(prefix: string, ...values: readonly string[]): string {
   return `${prefix}_${sha256(...values).slice(0, 40)}`;
 }
 
+/**
+ * Language-neutral Unicode hygiene: invisible format characters (zero-width
+ * spaces/joiners, bidi controls, BOM, soft hyphen — \p{Cf}) are removed so
+ * hidden controls cannot split or shadow an exact value, and every control
+ * character (\p{Cc}, including C1) becomes ordinary whitespace. Data-type
+ * validation only — never a natural-language assumption.
+ */
 function compactText(value: string, maximum = Number.MAX_SAFE_INTEGER): string {
   return value
     .normalize("NFKC")
-    .replace(/[\u0000-\u001f\u007f]/gu, " ")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\p{Cc}/gu, " ")
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, maximum);

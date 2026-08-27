@@ -11,6 +11,17 @@ export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
  * version changes embedding text, so existing ready artifacts are reindexed
  * through the safe profile-revision shadow lifecycle; version 6 and older
  * behavior stays byte-identical for their immutable revisions.
+ *
+ * Tokenizer identity joins the index-profile identity through this version
+ * plus the vector-space fingerprint: the pair (chunking profile version,
+ * upstream embedding model id hashed into the fingerprint below) selects
+ * exactly one token counter, and the model-native counter's pinned asset is
+ * sha256-verified at load (`tokenizer/qwen2BpeTokenizer.ts`), failing the
+ * generation before activation when unverifiable. Any change to a tokenizer
+ * algorithm, selection rule, or vendored asset therefore REQUIRES bumping
+ * this version so accepted generations and receipts stay replayable. The
+ * resolved identity label (name:version[:asset fingerprint]) is additionally
+ * recorded in retrieval evidence next to the vector-space fingerprint.
  */
 export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 7;
 export const KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION = 3;
