@@ -1,4 +1,4 @@
--- Knowledge generic language-neutral lexical retrieval (PRD FR-9).
+-- Knowledge language-neutral generic lexical retrieval (PRD FR-9).
 --
 -- Removes the per-language English/Russian FTS architecture from the active
 -- Knowledge hierarchical index tables: the generated per-language tsvector
