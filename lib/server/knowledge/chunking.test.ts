@@ -353,6 +353,48 @@ describe("Knowledge chunk profiles", () => {
     });
   });
 
+  it.each(["Көрсеткіш", "Показник", "Показатељ"])(
+    "detects the typed dated-series shape without a ru/en label vocabulary: %s",
+    (label) => {
+      const rows = [
+        [label, "2024", "Q1 2025"],
+        ["Revenue", "100", "25"]
+      ];
+      const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+        column,
+        columnSpan: 1,
+        row: rowIndex,
+        rowSpan: 1,
+        text
+      })));
+      const chunks = chunkKnowledgeDocument({
+        document: document([block(0, rows.map((row) => row.join("\t")).join("\n"), {
+          isTable: true,
+          table: { cells, columnCount: 3, rowCount: 2 },
+          type: "table"
+        })]),
+        maxChunks: 10,
+        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+        tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+      });
+
+      expect(chunks[0]?.documentContext?.locator).toMatchObject({
+        kind: "table_row",
+        rowIndex: 0,
+        rowKind: "header"
+      });
+      expect(chunks[1]?.documentContext?.locator).toMatchObject({
+        headerLineage: expect.arrayContaining([
+          expect.objectContaining({ columnStart: 1, text: "2024" }),
+          expect.objectContaining({ columnStart: 2, text: "Q1 2025" })
+        ]),
+        kind: "table_row",
+        rowIndex: 1,
+        rowKind: "data"
+      });
+    }
+  );
+
   it("does not promote an ordinary data row containing a year to table header", () => {
     const rows = [
       ["Invoice", "2024", "100"],

@@ -299,7 +299,9 @@ describe("executor delivery of child-to-parent expansion", () => {
             "Previous same-Source context:\nBefore.",
             "Next same-Source context:\nAfter."
           ].join("\n\n"),
-          expansion: { passageCount: 2, state: "expanded", tokens: 4 },
+          // Tokens cover the exact rendered expansion, including the two
+          // provider-visible labels and their separators.
+          expansion: { passageCount: 2, state: "expanded", tokens: 16 },
           handle: "K1",
           includedText: "Atomic answer text."
         })]

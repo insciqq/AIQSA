@@ -146,6 +146,7 @@ describe("OpenRouter reranker adapter", () => {
 
     expect(result.scores).toEqual([
       { handle: "c2", index: 2, relevanceScore: 0.88 },
+      { handle: "c1", index: 1, relevanceScore: 4 },
       { handle: "c0", index: 0, relevanceScore: 0.35 }
     ]);
   });
@@ -296,7 +297,7 @@ describe("OpenRouter reranker adapter", () => {
       [{ index: 0, relevance_score: 0.9 }, { index: 0, relevance_score: 0.1 }],
       [{ index: 0, relevance_score: 0.9 }, { index: 7, relevance_score: 0.5 }],
       [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: Number.NaN }],
-      [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: 1.5 }],
+      [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: Infinity }],
       [{ index: 0, relevance_score: 0.9 }, { relevance_score: 0.5 }],
       [
         { index: 0, relevance_score: 0.9 },
@@ -308,6 +309,23 @@ describe("OpenRouter reranker adapter", () => {
       await expect(strictAdapter(fetchFn).rerank({ documents, query: "query" }))
         .rejects.toMatchObject({ code: "rerank_response_invalid" });
     }
+  });
+
+  it("accepts any finite provider relevance score without inventing a range", async () => {
+    const documents = [
+      { handle: "c0", text: "first" },
+      { handle: "c1", text: "second" }
+    ];
+    const result = await strictAdapter(vi.fn<typeof fetch>(async () => response({
+      results: [
+        { index: 0, relevance_score: -2.5 },
+        { index: 1, relevance_score: 4.25 }
+      ]
+    }))).rerank({ documents, query: "query" });
+    expect(result.scores).toEqual([
+      { handle: "c0", index: 0, relevanceScore: -2.5 },
+      { handle: "c1", index: 1, relevanceScore: 4.25 }
+    ]);
   });
 
   it("still accepts a full valid response and a genuine partial subset in strict mode", async () => {

@@ -61,6 +61,14 @@ export class KnowledgeTokenizerError extends Error {
   }
 }
 
+/** A byte-level BPE can never emit more content tokens than UTF-8 input
+ * bytes. This conservative bound is used only if the verified asset is
+ * unavailable at query time, so rerank/parent limits remain hard limits
+ * rather than relying on the generic estimator's non-guaranteed ratio. */
+export function conservativeQwen2TokenUpperBound(text: string): number {
+  return text ? Buffer.byteLength(text.normalize("NFC"), "utf8") : 0;
+}
+
 const PRETOKEN_PATTERN = new RegExp(
   "'(?:[sſS]|[tT]|[rR][eE]|[vV][eE]|[mM]|[lL][lL]|[dD])" +
   "|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+" +

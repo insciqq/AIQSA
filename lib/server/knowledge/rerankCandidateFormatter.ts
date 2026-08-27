@@ -1,6 +1,8 @@
-import { approximateKnowledgeTokenCount } from "./chunking";
 import { MAX_RERANK_DOCUMENT_CHARACTERS } from "../providers/rerank";
-import { qwen2BpeTokenCounter } from "./tokenizer/qwen2BpeTokenizer";
+import {
+  conservativeQwen2TokenUpperBound,
+  qwen2BpeTokenCounter
+} from "./tokenizer/qwen2BpeTokenizer";
 
 /**
  * Versioned deterministic language-neutral candidate formatter for hosted
@@ -16,11 +18,11 @@ import { qwen2BpeTokenCounter } from "./tokenizer/qwen2BpeTokenizer";
  * Version 2 (FR-13) counts the token budget with the model-native Qwen2
  * byte-level BPE tokenizer of the built-in Qwen3 reranker family. If the
  * pinned tokenizer asset cannot be verified at query time, the formatter
- * falls back to the generic Unicode estimator, which only over-counts and
- * therefore only truncates more aggressively — retrieval never hard-fails on
- * a formatting-side tokenizer problem (indexing has its own fail-closed
- * path). The provider transport character bound remains an independent
- * defensive guard.
+ * falls back to the UTF-8 byte upper bound of byte-level BPE, so the limit
+ * remains conservative even if the asset is unavailable — retrieval never
+ * hard-fails on a formatting-side tokenizer problem (indexing has its own
+ * fail-closed path). The provider transport character bound remains an
+ * independent defensive guard.
  */
 export const KNOWLEDGE_RERANK_CANDIDATE_FORMATTER_VERSION = 2 as const;
 export const KNOWLEDGE_RERANK_CANDIDATE_MAX_TOKENS = 768 as const;
@@ -43,7 +45,7 @@ function budgetTokenCount(): TokenCount {
     const counter = qwen2BpeTokenCounter();
     return (text) => counter.countTokens(text);
   } catch {
-    return approximateKnowledgeTokenCount;
+    return conservativeQwen2TokenUpperBound;
   }
 }
 
@@ -137,6 +139,15 @@ export function formatKnowledgeRerankCandidate(
     const last = sliced.charCodeAt(sliced.length - 1);
     if (last >= 0xd800 && last <= 0xdbff) sliced = sliced.slice(0, -1);
     formatted = sliced.trimEnd();
+  }
+  if (count(formatted) > KNOWLEDGE_RERANK_CANDIDATE_MAX_TOKENS) {
+    // A character-prefix cut can alter the last BPE merge. Re-assert the
+    // model-token bound after the independent transport cut.
+    formatted = trimToTokenBudget(
+      count,
+      formatted,
+      KNOWLEDGE_RERANK_CANDIDATE_MAX_TOKENS
+    );
   }
   return formatted.length > 0 ? formatted : "-";
 }

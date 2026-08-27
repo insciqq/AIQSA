@@ -114,9 +114,6 @@ describe("Knowledge reranker binding evidence V2", () => {
       relevanceScores: [0.91, 0.4, Number.NaN]
     }))).toBeNull();
     expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence({
-      relevanceScores: [0.91, 0.4, 1.5]
-    }))).toBeNull();
-    expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence({
       outputOrder: ["chunk-b", "chunk-b", "chunk-c"]
     }))).toBeNull();
     expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence({
@@ -128,6 +125,11 @@ describe("Knowledge reranker binding evidence V2", () => {
     expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence({
       relevanceScores: [0.91, 0.4]
     }))).toBeNull();
+  });
+
+  it("round-trips finite scores outside a guessed probability range", () => {
+    const evidence = completeEvidence({ relevanceScores: [4.5, -1.25, 0] });
+    expect(decodeKnowledgeRerankerBindingEvidenceV2(evidence)).toEqual(evidence);
   });
 
   it("rejects status combinations that misstate what happened", () => {

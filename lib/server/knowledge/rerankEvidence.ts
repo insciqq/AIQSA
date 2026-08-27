@@ -145,7 +145,7 @@ export function decodeKnowledgeRerankerBindingEvidenceV2(
     !Array.isArray(value.relevanceScores) ||
     value.relevanceScores.length !== value.outputOrder.length ||
     value.relevanceScores.some((entry) => entry !== null && (
-      typeof entry !== "number" || !Number.isFinite(entry) || entry < 0 || entry > 1
+      typeof entry !== "number" || !Number.isFinite(entry)
     ))
   ) return null;
   const orderedIds = value.orderedCandidateChunkIds as string[];
@@ -186,8 +186,7 @@ export function decodeKnowledgeRerankerBindingEvidenceV2(
       // (zero or one candidate) records no provider scores.
       if (scored !== relevanceScores.length &&
         !(scored === 0 && value.inputCandidateCount <= 1)) return null;
-    } else if (scored < 1 || scored >= relevanceScores.length ||
-      value.inputCandidateCount < 2) return null;
+    } else if (scored >= relevanceScores.length || value.inputCandidateCount < 2) return null;
   }
   return Object.freeze({
     adapterVersion: value.adapterVersion as string | null,

@@ -1607,8 +1607,15 @@ export async function executeKnowledgeRetrievalCore(
       candidates: primaryPool,
       maximum: poolMaximum
     }));
+    // With zero or one unique passage there is nothing to rank. Because no
+    // learned relevance signal will be produced, keep today's deterministic
+    // relevance floors instead of letting a weak singleton bypass the
+    // existing no-relevant-evidence behavior merely because a role exists.
+    const executionPool = pool.length <= 1
+      ? Object.freeze(fuseKnowledgeCandidates(eligibleKnowledgeCandidates(pool)))
+      : pool;
     const stage = await input.rerank.executor({
-      candidates: pool.map((candidate) => ({
+      candidates: executionPool.map((candidate) => ({
         chunkId: candidate.chunkId,
         headingPath: candidate.headingPath,
         sourceName: candidate.sourceName,
@@ -1617,7 +1624,15 @@ export async function executeKnowledgeRetrievalCore(
       ...(input.rerank.signal ? { signal: input.rerank.signal } : {})
     });
     rerankerBinding = stage.evidence;
-    if (stage.status === "degraded") {
+    if (executionPool.length <= 1) {
+      const ranking = await rankKnowledgeCandidates({
+        candidates: executionPool,
+        resultLimit: input.resultLimit
+      });
+      candidates = executionPool;
+      rankingEvidence = ranking.evidence;
+      selected = ranking.selected;
+    } else if (stage.status === "degraded") {
       // Deterministic weighted RRF fallback: no retrieval or embedding is
       // repeated, today's named relevance floors apply, and exact candidates
       // stay eligible by definition.

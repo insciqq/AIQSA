@@ -169,9 +169,26 @@ describe("parent context expansion assembly", () => {
       windows: new Map([["chunk-10", rows]])
     });
     const expansion = expansions.get("chunk-10")!;
-    const total = expansion.units.reduce((sum, entry) => sum + entry.tokens, 0);
+    const total = countTokens(renderKnowledgeParentExpansionUnits(expansion.units));
     expect(expansion.units).toHaveLength(2);
     expect(total).toBeLessThanOrEqual(KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS);
+  });
+
+  it("includes provider-visible labels and separators in the group token cap", () => {
+    const hit = primary({ chunkId: "chunk-10", chunkIndex: 10 });
+    const expansions = assembleKnowledgeParentExpansions({
+      countTokens: (text) => text.length,
+      excludedContentHashes: new Set(),
+      maxTokensPerGroup: 10,
+      primaries: [hit],
+      windows: new Map([["chunk-10", [
+        windowRow({ id: "chunk-10", ordinal: 10 }),
+        windowRow({ id: "chunk-11", ordinal: 11, text: "short" })
+      ]]])
+    });
+
+    // The raw passage fits (5 <= 10), but its rendered label does not.
+    expect(expansions.get("chunk-10")!.units).toEqual([]);
   });
 
   it("also caps oversized pre-existing context and drops trailing whole units", () => {
@@ -179,8 +196,21 @@ describe("parent context expansion assembly", () => {
       chunkId: "chunk-10",
       chunkIndex: 10,
       legacyUnits: [
-        unit({ chunkId: "legacy-1", chunkIndex: 9, rank: 0, tokens: 500 }),
-        unit({ chunkId: "legacy-2", chunkIndex: 11, position: "next", rank: 1, tokens: 500 })
+        unit({
+          chunkId: "legacy-1",
+          chunkIndex: 9,
+          rank: 0,
+          text: "x".repeat(2_000),
+          tokens: 500
+        }),
+        unit({
+          chunkId: "legacy-2",
+          chunkIndex: 11,
+          position: "next",
+          rank: 1,
+          text: "y".repeat(2_000),
+          tokens: 500
+        })
       ],
       sectionId: null
     });

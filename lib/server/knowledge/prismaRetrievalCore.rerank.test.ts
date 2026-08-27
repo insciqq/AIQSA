@@ -353,4 +353,29 @@ describe("Prisma retrieval core hosted rerank stage", () => {
       status: "complete"
     });
   });
+
+  it("keeps deterministic relevance floors when a weak singleton skips reranking", async () => {
+    const rerank = vi.fn();
+    const executor = createKnowledgeRerankStage({
+      adapter: Object.freeze({ rerank }),
+      pin,
+      query: "договор аренды"
+    });
+    const result = await execute(
+      mockClient([scope(0, "Base A", "base-a")], [row({
+        chunkId: "chunk-weak",
+        lane: "passage_semantic",
+        rawScore: 0.1,
+        vectorDistance: 0.9
+      })]),
+      { rerank: { executor } }
+    );
+    expect(rerank).not.toHaveBeenCalled();
+    expect(result.candidateCount).toBe(0);
+    expect(result.passages).toEqual([]);
+    expect(result.rerankerBinding).toMatchObject({
+      inputCandidateCount: 0,
+      status: "complete"
+    });
+  });
 });

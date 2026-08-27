@@ -216,7 +216,7 @@ function responseBody(
     const index = Number(entry.index);
     const score = entry.relevance_score;
     if (index < 0 || index >= documents.length || seen.has(index) ||
-      typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
+      typeof score !== "number" || !Number.isFinite(score)) {
       if (strict) throw new RerankAdapterError("rerank_response_invalid");
       continue;
     }

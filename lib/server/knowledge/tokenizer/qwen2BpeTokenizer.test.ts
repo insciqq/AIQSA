@@ -7,6 +7,7 @@ import {
   requireKnowledgeTokenCounter
 } from "./knowledgeTokenCounter";
 import {
+  conservativeQwen2TokenUpperBound,
   createQwen2BpeTokenCounterFromAsset,
   KNOWLEDGE_QWEN2_BPE_ASSET_SHA256,
   KNOWLEDGE_QWEN2_BPE_IDENTITY,
@@ -75,6 +76,15 @@ describe("Qwen2 byte-level BPE token counter", () => {
     expect(KNOWLEDGE_QWEN2_BPE_IDENTITY.assetSha256)
       .toBe(KNOWLEDGE_QWEN2_BPE_ASSET_SHA256);
     expect(KNOWLEDGE_QWEN2_BPE_ASSET_SHA256).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it("provides a conservative byte-level fallback bound", () => {
+    const counter = qwen2BpeTokenCounter();
+    for (const [text] of REFERENCE_COUNTS) {
+      expect(conservativeQwen2TokenUpperBound(text))
+        .toBeGreaterThanOrEqual(counter.countTokens(text));
+    }
+    expect(conservativeQwen2TokenUpperBound("")).toBe(0);
   });
 
   it("fails closed when the asset fingerprint does not match", () => {

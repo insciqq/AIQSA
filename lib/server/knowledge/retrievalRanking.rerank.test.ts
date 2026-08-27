@@ -137,6 +137,31 @@ describe("Pre-rerank pool selection", () => {
     expect(pool.map((entry) => entry.chunkId).sort()).toEqual(["chunk-a", "chunk-c"]);
   });
 
+  it("keeps an exact-bearing representative when duplicate content has stronger dense evidence", () => {
+    const contentHash = "same".repeat(16);
+    const pool = selectKnowledgePreRerankPool({
+      bindingOrdinals: [0],
+      candidates: [
+        candidate({
+          chunkId: "dense-duplicate",
+          contentHash,
+          signals: [
+            signal("passage_lexical", 1),
+            signal("passage_semantic", 1, { rawScore: 0.99, vectorDistance: 0.01 }),
+            signal("metadata", 1)
+          ]
+        }),
+        candidate({
+          chunkId: "exact-duplicate",
+          contentHash,
+          signals: [signal("exact", 500, { rawScore: 0.001 })]
+        })
+      ],
+      maximum: 96
+    });
+    expect(pool.map((entry) => entry.chunkId)).toEqual(["exact-duplicate"]);
+  });
+
   it("returns the weighted RRF pre-order", () => {
     const first = candidate({ chunkId: "chunk-1", signals: [signal("exact", 1)] });
     const second = candidate({ chunkId: "chunk-2", signals: [signal("passage_lexical", 1)] });

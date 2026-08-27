@@ -135,7 +135,8 @@ export type KnowledgeParentExpansionUnit = Readonly<{
   /** Relevance order inside one primary's group; higher ranks trim first. */
   rank: number;
   text: string;
-  /** Model tokens counted with the profile tokenizer (estimator fallback). */
+  /** Tokens in this unit's text alone. The group cap is checked against the
+   * complete rendered expansion, including labels and separators. */
   tokens: number;
 }>;
 
