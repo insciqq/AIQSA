@@ -1,7 +1,4 @@
-import type {
-  KnowledgeExactEntryKind,
-  KnowledgeLexicalLanguage
-} from "./hierarchicalIndex";
+import type { KnowledgeExactEntryKind } from "./hierarchicalIndex";
 import type {
   KnowledgeExactSearchField,
   KnowledgeSourceDiscoveryField
@@ -48,12 +45,10 @@ export type KnowledgeLexicalMatchedField =
 export type KnowledgeLexicalIndexHit = Readonly<{
   indexArtifactId: string;
   label: string;
-  languageConfig: KnowledgeLexicalLanguage;
   level: KnowledgeLexicalTargetLevel;
   matchedFields: readonly KnowledgeLexicalMatchedField[];
   page: number | null;
   pageEnd: number | null;
-  queryVariant: "english" | "russian" | "simple";
   rank: number;
   sourceArtifactId: string;
   targetId: string;

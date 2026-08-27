@@ -50,6 +50,12 @@ import type {
   KnowledgeRerankerBindingEvidence,
   KnowledgeRetrievalLane
 } from "./retrievalRanking";
+import {
+  decodeKnowledgeRerankerBindingEvidenceV2,
+  KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
+  type KnowledgeRerankerBindingEvidenceV2
+} from "./rerankEvidence";
+import { decodeKnowledgeParentExpansionEvidence } from "./parentContextExpansion";
 
 function persistedContentMarker(version: KnowledgeResultVersion) {
   return Object.freeze({
@@ -166,6 +172,9 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
   const knowledgeBaseId = boundedString(value.knowledgeBaseId, 512);
   const ordinal = nonNegativeInteger(value.ordinal);
   const vectorSpaceFingerprint = boundedString(value.vectorSpaceFingerprint, 64);
+  const tokenizerProfile = value.tokenizerProfile === undefined
+    ? undefined
+    : boundedString(value.tokenizerProfile, 128);
   const vectorSearch = value.vectorSearch === undefined
     ? undefined
     : decodeVectorSearch(value.vectorSearch) ?? null;
@@ -176,6 +185,7 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
     (value.state !== "empty" && value.state !== "indexing" && value.state !== "ready") ||
     (value.targetDimension !== 1024 && value.targetDimension !== 1536) ||
     !vectorSpaceFingerprint || !/^[0-9a-f]{64}$/u.test(vectorSpaceFingerprint) ||
+    tokenizerProfile === null ||
     vectorSearch === null ||
     vectorSearch !== undefined && (
       vectorSearch.bindingOrdinal !== ordinal || vectorSearch.targetDimension !== value.targetDimension
@@ -191,6 +201,7 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
     ordinal,
     state: value.state,
     targetDimension: value.targetDimension,
+    ...(tokenizerProfile ? { tokenizerProfile } : {}),
     ...(vectorSearch ? { vectorSearch } : {}),
     vectorSpaceFingerprint
   };
@@ -287,6 +298,9 @@ function decodePassage(
   const expandedContext = value.expandedContext === undefined
     ? undefined
     : boundedString(value.expandedContext, 64 * 1024, true);
+  const expansion = value.expansion === undefined
+    ? undefined
+    : decodeKnowledgeParentExpansionEvidence(value.expansion);
   const fileName = boundedString(value.fileName, 1_024);
   const ftsRank = nullablePositiveRank(value.ftsRank);
   const ftsScore = nullableFiniteNumber(value.ftsScore);
@@ -359,7 +373,7 @@ function decodePassage(
     !chunkId || chunkIndex === null || !documentId || !documentVersionId ||
     documentContext === null && value.documentContext !== null ||
     (documentVersionNumber === null || documentVersionNumber < 1) || !fileName ||
-    expandedContext === null ||
+    expandedContext === null || expansion === null ||
     ftsRank === undefined || ftsScore === undefined || fusedScore === null || fusedScore < 0 ||
     !handle || !decodeKnowledgeCitationHandle(handle) ||
     includedText === null ||
@@ -380,7 +394,9 @@ function decodePassage(
     structuredAnalysis !== undefined && visualAnalysis !== undefined ||
     (version === KNOWLEDGE_RESULT_VERSION && (
       !sourceAlias || !sourceArtifactId || !sourceName ||
-      confidence !== undefined || rerankScore !== undefined
+      confidence !== undefined ||
+      rerankScore !== undefined && rerankScore !== null &&
+        (rerankScore < 0 || rerankScore > 1)
     )) ||
     (!advanced && Math.abs(fusedScore - expectedFusedScore) > 1e-12) ||
     (advanced && (
@@ -409,6 +425,7 @@ function decodePassage(
     documentVersionId,
     documentVersionNumber,
     ...(expandedContext !== undefined ? { expandedContext } : {}),
+    ...(expansion !== undefined ? { expansion } : {}),
     fileName,
     ftsRank,
     ftsScore,
@@ -1132,7 +1149,16 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     : null;
   const rerankerBinding = value.rerankerBinding === undefined
     ? undefined
-    : value.rerankerBinding === null ? null : decodeRerankerBinding(value.rerankerBinding);
+    : value.rerankerBinding === null
+      ? null
+      : isRecord(value.rerankerBinding) &&
+          value.rerankerBinding.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
+        ? decodeKnowledgeRerankerBindingEvidenceV2(value.rerankerBinding)
+        : decodeRerankerBinding(value.rerankerBinding);
+  const rerankerBindingV2: KnowledgeRerankerBindingEvidenceV2 | null =
+    rerankerBinding && rerankerBinding.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
+      ? rerankerBinding
+      : null;
   const preRerankOrder = value.preRerankOrder === undefined
     ? undefined
     : value.preRerankOrder === null ? null : decodeCandidateOrder(value.preRerankOrder);
@@ -1140,8 +1166,8 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     ? undefined
     : value.postRerankOrder === null ? null : decodeCandidateOrder(value.postRerankOrder);
   const legacyRankingFields = value.threshold !== undefined ||
-    value.rerankerBinding !== undefined || value.preRerankOrder !== undefined ||
-    value.postRerankOrder !== undefined;
+    value.preRerankOrder !== undefined || value.postRerankOrder !== undefined ||
+    value.rerankerBinding !== undefined && !rerankerBindingV2;
   const completeLegacyRankingFields = value.threshold !== undefined &&
     value.rerankerBinding !== undefined && value.preRerankOrder !== undefined &&
     value.postRerankOrder !== undefined;
@@ -1172,7 +1198,9 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (value.postRerankOrder !== undefined && value.postRerankOrder !== null &&
       postRerankOrder === null) ||
     (version === KNOWLEDGE_RESULT_VERSION && legacyRankingFields) ||
-    (version === KNOWLEDGE_LEGACY_RESULT_VERSION && !completeLegacyRankingFields) ||
+    (version === KNOWLEDGE_RESULT_VERSION && value.rerankerBinding === null) ||
+    (version === KNOWLEDGE_LEGACY_RESULT_VERSION &&
+      (!completeLegacyRankingFields || rerankerBindingV2 !== null)) ||
     (fusion === "none" && (
       rerankerBinding != null || preRerankOrder != null || postRerankOrder != null
     )) ||
@@ -1355,6 +1383,17 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (version === KNOWLEDGE_RESULT_VERSION &&
       (operation === "read_source") !== (read !== undefined)) ||
     invalidV2SourceBindings ||
+    (version === KNOWLEDGE_RESULT_VERSION && rerankerBindingV2 !== null && (
+      (operation ?? "automatic_search") !== "automatic_search" ||
+      (rerankerBindingV2.status === "complete" || rerankerBindingV2.status === "partial"
+        ? decodedResults.some((result) => result.rerankScore === undefined) ||
+          rerankerBindingV2.status === "complete" &&
+            rerankerBindingV2.relevanceScores.some((score) => score !== null) &&
+            decodedResults.some((result) => result.rerankScore == null)
+        : decodedResults.some((result) => result.rerankScore !== undefined))
+    )) ||
+    (version === KNOWLEDGE_RESULT_VERSION && rerankerBindingV2 === null &&
+      decodedResults.some((result) => result.rerankScore !== undefined)) ||
     candidateCount < decodedResults.length ||
     (!embeddingForbidden && retrievalCompleted && !embeddingDegraded && (
       decodedEmbeddings.some((entry) => entry.status !== "complete") ||

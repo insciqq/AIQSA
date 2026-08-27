@@ -5,6 +5,7 @@ import type {
   KnowledgeRankingEvidence,
   KnowledgeRerankerBindingEvidence
 } from "./retrievalRanking";
+import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import type {
   KnowledgeBudgetEvidence,
   LegacyKnowledgeBudgetEvidence,
@@ -40,6 +41,12 @@ export const KNOWLEDGE_RESULT_VERSIONS = Object.freeze([
   KNOWLEDGE_RESULT_VERSION
 ] as const);
 export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 3_000;
+/**
+ * Legacy ranking-profile-v1 per-lane candidate limit. Retained only for
+ * historical focused-receipt decoding and the read-only Admin retrieval
+ * projection; new operations use `KNOWLEDGE_LANE_CANDIDATE_LIMIT` from the
+ * versioned ranking profile in `retrievalRanking.ts`.
+ */
 export const KNOWLEDGE_CANDIDATE_LIMIT = 40;
 /** Broad map-stage recall. Source-scoped reduce calls intentionally stay
  * smaller so later rounds trade breadth for row-level precision. */
@@ -102,6 +109,64 @@ export type KnowledgePassageLayoutKind =
   | "table_row"
   | "table_row_projection";
 
+/**
+ * One same-Source context segment attached to a selected primary passage
+ * (FR-14 child-to-parent expansion). Units exist only in memory between the
+ * retrieval core and provider-text assembly: the persisted receipt keeps the
+ * rendered `expandedContext` text plus the content-free
+ * `KnowledgeParentExpansionEvidence` summary, exactly like the pre-existing
+ * neighbor context persisted before this stage existed.
+ */
+export type KnowledgeParentExpansionUnit = Readonly<{
+  chunkId: string;
+  chunkIndex: number;
+  contentHash: string;
+  /** Exact provider-visible segment label for non-section origins. */
+  label: string;
+  /**
+   * "section": same-Source context merged into the single previous/next
+   * same-Source block (section-window text, field-group neighbors, and
+   * same-row projection neighbors all carry this provider-visible label
+   * today); "table": complete nearby row from the same table; "independent":
+   * independently matched same-Source segment.
+   */
+  origin: "independent" | "section" | "table";
+  position: "next" | "previous";
+  /** Relevance order inside one primary's group; higher ranks trim first. */
+  rank: number;
+  text: string;
+  /** Tokens in this unit's text alone. The group cap is checked against the
+   * complete rendered expansion, including labels and separators. */
+  tokens: number;
+}>;
+
+/** In-memory expansion attached to one selected primary passage. */
+export type KnowledgeParentExpansion = Readonly<{
+  /** Content-free classification code, present only when degraded. */
+  reason?: string;
+  /**
+   * "expanded": the canonical-section window was consulted; "legacy": the
+   * passage has no canonical section (legacy generation) so only the
+   * candidate-pool neighbor mechanics apply; "degraded": window loading or
+   * assembly failed and the atomic evidence plus candidate-pool fallback was
+   * kept (PRD §18: parent expansion failure never loses the answer).
+   */
+  state: "degraded" | "expanded" | "legacy";
+  units: readonly KnowledgeParentExpansionUnit[];
+}>;
+
+/**
+ * Content-free structural facts persisted with each receipt result: how many
+ * expanded passages and model tokens shipped, and why expansion degraded.
+ * Never contains text.
+ */
+export type KnowledgeParentExpansionEvidence = Readonly<{
+  passageCount: number;
+  reason?: string;
+  state: KnowledgeParentExpansion["state"];
+  tokens: number;
+}>;
+
 export type KnowledgeAcceptedBinding = Readonly<{
   baseContentRevision: number;
   baseName: string;
@@ -148,6 +213,9 @@ export type KnowledgeBaseRetrievalEvidence = Readonly<{
   ordinal: number;
   state: "empty" | "indexing" | "ready";
   targetDimension: 1024 | 1536;
+  /** Content-free tokenizer identity (name:version[:asset fingerprint])
+   * derived from the pinned embedding profile; absent on older receipts. */
+  tokenizerProfile?: string;
   vectorSearch?: KnowledgeVectorSearchEvidence;
   vectorSpaceFingerprint: string;
 }>;
@@ -177,6 +245,8 @@ export type KnowledgeHybridPassage = Readonly<{
   documentVersionNumber: number;
   documentContext?: KnowledgeDocumentContextV1 | null;
   expandedContext?: string;
+  /** In-memory FR-14 expansion; never persisted with unit text. */
+  expansion?: KnowledgeParentExpansion;
   fileName: string;
   ftsRank: number | null;
   ftsScore: number | null;
@@ -199,14 +269,17 @@ export type KnowledgeHybridPassage = Readonly<{
   visualAnalysis?: KnowledgeVisualAnalysisResult;
 }>;
 
-export type KnowledgeRetrievedPassageEvidence = Omit<KnowledgeHybridPassage, "text"> & Readonly<{
-  handle: string;
-  includedText: string;
-  includedTextBytes: number;
-  sourceAlias?: string;
-  sourceTextBytes: number;
-  textTruncated: boolean;
-}>;
+export type KnowledgeRetrievedPassageEvidence =
+  Omit<KnowledgeHybridPassage, "expansion" | "text"> & Readonly<{
+    /** Content-free FR-14 expansion facts for the receipt; never unit text. */
+    expansion?: KnowledgeParentExpansionEvidence;
+    handle: string;
+    includedText: string;
+    includedTextBytes: number;
+    sourceAlias?: string;
+    sourceTextBytes: number;
+    textTruncated: boolean;
+  }>;
 
 /**
  * Current result passages always carry an immutable Source/Version identity
@@ -289,8 +362,15 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   providerText: string;
   query: string;
   read?: KnowledgeReadReceipt;
-  /** Non-null only when decoding an immutable legacy receipt. */
-  rerankerBinding?: null | KnowledgeRerankerBindingEvidence;
+  /**
+   * Version 1 shapes are decode-only compatibility for immutable legacy
+   * receipts. New automatic-search operations record the content-free hosted
+   * reranker execution evidence as `KnowledgeRerankerBindingEvidenceV2`.
+   */
+  rerankerBinding?:
+    | null
+    | KnowledgeRerankerBindingEvidence
+    | KnowledgeRerankerBindingEvidenceV2;
   resultLimit: number;
   results: readonly KnowledgeRetrievedPassageEvidence[];
   scopeAliases?: readonly KnowledgeEvidenceScopeAlias[];
@@ -318,6 +398,8 @@ export type KnowledgeHybridSearchResult = Readonly<{
   canonicalSourceProvenance?: readonly KnowledgeCanonicalSourceProvenance[];
   passages: readonly KnowledgeHybridPassage[];
   rankingEvidence?: KnowledgeRankingEvidence;
+  /** Present exactly when a hosted rerank stage ran for this operation. */
+  rerankerBinding?: KnowledgeRerankerBindingEvidenceV2;
   vectorSearchEvidence?: readonly KnowledgeVectorSearchEvidence[];
 }>;
 
