@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
+import { KnowledgeParentContextError } from "./parentContextExpansion";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { createPrismaKnowledgeParentContextLoader } from "./prismaRetrievalRepository";
 
 const fingerprint = "f".repeat(64);
+
+function basisVector(axis: number): number[] {
+  return Array.from({ length: 1_024 }, (_, index) => index === axis ? 1 : 0);
+}
 
 type Fixture = Readonly<{
   artifactId: string;
@@ -47,6 +52,10 @@ async function createFixture(): Promise<Fixture> {
   const passageIds = [
     ...PASSAGE_TEXTS.map((_, ordinal) => `knowledge-parent-passage-${ordinal}-${suffix}`),
     `knowledge-parent-passage-other-${suffix}`
+  ];
+  const embeddingTextHashes = [
+    ...PASSAGE_TEXTS.map((_, ordinal) => String(ordinal + 1).repeat(64)),
+    "a".repeat(64)
   ];
 
   await prisma.user.create({
@@ -227,7 +236,7 @@ async function createFixture(): Promise<Fixture> {
     data: [
       ...PASSAGE_TEXTS.map((text, ordinal) => ({
         contentHash: String(ordinal).repeat(64),
-        embeddingTextHash: String(ordinal + 1).repeat(64),
+        embeddingTextHash: embeddingTextHashes[ordinal]!,
         fileName: "parent-expansion.bin",
         id: passageIds[ordinal]!,
         indexArtifactId: hierarchyId,
@@ -245,7 +254,7 @@ async function createFixture(): Promise<Fixture> {
       })),
       {
         contentHash: "9".repeat(64),
-        embeddingTextHash: "a".repeat(64),
+        embeddingTextHash: embeddingTextHashes[PASSAGE_TEXTS.length]!,
         fileName: "parent-expansion.bin",
         id: passageIds[PASSAGE_TEXTS.length]!,
         indexArtifactId: hierarchyId,
@@ -263,11 +272,35 @@ async function createFixture(): Promise<Fixture> {
       }
     ]
   });
+  await prisma.knowledgeArtifactExactEntry.create({
+    data: {
+      id: `knowledge-parent-exact-${suffix}`,
+      indexArtifactId: hierarchyId,
+      kind: "heading",
+      normalizedValue: "primary section",
+      ordinal: 0,
+      page: 1,
+      pageEnd: 1,
+      sectionId,
+      value: "Primary section",
+      valueHash: "7".repeat(64)
+    }
+  });
+  const vector = `[${basisVector(0).join(",")}]`;
+  for (const [ordinal, passageId] of passageIds.entries()) {
+    await prisma.$executeRaw`
+      INSERT INTO "KnowledgeArtifactPassageEmbedding" (
+        "passageId", "indexArtifactId", "embeddingTextHash", "embeddingDimension", "embedding"
+      ) VALUES (
+        ${passageId}, ${hierarchyId}, ${embeddingTextHashes[ordinal]!}, 1024, ${vector}::vector
+      )
+    `;
+  }
   await prisma.knowledgeHierarchicalIndexArtifact.update({
     data: {
       checksum: "b".repeat(64),
       documentCount: 1,
-      exactEntryCount: 0,
+      exactEntryCount: 1,
       passageCount: passageIds.length,
       readyAt: now,
       sectionCount: 2,
@@ -277,7 +310,7 @@ async function createFixture(): Promise<Fixture> {
   });
   await prisma.knowledgeSourceIndexArtifact.update({
     data: {
-      embeddedPassageCount: 0,
+      embeddedPassageCount: passageIds.length,
       processingStage: null,
       readyAt: now,
       state: "ready"
@@ -342,7 +375,7 @@ describe("Prisma Knowledge child-to-parent context expansion", () => {
         candidateLimit: 64,
         excludedContentHashes: [],
         parentContextLoader: createPrismaKnowledgeParentContextLoader(prisma),
-        query: "parent expansion anchor evidence",
+        query: "anchor evidence",
         resultLimit: 8,
         runId: fixture.runId,
         userId: fixture.userId,
@@ -383,27 +416,32 @@ describe("Prisma Knowledge child-to-parent context expansion", () => {
     }
   });
 
-  it("degrades to atomic evidence when the hierarchical window is unavailable", async () => {
+  it("keeps atomic evidence when classified parent expansion fails", async () => {
     const fixture = await createFixture();
     try {
-      await prisma.knowledgeHierarchicalIndexArtifact.update({
-        data: { state: "failed" },
-        where: { id: fixture.hierarchyId }
-      });
-      // The retrieval SQL no longer selects this generation either, so the
-      // deterministic outcome is simply no candidates rather than a masked
-      // failure; the loader path is proven separately by the hermetic tests.
       const result = await executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
         excludedContentHashes: [],
-        parentContextLoader: createPrismaKnowledgeParentContextLoader(prisma),
-        query: "parent expansion anchor evidence",
+        parentContextLoader: async () => {
+          throw new KnowledgeParentContextError("parent_context_load_failed");
+        },
+        query: "anchor evidence",
         resultLimit: 8,
         runId: fixture.runId,
         userId: fixture.userId,
         vectors: []
       });
-      expect(result.passages).toEqual([]);
+      const anchor = result.passages.find((passage) =>
+        passage.chunkId === fixture.passageIds[2]);
+      expect(anchor).toMatchObject({
+        expansion: { reason: "parent_context_load_failed", state: "degraded" },
+        text: PASSAGE_TEXTS[2]
+      });
+      expect(anchor?.expandedContext).toBe([
+        `Previous same-Source context:\n${PASSAGE_TEXTS[1]}`,
+        `Next same-Source context:\n${PASSAGE_TEXTS[3]}`
+      ].join("\n\n"));
+      expect(anchor?.expandedContext).not.toContain(OTHER_SECTION_TEXT);
     } finally {
       await cleanupFixture(fixture);
     }

@@ -14,7 +14,7 @@ import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
-import { ensureClassifiedSearchEntry } from "../reclassification/repository";
+import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { planMemoryRetrieval } from "../../../domain/memory/retrieval";
 import { createPrismaLocalMemoryRetrievalRepository } from
   "../retrieval/localRepository";

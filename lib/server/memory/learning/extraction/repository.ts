@@ -872,6 +872,27 @@ function planIsValid(plan: MemoryFactExtractionPlan): boolean {
     ) === plan.outputHash;
 }
 
+function onlyAddsUnreferencedFactContext(
+  plan: MemoryFactExtractionPlan,
+  current: MemoryFactExtractionInput,
+  adjudication: MemorySemanticAdjudicationPacket | null
+): boolean {
+  if (
+    plan.input.contextRefs.some(({ kind }) => kind === "FACT_VERSION") ||
+    !current.contextRefs.some(({ kind }) => kind === "FACT_VERSION") ||
+    adjudication?.decisions.some(({ entityRef, targetRef }) =>
+      entityRef !== null || targetRef !== null) === true
+  ) return false;
+  const stableProjection = (input: MemoryFactExtractionInput) => ({
+    ...input,
+    contextRefs: input.contextRefs.filter(({ kind }) => kind === "MESSAGE"),
+    inputHash: null,
+    sourceProjectionHash: null
+  });
+  return memorySha256(stableProjection(plan.input)) ===
+    memorySha256(stableProjection(current));
+}
+
 function receiptFingerprint(
   plan: MemoryFactExtractionPlan,
   candidateOrdinal: number,
@@ -1360,7 +1381,11 @@ async function applyPlan(
     return "STALE";
   }
   const current = await prepareWith(tx, claim, now);
-  if ("decision" in current || current.input.inputHash !== plan.input.inputHash) {
+  if (
+    "decision" in current ||
+    (current.input.inputHash !== plan.input.inputHash &&
+      !onlyAddsUnreferencedFactContext(plan, current.input, adjudication))
+  ) {
     await invalidateMemoryFactExtractionStaging(tx, {
       memoryJobId: claim.id,
       reasonCode: "source_stale",

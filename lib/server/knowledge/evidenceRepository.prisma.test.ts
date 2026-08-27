@@ -232,7 +232,7 @@ function evidence(input: Readonly<{
       vectorSpaceFingerprint
     }],
     candidateCount: input.results.length,
-    candidateLimit: 40,
+    candidateLimit: 64,
     durationMs: 4,
     embeddingExecutions: [],
     fusion: "weighted_rrf_v2",
