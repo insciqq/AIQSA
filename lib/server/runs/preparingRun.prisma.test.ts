@@ -50,7 +50,10 @@ import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy
 } from "../memory/execution/policy";
-import { MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION } from "../memory/retrieval/runUtilities";
+import {
+  MEMORY_AGGREGATION_VERSIONS,
+  MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION
+} from "../memory/retrieval/runUtilities";
 import { createPrismaLocalMemoryRetrievalRepository } from "../memory/retrieval/localRepository";
 import { touchFrozenMemoryPack } from "../memory/retrieval/decayTouch";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT } from "../memory/retrieval/vector";
@@ -2346,6 +2349,134 @@ describe("PREPARING run orchestration", () => {
           state: "FAILED"
         }]);
         expect(usageCount).toBe(2);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
+
+  it("admits bounded aggregation map and reduce executions before Phase B", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const fixture = await createPreparingEmbeddingAuthority(userId);
+      try {
+        const chat = await prisma.chat.create({
+          data: { title: "Qualified aggregation map reduce", userId }
+        });
+        const request = normalizedRequest(chat.id, "Relate two historical events.");
+        const repository = createPrismaRunRepository(prisma, {
+          memoryExecutionAuthority: fixture.authority
+        });
+        const admitted = await repository.admitPreparingRun({
+          admissionKind: "NORMAL_SEND",
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: {},
+          userId
+        });
+        await expect(repository.beginPreparingRunAttempt({
+          attemptId: admitted.attemptId,
+          now: new Date(),
+          runId: admitted.runId,
+          userId
+        })).resolves.toBe(true);
+
+        const execution = createPrismaMemoryExecutionService(
+          fixture.authority,
+          prisma
+        );
+        const bindingIds: string[] = [];
+        for (const [index, ordinal] of [0, 2, 4].entries()) {
+          const binding = await execution.admission.bind(userId, {
+            inputHash: String(index + 2).repeat(64),
+            ordinal,
+            owner: {
+              retrievalAttemptId: admitted.attemptId,
+              type: "RETRIEVAL_ATTEMPT"
+            },
+            role: "MEMORY_AGGREGATE",
+            versions: MEMORY_AGGREGATION_VERSIONS
+          });
+          bindingIds.push(binding.id);
+          await execution.admission.start(userId, binding.id);
+          await execution.lifecycle.settle(userId, binding.id, {
+            acceptedOutputHash: String(index + 5).repeat(64),
+            errorCode: null,
+            providerResponseId: `preparing-aggregation-response-${index}`,
+            state: "SUCCEEDED",
+            usage: {
+              cachedInputTokens: 0,
+              completeness: "COMPLETE",
+              estimatedCostMicros: null,
+              inputTokens: 10,
+              outputTokens: 5,
+              reasoningTokens: 0,
+              totalTokens: 15
+            }
+          });
+        }
+
+        await expect(repository.completePreparingRunAttempt({
+          attemptId: admitted.attemptId,
+          result: {
+            budgetSnapshot: {
+              itemCount: 0,
+              plan: {
+                aggregationRequested: true,
+                profileRequested: false
+              },
+              schemaVersion: 1,
+              utilityEgressMode: "CONSENTED_EXTERNAL"
+            },
+            items: [],
+            outcome: "EMPTY",
+            preparedContext: null
+          },
+          runId: admitted.runId,
+          userId
+        })).resolves.toBe(true);
+        await expect(repository.finalizePreparingRun({
+          attemptId: admitted.attemptId,
+          normalizedRequest: request,
+          providerRequestPreview: {},
+          runId: admitted.runId,
+          userId
+        })).resolves.toBe(true);
+
+        const [attempt, bindings, usageCount] = await Promise.all([
+          prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+            where: { id: admitted.attemptId }
+          }),
+          prisma.memoryExecutionBinding.findMany({
+            orderBy: { ordinal: "asc" },
+            where: { id: { in: bindingIds } }
+          }),
+          prisma.usageEvent.count({
+            where: { memoryExecutionBindingId: { in: bindingIds }, userId }
+          })
+        ]);
+        expect(attempt).toMatchObject({
+          externalRolesUsed: [
+            "MEMORY_AGGREGATE",
+            "MEMORY_AGGREGATE",
+            "MEMORY_AGGREGATE"
+          ],
+          state: "CONSUMED",
+          utilityEgressMode: "CONSENTED_EXTERNAL"
+        });
+        expect(bindings.map(({ logicalRole, ordinal, state }) => ({
+          logicalRole,
+          ordinal,
+          state
+        }))).toEqual([
+          { logicalRole: "MEMORY_AGGREGATE", ordinal: 0, state: "SUCCEEDED" },
+          { logicalRole: "MEMORY_AGGREGATE", ordinal: 2, state: "SUCCEEDED" },
+          { logicalRole: "MEMORY_AGGREGATE", ordinal: 4, state: "SUCCEEDED" }
+        ]);
+        expect(usageCount).toBe(3);
       } finally {
         await fixture.cleanup();
       }

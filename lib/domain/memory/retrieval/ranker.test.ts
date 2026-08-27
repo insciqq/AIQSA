@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planMemoryRetrieval } from "./planner";
 import { fuseMemoryRetrievalCandidates } from "./ranker";
+import { orderMemoryCandidatesWithSoftSourceDiversity } from "./sourceDiversity";
 import type { MemoryCandidateMetadata, MemoryLaneCandidate } from "./contracts";
 import type { MemoryRetrievalLane } from "./config";
 
@@ -26,6 +27,38 @@ const aggregationPlan = planMemoryRetrieval({
   mode: "PAST_CHAT_SEARCH",
   now,
   temporalIntent: "ANY"
+});
+
+describe("soft source diversity", () => {
+  it("keeps relevance-ranked repeats reachable at the 25 percent prefix boundary", () => {
+    const ranked = [
+      "a-1", "a-2", "a-3", "b-1", "c-1", "d-1",
+      "e-1", "f-1", "g-1", "h-1", "i-1", "j-1"
+    ];
+
+    const ordered = orderMemoryCandidatesWithSoftSourceDiversity(
+      ranked,
+      (candidate) => candidate.slice(0, 1)
+    );
+
+    expect(ordered).toEqual([
+      "a-1", "b-1", "c-1", "d-1", "e-1", "f-1",
+      "g-1", "a-2", "h-1", "i-1", "j-1", "a-3"
+    ]);
+    for (const prefixLength of [4, 8, 12]) {
+      const prefix = ordered.slice(0, prefixLength);
+      expect(prefix.filter((candidate) => candidate.startsWith("a-"))).toHaveLength(
+        prefixLength / 4
+      );
+    }
+  });
+
+  it("relaxes the share when fewer than four distinct sources exist", () => {
+    expect(orderMemoryCandidatesWithSoftSourceDiversity(
+      ["a-1", "a-2", "b-1"],
+      (candidate) => candidate.slice(0, 1)
+    )).toEqual(["a-1", "b-1", "a-2"]);
+  });
 });
 
 function metadata(id: string): MemoryCandidateMetadata {

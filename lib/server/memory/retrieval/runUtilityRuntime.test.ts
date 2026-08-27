@@ -432,6 +432,8 @@ describe("Memory run utility provider runtime", () => {
     await expect(provider.run(
       memoryRunUtilityProviderEvidence(snapshot("openai_responses_compatible")),
       {
+        aggregationPhase: "MAP",
+        completeEvidenceView: true,
         evidence: [{
           handle: "i0",
           occurredFrom: "2026-01-01T00:00:00.000Z",

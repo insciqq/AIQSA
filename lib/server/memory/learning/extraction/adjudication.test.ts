@@ -144,13 +144,36 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
 describe("batched Memory semantic adjudication", () => {
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v3");
+      .toBe("memory-semantic-adjudication-prompt-v4");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("When context_refs is empty, set entity_ref and target_ref to null");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("use operation NO_RELATION");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("complete proposed_statement must be entailed");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("item obtained for a distinct recipient");
+  });
+
+  it("routes proposition STATE claims through statement-aware adjudication", () => {
+    const state = candidate({
+      canonicalKey: "proposition:gift-card",
+      displayText: "The current user owns a gift card.",
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      predicateKey: null,
+      proposedValue: null,
+      subjectKey: null
+    });
+    const input = memorySemanticAdjudicationInput(plan(state));
+    expect(input?.candidateRefs).toEqual(["C1"]);
+    const payload = JSON.parse(memorySemanticAdjudicationPromptPayload(input!)) as {
+      candidates: Array<{ proposed_statement?: string }>;
+    };
+    expect(payload.candidates[0]?.proposed_statement)
+      .toBe("The current user owns a gift card.");
   });
 
   it("requires one batch for a high-risk SLOT and hides database ids", () => {

@@ -37,6 +37,7 @@ import {
 } from "../persistence/lexical";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
+import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   memoryStatementClassificationDecision,
   memoryStatementClassificationInputHash,
@@ -54,6 +55,7 @@ import {
 import { createPrismaMemoryItemEmbeddingHandler } from "./handler";
 import { createPrismaMemoryEmbeddingHandler } from "./compositeHandler";
 import { createPrismaMemoryEmbeddingBatchRepository } from "./batchRepository";
+import { enqueueMemoryEmbeddingBatchItems } from "./enqueue";
 import { createPrismaMemoryItemEmbeddingRepository } from "./repository";
 import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
 
@@ -759,6 +761,40 @@ describe("Prisma explicit Memory vector enrichment", () => {
         );
       }
 
+      const entries = await prisma.memorySearchEntry.findMany({
+        orderBy: { id: "asc" },
+        select: { id: true, safeContentHash: true },
+        where: { userId: fixture.userId }
+      });
+      expect(entries).toHaveLength(32);
+      await prisma.memoryEmbeddingBatchItem.deleteMany({
+        where: { userId: fixture.userId }
+      });
+      await prisma.memoryJob.deleteMany({
+        where: { kind: "EMBED_ITEMS", userId: fixture.userId }
+      });
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        fixture.userId,
+        (tx, settings) => enqueueMemoryEmbeddingBatchItems(
+          tx,
+          settings,
+          entries.map((entry) => ({
+            entryId: entry.id,
+            triggerIdentity: memorySha256({
+              entryId: entry.id,
+              safeContentHash: entry.safeContentHash,
+              version: "embedding-bulk-regression-v1"
+            })
+          }))
+        )
+      )).resolves.toEqual({
+        childrenCreated: 32,
+        childrenReused: 0,
+        failed: false,
+        jobsCreated: 2
+      });
+
       const parents = await prisma.memoryJob.findMany({
         orderBy: { createdAt: "asc" },
         where: {
@@ -809,6 +845,132 @@ describe("Prisma explicit Memory vector enrichment", () => {
       ]));
     } finally {
       coordinator.stop();
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
+  it("queues a 471-entry rebuild set in bounded durable batches", async () => {
+    const fixture = await createFixture();
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    try {
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer bounded rebuild queue transactions.",
+        "embedding-bulk-471-seed"
+      );
+      await prisma.memoryEmbeddingBatchItem.deleteMany({
+        where: { userId: fixture.userId }
+      });
+      await prisma.memoryJob.deleteMany({
+        where: { kind: "EMBED_ITEMS", userId: fixture.userId }
+      });
+      const chat = await prisma.chat.create({
+        data: { title: "Embedding bulk scale fixture", userId: fixture.userId }
+      });
+      const chunks = Array.from({ length: 470 }, (_, ordinal) => {
+        const id = randomUUID();
+        const text = `Bounded rebuild queue entry ${ordinal}.`;
+        return {
+          contentHash: memorySha256(text),
+          id,
+          normalizedSearchText: normalizeMemorySearchText(text),
+          ordinal,
+          text
+        };
+      });
+      const occurredAt = new Date("2026-08-10T10:00:00.000Z");
+      await prisma.memoryRecallChunk.createMany({
+        data: chunks.map((chunk) => ({
+          branchGeneration: 0,
+          chatId: chat.id,
+          chunkOrdinal: chunk.ordinal,
+          chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+          contentHash: chunk.contentHash,
+          invalidatedAt: occurredAt,
+          languageCode: "en",
+          normalizedSafeSearchText: chunk.normalizedSearchText,
+          occurredFrom: occurredAt,
+          occurredTo: occurredAt,
+          redactionReasonCodes: [],
+          redactionState: "NOT_NEEDED" as const,
+          safeProjectedText: chunk.text,
+          safetyClass: "NORMAL" as const,
+          sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+          sourceRevisionAtCreation: 0,
+          state: "INVALIDATED" as const,
+          userId: fixture.userId,
+          id: chunk.id
+        }))
+      });
+      await prisma.memorySearchEntry.createMany({
+        data: chunks.map((chunk) => ({
+          embeddingState: "PENDING" as const,
+          id: randomUUID(),
+          indexGenerationId: fixture.generationId,
+          itemType: "RECALL_CHUNK" as const,
+          languageCode: "en",
+          normalizedSearchText: chunk.normalizedSearchText,
+          recallChunkId: chunk.id,
+          safeContentHash: chunk.contentHash,
+          safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
+          sourceIdentitySnapshot: memorySha256({ chunkId: chunk.id }),
+          suppressionIdentitySnapshot: memorySha256({ suppressions: [] }),
+          userId: fixture.userId
+        }))
+      });
+      const entries = await prisma.memorySearchEntry.findMany({
+        orderBy: { id: "asc" },
+        select: { id: true, safeContentHash: true },
+        where: { userId: fixture.userId }
+      });
+      expect(entries).toHaveLength(471);
+      const inputs = entries.map((entry) => ({
+        entryId: entry.id,
+        triggerIdentity: memorySha256({
+          entryId: entry.id,
+          safeContentHash: entry.safeContentHash,
+          version: "embedding-bulk-scale-regression-v1"
+        })
+      }));
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        fixture.userId,
+        (tx, settings) => enqueueMemoryEmbeddingBatchItems(
+          tx,
+          settings,
+          inputs
+        )
+      )).resolves.toEqual({
+        childrenCreated: 471,
+        childrenReused: 0,
+        failed: false,
+        jobsCreated: 30
+      });
+      const groups = await prisma.memoryEmbeddingBatchItem.groupBy({
+        _count: { _all: true },
+        by: ["memoryJobId"],
+        where: { userId: fixture.userId }
+      });
+      expect(groups).toHaveLength(30);
+      expect(groups.reduce((total, group) => total + group._count._all, 0))
+        .toBe(471);
+      expect(Math.max(...groups.map((group) => group._count._all))).toBe(16);
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        fixture.userId,
+        (tx, settings) => enqueueMemoryEmbeddingBatchItems(
+          tx,
+          settings,
+          inputs
+        )
+      )).resolves.toEqual({
+        childrenCreated: 0,
+        childrenReused: 471,
+        failed: false,
+        jobsCreated: 0
+      });
+    } finally {
       await fixture.cleanup();
     }
   }, 60_000);

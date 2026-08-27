@@ -6,9 +6,17 @@ import {
   assertBenchmarkDatabaseUrl,
   buildLongMemEvalBaselineManifest,
   decodeLongMemEvalDataset,
+  decodeLongMemEvalProfile,
+  decodeLongMemEvalProfileManifest,
   evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
+  longMemEvalEmbeddingBatchSizeDistribution,
+  longMemEvalExpectedUtilityModelId,
+  longMemEvalProfileManifest,
+  longMemEvalProductMemoryPipelineComplete,
+  longMemEvalQualificationGate,
   longMemEvalReaderOracleGap,
+  longMemEvalSettledImportTurns,
   mapConcurrentOrdered,
   mergeLongMemEvalEvaluationResults,
   parseLongMemEvalDate,
@@ -36,6 +44,145 @@ function fixture(questionId = "question-1") {
 }
 
 describe("LongMemEval adapter contract", () => {
+  it("fails qualification on a degraded Memory outcome independently of oracle scoring", () => {
+    expect(longMemEvalQualificationGate({
+      executionFailures: 0,
+      memoryOutcomes: ["USED", "DEGRADED"]
+    })).toEqual({
+      degradedMemoryOutcomes: 1,
+      executionFailures: 0,
+      passed: false,
+      successfulCases: 2
+    });
+    expect(longMemEvalQualificationGate({
+      executionFailures: 0,
+      memoryOutcomes: ["USED", "USED"]
+    }).passed).toBe(true);
+  });
+
+  it("keeps the official and product profiles explicit and non-interchangeable", () => {
+    expect(longMemEvalProfileManifest(decodeLongMemEvalProfile("official")))
+      .toEqual({
+        automaticFactLearning: false,
+        id: "official",
+        label: "official-history-recall",
+        officialComparable: true,
+        patternSynthesis: false,
+        version: 2
+      });
+    const product = longMemEvalProfileManifest(
+      decodeLongMemEvalProfile("product")
+    );
+    expect(product).toEqual({
+      automaticFactLearning: true,
+      id: "product",
+      label: "product-full-memory",
+      officialComparable: false,
+      patternSynthesis: true,
+      version: 2
+    });
+    expect(decodeLongMemEvalProfileManifest(product)).toEqual(product);
+    expect(() => decodeLongMemEvalProfile("benchmark-boost"))
+      .toThrow("longmemeval_profile_invalid");
+    expect(() => decodeLongMemEvalProfileManifest({
+      ...product,
+      officialComparable: true
+    })).toThrow("longmemeval_profile_manifest_invalid");
+  });
+
+  it("requires a real applied Dream call while accepting a valid empty result", () => {
+    const evidence = {
+      appliedSynthesisExecutions: 1,
+      assistantEvidence: 0,
+      automaticFactLearning: true,
+      automaticFactVersions: 24,
+      classifiedAutomaticFactVersions: 24,
+      classifiedPatternVersions: 0,
+      directUserEvidence: 24,
+      eligibleSynthesisSources: 24,
+      expectedSettlements: 46,
+      extractionJobs: 46,
+      factVersionRelations: 2,
+      lastSynthesisAtRecorded: true,
+      patternVersions: 0,
+      relationJobs: 2,
+      retainedSynthesisPayloads: 0,
+      successfulFactExtractionExecutions: 46,
+      successfulFactExtractionJobs: 46,
+      successfulSynthesisExecutions: 1,
+      successfulSynthesisJobs: 1,
+      synthesizedFromRelations: 0,
+      synthesisDue: false,
+      synthesisEnabled: true,
+      synthesisJobs: 1,
+      synthesisScheduleReason: "NO_NEW_ACTIVITY",
+      synthesisThreshold: 3
+    };
+    expect(longMemEvalProductMemoryPipelineComplete(evidence)).toBe(true);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      successfulFactExtractionExecutions: 48,
+      successfulFactExtractionJobs: 45
+    })).toBe(true);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      successfulFactExtractionJobs: 0
+    })).toBe(false);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      successfulSynthesisExecutions: 0
+    })).toBe(false);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      classifiedPatternVersions: 1,
+      patternVersions: 1,
+      synthesizedFromRelations: 2
+    })).toBe(false);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      classifiedPatternVersions: 1,
+      patternVersions: 1,
+      synthesizedFromRelations: 3
+    })).toBe(true);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      appliedSynthesisExecutions: 0,
+      eligibleSynthesisSources: 17,
+      lastSynthesisAtRecorded: false,
+      successfulSynthesisExecutions: 0,
+      successfulSynthesisJobs: 0,
+      synthesisJobs: 0
+    })).toBe(true);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      appliedSynthesisExecutions: 0,
+      lastSynthesisAtRecorded: false,
+      successfulSynthesisExecutions: 0,
+      successfulSynthesisJobs: 0,
+      synthesisDue: true,
+      synthesisJobs: 0
+    })).toBe(false);
+  });
+
+  it("routes utility-model evidence by role with an optional dedicated reranker", () => {
+    const expected = (logicalRole: string, rerankerModelId: string | null) =>
+      longMemEvalExpectedUtilityModelId({
+        embeddingModelId: "embedding-model",
+        logicalRole,
+        rerankerModelId,
+        systemModelId: "system-model"
+      });
+    expect(expected("MEMORY_DOCUMENT_EMBED", "reranker-model"))
+      .toBe("embedding-model");
+    expect(expected("MEMORY_QUERY_EMBED", "reranker-model"))
+      .toBe("embedding-model");
+    expect(expected("MEMORY_RERANK", "reranker-model"))
+      .toBe("reranker-model");
+    expect(expected("MEMORY_RERANK", null)).toBe("system-model");
+    expect(expected("MEMORY_HISTORY_CLASSIFY", "reranker-model"))
+      .toBe("system-model");
+  });
+
   it("decodes aligned official rows without changing their text", () => {
     const [entry] = decodeLongMemEvalDataset([fixture()]);
     expect(entry).toMatchObject({
@@ -52,6 +199,29 @@ describe("LongMemEval adapter contract", () => {
     value.haystack_sessions[0]![0]!.content = "";
     const [entry] = decodeLongMemEvalDataset([value]);
     expect(entry?.haystackSessions[0]?.[0]?.content).toBe("");
+  });
+
+  it("closes any user-ended external transcript without rewriting official turns", () => {
+    const official = Object.freeze([
+      Object.freeze({ content: "External greeting", role: "assistant" as const }),
+      Object.freeze({ content: "Final user detail", role: "user" as const })
+    ]);
+    const prepared = longMemEvalSettledImportTurns(official);
+    expect(prepared).toEqual({
+      appendedAssistantSettlement: true,
+      turns: [
+        ...official,
+        { content: "", role: "assistant" }
+      ]
+    });
+    expect(prepared.turns.slice(0, official.length)).toEqual(official);
+    expect(official).toHaveLength(2);
+    expect(longMemEvalSettledImportTurns([
+      { content: "Settled answer", role: "assistant" }
+    ])).toEqual({
+      appendedAssistantSettlement: false,
+      turns: [{ content: "Settled answer", role: "assistant" }]
+    });
   });
 
   it("rejects misaligned sessions and malformed benchmark dates", () => {
@@ -110,6 +280,28 @@ describe("LongMemEval adapter contract", () => {
       version: 1
     });
     expect(JSON.stringify(first)).not.toContain("What degree");
+  });
+
+  it("reports durable document batch sizes and one-input query requests", () => {
+    expect(longMemEvalEmbeddingBatchSizeDistribution({
+      documentBatches: [
+        { executionBindingId: "document-1", itemCount: 16 },
+        { executionBindingId: "document-2", itemCount: 3 }
+      ],
+      successfulExecutions: [
+        { id: "contextual-key", logicalRole: "MEMORY_HISTORY_CLASSIFY" },
+        { id: "document-1", logicalRole: "MEMORY_DOCUMENT_EMBED" },
+        { id: "document-2", logicalRole: "MEMORY_DOCUMENT_EMBED" },
+        { id: "query-1", logicalRole: "MEMORY_QUERY_EMBED" }
+      ]
+    })).toEqual({ "1": 1, "3": 1, "16": 1 });
+    expect(() => longMemEvalEmbeddingBatchSizeDistribution({
+      documentBatches: [],
+      successfulExecutions: [{
+        id: "document-1",
+        logicalRole: "MEMORY_DOCUMENT_EMBED"
+      }]
+    })).toThrow("longmemeval_embedding_batch_receipt_incomplete");
   });
 
   it("computes benchmark-only source, round, MRR, NDCG, and reader-gap metrics", () => {

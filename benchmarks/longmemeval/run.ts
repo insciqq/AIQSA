@@ -49,6 +49,8 @@ import { createAuthSession } from "../../lib/server/auth/requestAuth";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { defaultMemoryExecutionAuthority } from
   "../../lib/server/memory/execution/defaultAuthority";
+import { probeMemoryStructuredOutputAuthority } from
+  "../../lib/server/memory/execution/structuredClassifier";
 import { MEMORY_ITEM_EMBEDDING_VERSIONS } from
   "../../lib/server/memory/embedding/contract";
 import { probeCurrentMemoryEmbeddingPin } from
@@ -65,6 +67,22 @@ import {
   applyMemorySourceMutations,
   lockMemorySourceChat
 } from "../../lib/server/memory/sourceState";
+import { memorySynthesisSourceAuthorityPredicate } from
+  "../../lib/server/memory/synthesis/eligibility";
+import {
+  MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS,
+  MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES,
+  MEMORY_SYNTHESIS_POLICY_VERSION,
+  MEMORY_SYNTHESIS_QUIET_PERIOD_MS
+} from
+  "../../lib/server/memory/synthesis/policy";
+import { MEMORY_SYNTHESIS_VERSIONS } from
+  "../../lib/server/memory/synthesis/provider";
+import {
+  loadMemorySynthesisScheduleStatus,
+  reconcileMemorySynthesisWork
+} from
+  "../../lib/server/memory/synthesis/reconcile";
 import {
   LONGMEMEVAL_EVALUATOR_SHA256,
   LONGMEMEVAL_MAX_CASE_CONCURRENCY,
@@ -75,9 +93,16 @@ import {
   assertBenchmarkBaseUrl,
   assertBenchmarkDatabaseUrl,
   buildLongMemEvalBaselineManifest,
+  decodeLongMemEvalProfile,
   decodeLongMemEvalDataset,
   evaluateLongMemEvalComponentMetrics,
+  longMemEvalEmbeddingBatchSizeDistribution,
+  longMemEvalExpectedUtilityModelId,
+  longMemEvalProfileManifest,
+  longMemEvalProductMemoryPipelineComplete,
+  longMemEvalQualificationGate,
   longMemEvalQuestionPrompt,
+  longMemEvalSettledImportTurns,
   mapConcurrentOrdered,
   parseLongMemEvalDate,
   resolveBenchmarkOutputDirectory,
@@ -85,6 +110,8 @@ import {
   selectLongMemEvalCases,
   type LongMemEvalCase,
   type LongMemEvalComponentMetrics,
+  type LongMemEvalLearningEvidence,
+  type LongMemEvalProfile,
   type LongMemEvalRetrievalAudit
 } from "./contract";
 import { redactLongMemEvalDebugArtifact } from "./debug";
@@ -99,7 +126,10 @@ const evaluatorPath = resolve(upstreamRoot, "src/evaluation/evaluate_qa.py");
 const benchmarkEmailSuffix = "@longmemeval.benchmark.invalid";
 const qualificationSystemModelId = "gpt-5.6-sol";
 const qualificationSystemReasoningEffort = "medium";
-const activeMemoryRetrievalConfiguration = Object.freeze({
+const qualificationRerankerModelId = "qwen/qwen3-reranker-8b";
+const qualificationMemoryJobParallelism = 8;
+const qualificationMemoryJobPerUserParallelism = 4;
+const activeMemoryRetrievalConfigurationBase = Object.freeze({
   aggregationContextHardCapTokens: MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
   aggregationContextTargetTokens: MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS,
   aggregationHistoryCandidatesToReranker:
@@ -107,7 +137,6 @@ const activeMemoryRetrievalConfiguration = Object.freeze({
   aggregationPreFusionCandidates:
     MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
   aggregationRankedCandidates: MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
-  automaticFactLearning: false,
   complexContextHardCapTokens: MEMORY_CONTEXT_COMPLEX_HARD_CAP_TOKENS,
   complexContextTargetTokens: MEMORY_CONTEXT_COMPLEX_TARGET_TOKENS,
   contextPackerVersion: MEMORY_CONTEXT_PACKER_VERSION,
@@ -147,8 +176,10 @@ type CliOptions = Readonly<{
   caseConcurrency: number;
   confirmPaid: boolean;
   debugMemory: boolean;
+  forceDreamDiagnostic: boolean;
   indexTimeoutMs: number;
   outputDirectory: string;
+  profile: LongMemEvalProfile;
   questionIds: readonly string[];
   runTimeoutMs: number;
   sampleSize: number;
@@ -157,6 +188,7 @@ type CliOptions = Readonly<{
 }>;
 
 type ProviderRoles = Readonly<{
+  reranker: Readonly<{ id: string; upstreamModelId: string }> | null;
   system: Readonly<{ connectionId: string; credentialId: string; id: string }>;
   qwen: Readonly<{ connectionId: string; id: string }>;
 }>;
@@ -211,7 +243,9 @@ type CaseSummary = Readonly<{
     lexicalIndexMs: number;
     messages: number;
     sessions: number;
+    syntheticAssistantSettlements: number;
   }>;
+  learning: LongMemEvalLearningEvidence;
   questionId: string;
   questionType: string;
   retrieval: LongMemEvalRetrievalAudit;
@@ -271,8 +305,10 @@ function parseCli(argv: readonly string[]): CliOptions {
   let caseConcurrency = 2;
   let confirmPaid = false;
   let debugMemory = false;
+  let forceDreamDiagnostic = false;
   let indexTimeoutMinutes = 45;
   let output = `results/${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
+  let profile: LongMemEvalProfile = "official";
   const questionIds: string[] = [];
   let runTimeoutMinutes = 15;
   let sampleSize = 1;
@@ -298,6 +334,9 @@ function parseCli(argv: readonly string[]): CliOptions {
       case "--debug-memory":
         debugMemory = true;
         break;
+      case "--force-dream-diagnostic":
+        forceDreamDiagnostic = true;
+        break;
       case "--index-timeout-minutes":
         indexTimeoutMinutes = positiveInteger(next, "longmemeval_index_timeout_invalid");
         index += 1;
@@ -305,6 +344,10 @@ function parseCli(argv: readonly string[]): CliOptions {
       case "--output":
         if (!next?.trim()) throw new Error("longmemeval_output_invalid");
         output = next;
+        index += 1;
+        break;
+      case "--profile":
+        profile = decodeLongMemEvalProfile(next);
         index += 1;
         break;
       case "--question-id":
@@ -338,12 +381,17 @@ function parseCli(argv: readonly string[]): CliOptions {
     }
   }
   if (!confirmPaid) throw new Error("longmemeval_paid_confirmation_required");
+  if (forceDreamDiagnostic && profile !== "product") {
+    throw new Error("longmemeval_dream_diagnostic_requires_product_profile");
+  }
   return Object.freeze({
     caseConcurrency,
     confirmPaid,
     debugMemory,
+    forceDreamDiagnostic,
     indexTimeoutMs: indexTimeoutMinutes * 60_000,
     outputDirectory: resolveBenchmarkOutputDirectory(benchmarkRoot, output),
+    profile,
     questionIds: Object.freeze(questionIds),
     runTimeoutMs: runTimeoutMinutes * 60_000,
     sampleSize,
@@ -545,7 +593,7 @@ async function assertDatabaseIdentity(prisma: PrismaClient): Promise<void> {
 }
 
 async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles> {
-  const [systemModels, qwenModels, systemPolicy] = await Promise.all([
+  const [systemModels, qwenModels, rerankerModels, systemPolicy] = await Promise.all([
     prisma.providerModel.findMany({
       select: {
         connection: {
@@ -578,17 +626,36 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
         modelId: "qwen/qwen3-embedding-8b"
       }
     }),
+    prisma.providerModel.findMany({
+      select: { id: true, modelId: true },
+      where: {
+        activeConfig: { not: Prisma.DbNull },
+        activeVersion: { gt: 0 },
+        connection: { enabled: true, family: "openrouter" },
+        enabled: true,
+        modelClass: "reranker",
+        modelId: qualificationRerankerModelId
+      }
+    }),
     prisma.systemModelPolicy.findUnique({
-      select: { providerModelId: true, reasoningEffort: true },
+      select: {
+        providerModelId: true,
+        reasoningEffort: true,
+        rerankerProviderModelId: true
+      },
       where: { id: "installation" }
     })
   ]);
   const system = systemModels[0];
   const systemCredential = system?.connection.defaultCredential;
+  const reranker = systemPolicy?.rerankerProviderModelId
+    ? rerankerModels.find(({ id }) => id === systemPolicy.rerankerProviderModelId) ?? null
+    : null;
   if (systemModels.length !== 1 || !system || !systemCredential?.enabled ||
     !systemCredential.activeVersionId || qwenModels.length !== 1 ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
-    systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort) {
+    systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort ||
+    (systemPolicy.rerankerProviderModelId !== null && !reranker)) {
     throw new Error("longmemeval_provider_roles_invalid");
   }
   const egress = await createAdminMemoryEgressService(prisma, {
@@ -598,10 +665,14 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
     .filter(({ state }) => state === "AVAILABLE")
     .map(({ id }) => id));
   if (egress.reviewRequired || !destinations.has("system_model") ||
-    !destinations.has("embedding")) {
+    !destinations.has("embedding") ||
+    (reranker !== null && !destinations.has("remote_reranker"))) {
     throw new Error("longmemeval_memory_egress_not_ready");
   }
   return Object.freeze({
+    reranker: reranker
+      ? Object.freeze({ id: reranker.id, upstreamModelId: reranker.modelId })
+      : null,
     system: Object.freeze({
       connectionId: system.connectionId,
       credentialId: systemCredential.id,
@@ -625,7 +696,8 @@ async function deleteBenchmarkUsers(prisma: PrismaClient): Promise<number> {
 async function createBenchmarkIdentity(
   prisma: PrismaClient,
   roles: ProviderRoles,
-  questionId: string
+  questionId: string,
+  profile: LongMemEvalProfile
 ): Promise<BenchmarkIdentity> {
   const fullAccess = await prisma.group.findUnique({
     select: { id: true },
@@ -666,13 +738,15 @@ async function createBenchmarkIdentity(
     embeddingDeploymentId: roles.qwen.id,
     expectedMemoryRevision: settings.memoryRevision,
     expectedSettingsRevision: settings.settingsRevision,
-    learnAutomatically: false,
+    learnAutomatically: profile === "product",
     referenceChatHistory: true,
-    synthesisEnabled: false,
+    synthesisEnabled: profile === "product",
     useMemoryFacts: true
   });
   if (configured.embeddingProviderModelId !== roles.qwen.id ||
-    configured.learnAutomatically || !configured.referenceChatHistory ||
+    configured.learnAutomatically !== (profile === "product") ||
+    configured.synthesisEnabled !== (profile === "product") ||
+    !configured.referenceChatHistory ||
     !configured.useMemoryFacts) {
     throw new Error("longmemeval_memory_settings_invalid");
   }
@@ -687,11 +761,67 @@ async function createBenchmarkIdentity(
   });
 }
 
+function forcedDreamBoundary(entry: LongMemEvalCase): Date {
+  const earliest = Math.min(...entry.haystackDates.map((value) =>
+    parseLongMemEvalDate(value).getTime()));
+  if (!Number.isFinite(earliest) || earliest <= Number.MIN_SAFE_INTEGER) {
+    throw new Error("longmemeval_dream_diagnostic_boundary_invalid");
+  }
+  return new Date(earliest - 1);
+}
+
+async function prepareForcedDreamDiagnostic(
+  prisma: PrismaClient,
+  userId: string,
+  entry: LongMemEvalCase
+): Promise<Date> {
+  const [user, settings] = await Promise.all([
+    prisma.user.findUnique({ select: { email: true }, where: { id: userId } }),
+    prisma.userMemorySettings.findUnique({
+      select: {
+        lastSynthesisAt: true,
+        synthesisEnabled: true,
+        synthesisPolicyVersion: true
+      },
+      where: { userId }
+    })
+  ]);
+  if (typeof user?.email !== "string" ||
+    !user.email.endsWith(benchmarkEmailSuffix) || !settings?.synthesisEnabled ||
+    settings.lastSynthesisAt !== null ||
+    settings.synthesisPolicyVersion !== MEMORY_SYNTHESIS_POLICY_VERSION) {
+    throw new Error("longmemeval_dream_diagnostic_owner_invalid");
+  }
+  const boundary = forcedDreamBoundary(entry);
+  const updated = await prisma.userMemorySettings.updateMany({
+    data: { synthesisEnabledAt: boundary },
+    where: {
+      lastSynthesisAt: null,
+      synthesisEnabled: true,
+      synthesisPolicyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
+      userId
+    }
+  });
+  if (updated.count !== 1) {
+    throw new Error("longmemeval_dream_diagnostic_boundary_conflict");
+  }
+  emit("dream_diagnostic_boundary_prepared", {
+    boundary: boundary.toISOString(),
+    questionId: entry.questionId
+  });
+  return boundary;
+}
+
 type ImportedSession = Readonly<{
   activeLeafMessageId: string;
   assistantTurnsWithoutProductProvenance: number;
+  automaticSettlement: Readonly<{
+    assistantMessageId: string;
+    runId: string;
+  }> | null;
   chatId: string;
   messages: number;
+  syntheticAssistantSettlements: number;
 }>;
 
 async function importSessionRows(
@@ -700,7 +830,9 @@ async function importSessionRows(
   entry: LongMemEvalCase,
   sessionIndex: number
 ): Promise<ImportedSession> {
-  const turns = entry.haystackSessions[sessionIndex]!;
+  const officialTurns = entry.haystackSessions[sessionIndex]!;
+  const importPlan = longMemEvalSettledImportTurns(officialTurns);
+  const turns = importPlan.turns;
   const occurredAt = parseLongMemEvalDate(entry.haystackDates[sessionIndex]!);
   const chatId = randomUUID();
   const messages = turns.map((turn, turnIndex) => ({
@@ -717,8 +849,10 @@ async function importSessionRows(
   for (let index = 1; index < messages.length; index += 1) {
     messages[index]!.parentMessageId = messages[index - 1]!.id;
   }
-  const backedAssistantIndexes = turns.flatMap((turn, index) =>
-    turn.role === "assistant" && turns[index - 1]?.role === "user" ? [index] : []);
+  const backedAssistantRuns = turns.flatMap((turn, index) =>
+    turn.role === "assistant" && turns[index - 1]?.role === "user"
+      ? [{ id: randomUUID(), index }]
+      : []);
   await prisma.$transaction(async (tx) => {
     await withFailureCode("longmemeval_import_chat_create_failed", () =>
       tx.chat.create({
@@ -735,14 +869,14 @@ async function importSessionRows(
       tx.message.createMany({
         data: messages.map((message) => ({ ...message, chatId }))
       }));
-    if (backedAssistantIndexes.length > 0) {
+    if (backedAssistantRuns.length > 0) {
       await withFailureCode("longmemeval_import_runs_create_failed", () =>
         tx.modelRun.createMany({
-          data: backedAssistantIndexes.map((index) => ({
-            assistantMessageId: messages[index]!.id,
+          data: backedAssistantRuns.map((run) => ({
+            assistantMessageId: messages[run.index]!.id,
             chatId,
-            createdAt: messages[index]!.createdAt,
-            id: randomUUID(),
+            createdAt: messages[run.index]!.createdAt,
+            id: run.id,
             modelId: "external-history",
             normalizedRequest: {
               prompt: {
@@ -755,27 +889,37 @@ async function importSessionRows(
             },
             provider: "longmemeval-import",
             status: "complete",
-            updatedAt: messages[index]!.updatedAt,
+            updatedAt: messages[run.index]!.updatedAt,
             userId,
-            userMessageId: messages[index - 1]!.id
+            userMessageId: messages[run.index - 1]!.id
           }))
         }));
     }
   }, { timeout: 120_000 });
+  const finalRun = backedAssistantRuns.find(({ index }) =>
+    index === turns.length - 1) ?? null;
   return Object.freeze({
     activeLeafMessageId: messages.at(-1)!.id,
     assistantTurnsWithoutProductProvenance:
-      turns.filter((turn, index) =>
-        turn.role === "assistant" && turns[index - 1]?.role !== "user").length,
+      officialTurns.filter((turn, index) =>
+        turn.role === "assistant" && officialTurns[index - 1]?.role !== "user").length,
+    automaticSettlement: finalRun === null
+      ? null
+      : Object.freeze({
+          assistantMessageId: messages[finalRun.index]!.id,
+          runId: finalRun.id
+        }),
     chatId,
-    messages: messages.length
+    messages: messages.length,
+    syntheticAssistantSettlements: Number(importPlan.appendedAssistantSettlement)
   });
 }
 
 async function activateImportedSession(
   prisma: PrismaClient,
   userId: string,
-  imported: ImportedSession
+  imported: ImportedSession,
+  profile: LongMemEvalProfile
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const chat = await withFailureCode("longmemeval_import_chat_lock_failed", () =>
@@ -794,17 +938,42 @@ async function activateImportedSession(
         patch: { activeLeafMessageId: imported.activeLeafMessageId }
       }));
   }, { timeout: 120_000 });
+  if (profile !== "product" || imported.automaticSettlement === null) return;
+  await prisma.$transaction(async (tx) => {
+    const chat = await withFailureCode("longmemeval_import_chat_lock_failed", () =>
+      lockMemorySourceChat(tx, {
+        chatId: imported.chatId,
+        lock: "UPDATE",
+        personalOnly: true,
+        userId
+      }));
+    if (!chat) throw new Error("longmemeval_import_chat_missing");
+    await withFailureCode("longmemeval_import_settlement_failed", () =>
+      applyMemorySourceMutations(tx, {
+        chat,
+        hooks: defaultMemorySourceMutationHooks,
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: imported.automaticSettlement!.assistantMessageId,
+          runId: imported.automaticSettlement!.runId,
+          status: "complete"
+        }
+      }));
+  }, { timeout: 120_000 });
 }
 
 async function importHistory(
   prisma: PrismaClient,
   userId: string,
   entry: LongMemEvalCase,
-  concurrency: number
+  concurrency: number,
+  profile: LongMemEvalProfile
 ): Promise<Readonly<{
   assistantTurnsWithoutProductProvenance: number;
+  automaticSettlements: number;
   chatIds: readonly string[];
   messages: number;
+  syntheticAssistantSettlements: number;
 }>> {
   let completed = 0;
   const importedSessions = await mapConcurrentOrdered(
@@ -818,7 +987,7 @@ async function importHistory(
   // upgrade cycle in PostgreSQL. Keep row insertion parallel, then admit each
   // source through the ordinary lifecycle in a short ordered critical section.
   for (const imported of importedSessions) {
-    await activateImportedSession(prisma, userId, imported);
+    await activateImportedSession(prisma, userId, imported, profile);
     completed += 1;
     if (completed % 10 === 0 || completed === entry.haystackSessions.length) {
       emit("history_import_progress", {
@@ -833,8 +1002,16 @@ async function importHistory(
       (total, imported) => total + imported.assistantTurnsWithoutProductProvenance,
       0
     ),
+    automaticSettlements: profile === "product"
+      ? importedSessions.filter(({ automaticSettlement }) =>
+          automaticSettlement !== null).length
+      : 0,
     chatIds: Object.freeze(importedSessions.map(({ chatId }) => chatId)),
-    messages: importedSessions.reduce((total, imported) => total + imported.messages, 0)
+    messages: importedSessions.reduce((total, imported) => total + imported.messages, 0),
+    syntheticAssistantSettlements: importedSessions.reduce(
+      (total, imported) => total + imported.syntheticAssistantSettlements,
+      0
+    )
   });
 }
 
@@ -853,15 +1030,194 @@ function diagnosticToken(value: string | null): string {
     .slice(0, 48) || "none";
 }
 
+async function countEligibleSynthesisSources(
+  prisma: PrismaClient,
+  userId: string
+): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT COUNT(DISTINCT source_fact."id")::bigint AS count
+    FROM "MemoryFactVersion" AS source_version
+    INNER JOIN "MemoryFact" AS source_fact
+      ON source_fact."userId" = source_version."userId"
+     AND source_fact."id" = source_version."factId"
+    INNER JOIN "MemoryScope" AS source_scope
+      ON source_scope."userId" = source_fact."userId"
+     AND source_scope."id" = source_fact."scopeId"
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = source_version."userId"
+    WHERE source_version."userId" = ${userId}
+      AND ${memorySynthesisSourceAuthorityPredicate(userId)}
+  `);
+  const count = Number(rows[0]?.count ?? -1n);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error("longmemeval_synthesis_source_count_invalid");
+  }
+  return count;
+}
+
+async function loadLearningEvidence(
+  prisma: PrismaClient,
+  userId: string,
+  jobs: Awaited<ReturnType<typeof sourceJobs>>,
+  expectedSettlements: number,
+  automaticFactLearning: boolean
+): Promise<LongMemEvalLearningEvidence> {
+  const [
+    versions,
+    patterns,
+    factExtractionBindings,
+    synthesisBindings,
+    synthesisExecutions,
+    settings,
+    eligibleSynthesisSources,
+    synthesisSchedule
+  ] = await Promise.all([
+    prisma.memoryFactVersion.findMany({
+      select: {
+        id: true,
+        safetyClassificationState: true
+      },
+      where: { modality: { not: "PATTERN" }, sourceMode: "AUTOMATIC", userId }
+    }),
+    prisma.memoryFactVersion.findMany({
+      select: {
+        id: true,
+        safetyClassificationState: true
+      },
+      where: {
+        modality: "PATTERN",
+        sourceMode: "AUTOMATIC",
+        state: "ACTIVE",
+        systemTo: null,
+        userId
+      }
+    }),
+    prisma.memoryExecutionBinding.findMany({
+      select: { id: true, memoryJobId: true },
+      where: {
+        logicalRole: "MEMORY_FACT_EXTRACT",
+        state: "SUCCEEDED",
+        userId
+      }
+    }),
+    prisma.memoryExecutionBinding.findMany({
+      select: { id: true, memoryJobId: true },
+      where: {
+        logicalRole: "MEMORY_SYNTHESIZE",
+        state: "SUCCEEDED",
+        userId
+      }
+    }),
+    prisma.memorySynthesisExecution.findMany({
+      select: {
+        acceptedOutput: true,
+        appliedAt: true,
+        sourceBindings: true
+      },
+      where: { userId }
+    }),
+    prisma.userMemorySettings.findUniqueOrThrow({
+      select: { lastSynthesisAt: true, synthesisEnabled: true },
+      where: { userId }
+    }),
+    countEligibleSynthesisSources(prisma, userId),
+    loadMemorySynthesisScheduleStatus(prisma, userId, new Date())
+  ]);
+  const versionIds = versions.map(({ id }) => id);
+  const patternIds = patterns.map(({ id }) => id);
+  const [
+    assistantEvidence,
+    directUserEvidence,
+    factVersionRelations,
+    synthesizedFromRelations
+  ] = await Promise.all([
+    versionIds.length === 0
+      ? Promise.resolve(0)
+      : prisma.memoryEvidence.count({
+          where: {
+            factVersionId: { in: versionIds },
+            sourceRole: "assistant",
+            userId
+          }
+        }),
+    versionIds.length === 0
+      ? Promise.resolve(0)
+      : prisma.memoryEvidence.count({
+          where: {
+            factVersionId: { in: versionIds },
+            sourceRole: "user",
+            userId
+          }
+        }),
+    versionIds.length === 0
+      ? Promise.resolve(0)
+      : prisma.memoryFactVersionRelation.count({
+          where: {
+            OR: [
+              { sourceVersionId: { in: versionIds } },
+              { targetVersionId: { in: versionIds } }
+            ],
+            userId
+          }
+        }),
+    patternIds.length === 0
+      ? Promise.resolve(0)
+      : prisma.memoryFactVersionRelation.count({
+          where: {
+            kind: "SYNTHESIZED_FROM",
+            sourceVersionId: { in: patternIds },
+            userId
+          }
+        })
+  ]);
+  return Object.freeze({
+    appliedSynthesisExecutions: synthesisExecutions.filter(({ appliedAt }) =>
+      appliedAt !== null).length,
+    assistantEvidence,
+    automaticFactLearning,
+    automaticFactVersions: versions.length,
+    classifiedAutomaticFactVersions: versions.filter(({ safetyClassificationState }) =>
+      safetyClassificationState === "CLASSIFIED").length,
+    classifiedPatternVersions: patterns.filter(({ safetyClassificationState }) =>
+      safetyClassificationState === "CLASSIFIED").length,
+    directUserEvidence,
+    eligibleSynthesisSources,
+    expectedSettlements,
+    extractionJobs: jobs.filter(({ kind }) => kind === "EXTRACT_FACTS").length,
+    factVersionRelations,
+    lastSynthesisAtRecorded: settings.lastSynthesisAt !== null,
+    patternVersions: patterns.length,
+    relationJobs: jobs.filter(({ kind }) => kind === "RESOLVE_FACT_RELATIONS").length,
+    retainedSynthesisPayloads: synthesisExecutions.filter((execution) =>
+      execution.acceptedOutput !== null || execution.sourceBindings !== null).length,
+    successfulFactExtractionExecutions: factExtractionBindings.length,
+    successfulFactExtractionJobs: new Set(factExtractionBindings.flatMap(
+      ({ memoryJobId }) => memoryJobId ? [memoryJobId] : [])).size,
+    successfulSynthesisExecutions: synthesisBindings.length,
+    successfulSynthesisJobs: new Set(synthesisBindings.flatMap(
+      ({ memoryJobId }) => memoryJobId ? [memoryJobId] : [])).size,
+    synthesizedFromRelations,
+    synthesisDue: synthesisSchedule.decision.due,
+    synthesisEnabled: settings.synthesisEnabled,
+    synthesisJobs: jobs.filter(({ kind }) => kind === "SYNTHESIZE_MEMORIES").length,
+    synthesisScheduleReason: synthesisSchedule.decision.reason,
+    synthesisThreshold: MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES
+  });
+}
+
 async function waitForHistoryIndex(
   prisma: PrismaClient,
   userId: string,
   expectedChats: number,
+  expectedAutomaticSettlements: number,
+  profile: LongMemEvalProfile,
   timeoutMs: number,
   questionId: string
-): Promise<readonly JobAggregate[]> {
+): Promise<LongMemEvalLearningEvidence> {
   const deadline = Date.now() + timeoutMs;
+  let eligibleSynthesisSources: number | null = null;
   let nextProgressAt = 0;
+  let quietProductObservations = 0;
   while (Date.now() < deadline) {
     const [jobs, checkpoints] = await Promise.all([
       sourceJobs(prisma, userId),
@@ -890,22 +1246,60 @@ async function waitForHistoryIndex(
     const historyJobs = jobs.filter(({ kind }) => kind === "INDEX_HISTORY");
     const learningJobs = jobs.filter(({ kind }) =>
       kind === "EXTRACT_FACTS" || kind === "CONSOLIDATE_CANDIDATE" ||
-      kind === "VERIFY_CANDIDATE");
-    if (learningJobs.length > 0) {
+      kind === "VERIFY_CANDIDATE" || kind === "RESOLVE_FACT_RELATIONS" ||
+      kind === "SYNTHESIZE_MEMORIES");
+    if (profile === "official" && learningJobs.length > 0) {
       throw new Error("longmemeval_automatic_learning_not_disabled");
     }
+    const extractionJobs = learningJobs.filter(({ kind }) =>
+      kind === "EXTRACT_FACTS");
+    const synthesisJobs = learningJobs.filter(({ kind }) =>
+      kind === "SYNTHESIZE_MEMORIES");
     const ready = checkpoints.filter(({ status }) => status === "READY").length;
-    if (historyJobs.length === expectedChats &&
+    const historyReady = historyJobs.length === expectedChats &&
       historyJobs.every(({ state }) => state === "SUCCEEDED") &&
-      checkpoints.length === expectedChats && ready === expectedChats) {
-      return aggregateJobs(jobs);
+      checkpoints.length === expectedChats && ready === expectedChats;
+    if (profile === "official" && historyReady) {
+      return loadLearningEvidence(prisma, userId, jobs, 0, false);
+    }
+    const productPipelineIdle = historyReady && expectedAutomaticSettlements > 0 &&
+      extractionJobs.length === expectedAutomaticSettlements &&
+      extractionJobs.every(({ state }) => state === "SUCCEEDED") &&
+      jobs.every(({ state }) => !activeJobStates.has(state));
+    quietProductObservations = productPipelineIdle
+      ? quietProductObservations + 1
+      : 0;
+    if (quietProductObservations >= 3) {
+      const evidence = await loadLearningEvidence(
+        prisma,
+        userId,
+        jobs,
+        expectedAutomaticSettlements,
+        true
+      );
+      eligibleSynthesisSources = evidence.eligibleSynthesisSources;
+      if (longMemEvalProductMemoryPipelineComplete(evidence)) {
+        emit("product_memory_evidence", { ...evidence, questionId });
+        return evidence;
+      }
+      if (evidence.synthesisDue && evidence.synthesisJobs === 0) {
+        quietProductObservations = 0;
+      } else {
+        emit("product_memory_evidence", { ...evidence, questionId });
+        throw new Error("longmemeval_product_memory_pipeline_incomplete");
+      }
     }
     if (Date.now() >= nextProgressAt) {
       emit("history_index_progress", {
         activeJobs: jobs.filter(({ state }) => activeJobStates.has(state)).length,
+        extractionJobs: extractionJobs.length,
+        expectedExtractionJobs: expectedAutomaticSettlements,
         historyJobs: historyJobs.length,
+        profile,
         questionId,
         readyChats: ready,
+        synthesisEligibleSources: eligibleSynthesisSources,
+        synthesisJobs: synthesisJobs.length,
         totalChats: expectedChats
       });
       nextProgressAt = Date.now() + 15_000;
@@ -913,6 +1307,67 @@ async function waitForHistoryIndex(
     await sleep(2_000);
   }
   throw new Error("longmemeval_history_index_timeout");
+}
+
+async function admitForcedDreamDiagnostic(
+  prisma: PrismaClient,
+  userId: string,
+  questionId: string
+): Promise<Readonly<{ reason: string; schedulerNow: Date }>> {
+  const wallNow = new Date();
+  let schedulerNow = new Date(
+    wallNow.getTime() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1_000
+  );
+  let status = await loadMemorySynthesisScheduleStatus(
+    prisma,
+    userId,
+    schedulerNow
+  );
+  if (!status.decision.due && status.decision.reason === "ACCUMULATING") {
+    schedulerNow = new Date(
+      wallNow.getTime() + MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS + 1_000
+    );
+    status = await loadMemorySynthesisScheduleStatus(
+      prisma,
+      userId,
+      schedulerNow
+    );
+  }
+  if (!status.decision.due) {
+    throw new Error(
+      `longmemeval_dream_diagnostic_not_due:${diagnosticToken(status.decision.reason)}`
+    );
+  }
+  await reconcileMemorySynthesisWork(
+    prisma,
+    schedulerNow,
+    async (ownerId) => {
+      await probeMemoryStructuredOutputAuthority({
+        authority: defaultMemoryExecutionAuthority,
+        client: prisma,
+        role: "MEMORY_SYNTHESIZE",
+        userId: ownerId,
+        versions: MEMORY_SYNTHESIS_VERSIONS
+      });
+      return true;
+    }
+  );
+  const synthesisJobs = await prisma.memoryJob.count({
+    where: { kind: "SYNTHESIZE_MEMORIES", userId }
+  });
+  if (synthesisJobs < 1) {
+    throw new Error("longmemeval_dream_diagnostic_no_valid_cluster");
+  }
+  emit("dream_diagnostic_admitted", {
+    eligibleSources: status.activity?.eligibleSourceCount ?? 0,
+    questionId,
+    reason: status.decision.reason,
+    schedulerNow: schedulerNow.toISOString()
+  });
+  return Object.freeze({
+    reason: status.decision.reason,
+    schedulerNow
+  });
 }
 
 async function startHybridRebuild(
@@ -1584,6 +2039,208 @@ async function writeMemoryDebugArtifact(
   return artifactName;
 }
 
+async function writeDreamDiagnosticArtifact(
+  prisma: PrismaClient,
+  input: Readonly<{
+    chatIds: readonly string[];
+    entry: LongMemEvalCase;
+    outputDirectory: string;
+    phase: "post" | "pre";
+    userId: string;
+  }>
+): Promise<string> {
+  const facts = await prisma.memoryFact.findMany({
+    orderBy: [{ category: "asc" }, { canonicalKey: "asc" }, { id: "asc" }],
+    select: {
+      canonicalKey: true,
+      category: true,
+      currentVersionId: true,
+      dimensionKey: true,
+      predicateKey: true,
+      subjectKey: true
+    },
+    where: {
+      currentVersionId: { not: null },
+      state: "ACTIVE",
+      userId: input.userId
+    }
+  });
+  const versionIds = facts.flatMap(({ currentVersionId }) =>
+    currentVersionId ? [currentVersionId] : []);
+  const [versions, evidence, relations, executions, versionEntities] =
+    await Promise.all([
+    prisma.memoryFactVersion.findMany({
+      orderBy: [{ modality: "asc" }, { displayText: "asc" }, { id: "asc" }],
+      select: {
+        confidence: true,
+        directness: true,
+        displayText: true,
+        id: true,
+        modality: true,
+        observedAt: true,
+        semanticAdjudication: true,
+        structuredValue: true,
+        synthesisDepth: true,
+        synthesisGeneration: true
+      },
+      where: { id: { in: versionIds }, userId: input.userId }
+    }),
+    prisma.memoryEvidence.findMany({
+      orderBy: [{ observedAt: "asc" }, { id: "asc" }],
+      select: {
+        chatId: true,
+        factVersionId: true,
+        observedAt: true,
+        safeExcerpt: true,
+        sourceRole: true,
+        sourceType: true,
+        stance: true
+      },
+      where: { factVersionId: { in: versionIds }, userId: input.userId }
+    }),
+    prisma.memoryFactVersionRelation.findMany({
+      orderBy: [{ sourceVersionId: "asc" }, { targetVersionId: "asc" }],
+      select: {
+        confidence: true,
+        kind: true,
+        reasonCode: true,
+        sourceEligibilityHash: true,
+        sourceVersionId: true,
+        targetVersionId: true
+      },
+      where: {
+        kind: "SYNTHESIZED_FROM",
+        sourceVersionId: { in: versionIds },
+        targetVersionId: { in: versionIds },
+        userId: input.userId
+      }
+    }),
+    prisma.memorySynthesisExecution.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        acceptedOutput: true,
+        appliedAt: true,
+        sourceBindings: true,
+        sourceSetFingerprint: true
+      },
+      where: { userId: input.userId }
+    }),
+    prisma.memoryFactVersionEntity.findMany({
+      orderBy: [{ factVersionId: "asc" }, { role: "asc" }, { entityId: "asc" }],
+      select: { entityId: true, factVersionId: true, role: true },
+      where: { factVersionId: { in: versionIds }, userId: input.userId }
+    })
+  ]);
+  const entities = await prisma.memoryEntity.findMany({
+    orderBy: [{ entityType: "asc" }, { canonicalKey: "asc" }, { id: "asc" }],
+    select: {
+      canonicalKey: true,
+      displayName: true,
+      entityType: true,
+      id: true
+    },
+    where: {
+      id: { in: [...new Set(versionEntities.map(({ entityId }) => entityId))] },
+      userId: input.userId
+    }
+  });
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  const factByVersionId = new Map(facts.flatMap((fact) =>
+    fact.currentVersionId ? [[fact.currentVersionId, fact] as const] : []));
+  const versionById = new Map(versions.map((version) => [version.id, version]));
+  const evidenceByVersionId = new Map<string, typeof evidence>();
+  for (const item of evidence) {
+    const current = evidenceByVersionId.get(item.factVersionId) ?? [];
+    evidenceByVersionId.set(item.factVersionId, [...current, item]);
+  }
+  const projectEvidence = (versionId: string) =>
+    (evidenceByVersionId.get(versionId) ?? []).map((item) => ({
+      observedAt: item.observedAt,
+      safeExcerpt: item.safeExcerpt,
+      sourceRole: item.sourceRole,
+      sourceSession: debugSessionReference(item.chatId, input.chatIds, input.entry),
+      sourceType: item.sourceType,
+      stance: item.stance
+    }));
+  const projectFact = (versionId: string) => {
+    const fact = factByVersionId.get(versionId);
+    const version = versionById.get(versionId);
+    if (!fact || !version) {
+      throw new Error("longmemeval_dream_diagnostic_fact_projection_missing");
+    }
+    return {
+      canonicalKey: fact.canonicalKey,
+      category: fact.category,
+      confidence: version.confidence,
+      dimensionKey: fact.dimensionKey,
+      directness: version.directness,
+      entities: versionEntities
+        .filter(({ factVersionId }) => factVersionId === versionId)
+        .map(({ entityId, role }) => {
+          const entity = entityById.get(entityId);
+          if (!entity) {
+            throw new Error("longmemeval_dream_diagnostic_entity_missing");
+          }
+          return {
+            canonicalKey: entity.canonicalKey,
+            displayName: entity.displayName,
+            entityType: entity.entityType,
+            role
+          };
+        }),
+      evidence: projectEvidence(versionId),
+      modality: version.modality,
+      observedAt: version.observedAt,
+      predicateKey: fact.predicateKey,
+      semanticAdjudication: version.semanticAdjudication,
+      statement: version.displayText,
+      structuredValue: version.structuredValue,
+      subjectKey: fact.subjectKey,
+      synthesisDepth: version.synthesisDepth,
+      synthesisGeneration: version.synthesisGeneration
+    };
+  };
+  const patternVersions = versions.filter(({ modality }) => modality === "PATTERN");
+  const directVersions = versions.filter(({ modality }) => modality !== "PATTERN");
+  const artifactName = `dream-diagnostic-${input.phase}-${createHash("sha256")
+    .update(input.entry.questionId)
+    .digest("hex")
+    .slice(0, 16)}.json`;
+  await writeJsonAtomic(resolve(input.outputDirectory, artifactName),
+    redactLongMemEvalDebugArtifact({
+      directFacts: directVersions.map(({ id }) => projectFact(id)),
+      patterns: patternVersions.map(({ id }) => ({
+        ...projectFact(id),
+        sources: relations
+          .filter(({ sourceVersionId }) => sourceVersionId === id)
+          .map((relation) => ({
+            confidence: relation.confidence,
+            fact: projectFact(relation.targetVersionId),
+            reasonCode: relation.reasonCode,
+            sourceEligibilityHash: relation.sourceEligibilityHash
+          }))
+      })),
+      question: input.entry.question,
+      questionId: input.entry.questionId,
+      phase: input.phase,
+      synthesisExecutions: executions.map((execution) => ({
+        appliedAt: execution.appliedAt,
+        recoveryOutputCleared: execution.acceptedOutput === null,
+        recoverySourceBindingsCleared: execution.sourceBindings === null,
+        sourceSetFingerprint: execution.sourceSetFingerprint
+      })),
+      version: 1,
+      warning: "Contains secret-screened benchmark facts and Dream lineage. Keep this ignored 0600 artifact local."
+    }));
+  emit("dream_diagnostic_written", {
+    artifact: artifactName,
+    directFacts: directVersions.length,
+    patterns: patternVersions.length,
+    questionId: input.entry.questionId
+  });
+  return artifactName;
+}
+
 async function assertExecutionModels(
   prisma: PrismaClient,
   userId: string,
@@ -1597,6 +2254,7 @@ async function assertExecutionModels(
     select: {
       completedAt: true,
       estimatedCostMicros: true,
+      id: true,
       inputTokens: true,
       logicalRole: true,
       outputTokens: true,
@@ -1609,25 +2267,36 @@ async function assertExecutionModels(
   });
   const successful = executions.filter(({ state }) => state === "SUCCEEDED");
   for (const execution of successful) {
-    const expectedModelId = embeddingRoles.has(execution.logicalRole)
-      ? roles.qwen.id
-      : roles.system.id;
+    const expectedModelId = longMemEvalExpectedUtilityModelId({
+      embeddingModelId: roles.qwen.id,
+      logicalRole: execution.logicalRole,
+      rerankerModelId: roles.reranker?.id ?? null,
+      systemModelId: roles.system.id
+    });
     if (execution.providerModelId !== expectedModelId) {
       throw new Error("longmemeval_utility_model_mismatch");
     }
   }
-  const rolesUsed = new Set(successful.map(({ logicalRole }) => logicalRole));
-  if (!rolesUsed.has("MEMORY_HISTORY_CLASSIFY") ||
-    !rolesUsed.has("MEMORY_DOCUMENT_EMBED") ||
-    !rolesUsed.has("MEMORY_QUERY_EMBED")) {
-    throw new Error("longmemeval_required_utility_role_missing");
-  }
-  const oneItemEmbeddingRequests = successful.filter(({ logicalRole }) =>
-    embeddingRoles.has(logicalRole)).length;
-  const batchSizes: Record<string, number> = {};
-  if (oneItemEmbeddingRequests > 0) batchSizes["1"] = oneItemEmbeddingRequests;
-  const embeddingBatchSizeDistribution: Readonly<Record<string, number>> =
-    Object.freeze(batchSizes);
+  const documentExecutionIds = successful.flatMap(({ id, logicalRole }) =>
+    logicalRole === "MEMORY_DOCUMENT_EMBED" ? [id] : []);
+  const documentBatches = documentExecutionIds.length === 0
+    ? []
+    : await prisma.memoryEmbeddingBatchItem.groupBy({
+        _count: { _all: true },
+        by: ["executionBindingId"],
+        where: {
+          executionBindingId: { in: documentExecutionIds },
+          userId
+        }
+      });
+  const embeddingBatchSizeDistribution =
+    longMemEvalEmbeddingBatchSizeDistribution({
+      documentBatches: documentBatches.map((batch) => ({
+        executionBindingId: batch.executionBindingId!,
+        itemCount: batch._count._all
+      })),
+      successfulExecutions: successful
+    });
   return Object.freeze({
     aggregates: aggregateExecutions(executions),
     embeddingBatchSizeDistribution
@@ -1643,9 +2312,19 @@ async function runCase(
 ): Promise<Readonly<{ hypothesis: string; summary: CaseSummary }>> {
   const identity = await withFailureCode(
     "longmemeval_identity_setup_failed",
-    () => createBenchmarkIdentity(prisma, roles, entry.questionId)
+    () => createBenchmarkIdentity(prisma, roles, entry.questionId, options.profile)
   );
   try {
+    if (options.forceDreamDiagnostic) {
+      await withFailureCode(
+        "longmemeval_dream_diagnostic_boundary_failed",
+        () => prepareForcedDreamDiagnostic(
+          prisma,
+          identity.userId,
+          entry
+        )
+      );
+    }
     await withFailureCode(
       "longmemeval_catalog_preflight_failed",
       () => catalogSystemModel(baseUrl, identity.cookie, roles.system.id)
@@ -1657,20 +2336,72 @@ async function runCase(
         prisma,
         identity.userId,
         entry,
-        options.sessionConcurrency
+        options.sessionConcurrency,
+        options.profile
       )
     );
     const importCompletedAt = Date.now();
-    await withFailureCode(
+    let learning = await withFailureCode(
       "longmemeval_history_index_failed",
       () => waitForHistoryIndex(
         prisma,
         identity.userId,
         imported.chatIds.length,
+        imported.automaticSettlements,
+        options.profile,
         options.indexTimeoutMs,
         entry.questionId
       )
     );
+    if (options.forceDreamDiagnostic) {
+      await withFailureCode(
+        "longmemeval_dream_diagnostic_artifact_failed",
+        () => writeDreamDiagnosticArtifact(prisma, {
+          chatIds: imported.chatIds,
+          entry,
+          outputDirectory: options.outputDirectory,
+          phase: "pre",
+          userId: identity.userId
+        })
+      );
+      if (learning.synthesisJobs === 0) {
+        await withFailureCode(
+          "longmemeval_dream_diagnostic_admission_failed",
+          () => admitForcedDreamDiagnostic(
+            prisma,
+            identity.userId,
+            entry.questionId
+          )
+        );
+        learning = await withFailureCode(
+          "longmemeval_dream_diagnostic_pipeline_failed",
+          () => waitForHistoryIndex(
+            prisma,
+            identity.userId,
+            imported.chatIds.length,
+            imported.automaticSettlements,
+            options.profile,
+            options.indexTimeoutMs,
+            entry.questionId
+          )
+        );
+      }
+      if (learning.synthesisJobs < 1 ||
+        learning.successfulSynthesisJobs !== learning.synthesisJobs ||
+        learning.appliedSynthesisExecutions !== learning.synthesisJobs) {
+        throw new Error("longmemeval_dream_diagnostic_not_applied");
+      }
+      await withFailureCode(
+        "longmemeval_dream_diagnostic_artifact_failed",
+        () => writeDreamDiagnosticArtifact(prisma, {
+          chatIds: imported.chatIds,
+          entry,
+          outputDirectory: options.outputDirectory,
+          phase: "post",
+          userId: identity.userId
+        })
+      );
+    }
     const lexicalIndexCompletedAt = Date.now();
     const rebuildJobId = await withFailureCode(
       "longmemeval_hybrid_rebuild_start_failed",
@@ -1747,8 +2478,10 @@ async function runCase(
           jobs: aggregateJobs(jobs),
           lexicalIndexMs: lexicalIndexCompletedAt - importCompletedAt,
           messages: imported.messages,
-          sessions: imported.chatIds.length
+          sessions: imported.chatIds.length,
+          syntheticAssistantSettlements: imported.syntheticAssistantSettlements
         }),
+        learning,
         questionId: entry.questionId,
         questionType: entry.questionType,
         retrieval: answer.retrieval,
@@ -1840,6 +2573,8 @@ async function main(): Promise<void> {
       caseConcurrency: options.caseConcurrency,
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
+      forceDreamDiagnostic: options.forceDreamDiagnostic,
+      profile: options.profile,
       selectionMode: selection.mode,
       sessionConcurrency: options.sessionConcurrency,
       staleUsersRemoved
@@ -1849,6 +2584,8 @@ async function main(): Promise<void> {
       options.caseConcurrency,
       async (entry) => {
         emit("case_start", {
+          forceDreamDiagnostic: options.forceDreamDiagnostic,
+          profile: options.profile,
           questionId: entry.questionId,
           questionType: entry.questionType,
           sessions: entry.haystackSessions.length
@@ -1888,8 +2625,15 @@ async function main(): Promise<void> {
       summaries.push(outcome.result.summary);
     }
     const completedAt = new Date();
+    const qualification = longMemEvalQualificationGate({
+      executionFailures: failures.length,
+      memoryOutcomes: summaries.map(({ answer }) => answer.memoryOutcome)
+    });
     await writeJsonAtomic(summaryPath, {
-      activeMemoryRetrievalConfiguration,
+      activeMemoryRetrievalConfiguration: {
+        ...activeMemoryRetrievalConfigurationBase,
+        automaticFactLearning: options.profile === "product"
+      },
       answerModel: {
         provider: "codex-lb",
         reasoningEffort: qualificationSystemReasoningEffort,
@@ -1910,11 +2654,33 @@ async function main(): Promise<void> {
         referenceSha256: LONGMEMEVAL_ORACLE_SHA256,
         sha256: LONGMEMEVAL_EVALUATOR_SHA256
       },
+      dreamDiagnostic: options.forceDreamDiagnostic
+        ? {
+            enabled: true,
+            optInBoundary: "backdated_before_earliest_unchanged_session",
+            productPolicyChanged: false,
+            schedulerClock: "advanced_to_first_product_due_point",
+            scoring: "separate_non_official_diagnostic"
+          }
+        : { enabled: false },
       failures,
       memoryEmbeddingModel: {
         provider: "OpenRouter",
         upstreamModelId: "qwen/qwen3-embedding-8b"
       },
+      memoryRerankerModel: roles.reranker
+        ? {
+            mode: "dedicated",
+            provider: "OpenRouter",
+            upstreamModelId: roles.reranker.upstreamModelId
+          }
+        : {
+            mode: "system_model_compatibility",
+            provider: "codex-lb",
+            upstreamModelId: qualificationSystemModelId
+          },
+      profile: longMemEvalProfileManifest(options.profile),
+      qualification,
       results: summaries,
       selection: {
         mode: selection.mode,
@@ -1923,21 +2689,26 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 4,
+      version: 10,
       workerConcurrency: {
         case: options.caseConcurrency,
-        memoryJobs: 16,
-        memoryJobsPerUser: 16,
+        memoryJobs: qualificationMemoryJobParallelism,
+        memoryJobsPerUser: qualificationMemoryJobPerUserParallelism,
         sessionImport: options.sessionConcurrency
       }
     });
     emit("benchmark_complete", {
       completed: summaries.length,
+      degradedMemoryOutcomes: qualification.degradedMemoryOutcomes,
       failed: failures.length,
-      outputDirectory: options.outputDirectory
+      outputDirectory: options.outputDirectory,
+      qualificationPassed: qualification.passed
     });
     if (summaries.length === 0 || failures.length > 0) {
       throw new Error("longmemeval_qualification_incomplete");
+    }
+    if (!qualification.passed) {
+      throw new Error("longmemeval_qualification_memory_degraded");
     }
   } finally {
     await prisma.$disconnect();

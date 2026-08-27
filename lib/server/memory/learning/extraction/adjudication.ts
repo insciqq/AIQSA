@@ -16,7 +16,7 @@ export const MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION =
 export const MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION =
   "memory-semantic-adjudication-policy-v2";
 export const MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION =
-  "memory-semantic-adjudication-prompt-v3";
+  "memory-semantic-adjudication-prompt-v4";
 export const MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION =
   "memory-semantic-adjudication-schema-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME =
@@ -31,7 +31,7 @@ export const MEMORY_SEMANTIC_ADJUDICATION_VERSIONS: MemoryExecutionVersions =
       maxCandidates: 4,
       maxContextRefs: 8,
       source: "bounded-context-one-direct-user-target",
-      version: 2
+      version: 3
     }),
     schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION
   });
@@ -195,7 +195,8 @@ export function memoryCandidateRequiresSemanticAdjudication(
   candidate: MemoryExtractedCandidate
 ): boolean {
   if (candidate.confidenceBand === "MEDIUM") return false;
-  return candidate.identityKind === "SLOT" || candidate.correction === true ||
+  return candidate.identityKind === "SLOT" || candidate.modality === "STATE" ||
+    candidate.correction === true ||
     candidate.dependencies.length > 0 ||
     candidate.entities.some((entity) => entity.contextRef !== null ||
       entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS") ||
@@ -537,6 +538,8 @@ export const MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT = [
   "entity_ref and target_ref may only copy a supplied context_refs.ref. A candidate_ref is never an entity_ref or target_ref.",
   "When context_refs is empty, set entity_ref and target_ref to null. For an otherwise ENTAILED new observation with no existing target, use operation NO_RELATION.",
   "ENTAILED plus HIGH is required for a current-user hard fact or relation operation; otherwise return AMBIGUOUS with UNKNOWN or CONTRADICTED.",
+  "The complete proposed_statement must be entailed by the direct target message with the same agent, possessor, subject, object, recipient, beneficiary, relation, and material qualifiers.",
+  "Do not turn participation in a purchase, transfer, gift, recommendation, or setup into CURRENT_USER ownership. An item obtained for a distinct recipient is not thereby owned or kept by the current user.",
   "Questions, conditions, hypotheses, quotations, assistant claims, third-party claims, and ambiguous ownership are not current-user hard facts.",
   "Choose SUPERSEDE_TARGET only for an explicit current state change allowed by the supplied transition vocabulary; choose REINFORCE only for the same supported value.",
   "reason_code is a bounded label, never an explanation."
@@ -561,6 +564,7 @@ export function memorySemanticAdjudicationPromptPayload(
         subject_key: candidate.subjectKey
       },
       proposed_value: candidate.proposedValue,
+      proposed_statement: candidate.displayText,
       semantic_frame: candidate.semanticFrame,
       temporal: {
         expiration_intent: candidate.expirationIntent,

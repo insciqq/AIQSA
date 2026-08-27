@@ -62,6 +62,10 @@ import {
 import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
 import {
+  MEMORY_AGGREGATION_MAX_ATTEMPTS,
+  MEMORY_AGGREGATION_MAX_MAP_BATCHES
+} from "../memory/retrieval/runUtilities";
+import {
   decodeMemoryActionFeedback,
   decodeMemoryInitialChatMode,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
@@ -1408,10 +1412,21 @@ const retrievalExecutionRoles = new Set([
 
 const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ["MEMORY_CONTROL", new Set([0, 1])],
-  ["MEMORY_QUERY_EMBED", new Set([1, 3])],
+  ["MEMORY_QUERY_EMBED", new Set([1, 2, 3, 4])],
   ["MEMORY_RERANK", new Set(Array.from({ length: 18 }, (_, index) => index + 2))],
-  ["MEMORY_AGGREGATE", new Set([0, 1])]
+  ["MEMORY_AGGREGATE", new Set(Array.from(
+    {
+      length: (MEMORY_AGGREGATION_MAX_MAP_BATCHES + 1) *
+        MEMORY_AGGREGATION_MAX_ATTEMPTS
+    },
+    (_, index) => index
+  ))]
 ]);
+
+const aggregationPrimaryOrdinals = Array.from(
+  { length: MEMORY_AGGREGATION_MAX_MAP_BATCHES + 1 },
+  (_, index) => index * MEMORY_AGGREGATION_MAX_ATTEMPTS
+);
 
 export function validMemoryRetrievalExecutionSequence(
   bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[],
@@ -1419,7 +1434,7 @@ export function validMemoryRetrievalExecutionSequence(
   aggregationRequested = false
 ): boolean {
   if (profileRequested && aggregationRequested) return false;
-  if (bindings.length > (aggregationRequested ? 24 : 12)) return false;
+  if (bindings.length > (aggregationRequested ? 32 : 12)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
   if (new Set(positions).size !== positions.length || bindings.some((binding) =>
@@ -1434,10 +1449,26 @@ export function validMemoryRetrievalExecutionSequence(
     position !== "MEMORY_CONTROL:0" &&
     position !== "MEMORY_RERANK:2" &&
     position !== "MEMORY_RERANK:3")) return false;
+  const aggregateOrdinals = bindings
+    .filter(({ logicalRole }) => logicalRole === "MEMORY_AGGREGATE")
+    .map(({ ordinal }) => ordinal);
+  const aggregatePrimaryPresent = aggregationPrimaryOrdinals.filter((ordinal) =>
+    aggregateOrdinals.includes(ordinal));
+  const maximumAggregatePrimary = aggregatePrimaryPresent.at(-1);
+  if (maximumAggregatePrimary !== undefined &&
+    aggregationPrimaryOrdinals.some((ordinal) =>
+      ordinal < maximumAggregatePrimary && !aggregateOrdinals.includes(ordinal))) {
+    return false;
+  }
   return (
     (!present.has("MEMORY_CONTROL:1") || present.has("MEMORY_CONTROL:0")) &&
-    (!present.has("MEMORY_AGGREGATE:1") ||
-      present.has("MEMORY_AGGREGATE:0"))
+    (!present.has("MEMORY_QUERY_EMBED:2") ||
+      present.has("MEMORY_QUERY_EMBED:1")) &&
+    (!present.has("MEMORY_QUERY_EMBED:4") ||
+      present.has("MEMORY_QUERY_EMBED:3")) &&
+    aggregationPrimaryOrdinals.every((primaryOrdinal) =>
+      !present.has(`MEMORY_AGGREGATE:${primaryOrdinal + 1}`) ||
+        present.has(`MEMORY_AGGREGATE:${primaryOrdinal}`))
   );
 }
 
@@ -1459,6 +1490,27 @@ export function validMemoryRerankRetrySettlement(
     state: string;
   }>[]
 ): boolean {
+  const validGenerativePrimary = (
+    primary: Readonly<{
+      errorCode: string | null;
+      state: string;
+    }> | undefined
+  ) => primary?.state === "FAILED" && (
+    primary.errorCode === "memory_run_utility_output_invalid" ||
+    primary.errorCode === "memory_run_utility_provider_failed"
+  ) || primary?.state === "OUTCOME_UNKNOWN" &&
+    primary.errorCode === "memory_run_utility_outcome_unknown";
+  const validRerankPrimary = (
+    primary: Readonly<{
+      errorCode: string | null;
+      state: string;
+    }> | undefined
+  ) => validGenerativePrimary(primary) || primary?.state === "OUTCOME_UNKNOWN" && (
+    primary.errorCode === "memory_reranker_outcome_unknown" ||
+    primary.errorCode === "rerank_provider_request_failed" ||
+    primary.errorCode === "rerank_request_timed_out"
+  ) || primary?.state === "FAILED" &&
+    primary.errorCode === "memory_reranker_transient_http_failure";
   const rerankValid = [2, 4, 6, 8, 10, 12, 14, 16, 18]
     .every((primaryOrdinal) => {
     const retry = bindings.find((binding) =>
@@ -1468,16 +1520,34 @@ export function validMemoryRerankRetrySettlement(
     const primary = bindings.find((binding) =>
       binding.logicalRole === "MEMORY_RERANK" &&
       binding.ordinal === primaryOrdinal);
-    return primary?.state === "FAILED" &&
-      primary.errorCode === "memory_run_utility_output_invalid";
+    return validRerankPrimary(primary);
   });
-  const aggregationRetry = bindings.find((binding) =>
-    binding.logicalRole === "MEMORY_AGGREGATE" && binding.ordinal === 1);
-  if (!aggregationRetry) return rerankValid;
-  const aggregationPrimary = bindings.find((binding) =>
-    binding.logicalRole === "MEMORY_AGGREGATE" && binding.ordinal === 0);
-  return rerankValid && aggregationPrimary?.state === "FAILED" &&
-    aggregationPrimary.errorCode === "memory_run_utility_output_invalid";
+  const aggregationValid = aggregationPrimaryOrdinals.every((primaryOrdinal) => {
+    const retry = bindings.find((binding) =>
+      binding.logicalRole === "MEMORY_AGGREGATE" &&
+      binding.ordinal === primaryOrdinal + 1);
+    if (!retry) return true;
+    const primary = bindings.find((binding) =>
+      binding.logicalRole === "MEMORY_AGGREGATE" &&
+      binding.ordinal === primaryOrdinal);
+    return validGenerativePrimary(primary);
+  });
+  const embeddingValid = [1, 3].every((primaryOrdinal) => {
+    const retry = bindings.find((binding) =>
+      binding.logicalRole === "MEMORY_QUERY_EMBED" &&
+      binding.ordinal === primaryOrdinal + 1);
+    if (!retry) return true;
+    const primary = bindings.find((binding) =>
+      binding.logicalRole === "MEMORY_QUERY_EMBED" &&
+      binding.ordinal === primaryOrdinal);
+    return primary?.state === "OUTCOME_UNKNOWN" && (
+      primary.errorCode === "embedding_provider_request_failed" ||
+      primary.errorCode === "embedding_request_timed_out" ||
+      primary.errorCode === "memory_query_embedding_outcome_unknown"
+    ) || primary?.state === "FAILED" &&
+      primary.errorCode === "memory_query_embedding_transient_http_failure";
+  });
+  return rerankValid && aggregationValid && embeddingValid;
 }
 
 type PreparingAttemptExecutionEvidence = Readonly<{

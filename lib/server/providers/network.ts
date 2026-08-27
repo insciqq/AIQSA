@@ -4,6 +4,15 @@ import {
 } from "./providerConfiguration";
 
 const defaultProviderResponseMaxBytes = 16 * 1024 * 1024;
+const retryableProviderHttpStatuses = new Set([
+  408,
+  409,
+  429,
+  500,
+  502,
+  503,
+  504
+]);
 
 export type ProviderStreamLimits = Readonly<{
   idleTimeoutMs: number;
@@ -161,6 +170,14 @@ export function providerTimeoutMs(): number {
 
 export function providerResponseMaxBytes(): number {
   return positiveIntegerEnv("AIQSA_PROVIDER_RESPONSE_MAX_BYTES", defaultProviderResponseMaxBytes);
+}
+
+export function isProviderRetryableHttpStatus(
+  status: number | null | undefined
+): boolean {
+  return typeof status === "number" &&
+    Number.isSafeInteger(status) &&
+    retryableProviderHttpStatuses.has(status);
 }
 
 export class ProviderRequestTimeoutError extends Error {

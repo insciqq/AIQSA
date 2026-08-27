@@ -35,6 +35,10 @@ import {
   type MemoryRetrievalPlan
 } from "./contracts";
 import {
+  orderMemoryCandidatesByDistinctSourceFirst,
+  orderMemoryCandidatesWithSoftSourceDiversity
+} from "./sourceDiversity";
+import {
   memoryCandidateIsSupportingObservation,
   memoryRetrievalEvidenceRootKey
 } from "./ranker";
@@ -386,29 +390,18 @@ function packedItem(input: Readonly<{
 }
 
 function sourceDiversityOrder(
-  ranked: readonly MemoryRankedCandidate[]
+  ranked: readonly MemoryRankedCandidate[],
+  strictCoverage: boolean
 ): readonly MemoryRankedCandidate[] {
-  const firstBySource: MemoryRankedCandidate[] = [];
-  const remaining: MemoryRankedCandidate[] = [];
-  const seenSources = new Set<string>();
-  for (const candidate of ranked) {
-    if (candidate.itemType === "FACT_VERSION") continue;
-    const sourceChatId = candidate.metadata.sourceChatId;
-    if (sourceChatId && !seenSources.has(sourceChatId)) {
-      seenSources.add(sourceChatId);
-      firstBySource.push(candidate);
-    } else {
-      remaining.push(candidate);
-    }
-  }
-  // Diversity changes only the bounded ordering. It never excludes a source
-  // or imposes a per-source quota, and non-history candidates retain their
-  // original relevance-selected positions.
-  const history = [...firstBySource, ...remaining];
-  let historyIndex = 0;
-  return ranked.map((candidate) => candidate.itemType !== "FACT_VERSION"
-    ? history[historyIndex++]!
-    : candidate);
+  const order = strictCoverage
+    ? orderMemoryCandidatesByDistinctSourceFirst
+    : orderMemoryCandidatesWithSoftSourceDiversity;
+  return order(
+    ranked,
+    (candidate) => candidate.itemType === "FACT_VERSION"
+      ? null
+      : candidate.metadata.sourceChatId ?? `missing-source:${candidate.itemId}`
+  );
 }
 
 function temporalReason(plan: MemoryRetrievalPlan): MemoryPackedItem["temporalReason"] {
@@ -547,7 +540,10 @@ export function packMemoryPersonalContext(input: Readonly<{
   let historyCount = 0;
   let dynamicFactTokens = 0;
   let historyTokens = 0;
-  for (const candidate of sourceDiversityOrder(input.ranked)) {
+  for (const candidate of sourceDiversityOrder(
+    input.ranked,
+    input.plan.mode === "HISTORY_OVERVIEW"
+  )) {
     if (candidate.metadata.sourceAuthority === "SYNTHESIS" &&
       !input.plan.includePatterns) {
       increment(omissionCounts, "pattern_not_authorized");

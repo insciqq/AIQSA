@@ -695,6 +695,7 @@ describe("Memory fact extraction handler", () => {
 
   it("settles a replay-safe transient attempt before a new binding succeeds", async () => {
     const fixture = dependencies();
+    let preparedInput = fixture.input;
     const bindings: Array<{
       acceptedOutputHash: string | null;
       id: string;
@@ -780,7 +781,8 @@ describe("Memory fact extraction handler", () => {
       provider: { run },
       repository: {
         ...fixture.base.repository,
-        bindings: vi.fn(async () => bindings)
+        bindings: vi.fn(async () => bindings),
+        prepare: vi.fn(async () => ({ input: preparedInput }))
       }
     } as unknown as MemoryFactExtractionHandlerDependencies);
     const firstClaim = claim();
@@ -790,6 +792,17 @@ describe("Memory fact extraction handler", () => {
       retryable: true
     } satisfies Partial<MemoryCoordinatorError>);
     expect(bindings).toMatchObject([{ id: "binding-1", ordinal: 0, state: "FAILED" }]);
+
+    const { inputHash: _inputHash, ...changedInput } = fixture.input;
+    const changedProjection = {
+      ...changedInput,
+      sourceProjectionHash: "d".repeat(64)
+    };
+    preparedInput = {
+      ...changedProjection,
+      inputHash: memoryFactExtractionInputHash(changedProjection)
+    };
+    expect(preparedInput.inputHash).not.toBe(bindings[0]!.inputHash);
 
     const result = await handler.execute({ ...firstClaim, attemptCount: 2 }, context());
     expect(result.stage).toBe("fact_observations_committed");

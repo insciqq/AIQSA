@@ -38,13 +38,14 @@ function rerankerModel() {
 
 function response(input: Readonly<{
   model?: string;
+  provider?: string;
   results?: unknown[];
   usage?: unknown;
 }> = {}): Response {
   return new Response(JSON.stringify({
     id: "rerank-request-1",
     model: input.model ?? "qwen/qwen3-reranker-8b",
-    provider: "Together",
+    provider: input.provider ?? "Together",
     results: input.results ?? [
       { index: 1, relevance_score: 0.91 },
       { index: 0, relevance_score: 0.42 }
@@ -173,6 +174,32 @@ describe("OpenRouter reranker adapter", () => {
       documents: [{ handle: "c0", text: "first" }],
       query: "query"
     })).resolves.toMatchObject({ model: "Qwen3-Reranker-8B" });
+  });
+
+  it("accepts OpenRouter's provider-native canonical model path", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      model: "accounts/fireworks/models/qwen3-reranker-8b",
+      provider: "Fireworks",
+      results: [{ index: 0, relevance_score: 0.8 }]
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).resolves.toMatchObject({
+      model: "accounts/fireworks/models/qwen3-reranker-8b",
+      provider: "Fireworks"
+    });
+  });
+
+  it("rejects a provider-native model path that contradicts the routed provider", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      model: "accounts/fireworks/models/qwen3-reranker-8b",
+      provider: "Together"
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_response_model_mismatch" });
   });
 
   it("does not retry or enable provider fallback after an upstream failure", async () => {

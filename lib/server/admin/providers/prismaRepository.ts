@@ -1136,6 +1136,44 @@ export function createPrismaAdminProviderRepository(
         where: { connectionId, id: { in: referencedCredentialIds } },
         orderBy: { id: "asc" }
       });
+      const credentialDraftCheckWhere: Prisma.ProviderDraftCheckWhereInput[] = [];
+      for (const credential of credentials) {
+        if (credential.draftSecretEnvelope !== null) {
+          credentialDraftCheckWhere.push({
+            credentialDraftVersion: credential.draftVersion,
+            credentialId: credential.id,
+            credentialVersionId: null
+          });
+        } else if (credential.activeVersion) {
+          credentialDraftCheckWhere.push({
+            credentialDraftVersion: null,
+            credentialId: credential.id,
+            credentialVersionId: credential.activeVersion.id
+          });
+        }
+      }
+      const providerDraftChecks = models.length > 0 && credentials.length > 0
+        ? await prisma.providerDraftCheck.findMany({
+            select: {
+              checkedAt: true,
+              connectionDraftVersion: true,
+              credentialDraftVersion: true,
+              credentialId: true,
+              credentialVersionId: true,
+              evidence: true,
+              fingerprint: true,
+              modelDraftVersion: true,
+              providerModelId: true,
+              status: true
+            },
+            where: {
+              connectionDraftVersion: connection.draftVersion,
+              connectionId,
+              OR: credentialDraftCheckWhere,
+              providerModelId: { in: models.map(({ id }) => id) }
+            }
+          })
+        : [];
       return {
         connection: {
           configuration: connection.draftConfig,
@@ -1157,6 +1195,10 @@ export function createPrismaAdminProviderRepository(
           enabled: credential.enabled,
           id: credential.id
         })),
+        draftChecks: providerDraftChecks.flatMap((check) => {
+          const safeEvidence = evidence(check.evidence);
+          return safeEvidence ? [{ ...check, evidence: safeEvidence }] : [];
+        }),
         models: models.map((model) => ({
           configuration: model.draftConfig,
           draftVersion: model.draftVersion,

@@ -27,6 +27,7 @@ import {
   persistMemoryFactDependencies
 } from "../learning/dependencies/repository";
 import { persistMemoryCandidateEntities } from "../learning/entities/repository";
+import { ensureClassifiedSearchEntry } from "../reclassification/repository";
 
 type LockedFact = Readonly<{
   currentVersionId: string | null;
@@ -521,6 +522,13 @@ async function createFirstOrReactivatedVersion(
     factVersionId,
     userId: settings.userId
   });
+  await ensureClassifiedSearchEntry(
+    tx,
+    settings,
+    factVersionId,
+    bindingId,
+    now
+  );
   return { attachedEvidence: 1, createdVersions: 1 };
 }
 
@@ -887,6 +895,13 @@ async function createObservation(
       },
       where: { id: fact.id }
     });
+    await ensureClassifiedSearchEntry(
+      tx,
+      settings,
+      active.id,
+      bindingId,
+      now
+    );
     return { attachedEvidence: 1, createdVersions: 0 };
   }
 

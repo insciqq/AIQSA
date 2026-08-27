@@ -991,6 +991,7 @@ describe("Memory lexical history index persistence", () => {
         FROM "MemorySearchEntry" AS entry
         WHERE entry."userId" = ${userId}
           AND entry."indexGenerationId" = ${generation.id}
+          AND entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
           AND entry."searchVectorSimple" @@ plainto_tsquery('simple', 'кофе')
       `);
       expect(lexical).toEqual([{ id: entries[0]!.id }]);
@@ -1021,8 +1022,14 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "ACTIVE", userId }
       })).resolves.toBe(1);
-      await expect(prisma.memorySearchEntry.count({ where: { userId } }))
-        .resolves.toBe(1);
+      await expect(prisma.memorySearchEntry.findMany({
+        orderBy: { itemType: "asc" },
+        select: { itemType: true },
+        where: { userId }
+      })).resolves.toEqual([
+        { itemType: "RECALL_CHUNK" },
+        { itemType: "RECALL_ROUND" }
+      ]);
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
       })).resolves.toMatchObject({ status: "PENDING" });
@@ -1558,19 +1565,25 @@ describe("Memory lexical history index persistence", () => {
       expect(prepared.plan.incremental).toMatchObject({
         commonPathMessageCount: 4_000,
         mode: "APPEND",
-        rebuildFromMessageOrdinal: 3_998
+        rebuildFromMessageOrdinal: 3_996
       });
       expect(prepared.plan.timeZone).toBe("Europe/Moscow");
       expect(prepared.plan.work).toEqual({
         chunksBuilt: 1,
         chunksReplaced: 0,
         chunksReused: 1,
+        contextualProviderRequests: 0,
+        contextualRoundsFallback: 0,
+        contextualRoundsGenerated: 0,
         digestSegmentsProcessed: 0,
         digestSourceChunksProcessed: 0,
-        messageContentRowsLoaded: 4,
-        messagesProjected: 4,
-        modelRunRowsLoaded: 2,
-        pathMetadataRowsRead: 4_002
+        messageContentRowsLoaded: 6,
+        messagesProjected: 6,
+        modelRunRowsLoaded: 3,
+        pathMetadataRowsRead: 4_002,
+        roundsBuilt: 3,
+        roundsReplaced: 0,
+        roundsReused: 0
       });
       expect(prepared.plan.chunks[0]?.id).toBe(initialChunkId);
       expect(prepared.plan.rebuiltChunkIds).toHaveLength(1);

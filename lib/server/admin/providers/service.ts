@@ -870,9 +870,27 @@ export function createAdminProviderService(input: Readonly<{
       const checks: StoredProviderDraftCheck[] = models.flatMap((model) =>
         testedCredentials.map(({ checkedAt, credential, outcome }) => {
           const write = credentials.find(({ id }) => id === credential.id)!;
-          const available = (
+          const catalogAvailable = (
             outcome.modelIdsByClass?.[model.configuration.modelClass] ?? outcome.modelIds
           ).includes(model.configuration.upstreamModelId);
+          const directRerankerAvailable = model.configuration.modelClass === "reranker" &&
+            candidate.draftChecks.some((check) =>
+              check.status === "available" &&
+              check.connectionDraftVersion === candidate.connection.draftVersion &&
+              check.providerModelId === model.id &&
+              check.modelDraftVersion === model.draftVersion &&
+              check.credentialId === credential.id &&
+              check.credentialDraftVersion === (write.kind === "draft"
+                ? write.draftVersion
+                : null) &&
+              check.credentialVersionId === (write.kind === "active"
+                ? write.versionId
+                : null) &&
+              check.evidence.upstreamModelId === model.configuration.upstreamModelId &&
+              (check.evidence.method === "tiny_generation" ||
+                check.evidence.method === "openrouter_account_catalog")
+            );
+          const available = catalogAvailable || directRerankerAvailable;
           const credentialDraftVersion = write.kind === "draft" ? write.draftVersion : null;
           const credentialVersionId = write.kind === "active" ? write.versionId : null;
           return {

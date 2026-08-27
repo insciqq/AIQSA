@@ -6,21 +6,56 @@ normal AIQSA chat-history Memory path. The upstream repository, dataset, and
 revision, and SHA-256 in `upstream.json`. Generated downloads and results are
 ignored by Git.
 
-The qualification profile uses `gpt-5.6-sol` through codex-lb for the answer
-and all non-embedding Memory roles, and `qwen/qwen3-embedding-8b` through
-OpenRouter for document and query embeddings. It intentionally disables
-automatic fact learning so the result measures recall from imported chat
-history. Each official timestamped session becomes one ordinary source chat;
-the final question is submitted through AIQSA's normal HTTP run-admission path.
+The qualification profiles use `gpt-5.6-sol` through codex-lb for the answer
+and structured Memory roles, `qwen/qwen3-embedding-8b` through OpenRouter for
+document and query embeddings, and the installation's selected dedicated
+reranker when one is configured. The `official` profile intentionally disables
+automatic fact learning and pattern synthesis so the result measures recall
+from imported chat history and remains comparable with the upstream oracle.
+Each official timestamped session becomes one ordinary source chat;
+when an external session ends on a user turn, the adapter appends one
+content-free completed assistant settlement envelope so it can enter the same
+completed-source lifecycle as an ordinary chat. Every official turn remains
+byte-for-byte unchanged, and the summary records the number of such envelopes.
+The final question is submitted through AIQSA's normal HTTP run-admission path.
+
+The non-comparable `product` profile replays those same unchanged sessions
+through the ordinary persisted-chat settlement lifecycle. It enables automatic
+fact learning and forward-only Dream synthesis, waits for every expected fact
+extraction, and then rebuilds and queries the complete Memory index. Normal
+Dream admission follows product cadence: at least three eligible direct sources,
+thirty quiet minutes, a twelve-hour hard cooldown after a previous successful
+Dream, and either eight new evidence-bearing chats, twelve changed facts, or a
+twenty-four-hour low-activity fallback. Historical LongMemEval timestamps may
+correctly fall before the new benchmark user's first-enable boundary; in that
+case the profile proves that no Dream call was admitted. Its
+content-free summary records direct-user evidence, classification, eligible
+source count, governed provider bindings, cleared recovery payloads, and—when
+Dream runs—either classified patterns with at least three exact source
+relations each or a structurally valid empty result. It never inserts
+benchmark-selected facts or rerolls an unchanged source set to force a
+model-authored pattern.
+
+`--force-dream-diagnostic` is an explicit product-only inspection mode, kept in
+a separate output directory and never treated as official-comparable evidence.
+For only the disposable benchmark owner it moves the Dream opt-in boundary to
+one millisecond before the earliest unchanged source session, lets extraction
+finish normally, and invokes the production scheduler at its first legitimate
+quiet/fallback due point. It does not alter source text, extraction, clustering,
+minimum pattern evidence, prompts, or product policy. A secret-screened ignored
+`dream-diagnostic-*.json` artifact records current direct facts, safe evidence,
+generated patterns, and every exact `SYNTHESIZED_FROM` source so grounding can
+be reviewed manually before the disposable user is deleted.
 
 The overlay has an explicit compose name, container names, network names,
 volume names, database identity, and loopback-only ports. Its defaults are app
 `3137`, PostgreSQL `55437`, MinIO `19100`, and MinIO console `19101`; it does not
 share state with the default development installation. The benchmark overlay
-runs at most sixteen Memory jobs globally and per benchmark user. The policy
-supports a higher global-only ceiling for controlled experiments, but trials
-at twenty-four and thirty-two produced provider calls that outlived their
-configured timeout, so the preserved qualification profile uses sixteen.
+runs at most eight Memory jobs globally and four per benchmark user. The
+per-user bound preserves provider parallelism without building a same-owner
+commit queue or an embedding burst large enough to make transport outcomes
+ambiguous. The policy supports higher ceilings for controlled load tests, but
+they are not the reliability qualification profile.
 The runner imports up to sixteen sessions per case concurrently and runs up
 to two independent cases concurrently by default;
 case and session concurrency are bounded to thirty-two and sixteen respectively.
@@ -41,6 +76,7 @@ docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compos
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-sol
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-embedding qwen/qwen3-embedding-8b
+docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker qwen/qwen3-reranker-8b
 ```
 
 Run one deterministically selected LongMemEval-S case. Both acknowledgements
@@ -57,6 +93,10 @@ Use repeated `--question-id ID` arguments for an explicit set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.
 Use `--case-concurrency N` and `--session-concurrency N` to lower either
 bounded concurrency limit; the defaults are `2` and `16` respectively.
+Pass `--profile product` only for the full non-comparable automatic-learning
+and Dream replay described above. The default remains `official`.
+Add `--force-dream-diagnostic` to that product command only when the explicit
+historical-data Dream inspection described above is intended.
 
 Add `--debug-memory` only for an explicitly disposable diagnostic run. The
 runner then captures the secret-screened normalized pre-provider request, prepared
@@ -102,6 +142,13 @@ real model answers, then adds every recorded execution failure to the aggregate
 denominator as a hard incorrect result. This avoids both silently omitting a
 failure and letting an abstention judge mistake an empty response for a correct
 abstention. The resulting aggregate is written to `benchmark-score.json`.
+
+Oracle correctness is independent from runtime health. The runner records a
+content-free qualification gate and exits nonzero when any completed case has
+`memoryOutcome=DEGRADED`; the evaluator likewise reports
+`memoryDegradedCases` and `qualificationPassed=false` without changing the
+unchanged upstream label or accuracy. Such a result must be diagnosed and rerun
+cleanly rather than accepted because its answer happened to score correctly.
 
 Install the official evaluator dependencies and grade the answer with the
 upstream `gpt-4o-2024-08-06` evaluator:

@@ -14,6 +14,7 @@ export const LONGMEMEVAL_MAX_CONCURRENCY = 32;
 export const LONGMEMEVAL_MAX_CASE_CONCURRENCY = 32;
 export const LONGMEMEVAL_MAX_SESSION_CONCURRENCY = 16;
 export const LONGMEMEVAL_MAX_EVALUATOR_CONCURRENCY = 32;
+export const LONGMEMEVAL_PROFILES = ["official", "product"] as const;
 export const LONGMEMEVAL_QUESTION_TYPES = [
   "knowledge-update",
   "multi-session",
@@ -22,6 +23,136 @@ export const LONGMEMEVAL_QUESTION_TYPES = [
   "single-session-user",
   "temporal-reasoning"
 ] as const;
+
+export type LongMemEvalProfile = (typeof LONGMEMEVAL_PROFILES)[number];
+
+export type LongMemEvalProfileManifest = Readonly<{
+  automaticFactLearning: boolean;
+  id: LongMemEvalProfile;
+  label: "official-history-recall" | "product-full-memory";
+  officialComparable: boolean;
+  patternSynthesis: boolean;
+  version: 2;
+}>;
+
+export function decodeLongMemEvalProfile(value: unknown): LongMemEvalProfile {
+  if (typeof value === "string" &&
+    (LONGMEMEVAL_PROFILES as readonly string[]).includes(value)) {
+    return value as LongMemEvalProfile;
+  }
+  throw new Error("longmemeval_profile_invalid");
+}
+
+export function longMemEvalProfileManifest(
+  profile: LongMemEvalProfile
+): LongMemEvalProfileManifest {
+  return profile === "official"
+    ? Object.freeze({
+        automaticFactLearning: false,
+        id: profile,
+        label: "official-history-recall" as const,
+        officialComparable: true,
+        patternSynthesis: false,
+        version: 2 as const
+      })
+    : Object.freeze({
+        automaticFactLearning: true,
+        id: profile,
+        label: "product-full-memory" as const,
+        officialComparable: false,
+        patternSynthesis: true,
+        version: 2 as const
+      });
+}
+
+export function decodeLongMemEvalProfileManifest(
+  value: unknown
+): LongMemEvalProfileManifest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("longmemeval_profile_manifest_invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const profile = decodeLongMemEvalProfile(record.id);
+  const expected = longMemEvalProfileManifest(profile);
+  if (
+    record.automaticFactLearning !== expected.automaticFactLearning ||
+    record.label !== expected.label ||
+    record.officialComparable !== expected.officialComparable ||
+    record.patternSynthesis !== expected.patternSynthesis ||
+    record.version !== expected.version
+  ) {
+    throw new Error("longmemeval_profile_manifest_invalid");
+  }
+  return expected;
+}
+
+export type LongMemEvalLearningEvidence = Readonly<{
+  appliedSynthesisExecutions: number;
+  assistantEvidence: number;
+  automaticFactLearning: boolean;
+  automaticFactVersions: number;
+  classifiedAutomaticFactVersions: number;
+  classifiedPatternVersions: number;
+  directUserEvidence: number;
+  eligibleSynthesisSources: number;
+  expectedSettlements: number;
+  extractionJobs: number;
+  factVersionRelations: number;
+  lastSynthesisAtRecorded: boolean;
+  patternVersions: number;
+  relationJobs: number;
+  retainedSynthesisPayloads: number;
+  successfulFactExtractionExecutions: number;
+  successfulFactExtractionJobs: number;
+  successfulSynthesisExecutions: number;
+  successfulSynthesisJobs: number;
+  synthesizedFromRelations: number;
+  synthesisDue: boolean;
+  synthesisEnabled: boolean;
+  synthesisJobs: number;
+  synthesisScheduleReason: string;
+  synthesisThreshold: number;
+}>;
+
+export function longMemEvalProductMemoryPipelineComplete(
+  evidence: LongMemEvalLearningEvidence
+): boolean {
+  const counts = Object.values(evidence).filter(
+    (value): value is number => typeof value === "number"
+  );
+  if (counts.some((value) => !Number.isSafeInteger(value) || value < 0) ||
+    evidence.synthesisThreshold < 1 ||
+    !/^[A-Z_]{2,64}$/u.test(evidence.synthesisScheduleReason)) {
+    return false;
+  }
+  const automaticLearningComplete = evidence.automaticFactLearning &&
+    evidence.expectedSettlements > 0 &&
+    evidence.extractionJobs === evidence.expectedSettlements &&
+    evidence.successfulFactExtractionJobs > 0 &&
+    evidence.successfulFactExtractionJobs <= evidence.extractionJobs &&
+    evidence.successfulFactExtractionExecutions >=
+      evidence.successfulFactExtractionJobs &&
+    evidence.automaticFactVersions > 0 &&
+    evidence.classifiedAutomaticFactVersions === evidence.automaticFactVersions &&
+    evidence.directUserEvidence > 0 && evidence.assistantEvidence === 0 &&
+    evidence.classifiedPatternVersions === evidence.patternVersions;
+  if (!automaticLearningComplete || !evidence.synthesisEnabled) return false;
+  if (evidence.synthesisJobs === 0) {
+    return !evidence.synthesisDue &&
+      evidence.successfulSynthesisExecutions === 0 &&
+      evidence.successfulSynthesisJobs === 0 &&
+      evidence.appliedSynthesisExecutions === 0 &&
+      evidence.retainedSynthesisPayloads === 0 &&
+      !evidence.lastSynthesisAtRecorded && evidence.patternVersions === 0 &&
+      evidence.synthesizedFromRelations === 0;
+  }
+  return evidence.successfulSynthesisJobs === evidence.synthesisJobs &&
+    evidence.successfulSynthesisExecutions >= evidence.successfulSynthesisJobs &&
+    evidence.appliedSynthesisExecutions === evidence.successfulSynthesisJobs &&
+    evidence.retainedSynthesisPayloads === 0 && evidence.lastSynthesisAtRecorded &&
+    (evidence.patternVersions === 0 ||
+      evidence.synthesizedFromRelations >= evidence.patternVersions * 3);
+}
 
 export const LONGMEMEVAL_MEMORY_SOTA_BASELINE_CONFIGURATION = Object.freeze({
   aggregationContextHardCapTokens: 10_000,
@@ -55,6 +186,35 @@ export type LongMemEvalTurn = Readonly<{
   role: "assistant" | "user";
 }>;
 
+export type LongMemEvalImportTurnPlan = Readonly<{
+  appendedAssistantSettlement: boolean;
+  turns: readonly LongMemEvalTurn[];
+}>;
+
+/**
+ * A production chat source becomes indexable only after an assistant leaf has
+ * settled. External transcripts may validly stop on a user turn, so the
+ * adapter closes that transport shape with an empty assistant settlement. No
+ * official turn is removed, rewritten, or used to choose this behavior.
+ */
+export function longMemEvalSettledImportTurns(
+  turns: readonly LongMemEvalTurn[]
+): LongMemEvalImportTurnPlan {
+  if (turns.length === 0) {
+    throw new Error("longmemeval_import_session_invalid");
+  }
+  const appendedAssistantSettlement = turns.at(-1)?.role === "user";
+  return Object.freeze({
+    appendedAssistantSettlement,
+    turns: Object.freeze([
+      ...turns,
+      ...(appendedAssistantSettlement
+        ? [Object.freeze({ content: "", role: "assistant" as const })]
+        : [])
+    ])
+  });
+}
+
 export type LongMemEvalCase = Readonly<{
   answer: number | string;
   answerSessionIds: readonly string[];
@@ -72,6 +232,38 @@ export type LongMemEvalSelection = Readonly<{
   mode: "explicit" | "seeded_hash";
   seed: string;
 }>;
+
+export type LongMemEvalQualificationGate = Readonly<{
+  degradedMemoryOutcomes: number;
+  executionFailures: number;
+  passed: boolean;
+  successfulCases: number;
+}>;
+
+/** Oracle correctness and runtime health are independent qualification axes.
+ * A correct answer never waives a degraded Memory execution: the degraded
+ * reason must be diagnosed and the clean qualification rerun. Purpose-built
+ * fallback tests do not use this paid qualification gate. */
+export function longMemEvalQualificationGate(input: Readonly<{
+  executionFailures: number;
+  memoryOutcomes: readonly string[];
+}>): LongMemEvalQualificationGate {
+  if (!Number.isSafeInteger(input.executionFailures) ||
+    input.executionFailures < 0 ||
+    input.memoryOutcomes.some((outcome) => !outcome || outcome.length > 64 ||
+      !/^[A-Z][A-Z_]*$/u.test(outcome))) {
+    throw new Error("longmemeval_qualification_gate_input_invalid");
+  }
+  const degradedMemoryOutcomes = input.memoryOutcomes.filter((outcome) =>
+    outcome === "DEGRADED").length;
+  return Object.freeze({
+    degradedMemoryOutcomes,
+    executionFailures: input.executionFailures,
+    passed: input.memoryOutcomes.length > 0 &&
+      input.executionFailures === 0 && degradedMemoryOutcomes === 0,
+    successfulCases: input.memoryOutcomes.length
+  });
+}
 
 export type LongMemEvalComponentCandidate = Readonly<{
   evidenceHandle: string;
@@ -143,6 +335,62 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   utilityCallCounts: Readonly<Record<string, number>>;
   utilityFailureReasonCounts: Readonly<Record<string, number>>;
 }>;
+
+/** Builds a content-free provider-request distribution from the durable
+ * document-batch receipts. Query embeddings remain one-input requests. */
+export function longMemEvalEmbeddingBatchSizeDistribution(input: Readonly<{
+  documentBatches: readonly Readonly<{
+    executionBindingId: string;
+    itemCount: number;
+  }>[];
+  successfulExecutions: readonly Readonly<{
+    id: string;
+    logicalRole: string;
+  }>[];
+}>): Readonly<Record<string, number>> {
+  const documentExecutionIds = new Set(input.successfulExecutions
+    .filter(({ logicalRole }) => logicalRole === "MEMORY_DOCUMENT_EMBED")
+    .map(({ id }) => id));
+  const observedDocumentIds = new Set<string>();
+  const sizes: number[] = [];
+  for (const batch of input.documentBatches) {
+    if (!documentExecutionIds.has(batch.executionBindingId) ||
+      observedDocumentIds.has(batch.executionBindingId) ||
+      !Number.isSafeInteger(batch.itemCount) || batch.itemCount < 1 ||
+      batch.itemCount > 128) {
+      throw new Error("longmemeval_embedding_batch_receipt_invalid");
+    }
+    observedDocumentIds.add(batch.executionBindingId);
+    sizes.push(batch.itemCount);
+  }
+  if (observedDocumentIds.size !== documentExecutionIds.size) {
+    throw new Error("longmemeval_embedding_batch_receipt_incomplete");
+  }
+  sizes.push(...input.successfulExecutions.flatMap(({ logicalRole }) =>
+    logicalRole === "MEMORY_QUERY_EMBED" ? [1] : []));
+  const distribution: Record<string, number> = {};
+  for (const size of sizes.sort((left, right) => left - right)) {
+    const key = String(size);
+    distribution[key] = (distribution[key] ?? 0) + 1;
+  }
+  return Object.freeze(distribution);
+}
+
+export function longMemEvalExpectedUtilityModelId(input: Readonly<{
+  embeddingModelId: string;
+  logicalRole: string;
+  rerankerModelId: string | null;
+  systemModelId: string;
+}>): string {
+  if (input.logicalRole === "MEMORY_DOCUMENT_EMBED" ||
+    input.logicalRole === "MEMORY_QUERY_EMBED") {
+    return input.embeddingModelId;
+  }
+  if (input.logicalRole === "MEMORY_RERANK" && input.rerankerModelId) {
+    return input.rerankerModelId;
+  }
+  return input.systemModelId;
+}
 
 /** Runs bounded independent work concurrently while preserving input order.
  * On failure it stops admitting new work, waits for already-started work to

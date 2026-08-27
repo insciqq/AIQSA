@@ -16,7 +16,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v26");
+      .toBe("memory-fact-extraction-prompt-v27");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -38,6 +38,8 @@ describe("Memory semantic-frame extraction prompt", () => {
     for (const rule of [
       "zero-based exact occurrence index",
       "target_message is the only evidence",
+      "exact evidence text must by itself entail the complete statement",
+      "subject, semantic relation, object or value, recipient",
       "assistant-role context message is never user testimony",
       "copy that item's opaque context_ref into dependency_refs",
       "zero-based ordinal among identical exact-text matches",
@@ -58,6 +60,9 @@ describe("Memory semantic-frame extraction prompt", () => {
       "same key and value plus an exact source occurrence",
       "full exact mention as canonical_label with null brand and model qualifiers",
       "mere neighboring product mention is never direct ownership",
+      "Preserve agent, possessor, recipient, beneficiary",
+      "does not establish that the CURRENT_USER owns or keeps that item",
+      "must use the product_status SLOT shape above, never PROPOSITION",
       "one residence SLOT observation",
       "predicate_key residence, dimension_key primary",
       "value.place to the grounded PLACE canonical label",

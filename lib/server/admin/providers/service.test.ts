@@ -225,6 +225,7 @@ function activationCandidate(): ProviderActivationCandidate {
         id: "credential-active"
       }
     ],
+    draftChecks: [],
     models: [
       { configuration: modelConfiguration, draftVersion: 4, id: "model-1" },
       {
@@ -233,6 +234,58 @@ function activationCandidate(): ProviderActivationCandidate {
         id: "model-2"
       }
     ]
+  };
+}
+
+function rerankerActivationCandidate(): ProviderActivationCandidate {
+  const base = activationCandidate();
+  const credential = base.credentials[1]!;
+  const configuration = {
+    adapterKind: "openrouter_rerank",
+    answerSelectable: false,
+    capabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      toolCalling: false,
+      vision: false
+    },
+    defaultParams: {},
+    modelClass: "reranker",
+    openRouterRouting: { mode: "automatic", providers: [] },
+    upstreamModelId: "qwen/qwen3-reranker-8b"
+  } as const;
+  return {
+    connection: { ...base.connection, family: "openrouter" },
+    credentials: [credential],
+    draftChecks: [{
+      checkedAt: new Date("2026-08-27T12:00:00.000Z"),
+      connectionDraftVersion: base.connection.draftVersion,
+      credentialDraftVersion: null,
+      credentialId: credential.id,
+      credentialVersionId: credential.activeVersion!.id,
+      evidence: {
+        compatibility: {
+          directPdf: "not_supported",
+          modelAccess: "verified",
+          probeVersion: 1,
+          streaming: "not_supported",
+          structuredOutput: "not_supported",
+          usage: "verified"
+        },
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: [],
+        upstreamModelId: configuration.upstreamModelId
+      },
+      fingerprint: "reranker-direct-check",
+      modelDraftVersion: 4,
+      providerModelId: "reranker-1",
+      status: "available"
+    }],
+    models: [{ configuration, draftVersion: 4, id: "reranker-1" }]
   };
 }
 
@@ -632,6 +685,44 @@ describe("admin provider service", () => {
       code: "provider_credential_test_failed",
       resourceIds: ["credential-draft"]
     });
+  });
+
+  it("uses an exact positive reranker probe when OpenRouter's text catalog omits it", async () => {
+    const activateConnectionCas = vi.fn<AdminProviderRepository["activateConnectionCas"]>(
+      async () => "updated"
+    );
+    const providers = service(
+      repository({
+        activateConnectionCas,
+        async loadActivationCandidate() { return rerankerActivationCandidate(); }
+      }),
+      tester(vi.fn(async () => {
+        throw new Error("activation must reuse the exact paid draft probe");
+      })),
+      [],
+      credentialTester(async () => ({
+        method: "models_catalog",
+        modelIds: [],
+        modelIdsByClass: { answer: [], embedding: [], reranker: [] }
+      }))
+    );
+
+    await expect(providers.activateConnection({
+      confirmUnavailable: false,
+      connectionId: "connection-1",
+      enableConnection: true
+    })).resolves.toEqual({
+      activatedCredentialCount: 1,
+      activatedModelCount: 1,
+      connectionVersion: 3
+    });
+    expect(activateConnectionCas.mock.calls[0]?.[0].checks).toEqual([
+      expect.objectContaining({
+        credentialId: "credential-active",
+        providerModelId: "reranker-1",
+        status: "available"
+      })
+    ]);
   });
 
   it("keeps assignment separate from RBAC and confirmation-gates revoke and deletion", async () => {

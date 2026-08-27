@@ -103,9 +103,14 @@ async function factEntity(
 async function factRefs(
   tx: MemoryTransaction,
   userId: string,
-  limit: number
+  limit: number,
+  factVersionIds?: readonly string[]
 ): Promise<readonly MemoryFactContextRef[]> {
   if (limit <= 0) return [];
+  const frozenIds = factVersionIds === undefined
+    ? undefined
+    : [...new Set(factVersionIds)].slice(0, limit);
+  if (frozenIds?.length === 0) return [];
   const facts = await tx.$queryRaw<ContextFact[]>(Prisma.sql`
     SELECT version."id" AS "factVersionId", version."displayText",
       fact."subjectKey" AS "identitySubjectKey"
@@ -132,12 +137,21 @@ async function factRefs(
       AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND ${memoryExactVNextDirectAuthorityPredicate(userId)}
       AND aiqsa_memory_fact_dependencies_valid(${userId}, version."id")
+      ${frozenIds === undefined
+        ? Prisma.empty
+        : Prisma.sql`AND version."id" IN (${Prisma.join(frozenIds)})`}
     ORDER BY fact."pinned" DESC, fact."lastConfirmedAt" DESC NULLS LAST,
       version."systemFrom" DESC, version."id"
     LIMIT ${limit}
   `);
+  const orderedFacts = frozenIds === undefined
+    ? facts
+    : frozenIds.flatMap((id) => {
+        const fact = facts.find(({ factVersionId }) => factVersionId === id);
+        return fact ? [fact] : [];
+      });
   const refs: MemoryFactContextRef[] = [];
-  for (const fact of facts) {
+  for (const fact of orderedFacts) {
     const entity = await factEntity(tx, userId, fact.factVersionId);
     refs.push({
       aliases: entity?.aliases ?? [],
@@ -163,6 +177,7 @@ async function factRefs(
 export async function loadMemoryFactContextRefs(
   tx: MemoryTransaction,
   input: Readonly<{
+    factVersionIds?: readonly string[];
     messages: readonly MemoryFactInputMessage[];
     userId: string;
   }>
@@ -171,7 +186,8 @@ export async function loadMemoryFactContextRefs(
   const facts = await factRefs(
     tx,
     input.userId,
-    MEMORY_FACT_MAX_CONTEXT_REFS - messages.length
+    MEMORY_FACT_MAX_CONTEXT_REFS - messages.length,
+    input.factVersionIds
   );
   const bounded: MemoryFactContextRef[] = [];
   let characters = 0;

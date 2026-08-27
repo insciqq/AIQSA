@@ -1554,6 +1554,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
           branchGeneration: 0,
           chatId: chat.id,
           lastIndexedMessageId: assistantMessage.id,
+          lastSucceededAt: new Date(),
           pipelineVersion: "memory-history-incremental-v4",
           sourceContentHash,
           sourceRevision: 1,
@@ -1578,12 +1579,16 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         rebuildJob.idempotencyFingerprint
       );
       if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+      const afterAdmission = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      expect(afterAdmission.activeIndexGenerationId).not.toBeNull();
 
       await processRebuildJob(admitted.jobId, rebuild);
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       })).resolves.toMatchObject({
-        activeIndexGenerationId: before.activeIndexGenerationId,
+        activeIndexGenerationId: afterAdmission.activeIndexGenerationId,
         memoryGeneration: before.memoryGeneration,
         memoryRevision: before.memoryRevision
       });
@@ -1984,6 +1989,41 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         memoryRevision: caughtUp.memoryRevision
       });
 
+      // Reproduce the terminal-settlement ordering from a real embedding
+      // batch: vectors become READY and wake the shadow while the parent batch
+      // job is still nonterminal. The rebuild must wait, settle as catching up,
+      // and then be woken atomically by the batch parent's terminal commit.
+      await processRebuildJob(admitted.jobId, repository);
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: identity.generationId }
+      })).resolves.toMatchObject({ state: "CATCHING_UP" });
+      const embeddingJob = await prisma.memoryJob.findFirstOrThrow({
+        where: {
+          kind: "EMBED_ITEMS",
+          pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
+          state: "QUEUED",
+          userId
+        }
+      });
+      const embeddingCommitAt = new Date();
+      const embeddingClaim = await claimRebuildJob(
+        embeddingJob.id,
+        embeddingCommitAt
+      );
+      await expect(createPrismaMemoryCoordinatorRepository(prisma)
+        .commitJobSuccess({
+          acceptedResultHash: memorySha256({
+            domain: "memory-rebuild-test-embedding-batch",
+            jobId: embeddingJob.id
+          }),
+          claim: embeddingClaim,
+          now: embeddingCommitAt,
+          stage: "batch_settled"
+        })).resolves.toBe(true);
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      })).resolves.toMatchObject({ state: "QUEUED" });
+
       await processRebuildJob(admitted.jobId, repository);
       const [after, target, source, entries] = await Promise.all([
         prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
@@ -2026,6 +2066,172 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       await provider?.cleanup();
     }
   });
+
+  it("commits a 471-item eligible shadow within the rebuild budget", async () => {
+    const userId = await createOwner("hybrid-large-set");
+    const { explicit } = services();
+    const repository = createPrismaMemoryRebuildRepository(prisma);
+    let provider: Awaited<ReturnType<typeof configureEmbeddingProvider>> | null = null;
+    try {
+      await saveExplicit(
+        explicit,
+        userId,
+        "Prefer bounded full-set rebuild commits.",
+        "hybrid-large-set-seed"
+      );
+      const occurredAt = new Date("2026-08-10T09:00:00.000Z");
+      const text = "Bounded full-set rebuild source text.";
+      const chat = await prisma.chat.create({
+        data: { createdAt: occurredAt, title: "Large rebuild source", userId }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent(text),
+          createdAt: occurredAt,
+          parentMessageId: null,
+          role: "user",
+          status: "complete",
+          updatedAt: occurredAt
+        }
+      });
+      const assistantAt = new Date(occurredAt.getTime() + 1);
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Acknowledged."),
+          createdAt: assistantAt,
+          parentMessageId: userMessage.id,
+          role: "assistant",
+          status: "complete",
+          updatedAt: assistantAt
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: assistantMessage.id },
+        where: { id: chat.id }
+      });
+      const sourceContentHash = memorySha256({
+        assistantMessageId: assistantMessage.id,
+        userMessageId: userMessage.id
+      });
+      await prisma.chatMemoryCheckpoint.create({
+        data: {
+          activeLeafMessageId: assistantMessage.id,
+          branchGeneration: 0,
+          chatId: chat.id,
+          lastIndexedMessageId: assistantMessage.id,
+          lastSucceededAt: assistantAt,
+          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+          sourceContentHash,
+          sourceRevision: 0,
+          status: "READY",
+          userId
+        }
+      });
+      await prisma.chatMemoryCheckpointMessage.createMany({
+        data: [userMessage, assistantMessage].map((message, ordinal) => ({
+          chatId: chat.id,
+          messageId: message.id,
+          ordinal,
+          sourceMessageCreatedAt: message.createdAt,
+          sourceMessageUpdatedAt: message.updatedAt,
+          userId
+        }))
+      });
+      const chunks = Array.from({ length: 470 }, (_, chunkOrdinal) => ({
+        id: randomUUID(),
+        chunkOrdinal
+      }));
+      const contentHash = memorySha256(text);
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.createMany({
+          data: chunks.map((chunk) => ({
+            branchGeneration: 0,
+            chatId: chat.id,
+            chunkOrdinal: chunk.chunkOrdinal,
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+            contentHash,
+            id: chunk.id,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(text),
+            occurredFrom: occurredAt,
+            occurredTo: assistantAt,
+            redactionReasonCodes: [],
+            redactionState: "NOT_NEEDED" as const,
+            safeProjectedText: text,
+            safetyClass: "NORMAL" as const,
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+            sourceRevisionAtCreation: 0,
+            userId
+          }))
+        });
+        await tx.memoryRecallChunkMessage.createMany({
+          data: chunks.map((chunk) => ({
+            chatId: chat.id,
+            chunkId: chunk.id,
+            endOffset: text.length,
+            messageId: userMessage.id,
+            ordinal: 0,
+            role: "user",
+            safeTextHash: memorySha256(text),
+            sourceMessageContentHash: memorySha256(userMessage.content),
+            sourceMessageUpdatedAt: userMessage.updatedAt,
+            startOffset: 0,
+            userId
+          }))
+        });
+      });
+
+      provider = await configureEmbeddingProvider(userId, "hybrid-large-set");
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await repository.admit(userId, {
+        embeddingDeploymentId: provider.modelId,
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        operation: "REEMBED",
+        pin: provider.pin,
+        requestIdentity: { nonce: "hybrid-large-set" }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      const rebuildJob = await prisma.memoryJob.findUniqueOrThrow({
+        where: { id: admitted.jobId }
+      });
+      const identity = parseMemoryRebuildJobFingerprint(
+        rebuildJob.idempotencyFingerprint
+      );
+      if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+
+      await processRebuildJob(admitted.jobId, repository);
+      const [entries, children, parents] = await Promise.all([
+        prisma.memorySearchEntry.count({
+          where: { indexGenerationId: identity.generationId, userId }
+        }),
+        prisma.memoryEmbeddingBatchItem.count({
+          where: { indexGenerationId: identity.generationId, userId }
+        }),
+        prisma.memoryEmbeddingBatchItem.groupBy({
+          by: ["memoryJobId"],
+          where: { indexGenerationId: identity.generationId, userId }
+        })
+      ]);
+      expect({ children, entries, parents: parents.length }).toEqual({
+        children: 471,
+        entries: 471,
+        parents: 30
+      });
+      await expect(repository.status(userId, admitted.jobId)).resolves.toMatchObject({
+        completedUnits: 0,
+        state: "CATCHING_UP",
+        totalUnits: 471
+      });
+    } finally {
+      await cleanupOwner(userId);
+      await provider?.cleanup();
+    }
+  }, 60_000);
 
   it("retires an obsolete embedding shadow and admits the newly selected target", async () => {
     const userId = await createOwner("embedding-target-switch");

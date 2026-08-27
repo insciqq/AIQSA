@@ -16,7 +16,7 @@ import type { MemoryJobClaim } from "../coordinator/types";
 import {
   type MemoryItemEmbeddingPin
 } from "../embedding/contract";
-import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
+import { enqueueMemoryEmbeddingBatchItems } from "../embedding/enqueue";
 import {
   advanceMemoryMutation,
   ensureActiveLexicalGeneration,
@@ -1042,16 +1042,17 @@ async function applyFullSetDiff(
       where: { id: { in: deleteIds }, userId: settings.userId }
     });
   }
-  for (const item of items) {
-    if (retainedKeys.has(itemKey(item.itemType, item.itemId))) continue;
-    await tx.memorySearchEntry.create({
-      data: {
+  const missingItems = items.filter((item) =>
+    !retainedKeys.has(itemKey(item.itemType, item.itemId)));
+  if (missingItems.length > 0) {
+    await tx.memorySearchEntry.createMany({
+      data: missingItems.map((item) => ({
         ...targetData(item, settings.userId, generation.id),
         embeddingState: generation.indexMode === "LEXICAL_ONLY"
-          ? "NOT_APPLICABLE"
-          : "PENDING",
+          ? "NOT_APPLICABLE" as const
+          : "PENDING" as const,
         id: randomUUID()
-      }
+      }))
     });
   }
 
@@ -1072,24 +1073,23 @@ async function applyFullSetDiff(
     select: { embeddingState: true, id: true, safeContentHash: true },
     where: { indexGenerationId: generation.id, userId: settings.userId }
   });
-  let failed = false;
-  for (const entry of pending) {
-    if (entry.embeddingState === "READY") continue;
-    const queued = await enqueueMemoryEmbeddingBatchItem(tx, settings, {
+  const incomplete = pending.filter(({ embeddingState }) =>
+    embeddingState !== "READY");
+  const queued = await enqueueMemoryEmbeddingBatchItems(
+    tx,
+    settings,
+    incomplete.map((entry) => ({
       entryId: entry.id,
       triggerIdentity: memorySha256({
         generationId: generation.id,
         safeContentHash: entry.safeContentHash,
         version: "memory-shadow-entry-v2"
       })
-    });
-    if (["CANCELLED", "STALE", "TERMINAL_FAILED"].includes(queued.state)) {
-      failed = true;
-    }
-  }
+    }))
+  );
   return {
     complete: pending.every(({ embeddingState }) => embeddingState === "READY"),
-    failed,
+    failed: queued.failed,
     fullSetHash
   };
 }
@@ -1316,11 +1316,13 @@ async function applyShadowCatchUp(
   if (!await currentHistoryProjectionIsComplete(tx, settings)) return;
 
   // A source-producing job admitted on the current fence may still commit an
-  // eligible fact/history item. Activating now would advance the destructive
-  // generation, stale that exact job, and permanently lose the settled turn.
-  // The settings lock prevents a new source job from being admitted after this
-  // proof; row share locks make a concurrent terminal settlement wake the
-  // succeeded rebuild after this transaction commits.
+  // eligible fact/history item. A batched embedding job may also be between
+  // making its final vectors READY and durably settling its parent job. If the
+  // rebuild observes either job in that window, activating now can lose the
+  // source or miss the final wake that proves the shadow complete. The settings
+  // lock prevents a new source job from being admitted after this proof; row
+  // share locks make a concurrent terminal settlement wake the succeeded
+  // rebuild after this transaction commits.
   if (await shadowCutoverHasBlockingJobs(
     tx,
     settings.userId,

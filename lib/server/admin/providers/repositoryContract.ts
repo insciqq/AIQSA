@@ -117,6 +117,7 @@ export type ProviderActivationCandidate = Readonly<{
     enabled: boolean;
     id: string;
   }>;
+  draftChecks: readonly StoredProviderDraftCheck[];
   models: ReadonlyArray<{
     configuration: unknown;
     draftVersion: number;

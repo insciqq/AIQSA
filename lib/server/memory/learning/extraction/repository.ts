@@ -532,6 +532,37 @@ function safeMemoryFactContextRefs(
   });
 }
 
+function frozenFactVersionIds(value: Prisma.JsonValue): readonly string[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids: string[] = [];
+  for (const binding of value) {
+    if (!isRecord(binding) || !isRecord(binding.source) ||
+      (binding.kind !== "MESSAGE" && binding.kind !== "FACT_VERSION")) {
+      return null;
+    }
+    const factVersionId = binding.source.factVersionId;
+    if (binding.kind === "FACT_VERSION") {
+      if (typeof factVersionId !== "string" || !factVersionId) return null;
+      ids.push(factVersionId);
+    } else if (factVersionId !== null) {
+      return null;
+    }
+  }
+  return new Set(ids).size === ids.length ? ids : null;
+}
+
+async function stagedFactVersionIds(
+  tx: MemoryTransaction,
+  job: MemoryJobDescriptor
+): Promise<readonly string[] | undefined | null> {
+  const staged = await tx.memoryFactExtractionExecution.findFirst({
+    select: { contextBindings: true },
+    where: { memoryJobId: job.id, userId: job.userId }
+  });
+  if (!staged) return undefined;
+  return frozenFactVersionIds(staged.contextBindings);
+}
+
 async function loadBoundContext(
   tx: MemoryTransaction,
   job: MemoryJobDescriptor & MemoryFactSourceIdentity,
@@ -740,8 +771,11 @@ async function prepareWith(
   if (!selected.some((message) => message.evidenceEligible)) {
     return { decision: staleDecision };
   }
+  const frozenIds = await stagedFactVersionIds(tx, job);
+  if (frozenIds === null) return { decision: staleDecision };
   const contextRefs = safeMemoryFactContextRefs(
     await loadMemoryFactContextRefs(tx, {
+      ...(frozenIds === undefined ? {} : { factVersionIds: frozenIds }),
       messages: selected,
       userId: source.chat.userId
     })

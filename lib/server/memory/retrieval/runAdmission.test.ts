@@ -15,14 +15,21 @@ import {
 } from "../../../domain/memory/retrieval";
 import type { NormalizedRunRequest } from "../../providers/types";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../../providers/memoryActionAnswer";
-import type { MemoryPreparingSettingsSnapshot } from "../../runs/preparingRun";
+import {
+  validateMemoryPreparingAttemptResult,
+  type MemoryPreparingSettingsSnapshot
+} from "../../runs/preparingRun";
 import type { PrismaLocalMemoryRetrievalRepository } from "./localRepository";
 import type { MemoryControlService } from "../actions/controlRuntime";
 import {
   applyMemoryRelevance,
   createMemoryRunRetrievalService,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
+  MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS,
+  MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
+  MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
   memoryRelevanceCandidates,
+  selectMemoryAggregationRawCandidates,
   type MemoryRunControlCache,
   type MemoryRunRetrievalExpectedSnapshot
 } from "./runAdmission";
@@ -257,36 +264,38 @@ function repository(options: Readonly<{
     _plan: MemoryRetrievalPlan,
     ranked: readonly MemoryRankedCandidate[]
   ) => options.projectAggregationSessions?.(ranked) ?? ranked);
+  const expand = vi.fn(async (
+    _snapshot: unknown,
+    _plan: MemoryRetrievalPlan,
+    ranked: readonly MemoryRankedCandidate[]
+  ) => ranked.map((candidate): MemoryExpandedCandidate => {
+    const coreExpansion = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
+    if (coreExpansion) return coreExpansion;
+    return candidate.itemType === "RECALL_CHUNK"
+      ? {
+          itemId: candidate.itemId,
+          itemType: "RECALL_CHUNK",
+          occurredFrom: now,
+          occurredTo: new Date(now.getTime() + 60_000),
+          projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+          safeText: `relevant text ${candidate.itemId}`,
+          sourceChatId: candidate.metadata.sourceChatId,
+          supportingItemId: null
+        }
+      : {
+          itemId: candidate.itemId,
+          itemType: "FACT_VERSION",
+          occurredFrom: null,
+          occurredTo: null,
+          projectionKind: "FACT_DISPLAY_TEXT",
+          safeText: `relevant text ${candidate.itemId}`,
+          sourceChatId: null,
+          supportingItemId: null
+        };
+  }));
   const value = {
-    expand: vi.fn(async (
-      _snapshot: unknown,
-      _plan: MemoryRetrievalPlan,
-      ranked: readonly MemoryRankedCandidate[]
-    ) => ranked.map((candidate): MemoryExpandedCandidate => {
-      const coreExpansion = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
-      if (coreExpansion) return coreExpansion;
-      return candidate.itemType === "RECALL_CHUNK"
-        ? {
-            itemId: candidate.itemId,
-            itemType: "RECALL_CHUNK",
-            occurredFrom: now,
-            occurredTo: new Date(now.getTime() + 60_000),
-            projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-            safeText: `relevant text ${candidate.itemId}`,
-            sourceChatId: "chat-source",
-            supportingItemId: null
-          }
-        : {
-            itemId: candidate.itemId,
-            itemType: "FACT_VERSION",
-            occurredFrom: null,
-            occurredTo: null,
-            projectionKind: "FACT_DISPLAY_TEXT",
-            safeText: `relevant text ${candidate.itemId}`,
-            sourceChatId: null,
-            supportingItemId: null
-          };
-    })),
+    expand,
+    expandAggregationNavigation: expand,
     projectAggregationSessions,
     retrieve,
     snapshot: vi.fn(async () => state)
@@ -608,6 +617,54 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
+  it("budgets both bounded query-embedding attempts inside one admission deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("embedding-budget-local")] });
+      const base = retrievalOptions([]);
+      const embeddingSignals: AbortSignal[] = [];
+      const utilitiesWithHangingEmbedding: MemoryRunUtilityService = {
+        ...base.utilities,
+        embedQuery: vi.fn((input) => {
+          embeddingSignals.push(input.signal);
+          return resolveWhenAborted(input.signal, {
+            bindingId: "binding-embedding",
+            reason: "memory_query_embedding_unavailable",
+            status: "UNAVAILABLE" as const
+          });
+        })
+      };
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        utilities: utilitiesWithHangingEmbedding
+      }).retrieve(runInput("What do I prefer?"))
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+
+      await vi.advanceTimersByTimeAsync(
+        MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS - 1
+      );
+      expect(settled).toBe(false);
+      expect(embeddingSignals[0]?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({
+        budgetSnapshot: { degradationCode: "memory_query_embedding_unavailable" },
+        items: [{ exactItemId: "embedding-budget-local" }],
+        outcome: "DEGRADED"
+      });
+      expect(embeddingSignals[0]?.aborted).toBe(true);
+      expect(MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS).toBe(16_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("times out optional reranking and preserves RRF order", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
@@ -663,6 +720,53 @@ describe("Personal Memory v1 run admission", () => {
         items: [{ exactItemId: "pending-rerank" }],
         outcome: "DEGRADED"
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("budgets both bounded reranker attempts inside one admission deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("rerank-budget-local")] });
+      const base = retrievalOptions([]);
+      const rerankSignals: AbortSignal[] = [];
+      const utility = utilities([]);
+      const utilitiesWithHangingRerank: MemoryRunUtilityService = {
+        ...utility,
+        rerank: vi.fn((input) => {
+          rerankSignals.push(input.signal);
+          return resolveWhenAborted(input.signal, {
+            bindingId: "binding-relevance",
+            reason: "memory_relevance_unavailable",
+            status: "UNAVAILABLE" as const
+          });
+        })
+      };
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        utilities: utilitiesWithHangingRerank
+      }).retrieve(runInput("What do I prefer?"))
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+
+      await vi.advanceTimersByTimeAsync(MEMORY_RERANK_OPTIONAL_MAXIMUM_MS - 1);
+      expect(settled).toBe(false);
+      expect(rerankSignals[0]?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({
+        budgetSnapshot: { degradationCode: "memory_relevance_unavailable" },
+        items: [{ exactItemId: "rerank-budget-local" }],
+        outcome: "DEGRADED"
+      });
+      expect(rerankSignals[0]?.aborted).toBe(true);
+      expect(MEMORY_RERANK_OPTIONAL_MAXIMUM_MS).toBe(16_000);
     } finally {
       vi.useRealTimers();
     }
@@ -851,6 +955,104 @@ describe("Personal Memory v1 run admission", () => {
     );
   });
 
+  it("expands reranked aggregation sources back to diverse raw evidence", () => {
+    const raw = [
+      ["alpha-first", "chat-alpha"],
+      ["alpha-second", "chat-alpha"],
+      ["beta-first", "chat-beta"],
+      ["gamma-first", "chat-gamma"]
+    ].map(([itemId, sourceChatId], index) => {
+      const candidate = rankedHistory(itemId!, "NORMAL");
+      return {
+        ...candidate,
+        finalScore: 1 - index / 10,
+        metadata: { ...candidate.metadata, sourceChatId: sourceChatId! }
+      };
+    });
+    const selected = [
+      { ...raw[2]!, finalScore: 0.98, itemId: "beta-navigation" },
+      { ...raw[0]!, finalScore: 0.91, itemId: "alpha-navigation" }
+    ];
+    raw[0] = { ...raw[0]!, selectionReason: "r".repeat(120) };
+
+    const expanded = selectMemoryAggregationRawCandidates(raw, selected);
+
+    expect(expanded.map(({ itemId }) => itemId)).toEqual([
+      "beta-first",
+      "alpha-first",
+      "alpha-second"
+    ]);
+    expect(expanded.map(({ finalScore }) => finalScore)).toEqual([0.98, 0.91, 0.91]);
+    expect(expanded.map(({ selectionReason }) => selectionReason)).toEqual([
+      expect.stringContaining("aggregation_source_selected"),
+      "aggregation_source_selected",
+      expect.stringContaining("aggregation_source_selected")
+    ]);
+    expect(expanded.every(({ selectionReason }) => selectionReason.length <= 128)).toBe(true);
+  });
+
+  it("preserves an exact reranked aggregation anchor before source fallback", () => {
+    const raw = [
+      ["alpha-fused-first", "chat-alpha"],
+      ["alpha-navigation-anchor", "chat-alpha"],
+      ["beta-fused-first", "chat-beta"]
+    ].map(([itemId, sourceChatId], index) => {
+      const candidate = rankedHistory(itemId!, "NORMAL");
+      return {
+        ...candidate,
+        finalScore: 1 - index / 10,
+        metadata: { ...candidate.metadata, sourceChatId: sourceChatId! }
+      };
+    });
+    const selected = [
+      { ...raw[1]!, finalScore: 0.99 },
+      { ...raw[2]!, finalScore: 0.8, itemId: "beta-navigation-only" }
+    ];
+
+    const expanded = selectMemoryAggregationRawCandidates(raw, selected);
+
+    expect(expanded.map(({ itemId }) => itemId)).toEqual([
+      "alpha-navigation-anchor",
+      "beta-fused-first",
+      "alpha-fused-first"
+    ]);
+    expect(expanded.map(({ finalScore }) => finalScore)).toEqual([0.99, 0.8, 0.99]);
+  });
+
+  it("descends into raw children of strong sessions before the weak-session tail", () => {
+    const primary = Array.from({ length: 13 }, (_, index) => {
+      const candidate = rankedHistory(`session-${index}-primary`, "NORMAL");
+      return {
+        ...candidate,
+        finalScore: 1 - index / 100,
+        metadata: { ...candidate.metadata, sourceChatId: `chat-${index}` }
+      };
+    });
+    const deep = ["second", "third"].map((suffix, index) => {
+      const candidate = rankedHistory(`session-2-${suffix}`, "NORMAL");
+      return {
+        ...candidate,
+        finalScore: 0.7 - index / 100,
+        metadata: { ...candidate.metadata, sourceChatId: "chat-2" }
+      };
+    });
+
+    const expanded = selectMemoryAggregationRawCandidates(
+      [...primary, ...deep],
+      primary.map((candidate, index) => ({
+        ...candidate,
+        finalScore: 0.99 - index / 100
+      }))
+    );
+    const ids = expanded.map(({ itemId }) => itemId);
+
+    expect(ids.indexOf("session-2-second"))
+      .toBeLessThan(ids.indexOf("session-6-primary"));
+    expect(ids.at(-1)).toBe("session-12-primary");
+    expect(ids).toHaveLength(15);
+    expect(new Set(ids)).toHaveLength(15);
+  });
+
   it("uses compatibility model fields only for ordering, never admission", () => {
     const history = ["direct", "coverage", "outdated"].map((id, index) => ({
       ...rankedHistory(id, "NORMAL"),
@@ -948,6 +1150,25 @@ describe("Personal Memory v1 run admission", () => {
     ]);
     expect(candidates.filter(({ candidate }) =>
       candidate.metadata.sourceChatId === "source-chat-0")).toHaveLength(10);
+  });
+
+  it("compacts fallback reasons when wide multi-lane provenance reaches the frozen limit", () => {
+    const base = memoryRelevanceCandidates(
+      [rankedHistory("wide-provenance", "NORMAL")],
+      [expandedHistory("wide-provenance")]
+    );
+    const candidates = base.map((entry) => ({
+      ...entry,
+      candidate: { ...entry.candidate, selectionReason: `h${"x".repeat(127)}` }
+    }));
+
+    expect(applyMemoryRelevance(candidates, null)[0]?.selectionReason)
+      .toBe("rerank_fallback_rrf");
+    expect(applyMemoryRelevance(candidates, {
+      bindingId: "binding-partial-wide-provenance",
+      decisions: [],
+      status: "READY"
+    })[0]?.selectionReason).toBe("rerank_partial_rrf");
   });
 
   it("keeps fact relevance slots while diversifying history sources", () => {
@@ -1876,6 +2097,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).toContain("distinct_members=4; boundary_events=1");
     expect(result.preparedContext?.text).toContain("Counted or enumerated members:");
     expect(result.preparedContext?.text).toContain("Boundary events:");
+    expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
   });
 
   it("keeps the relevant source pack but degrades when global aggregation is unavailable", async () => {
@@ -1955,6 +2177,56 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "DEGRADED"
       });
       expect(result.preparedContext?.text).toContain("aggregation-timeout-evidence");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("budgets every bounded map and reduce attempt inside one admission deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("aggregation-budget-evidence")] });
+      const aggregationUtilities = utilities(["c0"]);
+      const receivedSignals: AbortSignal[] = [];
+      vi.mocked(aggregationUtilities.aggregate).mockImplementation((input) => {
+        receivedSignals.push(input.signal);
+        return resolveWhenAborted(input.signal, {
+          reason: "memory_aggregation_unavailable",
+          status: "UNAVAILABLE" as const
+        });
+      });
+      const options = {
+        ...intentOptions({
+          aggregationRequested: true,
+          memoryUseful: false,
+          pastChatsUseful: true,
+          retrievalMode: "PAST_CHAT_SEARCH",
+          temporalIntent: "ANY"
+        }),
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        utilities: aggregationUtilities
+      };
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, options)
+        .retrieve(runInput("Which releases did I complete?"))
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+
+      await vi.advanceTimersByTimeAsync(MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS - 1);
+      expect(settled).toBe(false);
+      expect(receivedSignals[0]?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({
+        degradationCode: "memory_aggregation_unavailable",
+        items: [{ exactItemId: "aggregation-budget-evidence" }],
+        outcome: "DEGRADED"
+      });
+      expect(receivedSignals[0]?.aborted).toBe(true);
+      expect(MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS).toBe(32_000);
     } finally {
       vi.useRealTimers();
     }
@@ -2049,7 +2321,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v4"
+        version: "memory-retrieval-component-metrics-v6"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
