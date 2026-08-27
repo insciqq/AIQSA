@@ -53,15 +53,27 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
-  it("keeps OpenRouter answer and embedding catalogs class-specific", async () => {
+  it("keeps OpenRouter answer, embedding, and reranker catalogs class-specific", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const tester = createAdminProviderCredentialTester({
       network: {
         dispatch: async (request) => {
           requests.push(request);
-          return request.url.pathname.endsWith("/embeddings/models")
-            ? catalog(["qwen/qwen3-embedding-8b"])
-            : catalog(["openai/gpt-5.6-sol"]);
+          if (request.url.pathname.endsWith("/embeddings/models")) {
+            return catalog(["qwen/qwen3-embedding-8b"]);
+          }
+          if (request.url.searchParams.get("output_modalities") === "rerank") {
+            return new Response(JSON.stringify({
+              data: [{
+                architecture: { output_modalities: ["rerank"] },
+                id: "qwen/qwen3-reranker-8b"
+              }, {
+                architecture: { output_modalities: ["text"] },
+                id: "must-not-be-classified-as-reranker"
+              }]
+            }));
+          }
+          return catalog(["openai/gpt-5.6-sol"]);
         },
         lookupHostname: publicLookup
       }
@@ -69,17 +81,23 @@ describe("admin provider credential tester", () => {
 
     await expect(tester.test({
       ...input("openrouter"),
-      modelClasses: ["answer", "embedding"]
+      modelClasses: ["answer", "embedding", "reranker"]
     })).resolves.toMatchObject({
-      modelIds: ["openai/gpt-5.6-sol", "qwen/qwen3-embedding-8b"],
+      modelIds: [
+        "openai/gpt-5.6-sol",
+        "qwen/qwen3-embedding-8b",
+        "qwen/qwen3-reranker-8b"
+      ],
       modelIdsByClass: {
         answer: ["openai/gpt-5.6-sol"],
-        embedding: ["qwen/qwen3-embedding-8b"]
+        embedding: ["qwen/qwen3-embedding-8b"],
+        reranker: ["qwen/qwen3-reranker-8b"]
       }
     });
-    expect(requests.map(({ url }) => url.pathname)).toEqual([
+    expect(requests.map(({ url }) => `${url.pathname}${url.search}`)).toEqual([
       "/v1/models/user",
-      "/v1/embeddings/models"
+      "/v1/embeddings/models",
+      "/v1/models?output_modalities=rerank"
     ]);
   });
 

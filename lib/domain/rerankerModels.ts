@@ -12,7 +12,8 @@ export const DEFAULT_RERANKER_MODEL_PRESET_ID = "qwen3-reranker-8b" as const;
 export const rerankerModelPresets: readonly RerankerModelPreset[] = Object.freeze([
   {
     default: true,
-    description: "Accuracy-first multilingual qualification profile for Memory evidence ordering.",
+    description:
+      "Accuracy-first multilingual default for reranking Knowledge retrieval candidates and Memory semantic sorting.",
     displayName: "Qwen3 Reranker 8B",
     id: DEFAULT_RERANKER_MODEL_PRESET_ID,
     providerFamily: "openrouter",
