@@ -1,7 +1,4 @@
 import { Prisma } from "@prisma/client";
-import { textFromContentBlocks } from "../../../../domain/modelRunEvents";
-import { projectMemoryHistorySafeText } from "../../history/safety";
-import { memorySha256 } from "../../persistence/lexical";
 import { memoryExactVNextDirectAuthorityPredicate } from
   "../../persistence/eligibility";
 import type { MemoryTransaction } from "../../persistence/transaction";
@@ -14,16 +11,9 @@ import {
   MEMORY_FACT_MAX_CONTEXT_MESSAGES,
   MEMORY_FACT_MAX_CONTEXT_REFS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
-  type MemoryFactContextRef
+  type MemoryFactContextRef,
+  type MemoryFactInputMessage
 } from "../extraction/contract";
-
-type ContextMessage = Readonly<{
-  content: Prisma.JsonValue;
-  id: string;
-  role: string;
-  status: string;
-  updatedAt: Date;
-}>;
 
 type ContextFact = Readonly<{
   displayText: string;
@@ -37,32 +27,17 @@ type EntityRow = Readonly<{
   entityType: string;
 }>;
 
-async function messageRefs(
-  tx: MemoryTransaction,
-  sourceMessageId: string,
-  activePathMessageIds: readonly string[]
-): Promise<readonly MemoryFactContextRef[]> {
-  const targetIndex = activePathMessageIds.indexOf(sourceMessageId);
-  if (targetIndex <= 0) return [];
-  const priorIds = activePathMessageIds.slice(0, targetIndex).reverse();
-  const messages = await tx.message.findMany({
-    select: { content: true, id: true, role: true, status: true, updatedAt: true },
-    where: { id: { in: priorIds }, role: "user", status: "complete" }
-  }) as ContextMessage[];
-  const byId = new Map(messages.map((message) => [message.id, message] as const));
+function messageRefs(
+  messages: readonly MemoryFactInputMessage[]
+): readonly MemoryFactContextRef[] {
   const refs: MemoryFactContextRef[] = [];
   let characters = 0;
-  for (const id of priorIds) {
+  for (const message of messages) {
+    if (message.evidenceEligible) continue;
     if (refs.length >= MEMORY_FACT_MAX_CONTEXT_MESSAGES) break;
-    const message = byId.get(id);
-    if (!message) continue;
-    const projected = projectMemoryHistorySafeText(textFromContentBlocks(
-      message.content as { blocks?: unknown[] }
-    ));
-    if (!projected.eligible || !projected.providerSafeText) continue;
-    if (characters + projected.providerSafeText.length >
+    if (characters + message.text.length >
       MEMORY_FACT_MAX_CONTEXT_CHARACTERS) continue;
-    characters += projected.providerSafeText.length;
+    characters += message.text.length;
     refs.push({
       aliases: [],
       displayName: null,
@@ -72,13 +47,13 @@ async function messageRefs(
       kind: "MESSAGE",
       ref: `M${refs.length + 1}`,
       source: {
-        contentHash: memorySha256(projected.providerSafeText),
+        contentHash: message.contentHash,
         factVersionId: null,
         messageId: message.id,
-        messageUpdatedAt: message.updatedAt.toISOString(),
+        messageUpdatedAt: message.updatedAt,
         projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
       },
-      text: projected.providerSafeText
+      text: message.text
     });
   }
   return refs;
@@ -147,6 +122,7 @@ async function factRefs(
       AND version."systemTo" IS NULL
       AND version."displayText" IS NOT NULL
       AND version."contentPurgedAt" IS NULL
+      AND version."confidence" = 1.0
       AND version."safetyClassificationState" =
         'CLASSIFIED'::"MemorySafetyClassificationState"
       AND version."sensitivityClass" IN (
@@ -187,16 +163,11 @@ async function factRefs(
 export async function loadMemoryFactContextRefs(
   tx: MemoryTransaction,
   input: Readonly<{
-    activePathMessageIds: readonly string[];
-    sourceMessageId: string;
+    messages: readonly MemoryFactInputMessage[];
     userId: string;
   }>
 ): Promise<readonly MemoryFactContextRef[]> {
-  const messages = await messageRefs(
-    tx,
-    input.sourceMessageId,
-    input.activePathMessageIds
-  );
+  const messages = messageRefs(input.messages);
   const facts = await factRefs(
     tx,
     input.userId,

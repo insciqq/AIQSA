@@ -1,6 +1,6 @@
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v19";
-export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v12";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v13";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v20";
+export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v13";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v14";
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;
 export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 160;
@@ -22,6 +22,7 @@ export const MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR = -1;
 // disabled until fixed-sample evidence supports one.
 export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR: number | null = null;
 export const MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER = 0.5;
+export const MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER = 0.65;
 
 export const MEMORY_RETRIEVAL_LANE_WEIGHTS = Object.freeze({
   FACT_ENTITY: 1.2,

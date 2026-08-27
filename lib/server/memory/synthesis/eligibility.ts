@@ -238,6 +238,7 @@ function sourceAuthorityPredicate(
       lifecycle: "CURRENT"
     })}
     AND ${directAuthorityPredicate(userId, version)}
+    AND ${version}."confidence" = 1.0
     AND ${version}."observedAt" IS NOT NULL
     AND ${settings}."synthesisEnabledAt" IS NOT NULL
     AND ${settings}."synthesisPolicyVersion" = ${MEMORY_SYNTHESIS_POLICY_VERSION}

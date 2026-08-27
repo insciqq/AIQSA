@@ -225,6 +225,28 @@ describe("relative-rank Memory fusion", () => {
     expect(ranked[1]!.finalScore).toBeCloseTo(ranked[1]!.rrfScore * 0.5);
   });
 
+  it("keeps supporting observations retrievable below equal HIGH authority", () => {
+    const high = candidate("high", "FACT_FTS_SIMPLE", 0.1);
+    const supporting = candidate("supporting", "FACT_VECTOR", 0.9);
+    const ranked = fuseMemoryRetrievalCandidates(plan, [{
+      lane: "FACT_FTS_SIMPLE",
+      candidates: [{
+        ...high,
+        metadata: { ...high.metadata, confidence: 1 }
+      }]
+    }, {
+      lane: "FACT_VECTOR",
+      candidates: [{
+        ...supporting,
+        metadata: { ...supporting.metadata, confidence: 0.6 }
+      }]
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual(["high", "supporting"]);
+    expect(ranked[1]!.finalScore).toBeCloseTo(ranked[1]!.rrfScore * 0.65);
+    expect(ranked[1]!.featureSnapshot.authorityRank).toBe(1);
+  });
+
   it("deduplicates a logical fact after fusion", () => {
     const duplicate = candidate("version-b", "FACT_VECTOR", 0.5);
     const ranked = fuseMemoryRetrievalCandidates(plan, [{

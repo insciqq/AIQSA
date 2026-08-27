@@ -10,6 +10,7 @@ import {
   type MemorySynthesisPlan,
   type MemorySynthesisSource
 } from "./policy";
+import { memorySynthesisSourceAuthorityPredicate } from "./eligibility";
 
 function plan(): MemorySynthesisPlan {
   const boundary = new Date("2026-08-01T00:00:00.000Z");
@@ -43,6 +44,11 @@ function plan(): MemorySynthesisPlan {
 }
 
 describe("Dream synthesis strict contract", () => {
+  it("excludes lower-authority supporting observations from synthesis sources", () => {
+    expect(memorySynthesisSourceAuthorityPredicate("user-1").sql)
+      .toContain('"confidence" = 1.0');
+  });
+
   it("accepts only one-cluster, three-distinct-source depth-one proposals", () => {
     const input = plan();
     const refs = input.clusters[0]!.sources.slice(0, 3).map(({ ref }) => ref);

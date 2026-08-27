@@ -44,6 +44,8 @@ export const MEMORY_CURSOR_MAX_LENGTH = 2_048;
 export const MEMORY_PAGE_SIZE_MAX = 20;
 export const MEMORY_FEEDBACK_COMMENT_MAX_LENGTH = 1_000;
 export const MEMORY_FORGET_UNDO_WINDOW_MS = 60_000;
+/** Code-owned numeric marker for retrievable, non-authoritative MEDIUM facts. */
+export const MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE = 0.6;
 
 export const MEMORY_CHAT_MODES = ["NORMAL", "EXCLUDED", "TEMPORARY"] as const;
 export type MemoryChatMode = (typeof MEMORY_CHAT_MODES)[number];

@@ -246,7 +246,7 @@ export type MemoryRunUtilityService = Readonly<{
   rerank(input: UtilityBaseInput & Readonly<{
     aggregationRequested?: boolean;
     candidates: readonly Readonly<{
-      authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
+      authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED" | "SUPPORTING";
       current: boolean;
       directness: "DIRECT" | "INFERRED" | "PARAPHRASED" | null;
       handle: string;

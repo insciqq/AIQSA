@@ -163,12 +163,13 @@ async function createEvent(
       factVersionId,
       id,
       metadata: {
+        confidenceBand: candidate.confidenceBand,
         extractionExecutionId: bindingId,
         identityKind: candidate.identityKind,
         identityVersion: candidate.identityVersion,
         ingestionJobId: claim.id,
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-        schemaVersion: "memory-vnext-observation-event-v2"
+        schemaVersion: "memory-vnext-observation-event-v3"
       },
       operation,
       sourceChatId: claim.chatId,
@@ -487,7 +488,7 @@ async function createFirstOrReactivatedVersion(
     factId,
     factVersionId,
     bindingId,
-    "PROMOTE"
+    candidate.confidenceBand === "MEDIUM" ? "AUTO_PROPOSE" : "PROMOTE"
   );
   await insertVersion(tx, {
     candidate,

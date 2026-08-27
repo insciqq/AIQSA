@@ -872,8 +872,7 @@ describe("Prisma Memory entity provenance", () => {
         loadAdmissibleMemoryEntityAliases(tx, userId, [entity.id]));
       const context = () => prisma.$transaction((tx) =>
         loadMemoryFactContextRefs(tx, {
-          activePathMessageIds: [],
-          sourceMessageId: "no-prior-message",
+          messages: [],
           userId
         }));
       await expect(admissible()).resolves.toMatchObject([{ id: alias.id }]);

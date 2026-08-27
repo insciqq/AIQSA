@@ -7,12 +7,13 @@ import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES,
-  MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
   applyMemoryDecay,
   fuseMemoryRetrievalCandidates,
   isEligibleMemoryResponsePreferenceCore,
+  memoryCandidateIsSupportingObservation,
+  memoryRetrievalAuthorityMultiplier,
   memoryRetrievalEvidenceRootKey,
   packMemoryPersonalContext,
   planMemoryRetrieval,
@@ -984,7 +985,7 @@ function settingsDriftFailedSafeBudget(
 }
 
 export type MemoryRelevanceCandidate = Readonly<{
-  authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED";
+  authorityLevel: "LEARNED" | "PAST_CHAT" | "SAVED" | "SUPPORTING";
   candidate: MemoryRankedCandidate;
   current: boolean;
   directness: "DIRECT" | "INFERRED" | "PARAPHRASED" | null;
@@ -1083,7 +1084,11 @@ export function memoryRelevanceCandidates(
     return [{
       authorityLevel: candidate.itemType !== "FACT_VERSION"
         ? "PAST_CHAT" as const
-        : candidate.metadata.sourceMode === "EXPLICIT" ? "SAVED" as const : "LEARNED" as const,
+        : candidate.metadata.sourceMode === "EXPLICIT"
+          ? "SAVED" as const
+          : memoryCandidateIsSupportingObservation(candidate.metadata)
+            ? "SUPPORTING" as const
+            : "LEARNED" as const,
       candidate,
       current: candidate.metadata.current,
       directness: candidate.metadata.directness,
@@ -1155,9 +1160,7 @@ export function applyMemoryRelevance(
         : candidate.metadata.current && candidate.metadata.sourceMode === "EXPLICIT"
           ? 0.01
           : 0;
-    const authorityMultiplier = candidate.metadata.sourceAuthority === "SYNTHESIS"
-      ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
-      : 1;
+    const authorityMultiplier = memoryRetrievalAuthorityMultiplier(candidate.metadata);
     const reason = `${candidate.selectionReason}+semantic_sort.` +
       decision.reasonCode.toLocaleLowerCase("und");
     return {

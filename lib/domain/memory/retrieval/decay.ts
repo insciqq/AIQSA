@@ -57,7 +57,8 @@ function policyShape(metadata: MemoryCandidateMetadata): Readonly<{
     return { floor: 0.8, halfLifeDays: 720 };
   }
   if (
-    metadata.sourceAuthority === "DIRECT_AUTOMATIC" && metadata.current &&
+    metadata.sourceAuthority === "DIRECT_AUTOMATIC" && metadata.confidence === 1 &&
+    metadata.current &&
     (metadata.identityKind === "SLOT" || metadata.modality === "STATE")
   ) {
     return { floor: 0.85, halfLifeDays: 540 };
