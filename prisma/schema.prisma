@@ -4517,6 +4517,9 @@ model MemorySearchEntry {
   embeddingDimension          Int?
   embeddingState              MemoryEmbeddingState     @default(NOT_APPLICABLE)
   searchVectorSimple          Unsupported("tsvector")?
+  searchVectorEnglish         Unsupported("tsvector")?
+  searchVectorRussian         Unsupported("tsvector")?
+  trigramSearchText           Unsupported("text")?
   createdAt                   DateTime                 @default(now())
   updatedAt                   DateTime                 @default(now()) @updatedAt
 

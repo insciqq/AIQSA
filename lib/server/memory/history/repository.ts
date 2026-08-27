@@ -100,7 +100,6 @@ type CurrentChunkRow = Readonly<{
 
 type HistoryPathMessageMetadata = Readonly<{
   createdAt: Date;
-  cycle: boolean;
   depth: number;
   id: string;
   parentMessageId: string | null;
@@ -126,6 +125,8 @@ const disabledDecision = Object.freeze({
   errorCode: "memory_history_disabled",
   status: "CANCELLED" as const
 });
+const MEMORY_HISTORY_PREPARE_TRANSACTION_MAX_WAIT_MS = 5_000;
+const MEMORY_HISTORY_PREPARE_TRANSACTION_TIMEOUT_MS = 30_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -169,13 +170,15 @@ async function loadHistoryPathMetadata(
   chatId: string,
   activeLeafMessageId: string
 ): Promise<readonly HistoryPathMessageMetadata[]> {
+  // A bounded walk keeps valid paths linear in their length. A cycle cannot
+  // terminate at a root, so it necessarily produces MAX + 1 rows and fails
+  // the same limit check as an overlong path without carrying an O(n²) array.
   const rows = await tx.$queryRaw<HistoryPathMessageMetadata[]>(Prisma.sql`
     WITH RECURSIVE active_path AS (
       SELECT
         message."id", message."parentMessageId", message."role",
         message."status"::text AS "status", message."createdAt",
-        message."updatedAt", 0 AS "depth",
-        ARRAY[message."id"]::text[] AS visited, FALSE AS cycle
+        message."updatedAt", 0 AS "depth"
       FROM "Message" AS message
       WHERE message."chatId" = ${chatId}
         AND message."id" = ${activeLeafMessageId}
@@ -185,26 +188,22 @@ async function loadHistoryPathMetadata(
       SELECT
         parent."id", parent."parentMessageId", parent."role",
         parent."status"::text AS "status", parent."createdAt",
-        parent."updatedAt", child."depth" + 1,
-        child.visited || parent."id",
-        parent."id" = ANY(child.visited)
+        parent."updatedAt", child."depth" + 1
       FROM active_path AS child
       INNER JOIN "Message" AS parent
         ON parent."chatId" = ${chatId}
        AND parent."id" = child."parentMessageId"
-      WHERE NOT child.cycle
-        AND child."depth" < ${MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES}
+      WHERE child."depth" < ${MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES}
     )
     SELECT
       "id", "parentMessageId", "role", "status", "createdAt", "updatedAt",
-      "depth", cycle
+      "depth"
     FROM active_path
     ORDER BY "depth" DESC
   `);
   if (
     rows.length === 0 ||
     rows.length > MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES ||
-    rows.some((row) => row.cycle) ||
     rows[0]?.parentMessageId !== null ||
     rows.at(-1)?.id !== activeLeafMessageId ||
     rows.some((row, index) =>
@@ -1482,7 +1481,9 @@ export function createPrismaMemoryHistoryIndexRepository(
     },
     async prepare(job: MemoryJobDescriptor): Promise<MemoryHistoryPrepareResult> {
       return client.$transaction((tx) => prepareWith(tx, job, new Date()), {
-        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        maxWait: MEMORY_HISTORY_PREPARE_TRANSACTION_MAX_WAIT_MS,
+        timeout: MEMORY_HISTORY_PREPARE_TRANSACTION_TIMEOUT_MS
       });
     }
   });

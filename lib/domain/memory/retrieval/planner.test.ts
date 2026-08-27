@@ -38,6 +38,14 @@ describe("language-agnostic Memory retrieval planning", () => {
     ]);
   });
 
+  it("uses the same yo-folded search projection for exact lookup", () => {
+    expect(planMemoryRetrieval({ currentUserText: "  ЗЕЛЁНАЯ ёлка  ", now }))
+      .toMatchObject({
+        normalizedExactQuery: "зеленая елка",
+        normalizedQuery: "ЗЕЛЁНАЯ ёлка"
+      });
+  });
+
   it("keeps the original first and adds a deduplicated planner rewrite", () => {
     const plan = planMemoryRetrieval({
       currentUserText: "What did I call the Helsinki project?",

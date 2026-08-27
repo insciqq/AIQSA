@@ -2701,6 +2701,16 @@ describe("Personal Memory v1 run admission", () => {
       vectorState: "READY" as const
     },
     {
+      candidateLane: "FACT_VECTOR" as const,
+      code: "memory_fts_unavailable",
+      embeddingUnavailable: false,
+      lexicalFailures: [
+        "FACT_FTS_RUSSIAN", "FACT_TRIGRAM"
+      ] as readonly MemoryRetrievalLane[],
+      lexicalState: "DEGRADED" as const,
+      vectorState: "READY" as const
+    },
+    {
       candidateLane: "FACT_FTS_SIMPLE" as const,
       code: "memory_entity_unavailable",
       embeddingUnavailable: false,

@@ -398,14 +398,48 @@ async function assertConstraintCatalog(): Promise<void> {
       AND (column_name ILIKE '%search%' OR column_name ILIKE '%vector%')
     ORDER BY column_name
   `;
-  if (
-    memorySearchColumns.length !== 2 ||
-    memorySearchColumns[0]?.columnName !== "normalizedSearchText" ||
-    memorySearchColumns[0]?.isGenerated !== "NEVER" ||
-    memorySearchColumns[1]?.columnName !== "searchVectorSimple" ||
-    memorySearchColumns[1]?.isGenerated !== "ALWAYS"
-  ) {
-    throw new Error("Expected one canonical Memory search text and one generated simple vector.");
+  if (JSON.stringify(memorySearchColumns) !== JSON.stringify([
+    { columnName: "normalizedSearchText", isGenerated: "NEVER" },
+    { columnName: "searchVectorEnglish", isGenerated: "ALWAYS" },
+    { columnName: "searchVectorRussian", isGenerated: "ALWAYS" },
+    { columnName: "searchVectorSimple", isGenerated: "ALWAYS" },
+    { columnName: "trigramSearchText", isGenerated: "ALWAYS" }
+  ])) {
+    throw new Error("Expected canonical and generated multilingual Memory search projections.");
+  }
+  const memoryMultilingualIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname IN (
+        'MemorySearchEntry_english_gin_idx',
+        'MemorySearchEntry_russian_gin_idx',
+        'MemorySearchEntry_trigram_gin_idx'
+      )
+    ORDER BY indexname
+  `;
+  if (memoryMultilingualIndexes.length !== 3) {
+    throw new Error("Expected multilingual Memory GIN indexes.");
+  }
+  const memoryTransliterationFunctions = await prisma.$queryRaw<Array<{
+    parallelSafety: string;
+    strict: boolean;
+    volatility: string;
+  }>>`
+    SELECT procedure.proparallel AS "parallelSafety",
+      procedure.proisstrict AS strict,
+      procedure.provolatile AS volatility
+    FROM pg_proc AS procedure
+    INNER JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = current_schema()
+      AND procedure.proname = 'aiqsa_memory_transliterate_ru'
+  `;
+  if (JSON.stringify(memoryTransliterationFunctions) !== JSON.stringify([{
+    parallelSafety: "s",
+    strict: true,
+    volatility: "i"
+  }])) {
+    throw new Error("Expected immutable strict Memory transliteration projection.");
   }
   const memoryOperationOutcomes = await prisma.$queryRaw<Array<{ label: string }>>`
     SELECT enum_label.enumlabel AS label

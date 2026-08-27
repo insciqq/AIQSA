@@ -129,7 +129,6 @@ export const NOOP_MEMORY_SOURCE_MUTATION_HOOKS: MemorySourceMutationHooks = Obje
 type SourcePathRow = Readonly<{
   content: Prisma.JsonValue;
   createdAt: Date;
-  cycle: boolean;
   depth: number;
   errorMessage: string | null;
   groundedAt: Date | null;
@@ -230,46 +229,64 @@ async function loadActiveSourcePath(
   activeLeafMessageId: string | null
 ): Promise<readonly SourcePathRow[]> {
   if (activeLeafMessageId === null) return [];
+  // UNION deduplicates ancestor identities, so a cycle terminates without an
+  // ever-growing visited array. The second walk can only start from a root;
+  // cyclic or disconnected paths therefore fail the existing shape checks.
   const rows = await tx.$queryRaw<SourcePathRow[]>(Prisma.sql`
-    WITH RECURSIVE active_path AS (
+    WITH RECURSIVE ancestor_ids AS (
+      SELECT
+        message."id", message."parentMessageId"
+      FROM "Message" AS message
+      WHERE message."chatId" = ${chatId}
+        AND message."id" = ${activeLeafMessageId}
+
+      UNION
+
+      SELECT
+        parent."id", parent."parentMessageId"
+      FROM ancestor_ids AS child
+      INNER JOIN "Message" AS parent
+        ON parent."chatId" = ${chatId}
+       AND parent."id" = child."parentMessageId"
+    ), active_path AS (
       SELECT
         message."id", message."parentMessageId", message."role",
         message."content", message."status"::text AS "status",
         message."provider", message."modelId", message."errorMessage",
         message."groundedAt", message."groundingProvider",
         message."groundingStrategy", message."createdAt", message."updatedAt",
-        0 AS "depth", ARRAY[message."id"]::text[] AS visited, FALSE AS cycle
-      FROM "Message" AS message
-      WHERE message."chatId" = ${chatId}
-        AND message."id" = ${activeLeafMessageId}
+        0 AS "depth"
+      FROM ancestor_ids AS member
+      INNER JOIN "Message" AS message
+        ON message."chatId" = ${chatId}
+       AND message."id" = member."id"
+      WHERE member."parentMessageId" IS NULL
 
       UNION ALL
 
       SELECT
-        parent."id", parent."parentMessageId", parent."role",
-        parent."content", parent."status"::text AS "status",
-        parent."provider", parent."modelId", parent."errorMessage",
-        parent."groundedAt", parent."groundingProvider",
-        parent."groundingStrategy", parent."createdAt", parent."updatedAt",
-        child."depth" + 1,
-        child.visited || parent."id",
-        parent."id" = ANY(child.visited)
-      FROM active_path AS child
-      INNER JOIN "Message" AS parent
-        ON parent."chatId" = ${chatId}
-       AND parent."id" = child."parentMessageId"
-      WHERE NOT child.cycle
+        child."id", child."parentMessageId", child."role",
+        child."content", child."status"::text AS "status",
+        child."provider", child."modelId", child."errorMessage",
+        child."groundedAt", child."groundingProvider",
+        child."groundingStrategy", child."createdAt", child."updatedAt",
+        parent."depth" + 1
+      FROM active_path AS parent
+      INNER JOIN "Message" AS child
+        ON child."chatId" = ${chatId}
+       AND child."parentMessageId" = parent."id"
+      INNER JOIN ancestor_ids AS member
+        ON member."id" = child."id"
     )
     SELECT
       "id", "parentMessageId", "role", "content", "status", "provider",
       "modelId", "errorMessage", "groundedAt", "groundingProvider",
-      "groundingStrategy", "createdAt", "updatedAt", "depth", cycle
+      "groundingStrategy", "createdAt", "updatedAt", "depth"
     FROM active_path
-    ORDER BY "depth" DESC
+    ORDER BY "depth" ASC
   `);
   if (
     rows.length === 0 ||
-    rows.some((row) => row.cycle) ||
     rows[0]?.parentMessageId !== null ||
     rows.at(-1)?.id !== activeLeafMessageId ||
     rows.some((row, index) => index > 0 && row.parentMessageId !== rows[index - 1]?.id)

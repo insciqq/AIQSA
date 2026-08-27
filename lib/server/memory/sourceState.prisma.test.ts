@@ -229,6 +229,47 @@ describe("Memory source-state persistence", () => {
     }
   });
 
+  it("rejects a cyclic active path without an unbounded recursive walk", async () => {
+    const suffix = randomUUID();
+    const userId = `memory-source-cycle-${suffix}`;
+    await prisma.user.create({
+      data: {
+        displayName: "Memory Source Cycle Test",
+        id: userId,
+        status: "active"
+      }
+    });
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Cyclic source state", userId }
+      });
+      const messageId = randomUUID();
+      await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Cyclic source"),
+          id: messageId,
+          parentMessageId: messageId,
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: messageId },
+        where: { id: chat.id }
+      });
+
+      await expect(loadMemorySourceSnapshot(prisma, {
+        chatId: chat.id,
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_source_path_invalid"
+      });
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
   it("invokes the Temporary finalization leaf inside the terminal source transaction", async () => {
     const suffix = randomUUID();
     const userId = `memory-temporary-source-${suffix}`;
