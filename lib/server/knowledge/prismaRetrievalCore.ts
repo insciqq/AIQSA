@@ -42,6 +42,23 @@ import {
 } from "./retrievalRanking";
 import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
+import {
+  assembleKnowledgeParentExpansions,
+  KNOWLEDGE_PARENT_CONTEXT_WINDOW_RADIUS,
+  KnowledgeParentContextError,
+  knowledgeParentContextTokenCounter,
+  renderKnowledgeParentExpansionUnits,
+  usableKnowledgeParentContextWindow,
+  type KnowledgeParentContextFailureCode,
+  type KnowledgeParentContextLoader,
+  type KnowledgeParentContextRow,
+  type KnowledgeParentExpansionPrimary,
+  type KnowledgeParentSectionWindowRequest
+} from "./parentContextExpansion";
+import type {
+  KnowledgeParentExpansion,
+  KnowledgeParentExpansionUnit
+} from "./retrievalTypes";
 
 const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
 const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
@@ -116,6 +133,9 @@ export type KnowledgeVectorSearchEvidence = Readonly<{
 export type KnowledgeRetrievalCorePassage = KnowledgeRetrievalCandidate & Readonly<{
   annRank: number | null;
   expandedContext?: string;
+  /** In-memory FR-14 expansion units backing `expandedContext`; present
+   * exactly when a parent-context loader ran for this operation. */
+  expansion?: KnowledgeParentExpansion;
   ftsRank: number | null;
   ftsScore: number | null;
   fusedScore: number;
@@ -1379,6 +1399,47 @@ function knowledgeContextLabel(
     : "Next same-Source context";
 }
 
+/** Mirrors the `knowledgeContextLabel` branches: units that render with the
+ * shared previous/next same-Source label are mergeable "section" units, so
+ * one primary never ships more than one previous and one next block. */
+function legacyExpansionOrigin(
+  source: KnowledgeRetrievalCandidate,
+  candidate: KnowledgeRetrievalCandidate
+): "independent" | "section" | "table" {
+  const sourceLocator = source.documentContext?.locator;
+  const candidateLocator = candidate.documentContext?.locator;
+  if (sourceLocator?.kind === "table_row" && candidateLocator?.kind === "table_row" &&
+    sourceLocator.rowId !== candidateLocator.rowId) {
+    return sourceLocator.blockId === candidateLocator.blockId ? "table" : "independent";
+  }
+  if (sourceLocator?.kind === "table_row" && !candidateLocator &&
+    candidate.layoutKind === "body" && hasPrimarySignal(candidate)) {
+    return "independent";
+  }
+  return "section";
+}
+
+function legacyExpansionUnit(
+  source: KnowledgeRetrievalCandidate,
+  candidate: KnowledgeRetrievalCandidate,
+  rank: number,
+  countTokens: (text: string) => number
+): KnowledgeParentExpansionUnit {
+  return Object.freeze({
+    chunkId: candidate.chunkId,
+    chunkIndex: candidate.chunkIndex,
+    contentHash: candidate.contentHash,
+    label: knowledgeContextLabel(source, candidate),
+    origin: legacyExpansionOrigin(source, candidate),
+    position: candidate.chunkIndex < source.chunkIndex
+      ? "previous" as const
+      : "next" as const,
+    rank,
+    text: candidate.text,
+    tokens: countTokens(candidate.text)
+  });
+}
+
 export async function executeKnowledgeRetrievalCore(
   client: RetrievalCoreClient,
   input: Readonly<{
@@ -1386,6 +1447,9 @@ export async function executeKnowledgeRetrievalCore(
     candidateLimit: number;
     bindingOrdinals?: readonly number[];
     excludedContentHashes: readonly string[];
+    /** FR-14 canonical-section window loader; present only for automatic
+     * search operations, so exact/metadata/read operations never expand. */
+    parentContextLoader?: KnowledgeParentContextLoader;
     query: string;
     rerank?: KnowledgeRetrievalRerank;
     resultLimit: number;
@@ -1607,14 +1671,49 @@ export async function executeKnowledgeRetrievalCore(
   );
   const selectedContentHashes = new Set(selected.map((candidate) => candidate.contentHash));
   const assignedContextHashes = new Set<string>();
-  const passages = selected.map((candidate): KnowledgeRetrievalCorePassage => {
-    const semantic = candidate.signals
-      .filter((signal) => signal.lane === "passage_semantic")
-      .sort((left, right) => left.rank - right.rank)[0] ?? null;
-    const lexical = candidate.signals
-      .filter((signal) => signal.lane.endsWith("_lexical"))
-      .sort((left, right) => left.rank - right.rank)[0] ?? null;
-    const context = selectKnowledgeContext({
+  // FR-14 child-to-parent expansion: load bounded canonical-section windows
+  // for the final selection before provider delivery. A classified load
+  // failure degrades to the candidate-pool mechanics below (PRD §18: parent
+  // expansion failure never loses the answer); database, authority, and
+  // invariant failures outside the classified stage propagate unchanged.
+  const countTokens = input.parentContextLoader ? knowledgeParentContextTokenCounter() : null;
+  let parentWindows: ReadonlyMap<string, readonly KnowledgeParentContextRow[]> = new Map();
+  let parentLoadFailure: KnowledgeParentContextFailureCode | undefined;
+  if (input.parentContextLoader) {
+    const requests = selected.flatMap((candidate): KnowledgeParentSectionWindowRequest[] =>
+      candidate.sectionId === null || candidate.sourceArtifactId === null ? [] : [{
+        chunkId: candidate.chunkId,
+        chunkIndex: candidate.chunkIndex,
+        documentVersionId: candidate.documentVersionId,
+        fromOrdinal: Math.max(0, candidate.chunkIndex - KNOWLEDGE_PARENT_CONTEXT_WINDOW_RADIUS),
+        sectionId: candidate.sectionId,
+        sourceArtifactId: candidate.sourceArtifactId,
+        toOrdinal: candidate.chunkIndex + KNOWLEDGE_PARENT_CONTEXT_WINDOW_RADIUS
+      }]);
+    if (requests.length > 0) {
+      try {
+        parentWindows = await input.parentContextLoader(requests);
+      } catch (error) {
+        if (!(error instanceof KnowledgeParentContextError)) throw error;
+        parentLoadFailure = error.code;
+      }
+    }
+  }
+  // Candidate-pool neighbor mechanics stay the owner for table and form
+  // primaries; a body primary whose usable section window subsumes the linear
+  // previous/next attachment skips the legacy selection so both mechanisms
+  // never double-ship the same text (the assembly claim set also dedupes the
+  // remaining overlap in either direction).
+  const legacyContextByChunk = new Map<string, readonly KnowledgeRetrievalCandidate[]>();
+  const expansionPrimaries: KnowledgeParentExpansionPrimary[] = [];
+  for (const candidate of selected) {
+    const sectionWindowUsable = countTokens !== null && parentLoadFailure === undefined &&
+      candidate.layoutKind === "body" && candidate.sectionId !== null &&
+      usableKnowledgeParentContextWindow(
+        parentWindows.get(candidate.chunkId),
+        candidate
+      ) !== null;
+    const context = sectionWindowUsable ? [] : selectKnowledgeContext({
       assignedContentHashes: assignedContextHashes,
       candidates: canonical.candidates,
       excludedContentHashes,
@@ -1622,15 +1721,65 @@ export async function executeKnowledgeRetrievalCore(
       source: candidate
     });
     for (const neighbor of context) assignedContextHashes.add(neighbor.contentHash);
-    const expandedContext = context.map((neighbor) =>
-      `${knowledgeContextLabel(candidate, neighbor)}:\n${neighbor.text}`
-    ).join("\n\n");
+    legacyContextByChunk.set(candidate.chunkId, context);
+    if (countTokens !== null) {
+      expansionPrimaries.push({
+        chunkId: candidate.chunkId,
+        chunkIndex: candidate.chunkIndex,
+        contentHash: candidate.contentHash,
+        ...(candidate.documentContext !== undefined
+          ? { documentContext: candidate.documentContext }
+          : {}),
+        documentId: candidate.documentId,
+        documentVersionId: candidate.documentVersionId,
+        layoutKind: candidate.layoutKind,
+        legacyUnits: Object.freeze(context.map((neighbor, index) =>
+          legacyExpansionUnit(candidate, neighbor, index, countTokens))),
+        sectionId: candidate.sectionId,
+        sourceArtifactId: candidate.sourceArtifactId
+      });
+    }
+  }
+  let expansions: ReadonlyMap<string, KnowledgeParentExpansion> | null = null;
+  if (countTokens !== null) {
+    try {
+      expansions = assembleKnowledgeParentExpansions({
+        countTokens,
+        excludedContentHashes,
+        ...(parentLoadFailure ? { loadFailureCode: parentLoadFailure } : {}),
+        primaries: expansionPrimaries,
+        windows: parentWindows
+      });
+    } catch {
+      // PRD §18: an expansion assembly defect keeps the atomic evidence and
+      // the candidate-pool fallback with a content-free degradation reason.
+      expansions = new Map(expansionPrimaries.map((primary) => [primary.chunkId, Object.freeze({
+        reason: "parent_context_assembly_failed",
+        state: "degraded" as const,
+        units: primary.legacyUnits
+      })]));
+    }
+  }
+  const passages = selected.map((candidate): KnowledgeRetrievalCorePassage => {
+    const semantic = candidate.signals
+      .filter((signal) => signal.lane === "passage_semantic")
+      .sort((left, right) => left.rank - right.rank)[0] ?? null;
+    const lexical = candidate.signals
+      .filter((signal) => signal.lane.endsWith("_lexical"))
+      .sort((left, right) => left.rank - right.rank)[0] ?? null;
+    const expansion = expansions?.get(candidate.chunkId);
+    const expandedContext = expansion
+      ? renderKnowledgeParentExpansionUnits(expansion.units)
+      : (legacyContextByChunk.get(candidate.chunkId) ?? []).map((neighbor) =>
+        `${knowledgeContextLabel(candidate, neighbor)}:\n${neighbor.text}`
+      ).join("\n\n");
     return Object.freeze({
       ...candidate,
       annRank: semantic?.rank ?? null,
       ftsRank: lexical?.rank ?? null,
       ftsScore: lexical?.rawScore ?? null,
       ...(expandedContext ? { expandedContext } : {}),
+      ...(expansion ? { expansion } : {}),
       vectorDistance: semantic?.vectorDistance ?? null,
       vectorScore: semantic?.vectorDistance === null || semantic === null
         ? null

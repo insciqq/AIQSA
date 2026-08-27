@@ -55,6 +55,7 @@ import {
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
   type KnowledgeRerankerBindingEvidenceV2
 } from "./rerankEvidence";
+import { decodeKnowledgeParentExpansionEvidence } from "./parentContextExpansion";
 
 function persistedContentMarker(version: KnowledgeResultVersion) {
   return Object.freeze({
@@ -297,6 +298,9 @@ function decodePassage(
   const expandedContext = value.expandedContext === undefined
     ? undefined
     : boundedString(value.expandedContext, 64 * 1024, true);
+  const expansion = value.expansion === undefined
+    ? undefined
+    : decodeKnowledgeParentExpansionEvidence(value.expansion);
   const fileName = boundedString(value.fileName, 1_024);
   const ftsRank = nullablePositiveRank(value.ftsRank);
   const ftsScore = nullableFiniteNumber(value.ftsScore);
@@ -369,7 +373,7 @@ function decodePassage(
     !chunkId || chunkIndex === null || !documentId || !documentVersionId ||
     documentContext === null && value.documentContext !== null ||
     (documentVersionNumber === null || documentVersionNumber < 1) || !fileName ||
-    expandedContext === null ||
+    expandedContext === null || expansion === null ||
     ftsRank === undefined || ftsScore === undefined || fusedScore === null || fusedScore < 0 ||
     !handle || !decodeKnowledgeCitationHandle(handle) ||
     includedText === null ||
@@ -421,6 +425,7 @@ function decodePassage(
     documentVersionId,
     documentVersionNumber,
     ...(expandedContext !== undefined ? { expandedContext } : {}),
+    ...(expansion !== undefined ? { expansion } : {}),
     fileName,
     ftsRank,
     ftsScore,

@@ -17,6 +17,7 @@ import {
   type KnowledgeGroundingResult
 } from "./grounding";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "./retrievalTypes";
+import { decodeKnowledgeParentExpansionEvidence } from "./parentContextExpansion";
 import { knowledgeEvidenceFromToolResult } from "./toolResult";
 import { parsePersistedToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { parseToolLoopCheckpoint } from "../runs/toolLoopPersistence";
@@ -317,6 +318,9 @@ function contextBoundaries(
   const documentContext = value.documentContext === undefined
     ? undefined
     : decodeKnowledgeDocumentContext(value.documentContext) ?? null;
+  const expansion = value.expansion === undefined
+    ? undefined
+    : decodeKnowledgeParentExpansionEvidence(value.expansion) ?? null;
   const layoutKind = value.layoutKind === undefined
     ? undefined
     : value.layoutKind === "body" || value.layoutKind === "field_ambiguous" ||
@@ -333,7 +337,7 @@ function contextBoundaries(
     : decodeKnowledgeVisualAnalysisResult(value.visualAnalysis) ?? null;
   return excerptBytes === null || layoutKind === null || sourceTextBytes === null ||
     sourceTextBytes < excerptBytes
-    || documentContext === null
+    || documentContext === null || expansion === null
     || structuredAnalysis === null || visualAnalysis === null ||
       structuredAnalysis !== undefined && visualAnalysis !== undefined
     ? undefined
@@ -341,6 +345,7 @@ function contextBoundaries(
         expanded: value.expanded,
         ...(documentContext ? { documentContext } : {}),
         excerptBytes,
+        ...(expansion ? { expansion } : {}),
         ...(layoutKind !== undefined ? { layoutKind } : {}),
         sourceTextBytes,
         ...(structuredAnalysis ? { structuredAnalysis } : {}),
