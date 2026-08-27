@@ -103,7 +103,7 @@ async function execute(
   overrides: Partial<Parameters<typeof executeKnowledgeRetrievalCore>[1]> = {}
 ) {
   return executeKnowledgeRetrievalCore(client, {
-    candidateLimit: 40,
+    candidateLimit: 64,
     excludedContentHashes: [],
     query: "canonical source evidence",
     resultLimit: 8,
@@ -556,7 +556,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
         laneRank: 1,
         text: "Primary matching row."
       }),
-      ...Array.from({ length: 40 }, (_, index) => row({
+      ...Array.from({ length: 64 }, (_, index) => row({
         artifactId: `artifact-distractor-${index}`,
         baseName: "Metrics",
         bindingOrdinal: 0,
@@ -574,13 +574,13 @@ describe("Prisma retrieval core canonical Source identity", () => {
         chunkIndex: 10,
         contentHash: "e".repeat(64),
         documentContext: supplementalContext,
-        laneRank: 40,
+        laneRank: 66,
         rawScore: 0.11,
         text: "Independently matching complete row."
       })
     ]));
 
-    expect(result.candidateCount).toBe(40);
+    expect(result.candidateCount).toBe(64);
     expect(result.rankingEvidence.candidateOrder).not.toContain("target-supplemental");
     expect(result.passages.find((passage) => passage.chunkId === "target-primary"))
       .toMatchObject({
@@ -591,9 +591,9 @@ describe("Prisma retrieval core canonical Source identity", () => {
       });
   });
 
-  it("caps the canonical RRF pool at forty chunks inside the one focused operation", async () => {
+  it("caps the canonical RRF pool at the profile lane limit inside the one focused operation", async () => {
     const acceptedScope = scope(0, "Lab", "base-lab");
-    const rows = Array.from({ length: 50 }, (_, index) => row({
+    const rows = Array.from({ length: 70 }, (_, index) => row({
       artifactId: `artifact-${index}`,
       baseName: "Lab",
       bindingOrdinal: 0,
@@ -609,8 +609,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const result = await execute(client);
 
     expect(client.$queryRaw).toHaveBeenCalledOnce();
-    expect(result.candidateCount).toBe(40);
-    expect(result.candidateCounts).toEqual({ 0: 40 });
+    expect(result.candidateCount).toBe(64);
+    expect(result.candidateCounts).toEqual({ 0: 64 });
     expect(result.passages).toHaveLength(8);
   });
 

@@ -3,6 +3,15 @@ import type { KnowledgeDocumentContextV1 } from "./documentContext";
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
 export const KNOWLEDGE_RANKING_CANDIDATE_MAX = 1_000;
+/**
+ * Versioned code-owned ranking profile. Version 2 widens the per-lane
+ * candidate limit to 64 and introduces the hosted-rerank merged-pool caps.
+ * These values are internal retrieval defaults, never user or Admin settings.
+ */
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 2 as const;
+export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
+export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
+export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
 export const KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR = 0.1;
 export const KNOWLEDGE_METADATA_RELEVANCE_FLOOR = 0.45;
 export const KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR = 0.65;
@@ -143,6 +152,16 @@ function relevanceEligibleCandidate(
     : null;
 }
 
+/** Named lane relevance eligibility exactly as the deterministic path applies it. */
+export function eligibleKnowledgeCandidates(
+  candidates: readonly KnowledgeRetrievalCandidate[]
+): KnowledgeRetrievalCandidate[] {
+  return candidates.flatMap((candidate) => {
+    const accepted = relevanceEligibleCandidate(candidate);
+    return accepted ? [accepted] : [];
+  });
+}
+
 export function fuseKnowledgeCandidates(
   candidates: readonly KnowledgeRetrievalCandidate[]
 ): KnowledgeRankedCandidate[] {
@@ -208,6 +227,153 @@ export function boundKnowledgeCandidates(
     if (selected.length >= maximum) break;
     if (selectedChunks.has(candidate.chunkId)) continue;
     selected.push(candidate);
+  }
+  return selected;
+}
+
+export function knowledgeCandidateHasExactSignal(
+  candidate: KnowledgeRetrievalCandidate
+): boolean {
+  return candidate.signals.some((signal) => signal.lane === "exact");
+}
+
+/**
+ * Builds the merged pre-rerank candidate pool: weighted RRF pre-order,
+ * canonical content deduplication, guaranteed exact-candidate survival, and
+ * soft balancing across accepted bindings, capped at the versioned rerank
+ * input maximum. Relevance floors are deliberately not applied here — the
+ * hosted reranker sees every authority-scoped candidate.
+ */
+export function selectKnowledgePreRerankPool(input: Readonly<{
+  bindingOrdinals: readonly number[];
+  candidates: readonly KnowledgeRetrievalCandidate[];
+  maximum: number;
+}>): KnowledgeRankedCandidate[] {
+  const bindingCount = new Set(input.bindingOrdinals).size;
+  if (!Number.isSafeInteger(input.maximum) || input.maximum < 1 || bindingCount < 1) {
+    throw new Error("knowledge_prererank_pool_invalid");
+  }
+  const fused = fuseKnowledgeCandidates(input.candidates);
+  const deduped: KnowledgeRankedCandidate[] = [];
+  const seenChunks = new Set<string>();
+  const seenContent = new Set<string>();
+  for (const candidate of fused) {
+    if (seenChunks.has(candidate.chunkId) || seenContent.has(candidate.contentHash)) continue;
+    seenChunks.add(candidate.chunkId);
+    seenContent.add(candidate.contentHash);
+    deduped.push(candidate);
+  }
+  if (deduped.length <= input.maximum) return deduped;
+  const selected: KnowledgeRankedCandidate[] = [];
+  const selectedChunks = new Set<string>();
+  const perBinding = new Map<number, number>();
+  const take = (candidate: KnowledgeRankedCandidate): void => {
+    selected.push(candidate);
+    selectedChunks.add(candidate.chunkId);
+    perBinding.set(
+      candidate.bindingOrdinal,
+      (perBinding.get(candidate.bindingOrdinal) ?? 0) + 1
+    );
+  };
+  // Exact candidates survive pre-rerank bounding regardless of dense or
+  // lexical strength and regardless of binding quotas.
+  for (const candidate of deduped) {
+    if (selected.length >= input.maximum) break;
+    if (knowledgeCandidateHasExactSignal(candidate)) take(candidate);
+  }
+  const quota = Math.max(1, Math.floor(input.maximum / bindingCount));
+  for (const candidate of deduped) {
+    if (selected.length >= input.maximum) break;
+    if (selectedChunks.has(candidate.chunkId)) continue;
+    if ((perBinding.get(candidate.bindingOrdinal) ?? 0) >= quota) continue;
+    take(candidate);
+  }
+  for (const candidate of deduped) {
+    if (selected.length >= input.maximum) break;
+    if (selectedChunks.has(candidate.chunkId)) continue;
+    take(candidate);
+  }
+  return selected.sort((left, right) =>
+    right.fusedScore - left.fusedScore || left.chunkId.localeCompare(right.chunkId));
+}
+
+export type KnowledgeRerankedCandidate = KnowledgeRankedCandidate & Readonly<{
+  rerankScore: number | null;
+}>;
+
+/**
+ * Final ranking after hosted reranking: descending rerank score, exact signal
+ * as tie-breaker, fused RRF score next, deterministic chunk id last. Scored
+ * candidates always precede candidates the provider omitted; omitted
+ * candidates keep their deterministic weighted RRF order.
+ */
+export function orderRerankedKnowledgeCandidates(input: Readonly<{
+  pool: readonly KnowledgeRankedCandidate[];
+  rerankScores: ReadonlyMap<string, number>;
+}>): KnowledgeRerankedCandidate[] {
+  const withScores = input.pool.map((candidate): KnowledgeRerankedCandidate =>
+    Object.freeze({
+      ...candidate,
+      rerankScore: input.rerankScores.get(candidate.chunkId) ?? null
+    }));
+  return withScores.sort((left, right) => {
+    if ((left.rerankScore === null) !== (right.rerankScore === null)) {
+      return left.rerankScore === null ? 1 : -1;
+    }
+    if (left.rerankScore !== null && right.rerankScore !== null &&
+      left.rerankScore !== right.rerankScore) {
+      return right.rerankScore - left.rerankScore;
+    }
+    const leftExact = knowledgeCandidateHasExactSignal(left) ? 1 : 0;
+    const rightExact = knowledgeCandidateHasExactSignal(right) ? 1 : 0;
+    if (leftExact !== rightExact) return rightExact - leftExact;
+    if (left.fusedScore !== right.fusedScore) return right.fusedScore - left.fusedScore;
+    return left.chunkId.localeCompare(right.chunkId);
+  });
+}
+
+/**
+ * Post-rerank final selection: canonical content deduplication, then soft
+ * Source diversity applied only inside the narrow relative score band, then
+ * the final broad/scoped result limit. Diversity never promotes an unscored
+ * candidate above a scored one and never lifts a candidate outside the band.
+ */
+export function selectRerankedKnowledgeCandidates(input: Readonly<{
+  candidates: readonly KnowledgeRerankedCandidate[];
+  resultLimit: number;
+}>): KnowledgeRerankedCandidate[] {
+  const selectedChunks = new Set<string>();
+  const selectedContent = new Set<string>();
+  const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
+    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
+      return false;
+    }
+    selectedChunks.add(candidate.chunkId);
+    selectedContent.add(candidate.contentHash);
+    return true;
+  });
+  const bandScore = (candidate: KnowledgeRerankedCandidate): number =>
+    candidate.rerankScore ?? candidate.fusedScore;
+  const selected: KnowledgeRerankedCandidate[] = [];
+  const counts = new Map<string, number>();
+  while (selected.length < input.resultLimit && remaining.length > 0) {
+    const strongest = remaining[0]!;
+    const strongestSourceCount = counts.get(sourceKey(strongest)) ?? 0;
+    const bandFloor = bandScore(strongest) * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
+    const alternative = remaining
+      .filter((candidate) =>
+        (candidate.rerankScore === null) === (strongest.rerankScore === null) &&
+        bandScore(candidate) >= bandFloor &&
+        (counts.get(sourceKey(candidate)) ?? 0) < strongestSourceCount)
+      .sort((left, right) =>
+        (counts.get(sourceKey(left)) ?? 0) - (counts.get(sourceKey(right)) ?? 0) ||
+        bandScore(right) - bandScore(left) ||
+        left.chunkId.localeCompare(right.chunkId))[0];
+    const chosen = alternative ?? strongest;
+    remaining.splice(remaining.indexOf(chosen), 1);
+    selected.push(chosen);
+    const source = sourceKey(chosen);
+    counts.set(source, (counts.get(source) ?? 0) + 1);
   }
   return selected;
 }

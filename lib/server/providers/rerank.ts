@@ -102,6 +102,15 @@ type RerankNetworkOptions = Readonly<{
   responseMaxBytes?: number;
 }>;
 
+/**
+ * "lenient" (default) keeps the valid unique in-range subset of returned
+ * scores and drops malformed entries, matching Memory's partial-score
+ * rejoin semantics. "strict" treats any duplicate, out-of-range, non-finite,
+ * or shape-invalid entry as a malformed response so a possibly wrong
+ * score-to-passage mapping is never used.
+ */
+export type RerankResponseValidation = "lenient" | "strict";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -179,14 +188,16 @@ function responseBody(
   value: unknown,
   documents: readonly RerankDocument[],
   model: ProviderModelConfiguration,
-  headerRequestId: string | null
+  headerRequestId: string | null,
+  validation: RerankResponseValidation
 ): RerankResult {
+  const strict = validation === "strict";
   const body = isRecord(value) ? value : null;
   const responseModel = boundedIdentifier(body?.model);
   if (!body || !responseModel ||
     !responseModelMatches(responseModel, model.upstreamModelId) ||
     !Array.isArray(body.results) ||
-    body.results.length > MAX_RERANK_DOCUMENTS * 4) {
+    body.results.length > (strict ? documents.length : MAX_RERANK_DOCUMENTS * 4)) {
     if (isRecord(value) && typeof value.model === "string" &&
       !responseModelMatches(value.model, model.upstreamModelId)) {
       throw new RerankAdapterError("rerank_response_model_mismatch");
@@ -196,11 +207,17 @@ function responseBody(
   const scores: RerankScore[] = [];
   const seen = new Set<number>();
   for (const entry of body.results) {
-    if (!isRecord(entry) || !Number.isSafeInteger(entry.index)) continue;
+    if (!isRecord(entry) || !Number.isSafeInteger(entry.index)) {
+      // Strict validation never tolerates an entry whose score-to-document
+      // mapping could be wrong; lenient callers keep the valid subset.
+      if (strict) throw new RerankAdapterError("rerank_response_invalid");
+      continue;
+    }
     const index = Number(entry.index);
     const score = entry.relevance_score;
     if (index < 0 || index >= documents.length || seen.has(index) ||
       typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
+      if (strict) throw new RerankAdapterError("rerank_response_invalid");
       continue;
     }
     seen.add(index);
@@ -225,7 +242,9 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
   model: ProviderModelConfiguration;
   network?: RerankNetworkOptions;
   secret: ProviderCredentialSource;
+  validation?: RerankResponseValidation;
 }>): RerankAdapter {
+  const validation: RerankResponseValidation = input.validation ?? "lenient";
   const connection = normalizeProviderConnectionConfiguration(input.connection);
   const model = normalizeProviderModelConfiguration(input.model);
   if (model.modelClass !== "reranker" || model.adapterKind !== "openrouter_rerank" ||
@@ -310,7 +329,8 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
           parsed,
           documents,
           model,
-          boundedIdentifier(response.headers.get("x-request-id"))
+          boundedIdentifier(response.headers.get("x-request-id")),
+          validation
         );
       } catch (error) {
         if (error instanceof RerankAdapterError) throw error;

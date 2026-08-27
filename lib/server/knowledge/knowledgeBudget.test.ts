@@ -33,7 +33,7 @@ describe("Knowledge execution budgets", () => {
   it("allows the default twelve operations and derives smaller administrator limits", () => {
     const policy = DEFAULT_KNOWLEDGE_BUDGET_POLICY;
     expect(policy).toMatchObject({
-      maxCumulativeCandidates: 480,
+      maxCumulativeCandidates: 1_152,
       maxLatencyMs: 360_000,
       maxOperations: 12,
       maxQueryEmbeddingCalls: 12,
@@ -48,7 +48,7 @@ describe("Knowledge execution budgets", () => {
     expect(knowledgeBudgetStopReason(policy, usage({ queryEmbeddingCalls: 13 })))
       .toBe("embedding_budget");
     expect(knowledgeBudgetPolicyFromProfileConfiguration(null, 4)).toMatchObject({
-      maxCumulativeCandidates: 160,
+      maxCumulativeCandidates: 384,
       maxOperations: 4,
       maxQueryEmbeddingCalls: 4,
       maxRetrievedTokens: 49_152

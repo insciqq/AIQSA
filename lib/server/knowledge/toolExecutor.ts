@@ -17,7 +17,6 @@ import {
   knowledgeToolResultText
 } from "./toolResult";
 import {
-  KNOWLEDGE_CANDIDATE_LIMIT,
   KNOWLEDGE_EXECUTION_TOOL_NAMES,
   KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
   KNOWLEDGE_QUERY_MAX_CHARACTERS,
@@ -70,6 +69,15 @@ import {
   type KnowledgeDocumentLocatorV1
 } from "./documentContext";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
+import { KNOWLEDGE_LANE_CANDIDATE_LIMIT } from "./retrievalRanking";
+import {
+  createKnowledgeRerankStage,
+  knowledgeRerankerDisabledEvidence,
+  knowledgeRerankerUnavailableEvidence,
+  type KnowledgeRerankExecutor
+} from "./rerankExecution";
+import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
 
 export { knowledgeRetrievalTool } from "./knowledgeTools";
 
@@ -103,6 +111,10 @@ export type KnowledgeRetrievalStore = Readonly<{
     excludedContentHashes: readonly string[];
     operation: KnowledgeOperationKind;
     query: string;
+    rerank?: Readonly<{
+      executor: KnowledgeRerankExecutor;
+      signal?: AbortSignal;
+    }>;
     resultLimit: number;
     runId: string;
     sourceIds?: readonly string[];
@@ -835,10 +847,15 @@ function validBindings(bindings: readonly KnowledgeAcceptedBinding[]): boolean {
 export function createKnowledgeToolExecutor(input: Readonly<{
   budgetReservations?: KnowledgeBudgetReservationRepository;
   embeddingRuntime: KnowledgeEmbeddingRuntimeResolver;
+  /**
+   * Installation reranker role for hosted reranking. When omitted, retrieval
+   * stays fully deterministic and no reranker evidence is recorded.
+   */
+  rerankerRuntime?: KnowledgeRerankerRuntimeResolver;
   store: KnowledgeRetrievalStore;
 }>): KnowledgeToolExecutor {
   const staticPolicy = Object.freeze({
-    candidateLimit: KNOWLEDGE_CANDIDATE_LIMIT,
+    candidateLimit: KNOWLEDGE_LANE_CANDIDATE_LIMIT,
     resultLimit: KNOWLEDGE_RESULT_LIMIT
   });
 
@@ -1475,6 +1492,20 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         }
       }
 
+      // FR-4/FR-15: the installation reranker role is resolved and pinned per
+      // accepted operation. Recovery replays the stored receipt above and
+      // never reaches this resolution, so an accepted operation is immutable.
+      const rerankResolution = input.rerankerRuntime
+        ? await input.rerankerRuntime.resolve()
+        : null;
+      const rerankExecutor: KnowledgeRerankExecutor | null =
+        rerankResolution?.kind === "ready"
+          ? createKnowledgeRerankStage({
+              adapter: rerankResolution.adapter,
+              pin: rerankResolution.pin,
+              query: request.query
+            })
+          : null;
       const search = await input.store.hybridSearch({
         ...(anchorQuery ? { anchorQuery } : {}),
         ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
@@ -1482,6 +1513,14 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         excludedContentHashes: budgetState.priorContentHashes,
         operation: request.operation,
         query: request.query,
+        ...(rerankExecutor
+          ? {
+              rerank: {
+                executor: rerankExecutor,
+                ...(options?.signal ? { signal: options.signal } : {})
+              }
+            }
+          : {}),
         resultLimit,
         runId,
         ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}),
@@ -1497,6 +1536,19 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ranking.candidateOrder.length !== search.candidateCount ||
         (search.candidateCount > 0 && search.passages.length === 0)) {
         throw new Error("knowledge_hybrid_ranking_invalid");
+      }
+      const rerankerBinding: KnowledgeRerankerBindingEvidenceV2 | undefined =
+        rerankResolution === null
+          ? undefined
+          : rerankResolution.kind === "absent"
+            ? knowledgeRerankerDisabledEvidence()
+            : rerankResolution.kind === "unavailable"
+              ? knowledgeRerankerUnavailableEvidence({
+                  selectedProviderModelId: rerankResolution.selectedProviderModelId
+                })
+              : search.rerankerBinding;
+      if (rerankResolution?.kind === "ready" && !rerankerBinding) {
+        throw new Error("knowledge_reranker_evidence_missing");
       }
       const remainingRetrievedTokens = Math.max(
         1,
@@ -1542,6 +1594,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         operation: request.operation,
         outcome: retrievalOutcome,
         query: request.query,
+        ...(rerankerBinding ? { rerankerBinding } : {}),
         resultLimit,
         results: retrievalOutcome === "complete" ? results : [],
         scopeAliases: evidenceAliases(aliases, results, scopedBindings),

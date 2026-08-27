@@ -363,7 +363,7 @@ describe("Knowledge executor surface", () => {
     expect(embed).toHaveBeenCalledWith({ mode: "query", texts: ["Question"] });
     expect(hybridSearch).toHaveBeenCalledOnce();
     expect(hybridSearch).toHaveBeenCalledWith(expect.objectContaining({
-      candidateLimit: 40,
+      candidateLimit: 64,
       excludedContentHashes: ["c".repeat(64)],
       operation: "automatic_search",
       query: "Question",

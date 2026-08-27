@@ -5,6 +5,7 @@ import type {
   KnowledgeRankingEvidence,
   KnowledgeRerankerBindingEvidence
 } from "./retrievalRanking";
+import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import type {
   KnowledgeBudgetEvidence,
   LegacyKnowledgeBudgetEvidence,
@@ -40,6 +41,12 @@ export const KNOWLEDGE_RESULT_VERSIONS = Object.freeze([
   KNOWLEDGE_RESULT_VERSION
 ] as const);
 export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 3_000;
+/**
+ * Legacy ranking-profile-v1 per-lane candidate limit. Retained only for
+ * historical focused-receipt decoding and the read-only Admin retrieval
+ * projection; new operations use `KNOWLEDGE_LANE_CANDIDATE_LIMIT` from the
+ * versioned ranking profile in `retrievalRanking.ts`.
+ */
 export const KNOWLEDGE_CANDIDATE_LIMIT = 40;
 /** Broad map-stage recall. Source-scoped reduce calls intentionally stay
  * smaller so later rounds trade breadth for row-level precision. */
@@ -289,8 +296,15 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   providerText: string;
   query: string;
   read?: KnowledgeReadReceipt;
-  /** Non-null only when decoding an immutable legacy receipt. */
-  rerankerBinding?: null | KnowledgeRerankerBindingEvidence;
+  /**
+   * Version 1 shapes are decode-only compatibility for immutable legacy
+   * receipts. New automatic-search operations record the content-free hosted
+   * reranker execution evidence as `KnowledgeRerankerBindingEvidenceV2`.
+   */
+  rerankerBinding?:
+    | null
+    | KnowledgeRerankerBindingEvidence
+    | KnowledgeRerankerBindingEvidenceV2;
   resultLimit: number;
   results: readonly KnowledgeRetrievedPassageEvidence[];
   scopeAliases?: readonly KnowledgeEvidenceScopeAlias[];
@@ -318,6 +332,8 @@ export type KnowledgeHybridSearchResult = Readonly<{
   canonicalSourceProvenance?: readonly KnowledgeCanonicalSourceProvenance[];
   passages: readonly KnowledgeHybridPassage[];
   rankingEvidence?: KnowledgeRankingEvidence;
+  /** Present exactly when a hosted rerank stage ran for this operation. */
+  rerankerBinding?: KnowledgeRerankerBindingEvidenceV2;
   vectorSearchEvidence?: readonly KnowledgeVectorSearchEvidence[];
 }>;
 
