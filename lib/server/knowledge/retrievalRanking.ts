@@ -254,15 +254,23 @@ export function selectKnowledgePreRerankPool(input: Readonly<{
     throw new Error("knowledge_prererank_pool_invalid");
   }
   const fused = fuseKnowledgeCandidates(input.candidates);
-  const deduped: KnowledgeRankedCandidate[] = [];
+  const representativeByContent = new Map<string, KnowledgeRankedCandidate>();
   const seenChunks = new Set<string>();
-  const seenContent = new Set<string>();
   for (const candidate of fused) {
-    if (seenChunks.has(candidate.chunkId) || seenContent.has(candidate.contentHash)) continue;
+    if (seenChunks.has(candidate.chunkId)) continue;
     seenChunks.add(candidate.chunkId);
-    seenContent.add(candidate.contentHash);
-    deduped.push(candidate);
+    const existing = representativeByContent.get(candidate.contentHash);
+    if (!existing || knowledgeCandidateHasExactSignal(candidate) &&
+      !knowledgeCandidateHasExactSignal(existing)) {
+      // Canonical content dedup must not erase the exact signal merely
+      // because another Source's duplicate happened to have stronger dense
+      // evidence. Keep the exact-bearing representative; ties retain the
+      // deterministic fused pre-order.
+      representativeByContent.set(candidate.contentHash, candidate);
+    }
   }
+  const deduped = [...representativeByContent.values()].sort((left, right) =>
+    right.fusedScore - left.fusedScore || left.chunkId.localeCompare(right.chunkId));
   if (deduped.length <= input.maximum) return deduped;
   const selected: KnowledgeRankedCandidate[] = [];
   const selectedChunks = new Set<string>();

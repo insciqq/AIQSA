@@ -297,98 +297,95 @@ function coherentSourceReadTableRow<T extends SourceReadPassageRow>(
  * hierarchical index of each admitted source artifact with the same rule the
  * retrieval SQL applies, then reads the bounded ordinal window of each hit's
  * canonical section through the `KAPI_section_ordinal_idx` path — the exact
- * shape the internal `read_source` service already uses. Every classified
- * failure throws `KnowledgeParentContextError`, which the retrieval core
- * degrades to atomic evidence with a content-free reason.
+ * shape the internal `read_source` service already uses. Structurally invalid
+ * persisted rows throw `KnowledgeParentContextError`,
+ * which the retrieval core degrades to atomic evidence with a content-free
+ * reason. Database/query failures deliberately propagate: they are not a
+ * parent-expansion outage and must never be hidden by the fallback path.
  */
 export function createPrismaKnowledgeParentContextLoader(
   client: Pick<RetrievalPrisma, "knowledgeArtifactPassageIndex" | "knowledgeSourceIndexArtifact">
 ): KnowledgeParentContextLoader {
   return async (requests) => {
-    try {
-      if (requests.length === 0) return new Map();
-      const byArtifact = new Map(requests.map((request) => [request.sourceArtifactId, request]));
-      const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
-        select: {
-          hierarchicalIndexes: {
-            orderBy: { schemaVersion: "desc" },
-            select: { id: true },
-            take: 1,
-            where: {
-              schemaVersion: { in: [...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS] },
-              state: "ready"
-            }
-          },
-          id: true,
-          sourceVersionId: true
-        },
-        where: { id: { in: [...byArtifact.keys()] }, state: "ready" }
-      });
-      const indexByArtifact = new Map(artifacts.flatMap((artifact) => {
-        const request = byArtifact.get(artifact.id);
-        const indexArtifactId = artifact.hierarchicalIndexes[0]?.id;
-        return request && indexArtifactId && artifact.sourceVersionId === request.documentVersionId
-          ? [[artifact.id, indexArtifactId] as const]
-          : [];
-      }));
-      const scoped = requests.flatMap((request) => {
-        const indexArtifactId = indexByArtifact.get(request.sourceArtifactId);
-        return indexArtifactId ? [{ indexArtifactId, request }] : [];
-      });
-      if (scoped.length === 0) return new Map();
-      const rows = await client.knowledgeArtifactPassageIndex.findMany({
-        orderBy: { ordinal: "asc" },
-        select: {
-          contentHash: true,
-          contextPrefix: true,
-          documentContext: true,
-          id: true,
-          indexArtifactId: true,
-          layoutKind: true,
-          ordinal: true,
-          sectionId: true,
-          text: true
-        },
-        where: {
-          OR: scoped.map((entry) => ({
-            indexArtifactId: entry.indexArtifactId,
-            ordinal: { gte: entry.request.fromOrdinal, lte: entry.request.toOrdinal },
-            sectionId: entry.request.sectionId
-          }))
-        }
-      });
-      const windows = new Map<string, KnowledgeParentContextRow[]>();
-      for (const entry of scoped) {
-        const window: KnowledgeParentContextRow[] = [];
-        for (const row of rows) {
-          if (row.indexArtifactId !== entry.indexArtifactId ||
-            row.sectionId !== entry.request.sectionId ||
-            row.ordinal < entry.request.fromOrdinal ||
-            row.ordinal > entry.request.toOrdinal) continue;
-          const documentContext = row.documentContext === null
-            ? null
-            : decodeKnowledgeDocumentContext(row.documentContext);
-          if (row.documentContext !== null && documentContext === null) {
-            throw new KnowledgeParentContextError("parent_context_rows_invalid");
+    if (requests.length === 0) return new Map();
+    const byArtifact = new Map(requests.map((request) => [request.sourceArtifactId, request]));
+    const artifacts = await client.knowledgeSourceIndexArtifact.findMany({
+      select: {
+        hierarchicalIndexes: {
+          orderBy: { schemaVersion: "desc" },
+          select: { id: true },
+          take: 1,
+          where: {
+            schemaVersion: { in: [...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS] },
+            state: "ready"
           }
-          window.push({
-            contentHash: row.contentHash.trim(),
-            documentContext,
-            id: row.id,
-            layoutKind:
-              passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext) ?? "body",
-            ordinal: row.ordinal,
-            sectionId: row.sectionId,
-            text: row.text
-          });
-        }
-        if (window.length > 0) windows.set(entry.request.chunkId, window);
+        },
+        id: true,
+        sourceVersionId: true
+      },
+      where: { id: { in: [...byArtifact.keys()] }, state: "ready" }
+    });
+    const indexByArtifact = new Map(artifacts.flatMap((artifact) => {
+      const request = byArtifact.get(artifact.id);
+      const indexArtifactId = artifact.hierarchicalIndexes[0]?.id;
+      return request && indexArtifactId && artifact.sourceVersionId === request.documentVersionId
+        ? [[artifact.id, indexArtifactId] as const]
+        : [];
+    }));
+    const scoped = requests.flatMap((request) => {
+      const indexArtifactId = indexByArtifact.get(request.sourceArtifactId);
+      return indexArtifactId ? [{ indexArtifactId, request }] : [];
+    });
+    if (scoped.length === 0) return new Map();
+    const rows = await client.knowledgeArtifactPassageIndex.findMany({
+      orderBy: { ordinal: "asc" },
+      select: {
+        contentHash: true,
+        contextPrefix: true,
+        documentContext: true,
+        id: true,
+        indexArtifactId: true,
+        layoutKind: true,
+        ordinal: true,
+        sectionId: true,
+        text: true
+      },
+      where: {
+        OR: scoped.map((entry) => ({
+          indexArtifactId: entry.indexArtifactId,
+          ordinal: { gte: entry.request.fromOrdinal, lte: entry.request.toOrdinal },
+          sectionId: entry.request.sectionId
+        }))
       }
-      return windows;
-    } catch (error) {
-      if (error instanceof KnowledgeParentContextError) throw error;
-      throw new KnowledgeParentContextError("parent_context_load_failed", { cause: error });
+    });
+    const windows = new Map<string, KnowledgeParentContextRow[]>();
+    for (const entry of scoped) {
+      const window: KnowledgeParentContextRow[] = [];
+      for (const row of rows) {
+        if (row.indexArtifactId !== entry.indexArtifactId ||
+          row.sectionId !== entry.request.sectionId ||
+          row.ordinal < entry.request.fromOrdinal ||
+          row.ordinal > entry.request.toOrdinal) continue;
+        const documentContext = row.documentContext === null
+          ? null
+          : decodeKnowledgeDocumentContext(row.documentContext);
+        if (row.documentContext !== null && documentContext === null) {
+          throw new KnowledgeParentContextError("parent_context_rows_invalid");
+        }
+        window.push({
+          contentHash: row.contentHash.trim(),
+          documentContext,
+          id: row.id,
+          layoutKind:
+            passageLayoutKind(row.layoutKind, row.contextPrefix, documentContext) ?? "body",
+          ordinal: row.ordinal,
+          sectionId: row.sectionId,
+          text: row.text
+        });
+      }
+      if (window.length > 0) windows.set(entry.request.chunkId, window);
     }
+    return windows;
   };
 }
 
@@ -1859,6 +1856,8 @@ export function createPrismaKnowledgeRetrievalStore(
         if (input.evidence.budget?.stopReason) degradedFlags.add("budget_exhausted");
         if (rerankerBinding?.status === "degraded") {
           degradedFlags.add("knowledge_reranker_degraded");
+        } else if (rerankerBinding?.status === "partial") {
+          degradedFlags.add("knowledge_reranker_partial");
         }
         await tx.knowledgeRetrievalSession.update({
           data: {

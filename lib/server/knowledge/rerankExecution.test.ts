@@ -142,6 +142,31 @@ describe("Knowledge rerank execution stage", () => {
     expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
   });
 
+  it("accepts an empty structurally valid response as a zero-score partial result", async () => {
+    const stage = createKnowledgeRerankStage({
+      adapter: fakeAdapter(async () => ({
+        model: "qwen3-reranker-8b",
+        provider: null,
+        requestId: "req-empty",
+        scores: [],
+        usage: { inputTokens: null, searchUnits: 1, totalTokens: 10 }
+      })),
+      pin,
+      query: "q"
+    });
+    const result = await stage({
+      candidates: [candidate("chunk-a"), candidate("chunk-b")]
+    });
+
+    expect(result.status).toBe("partial");
+    expect(result.evidence).toMatchObject({
+      outputOrder: ["chunk-a", "chunk-b"],
+      relevanceScores: [null, null],
+      status: "partial"
+    });
+    expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
+  });
+
   it("degrades with a timeout indicator when the wall-clock deadline fires", async () => {
     const stage = createKnowledgeRerankStage({
       adapter: fakeAdapter((request) => new Promise((_, reject) => {
@@ -160,6 +185,21 @@ describe("Knowledge rerank execution stage", () => {
       timedOut: true
     });
     expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
+  });
+
+  it("enforces the wall-clock deadline when an adapter ignores AbortSignal", async () => {
+    const stage = createKnowledgeRerankStage({
+      adapter: fakeAdapter(() => new Promise(() => undefined)),
+      pin,
+      query: "q",
+      timeoutMs: 5
+    });
+    const result = await stage({ candidates: [candidate("chunk-a"), candidate("chunk-b")] });
+    expect(result.status).toBe("degraded");
+    expect(result.evidence).toMatchObject({
+      fallbackReason: "rerank_request_timed_out",
+      timedOut: true
+    });
   });
 
   it("degrades on classified provider failures and malformed responses", async () => {
@@ -198,6 +238,17 @@ describe("Knowledge rerank execution stage", () => {
     await expect(stage({ candidates: [candidate("chunk-a"), candidate("chunk-b")] }))
       .rejects.toThrow("database_gone");
 
+    const invalidInput = createKnowledgeRerankStage({
+      adapter: fakeAdapter(async () => {
+        throw new RerankAdapterError("rerank_input_invalid");
+      }),
+      pin,
+      query: "q"
+    });
+    await expect(invalidInput({
+      candidates: [candidate("chunk-a"), candidate("chunk-b")]
+    })).rejects.toMatchObject({ code: "rerank_input_invalid" });
+
     const cancelled = new AbortController();
     const cancelStage = createKnowledgeRerankStage({
       adapter: fakeAdapter((request) => new Promise((_, reject) => {
@@ -212,7 +263,21 @@ describe("Knowledge rerank execution stage", () => {
       signal: cancelled.signal
     });
     cancelled.abort(new Error("operation_cancelled"));
-    await expect(pending).rejects.toThrow("rerank_provider_request_failed");
+    await expect(pending).rejects.toThrow("operation_cancelled");
+
+    const ignored = new AbortController();
+    const ignoresAbort = createKnowledgeRerankStage({
+      adapter: fakeAdapter(() => new Promise(() => undefined)),
+      pin,
+      query: "q",
+      timeoutMs: 1_000
+    });
+    const ignoredPending = ignoresAbort({
+      candidates: [candidate("chunk-a"), candidate("chunk-b")],
+      signal: ignored.signal
+    });
+    ignored.abort(new Error("ignored_adapter_cancelled"));
+    await expect(ignoredPending).rejects.toThrow("ignored_adapter_cancelled");
   });
 
   it("provides disabled and unavailable fallback evidence builders", () => {

@@ -4,6 +4,7 @@ import {
   type KnowledgeParentContextRow
 } from "./parentContextExpansion";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { createPrismaKnowledgeParentContextLoader } from "./prismaRetrievalRepository";
 import type { KnowledgeRetrievalLane } from "./retrievalRanking";
 
 type CoreClient = Parameters<typeof executeKnowledgeRetrievalCore>[0];
@@ -246,6 +247,26 @@ describe("retrieval core child-to-parent context expansion", () => {
 
     await expect(execute(client, { parentContextLoader: loader }))
       .rejects.toThrow("database_connection_lost");
+  });
+
+  it("keeps production parent-window database failures unclassified", async () => {
+    const failure = new Error("database_connection_lost");
+    const loader = createPrismaKnowledgeParentContextLoader({
+      knowledgeArtifactPassageIndex: { findMany: vi.fn() },
+      knowledgeSourceIndexArtifact: {
+        findMany: vi.fn().mockRejectedValue(failure)
+      }
+    } as never);
+
+    await expect(loader([{
+      chunkId: "chunk-10",
+      chunkIndex: 10,
+      documentVersionId: "version-1",
+      fromOrdinal: 2,
+      sectionId: "section-1",
+      sourceArtifactId: "artifact-1",
+      toOrdinal: 18
+    }])).rejects.toBe(failure);
   });
 
   it("marks legacy rows without a canonical section and skips the window read", async () => {

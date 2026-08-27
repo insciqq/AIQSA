@@ -74,6 +74,13 @@ function boundedRerankQuery(query: string): string {
   return sliced;
 }
 
+function rerankCancellationError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error("knowledge_retrieval_aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 function usageEvidence(result: RerankResult | null) {
   return Object.freeze({
     searchUnits: result?.usage.searchUnits ?? null,
@@ -150,7 +157,23 @@ export function knowledgeRerankerUnavailableEvidence(input: Readonly<{
 }
 
 function classifiedFallbackCode(error: unknown): string | null {
-  if (error instanceof RerankAdapterError) return error.code;
+  if (error instanceof RerankAdapterError) {
+    switch (error.code) {
+      case "rerank_provider_http_error":
+      case "rerank_provider_request_failed":
+      case "rerank_request_timed_out":
+      case "rerank_response_invalid":
+      case "rerank_response_model_mismatch":
+      case "rerank_response_too_large":
+        return error.code;
+      case "rerank_documents_invalid":
+      case "rerank_input_invalid":
+      case "rerank_request_too_large":
+        // These describe a local contract/bounds defect, not a provider
+        // outage. Propagate it so invariants are never hidden as fallback.
+        return null;
+    }
+  }
   if (error instanceof ProviderAdmissionError) return error.code;
   return null;
 }
@@ -215,26 +238,46 @@ export function createKnowledgeRerankStage(input: Readonly<{
     }));
     const controller = new AbortController();
     let deadlineFired = false;
-    const timer = setTimeout(() => {
-      deadlineFired = true;
-      controller.abort(new Error("knowledge_rerank_deadline_exceeded"));
-    }, timeoutMs);
-    const forwardAbort = () => controller.abort(signal?.reason);
-    if (signal) {
-      if (signal.aborted) forwardAbort();
-      else signal.addEventListener("abort", forwardAbort, { once: true });
-    }
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        deadlineFired = true;
+        const error = new RerankAdapterError("rerank_request_timed_out");
+        controller.abort(error);
+        // Enforce the operation deadline even if a custom adapter ignores
+        // AbortSignal. The one in-flight request is still never retried.
+        reject(error);
+      }, timeoutMs);
+    });
+    let forwardAbort: (() => void) | null = null;
+    const cancellation = signal
+      ? new Promise<never>((_resolve, reject) => {
+          forwardAbort = () => {
+            const error = rerankCancellationError(signal);
+            controller.abort(error);
+            // Cancellation is an operation-level control signal, not a
+            // reranker fallback. Enforce it even if an adapter ignores abort.
+            reject(error);
+          };
+          if (signal.aborted) forwardAbort();
+          else signal.addEventListener("abort", forwardAbort, { once: true });
+        })
+      : null;
     const startedAt = now();
     let result: RerankResult;
     try {
-      result = await input.adapter.rerank({
-        documents,
-        query,
-        signal: controller.signal
-      });
+      result = await Promise.race([
+        input.adapter.rerank({
+          documents,
+          query,
+          signal: controller.signal
+        }),
+        deadline,
+        ...(cancellation ? [cancellation] : [])
+      ]);
     } catch (error) {
       const durationMs = Math.max(0, now() - startedAt);
-      if (signal?.aborted) throw error;
+      if (signal?.aborted) throw rerankCancellationError(signal);
       const timedOut = deadlineFired ||
         error instanceof RerankAdapterError && error.code === "rerank_request_timed_out";
       const fallbackReason = timedOut
@@ -262,8 +305,8 @@ export function createKnowledgeRerankStage(input: Readonly<{
         status: "degraded"
       };
     } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", forwardAbort);
+      clearTimeout(timer!);
+      if (forwardAbort) signal?.removeEventListener("abort", forwardAbort);
     }
     const durationMs = Math.max(0, now() - startedAt);
     const scores = new Map<string, number>();

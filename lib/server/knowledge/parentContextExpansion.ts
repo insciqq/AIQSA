@@ -1,8 +1,8 @@
+import { KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS } from "./chunking";
 import {
-  approximateKnowledgeTokenCount,
-  KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS
-} from "./chunking";
-import { qwen2BpeTokenCounter } from "./tokenizer/qwen2BpeTokenizer";
+  conservativeQwen2TokenUpperBound,
+  qwen2BpeTokenCounter
+} from "./tokenizer/qwen2BpeTokenizer";
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
 import type {
   KnowledgeParentExpansion,
@@ -35,10 +35,12 @@ import type {
  *
  * One evidence group (legacy segments plus new window units) never exceeds
  * `KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS` model tokens, counted with the
- * model-native tokenizer when available (generic estimator fallback, which
- * only over-counts). Overlapping windows from several primaries are merged by
- * a shared claim set: the same text never ships twice, while every atomic
- * evidence handle and each child hit's ranking survive untouched.
+ * model-native tokenizer when available (a conservative UTF-8 byte upper
+ * bound otherwise). The cap applies to the exact rendered expansion payload,
+ * including its labels and separators. Overlapping windows from several
+ * primaries are merged by a shared claim set: the same text never ships
+ * twice, while every atomic evidence handle and each child hit's ranking
+ * survive untouched.
  *
  * Failure discipline mirrors the hosted rerank stage: classified loading and
  * assembly failures degrade to the atomic evidence (plus the candidate-pool
@@ -78,16 +80,16 @@ export class KnowledgeParentContextError extends Error {
 /**
  * Retrieval-time token counter following the Phase-4 formatter convention:
  * the model-native counter when its pinned asset verifies, otherwise the
- * generic estimator, which only over-counts and therefore only tightens the
- * expansion budget — retrieval never hard-fails on a counting-side tokenizer
- * problem (indexing keeps its own fail-closed path).
+ * conservative UTF-8 byte upper bound of byte-level BPE, which can only
+ * tighten the expansion budget — retrieval never hard-fails on a
+ * counting-side tokenizer problem (indexing keeps its own fail-closed path).
  */
 export function knowledgeParentContextTokenCounter(): (text: string) => number {
   try {
     const counter = qwen2BpeTokenCounter();
     return (text) => counter.countTokens(text);
   } catch {
-    return approximateKnowledgeTokenCount;
+    return conservativeQwen2TokenUpperBound;
   }
 }
 
@@ -206,7 +208,6 @@ type PrimaryState = {
   structure: StructureKey | null;
   structured: boolean;
   units: KnowledgeParentExpansionUnit[];
-  usedTokens: number;
   window: readonly KnowledgeParentContextRow[];
 };
 
@@ -259,16 +260,13 @@ function peekSide(
   return null;
 }
 
-function takeSide(
+function sectionExpansionUnit(
   state: PrimaryState,
-  claims: Claims,
   side: "next" | "previous",
   found: Readonly<{ index: number; row: KnowledgeParentContextRow }>,
   tokens: number
-): void {
-  claims.chunkIds.add(found.row.id);
-  claims.contentHashes.add(found.row.contentHash);
-  state.units.push(Object.freeze({
+): KnowledgeParentExpansionUnit {
+  return Object.freeze({
     chunkId: found.row.id,
     chunkIndex: found.row.ordinal,
     contentHash: found.row.contentHash,
@@ -278,8 +276,19 @@ function takeSide(
     rank: state.units.length,
     text: found.row.text,
     tokens
-  }));
-  state.usedTokens += tokens;
+  });
+}
+
+function takeSide(
+  state: PrimaryState,
+  claims: Claims,
+  side: "next" | "previous",
+  found: Readonly<{ index: number; row: KnowledgeParentContextRow }>,
+  unit: KnowledgeParentExpansionUnit
+): void {
+  claims.chunkIds.add(found.row.id);
+  claims.contentHashes.add(found.row.contentHash);
+  state.units.push(unit);
   const direction = side === "previous" ? -1 : 1;
   state[side] = {
     index: found.index + direction,
@@ -291,13 +300,12 @@ function takeSide(
 /** Keeps the relevance-ordered prefix of units that fits the token cap. */
 function unitsWithinTokenCap(
   units: readonly KnowledgeParentExpansionUnit[],
+  countTokens: (text: string) => number,
   cap: number
 ): readonly KnowledgeParentExpansionUnit[] {
   const kept: KnowledgeParentExpansionUnit[] = [];
-  let total = 0;
   for (const unit of units) {
-    if (total + unit.tokens > cap) break;
-    total += unit.tokens;
+    if (countTokens(renderKnowledgeParentExpansionUnits([...kept, unit])) > cap) break;
     kept.push(unit);
   }
   return kept;
@@ -361,7 +369,7 @@ export function assembleKnowledgeParentExpansions(input: Readonly<{
   }>();
   const states: PrimaryState[] = [];
   for (const primary of input.primaries) {
-    const legacy = unitsWithinTokenCap(primary.legacyUnits, cap);
+    const legacy = unitsWithinTokenCap(primary.legacyUnits, input.countTokens, cap);
     for (const unit of legacy) {
       claims.chunkIds.add(unit.chunkId);
       claims.contentHashes.add(unit.contentHash);
@@ -396,7 +404,6 @@ export function assembleKnowledgeParentExpansions(input: Readonly<{
       structure: primaryStructure(primary),
       structured: primary.layoutKind !== "body",
       units: [...legacy],
-      usedTokens: legacy.reduce((total, unit) => total + unit.tokens, 0),
       window
     });
     results.set(primary.chunkId, { state: "expanded", units: legacy });
@@ -418,8 +425,12 @@ export function assembleKnowledgeParentExpansions(input: Readonly<{
       let took = false;
       for (const entry of ordered) {
         const tokens = input.countTokens(entry.found.row.text);
-        if (state.usedTokens + tokens > cap) continue;
-        takeSide(state, claims, entry.side, entry.found, tokens);
+        const unit = sectionExpansionUnit(state, entry.side, entry.found, tokens);
+        const renderedTokenTotal = input.countTokens(
+          renderKnowledgeParentExpansionUnits([...state.units, unit])
+        );
+        if (renderedTokenTotal > cap) continue;
+        takeSide(state, claims, entry.side, entry.found, unit);
         took = true;
         break;
       }
@@ -483,11 +494,12 @@ export function knowledgeParentExpansionEvidence(
   expansion: KnowledgeParentExpansion,
   shippedUnits: readonly KnowledgeParentExpansionUnit[]
 ): KnowledgeParentExpansionEvidence {
+  const rendered = renderKnowledgeParentExpansionUnits(shippedUnits);
   return Object.freeze({
     passageCount: shippedUnits.length,
     ...(expansion.reason ? { reason: expansion.reason } : {}),
     state: expansion.state,
-    tokens: shippedUnits.reduce((total, unit) => total + unit.tokens, 0)
+    tokens: rendered ? knowledgeParentContextTokenCounter()(rendered) : 0
   });
 }
 

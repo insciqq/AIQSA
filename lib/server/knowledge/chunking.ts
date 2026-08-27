@@ -12,6 +12,7 @@ import {
   KNOWLEDGE_TABLE_ROW_MAX_PROJECTIONS,
   KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES,
   normalizeKnowledgeObservationValue,
+  normalizeKnowledgeTableHeaderPeriodV1,
   type KnowledgeDocumentContextV1,
   type KnowledgeTableContextCell,
   type KnowledgeTableHeaderLineageV1
@@ -383,11 +384,17 @@ function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean
   const cells = cellsForRange(grid, rowIndex, 0, grid.columnCount - 1);
   if (cells.length < 3) return false;
   const label = cells[0]!.text.normalize("NFKC").replace(/\s+/gu, " ").trim();
-  if (!/^(?:indicator|measure|metric(?:\s+(?:label|name))?|parameter|метрика|параметр|показатель)$/iu
-    .test(label)) return false;
-  return cells.slice(1).every((cell) =>
-    /^(?:(?:19|20)\d{2}|q[1-4]\s+(?:19|20)\d{2}|(?:19|20)\d{2}\s+q[1-4])(?:\s*\/\s*(?:(?:19|20)\d{2}|q[1-4]\s+(?:19|20)\d{2}|(?:19|20)\d{2}\s+q[1-4]))?$/iu
-      .test(cell.text.normalize("NFKC").replace(/\s+/gu, " ").trim()));
+  // Typed-data shape only: a textual leading label followed entirely by
+  // bounded year/quarter periods (or one slash-separated pair). No English/
+  // Russian vocabulary is allowed to decide the chunking path.
+  if (!label || !/[\p{L}\p{M}]/u.test(label) ||
+    normalizeKnowledgeObservationValue(label).kind !== "text") return false;
+  return cells.slice(1).every((cell) => {
+    const periods = cell.text.normalize("NFKC").replace(/\s+/gu, " ").trim()
+      .split(/\s*\/\s*/u);
+    return periods.length >= 1 && periods.length <= 2 && periods.every((period) =>
+      normalizeKnowledgeTableHeaderPeriodV1(period) !== null);
+  });
 }
 
 function boundedChunkText(text: string, currentSizing = false): boolean {
