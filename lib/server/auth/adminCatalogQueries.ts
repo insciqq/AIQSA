@@ -85,7 +85,7 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
       return {
         displayName: model.displayName,
         modelId: model.id,
-        modelClass: model.modelClass,
+        modelClass: model.modelClass === "embedding" ? "embedding" as const : "answer" as const,
         provider: model.connection.id,
         ...(upstreamModelId
           ? {

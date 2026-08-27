@@ -1287,6 +1287,45 @@ describe("AdminProvidersSection", () => {
     expect(within(row).getByText(/Technical runtime only/)).toBeVisible();
   });
 
+  it("offers explicit isolated reranker presets on OpenRouter", () => {
+    const view = controller();
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Models");
+    expect(screen.getByRole("heading", { name: "Memory reranker presets" }))
+      .toBeVisible();
+    expect(screen.getByText("Answer").parentElement).toHaveTextContent("Blocked");
+    expect(screen.getByText("Embed").parentElement).toHaveTextContent("Blocked");
+    expect(screen.getByText("Rerank").parentElement).toHaveTextContent("Allowed");
+    expect(screen.getByText(/Qwen3 Reranker 8B · Qualification default/u))
+      .toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Add Qwen3 Reranker 8B reranker preset"
+    }));
+    expect(view.actions.createModel).toHaveBeenCalledWith("connection-1", {
+      configuration: {
+        adapterKind: "openrouter_rerank",
+        answerSelectable: false,
+        capabilities: {
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          streaming: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        modelClass: "reranker",
+        openRouterRouting: { mode: "automatic", providers: [] },
+        upstreamModelId: "qwen/qwen3-reranker-8b"
+      },
+      displayName: "Qwen3 Reranker 8B"
+    });
+  });
+
   it("makes model availability and restoration actions visually explicit", async () => {
     const view = controller();
     const configuredConnection: AdminProviderConnection = {

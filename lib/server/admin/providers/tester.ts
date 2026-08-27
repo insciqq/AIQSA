@@ -9,6 +9,7 @@ import {
 } from "../../providers/openRouterDiscovery";
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createOpenAICompatibleEmbeddingAdapter } from "../../providers/embeddings";
+import { createOpenRouterRerankAdapter } from "../../providers/rerank";
 import type {
   ProviderConnectionConfiguration,
   ProviderModelConfiguration
@@ -381,6 +382,51 @@ async function testEmbedding(
   };
 }
 
+async function testReranker(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions,
+  method: AdminProviderTestEvidence["method"],
+  selectedProviders: string[]
+): Promise<AdminProviderDraftTestOutcome> {
+  const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
+    configuration: input.connection
+  });
+  const result = await createOpenRouterRerankAdapter({
+    connection: input.connection,
+    model: input.model,
+    network: { fetchFn },
+    secret: input.secret ?? (() => Promise.reject(new Error("provider_credential_missing")))
+  }).rerank({
+    documents: [
+      { handle: "probe-0", text: "A bounded unrelated provider check." },
+      { handle: "probe-1", text: "AIQSA reranker compatibility check." }
+    ],
+    query: "AIQSA reranker compatibility check",
+    signal: input.signal
+  });
+  const usage = result.usage.inputTokens !== null ||
+    result.usage.totalTokens !== null || result.usage.searchUnits !== null
+    ? "verified"
+    : "not_supported";
+  return {
+    evidence: {
+      compatibility: {
+        directPdf: "not_supported",
+        modelAccess: "verified",
+        probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+        streaming: "not_supported",
+        structuredOutput: "not_supported",
+        usage
+      },
+      detail: "ok",
+      method,
+      selectedProviders,
+      upstreamModelId: input.model.upstreamModelId
+    },
+    status: "available"
+  };
+}
+
 async function testAnswerModel(
   input: AdminProviderDraftTesterInput,
   options: ResolvedTesterOptions,
@@ -420,9 +466,13 @@ async function runTinyGeneration(
   options: ResolvedTesterOptions
 ): Promise<AdminProviderDraftTestOutcome> {
   const selectedProviders = input.model.openRouterRouting?.providers ?? [];
-  return input.model.modelClass === "embedding"
-    ? testEmbedding(input, options, "tiny_generation", selectedProviders)
-    : testAnswerModel(input, options, "tiny_generation", selectedProviders);
+  if (input.model.modelClass === "embedding") {
+    return testEmbedding(input, options, "tiny_generation", selectedProviders);
+  }
+  if (input.model.modelClass === "reranker") {
+    return testReranker(input, options, "tiny_generation", selectedProviders);
+  }
+  return testAnswerModel(input, options, "tiny_generation", selectedProviders);
 }
 
 async function testOpenRouterCatalog(
@@ -433,7 +483,7 @@ async function testOpenRouterCatalog(
     throw new Error("provider_account_catalog_test_unsupported");
   }
   const routing = input.model.openRouterRouting;
-  if (input.model.modelClass === "answer" && !routing) {
+  if (input.model.modelClass !== "embedding" && !routing) {
     throw new Error("provider_account_catalog_test_unsupported");
   }
   if (input.secret === null) {
@@ -485,9 +535,13 @@ async function testOpenRouterCatalog(
     }
   }
 
-  return input.model.modelClass === "embedding"
-    ? testEmbedding(input, options, "openrouter_account_catalog", selectedProviders)
-    : testAnswerModel(input, options, "openrouter_account_catalog", selectedProviders);
+  if (input.model.modelClass === "embedding") {
+    return testEmbedding(input, options, "openrouter_account_catalog", selectedProviders);
+  }
+  if (input.model.modelClass === "reranker") {
+    return testReranker(input, options, "openrouter_account_catalog", selectedProviders);
+  }
+  return testAnswerModel(input, options, "openrouter_account_catalog", selectedProviders);
 }
 
 export function createAdminProviderDraftTester(

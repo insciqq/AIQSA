@@ -9,6 +9,16 @@ import {
   EmbeddingAdapterError,
   type EmbeddingResult
 } from "../../providers/embeddings";
+import {
+  MAX_RERANK_DOCUMENTS,
+  MAX_RERANK_REQUEST_BYTES,
+  RerankAdapterError,
+  type RerankResult
+} from "../../providers/rerank";
+import {
+  createAcceptedRerankerRuntime,
+  type AcceptedRerankerRuntimeEvidence
+} from "../../providerRuntime/rerankerRuntime";
 import { prisma } from "../../prisma";
 import {
   createPrismaMemoryExecutionService,
@@ -56,7 +66,7 @@ import {
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v19";
+  "memory-multilingual-relevance-v20";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
   "memory-evidence-aggregation-v2";
 export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
@@ -69,13 +79,14 @@ export const MEMORY_RERANK_AGGREGATION_MAX_BATCHES = Math.ceil(
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES / MEMORY_RERANK_AGGREGATION_BATCH_SIZE
 );
 export const MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES = 3;
+export const MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES = 16 * 1024;
 export const MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS =
   MEMORY_RERANK_TARGETED_MAX_CANDIDATES * 4_000;
 export const MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS =
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES * 4_000;
 export const MEMORY_AGGREGATION_MAX_ATTEMPTS = 2;
 export const MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS = 24;
-export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 8;
+export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 0;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
@@ -87,8 +98,8 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v16",
-  promptVersion: "memory-relevance-prompt-v15",
+  policyVersion: "memory-relevance-policy-v17",
+  promptVersion: "memory-relevance-input-v16",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
     aggregationBatchSize: MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
@@ -110,9 +121,12 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     aggregationRoleAssignment: "separate_global_evidence_planner",
     serverAuthorityOnly: true,
     sorterNotGate: true,
-    version: 19
+    dedicatedRerankerAdapter: "openrouter-rerank-v1",
+    dedicatedWireEnvelopeReserveBytes: MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES,
+    generativeCompatibilityPath: "structured-output-v19",
+    version: 20
   }),
-  schemaVersion: "memory-relevance-result-v5"
+  schemaVersion: "memory-relevance-result-v6"
 });
 
 const aggregationVersions: MemoryExecutionVersions = Object.freeze({
@@ -167,15 +181,16 @@ export type MemoryRunAggregationResult =
     }>;
 
 export type MemoryRunRerankDecision = Readonly<{
-  applicable: boolean;
-  current: boolean;
+  applicable: boolean | null;
+  current: boolean | null;
   handle: string;
   reasonCode:
     | "DIRECT_RELEVANCE"
     | "SUPPORTING_CONTEXT"
     | "RESPONSE_PREFERENCE"
     | "OUTDATED"
-    | "NOT_RELEVANT";
+    | "NOT_RELEVANT"
+    | "SCORE_ONLY";
   relevanceScore: number;
 }>;
 
@@ -236,6 +251,7 @@ export type MemoryRunUtilityService = Readonly<{
       occurredFrom: string | null;
       occurredTo: string | null;
       sensitivityClass: "NORMAL";
+      speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "user";
       sourceKind: "EVENT" | "FACT" | "HISTORY";
       temporalReason: "any" | "as_of" | "between" | "current" | "historical";
       text: string;
@@ -249,11 +265,16 @@ export type MemoryRunUtilityService = Readonly<{
 }>;
 
 type AcceptedEmbeddingRuntime = ReturnType<typeof createAcceptedEmbeddingRuntime>;
+type AcceptedRerankerRuntime = ReturnType<typeof createAcceptedRerankerRuntime>;
+
+type MemoryRerankPath = "DEDICATED" | "GENERATIVE_COMPATIBILITY";
 
 type MemoryRunUtilityDependencies = Readonly<{
   embeddingRuntime: AcceptedEmbeddingRuntime;
   execution: PrismaMemoryExecutionService;
   provider: MemoryRunUtilityProvider;
+  rerankerRuntime?: AcceptedRerankerRuntime;
+  resolveRerankPath?: (userId: string) => Promise<MemoryRerankPath>;
 }>;
 
 const unavailableUsage: MemoryReportedUsage = Object.freeze({
@@ -269,6 +290,11 @@ const unavailableUsage: MemoryReportedUsage = Object.freeze({
 const uncertainEmbeddingErrors = new Set([
   "embedding_provider_request_failed",
   "embedding_request_timed_out"
+]);
+
+const uncertainRerankErrors = new Set([
+  "rerank_provider_request_failed",
+  "rerank_request_timed_out"
 ]);
 
 function unavailable(reason: string, bindingId?: string): MemoryRunUtilityUnavailable {
@@ -320,7 +346,7 @@ function aggregationProviderInput(
     evidence: input.evidence,
     kind: "AGGREGATE",
     query: input.query,
-    role: "MEMORY_RERANK"
+    role: "MEMORY_AGGREGATE"
   };
 }
 
@@ -352,15 +378,66 @@ function partitionRerankCandidates(
     : null;
 }
 
+type RerankInput = Parameters<MemoryRunUtilityService["rerank"]>[0];
+type RerankCandidate = RerankInput["candidates"][number];
+
+export function memoryDedicatedRerankDocument(candidate: RerankCandidate): string {
+  const occurredFrom = candidate.occurredFrom ?? "unknown";
+  const occurredTo = candidate.occurredTo ?? "open";
+  return [
+    `[date_from=${occurredFrom} date_to=${occurredTo}]`,
+    `[source=${candidate.sourceKind.toLocaleLowerCase("und")} ` +
+      `speaker=${candidate.speakerScope} state=${candidate.current ? "current" : "historical"} ` +
+      `lifecycle=${candidate.lifecycleState?.toLocaleLowerCase("und") ?? "not_applicable"}]`,
+    candidate.text
+  ].join("\n");
+}
+
+function dedicatedEnvelopeBytes(
+  input: RerankInput,
+  candidates: readonly RerankCandidate[]
+): number {
+  return Buffer.byteLength(JSON.stringify({
+    documents: candidates.map((candidate) => ({
+      handle: candidate.handle,
+      text: memoryDedicatedRerankDocument(candidate)
+    })),
+    instruction: null,
+    query: input.query
+  }), "utf8");
+}
+
+function partitionDedicatedRerankCandidates(
+  input: RerankInput
+): readonly (readonly RerankCandidate[])[] | null {
+  const providerNeutralLimit = MAX_RERANK_REQUEST_BYTES -
+    MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES;
+  const batches: RerankCandidate[][] = [];
+  let current: RerankCandidate[] = [];
+  for (const candidate of input.candidates) {
+    const proposed = [...current, candidate];
+    if (proposed.length <= MAX_RERANK_DOCUMENTS &&
+      dedicatedEnvelopeBytes(input, proposed) <= providerNeutralLimit) {
+      current = proposed;
+      continue;
+    }
+    if (current.length < 1) return null;
+    batches.push(current);
+    current = [candidate];
+    if (dedicatedEnvelopeBytes(input, current) > providerNeutralLimit) return null;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches.length <= MEMORY_RERANK_AGGREGATION_MAX_BATCHES
+    ? batches
+    : null;
+}
+
 function rerankBatchFirstOrdinal(batchIndex: number): number {
   if (!Number.isSafeInteger(batchIndex) || batchIndex < 0 ||
     batchIndex >= MEMORY_RERANK_AGGREGATION_MAX_BATCHES) {
     throw new Error("memory_rerank_batch_ordinal_invalid");
   }
-  const denseOrdinal = 2 + batchIndex * MEMORY_RERANK_MAX_ATTEMPTS;
-  return denseOrdinal >= MEMORY_AGGREGATION_PRIMARY_ORDINAL
-    ? denseOrdinal + MEMORY_AGGREGATION_MAX_ATTEMPTS
-    : denseOrdinal;
+  return 2 + batchIndex * MEMORY_RERANK_MAX_ATTEMPTS;
 }
 
 function unavailableReason(error: unknown): string {
@@ -384,6 +461,22 @@ function embeddingUsage(result: EmbeddingResult): MemoryReportedUsage {
     outputTokens: 0,
     reasoningTokens: 0,
     totalTokens: result.usage.totalTokens
+  };
+}
+
+function rerankerUsage(result: RerankResult): MemoryReportedUsage {
+  const { inputTokens, totalTokens } = result.usage;
+  if (inputTokens === null && totalTokens === null) return unavailableUsage;
+  return {
+    cachedInputTokens: 0,
+    completeness: inputTokens !== null && totalTokens !== null
+      ? "COMPLETE"
+      : "PARTIAL",
+    estimatedCostMicros: null,
+    inputTokens,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens
   };
 }
 
@@ -415,6 +508,22 @@ function embeddingEvidence(
   const provider = snapshot.providerExecutionSnapshot;
   if (!provider.credentialId || !provider.credentialVersionId) {
     throw new Error("memory_query_embedding_binding_invalid");
+  }
+  return {
+    connectionId: provider.connectionId,
+    credentialId: provider.credentialId,
+    credentialVersionId: provider.credentialVersionId,
+    executionSnapshot: provider,
+    providerModelId: provider.providerModelId
+  };
+}
+
+function rerankerEvidence(
+  snapshot: MemorySecretFreeExecutionSnapshot
+): AcceptedRerankerRuntimeEvidence {
+  const provider = snapshot.providerExecutionSnapshot;
+  if (!provider.credentialId || !provider.credentialVersionId) {
+    throw new Error("memory_reranker_binding_invalid");
   }
   return {
     connectionId: provider.connectionId,
@@ -696,7 +805,7 @@ async function runTextUtility<T>(
   deps: MemoryRunUtilityDependencies,
   input: UtilityBaseInput,
   request: Parameters<MemoryRunUtilityProvider["run"]>[1],
-  role: "MEMORY_RERANK",
+  role: "MEMORY_AGGREGATE" | "MEMORY_RERANK",
   ordinal: number,
   versions: MemoryExecutionVersions,
   inputHash: string,
@@ -805,6 +914,122 @@ async function runTextUtility<T>(
   return { bindingId: started.bindingId, output, snapshotHash, status: "READY" };
 }
 
+async function runDedicatedRerankBatch(
+  deps: MemoryRunUtilityDependencies,
+  input: RerankInput,
+  candidates: readonly RerankCandidate[],
+  ordinal: number,
+  inputHash: string
+): Promise<
+  | MemoryRunUtilityUnavailable
+  | Readonly<{
+      bindingId: string;
+      output: readonly MemoryRunRerankDecision[];
+      status: "READY";
+    }>
+> {
+  const started = await bindAndStart(
+    deps,
+    input,
+    "MEMORY_RERANK",
+    ordinal,
+    rerankVersions,
+    inputHash
+  );
+  if (started.status !== "STARTED") return started;
+  const model = started.snapshot.providerExecutionSnapshot.model;
+  if (
+    started.snapshot.logicalRole !== "MEMORY_RERANK" ||
+    started.snapshot.requiresStrictStructuredOutput ||
+    model.adapterKind === "fake" || model.modelClass !== "reranker" ||
+    model.adapterKind !== "openrouter_rerank"
+  ) {
+    await settleQuietly(deps, input.userId, started.bindingId, {
+      acceptedOutputHash: null,
+      errorCode: "memory_reranker_binding_invalid",
+      providerResponseId: null,
+      state: "FAILED",
+      usage: unavailableUsage
+    });
+    return unavailable("memory_reranker_binding_invalid", started.bindingId);
+  }
+  let runtime: Awaited<ReturnType<AcceptedRerankerRuntime["resolve"]>>;
+  if (!deps.rerankerRuntime) {
+    await settleQuietly(deps, input.userId, started.bindingId, {
+      acceptedOutputHash: null,
+      errorCode: "memory_reranker_runtime_unavailable",
+      providerResponseId: null,
+      state: "FAILED",
+      usage: unavailableUsage
+    });
+    return unavailable("memory_reranker_runtime_unavailable", started.bindingId);
+  }
+  try {
+    runtime = await deps.rerankerRuntime.resolve(rerankerEvidence(started.snapshot));
+  } catch {
+    await settleQuietly(deps, input.userId, started.bindingId, {
+      acceptedOutputHash: null,
+      errorCode: "memory_reranker_runtime_unavailable",
+      providerResponseId: null,
+      state: "FAILED",
+      usage: unavailableUsage
+    });
+    return unavailable("memory_reranker_runtime_unavailable", started.bindingId);
+  }
+  let result: RerankResult;
+  try {
+    result = await runtime.adapter.rerank({
+      documents: candidates.map((candidate) => ({
+        handle: candidate.handle,
+        text: memoryDedicatedRerankDocument(candidate)
+      })),
+      query: input.query,
+      signal: input.signal
+    });
+  } catch (error) {
+    const uncertain = input.signal.aborted || !(error instanceof RerankAdapterError) ||
+      uncertainRerankErrors.has(error.code);
+    await settleQuietly(deps, input.userId, started.bindingId, {
+      acceptedOutputHash: null,
+      errorCode: error instanceof RerankAdapterError
+        ? error.code
+        : "memory_reranker_outcome_unknown",
+      providerResponseId: null,
+      state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
+      usage: unavailableUsage
+    });
+    return unavailable(uncertain
+      ? "memory_reranker_outcome_unknown"
+      : "memory_reranker_failed", started.bindingId);
+  }
+  const output = result.scores.map((score): MemoryRunRerankDecision => ({
+    applicable: null,
+    current: null,
+    handle: score.handle,
+    reasonCode: "SCORE_ONLY",
+    relevanceScore: score.relevanceScore
+  }));
+  const outputHash = memoryExecutionSha256({ inputHash, output, version: 1 });
+  try {
+    await deps.execution.lifecycle.settle(input.userId, started.bindingId, {
+      acceptedOutputHash: outputHash,
+      errorCode: null,
+      providerResponseId: boundedResponseId(result.requestId),
+      state: "SUCCEEDED",
+      usage: rerankerUsage(result)
+    });
+  } catch {
+    return unavailable("memory_run_utility_settle_failed", started.bindingId);
+  }
+  if (!await authorizeAcceptedOutput(
+    deps,
+    input.userId,
+    started.bindingId,
+    outputHash
+  )) return unavailable("memory_execution_policy_drift", started.bindingId);
+  return { bindingId: started.bindingId, output, status: "READY" };
+}
+
 function validSafeQuery(query: string): boolean {
   return query.length > 0 && query.length <= 2_000 && !query.includes("\u0000") &&
     !memoryExplicitStatementContainsSecret(query);
@@ -869,7 +1094,7 @@ export function createMemoryRunUtilityService(
         deps,
         input,
         request,
-        "MEMORY_RERANK",
+        "MEMORY_AGGREGATE",
         MEMORY_AGGREGATION_PRIMARY_ORDINAL,
         aggregationVersions,
         inputHash,
@@ -886,7 +1111,7 @@ export function createMemoryRunUtilityService(
           deps,
           input,
           request,
-          "MEMORY_RERANK",
+          "MEMORY_AGGREGATE",
           MEMORY_AGGREGATION_PRIMARY_ORDINAL + 1,
           aggregationVersions,
           inputHash,
@@ -1039,11 +1264,30 @@ export function createMemoryRunUtilityService(
           candidate.text.length > 4_000 ||
           candidate.text.includes("\u0000") ||
           memoryExplicitStatementContainsSecret(candidate.text) ||
-          candidate.current === candidate.historical
+          candidate.current === candidate.historical ||
+          !["EVENT", "FACT", "HISTORY"].includes(candidate.sourceKind) ||
+          !["assistant", "memory_record", "mixed_conversation", "user"]
+            .includes(candidate.speakerScope) ||
+          !["any", "as_of", "between", "current", "historical"]
+            .includes(candidate.temporalReason) ||
+          [candidate.occurredFrom, candidate.occurredTo].some((value) =>
+            value !== null && (value.length < 1 || value.length > 64 ||
+              !Number.isFinite(Date.parse(value))))
         ) || input.profileRequested && input.candidates.some((candidate) =>
           !candidate.current || candidate.sourceKind === "HISTORY")
       ) return unavailable("memory_utility_input_blocked");
-      const candidateBatches = partitionRerankCandidates(input);
+      let rerankPath: MemoryRerankPath;
+      try {
+        rerankPath = await deps.resolveRerankPath?.(input.userId) ??
+          "GENERATIVE_COMPATIBILITY";
+      } catch {
+        // This hint controls envelope partitioning only. Immutable admission
+        // remains authoritative and rejects a path mismatch before external I/O.
+        rerankPath = "GENERATIVE_COMPATIBILITY";
+      }
+      const candidateBatches = rerankPath === "DEDICATED"
+        ? partitionDedicatedRerankCandidates(input)
+        : partitionRerankCandidates(input);
       if (!candidateBatches) return unavailable("memory_utility_input_blocked");
       const results = await mapWithConcurrency(
         candidateBatches,
@@ -1064,6 +1308,7 @@ export function createMemoryRunUtilityService(
               occurredFrom: candidate.occurredFrom,
               occurredTo: candidate.occurredTo,
               sensitivityClass: candidate.sensitivityClass,
+              speakerScope: candidate.speakerScope,
               sourceKind: candidate.sourceKind,
               temporalReason: candidate.temporalReason,
               textHash: memorySha256(candidate.text)
@@ -1071,11 +1316,21 @@ export function createMemoryRunUtilityService(
             domain: "aiqsa.memory.relevance-input",
             profileRequested: input.profileRequested,
             queryHash: memorySha256(input.query),
+            rerankPath,
             retrievalMode: input.retrievalMode,
             temporalIntent: input.temporalIntent,
-            version: 11
+            version: 12
           });
           const firstOrdinal = rerankBatchFirstOrdinal(batchIndex);
+          if (rerankPath === "DEDICATED") {
+            return runDedicatedRerankBatch(
+              deps,
+              input,
+              candidates,
+              firstOrdinal,
+              inputHash
+            );
+          }
           let result = await runTextUtility(
             deps,
             input,
@@ -1136,11 +1391,23 @@ export function createPrismaMemoryRunUtilityService(
     embeddingRuntime?: AcceptedEmbeddingRuntime;
     execution?: PrismaMemoryExecutionService;
     provider?: MemoryRunUtilityProvider;
+    rerankerRuntime?: AcceptedRerankerRuntime;
+    resolveRerankPath?: (userId: string) => Promise<MemoryRerankPath>;
   }> = {}
 ): MemoryRunUtilityService {
   return createMemoryRunUtilityService({
     embeddingRuntime: options.embeddingRuntime ?? createAcceptedEmbeddingRuntime(client),
     execution: options.execution ?? createPrismaMemoryExecutionService(authority, client),
-    provider: options.provider ?? createAcceptedMemoryRunUtilityProvider(client)
+    provider: options.provider ?? createAcceptedMemoryRunUtilityProvider(client),
+    rerankerRuntime: options.rerankerRuntime ?? createAcceptedRerankerRuntime(client),
+    resolveRerankPath: options.resolveRerankPath ?? (async () => {
+      const policy = await client.systemModelPolicy.findUnique({
+        select: { rerankerProviderModelId: true },
+        where: { id: "installation" }
+      });
+      return policy?.rerankerProviderModelId
+        ? "DEDICATED" as const
+        : "GENERATIVE_COMPATIBILITY" as const;
+    })
   });
 }

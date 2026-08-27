@@ -6,9 +6,13 @@ export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
   structuredOutput: "not_verified" | "unsupported" | "verified";
 };
 
+export type AdminRerankerModelCandidate = AdminModelDefaultCandidate;
+
 export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
+  rerankerCandidates: AdminRerankerModelCandidate[];
   policy: {
+    rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
     reasoningEffort: string | null;
     systemModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     updatedAt: string;
@@ -30,10 +34,15 @@ function boundedText(value: unknown, maxLength: number): value is string {
     value.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
+function baseCandidate(value: unknown): boolean {
+  return record(value) && boundedText(value.connectionDisplayName, 160) &&
+    boundedText(value.connectionId, 256) && boundedText(value.displayName, 160) &&
+    boundedText(value.id, 256);
+}
+
 function candidate(value: unknown): value is AdminSystemModelCandidate {
-  if (!record(value) || !boundedText(value.connectionDisplayName, 160) ||
-    !boundedText(value.connectionId, 256) || !boundedText(value.displayName, 160) ||
-    !boundedText(value.id, 256) || !Array.isArray(value.reasoningEfforts) ||
+  if (!record(value) || !baseCandidate(value) ||
+    !Array.isArray(value.reasoningEfforts) ||
     value.reasoningEfforts.length > 16 ||
     !value.reasoningEfforts.every((effort) => boundedText(effort, 32)) ||
     new Set(value.reasoningEfforts).size !== value.reasoningEfforts.length ||
@@ -51,13 +60,18 @@ export function decodeAdminSystemModelPolicyResponse(
   if (!record(value) || !record(value.systemModelPolicy)) return null;
   const catalog = value.systemModelPolicy;
   if (!Array.isArray(catalog.candidates) || !catalog.candidates.every(candidate) ||
+    !Array.isArray(catalog.rerankerCandidates) ||
+    !catalog.rerankerCandidates.every(baseCandidate) ||
     !record(catalog.policy)) return null;
   const policy = catalog.policy;
   const reasoningEffort = policy.reasoningEffort;
   const systemModel = policy.systemModel;
+  const rerankerModel = policy.rerankerModel;
   const updatedBy = policy.updatedBy;
   if ((systemModel !== null && (!record(systemModel) || !candidate(systemModel) ||
       typeof (systemModel as Record<string, unknown>).available !== "boolean")) ||
+    (rerankerModel !== null && (!record(rerankerModel) || !baseCandidate(rerankerModel) ||
+      typeof (rerankerModel as Record<string, unknown>).available !== "boolean")) ||
     (systemModel === null && reasoningEffort !== null) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
@@ -68,8 +82,11 @@ export function decodeAdminSystemModelPolicyResponse(
   return {
     systemModelPolicy: {
       candidates: catalog.candidates,
+      rerankerCandidates: catalog.rerankerCandidates,
       policy: {
         reasoningEffort: reasoningEffort as string | null,
+        rerankerModel: rerankerModel as
+          (AdminRerankerModelCandidate & { available: boolean }) | null,
         systemModel: systemModel as
           (AdminSystemModelCandidate & { available: boolean }) | null,
         updatedAt: policy.updatedAt,

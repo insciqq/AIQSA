@@ -12,10 +12,19 @@ const candidate = {
   structuredOutput: "not_verified" as const
 };
 
+const rerankerCandidate = {
+  connectionDisplayName: "OpenRouter",
+  connectionId: "connection-reranker",
+  displayName: "Qwen3 Reranker 8B",
+  id: "reranker-a"
+};
+
 const catalog = {
   candidates: [candidate],
+  rerankerCandidates: [],
   policy: {
     reasoningEffort: null,
+    rerankerModel: null,
     systemModel: null,
     updatedAt: "2026-08-08T00:00:00.000Z",
     updatedBy: null,
@@ -28,6 +37,46 @@ afterEach(() => {
 });
 
 describe("administrator provider system model task", () => {
+  it("selects a dedicated Memory reranker independently from the system model", async () => {
+    const initial = {
+      ...catalog,
+      rerankerCandidates: [rerankerCandidate]
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ systemModelPolicy: initial }),
+        { status: 200 }
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        systemModelPolicy: {
+          ...initial,
+          policy: {
+            ...initial.policy,
+            rerankerModel: { ...rerankerCandidate, available: true },
+            version: 2
+          }
+        }
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminProviderSystemModelTask active />);
+    fireEvent.change(await screen.findByLabelText(
+      "Dedicated Memory reranker deployment"
+    ), { target: { value: "reranker-a" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save utility models" }));
+
+    await screen.findByText("Utility model roles updated.");
+    expect(screen.getByText(/Memory reranker: OpenRouter \/ Qwen3 Reranker 8B/u))
+      .toBeVisible();
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      expectedVersion: 1,
+      providerModelId: null,
+      reasoningEffort: null,
+      rerankerProviderModelId: "reranker-a"
+    });
+  });
+
   it("saves one exact deployment with the observed policy version", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(
@@ -52,14 +101,15 @@ describe("administrator provider system model task", () => {
     const select = await screen.findByLabelText("Active answer model deployment");
     fireEvent.change(select, { target: { value: "model-a" } });
     expect(screen.getByLabelText("Reasoning effort")).toHaveValue("xhigh");
-    fireEvent.click(screen.getByRole("button", { name: "Save system model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save utility models" }));
 
-    await screen.findByText("System model updated.");
+    await screen.findByText("Utility model roles updated.");
     expect(screen.getByText(/Last saved by Administrator/)).toBeVisible();
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
       expectedVersion: 1,
       providerModelId: "model-a",
+      rerankerProviderModelId: null,
       reasoningEffort: "xhigh"
     });
   });
@@ -73,6 +123,7 @@ describe("administrator provider system model task", () => {
         connectionId: "connection-b",
         id: "model-b"
       }],
+      rerankerCandidates: [],
       policy: {
         ...catalog.policy,
         reasoningEffort: null,
@@ -99,7 +150,9 @@ describe("administrator provider system model task", () => {
   it("shows retained unavailability and permits re-saving the same deployment", async () => {
     const unavailable = {
       candidates: [candidate],
+      rerankerCandidates: [],
       policy: {
+        rerankerModel: null,
         systemModel: { ...candidate, available: false },
         reasoningEffort: "xhigh",
         updatedAt: "2026-08-08T00:00:00.000Z",
@@ -130,16 +183,17 @@ describe("administrator provider system model task", () => {
     expect(await screen.findByText(/Status: Unavailable/)).toBeVisible();
     expect(screen.getByText(/MCP Auto: Verification required/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Run verification" })).toBeEnabled();
-    const save = screen.getByRole("button", { name: "Save system model" });
+    const save = screen.getByRole("button", { name: "Save utility models" });
     expect(save).toBeEnabled();
     fireEvent.click(save);
-    await screen.findByText("System model updated.");
+    await screen.findByText("Utility model roles updated.");
     expect(screen.getByText(/Last saved by Current administrator/)).toBeVisible();
   });
 
   it("verifies the current supported model with one explicit provider request", async () => {
     const current = {
       candidates: [candidate],
+      rerankerCandidates: [],
       policy: {
         ...catalog.policy,
         systemModel: { ...candidate, available: true }
@@ -147,6 +201,7 @@ describe("administrator provider system model task", () => {
     };
     const verified = {
       candidates: [{ ...candidate, structuredOutput: "verified" as const }],
+      rerankerCandidates: [],
       policy: {
         ...current.policy,
         systemModel: {
@@ -186,6 +241,7 @@ describe("administrator provider system model task", () => {
   it("reports verified structured output without another paid action", async () => {
     const verified = {
       candidates: [{ ...candidate, structuredOutput: "verified" as const }],
+      rerankerCandidates: [],
       policy: {
         ...catalog.policy,
         systemModel: {
@@ -207,6 +263,7 @@ describe("administrator provider system model task", () => {
   it("does not let verification discard an unsaved system-model draft", async () => {
     const current = {
       candidates: [candidate],
+      rerankerCandidates: [],
       policy: {
         ...catalog.policy,
         systemModel: { ...candidate, available: true }
@@ -228,6 +285,7 @@ describe("administrator provider system model task", () => {
   it("explains unsupported adapters without offering verification", async () => {
     const unsupported = {
       candidates: [{ ...candidate, structuredOutput: "unsupported" as const }],
+      rerankerCandidates: [],
       policy: {
         ...catalog.policy,
         systemModel: {
@@ -262,7 +320,7 @@ describe("administrator provider system model task", () => {
     fireEvent.change(await screen.findByLabelText("Active answer model deployment"), {
       target: { value: "model-a" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save system model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save utility models" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
       "The system model changed elsewhere"
     ));

@@ -60,6 +60,8 @@ describe("provider connection configuration", () => {
       .toBe("https://api.example.test/v1/messages");
     expect(providerRequestEndpoint(configuration, "gemini_interactions_native"))
       .toBe("https://api.example.test/v1/interactions");
+    expect(providerRequestEndpoint(configuration, "openrouter_rerank"))
+      .toBe("https://api.example.test/v1/rerank");
   });
 
   it("allows HTTP only for an explicit internal-network connection", () => {
@@ -518,5 +520,69 @@ describe("provider model configuration", () => {
       }),
       "provider_routing_invalid"
     );
+  });
+
+  it("keeps rerankers inert and isolated from answer and embedding classes", () => {
+    const inertCapabilities = {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      toolCalling: false,
+      vision: false
+    };
+    const valid = normalizeProviderModelConfigurationBase({
+      adapterKind: "openrouter_rerank",
+      answerSelectable: false,
+      capabilities: inertCapabilities,
+      defaultParams: {},
+      modelClass: "reranker",
+      openRouterRouting: { mode: "only_selected", providers: ["Together"] },
+      upstreamModelId: "qwen/qwen3-reranker-8b"
+    });
+    expect(valid).toEqual({
+      adapterKind: "openrouter_rerank",
+      answerSelectable: false,
+      capabilities: inertCapabilities,
+      defaultParams: {},
+      modelClass: "reranker",
+      openRouterRouting: { mode: "only_selected", providers: ["Together"] },
+      upstreamModelId: "qwen/qwen3-reranker-8b"
+    });
+
+    for (const change of [
+      { answerSelectable: true },
+      { capabilities: { ...inertCapabilities, toolCalling: true } },
+      { defaultParams: { temperature: 0 } },
+      { embedding: {
+        nativeDimension: 1_024,
+        providerFamily: "openrouter",
+        queryInstructionTemplate: null,
+        supportsMrl: false,
+        targetDimension: 1_024
+      } },
+      { adapterKind: "openrouter_chat_completions" }
+    ]) {
+      expectCode(() => normalizeProviderModelConfigurationBase({
+        adapterKind: "openrouter_rerank",
+        answerSelectable: false,
+        capabilities: inertCapabilities,
+        defaultParams: {},
+        modelClass: "reranker",
+        openRouterRouting: { mode: "only_selected", providers: ["Together"] },
+        upstreamModelId: "qwen/qwen3-reranker-8b",
+        ...change
+      }), "provider_model_class_invalid");
+    }
+    expectCode(() => normalizeProviderModelConfigurationBase({
+      adapterKind: "openrouter_rerank",
+      answerSelectable: false,
+      capabilities: inertCapabilities,
+      defaultParams: {},
+      modelClass: "answer",
+      openRouterRouting: { mode: "only_selected", providers: ["Together"] },
+      upstreamModelId: "qwen/qwen3-reranker-8b"
+    }), "provider_embedding_configuration_invalid");
   });
 });

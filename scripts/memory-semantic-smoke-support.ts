@@ -554,9 +554,12 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
     return bindings.filter((binding) => {
       try {
         const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+        const model = snapshot.providerExecutionSnapshot.model;
+        const expectedStrictOutput = input.logicalRole === "MEMORY_RERANK"
+          ? model.adapterKind !== "fake" && model.modelClass === "answer"
+          : memoryRoleRequiresStrictOutput(input.logicalRole);
         return snapshot.logicalRole === input.logicalRole &&
-          snapshot.requiresStrictStructuredOutput ===
-            memoryRoleRequiresStrictOutput(input.logicalRole);
+          snapshot.requiresStrictStructuredOutput === expectedStrictOutput;
       } catch {
         return false;
       }

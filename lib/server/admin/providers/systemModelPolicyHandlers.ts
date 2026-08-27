@@ -78,6 +78,12 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
           value.providerModelId.trim() === value.providerModelId &&
           value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
           !/[\u0000-\u001f\u007f]/u.test(value.providerModelId)) ||
+        !(value.rerankerProviderModelId === null ||
+          typeof value.rerankerProviderModelId === "string" &&
+          value.rerankerProviderModelId.trim() === value.rerankerProviderModelId &&
+          value.rerankerProviderModelId.length > 0 &&
+          value.rerankerProviderModelId.length <= 256 &&
+          !/[\u0000-\u001f\u007f]/u.test(value.rerankerProviderModelId)) ||
         !(value.reasoningEffort === null || typeof value.reasoningEffort === "string" &&
           value.reasoningEffort.trim() === value.reasoningEffort &&
           value.reasoningEffort.length > 0 && value.reasoningEffort.length <= 32 &&
@@ -89,6 +95,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         await input.service.update({
           expectedVersion: Number(value.expectedVersion),
           providerModelId: value.providerModelId,
+          rerankerProviderModelId: value.rerankerProviderModelId,
           reasoningEffort: value.reasoningEffort,
           userId: auth.session.userId
         });

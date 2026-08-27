@@ -41,6 +41,7 @@ export type MemoryRerankUtilityProviderInput = Readonly<{
     occurredFrom: string | null;
     occurredTo: string | null;
     sensitivityClass: "NORMAL";
+    speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "user";
     sourceKind: "EVENT" | "FACT" | "HISTORY";
     temporalReason: "any" | "as_of" | "between" | "current" | "historical";
     text: string;
@@ -63,7 +64,7 @@ export type MemoryAggregationUtilityProviderInput = Readonly<{
   }>[];
   kind: "AGGREGATE";
   query: string;
-  role: "MEMORY_RERANK";
+  role: "MEMORY_AGGREGATE";
 }>;
 
 export type MemoryRunUtilityProviderInput =

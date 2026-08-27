@@ -14,11 +14,12 @@ export type AdminProviderAdapterKind =
   | "openai_embeddings_compatible"
   | "openai_responses_compatible"
   | "openai_responses_native"
-  | "openrouter_chat_completions";
+  | "openrouter_chat_completions"
+  | "openrouter_rerank";
 
 export type AdminProviderUnassignedPolicy = "require_assignment" | "use_default";
 export type AdminProviderCheckStatus = "available" | "unavailable";
-export type AdminProviderModelClass = "answer" | "embedding";
+export type AdminProviderModelClass = "answer" | "embedding" | "reranker";
 
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = 300;
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = 900;

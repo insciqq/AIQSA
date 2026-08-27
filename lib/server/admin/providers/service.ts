@@ -118,6 +118,7 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
   if (model.modelClass === "embedding") {
     return model.embedding!.providerFamily;
   }
+  if (model.modelClass === "reranker") return "openrouter";
   switch (model.adapterKind) {
     case "anthropic_messages":
       return "anthropic";
@@ -132,6 +133,8 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
       throw new AdminProviderServiceError("provider_family_adapter_mismatch");
     case "openrouter_chat_completions":
       return "openrouter";
+    case "openrouter_rerank":
+      throw new AdminProviderServiceError("provider_family_adapter_mismatch");
   }
 }
 
@@ -224,7 +227,7 @@ function validateEvidence(
       (outcome.status === "unavailable" && (
         compatibility.streaming === "verified" || compatibility.usage === "verified"
       )) ||
-      (model.modelClass === "embedding" && (
+      (model.modelClass !== "answer" && (
         compatibility.directPdf === "verified" ||
         compatibility.streaming === "verified" ||
         compatibility.structuredOutput === "verified"

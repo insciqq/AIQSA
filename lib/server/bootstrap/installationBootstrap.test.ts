@@ -374,7 +374,12 @@ describe("installation bootstrap", () => {
       where: { id: "installation" }
     });
     expect(fixture.spies.systemModelPolicyUpsert).toHaveBeenCalledWith({
-      create: { id: "installation", providerModelId: null, reasoningEffort: null },
+      create: {
+        id: "installation",
+        providerModelId: null,
+        reasoningEffort: null,
+        rerankerProviderModelId: null
+      },
       update: {},
       where: { id: "installation" }
     });

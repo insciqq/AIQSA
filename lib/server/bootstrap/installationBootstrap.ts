@@ -340,6 +340,7 @@ async function synchronizeInstallationFoundation(
     create: {
       id: "installation",
       providerModelId: null,
+      rerankerProviderModelId: null,
       reasoningEffort: null
     },
     // Bootstrap adoption repairs missing code-owned foundation only. It never

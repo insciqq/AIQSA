@@ -35,6 +35,7 @@ export function AdminProviderSystemModelTask({
 }>) {
   const [catalog, setCatalog] = useState<AdminSystemModelPolicyCatalog | null>(null);
   const [selectedId, setSelectedId] = useState("");
+  const [selectedRerankerId, setSelectedRerankerId] = useState("");
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -44,23 +45,34 @@ export function AdminProviderSystemModelTask({
   const autoLoadAttemptedRef = useRef(false);
   const connectionLabels = useMemo(() => resolveProviderConnectionLabels([
     ...(catalog?.candidates ?? []).map(({ connectionDisplayName: name, connectionId: id }) => ({ id, name })),
+    ...(catalog?.rerankerCandidates ?? []).map(({ connectionDisplayName: name, connectionId: id }) => ({ id, name })),
     ...(catalog?.policy.systemModel
       ? [{
           id: catalog.policy.systemModel.connectionId,
           name: catalog.policy.systemModel.connectionDisplayName
         }]
+      : []),
+    ...(catalog?.policy.rerankerModel
+      ? [{
+          id: catalog.policy.rerankerModel.connectionId,
+          name: catalog.policy.rerankerModel.connectionDisplayName
+        }]
       : [])
   ]), [catalog]);
-  const deploymentLabel = (deployment: AdminSystemModelPolicyCatalog["candidates"][number]) =>
+  const deploymentLabel = (deployment:
+    AdminSystemModelPolicyCatalog["candidates"][number] |
+    AdminSystemModelPolicyCatalog["rerankerCandidates"][number]) =>
     `${connectionLabels.get(deployment.connectionId) ?? deployment.connectionDisplayName} / ${deployment.displayName}`;
   const currentId = catalog?.policy.systemModel?.id ?? "";
   const currentReasoningEffort = catalog?.policy.reasoningEffort ?? "";
+  const currentRerankerId = catalog?.policy.rerankerModel?.id ?? "";
   const selectedDeployment = selectedId
     ? catalog?.candidates.find((candidate) => candidate.id === selectedId) ??
       (catalog?.policy.systemModel?.id === selectedId ? catalog.policy.systemModel : null)
     : null;
   const draftDirty = Boolean(catalog) && (
-    selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort
+    selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
+    selectedRerankerId !== currentRerankerId
   );
   const busy = saving || verifying;
   const requestDraftDiscard = useAdminDraftProtection({
@@ -68,6 +80,7 @@ export function AdminProviderSystemModelTask({
     onDiscard: () => {
       setSelectedId(currentId);
       setSelectedReasoningEffort(currentReasoningEffort);
+      setSelectedRerankerId(currentRerankerId);
     },
     owner: "provider-system-model-policy",
     pending: draftDirty && busy
@@ -77,6 +90,7 @@ export function AdminProviderSystemModelTask({
     setCatalog(next);
     setSelectedId(next.policy.systemModel?.id ?? "");
     setSelectedReasoningEffort(next.policy.reasoningEffort ?? "");
+    setSelectedRerankerId(next.policy.rerankerModel?.id ?? "");
   }, []);
 
   const refresh = useCallback(async () => {
@@ -108,7 +122,11 @@ export function AdminProviderSystemModelTask({
     };
   }, [active, catalog, loading, refresh]);
 
-  const save = async (providerModelId: string | null, reasoningEffort: string | null) => {
+  const save = async (
+    providerModelId: string | null,
+    reasoningEffort: string | null,
+    rerankerProviderModelId: string | null
+  ) => {
     if (!catalog || busy) return;
     setSaving(true);
     setError(null);
@@ -116,6 +134,7 @@ export function AdminProviderSystemModelTask({
     const result = await updateAdminSystemModelPolicy({
       expectedVersion: catalog.policy.version,
       providerModelId,
+      rerankerProviderModelId,
       reasoningEffort
     });
     setSaving(false);
@@ -124,7 +143,7 @@ export function AdminProviderSystemModelTask({
       return;
     }
     apply(result.data);
-    setNotice(providerModelId ? "System model updated." : "System model cleared.");
+    setNotice("Utility model roles updated.");
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
@@ -148,7 +167,9 @@ export function AdminProviderSystemModelTask({
 
   const canSave = Boolean(catalog) && (
     selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
-    Boolean(catalog?.policy.systemModel?.available === false)
+    selectedRerankerId !== currentRerankerId ||
+    Boolean(catalog?.policy.systemModel?.available === false) ||
+    Boolean(catalog?.policy.rerankerModel?.available === false)
   );
 
   function selectDeployment(providerModelId: string) {
@@ -179,9 +200,9 @@ export function AdminProviderSystemModelTask({
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-trace-subtle pb-4">
           <div>
             <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation role</p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="provider-system-model-heading">System model</h2>
+            <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="provider-system-model-heading">Utility models</h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
-              Internal utility work uses this exact deployment. The role grants no user access and never falls back to another model.
+              Generative utility work and Memory reranking use separately typed deployments. Neither role grants user access or substitutes another configured model.
             </p>
           </div>
           <button
@@ -204,9 +225,14 @@ export function AdminProviderSystemModelTask({
           <div className="mt-5 grid gap-4">
             <div className="border-l-2 border-proof/60 pl-3 text-xs leading-5 text-ink-secondary">
               <p>
-                Current: {catalog.policy.systemModel
+                Generative: {catalog.policy.systemModel
                   ? `${deploymentLabel(catalog.policy.systemModel)} · reasoning ${catalog.policy.reasoningEffort ?? "provider default"}`
                   : "None"}.
+              </p>
+              <p>
+                Memory reranker: {catalog.policy.rerankerModel
+                  ? deploymentLabel(catalog.policy.rerankerModel)
+                  : "System model compatibility path"}.
               </p>
               {catalog.policy.systemModel ? (
                 <>
@@ -242,6 +268,18 @@ export function AdminProviderSystemModelTask({
                   ) : null}
                 </>
               ) : null}
+              {catalog.policy.rerankerModel ? (
+                <p className={catalog.policy.rerankerModel.available ? "text-ink-secondary" : "text-caution"}>
+                  Reranker status: {catalog.policy.rerankerModel.available ? "Available" : "Unavailable"}.
+                  {!catalog.policy.rerankerModel.available
+                    ? " RRF remains available, but this selected deployment is never replaced automatically."
+                    : ""}
+                </p>
+              ) : (
+                <p className="text-caution">
+                  Memory relevance still uses the versioned generative compatibility path until a dedicated reranker is selected.
+                </p>
+              )}
               <p>Policy version: {catalog.policy.version}.</p>
               {catalog.policy.updatedBy ? (
                 <p>
@@ -296,6 +334,31 @@ export function AdminProviderSystemModelTask({
               </select>
             </label>
 
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="memory-reranker-deployment">
+              Dedicated Memory reranker deployment
+              <select
+                className={inputClass}
+                disabled={busy || loading}
+                id="memory-reranker-deployment"
+                onChange={(event) => setSelectedRerankerId(event.currentTarget.value)}
+                value={selectedRerankerId}
+              >
+                <option value="">Use versioned System Model compatibility path</option>
+                {catalog.policy.rerankerModel &&
+                  !catalog.rerankerCandidates.some((candidate) =>
+                    candidate.id === catalog.policy.rerankerModel?.id) ? (
+                    <option disabled value={catalog.policy.rerankerModel.id}>
+                      Unavailable — {deploymentLabel(catalog.policy.rerankerModel)}
+                    </option>
+                  ) : null}
+                {catalog.rerankerCandidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {deploymentLabel(candidate)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <p className="text-xs leading-5 text-ink-muted">
               Runtime uses the selected connection&apos;s installation-default credential. Reasoning choices are limited to capabilities advertised by that deployment.
             </p>
@@ -304,23 +367,39 @@ export function AdminProviderSystemModelTask({
               <button
                 className={primaryButton}
                 disabled={busy || !canSave}
-                onClick={() => void save(selectedId || null, selectedId ? selectedReasoningEffort || null : null)}
+                onClick={() => void save(
+                  selectedId || null,
+                  selectedId ? selectedReasoningEffort || null : null,
+                  selectedRerankerId || null
+                )}
                 type="button"
               >
-                Save system model
+                Save utility models
               </button>
               <button
                 className={quietButton}
                 disabled={busy || catalog.policy.systemModel === null}
-                onClick={() => void save(null, null)}
+                onClick={() => void save(null, null, selectedRerankerId || null)}
                 type="button"
               >
                 Clear system model
               </button>
+              <button
+                className={quietButton}
+                disabled={busy || catalog.policy.rerankerModel === null}
+                onClick={() => void save(
+                  selectedId || null,
+                  selectedId ? selectedReasoningEffort || null : null,
+                  null
+                )}
+                type="button"
+              >
+                Use compatibility reranker
+              </button>
             </div>
           </div>
         ) : loading ? (
-          <p className="mt-5 text-sm text-ink-muted" role="status">Loading system model…</p>
+          <p className="mt-5 text-sm text-ink-muted" role="status">Loading utility models…</p>
         ) : null}
       </div>
     </section>

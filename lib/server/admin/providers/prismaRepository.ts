@@ -1771,7 +1771,14 @@ export function createPrismaAdminProviderRepository(
         ] = await Promise.all([
           tx.accessGrant.count({ where: { providerModelId: modelId } }),
           tx.modelPolicy.count({ where: { defaultProviderModelId: modelId } }),
-          tx.systemModelPolicy.count({ where: { providerModelId: modelId } }),
+          tx.systemModelPolicy.count({
+            where: {
+              OR: [
+                { providerModelId: modelId },
+                { rerankerProviderModelId: modelId }
+              ]
+            }
+          }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
@@ -1923,10 +1930,16 @@ export function createPrismaAdminProviderRepository(
           await tx.systemModelPolicy.updateMany({
             data: {
               providerModelId: null,
+              rerankerProviderModelId: null,
               updatedByUserId: null,
               version: { increment: 1 }
             },
-            where: { providerModelId: { in: modelIds } }
+            where: {
+              OR: [
+                { providerModelId: { in: modelIds } },
+                { rerankerProviderModelId: { in: modelIds } }
+              ]
+            }
           });
           await tx.chat.updateMany({
             data: { defaultProviderModelId: null },

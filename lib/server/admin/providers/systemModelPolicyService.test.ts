@@ -24,6 +24,24 @@ const activeConfiguration = {
   upstreamModelId: "vendor/answer"
 };
 
+const activeRerankerConfiguration = {
+  adapterKind: "openrouter_rerank",
+  answerSelectable: false,
+  capabilities: {
+    nativePdfInput: false,
+    nativeSearch: false,
+    pdf: false,
+    reasoning: false,
+    streaming: false,
+    toolCalling: false,
+    vision: false
+  },
+  defaultParams: {},
+  modelClass: "reranker",
+  openRouterRouting: { mode: "only_selected", providers: ["Together"] },
+  upstreamModelId: "qwen/qwen3-reranker-8b"
+};
+
 function activeModel(overrides: Record<string, unknown> = {}) {
   return {
     activeConfig: activeConfiguration,
@@ -65,7 +83,79 @@ function verifiableModel(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function activeRerankerModel(overrides: Record<string, unknown> = {}) {
+  const base = activeModel();
+  return activeModel({
+    activeConfig: activeRerankerConfiguration,
+    connection: {
+      ...base.connection,
+      displayName: "OpenRouter"
+    },
+    displayName: "Qwen3 Reranker 8B",
+    id: "reranker-1",
+    ...overrides
+  });
+}
+
 describe("administrator system model policy service", () => {
+  it("projects and retains the independently selected dedicated reranker", async () => {
+    const answer = activeModel();
+    const reranker = activeRerankerModel();
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([answer])
+      .mockResolvedValueOnce([reranker]);
+    const prisma = {
+      providerModel: { findMany },
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: answer,
+          providerModelId: "model-1",
+          reasoningEffort: null,
+          rerankerProviderModel: reranker,
+          rerankerProviderModelId: "reranker-1",
+          updatedAt: NOW,
+          updatedBy: null,
+          version: 6
+        })
+      }
+    } as unknown as PrismaClient;
+
+    const catalog = await createAdminSystemModelPolicyService(prisma, {
+      resolveRerankerRole: vi.fn().mockResolvedValue({
+        credentialScope: "installation",
+        ok: true,
+        policyVersion: 6,
+        providerModelId: "reranker-1",
+        role: {}
+      }),
+      resolveRole: vi.fn().mockResolvedValue({
+        credentialScope: "installation",
+        ok: true,
+        policyVersion: 6,
+        providerModelId: "model-1",
+        reasoningEffort: null,
+        role: {}
+      })
+    }).list();
+
+    expect(findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: { modelClass: "reranker" }
+    }));
+    expect(catalog.rerankerCandidates).toEqual([{
+      connectionDisplayName: "OpenRouter",
+      connectionId: "connection-1",
+      displayName: "Qwen3 Reranker 8B",
+      id: "reranker-1"
+    }]);
+    expect(catalog.policy.rerankerModel).toEqual({
+      available: true,
+      connectionDisplayName: "OpenRouter",
+      connectionId: "connection-1",
+      displayName: "Qwen3 Reranker 8B",
+      id: "reranker-1"
+    });
+  });
+
   it("projects answer candidates and retains an unavailable exact target", async () => {
     const target = activeModel({ enabled: false, id: "model-old" });
     const prisma = {
@@ -105,6 +195,7 @@ describe("administrator system model policy service", () => {
       }],
       policy: {
         reasoningEffort: "xhigh",
+        rerankerModel: null,
         systemModel: {
           available: false,
           connectionDisplayName: "Answer provider",
@@ -118,7 +209,8 @@ describe("administrator system model policy service", () => {
         updatedAt: NOW.toISOString(),
         updatedBy: { displayName: "Administrator", id: "admin-1" },
         version: 4
-      }
+      },
+      rerankerCandidates: []
     });
   });
 
@@ -342,6 +434,7 @@ describe("administrator system model policy service", () => {
       expectedVersion: 3,
       providerModelId: "model-1",
       reasoningEffort: "xhigh",
+      rerankerProviderModelId: null,
       userId: "admin-1"
     });
 
@@ -352,6 +445,50 @@ describe("administrator system model policy service", () => {
       data: {
         providerModelId: "model-1",
         reasoningEffort: "xhigh",
+        rerankerProviderModelId: null,
+        updatedByUserId: "admin-1",
+        version: { increment: 1 }
+      },
+      where: { id: "installation" }
+    });
+  });
+
+  it("validates and updates answer and reranker roles atomically", async () => {
+    const loadRole = vi.fn().mockResolvedValue({
+      snapshot: { model: { capabilities: { reasoning: false } } }
+    });
+    const loadRerankerRole = vi.fn().mockResolvedValue({});
+    const update = vi.fn().mockResolvedValue({});
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]),
+      systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) =>
+        operation(tx))
+    } as unknown as PrismaClient;
+
+    await createAdminSystemModelPolicyService(prisma, {
+      loadRerankerRole,
+      loadRole
+    }).update({
+      expectedVersion: 3,
+      providerModelId: "model-1",
+      reasoningEffort: null,
+      rerankerProviderModelId: "reranker-1",
+      userId: "admin-1"
+    });
+
+    expect(loadRole).toHaveBeenCalledWith(tx, { providerModelId: "model-1" });
+    expect(loadRerankerRole).toHaveBeenCalledWith(tx, {
+      providerModelId: "reranker-1"
+    });
+    expect(update).toHaveBeenCalledWith({
+      data: {
+        providerModelId: "model-1",
+        reasoningEffort: null,
+        rerankerProviderModelId: "reranker-1",
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
@@ -382,6 +519,7 @@ describe("administrator system model policy service", () => {
       expectedVersion: 3,
       providerModelId: "model-1",
       reasoningEffort: "xhigh",
+      rerankerProviderModelId: null,
       userId: "admin-1"
     })).rejects.toEqual(
       new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable")
@@ -404,6 +542,7 @@ describe("administrator system model policy service", () => {
       expectedVersion: 3,
       providerModelId: null,
       reasoningEffort: "xhigh",
+      rerankerProviderModelId: null,
       userId: "admin-1"
     })).rejects.toEqual(
       new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable")
@@ -425,6 +564,7 @@ describe("administrator system model policy service", () => {
       expectedVersion: 1,
       providerModelId: null,
       reasoningEffort: null,
+      rerankerProviderModelId: null,
       userId: "admin-1"
     })).rejects.toEqual(new AdminSystemModelPolicyServiceError("system_model_policy_stale"));
 
@@ -443,6 +583,7 @@ describe("administrator system model policy service", () => {
       expectedVersion: 2,
       providerModelId: "model-1",
       reasoningEffort: null,
+      rerankerProviderModelId: null,
       userId: "admin-1"
     })).rejects.toEqual(
       new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable")
@@ -464,6 +605,7 @@ describe("administrator system model policy service", () => {
         expectedVersion: 1,
         providerModelId: null,
         reasoningEffort: null,
+        rerankerProviderModelId: null,
         userId: "admin-1"
       })).rejects.toEqual(new AdminSystemModelPolicyServiceError(expected));
     }

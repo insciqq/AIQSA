@@ -12,8 +12,10 @@ const response = {
       reasoningEfforts: ["low", "medium", "high", "xhigh"],
       structuredOutput: "verified"
     }],
+    rerankerCandidates: [],
     policy: {
       reasoningEffort: null,
+      rerankerModel: null,
       systemModel: null,
       updatedAt: "2026-08-08T00:00:00.000Z",
       updatedBy: null,

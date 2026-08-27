@@ -24,6 +24,10 @@ import {
   embeddingPresetsForFamily,
   type EmbeddingModelPreset
 } from "@/lib/domain/embeddingModels";
+import {
+  rerankerPresetsForFamily,
+  type RerankerModelPreset
+} from "@/lib/domain/rerankerModels";
 import { MoreHorizontal, Pencil, Plus, TestTube2, Trash2 } from "lucide-react";
 import { useState } from "react";
 
@@ -45,6 +49,7 @@ export function AdminProviderModelsTask({
     ? connection.models.find(({ id }) => id === editingId) ?? null
     : null;
   const embeddingPresets = embeddingPresetsForFamily(connection.family);
+  const rerankerPresets = rerankerPresetsForFamily(connection.family);
 
   function addOrEnableEmbeddingPreset(preset: EmbeddingModelPreset) {
     const existing = connection.models.find((model) =>
@@ -85,6 +90,44 @@ export function AdminProviderModelsTask({
           targetDimension: preset.targetDimension
         },
         modelClass: "embedding",
+        upstreamModelId: preset.upstreamModelId
+      },
+      displayName: preset.displayName
+    });
+  }
+
+  function addOrEnableRerankerPreset(preset: RerankerModelPreset) {
+    const existing = connection.models.find((model) =>
+      (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "reranker" &&
+      model.draftConfig.upstreamModelId === preset.upstreamModelId
+    );
+    if (existing) {
+      if (!existing.enabled) {
+        void controller.actions.updateModel(
+          connection.id,
+          existing.id,
+          { action: "enable" },
+          `${preset.displayName} reranker deployment enabled.`
+        );
+      }
+      return;
+    }
+    void controller.actions.createModel(connection.id, {
+      configuration: {
+        adapterKind: "openrouter_rerank",
+        answerSelectable: false,
+        capabilities: {
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          streaming: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        modelClass: "reranker",
+        openRouterRouting: { mode: "automatic", providers: [] },
         upstreamModelId: preset.upstreamModelId
       },
       displayName: preset.displayName
@@ -169,6 +212,51 @@ export function AdminProviderModelsTask({
           </div>
         ) : null}
 
+        {rerankerPresets.length ? (
+          <div className="border-b border-trace-subtle bg-workspace-rail/35 px-4 py-4">
+            <div className="max-w-3xl">
+              <h4 className="text-sm font-semibold text-ink">Memory reranker presets</h4>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">
+                These deployments score bounded evidence only. They cannot answer chats, embed documents, or silently substitute another model.
+              </p>
+              <dl className="mt-3 grid grid-cols-3 border-y border-trace-subtle text-metadata">
+                <div className="py-2"><dt className="text-ink-muted">Answer</dt><dd className="font-semibold text-critical">Blocked</dd></div>
+                <div className="border-x border-trace-subtle px-3 py-2"><dt className="text-ink-muted">Embed</dt><dd className="font-semibold text-critical">Blocked</dd></div>
+                <div className="pl-3 py-2"><dt className="text-ink-muted">Rerank</dt><dd className="font-semibold text-positive">Allowed</dd></div>
+              </dl>
+            </div>
+            <div className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
+              {rerankerPresets.map((preset) => {
+                const existing = connection.models.find((model) =>
+                  (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "reranker" &&
+                  model.draftConfig.upstreamModelId === preset.upstreamModelId
+                );
+                return (
+                  <div className="flex min-w-0 flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between" key={preset.id}>
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium text-ink">
+                        {preset.displayName}{preset.default ? " · Qualification default" : ""}
+                      </p>
+                      <p className="mt-1 font-mono text-metadata text-proof">Dedicated reranker · ordered numeric scores</p>
+                      <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{preset.description}</p>
+                    </div>
+                    <button
+                      aria-label={`${existing?.enabled ? "Added" : existing ? "Enable" : "Add"} ${preset.displayName} reranker preset`}
+                      className={existing?.enabled ? quietButton : primaryButton}
+                      disabled={controller.state.busy || existing?.enabled === true}
+                      onClick={() => addOrEnableRerankerPreset(preset)}
+                      type="button"
+                    >
+                      <Plus aria-hidden="true" className="size-3.5" />
+                      {existing?.enabled ? "Added" : existing ? "Enable" : "Add preset"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         {editingId ? (
           <div className="border-b border-trace-subtle px-4 py-4">
             <AdminProviderModelEditor
@@ -187,6 +275,7 @@ export function AdminProviderModelsTask({
             {connection.models.map((model) => {
               const presentation = presentProviderModel(model);
               const isEmbedding = (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "embedding";
+              const isReranker = (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "reranker";
               const embedding = model.draftConfig.embedding;
               const routing = model.draftConfig.openRouterRouting;
               const routingText = isEmbedding && embedding
@@ -208,7 +297,7 @@ export function AdminProviderModelsTask({
                   <div className="min-w-0">
                     <p className="break-words text-sm font-medium text-ink">{model.displayName}</p>
                     <p className="mt-1 text-xs leading-5 text-ink-muted">
-                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {isEmbedding ? "Embedding model" : model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
+                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {isEmbedding ? "Embedding model" : isReranker ? "Memory reranker only" : model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
                     </p>
                     <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                       <AdminAvailabilityStatus enabled={model.enabled} />
@@ -236,7 +325,7 @@ export function AdminProviderModelsTask({
                       <TestTube2 aria-hidden="true" className="size-3.5" />
                       Capabilities
                     </button>
-                    {!isEmbedding ? (
+                    {!isEmbedding && !isReranker ? (
                       <button
                         aria-label={`Edit ${model.displayName}`}
                         className={quietButton}
@@ -291,7 +380,7 @@ export function AdminProviderModelsTask({
                           className={dangerButton}
                           disabled={controller.state.busy}
                           onClick={() => requestConfirmation({
-                            body: "The deployment can be deleted only after Assistant revisions, grants, defaults, the system model role, Search references, and live run bindings are removed.",
+                            body: "The deployment can be deleted only after Assistant revisions, grants, defaults, utility model roles, Search references, and live run bindings are removed.",
                             confirmLabel: "Delete model",
                             dialogLabel: `Delete ${model.displayName} model`,
                             icon: "trash",

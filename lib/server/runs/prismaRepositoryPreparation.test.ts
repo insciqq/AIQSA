@@ -181,10 +181,14 @@ describe("Memory retrieval execution sequence", () => {
     ])).toBe(true);
   });
 
-  it("allows five bounded reranker batches plus one global aggregation and retries", () => {
+  it("allows nine bounded reranker batches plus one global aggregation and retries", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 1 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 },
       { logicalRole: "MEMORY_RERANK", ordinal: 4 },
@@ -196,7 +200,13 @@ describe("Memory retrieval execution sequence", () => {
       { logicalRole: "MEMORY_RERANK", ordinal: 10 },
       { logicalRole: "MEMORY_RERANK", ordinal: 11 },
       { logicalRole: "MEMORY_RERANK", ordinal: 12 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 13 }
+      { logicalRole: "MEMORY_RERANK", ordinal: 13 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 14 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 15 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 16 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 17 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 18 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 19 }
     ], false, true)).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
@@ -210,13 +220,13 @@ describe("Memory retrieval execution sequence", () => {
     ], false, true)).toBe(true);
   });
 
-  it("allows the embedding-free reranker sequence only for a broad profile inventory", () => {
+  it("allows earlier-utility degradation while constraining a broad profile inventory", () => {
     const profileSequence = [
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 }
     ];
     expect(validMemoryRetrievalExecutionSequence(profileSequence, true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence(profileSequence)).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence(profileSequence)).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
@@ -236,15 +246,9 @@ describe("Memory retrieval execution sequence", () => {
   });
 
   it.each([
-    [[{ logicalRole: "MEMORY_RERANK", ordinal: 3 }]],
-    [[{ logicalRole: "MEMORY_RERANK", ordinal: 2 }]],
-    [[{ logicalRole: "MEMORY_CONTROL", ordinal: 1 }]],
-    [[{ logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 }]],
-    [[
-      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
-    ]],
+    [[{ logicalRole: "MEMORY_RERANK", ordinal: 20 }]],
+    [[{ logicalRole: "MEMORY_UNKNOWN", ordinal: 0 }]],
+    [[{ logicalRole: "MEMORY_AGGREGATE", ordinal: 0 }]],
     [[
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 }
@@ -253,26 +257,26 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(false);
   });
 
-  it("rejects aggregation reranker ordinals unless aggregation was declared", () => {
+  it("keeps aggregation bindings separate from bounded targeted reranker ordinals", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_RERANK", ordinal: 4 }
-    ])).toBe(false);
+    ])).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 }
     ], false, true)).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 8 }
+      { logicalRole: "MEMORY_RERANK", ordinal: 18 }
     ], false, true)).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 8 }
+      { logicalRole: "MEMORY_RERANK", ordinal: 10 }
     ])).toBe(false);
   });
 

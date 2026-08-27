@@ -170,7 +170,8 @@ type MemoryAdmissionDeadline = Readonly<{
 type UtilityEvidence = Readonly<{
   externalCall: boolean;
   reason: string | null;
-  role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+  role: "MEMORY_AGGREGATE" | "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" |
+    "MEMORY_RERANK";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
 }>;
 
@@ -911,7 +912,7 @@ function admissionDeadlineAttempt(
   utilities: readonly Readonly<{
     result: MemoryRunAggregationResult | MemoryRunQueryEmbeddingResult |
       MemoryRunRerankResult | null;
-    role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+    role: "MEMORY_AGGREGATE" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   }>[] = []
 ): MemoryPreparingAttemptResult {
   const readOnlyControlReuse = cache.readOnlyControlReuseAttemptId === attemptId
@@ -957,7 +958,7 @@ function settingsDriftFailedSafeBudget(
   utilities: readonly Readonly<{
     result: MemoryRunAggregationResult | MemoryRunQueryEmbeddingResult |
       MemoryRunRerankResult | null;
-    role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
+    role: "MEMORY_AGGREGATE" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   }>[] = []
 ): Readonly<Record<string, unknown>> {
   const deadlineBudget = admissionDeadlineAttempt(
@@ -985,10 +986,23 @@ export type MemoryRelevanceCandidate = Readonly<{
   occurredFrom: string | null;
   occurredTo: string | null;
   sensitivityClass: "NORMAL";
+  speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "user";
   sourceKind: "EVENT" | "FACT" | "HISTORY";
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   text: string;
 }>;
+
+function relevanceSpeakerScope(
+  sourceKind: MemoryRelevanceCandidate["sourceKind"],
+  text: string
+): MemoryRelevanceCandidate["speakerScope"] {
+  if (sourceKind !== "HISTORY") return "memory_record";
+  const user = /(?:^|\n)User:\s/u.test(text);
+  const assistant = /(?:^|\n)Assistant:\s/u.test(text);
+  if (user && !assistant) return "user";
+  if (assistant && !user) return "assistant";
+  return "mixed_conversation";
+}
 
 function sourceDiversityOrder(
   candidates: readonly MemoryRelevanceCandidate[]
@@ -1072,6 +1086,7 @@ export function memoryRelevanceCandidates(
         candidate.metadata.systemFrom)?.toISOString() ?? null,
       occurredTo: (projection.occurredTo ?? candidate.metadata.validTo)?.toISOString() ?? null,
       sensitivityClass: "NORMAL" as const,
+      speakerScope: relevanceSpeakerScope(sourceKind, projection.safeText),
       sourceKind,
       temporalReason: (options.temporalIntent ?? "CURRENT").toLocaleLowerCase("und") as
         MemoryRelevanceCandidate["temporalReason"],
@@ -1820,7 +1835,7 @@ export function createMemoryRunRetrievalService(
             return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
               { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
               { result: relevance, role: "MEMORY_RERANK" },
-              { result: aggregation, role: "MEMORY_RERANK" }
+              { result: aggregation, role: "MEMORY_AGGREGATE" }
             ]);
           }
         } else {
@@ -1853,7 +1868,7 @@ export function createMemoryRunRetrievalService(
         utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
         utilityEvidence("MEMORY_RERANK", relevance),
         ...(plan.aggregationRequested
-          ? [utilityEvidence("MEMORY_RERANK", aggregation)]
+          ? [utilityEvidence("MEMORY_AGGREGATE", aggregation)]
           : [])
       ];
       const externalUtilityUsed = currentControlExternal ||

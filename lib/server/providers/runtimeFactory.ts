@@ -247,7 +247,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     }
     return { adapter: createFakeProviderAdapter() };
   }
-  if (snapshot.model.modelClass === "embedding") {
+  if (snapshot.model.modelClass !== "answer") {
     throw new Error("provider_model_class_invalid");
   }
 
@@ -435,6 +435,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       };
     }
     case "openai_embeddings_compatible":
+    case "openrouter_rerank":
       throw new Error("provider_model_class_invalid");
   }
 }

@@ -7,6 +7,7 @@ export const MEMORY_EXECUTION_ROLES = [
   "MEMORY_CONSOLIDATE",
   "MEMORY_SYNTHESIZE",
   "MEMORY_RERANK",
+  "MEMORY_AGGREGATE",
   "MEMORY_DOCUMENT_EMBED",
   "MEMORY_QUERY_EMBED"
 ] as const;
@@ -33,7 +34,7 @@ export const MEMORY_STRICT_OUTPUT_ROLES = [
   "MEMORY_FACT_EXTRACT",
   "MEMORY_CONSOLIDATE",
   "MEMORY_SYNTHESIZE",
-  "MEMORY_RERANK"
+  "MEMORY_AGGREGATE"
 ] as const satisfies readonly MemoryExecutionRole[];
 
 export function isMemoryExecutionRole(value: unknown): value is MemoryExecutionRole {

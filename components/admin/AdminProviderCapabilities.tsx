@@ -128,6 +128,8 @@ function capabilityRows(
   }>> = [{
     description: configuration.modelClass === "embedding"
       ? "A bounded embedding request completed for this exact model and credential."
+      : configuration.modelClass === "reranker"
+        ? "A bounded two-document ranking request completed for this exact model and credential."
       : "A bounded generation request completed for this exact model and credential.",
     key: "model-access",
     label: "Model access",
@@ -162,12 +164,16 @@ function capabilityRows(
   }, {
     description: configuration.modelClass === "embedding"
       ? "The embedding response included provider token usage."
+      : configuration.modelClass === "reranker"
+        ? "The ranking response included provider token or search-unit usage."
       : "At least one compatibility response included provider token usage.",
     key: "usage",
     label: "Usage reporting",
     status: compatibility?.usage ?? null
   }];
-  return rows;
+  return configuration.modelClass === "answer"
+    ? rows
+    : rows.filter(({ key }) => key === "model-access" || key === "usage");
 }
 
 export function AdminProviderCapabilities({
@@ -200,6 +206,7 @@ export function AdminProviderCapabilities({
     : model.draftConfig;
   const rows = capabilityRows(configuration, check);
   const isEmbedding = configuration.modelClass === "embedding";
+  const isReranker = configuration.modelClass === "reranker";
 
   const runCompatibilityChecks = async () => {
     if (!credential || testing) return;
@@ -231,6 +238,8 @@ export function AdminProviderCapabilities({
     requestConfirmation({
       body: isEmbedding
         ? "AIQSA will send one small embedding request to verify model access and usage reporting. It may consume provider quota; the returned vector is discarded."
+        : isReranker
+          ? "AIQSA will check the OpenRouter account catalog and send one small two-document ranking request. It may consume provider quota; returned scores are discarded."
         : connection.family === "openrouter"
           ? "AIQSA will check the account catalog and configured route, then send up to four small requests for model access, Structured Output, Direct PDF, streaming, and usage reporting. Requests may consume provider quota."
           : "AIQSA will send up to four small requests for model access, Structured Output, Direct PDF, streaming, and usage reporting. Requests may consume provider quota.",
@@ -253,7 +262,9 @@ export function AdminProviderCapabilities({
         <div className="max-w-3xl">
           <h4 className="text-sm font-semibold text-ink" id={headingId}>Compatibility checks</h4>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
-            Five runtime contracts are checked for this exact model and credential. Transient provider failures do not overwrite earlier evidence.
+            {configuration.modelClass === "answer"
+              ? "Five runtime contracts are checked for this exact model and credential."
+              : "Model access and usage reporting are checked for this exact specialized deployment and credential."} Transient provider failures do not overwrite earlier evidence.
           </p>
         </div>
         {credential ? (

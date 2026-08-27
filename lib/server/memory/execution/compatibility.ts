@@ -68,14 +68,20 @@ export function resolveMemoryExecutionCompatibility(input: Readonly<{
     return memoryExecutionFailure("memory_execution_capability_unavailable");
   }
   const embeddingRole = isMemoryEmbeddingRole(input.role);
+  const rerankerRole = input.role === "MEMORY_RERANK";
   const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(input.target);
   if (
     embeddingRole !== (vectorSpaceFingerprint !== null) ||
     (embeddingRole && model.modelClass !== "embedding") ||
-    (!embeddingRole && model.modelClass !== "answer")
+    (rerankerRole && model.modelClass !== "answer" &&
+      model.modelClass !== "reranker") ||
+    (!embeddingRole && !rerankerRole && model.modelClass !== "answer") ||
+    (model.modelClass === "reranker" && model.adapterKind !== "openrouter_rerank")
   ) return memoryExecutionFailure("memory_execution_capability_unavailable");
 
-  const requiresStrictStructuredOutput = memoryRoleRequiresStrictOutput(input.role);
+  const requiresStrictStructuredOutput = rerankerRole
+    ? model.modelClass === "answer"
+    : memoryRoleRequiresStrictOutput(input.role);
   if (requiresStrictStructuredOutput && (
     model.capabilities.toolCalling !== true ||
     model.capabilities.structuredOutput !== true
