@@ -109,6 +109,63 @@ export type KnowledgePassageLayoutKind =
   | "table_row"
   | "table_row_projection";
 
+/**
+ * One same-Source context segment attached to a selected primary passage
+ * (FR-14 child-to-parent expansion). Units exist only in memory between the
+ * retrieval core and provider-text assembly: the persisted receipt keeps the
+ * rendered `expandedContext` text plus the content-free
+ * `KnowledgeParentExpansionEvidence` summary, exactly like the pre-existing
+ * neighbor context persisted before this stage existed.
+ */
+export type KnowledgeParentExpansionUnit = Readonly<{
+  chunkId: string;
+  chunkIndex: number;
+  contentHash: string;
+  /** Exact provider-visible segment label for non-section origins. */
+  label: string;
+  /**
+   * "section": same-Source context merged into the single previous/next
+   * same-Source block (section-window text, field-group neighbors, and
+   * same-row projection neighbors all carry this provider-visible label
+   * today); "table": complete nearby row from the same table; "independent":
+   * independently matched same-Source segment.
+   */
+  origin: "independent" | "section" | "table";
+  position: "next" | "previous";
+  /** Relevance order inside one primary's group; higher ranks trim first. */
+  rank: number;
+  text: string;
+  /** Model tokens counted with the profile tokenizer (estimator fallback). */
+  tokens: number;
+}>;
+
+/** In-memory expansion attached to one selected primary passage. */
+export type KnowledgeParentExpansion = Readonly<{
+  /** Content-free classification code, present only when degraded. */
+  reason?: string;
+  /**
+   * "expanded": the canonical-section window was consulted; "legacy": the
+   * passage has no canonical section (legacy generation) so only the
+   * candidate-pool neighbor mechanics apply; "degraded": window loading or
+   * assembly failed and the atomic evidence plus candidate-pool fallback was
+   * kept (PRD §18: parent expansion failure never loses the answer).
+   */
+  state: "degraded" | "expanded" | "legacy";
+  units: readonly KnowledgeParentExpansionUnit[];
+}>;
+
+/**
+ * Content-free structural facts persisted with each receipt result: how many
+ * expanded passages and model tokens shipped, and why expansion degraded.
+ * Never contains text.
+ */
+export type KnowledgeParentExpansionEvidence = Readonly<{
+  passageCount: number;
+  reason?: string;
+  state: KnowledgeParentExpansion["state"];
+  tokens: number;
+}>;
+
 export type KnowledgeAcceptedBinding = Readonly<{
   baseContentRevision: number;
   baseName: string;
@@ -187,6 +244,8 @@ export type KnowledgeHybridPassage = Readonly<{
   documentVersionNumber: number;
   documentContext?: KnowledgeDocumentContextV1 | null;
   expandedContext?: string;
+  /** In-memory FR-14 expansion; never persisted with unit text. */
+  expansion?: KnowledgeParentExpansion;
   fileName: string;
   ftsRank: number | null;
   ftsScore: number | null;
@@ -209,14 +268,17 @@ export type KnowledgeHybridPassage = Readonly<{
   visualAnalysis?: KnowledgeVisualAnalysisResult;
 }>;
 
-export type KnowledgeRetrievedPassageEvidence = Omit<KnowledgeHybridPassage, "text"> & Readonly<{
-  handle: string;
-  includedText: string;
-  includedTextBytes: number;
-  sourceAlias?: string;
-  sourceTextBytes: number;
-  textTruncated: boolean;
-}>;
+export type KnowledgeRetrievedPassageEvidence =
+  Omit<KnowledgeHybridPassage, "expansion" | "text"> & Readonly<{
+    /** Content-free FR-14 expansion facts for the receipt; never unit text. */
+    expansion?: KnowledgeParentExpansionEvidence;
+    handle: string;
+    includedText: string;
+    includedTextBytes: number;
+    sourceAlias?: string;
+    sourceTextBytes: number;
+    textTruncated: boolean;
+  }>;
 
 /**
  * Current result passages always carry an immutable Source/Version identity

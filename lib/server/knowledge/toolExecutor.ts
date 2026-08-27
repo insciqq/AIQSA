@@ -30,6 +30,7 @@ import {
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactSearchRequest,
   type KnowledgeExactSearchResult,
+  type KnowledgeHybridPassage,
   type KnowledgeHybridSearchResult,
   type KnowledgeRetrievalEvidence,
   type KnowledgeRetrievalOutcome,
@@ -79,6 +80,10 @@ import {
 import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
 import { knowledgeTokenizerEvidenceLabel } from "./tokenizer/knowledgeTokenCounter";
+import {
+  fitKnowledgeParentExpansionsToByteBudget,
+  knowledgeParentExpansionEvidence
+} from "./parentContextExpansion";
 
 export { knowledgeRetrievalTool } from "./knowledgeTools";
 
@@ -441,8 +446,9 @@ function includedPassages(
   const sourceAliasByArtifact = primarySourceAliasesByArtifact(aliases);
   const selected: KnowledgeRetrievedPassageEvidence[] = [];
   const pendingExpandedContext: Array<string | null> = [];
+  const pendingExpansion: Array<KnowledgeHybridPassage["expansion"] | null> = [];
   let retainedExcerptBytes = 0;
-  for (const { expandedContext, text, ...passage } of passages) {
+  for (const { expandedContext, expansion, text, ...passage } of passages) {
     const sourceTextBytes = Buffer.byteLength(text, "utf8");
     if (sourceTextBytes > excerptBudgetBytes) {
       if (selected.length === 0) throw new Error("knowledge_evidence_item_too_large");
@@ -465,10 +471,53 @@ function includedPassages(
       textTruncated: false
     });
     pendingExpandedContext.push(expandedContext || null);
+    pendingExpansion.push(expansion ?? null);
     retainedExcerptBytes += sourceTextBytes;
   }
+  // FR-14 trim order: every atomic hit above is already packed and is never
+  // dropped in favor of expansion — expanded context competes only for the
+  // leftover bytes. Unit-bearing expansions shrink unit-by-unit with
+  // per-source round-robin fairness before any expansion drops entirely;
+  // legacy whole-string context keeps its historical all-or-nothing attach.
   let remainingContextBytes = excerptBudgetBytes - retainedExcerptBytes;
+  const unitEntries = selected.flatMap((passage, index) => {
+    const expansion = pendingExpansion[index];
+    return expansion && expansion.units.length > 0
+      ? [{
+          key: String(index),
+          sourceKey: [
+            passage.documentId,
+            passage.documentVersionId,
+            passage.sourceArtifactId ?? ""
+          ].join("\u001f"),
+          units: expansion.units
+        }]
+      : [];
+  });
+  const fitted = unitEntries.length > 0
+    ? fitKnowledgeParentExpansionsToByteBudget({
+        entries: unitEntries,
+        maximumBytes: Math.max(0, remainingContextBytes)
+      })
+    : null;
+  if (fitted) {
+    for (const kept of fitted.values()) {
+      if (kept.units.length > 0) {
+        remainingContextBytes -= Buffer.byteLength(kept.text, "utf8");
+      }
+    }
+  }
   return selected.map((passage, index) => {
+    const expansion = pendingExpansion[index];
+    if (expansion) {
+      const kept = fitted?.get(String(index));
+      const units = kept?.units ?? [];
+      return {
+        ...passage,
+        ...(units.length > 0 ? { expandedContext: kept!.text } : {}),
+        expansion: knowledgeParentExpansionEvidence(expansion, units)
+      };
+    }
     const expandedContext = pendingExpandedContext[index];
     if (!expandedContext) return passage;
     const expandedContextBytes = Buffer.byteLength(expandedContext, "utf8");
