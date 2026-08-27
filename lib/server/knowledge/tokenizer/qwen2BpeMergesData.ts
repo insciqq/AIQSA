@@ -1,4 +1,3 @@
-/* eslint-disable */
 // GENERATED FILE - do not edit by hand. Provenance and verification live in
 // ./qwen2BpeTokenizer.ts. Regeneration requires the exact pinned upstream
 // tokenizer.json named there.

@@ -43,7 +43,7 @@ function sqlText(value: unknown): string {
 
 async function capturedHybridSql(query: string): Promise<string> {
   const client = {
-    $queryRaw: vi.fn(async () => [{
+    $queryRaw: vi.fn(async (_statement: unknown) => [{
       candidates: [],
       scopes: [{
         baseName: "Docs",
