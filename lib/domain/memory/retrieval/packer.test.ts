@@ -543,6 +543,50 @@ describe("Personal Memory context pack", () => {
     expect(pack.items[0]?.exactSafeText).toBe("The user preferred Vim.");
   });
 
+  it("carries expected points and extracted event intervals into reader time", () => {
+    const futureBase = ranked("future-event");
+    const intervalBase = ranked("interval-event");
+    const pack = packMemoryPersonalContext({
+      expanded: [
+        expansion("future-event", false, "The user plans a launch."),
+        expansion("interval-event", false, "The user attended a conference.")
+      ],
+      plan,
+      ranked: [{
+        ...futureBase,
+        metadata: {
+          ...futureBase.metadata,
+          expectedAt: new Date("2026-09-10T09:00:00.000Z"),
+          modality: "EVENT",
+          systemFrom: null
+        }
+      }, {
+        ...intervalBase,
+        metadata: {
+          ...intervalBase.metadata,
+          modality: "EVENT",
+          systemFrom: null,
+          validFrom: new Date("2026-09-12T09:00:00.000Z"),
+          validTo: new Date("2026-09-14T17:00:00.000Z")
+        }
+      }]
+    });
+
+    expect(renderedEvidence(pack)).toMatchObject([{
+      document_time: "2026-09-10T09:00:00.000Z",
+      event_time: {
+        end: "unknown",
+        start: "2026-09-10T09:00:00.000Z"
+      }
+    }, {
+      document_time: "2026-09-12T09:00:00.000Z",
+      event_time: {
+        end: "2026-09-14T17:00:00.000Z",
+        start: "2026-09-12T09:00:00.000Z"
+      }
+    }]);
+  });
+
   it("uses explicit unknown dates and opaque source handles without repository IDs", () => {
     const candidate = ranked("repository-chunk-id", true, "DYNAMIC", "repository-chat-id");
     const undated = {

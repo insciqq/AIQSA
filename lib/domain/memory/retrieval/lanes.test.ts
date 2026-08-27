@@ -38,16 +38,20 @@ describe("Memory retrieval lane scheduler", () => {
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(allocation).toEqual({
-      FACT_EXACT: 7,
-      FACT_ENTITY: 10,
-      FACT_FTS_SIMPLE: 10,
+      FACT_EXACT: 5,
+      FACT_ENTITY: 8,
+      FACT_FTS_SIMPLE: 8,
       FACT_RECENT: 3,
-      FACT_VECTOR: 10,
-      HISTORY_DIGEST_FTS_SIMPLE: 25,
-      HISTORY_RECALL_EXACT: 10,
-      HISTORY_RECALL_FTS_SIMPLE: 25,
-      HISTORY_RECALL_RECENT: 10,
-      HISTORY_RECALL_VECTOR: 50
+      FACT_TEMPORAL_FILTERED: 8,
+      FACT_TEMPORAL_UNRESTRICTED: 3,
+      FACT_VECTOR: 8,
+      HISTORY_DIGEST_FTS_SIMPLE: 20,
+      HISTORY_RECALL_EXACT: 8,
+      HISTORY_RECALL_FTS_SIMPLE: 20,
+      HISTORY_RECALL_RECENT: 8,
+      HISTORY_RECALL_TEMPORAL_FILTERED: 16,
+      HISTORY_RECALL_TEMPORAL_UNRESTRICTED: 5,
+      HISTORY_RECALL_VECTOR: 40
     });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);

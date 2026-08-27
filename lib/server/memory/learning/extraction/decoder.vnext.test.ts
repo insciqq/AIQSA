@@ -487,8 +487,31 @@ describe("Memory v5 semantic-frame decoder", () => {
     })]);
     expect(plan.rejections).toEqual([]);
     expect(plan.candidates[0]).toMatchObject({
+      displayText: "An explicit source-grounded fact.",
       expiresAt: "2026-08-28T10:00:00.000Z",
       rawTemporalExpression: "ttl-token"
+    });
+  });
+
+  it("adds a grounded absolute event date while retaining the source wording", () => {
+    const quote = "The launch happened yesterday.";
+    const plan = decode(quote, [observation(quote, {
+      memory_type: "EVENT",
+      semantic_frame: { ...frame, temporal_perspective: "EVENT" },
+      statement: "The launch happened yesterday.",
+      temporal: {
+        expiration_intent: "NONE",
+        normalization: { amount: -1, kind: "CALENDAR_OFFSET", unit: "DAY" },
+        perspective: "EVENT",
+        raw_expression: textRef("yesterday")
+      }
+    })]);
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates[0]).toMatchObject({
+      displayText: "The launch happened yesterday. [event_date=2026-08-24]",
+      occurredAt: "2026-08-24T10:00:00.000Z",
+      rawTemporalExpression: "yesterday"
     });
   });
 

@@ -354,6 +354,7 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "When a preference source does not explicitly supply a stable category, format, interaction, or topic dimension, use PROPOSITION identity with subject NONE, null canonical_label and brand/model qualifiers, null predicate_key and dimension_key, entities [], and every value field null; preserve the preference meaning in statement and never invent a SLOT dimension.",
   "For PROPOSITION identity, set predicate_key and dimension_key to null and keep unused value fields null.",
   "Use structured temporal normalization only; raw_expression is an exact occurrence reference, not an interpreted timestamp.",
+  "When a relative date is reliably grounded, resolve it against target_message.created_at in time_zone into the structured absolute/calendar normalization while preserving the exact original wording through raw_expression; never replace source wording or invent an event time.",
   "Entity aliases require exact NAMED or NOMINAL source occurrences. PRONOMINAL, ELLIPSIS, UNKNOWN, or context-only mentions are never aliases.",
   "Use only supplied opaque refs. A context-resolved subject or correction must include the same ref in dependency_refs.",
   "Return zero observations only when the source contains no clear atomic, durable, future-useful fact. Hard SLOT proposals require HIGH confidence.",

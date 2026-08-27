@@ -608,7 +608,8 @@ async function prepareWith(
   const byId = new Map(rows.map((row) => [row.id, row]));
   if (tailIds.some((id) => !byId.has(id))) return { decision: staleDecision };
 
-  const runs = tailIds.length === 0 ? [] : await tx.modelRun.findMany({
+  const runMessageIds = [...new Set([...tailIds, source.activeLeafMessageId])];
+  const runs = await tx.modelRun.findMany({
     select: {
       assistantId: true,
       assistantMessageId: true,
@@ -618,7 +619,7 @@ async function prepareWith(
       userMessageId: true
     },
     where: {
-      assistantMessageId: { in: tailIds },
+      assistantMessageId: { in: runMessageIds },
       chatId: source.id,
       userId: source.userId
     }
@@ -705,6 +706,7 @@ async function prepareWith(
   const activeRun = activeRunCandidates.length === 1
     ? activeRunCandidates[0]!
     : null;
+  const timeZone = runTimeZone(activeRun?.normalizedRequest ?? null);
   const sourceIdentity: MemoryHistoryIndexSourceIdentity = {
     activeLeafMessageId: source.activeLeafMessageId,
     branchGeneration: source.memoryBranchGeneration,
@@ -724,7 +726,7 @@ async function prepareWith(
         mode: source.memoryMode,
         sourceContentHash: source.sourceHash,
         sourceRevision: source.memorySourceRevision,
-        timeZone: runTimeZone(activeRun?.normalizedRequest ?? null),
+        timeZone,
         userId: source.userId
       }), undefined, {
         excludedMessageIds: admission.excludedMessageIds,
@@ -764,6 +766,7 @@ async function prepareWith(
     chunks,
     admission.suppressionIdentitySnapshot,
     null,
+    timeZone,
     {
       checkpointMessages,
       digest: null,
@@ -788,6 +791,7 @@ async function prepareWith(
       reusedChunkIds,
       source: sourceIdentity,
       suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
+      timeZone,
       work
     }
   };
@@ -1281,6 +1285,7 @@ async function applyPlan(
       plan.chunks,
       plan.suppressionIdentitySnapshot,
       plan.classificationPolicyVersion,
+      plan.timeZone,
       {
         checkpointMessages: plan.checkpointMessages,
         digest: plan.digest,

@@ -81,9 +81,9 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v12";
+  "memory-run-retrieval-admission-v13";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v3";
+  "memory-retrieval-component-metrics-v4";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -178,6 +178,10 @@ function exactCurrentUserText(request: NormalizedRunRequest): string {
   return textFromContentBlocks(request.content);
 }
 
+function acceptedMemoryTimeZone(request: NormalizedRunRequest): string {
+  return request.prompt.baseline?.timeZone ?? "UTC";
+}
+
 function recentAssistantMessageIds(request: NormalizedRunRequest): readonly string[] {
   return (request.context?.messages ?? []).flatMap((message) =>
     message.role === "assistant" && message.id ? [message.id] : [])
@@ -251,7 +255,8 @@ function deterministicBaseReadPlan(
     currentUserText: originalSanitizedQuery,
     filters: { sourceKinds },
     now: input.now,
-    temporalIntent: "ANY"
+    temporalIntent: "ANY",
+    timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
   });
 }
 
@@ -655,6 +660,13 @@ function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknow
       kind
     })),
     temporalIntent: plan.temporalIntent,
+    temporalQuery: {
+      confidence: plan.temporalQuery.confidence,
+      expressionCount: plan.temporalQuery.matchedExpressionCount,
+      parserVersion: plan.temporalQuery.parserVersion,
+      state: plan.temporalQuery.state,
+      type: plan.temporalQuery.expressionType
+    },
     temporalQueryVariants: plan.temporalQueryVariants.map(({ kind, text }) => ({
       hash: memorySha256(text),
       kind
@@ -744,6 +756,12 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   const rerankerDecisionHandles = new Set(input.relevance?.status === "READY"
     ? input.relevance.decisions.map(({ handle }) => handle)
     : []);
+  const temporalFilteredCandidateCount = Object.entries(candidateCountsByLane)
+    .filter(([lane]) => lane.endsWith("_TEMPORAL_FILTERED"))
+    .reduce((count, [, laneCount]) => count + laneCount, 0);
+  const temporalUnrestrictedCandidateCount = Object.entries(candidateCountsByLane)
+    .filter(([lane]) => lane.endsWith("_TEMPORAL_UNRESTRICTED"))
+    .reduce((count, [, laneCount]) => count + laneCount, 0);
   return Object.freeze({
     candidateCountsByLane,
     candidatesRetainedAfterReranker: input.relevant.length,
@@ -766,11 +784,11 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     safetyFindingCounts: input.querySafety.findingCounts,
     safetyMetricsState: "QUERY_REDACTION_ACTIVE",
     selectedSourceChats: selectedSourceChats.size,
-    temporalFilteredCandidateCount: 0,
-    temporalParserConfidence: null,
-    temporalParserState: "NOT_AVAILABLE",
-    temporalParserType: null,
-    temporalUnrestrictedCandidateCount: 0,
+    temporalFilteredCandidateCount,
+    temporalParserConfidence: input.plan.temporalQuery.confidence,
+    temporalParserState: input.plan.temporalQuery.state,
+    temporalParserType: input.plan.temporalQuery.expressionType,
+    temporalUnrestrictedCandidateCount,
     uniqueEvidenceRootsAfterFusion: new Set(input.dynamicFused.map((candidate) =>
       memoryRetrievalEvidenceRootKey(candidate))).size,
     uniqueEvidenceRootsBeforeFusion: beforeFusionRoots.size,
@@ -1199,7 +1217,8 @@ export function createMemoryRunRetrievalService(
       const querySafety = sanitizeMemoryUtilityText(currentUserText);
       const provisionalPlan = planMemoryRetrieval({
         currentUserText: querySafety.safeText,
-        now: input.now
+        now: input.now,
+        timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
       });
       if (!provisionalPlan.queryPresent) {
         return emptyAttempt(input.expected, "FAILED_SAFE", "memory_plan_query_missing", null, {
@@ -1453,7 +1472,8 @@ export function createMemoryRunRetrievalService(
             profileRequested: control.intent.profileRequested,
             recencyRequested: control.intent.recencyRequested,
             semanticRewrite: rewriteSafety.safeText,
-            temporalIntent: control.intent.temporalIntent
+            temporalIntent: control.intent.temporalIntent,
+            timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
           });
         } catch {
           plannerFallbackReason = "memory_plan_invalid";

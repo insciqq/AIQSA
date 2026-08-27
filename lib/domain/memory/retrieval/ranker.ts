@@ -108,7 +108,38 @@ function authorityRank(metadata: MemoryCandidateMetadata): number {
   }
 }
 
+function temporalEvidenceInterval(metadata: MemoryCandidateMetadata): Readonly<{
+  from: Date;
+  to: Date;
+}> | null {
+  const point = metadata.occurredAt ?? metadata.expectedAt;
+  const from = metadata.occurredFrom ?? point ?? metadata.validFrom ??
+    metadata.observedAt ?? metadata.systemFrom;
+  if (!from) return null;
+  const to = metadata.occurredTo ?? (point ? point : metadata.validTo) ?? from;
+  return { from, to };
+}
+
+function parsedTemporalFit(
+  plan: MemoryRetrievalPlan,
+  metadata: MemoryCandidateMetadata
+): number | null {
+  const query = plan.temporalQuery;
+  if (query.state !== "MATCHED" || !query.interval || !query.confidence) return null;
+  const evidence = temporalEvidenceInterval(metadata);
+  if (!evidence) return query.confidence === "HIGH" ? 0.5 : 0.85;
+  const pointEvidence = evidence.from.getTime() === evidence.to.getTime();
+  const afterStart = query.interval.from === null ||
+    evidence.to > query.interval.from ||
+    pointEvidence && evidence.from >= query.interval.from;
+  const beforeEnd = query.interval.to === null || evidence.from < query.interval.to;
+  if (afterStart && beforeEnd) return 1;
+  return query.confidence === "HIGH" ? 0.5 : 0.85;
+}
+
 function temporalFit(plan: MemoryRetrievalPlan, metadata: MemoryCandidateMetadata): number {
+  const parsed = parsedTemporalFit(plan, metadata);
+  if (parsed !== null) return parsed;
   switch (plan.temporalIntent) {
     case "CURRENT": return metadata.current ? 1 : 0;
     case "HISTORICAL": return metadata.historical ? 1 : 0.9;

@@ -36,6 +36,7 @@ import {
   seedMemoryHistoryBackfill
 } from "./backfill";
 import {
+  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
   memoryHistoryIndexJobFingerprint
@@ -239,7 +240,7 @@ async function processHistoryJob(
 }
 
 const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
-  async generate(source, chunks) {
+  async generate(source, chunks, options) {
     if (chunks.length === 0) {
       return {
         classificationRequired: false,
@@ -262,7 +263,8 @@ const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
           summary: "The chat selected a deployment approach.",
           topics: ["Deployment"]
         }),
-        source
+        source,
+        timeZone: options.timeZone
       }),
       executions: [],
       policyVersion: "memory-chat-digest-policy-test",
@@ -1427,6 +1429,9 @@ describe("Memory lexical history index persistence", () => {
         });
       }
       const tailPlan = await prisma.$transaction(async (tx) => {
+        // EXPLAIN must qualify the physical tail index against the rows just
+        // bulk-loaded by this fixture, not against stale suite-global stats.
+        await tx.$executeRaw(Prisma.sql`ANALYZE "ChatMemoryCheckpointMessage"`);
         await tx.$executeRaw(Prisma.sql`SET LOCAL enable_seqscan = off`);
         return tx.$queryRaw<unknown[]>(Prisma.sql`
           EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
@@ -1555,6 +1560,7 @@ describe("Memory lexical history index persistence", () => {
         mode: "APPEND",
         rebuildFromMessageOrdinal: 3_998
       });
+      expect(prepared.plan.timeZone).toBe("Europe/Moscow");
       expect(prepared.plan.work).toEqual({
         chunksBuilt: 1,
         chunksReplaced: 0,
@@ -1607,13 +1613,47 @@ describe("Memory lexical history index persistence", () => {
       });
       expect(digest).toMatchObject({
         activeLeafMessageId: first.assistantMessage.id,
-        pipelineVersion: "memory-chat-digest-v3",
+        pipelineVersion: "memory-chat-digest-v4",
         redactionState: "NOT_NEEDED",
         safetyClass: "NORMAL",
         safeDigestText: expect.stringContaining("Summary:"),
         sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
         updateMode: "FULL_REBUILD"
       });
+      const incompleteDigestId = randomUUID();
+      await expect(prisma.chatMemoryDigest.create({
+        data: {
+          activeLeafMessageId: digest.activeLeafMessageId,
+          anchorChunkId: digest.anchorChunkId,
+          branchGeneration: digest.branchGeneration,
+          chatId: digest.chatId,
+          contentHash: digest.contentHash,
+          decisions: digest.decisions,
+          id: incompleteDigestId,
+          languageCode: digest.languageCode,
+          normalizedSafeSearchText: digest.normalizedSafeSearchText,
+          occurredFrom: digest.occurredFrom,
+          occurredTo: digest.occurredTo,
+          openLoops: digest.openLoops,
+          pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+          redactionState: digest.redactionState,
+          safeDigestText: digest.safeDigestText,
+          safetyClass: digest.safetyClass,
+          safetyPolicyVersion: digest.safetyPolicyVersion,
+          sourceAssistantId: digest.sourceAssistantId,
+          sourceContentHash: digest.sourceContentHash,
+          sourceFolderId: digest.sourceFolderId,
+          sourceProjectionVersion: digest.sourceProjectionVersion,
+          sourceRevisionAtCreation: digest.sourceRevisionAtCreation,
+          state: "INVALIDATED",
+          summary: digest.summary,
+          topics: digest.topics,
+          userId
+        }
+      })).rejects.toThrow("ChatMemoryDigest_incremental_metadata_check");
+      await expect(prisma.chatMemoryDigest.count({
+        where: { id: incompleteDigestId }
+      })).resolves.toBe(0);
       await expect(prisma.chatMemoryDigestChunk.count({
         where: { digestId: digest.id, userId }
       })).resolves.toBe(1);

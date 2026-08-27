@@ -13,6 +13,9 @@ import {
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
   MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS,
+  MEMORY_TEMPORAL_QUERY_MAX_MATCHED_EXPRESSIONS,
+  MEMORY_TEMPORAL_QUERY_EXPRESSION_TYPES,
+  MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
   type MemoryCoreCandidate,
@@ -225,6 +228,9 @@ const semanticVariantKinds = new Set([
   "DECOMPOSED", "ENTITY_EXPANSION", "ORIGINAL", "PLANNER_REWRITE"
 ]);
 const temporalVariantKinds = new Set(["FILTERED", "UNRESTRICTED"]);
+const temporalParserStates = new Set(["AMBIGUOUS", "INVALID", "MATCHED", "NO_MATCH"]);
+const temporalParserConfidences = new Set(["HIGH", "MEDIUM"]);
+const temporalExpressionTypes = new Set(MEMORY_TEMPORAL_QUERY_EXPRESSION_TYPES);
 const opaqueEntityRefPattern = /^[^\u0000-\u0020\u007f]{1,2048}$/u;
 
 function validToken(value: unknown): value is string {
@@ -233,6 +239,28 @@ function validToken(value: unknown): value is string {
 
 function validDate(value: Date | null): boolean {
   return value === null || value instanceof Date && Number.isFinite(value.getTime());
+}
+
+function validTemporalQuery(plan: MemoryRetrievalPlan): boolean {
+  const result = plan.temporalQuery;
+  if (!result || typeof result !== "object" ||
+    result.parserVersion !== MEMORY_TEMPORAL_QUERY_PARSER_VERSION ||
+    !temporalParserStates.has(result.state) ||
+    !Number.isSafeInteger(result.matchedExpressionCount) ||
+    result.matchedExpressionCount < 0 ||
+    result.matchedExpressionCount > MEMORY_TEMPORAL_QUERY_MAX_MATCHED_EXPRESSIONS) return false;
+  if (result.state !== "MATCHED") {
+    return result.confidence === null && result.expressionType === null &&
+      result.interval === null;
+  }
+  if (!result.interval || result.confidence === null || result.expressionType === null ||
+    !temporalParserConfidences.has(result.confidence) ||
+    !temporalExpressionTypes.has(result.expressionType) ||
+    !validDate(result.interval.from) || !validDate(result.interval.to) ||
+    result.interval.from === null && result.interval.to === null ||
+    result.interval.from !== null && result.interval.to !== null &&
+      result.interval.from >= result.interval.to) return false;
+  return result.matchedExpressionCount >= 1;
 }
 
 function validUnit(value: number): boolean {
@@ -591,22 +619,7 @@ function factPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
   const target = plan.filters.scopeTargetId
     ? Prisma.sql`scope."targetIdSnapshot" = ${plan.filters.scopeTargetId}`
     : Prisma.sql`TRUE`;
-  const temporalStart = Prisma.sql`COALESCE(
-    version."occurredAt", version."validFrom", version."observedAt", version."systemFrom"
-  )`;
-  const temporalEnd = Prisma.sql`COALESCE(version."validTo", version."systemTo")`;
-  const from = plan.filters.from
-    ? Prisma.sql`COALESCE(${temporalEnd}, ${temporalStart}) >= ${plan.filters.from}`
-    : Prisma.sql`TRUE`;
-  const to = plan.filters.to
-    ? Prisma.sql`${temporalStart} < ${plan.filters.to}`
-    : Prisma.sql`TRUE`;
-  const asOf = plan.filters.asOf
-    ? Prisma.sql`${temporalStart} <= ${plan.filters.asOf}
-        AND (${temporalEnd} IS NULL OR ${temporalEnd} > ${plan.filters.asOf})`
-    : Prisma.sql`TRUE`;
-  return Prisma.sql`${patterns} AND ${factKindPredicate(plan)} AND ${scope} AND ${target}
-    AND ${from} AND ${to} AND ${asOf}`;
+  return Prisma.sql`${patterns} AND ${factKindPredicate(plan)} AND ${scope} AND ${target}`;
 }
 
 function historyPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
@@ -622,17 +635,7 @@ function historyPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
         : plan.filters.scopeType === "ASSISTANT" && plan.filters.scopeTargetId
           ? Prisma.sql`chunk."sourceAssistantId" = ${plan.filters.scopeTargetId}`
           : Prisma.sql`FALSE`;
-  const from = plan.filters.from
-    ? Prisma.sql`chunk."occurredTo" >= ${plan.filters.from}`
-    : Prisma.sql`TRUE`;
-  const to = plan.filters.to
-    ? Prisma.sql`chunk."occurredFrom" < ${plan.filters.to}`
-    : Prisma.sql`TRUE`;
-  const asOf = plan.filters.asOf
-    ? Prisma.sql`chunk."occurredFrom" <= ${plan.filters.asOf}
-        AND chunk."occurredTo" > ${plan.filters.asOf}`
-    : Prisma.sql`TRUE`;
-  return Prisma.sql`${scope} AND ${from} AND ${to} AND ${asOf}`;
+  return scope;
 }
 
 function historyDigestPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
@@ -651,17 +654,7 @@ function historyDigestPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
         : plan.filters.scopeType === "ASSISTANT" && plan.filters.scopeTargetId
           ? Prisma.sql`digest."sourceAssistantId" = ${plan.filters.scopeTargetId}`
           : Prisma.sql`FALSE`;
-  const from = plan.filters.from
-    ? Prisma.sql`digest."occurredTo" >= ${plan.filters.from}`
-    : Prisma.sql`TRUE`;
-  const to = plan.filters.to
-    ? Prisma.sql`digest."occurredFrom" < ${plan.filters.to}`
-    : Prisma.sql`TRUE`;
-  const asOf = plan.filters.asOf
-    ? Prisma.sql`digest."occurredFrom" <= ${plan.filters.asOf}
-        AND digest."occurredTo" > ${plan.filters.asOf}`
-    : Prisma.sql`TRUE`;
-  return Prisma.sql`${scope} AND ${from} AND ${to} AND ${asOf}`;
+  return scope;
 }
 
 function factColumns(
@@ -1259,6 +1252,129 @@ function historyEligibleSelect(
   `;
 }
 
+type MemoryTemporalSqlConstraint = Readonly<{
+  confidence: "HIGH" | "MEDIUM";
+  from: Date | null;
+  to: Date | null;
+}>;
+
+function temporalSqlConstraints(
+  plan: MemoryRetrievalPlan
+): readonly MemoryTemporalSqlConstraint[] {
+  const constraints: MemoryTemporalSqlConstraint[] = [];
+  if (plan.temporalQuery.state === "MATCHED" &&
+    plan.temporalQuery.confidence && plan.temporalQuery.interval) {
+    constraints.push({
+      confidence: plan.temporalQuery.confidence,
+      from: plan.temporalQuery.interval.from,
+      to: plan.temporalQuery.interval.to
+    });
+  }
+  if (plan.filters.asOf) {
+    const toMs = plan.filters.asOf.getTime() + 1;
+    const to = new Date(toMs);
+    if (Number.isFinite(to.getTime())) {
+      constraints.push({
+        confidence: "HIGH",
+        from: plan.filters.asOf,
+        to
+      });
+    }
+  } else if (plan.filters.from || plan.filters.to) {
+    constraints.push({
+      confidence: "HIGH",
+      from: plan.filters.from,
+      to: plan.filters.to
+    });
+  }
+  const seen = new Set<string>();
+  return constraints.filter((constraint) => {
+    const key = `${constraint.from?.getTime() ?? "open"}:` +
+      `${constraint.to?.getTime() ?? "open"}:${constraint.confidence}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 2);
+}
+
+function temporalOverlapPredicate(
+  start: Prisma.Sql,
+  end: Prisma.Sql,
+  constraint: MemoryTemporalSqlConstraint
+): Prisma.Sql {
+  const from = constraint.from
+    ? Prisma.sql`(${end} > ${constraint.from} OR (
+        ${end} = ${start} AND ${start} >= ${constraint.from}
+      ))`
+    : Prisma.sql`TRUE`;
+  const to = constraint.to
+    ? Prisma.sql`${start} < ${constraint.to}`
+    : Prisma.sql`TRUE`;
+  return Prisma.sql`(${from} AND ${to})`;
+}
+
+function anyTemporalOverlapPredicate(
+  start: Prisma.Sql,
+  end: Prisma.Sql,
+  constraints: readonly MemoryTemporalSqlConstraint[]
+): Prisma.Sql {
+  if (constraints.length === 0) return Prisma.sql`FALSE`;
+  return Prisma.sql`(${Prisma.join(
+    constraints.map((constraint) => temporalOverlapPredicate(start, end, constraint)),
+    " OR "
+  )})`;
+}
+
+function temporalSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  itemType: "FACT_VERSION" | "RECALL_CHUNK",
+  limit: number,
+  unrestricted: boolean
+): Prisma.Sql {
+  const constraints = temporalSqlConstraints(plan);
+  if (constraints.length === 0) throw new Error("memory_retrieval_lane_invalid");
+  const eligible = itemType === "FACT_VERSION"
+    ? factEligibleSelect(snapshot, plan, "DIRECT")
+    : historyEligibleSelect(snapshot, plan);
+  const start = itemType === "FACT_VERSION"
+    ? Prisma.sql`COALESCE(
+        eligible."occurredAt", eligible."expectedAt", eligible."validFrom",
+        eligible."observedAt", eligible."systemFrom"
+      )`
+    : Prisma.sql`eligible."occurredFrom"`;
+  const end = itemType === "FACT_VERSION"
+    ? Prisma.sql`CASE
+        WHEN eligible."occurredAt" IS NOT NULL OR eligible."expectedAt" IS NOT NULL
+          THEN ${start}
+        ELSE COALESCE(eligible."validTo", ${start})
+      END`
+    : Prisma.sql`COALESCE(eligible."occurredTo", ${start})`;
+  const match = anyTemporalOverlapPredicate(start, end, constraints);
+  const highConfidenceMatch = anyTemporalOverlapPredicate(
+    start,
+    end,
+    constraints.filter(({ confidence }) => confidence === "HIGH")
+  );
+  const hardFilter = unrestricted || !constraints.some(({ confidence }) =>
+    confidence === "HIGH")
+    ? Prisma.sql`TRUE`
+    : highConfidenceMatch;
+  const score = unrestricted
+    ? Prisma.sql`0.0`
+    : Prisma.sql`CASE WHEN ${match} THEN 1.0 ELSE 0.0 END`;
+  const order = unrestricted
+    ? Prisma.sql`${start} DESC, eligible."itemId"`
+    : Prisma.sql`${score} DESC, ${start} DESC, eligible."itemId"`;
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${eligible})
+    SELECT ${candidateColumns(score)} FROM eligible
+    WHERE ${start} IS NOT NULL AND ${hardFilter}
+    ORDER BY ${order}
+    LIMIT ${limit}
+  `;
+}
+
 function candidateColumns(
   rawScore: Prisma.Sql,
   matchedEntityRole: Prisma.Sql = Prisma.sql`eligible."matchedEntityRole"`,
@@ -1637,6 +1753,8 @@ function localLexicalLanes(
 ): readonly MemoryRetrievalLane[] {
   if (!plan.queryPresent) return [];
   const indexed = snapshot.activeGenerationId !== null && snapshot.indexMode !== null;
+  const temporal = !plan.profileRequested && plan.temporalQueryVariants.some(({ kind }) =>
+    kind === "FILTERED");
   const lanes: MemoryRetrievalLane[] = [];
   if (snapshot.useMemoryFacts &&
     (plan.filters.sourceKinds.includes("FACT") || plan.filters.sourceKinds.includes("EVENT"))) {
@@ -1645,6 +1763,9 @@ function localLexicalLanes(
       lanes.push("FACT_EXACT");
       if (plan.semanticQueryVariants.some(({ text }) =>
         entityQueryTerms(text).length > 0)) lanes.push("FACT_ENTITY");
+      if (temporal) {
+        lanes.push("FACT_TEMPORAL_FILTERED", "FACT_TEMPORAL_UNRESTRICTED");
+      }
       if (indexed && plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
       if (indexed && plan.recencyRequested) lanes.push("FACT_RECENT");
     }
@@ -1652,6 +1773,12 @@ function localLexicalLanes(
   if (indexed && !plan.profileRequested && snapshot.useMemoryFacts &&
     snapshot.referenceChatHistory &&
     plan.filters.sourceKinds.includes("HISTORY")) {
+    if (temporal) {
+      lanes.push(
+        "HISTORY_RECALL_TEMPORAL_FILTERED",
+        "HISTORY_RECALL_TEMPORAL_UNRESTRICTED"
+      );
+    }
     if (plan.mode === "HISTORY_OVERVIEW") {
       if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
       lanes.push("HISTORY_RECALL_RECENT");
@@ -1689,6 +1816,12 @@ function laneSql(
     return targetedDigestFtsSql(snapshot, plan, limit);
   }
   const itemType = lane.startsWith("FACT_") ? "FACT_VERSION" : "RECALL_CHUNK";
+  if (lane.endsWith("_TEMPORAL_FILTERED")) {
+    return temporalSql(snapshot, plan, itemType, limit, false);
+  }
+  if (lane.endsWith("_TEMPORAL_UNRESTRICTED")) {
+    return temporalSql(snapshot, plan, itemType, limit, true);
+  }
   if (lane === "FACT_PROFILE") return profileSql(snapshot, plan, limit);
   if (lane === "FACT_ENTITY") return entitySql(snapshot, plan, limit);
   if (lane.endsWith("_EXACT")) return exactSql(snapshot, plan, itemType, limit);
@@ -1808,10 +1941,10 @@ function pushVectorTasks(
       chatId: snapshot.chatId,
       factMode: input.plan.mode === "HISTORICAL_MEMORY" ? "HISTORICAL" : "CURRENT",
       includePatterns: input.plan.includePatterns,
-      factTemporalAsOf: input.plan.filters.asOf,
+      factTemporalAsOf: null,
       folderId: snapshot.folderId,
-      occurredFrom: input.plan.filters.from,
-      occurredTo: input.plan.filters.to,
+      occurredFrom: null,
+      occurredTo: null,
       sourceAssistantId: input.plan.filters.scopeType === "ASSISTANT"
         ? input.plan.filters.scopeTargetId
         : null,
@@ -2067,7 +2200,9 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
       `${kind}:${text.toLocaleLowerCase("und")}`)).size === plan.temporalQueryVariants.length &&
     (!plan.queryPresent || plan.temporalQueryVariants.some((variant) =>
       variant.kind === "UNRESTRICTED" && variant.text === plan.originalSanitizedQuery)) &&
-    (plan.temporalIntent === "AS_OF" || plan.temporalIntent === "BETWEEN"
+    validTemporalQuery(plan) &&
+    (plan.temporalIntent === "AS_OF" || plan.temporalIntent === "BETWEEN" ||
+      plan.temporalQuery.state === "MATCHED"
       ? plan.temporalQueryVariants.some((variant) =>
           variant.kind === "FILTERED" && variant.text === plan.originalSanitizedQuery)
       : plan.temporalQueryVariants.every((variant) => variant.kind === "UNRESTRICTED")) &&

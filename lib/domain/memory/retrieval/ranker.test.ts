@@ -119,6 +119,65 @@ describe("relative-rank Memory fusion", () => {
     expect(tied[0]!.rrfScore).toBe(tied[1]!.rrfScore);
   });
 
+  it("uses deterministic temporal overlap only as a confidence-aware tie-break", () => {
+    const temporalPlan = planMemoryRetrieval({
+      currentUserText: "what happened yesterday",
+      now,
+      temporalIntent: "ANY",
+      timeZone: "UTC"
+    });
+    const inside = {
+      ...historyCandidate("inside", 0),
+      lane: "HISTORY_RECALL_FTS_SIMPLE" as const
+    };
+    const outside = {
+      ...historyCandidate("outside", 999),
+      lane: "HISTORY_RECALL_VECTOR" as const
+    };
+    const endedAtStart = {
+      ...historyCandidate("ended-at-start", 10),
+      lane: "HISTORY_DIGEST_FTS_SIMPLE" as const
+    };
+    const ranked = fuseMemoryRetrievalCandidates(temporalPlan, [{
+      candidates: [{
+        ...outside,
+        metadata: {
+          ...outside.metadata,
+          occurredFrom: new Date("2026-07-01T00:00:00.000Z"),
+          occurredTo: new Date("2026-07-01T01:00:00.000Z")
+        }
+      }],
+      lane: "HISTORY_RECALL_VECTOR"
+    }, {
+      candidates: [{
+        ...inside,
+        metadata: {
+          ...inside.metadata,
+          occurredFrom: new Date("2026-08-12T12:00:00.000Z"),
+          occurredTo: new Date("2026-08-12T13:00:00.000Z")
+        }
+      }],
+      lane: "HISTORY_RECALL_FTS_SIMPLE"
+    }, {
+      candidates: [{
+        ...endedAtStart,
+        metadata: {
+          ...endedAtStart.metadata,
+          occurredFrom: new Date("2026-08-01T00:00:00.000Z"),
+          occurredTo: new Date("2026-08-12T00:00:00.000Z")
+        }
+      }],
+      lane: "HISTORY_DIGEST_FTS_SIMPLE"
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual([
+      "inside", "ended-at-start", "outside"
+    ]);
+    expect(ranked[0]?.rrfScore).toBe(ranked[2]?.rrfScore);
+    expect(ranked.map(({ featureSnapshot }) => featureSnapshot.temporalFit))
+      .toEqual([1, 0.5, 0.5]);
+  });
+
   it("demotes inferred synthesis below equally ranked direct facts", () => {
     const synthesized = candidate("pattern", "FACT_FTS_SIMPLE", 1);
     const ranked = fuseMemoryRetrievalCandidates(plan, [{

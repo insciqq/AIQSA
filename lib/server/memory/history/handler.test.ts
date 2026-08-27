@@ -103,6 +103,7 @@ function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndex
     chunks,
     suppressionIdentitySnapshot,
     null,
+    "UTC",
     {
       checkpointMessages,
       incremental,
@@ -123,6 +124,7 @@ function plan(chunks: MemoryHistoryIndexPlan["chunks"] = []): MemoryHistoryIndex
     reusedChunkIds: [],
     source,
     suppressionIdentitySnapshot,
+    timeZone: "UTC",
     work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   };
 }
@@ -283,6 +285,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       basePlan.chunks,
       basePlan.suppressionIdentitySnapshot,
       null,
+      basePlan.timeZone,
       {
         checkpointMessages: basePlan.checkpointMessages,
         incremental,
@@ -388,7 +391,11 @@ describe("Memory INDEX_HISTORY handler", () => {
         expect.objectContaining({ id: "chunk-stable" }),
         expect.objectContaining({ id: "chunk-tail" })
       ]),
-      expect.objectContaining({ jobId: currentClaim.id, userId: source.userId })
+      expect.objectContaining({
+        jobId: currentClaim.id,
+        timeZone: "UTC",
+        userId: source.userId
+      })
     );
     await result.apply?.({
       $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
