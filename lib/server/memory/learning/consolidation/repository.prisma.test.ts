@@ -376,6 +376,7 @@ function consolidationRepository() {
 }
 
 async function createCandidate(input: Readonly<{
+  candidateText?: string;
   createdAt: Date;
   folderId?: string;
   structuredValue: Record<string, unknown>;
@@ -395,6 +396,7 @@ async function createCandidate(input: Readonly<{
   const prepared = await extractionRepository().prepare(claim);
   if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
   const extractionInput: MemoryFactExtractionInput = prepared.input;
+  const candidateText = input.candidateText ?? input.text;
   const plan = decodeMemoryFactExtractionV1([{
     arguments: {
       candidates: [{
@@ -402,11 +404,11 @@ async function createCandidate(input: Readonly<{
         confidence_band: "HIGH",
         correction: false,
         future_useful: true,
-        quote: input.text,
+        quote: candidateText,
         reason_code: "durable_preference",
-        response_preference: input.text,
+        response_preference: candidateText,
         sensitivity: "NORMAL",
-        statement: input.text,
+        statement: candidateText,
         temporary: false
       }]
     },
@@ -836,6 +838,70 @@ describe("Prisma Memory fact consolidation", () => {
       await deleteTestProviderExecutionAuthority(prisma, executionAuthority);
     }
     await prisma.$disconnect();
+  });
+
+  it("revalidates mixed-secret evidence against its exact safe projection", async () => {
+    const userId = await createOwner("mixed-secret-projection");
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    try {
+      const candidate = await createCandidate({
+        candidateText: "I moved to Helsinki.",
+        createdAt: new Date("2026-08-27T09:30:00.000Z"),
+        structuredValue: { location: "Helsinki" },
+        text: `I moved to Helsinki. API token ${token}`,
+        userId
+      });
+      const job = await enqueueLegacyConsolidationFixture(candidate);
+      const claim = await claimJob(job.id);
+      const prepared = await consolidationRepository().prepareConsolidation(claim);
+
+      expect(prepared).toMatchObject({
+        input: {
+          candidate: {
+            displayText: "I moved to Helsinki.",
+            evidence: [{ quote: "I moved to Helsinki." }]
+          }
+        }
+      });
+      expect(JSON.stringify(prepared)).not.toContain(token);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("rejects staged evidence that was moved onto a redaction placeholder", async () => {
+    const userId = await createOwner("mixed-secret-placeholder-evidence");
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const safeText = "I moved to Helsinki. API token [REDACTED:TOKEN]";
+    try {
+      const candidate = await createCandidate({
+        candidateText: "I moved to Helsinki.",
+        createdAt: new Date("2026-08-27T09:31:00.000Z"),
+        structuredValue: { location: "Helsinki" },
+        text: `I moved to Helsinki. API token ${token}`,
+        userId
+      });
+      const startOffset = safeText.indexOf("[REDACTED:TOKEN]");
+      await prisma.memoryCandidateMessage.updateMany({
+        data: {
+          endOffset: startOffset + "[REDACTED:TOKEN]".length,
+          startOffset
+        },
+        where: { candidateId: candidate.candidateId, userId }
+      });
+      const job = await enqueueLegacyConsolidationFixture(candidate);
+      const claim = await claimJob(job.id);
+
+      await expect(consolidationRepository().prepareConsolidation(claim))
+        .resolves.toEqual({
+          decision: {
+            errorCode: "memory_fact_candidate_stale",
+            status: "STALE"
+          }
+        });
+    } finally {
+      await cleanupOwner(userId);
+    }
   });
 
   it.each(["AUTOMATIC_FACTS", "ALL_REUSABLE"] as const)(

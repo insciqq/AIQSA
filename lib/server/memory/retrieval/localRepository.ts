@@ -37,6 +37,10 @@ import {
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../explicit/safety";
+import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
@@ -279,6 +283,9 @@ function nullableClosed(value: string | null, allowed: ReadonlySet<string>): boo
 }
 
 function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
+  const safeDisplayText = row.displayText === null
+    ? null
+    : safeMemoryProjectionText(row.displayText);
   if (
     !validToken(row.itemId) || !validToken(row.dedupeKey) ||
     (row.entryId !== null && !validToken(row.entryId)) ||
@@ -309,11 +316,17 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
       .some((value) => !validDate(value)) ||
     row.current === row.historical ||
     row.itemType === "FACT_VERSION" && row.entryId !== null && (
-      !row.safeContentHash || row.structuredValue === null ||
-      row.safeContentHash !== memorySha256({
-        displayText: row.displayText,
-        structuredValue: row.structuredValue
-      })
+      !row.safeContentHash || row.structuredValue === null || safeDisplayText === null ||
+      ![
+        memorySha256({
+          displayText: row.displayText,
+          structuredValue: row.structuredValue
+        }),
+        memorySha256({
+          displayText: safeDisplayText,
+          structuredValue: row.structuredValue
+        })
+      ].includes(row.safeContentHash)
     )
   ) throw new Error("memory_retrieval_result_invalid");
   return {
@@ -384,7 +397,14 @@ function decodeCandidate(row: CandidateRow, lane: MemoryRetrievalLane): MemoryLa
   };
 }
 
-function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate {
+function safeMemoryProjectionText(value: string): string | null {
+  const redaction = redactMemorySecrets(value);
+  if (redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+  return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
+}
+
+function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   if (
     !validToken(row.itemId) ||
     !["FACT_VERSION", "RECALL_CHUNK"].includes(row.itemType) ||
@@ -396,9 +416,12 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate {
     (row.supportingItemId !== null && !validToken(row.supportingItemId)) ||
     !validDate(row.occurredFrom) || !validDate(row.occurredTo)
   ) throw new Error("memory_expansion_result_invalid");
+  const safeText = safeMemoryProjectionText(row.safeText);
+  if (!safeText) return null;
   return {
     ...row,
-    itemType: row.itemType as "FACT_VERSION" | "RECALL_CHUNK"
+    itemType: row.itemType as "FACT_VERSION" | "RECALL_CHUNK",
+    safeText
   };
 }
 
@@ -992,7 +1015,9 @@ async function loadCore(
 ): Promise<readonly MemoryCoreCandidate[]> {
   if (!snapshot.useMemoryFacts || snapshot.status !== "READY") return [];
   const rows = await client.$queryRaw<CoreRow[]>(coreSql(snapshot));
-  return rows.map((row): MemoryCoreCandidate => {
+  return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
+    const safeText = safeMemoryProjectionText(row.safeText);
+    if (!safeText) return [];
     const metadata = decodeMetadata(row);
     const candidate: MemoryRankedCandidate = {
       entryId: null,
@@ -1011,7 +1036,7 @@ async function loadCore(
       rrfScore: 0,
       selectionReason: coreReason(row)
     };
-    return {
+    return [{
       candidate,
       expansion: {
         itemId: row.itemId,
@@ -1019,11 +1044,11 @@ async function loadCore(
         occurredFrom: null,
         occurredTo: null,
         projectionKind: "FACT_DISPLAY_TEXT",
-        safeText: row.safeText,
+        safeText,
         sourceChatId: null,
         supportingItemId: null
       }
-    };
+    }];
   });
 }
 
@@ -2406,7 +2431,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
           ? digestExpansionSql(snapshot, plan, chunkIds)
           : chunkExpansionSql(snapshot, plan, chunkIds)));
-      const decoded = (await Promise.all(queries)).flat().map(decodeExpanded);
+      const decoded = (await Promise.all(queries)).flat().flatMap((row) => {
+        const expanded = decodeExpanded(row);
+        return expanded ? [expanded] : [];
+      });
       const keys = decoded.map((row) => `${row.itemType}:${row.itemId}`);
       if (new Set(keys).size !== keys.length) throw new Error("memory_expansion_result_invalid");
       const byKey = new Map(decoded.map((row) => [`${row.itemType}:${row.itemId}`, row]));

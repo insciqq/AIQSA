@@ -440,7 +440,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("reindexes a legacy READY checkpoint once and marks a classified zero-chunk result current", async () => {
+  it("reindexes a legacy READY checkpoint locally despite a legacy classifier result", async () => {
     const userId = await createOwner("memory-history-checkpoint-upgrade");
     try {
       const chat = await prisma.chat.create({
@@ -516,7 +516,7 @@ describe("Memory lexical history index persistence", () => {
 
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "ACTIVE", userId }
-      })).resolves.toBe(0);
+      })).resolves.toBe(1);
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
       })).resolves.toMatchObject({
@@ -1057,7 +1057,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("preserves stable prefix chunks and classifies only the overlap tail on append", async () => {
+  it("preserves stable prefix chunks and projects the overlap tail without a classifier", async () => {
     const userId = await createOwner("memory-history-incremental-append");
     try {
       const chat = await prisma.chat.create({
@@ -1093,7 +1093,7 @@ describe("Memory lexical history index persistence", () => {
       await processHistoryJob(userId, {
         classifier: { classify: initialClassify }
       });
-      expect(initialClassify.mock.calls[0]?.[0]).toHaveLength(2);
+      expect(initialClassify).not.toHaveBeenCalled();
       const initialChunks = await prisma.memoryRecallChunk.findMany({
         orderBy: { chunkOrdinal: "asc" },
         where: { chatId: chat.id, state: "ACTIVE", userId }
@@ -1129,8 +1129,7 @@ describe("Memory lexical history index persistence", () => {
         classifier: { classify: appendClassify }
       });
 
-      expect(appendClassify).toHaveBeenCalledTimes(1);
-      expect(appendClassify.mock.calls[0]?.[0]).toHaveLength(1);
+      expect(appendClassify).not.toHaveBeenCalled();
       const currentChunks = await prisma.memoryRecallChunk.findMany({
         orderBy: { chunkOrdinal: "asc" },
         where: { chatId: chat.id, state: "ACTIVE", userId }
@@ -1613,7 +1612,7 @@ describe("Memory lexical history index persistence", () => {
       });
       expect(digest).toMatchObject({
         activeLeafMessageId: first.assistantMessage.id,
-        pipelineVersion: "memory-chat-digest-v4",
+        pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
         redactionState: "NOT_NEEDED",
         safetyClass: "NORMAL",
         safeDigestText: expect.stringContaining("Summary:"),

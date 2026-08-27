@@ -75,7 +75,7 @@ describe("Memory job enqueue boundary", () => {
     await expect(enqueueMemoryJob(tx, settings, {
       idempotencyFingerprint: "extract-v5-fingerprint",
       kind: "EXTRACT_FACTS",
-      pipelineVersion: "memory-fact-extraction-vnext-v5",
+      pipelineVersion: "memory-fact-extraction-vnext-v6",
       source: {
         activeLeafMessageId: "assistant-1",
         branchGeneration: 0,

@@ -21,6 +21,7 @@ import {
   type MemoryLearningProviderResult
 } from "../learning/providerRuntime";
 import { memorySha256 } from "../persistence/lexical";
+import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import type { MemoryActionTarget } from "./targetSearch";
 
 export const MEMORY_TARGET_SELECTION_NAME = "MemoryTargetSelection";
@@ -318,17 +319,26 @@ export function createMemoryTargetSelector(input: Readonly<{
       if (!validSelectorInput(request)) {
         return { reason: "memory_target_selector_input_invalid", status: "UNAVAILABLE" };
       }
-      const candidates = request.candidates.map(({ handle, target }) => ({
-        handle,
-        statement: target.statement
-      }));
+      const safeCurrentUserText = sanitizeMemoryUtilityText(request.currentUserText);
+      const safeTargetQuery = sanitizeMemoryUtilityText(request.targetQuery);
+      const candidates = request.candidates.flatMap(({ handle, target }) => {
+        const safe = sanitizeMemoryUtilityText(target.statement);
+        return safe.eligible && safe.safeText
+          ? [{ handle, statement: safe.safeText }]
+          : [];
+      });
+      if (!safeCurrentUserText.eligible || !safeCurrentUserText.safeText ||
+        !safeTargetQuery.eligible || !safeTargetQuery.safeText ||
+        candidates.length !== request.candidates.length) {
+        return { reason: "memory_target_selector_input_invalid", status: "UNAVAILABLE" };
+      }
       const candidateMapHash = memoryTargetCandidateMapHash(request.candidates);
       const handles = new Set(candidates.map(({ handle }) => handle));
       const inputHash = memoryExecutionSha256({
         candidateMapHash,
         controlBindingId: request.controlBindingId,
-        currentUserTextHash: memorySha256(request.currentUserText),
-        targetQueryHash: memorySha256(request.targetQuery),
+        currentUserTextHash: memorySha256(safeCurrentUserText.safeText),
+        targetQueryHash: memorySha256(safeTargetQuery.safeText),
         version: 2
       });
       let bindingId: string | undefined;
@@ -351,8 +361,8 @@ export function createMemoryTargetSelector(input: Readonly<{
         }
         const result = await input.provider.run(providerEvidence(started.snapshot), {
           candidates,
-          currentUserText: request.currentUserText,
-          targetQuery: request.targetQuery
+          currentUserText: safeCurrentUserText.safeText,
+          targetQuery: safeTargetQuery.safeText
         }, request.signal);
         const selection = providerSelection(result, handles);
         if (!selection) {

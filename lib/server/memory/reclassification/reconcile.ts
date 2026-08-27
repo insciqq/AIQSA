@@ -2,8 +2,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { memorySha256 } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { MEMORY_RECLASSIFICATION_PIPELINE_VERSION } from "./classifier";
+import { memoryReclassificationCandidateAuthorityPredicate } from "./repository";
 
 type PendingOwner = Readonly<{
   userId: string;
@@ -16,7 +16,8 @@ type PendingOwner = Readonly<{
 export const MEMORY_RECLASSIFICATION_TERMINAL_REVIVAL_BACKOFF_MS =
   5 * 60 * 1_000;
 
-/** Discover one idempotent global job per pending owner.  The count/oldest
+/** Discover one idempotent global job per owner with an eligible Safety Lite
+ * projection. The count/oldest
  * token changes after each committed batch, so a successfully completed job
  * cannot hide the next batch. */
 export async function reconcileMemoryFactReclassificationJobs(
@@ -63,18 +64,11 @@ export async function reconcileMemoryFactReclassificationJobs(
           )
         )
       )
-      AND version."safetyClassificationState" =
-        'PENDING'::"MemorySafetyClassificationState"
       AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND version."displayText" IS NOT NULL
       AND ${memoryCanonicalGlobalScopePredicate()}
-      AND ${memoryReusableFactAuthorityPredicate(
-        Prisma.sql`version."userId"`,
-        {
-          classification: "PENDING",
-          includePatterns: true,
-          lifecycle: "RECLASSIFICATION"
-        }
+      AND ${memoryReclassificationCandidateAuthorityPredicate(
+        Prisma.sql`version."userId"`
       )}
     GROUP BY version."userId", settings."memoryGeneration", settings."memoryRevision"
   `);

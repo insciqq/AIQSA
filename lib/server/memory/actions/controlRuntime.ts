@@ -27,22 +27,23 @@ import {
   type MemoryLearningProviderResult
 } from "../learning/providerRuntime";
 import { memorySha256 } from "../persistence/lexical";
+import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import {
   buildMemoryActionIntentRequest,
   preserveUniqueQuotedUpdateReplacement,
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v13";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v14";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v13",
-  promptVersion: "memory-control-prompt-v18",
+  policyVersion: "memory-control-policy-v14",
+  promptVersion: "memory-control-prompt-v19",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 11
+    version: 12
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
@@ -178,6 +179,41 @@ function decodeProviderResult(result: MemoryLearningProviderResult): MemoryActio
   return decoded.ok ? decoded.value : null;
 }
 
+function safeNullableControlText(value: string | null): string | null {
+  if (value === null) return null;
+  const projected = sanitizeMemoryUtilityText(value);
+  return projected.eligible && projected.safeText ? projected.safeText : null;
+}
+
+/** Treat provider output as another untrusted egress source. A model can echo
+ * or invent credential-shaped text even when every input field was already
+ * projected, so bind and persist only the locally re-decoded safe intent. */
+function sanitizeProviderIntent(intent: MemoryActionIntent): MemoryActionIntent | null {
+  const projected: MemoryActionIntent = {
+    ...intent,
+    entityMentions: intent.entityMentions.flatMap((mention) => {
+      const text = sanitizeMemoryUtilityText(mention.text);
+      const resolvedRef = safeNullableControlText(mention.resolvedRef);
+      return text.eligible && text.safeText && !text.redacted &&
+        (mention.resolvedRef === null || resolvedRef === mention.resolvedRef)
+        ? [{ ...mention, resolvedRef, text: text.safeText }]
+        : [];
+    }),
+    queryText: safeNullableControlText(intent.queryText),
+    referencedMemoryRef: intent.referencedMemoryRef === null
+      ? null
+      : sanitizeMemoryUtilityText(intent.referencedMemoryRef).redacted
+        ? null
+        : safeNullableControlText(intent.referencedMemoryRef),
+    replacementStatement: safeNullableControlText(intent.replacementStatement),
+    sensitiveDomainHint: safeNullableControlText(intent.sensitiveDomainHint),
+    statement: safeNullableControlText(intent.statement),
+    targetQuery: safeNullableControlText(intent.targetQuery)
+  };
+  const decoded = decodeMemoryActionIntent(projected);
+  return decoded.ok ? decoded.value : null;
+}
+
 export function memoryControlIntentHash(intent: MemoryActionIntent): string {
   return memoryExecutionSha256({ intent, version: 5 });
 }
@@ -278,7 +314,26 @@ export function createMemoryControlService(input: Readonly<{
 }>): MemoryControlService {
   return Object.freeze({
     async decide(requestInput) {
-      const inputHash = memoryControlInputHash(requestInput.context);
+      const current = sanitizeMemoryUtilityText(requestInput.context.currentUserMessage);
+      const recentMessages = (requestInput.context.recentMessages ?? []).flatMap((message) => {
+        const safe = sanitizeMemoryUtilityText(message.text);
+        return safe.eligible && safe.safeText ? [{ ...message, text: safe.safeText }] : [];
+      });
+      const memoryRefs = (requestInput.context.memoryRefs ?? []).flatMap((ref) => {
+        const safe = sanitizeMemoryUtilityText(ref);
+        return safe.eligible && safe.safeText ? [safe.safeText] : [];
+      });
+      if (!current.eligible || !current.safeText ||
+        memoryRefs.length !== (requestInput.context.memoryRefs ?? []).length) {
+        return { reason: "memory_action_intent_input_blocked", status: "UNAVAILABLE" };
+      }
+      const safeContext = {
+        ...requestInput.context,
+        currentUserMessage: current.safeText,
+        memoryRefs,
+        recentMessages
+      };
+      const inputHash = memoryControlInputHash(safeContext);
       let bindingId: string | undefined;
       try {
         const binding = await input.execution.admission.bind(requestInput.userId, {
@@ -296,7 +351,7 @@ export function createMemoryControlService(input: Readonly<{
         }
         const result = await input.provider.run(
           providerEvidence(started.snapshot),
-          buildMemoryActionIntentRequest(requestInput.context),
+          buildMemoryActionIntentRequest(safeContext),
           requestInput.signal
         );
         const decodedIntent = decodeProviderResult(result);
@@ -310,10 +365,24 @@ export function createMemoryControlService(input: Readonly<{
           });
           return { bindingId: binding.id, reason: "memory_action_intent_invalid", status: "UNAVAILABLE" };
         }
-        const intent = preserveUniqueQuotedUpdateReplacement(
+        const intent = sanitizeProviderIntent(preserveUniqueQuotedUpdateReplacement(
           decodedIntent,
-          requestInput.context.currentUserMessage
-        );
+          safeContext.currentUserMessage
+        ));
+        if (!intent) {
+          await input.execution.lifecycle.settle(requestInput.userId, binding.id, {
+            acceptedOutputHash: null,
+            errorCode: "memory_action_intent_invalid",
+            providerResponseId: result.providerResponseId,
+            state: "FAILED",
+            usage: reportedUsage(result.usage)
+          });
+          return {
+            bindingId: binding.id,
+            reason: "memory_action_intent_invalid",
+            status: "UNAVAILABLE"
+          };
+        }
         const outputHash = memoryControlAcceptedOutputHash(
           inputHash,
           memoryControlIntentHash(intent)

@@ -145,6 +145,32 @@ describe("preparing Memory item finalization", () => {
     expect(factSql).toContain('negative_feedback."memoryFactVersionId" =');
   });
 
+  it("redacts legacy identity metadata in the frozen diagnostic snapshot", async () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+      .mockResolvedValueOnce([{
+        ...automaticFactRow,
+        factCanonicalKey: `legacy.${token}`,
+        factCategory: `legacy ${token}`
+      }])
+      .mockResolvedValueOnce([automaticEvidenceRow()])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const resolved = await resolvePreparingMemoryItem(
+      { $queryRaw } as unknown as Prisma.TransactionClient,
+      authority,
+      "What do you know about me?",
+      item
+    );
+
+    expect(resolved.versionSnapshot).toMatchObject({
+      factCanonicalKey: "legacy.[REDACTED:TOKEN]",
+      factCategory: "legacy [REDACTED:TOKEN]"
+    });
+    expect(JSON.stringify(resolved.versionSnapshot)).not.toContain(token);
+  });
+
   it("revalidates a direct exact fact without a search generation", async () => {
     const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
       .mockResolvedValueOnce([automaticFactRow])
@@ -326,8 +352,8 @@ describe("preparing Memory item finalization", () => {
       contentHash: "anchor-content-hash",
       digestContentHash: "digest-content-hash",
       digestId: "digest-1",
-      digestPipelineVersion: "memory-chat-digest-v4",
-      digestSafetyPolicyVersion: "memory-chat-digest-policy-v3",
+      digestPipelineVersion: "memory-chat-digest-v5",
+      digestSafetyPolicyVersion: "memory-chat-digest-policy-v4",
       digestText,
       languageCode: "en",
       redactionState: "NOT_NEEDED",
@@ -376,7 +402,7 @@ describe("preparing Memory item finalization", () => {
         projectionKind: "CHAT_DIGEST_SAFE_TEXT",
         sourceSnapshot: { digestId: "digest-1", schemaVersion: 3 },
         versionSnapshot: {
-          digestPipelineVersion: "memory-chat-digest-v4",
+          digestPipelineVersion: "memory-chat-digest-v5",
           schemaVersion: 3
         }
       });

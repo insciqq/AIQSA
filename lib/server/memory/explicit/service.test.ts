@@ -15,7 +15,6 @@ import {
   type ExplicitMemoryScopeRepository
 } from "./service";
 import {
-  MemoryStatementClassificationError,
   type MemoryStatementClassifier
 } from "./statementClassifier";
 
@@ -269,7 +268,7 @@ describe("explicit Memory service", () => {
     }));
   });
 
-  it("classifies manual statements before persistence and rejects unsafe uncertainty", async () => {
+  it("uses local Safety Lite without semantic classification", async () => {
     const authorizations = authorizationRepository();
     const facts = factRepository();
     const classifier: MemoryStatementClassifier = {
@@ -297,17 +296,12 @@ describe("explicit Memory service", () => {
       scope: { type: "GLOBAL_USER" },
       statement: STATEMENT
     });
-    expect(classifier.classify).toHaveBeenCalledWith(STATEMENT, {
-      execution: {
-        mutationAuthorizationId: "authorization-1",
-        userId: "user-1"
-      }
-    });
+    expect(classifier.classify).not.toHaveBeenCalled();
     expect(facts.save).toHaveBeenCalledWith("user-1", expect.objectContaining({
       evidence: expect.objectContaining({ safetyClass: "NORMAL" }),
       value: expect.objectContaining({
-        category: "about_you",
-        displayText: "Я предпочитаю ответы о ёлках на русском языке.",
+        category: "other",
+        displayText: STATEMENT,
         sensitivityClass: "NORMAL"
       })
     }));
@@ -324,9 +318,9 @@ describe("explicit Memory service", () => {
       mutationAuthorizationId: "authorization-2",
       scope: { type: "GLOBAL_USER" },
       statement: "Remember this ambiguous private material."
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_secret_rejected"));
+    })).resolves.toMatchObject({ memory: { id: "fact-1" } });
     expect(authorizations.resolveForUse).toHaveBeenCalledTimes(2);
-    expect(facts.save).toHaveBeenCalledTimes(1);
+    expect(facts.save).toHaveBeenCalledTimes(2);
 
     vi.mocked(classifier.classify).mockResolvedValueOnce({
       category: "sensitive",
@@ -340,19 +334,18 @@ describe("explicit Memory service", () => {
       mutationAuthorizationId: "authorization-3",
       scope: { type: "GLOBAL_USER" },
       statement: "A third party faces a private allegation."
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_statement_invalid"));
+    })).resolves.toMatchObject({ memory: { id: "fact-1" } });
     expect(authorizations.resolveForUse).toHaveBeenCalledTimes(3);
-    expect(facts.save).toHaveBeenCalledTimes(1);
+    expect(classifier.classify).not.toHaveBeenCalled();
+    expect(facts.save).toHaveBeenCalledTimes(3);
   });
 
-  it("preserves a stable unavailable outcome when manual classification cannot run", async () => {
+  it("does not depend on a legacy statement-classifier outage", async () => {
     const authorizations = authorizationRepository();
     const facts = factRepository();
     const classifier: MemoryStatementClassifier = {
       classify: vi.fn(async () => {
-        throw new MemoryStatementClassificationError(
-          "memory_statement_classification_unavailable"
-        );
+        throw new Error("classifier unavailable");
       })
     };
     const service = createExplicitMemoryService({
@@ -368,12 +361,53 @@ describe("explicit Memory service", () => {
       mutationAuthorizationId: "authorization-unavailable",
       scope: { type: "GLOBAL_USER" },
       statement: STATEMENT
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_unavailable"));
+    })).resolves.toMatchObject({ memory: { id: "fact-1" } });
     expect(authorizations.resolveForUse).toHaveBeenCalledOnce();
-    expect(facts.save).not.toHaveBeenCalled();
+    expect(classifier.classify).not.toHaveBeenCalled();
+    expect(facts.save).toHaveBeenCalledOnce();
   });
 
-  it("replays a consumed manual mutation without a second provider call", async () => {
+  it("retains the meaningful remainder of a mixed secret statement", async () => {
+    const authorizations = authorizationRepository();
+    const facts = factRepository();
+    const classifier: MemoryStatementClassifier = { classify: vi.fn() };
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizations,
+      clock: () => NOW,
+      factRepository: facts,
+      readRepository: readRepository(),
+      scopeRepository: scopeRepository(),
+      statementClassifier: classifier
+    });
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const statement = `I live in Helsinki. API key: ${token}`;
+
+    await expect(service.create("user-1", {
+      category: "about_you",
+      mutationAuthorizationId: "authorization-mixed",
+      scope: { type: "GLOBAL_USER" },
+      statement
+    })).resolves.toMatchObject({ memory: { id: "fact-1" } });
+
+    expect(authorizations.resolveForUse).toHaveBeenCalledWith("user-1", {
+      action: "SAVE",
+      authorizationId: "authorization-mixed",
+      authorizedPayloadHash: memorySha256(statement)
+    });
+    expect(facts.save).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      evidence: expect.objectContaining({
+        safeExcerpt: "I live in Helsinki. API key: [REDACTED:TOKEN]"
+      }),
+      value: expect.objectContaining({
+        displayText: "I live in Helsinki. API key: [REDACTED:TOKEN]",
+        redactionApplied: true
+      })
+    }));
+    expect(JSON.stringify(vi.mocked(facts.save).mock.calls)).not.toContain(token);
+    expect(classifier.classify).not.toHaveBeenCalled();
+  });
+
+  it("replays a consumed manual mutation without provider calls", async () => {
     const authorizations = authorizationRepository();
     const facts = factRepository();
     const classifier: MemoryStatementClassifier = {
@@ -418,7 +452,7 @@ describe("explicit Memory service", () => {
     await expect(service.create("user-1", createInput)).resolves.toMatchObject({
       memory: { id: "fact-1" }
     });
-    expect(classifier.classify).toHaveBeenCalledOnce();
+    expect(classifier.classify).not.toHaveBeenCalled();
     expect(facts.save).toHaveBeenCalledTimes(2);
   });
 
@@ -602,18 +636,17 @@ describe("explicit Memory service", () => {
     }));
   });
 
-  it("preserves a hash-bound exact correction while retaining classifier safety", async () => {
+  it("preserves a hash-bound exact correction under local Safety Lite", async () => {
     const authorizations = authorizationRepository();
     const facts = factRepository();
     const exactStatement = "  Use the frozen replacement exactly.  ";
-    const normalizedStatement = "Use the frozen replacement exactly.";
     const classifier: MemoryStatementClassifier = {
       classify: vi.fn(async () => ({
         acceptedOutputHash: "a".repeat(64),
         category: "preferences" as const,
         executionId: "classification-execution-1",
         inputHash: "b".repeat(64),
-        normalizedStatement,
+        normalizedStatement: "Use the frozen replacement exactly.",
         reasonCode: "response_preference" as const,
         responsePreference: true,
         sensitivity: "NORMAL" as const,
@@ -655,15 +688,12 @@ describe("explicit Memory service", () => {
     expect(facts.edit).toHaveBeenCalledWith("user-1", expect.objectContaining({
       evidence: expect.objectContaining({ safeExcerpt: exactStatement }),
       value: expect.objectContaining({
-        displayText: exactStatement,
-        safetyClassification: expect.objectContaining({
-          decision: expect.objectContaining({ normalizedStatement }),
-          displayProjection: "EXACT_INPUT",
-          inputStatement: exactStatement,
-          kind: "STATEMENT"
-        })
+        displayText: exactStatement
       })
     }));
+    expect(vi.mocked(facts.edit).mock.calls[0]?.[1].value)
+      .not.toHaveProperty("safetyClassification");
+    expect(classifier.classify).not.toHaveBeenCalled();
 
     await expect(service.update("user-1", "fact-1", {
       expectedVersionId: "version-1",
@@ -676,7 +706,7 @@ describe("explicit Memory service", () => {
     expect(authorizations.resolveForUse).toHaveBeenCalledOnce();
   });
 
-  it("resolves an exact conflict snapshot once and conservatively labels corrections", async () => {
+  it("resolves an exact conflict snapshot once under local Safety Lite", async () => {
     const facts = factRepository();
     const reads = readRepository();
     const classifier: MemoryStatementClassifier = {
@@ -730,20 +760,12 @@ describe("explicit Memory service", () => {
       mutationAuthorizationId: "authorization-resolve",
       resolution: { kind: "CORRECT", statement: "Use a balanced level of detail." }
     })).resolves.toMatchObject({ memory: { currentVersionId: "version-resolved" } });
-    expect(classifier.classify).toHaveBeenCalledWith(
-      "Use a balanced level of detail.",
-      {
-        execution: {
-          mutationAuthorizationId: "authorization-resolve",
-          userId: "user-1"
-        }
-      }
-    );
+    expect(classifier.classify).not.toHaveBeenCalled();
     expect(facts.resolve).toHaveBeenCalledWith("user-1", expect.objectContaining({
       expectedVersionIds: ["version-a", "version-b"],
       selectedVersionId: "version-a",
       value: expect.objectContaining({
-        category: "goals",
+        category: "preference",
         displayText: "Use a balanced level of detail.",
         sensitivityClass: "HIGHLY_SENSITIVE",
         sourceMode: "EXPLICIT"

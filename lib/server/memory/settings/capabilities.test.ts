@@ -9,7 +9,8 @@ import type { MemoryExecutionRole } from "../execution/roles";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
-  MEMORY_LEXICAL_NORMALIZATION_VERSION
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../persistence/lexical";
 import type { MemorySettingsPersistenceSnapshot } from "../persistence/settings";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
@@ -203,13 +204,13 @@ describe("Memory capability projection", () => {
       managementAvailable: true,
       naturalLanguageActionsAvailable: true,
       pastChatIndexingAvailable: true,
-      retrievalAvailable: false
+      retrievalAvailable: true
     });
     expect(derive({ omitted: ["MEMORY_DOCUMENT_EMBED"] })).toMatchObject({
-      automaticLearningAvailable: false,
+      automaticLearningAvailable: true,
       managementAvailable: true,
       naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: false,
+      pastChatIndexingAvailable: true,
       retrievalAvailable: true
     });
     expect(derive({ operations: { workerAvailable: false } })).toMatchObject({
@@ -228,30 +229,28 @@ describe("Memory capability projection", () => {
     });
   });
 
-  it("uses the exact classifier and vector dependencies for each background capability", () => {
+  it("keeps local and lexical fallbacks independent from optional utility roles", () => {
     expect(derive({ omitted: ["MEMORY_CONTROL"] })).toMatchObject({
       automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: false,
       pastChatIndexingAvailable: true,
-      retrievalAvailable: false
+      retrievalAvailable: true
     });
     expect(derive({ omitted: ["MEMORY_HISTORY_CLASSIFY"] })).toMatchObject({
       automaticLearningAvailable: true,
-      pastChatIndexingAvailable: false,
+      pastChatIndexingAvailable: true,
       retrievalAvailable: true
     });
     expect(derive({ omitted: ["MEMORY_QUERY_EMBED"] })).toMatchObject({
-      automaticLearningAvailable: false,
+      automaticLearningAvailable: true,
       pastChatIndexingAvailable: true,
-      retrievalAvailable: false
+      retrievalAvailable: true
     });
   });
 
   it.each([
     ["MEMORY_FACT_EXTRACT"],
-    ["MEMORY_CONSOLIDATE"],
-    ["MEMORY_DOCUMENT_EMBED"],
-    ["MEMORY_QUERY_EMBED"]
+    ["MEMORY_CONSOLIDATE"]
   ] as const)("fails automatic learning when %s alone is unavailable", (role) => {
     expect(derive({ omitted: [role] }).automaticLearningAvailable).toBe(false);
   });
@@ -304,7 +303,7 @@ describe("Memory capability projection", () => {
     expect(derive({
       omitted: ["MEMORY_RERANK"],
       settings: enabled
-    })).toMatchObject({ decayAvailable: false, retrievalAvailable: false });
+    })).toMatchObject({ decayAvailable: true, retrievalAvailable: true });
     expect(derive({
       operations: { workerAvailable: false },
       settings: enabled
@@ -339,24 +338,24 @@ describe("Memory capability projection", () => {
       retrievalAvailable: true
     });
     expect(admin("MEMORY_STATEMENT_CLASSIFY")).toMatchObject({
-      administratorSetupRequired: true,
+      administratorSetupRequired: false,
+      automaticLearningAvailable: true,
+      naturalLanguageActionsAvailable: true,
+      pastChatIndexingAvailable: true,
+      retrievalAvailable: true
+    });
+    expect(admin("MEMORY_CONTROL")).toMatchObject({
+      administratorSetupRequired: false,
       automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: false,
       pastChatIndexingAvailable: true,
       retrievalAvailable: true
     });
-    expect(admin("MEMORY_CONTROL")).toMatchObject({
-      administratorSetupRequired: true,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: false,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: false
-    });
     expect(admin("MEMORY_HISTORY_CLASSIFY")).toMatchObject({
-      administratorSetupRequired: true,
+      administratorSetupRequired: false,
       automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: false,
+      pastChatIndexingAvailable: true,
       retrievalAvailable: true
     });
     expect(admin("MEMORY_FACT_EXTRACT")).toMatchObject({
@@ -374,25 +373,25 @@ describe("Memory capability projection", () => {
       retrievalAvailable: true
     });
     expect(admin("MEMORY_RERANK")).toMatchObject({
-      administratorSetupRequired: true,
+      administratorSetupRequired: false,
       automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: true,
       pastChatIndexingAvailable: true,
-      retrievalAvailable: false
+      retrievalAvailable: true
     });
     expect(admin("MEMORY_DOCUMENT_EMBED")).toMatchObject({
-      administratorSetupRequired: true,
-      automaticLearningAvailable: false,
+      administratorSetupRequired: false,
+      automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: false,
+      pastChatIndexingAvailable: true,
       retrievalAvailable: true
     });
     expect(admin("MEMORY_QUERY_EMBED")).toMatchObject({
-      administratorSetupRequired: true,
-      automaticLearningAvailable: false,
+      administratorSetupRequired: false,
+      automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: true,
       pastChatIndexingAvailable: true,
-      retrievalAvailable: false
+      retrievalAvailable: true
     });
     expect(derive({
       adminAcceptedRoles: allRoles,
@@ -437,12 +436,12 @@ describe("Memory capability projection", () => {
       automaticLearningAvailable: false,
       managementAvailable: true,
       naturalLanguageActionsAvailable: false,
-      pastChatIndexingAvailable: false,
-      retrievalAvailable: false
+      pastChatIndexingAvailable: true,
+      retrievalAvailable: true
     });
   });
 
-  it("requires a fresh worker and exact compatible active hybrid generation", async () => {
+  it("requires a fresh worker and a compatible active retrieval generation", async () => {
     const currentPolicy = policy();
     const embedding = currentPolicy.targets.get("MEMORY_QUERY_EMBED")!;
     const findGeneration = vi.fn(async () => ({
@@ -480,6 +479,38 @@ describe("Memory capability projection", () => {
     expect(findHeartbeat).toHaveBeenCalledWith({
       select: { lastSeenAt: true },
       where: { id: "installation" }
+    });
+  });
+
+  it("admits an active lexical generation without a query-embedding target", async () => {
+    const state = await readMemoryCapabilityOperationalState({
+      memoryIndexGeneration: {
+        findFirst: vi.fn(async () => ({
+          chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+          embeddingConfigurationFingerprint: null,
+          embeddingProviderModelId: null,
+          indexMode: "LEXICAL_ONLY",
+          languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+          normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+          retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+          state: "ACTIVE",
+          vectorSpaceFingerprint: null
+        }))
+      },
+      memoryWorkerHeartbeat: {
+        findUnique: vi.fn(async () => null)
+      }
+    } as never, {
+      consentMode: "PER_USER",
+      now: NOW,
+      policy: policy(["MEMORY_QUERY_EMBED"]),
+      settings: settings({ embeddingProviderModelId: null })
+    });
+
+    expect(state).toEqual({
+      adminAcceptedDestinations: [],
+      retrievalIndexAvailable: true,
+      workerAvailable: false
     });
   });
 

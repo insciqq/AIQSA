@@ -1,4 +1,5 @@
 import { memorySha256 } from "../persistence/lexical";
+import type { MemorySecretSourceMapEntry } from "../explicit/safety";
 import { detectMemoryTextLanguage, type MemoryTextLanguage } from "./language";
 import {
   projectMemoryHistorySafeText,
@@ -7,7 +8,7 @@ import {
 } from "./safety";
 
 export const MEMORY_HISTORY_SOURCE_PROJECTION_VERSION =
-  "memory-history-source-projection-v3";
+  "memory-history-source-projection-v4";
 
 export const MEMORY_HISTORY_SOURCE_ORIGINS = [
   "DEVELOPER",
@@ -84,6 +85,7 @@ export type MemoryHistoryProjectedMessage = Readonly<{
     origin: "DIRECT_USER" | "VISIBLE_ASSISTANT";
   }>;
   redactionReasonCodes: readonly string[];
+  redactionSourceMap: readonly MemorySecretSourceMapEntry[];
   redactionState: Exclude<MemoryRedactionState, "EXCLUDED">;
   role: "assistant" | "user";
   safeText: string;
@@ -448,6 +450,7 @@ function evaluateMessages(
             origin: origin as "DIRECT_USER" | "VISIBLE_ASSISTANT"
           },
           redactionReasonCodes: safety.redactionReasonCodes,
+          redactionSourceMap: safety.redactionSourceMap,
           redactionState: safety.redactionState,
           role: input.role,
           safeText: safety.safeText,
@@ -541,8 +544,7 @@ function factEvidenceMessages(evaluated: EvaluatedMessage[]): MemoryHistoryProje
     message.input.role === "user" &&
     message.projected !== null &&
     !message.transitiveTaint &&
-    message.projected.safetyClass === "NORMAL" &&
-    message.projected.redactionState === "NOT_NEEDED");
+    message.projected.safetyClass === "NORMAL");
   const excludedWindowMessageIds = new Set<string>();
   for (let index = 1; index < candidates.length; index += 1) {
     const previous = candidates[index - 1]!;

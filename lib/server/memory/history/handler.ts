@@ -9,8 +9,6 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemoryOperationalCounters } from "../operational/counters";
 import {
   authorizeMemoryExecutionResultsForCommit,
-  MemoryExecutionError,
-  probeMemoryStructuredOutputAuthority,
   type MemoryExecutionAuthorityDependencies,
   type MemoryStructuredOutputProvider
 } from "../execution";
@@ -20,11 +18,10 @@ import {
   type LockedMemorySettings
 } from "../persistence/transaction";
 import {
-  createPrismaMemoryHistorySafetyClassifier,
-  MEMORY_HISTORY_CLASSIFICATION_VERSIONS,
   type MemoryHistoryClassificationResult,
   type MemoryHistorySafetyClassifier
 } from "./classifier";
+import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import {
   memoryHistoryIndexClaimIsValid,
   memoryHistoryIndexResultHash,
@@ -32,7 +29,7 @@ import {
 } from "./contract";
 import {
   createPrismaMemoryChatDigestGenerator,
-  MEMORY_CHAT_DIGEST_VERSIONS,
+  MemoryChatDigestError,
   MemoryChatDigestOutputError,
   type MemoryChatDigestGenerationResult,
   type MemoryChatDigestGenerator
@@ -53,9 +50,8 @@ export type MemoryHistoryIndexHandlerDependencies = Readonly<{
       bindingId: string;
     }>[]
   ) => Promise<void>;
-  classifier: MemoryHistorySafetyClassifier;
+  classifier?: MemoryHistorySafetyClassifier;
   digestGenerator?: MemoryChatDigestGenerator;
-  probeAuthority?: (userId: string) => Promise<void>;
   repository: MemoryHistoryIndexRepository;
 }>;
 
@@ -63,7 +59,8 @@ const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
   "memory-chat-digest-output-degraded-v1";
 
 function degradedMemoryChatDigest(
-  error: MemoryChatDigestOutputError
+  reason: "aggregate_limit" | "contract" | "invalid" | "safety_rejected" |
+    "unavailable"
 ): Readonly<{
   generated: MemoryChatDigestGenerationResult;
   stage: string;
@@ -74,29 +71,33 @@ function degradedMemoryChatDigest(
       digest: null,
       executions: [],
       policyVersion:
-        `${MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION}:${error.reason}`,
+        `${MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION}:${reason}`,
       work: {
         digestSegmentsProcessed: 0,
         digestSourceChunksProcessed: 0
       }
     },
-    stage: `lexical_ready:digest_${error.reason}`
+    stage: `lexical_ready:digest_${reason}`
   };
 }
 
-function authorityGate(error: unknown) {
-  if (error instanceof MemoryExecutionError) {
-    if (
-      error.code === "memory_execution_egress_consent_required" ||
-      error.code === "memory_execution_target_unavailable" ||
-      error.code === "memory_execution_capability_unavailable" ||
-      error.code === "memory_execution_policy_unavailable"
-    ) {
-      return { errorCode: error.code, status: "WAITING_FOR_EGRESS_CONSENT" as const };
-    }
-    return { errorCode: error.code, status: "CANCELLED" as const };
+function classifyMemoryHistoryLite(
+  chunks: readonly Readonly<{ id: string }>[],
+  expectedIds: readonly string[]
+): MemoryHistoryClassificationResult {
+  const expected = new Set(expectedIds);
+  const selected = chunks.filter((chunk) => expected.has(chunk.id));
+  if (selected.length !== expected.size) {
+    throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
   }
-  throw error;
+  return {
+    decisions: selected.map((chunk) => ({
+      chunkId: chunk.id,
+      sensitivity: "NORMAL" as const
+    })),
+    executions: [],
+    policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION
+  };
 }
 
 export function applyMemoryHistoryClassifications(
@@ -274,14 +275,7 @@ export function createMemoryHistoryIndexHandler(
           status: "CANCELLED" as const
         };
       }
-      const source = await dependencies.repository.preflight(job);
-      if (source.status !== "READY" || !dependencies.probeAuthority) return source;
-      try {
-        await dependencies.probeAuthority(job.userId);
-        return source;
-      } catch (error) {
-        return authorityGate(error);
-      }
+      return dependencies.repository.preflight(job);
     },
 
     async execute(claim, context) {
@@ -298,13 +292,9 @@ export function createMemoryHistoryIndexHandler(
       let plan: MemoryHistoryIndexPlan;
       let completionStage = "lexical_ready";
       try {
-        const classification = await dependencies.classifier.classify(
-          prepared.plan.chunks.filter((chunk) =>
-            prepared.plan.rebuiltChunkIds.includes(chunk.id)),
-          {
-            execution: { jobId: claim.id, userId: claim.userId },
-            signal: context.signal
-          }
+        const classification = classifyMemoryHistoryLite(
+          prepared.plan.chunks,
+          prepared.plan.rebuiltChunkIds
         );
         plan = applyMemoryHistoryClassifications(prepared.plan, classification);
         let executionResults = [...(classification.executions ?? [])];
@@ -323,21 +313,26 @@ export function createMemoryHistoryIndexHandler(
               }
             );
           } catch (error) {
-            if (!(error instanceof MemoryChatDigestOutputError)) throw error;
-            const degraded = degradedMemoryChatDigest(error);
+            if (context.signal.aborted) throw context.signal.reason;
+            const reason = error instanceof MemoryChatDigestOutputError
+              ? error.reason
+              : error instanceof MemoryChatDigestError
+                ? error.code === "memory_chat_digest_unavailable"
+                  ? "unavailable"
+                  : "invalid"
+                : null;
+            if (!reason) throw error;
+            const degraded = degradedMemoryChatDigest(reason);
             generated = degraded.generated;
             completionStage = degraded.stage;
           }
           executionResults.push(...generated.executions);
           if (generated.digest) {
             const digestSafety = generated.classificationRequired
-              ? await dependencies.classifier.classify([{
-                  id: generated.digest.id,
-                  safeProjectedText: generated.digest.safeDigestText
-                }], {
-                  execution: { jobId: claim.id, userId: claim.userId },
-                  signal: context.signal
-                })
+              ? classifyMemoryHistoryLite(
+                  [{ id: generated.digest.id }],
+                  [generated.digest.id]
+                )
               : null;
             if (digestSafety) executionResults.push(...(digestSafety.executions ?? []));
             plan = attachMemoryChatDigest(plan, generated, digestSafety);
@@ -401,7 +396,7 @@ export function createMemoryHistoryIndexHandler(
 
 export function createPrismaMemoryHistoryIndexHandler(
   client: PrismaClient = prisma,
-  classifier?: MemoryHistorySafetyClassifier,
+  _classifier?: MemoryHistorySafetyClassifier,
   options: Readonly<{
     authority?: MemoryExecutionAuthorityDependencies;
     digestGenerator?: MemoryChatDigestGenerator;
@@ -409,7 +404,7 @@ export function createPrismaMemoryHistoryIndexHandler(
   }> = {}
 ): MemoryJobHandler {
   const authority = options.authority ?? defaultMemoryExecutionAuthority;
-  const governed = classifier === undefined;
+  const governed = _classifier === undefined;
   return createMemoryHistoryIndexHandler({
     ...(governed ? {
       authorizeResults: async (
@@ -431,27 +426,7 @@ export function createPrismaMemoryHistoryIndexHandler(
           results
         );
       },
-      probeAuthority: async (userId: string) => {
-        await probeMemoryStructuredOutputAuthority({
-          authority,
-          client,
-          role: "MEMORY_HISTORY_CLASSIFY",
-          userId,
-          versions: MEMORY_HISTORY_CLASSIFICATION_VERSIONS
-        });
-        await probeMemoryStructuredOutputAuthority({
-          authority,
-          client,
-          role: "MEMORY_HISTORY_CLASSIFY",
-          userId,
-          versions: MEMORY_CHAT_DIGEST_VERSIONS
-        });
-      }
     } : {}),
-    classifier: classifier ?? createPrismaMemoryHistorySafetyClassifier(client, {
-      authority,
-      provider: options.structuredProvider
-    }),
     ...(options.digestGenerator
       ? { digestGenerator: options.digestGenerator }
       : governed

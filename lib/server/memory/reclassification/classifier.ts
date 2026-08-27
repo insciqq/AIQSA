@@ -24,7 +24,7 @@ import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider } from "../execution/structuredClassifier";
 
 export const MEMORY_RECLASSIFICATION_PIPELINE_VERSION =
-  "memory-safety-reclassification-v1";
+  "memory-safety-reclassification-v2";
 export const MEMORY_RECLASSIFICATION_POLICY_VERSION =
   "memory-safety-policy-v2";
 export const MEMORY_RECLASSIFICATION_SCHEMA_VERSION =

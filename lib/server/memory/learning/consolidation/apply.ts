@@ -20,6 +20,7 @@ import {
   type MemoryTransaction
 } from "../../persistence/transaction";
 import type { MemorySuppressionKeyring } from "../../suppressionKeyring";
+import { memorySafetyLiteFactClassification } from "../../safetyLite";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION as MEMORY_FACT_EXTRACTION_V1 } from "../extraction/contract";
 import {
   memoryFactDecisionId,
@@ -142,54 +143,8 @@ function candidateValue(candidate: MemoryFactCandidateSnapshot) {
   };
 }
 
-async function extractionSafetyData(
-  tx: MemoryTransaction,
-  userId: string,
-  candidate: MemoryFactCandidateSnapshot
-) {
-  const binding = await tx.memoryExecutionBinding.findFirst({
-    select: {
-      acceptedOutputHash: true,
-      completedAt: true,
-      policyVersion: true,
-      providerId: true,
-      providerModelId: true
-    },
-    where: {
-      id: candidate.extractionExecutionId,
-      logicalRole: "MEMORY_FACT_EXTRACT",
-      ownerType: "JOB",
-      state: "SUCCEEDED",
-      userId
-    }
-  });
-  if (
-    !binding?.acceptedOutputHash || !binding.completedAt ||
-    !binding.providerId || !binding.policyVersion
-  ) {
-    throw new Error("memory_fact_extraction_provenance_invalid");
-  }
-  const usage = await tx.usageEvent.findUnique({
-    select: { id: true, provider: true, providerModelId: true },
-    where: { memoryExecutionBindingId: candidate.extractionExecutionId }
-  });
-  const providerModelId = binding.providerModelId ?? usage?.providerModelId;
-  if (
-    !usage || usage.provider !== binding.providerId || !providerModelId ||
-    (binding.providerModelId !== null &&
-      usage.providerModelId !== binding.providerModelId)
-  ) {
-    throw new Error("memory_fact_extraction_provenance_invalid");
-  }
-  return {
-    safetyClassificationReasonCode: "automatic_extraction",
-    safetyClassificationState: "CLASSIFIED" as const,
-    safetyClassifiedAt: binding.completedAt,
-    safetyClassifierExecutionId: candidate.extractionExecutionId,
-    safetyClassifierModelId: providerModelId,
-    safetyClassifierPolicyVersion: binding.policyVersion,
-    safetyClassifierProviderId: binding.providerId
-  };
+function extractionSafetyData(now: Date) {
+  return memorySafetyLiteFactClassification(now);
 }
 
 async function requireSucceededBinding(
@@ -501,7 +456,7 @@ async function applyAdd(
     userId: settings.userId,
     versionId
   });
-  const safety = await extractionSafetyData(tx, settings.userId, candidate);
+  const safety = extractionSafetyData(systemFrom);
   await tx.memoryFactVersion.create({
     data: {
       ...candidateValue(candidate),
@@ -726,7 +681,7 @@ async function applyVersionTransition(
   if (transitioned.count !== 1) {
     throw new Error("memory_fact_transition_stale");
   }
-  const safety = await extractionSafetyData(tx, settings.userId, factCandidate);
+  const safety = extractionSafetyData(at);
   await tx.memoryFactVersion.create({
     data: {
       ...candidateValue(factCandidate),

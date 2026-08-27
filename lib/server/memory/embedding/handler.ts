@@ -34,6 +34,7 @@ import {
   memoryItemEmbeddingInputHash,
   memoryItemEmbeddingOutputHash,
   memoryItemEmbeddingPinFromSnapshot,
+  memorySafeEmbeddingText,
   parseMemoryEmbeddingJobFingerprint,
   type MemoryItemEmbeddingPin,
   type MemoryItemEmbeddingTarget
@@ -357,7 +358,7 @@ export function createMemoryItemEmbeddingHandler(
         result = await runtime.adapter.embed({
           mode: "document",
           signal: context.signal,
-          texts: [target.normalizedSearchText]
+          texts: [memorySafeEmbeddingText(target.normalizedSearchText)]
         });
       } catch (error) {
         if (context.signal.aborted) throw error;

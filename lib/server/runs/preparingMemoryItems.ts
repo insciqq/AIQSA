@@ -22,6 +22,10 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../memory/history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../memory/history/sourceProjection";
+import {
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../memory/explicit/safety";
 import { memoryHistoryChunkSourceAuthorityPredicate } from
   "../memory/persistence/pauseIntervals";
 import {
@@ -249,6 +253,13 @@ type FactRetrievalContract = Readonly<{
   mode: "CURRENT_PROFILE" | "HISTORICAL_MEMORY" | "HISTORY_OVERVIEW" |
     "PAST_CHAT_SEARCH" | "TARGETED_CURRENT";
 }>;
+
+function safeFactProjectionText(value: string): string | null {
+  const redaction = redactMemorySecrets(value);
+  if (redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+  return redaction.redactedText;
+}
 
 function factRetrievalContract(
   feature: Record<string, unknown> | null,
@@ -498,12 +509,18 @@ async function resolveFact(
       )
     FOR SHARE OF ${lockTargets}
   `);
+  const safeDisplayText = row ? safeFactProjectionText(row.displayText) : null;
+  const expectedSearchHashes = row && safeDisplayText
+    ? [row.displayText, safeDisplayText].map((displayText) => memorySha256({
+        displayText,
+        structuredValue: row.structuredValue
+      }))
+    : [];
   if (
-    !row || !exactTextContainsProjection(input.exactSafeText, row.displayText) ||
-    !core && !direct && row.searchSafeContentHash !== memorySha256({
-      displayText: row.displayText,
-      structuredValue: row.structuredValue
-    })
+    !row || !safeDisplayText ||
+    !exactTextContainsProjection(input.exactSafeText, safeDisplayText) ||
+    !core && !direct && !row.searchSafeContentHash ||
+    !core && !direct && !expectedSearchHashes.includes(row.searchSafeContentHash!)
   ) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
@@ -583,7 +600,7 @@ async function resolveFact(
               }]
             : [])
       : [],
-    projectedTextHash: memoryPreparingTextHash(compactProjection(row.displayText)),
+    projectedTextHash: memoryPreparingTextHash(compactProjection(safeDisplayText)),
     projectionKind: projection.kind,
     schemaVersion: 3,
     synthesisRelations,
@@ -604,8 +621,8 @@ async function resolveFact(
     coreEligible: row.coreEligible,
     coreSalience: row.coreSalience,
     dependencySnapshot,
-    factCanonicalKey: row.factCanonicalKey,
-    factCategory: row.factCategory,
+    factCanonicalKey: redactMemorySecrets(row.factCanonicalKey).redactedText,
+    factCategory: redactMemorySecrets(row.factCategory).redactedText,
     factId: row.factId,
     factState: row.factState,
     factVersionId: input.factVersionId,

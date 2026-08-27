@@ -1,14 +1,22 @@
 import { parseMemorySecret } from "./secretParser";
 
 export type {
+  MemorySecretConfidence,
+  MemorySecretDetectorClass,
   MemorySecretFinding,
   MemorySecretParseResult,
+  MemorySecretPolicyAction,
   MemorySecretRedactionResult,
+  MemorySecretSourceMapEntry,
   MemorySecretSpan
 } from "./secretParser";
 export {
   MEMORY_SECRET_FINDINGS,
   MEMORY_SECRET_REDACTION_PLACEHOLDER,
+  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionHasMeaningfulText,
+  memorySecretSafeObjectKey,
+  memoryValueContainsRecognizedSecret,
   parseMemorySecret,
   redactMemorySecrets
 } from "./secretParser";

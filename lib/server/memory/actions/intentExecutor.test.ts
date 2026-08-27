@@ -214,7 +214,7 @@ describe("Memory intent action executor", () => {
     expect(deps.explicitService.create).not.toHaveBeenCalled();
   });
 
-  it("rejects secret-shaped intent without copying its statement into the artifact", async () => {
+  it("does not treat a legacy semantic SECRET label as DLP evidence", async () => {
     const deps = dependencies();
     const result = await createMemoryIntentActionExecutor({
       ...deps,
@@ -225,6 +225,48 @@ describe("Memory intent action executor", () => {
       sensitivity: "SECRET",
       statement: "private-secret-sentinel"
     })));
+    expect(result).toMatchObject({
+      operation: "SAVE",
+      status: "COMMITTED"
+    });
+    expect(deps.authorizationRepository.mintForControl).toHaveBeenCalledOnce();
+    expect(deps.explicitService.create).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ statement: "private-secret-sentinel" }),
+      expect.anything()
+    );
+  });
+
+  it("rejects a recognized secret-only intent without copying plaintext", async () => {
+    const deps = dependencies();
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const result = await createMemoryIntentActionExecutor({
+      ...deps,
+      clientRefs
+    } as never).execute(execution(intent({
+      action: "SAVE",
+      reasonCode: "save_request",
+      statement: `My API token is ${token}`
+    })));
+    expect(result).toEqual({ operation: "SAVE", status: "REJECTED" });
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
+    expect(deps.explicitService.create).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if unprojected mixed secret text reaches the executor", async () => {
+    const deps = dependencies();
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const result = await createMemoryIntentActionExecutor({
+      ...deps,
+      clientRefs
+    } as never).execute(execution(intent({
+      action: "SAVE",
+      category: "about_you",
+      reasonCode: "save_request",
+      statement: `I live in Helsinki. API token: ${token}`
+    })));
+
     expect(result).toEqual({ operation: "SAVE", status: "REJECTED" });
     expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
     expect(deps.explicitService.create).not.toHaveBeenCalled();

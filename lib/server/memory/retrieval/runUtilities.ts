@@ -32,7 +32,6 @@ import {
 import { memoryExecutionSha256 } from "../execution/canonical";
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import type { MemoryExecutionOwner } from "../execution/owner";
-import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import { memorySha256 } from "../persistence/lexical";
 import {
   MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
@@ -59,6 +58,7 @@ import {
   type MemoryRunUtilityProvider,
   type MemoryRunUtilityProviderInput
 } from "./runUtilityRuntime";
+import { sanitizeMemoryUtilityText } from "./querySafety";
 import {
   MEMORY_AGGREGATION_MAX_MEMBER_QUANTITY,
   MEMORY_AGGREGATION_OPERATIONS,
@@ -386,6 +386,10 @@ type RerankInput = Parameters<MemoryRunUtilityService["rerank"]>[0];
 type RerankCandidate = RerankInput["candidates"][number];
 
 export function memoryDedicatedRerankDocument(candidate: RerankCandidate): string {
+  const safe = sanitizeMemoryUtilityText(candidate.text);
+  if (!safe.eligible || !safe.safeText) {
+    throw new Error("memory_reranker_document_secret_only");
+  }
   const occurredFrom = candidate.occurredFrom ?? "unknown";
   const occurredTo = candidate.occurredTo ?? "open";
   return [
@@ -393,7 +397,7 @@ export function memoryDedicatedRerankDocument(candidate: RerankCandidate): strin
     `[source=${candidate.sourceKind.toLocaleLowerCase("und")} ` +
       `speaker=${candidate.speakerScope} state=${candidate.current ? "current" : "historical"} ` +
       `lifecycle=${candidate.lifecycleState?.toLocaleLowerCase("und") ?? "not_applicable"}]`,
-    candidate.text
+    safe.safeText
   ].join("\n");
 }
 
@@ -1035,8 +1039,7 @@ async function runDedicatedRerankBatch(
 }
 
 function validSafeQuery(query: string): boolean {
-  return query.length > 0 && query.length <= 2_000 && !query.includes("\u0000") &&
-    !memoryExplicitStatementContainsSecret(query);
+  return query.length > 0 && query.length <= 2_000 && !query.includes("\u0000");
 }
 
 function queryEmbeddingOrdinal(
@@ -1058,19 +1061,31 @@ export function createMemoryRunUtilityService(
 ): MemoryRunUtilityService {
   return Object.freeze({
     async aggregate(input) {
-      const handles = input.evidence.map((item) => item.handle);
-      const request = aggregationProviderInput(input);
+      const safeQuery = sanitizeMemoryUtilityText(input.query);
+      const safeEvidence = input.evidence.map((item) => {
+        const safe = sanitizeMemoryUtilityText(item.text);
+        return safe.eligible && safe.safeText ? { ...item, text: safe.safeText } : null;
+      });
+      if (!safeQuery.eligible || !safeQuery.safeText || safeEvidence.some((item) => !item)) {
+        return unavailable("memory_utility_input_blocked");
+      }
+      const safeInput = {
+        ...input,
+        evidence: safeEvidence as typeof input.evidence,
+        query: safeQuery.safeText
+      };
+      const handles = safeInput.evidence.map((item) => item.handle);
+      const request = aggregationProviderInput(safeInput);
       if (
-        !validSafeQuery(input.query) ||
-        input.evidence.length < 1 ||
-        input.evidence.length > MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS ||
+        !validSafeQuery(safeInput.query) ||
+        safeInput.evidence.length < 1 ||
+        safeInput.evidence.length > MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS ||
         new Set(handles).size !== handles.length ||
-        input.evidence.some((item, index) =>
+        safeInput.evidence.some((item, index) =>
           item.handle !== `i${index}` ||
           item.text.length < 1 ||
           item.text.length > 4_000 ||
           item.text.includes("\u0000") ||
-          memoryExplicitStatementContainsSecret(item.text) ||
           !["EVENT", "FACT", "HISTORY"].includes(item.sourceKind) ||
           [item.occurredFrom, item.occurredTo].some((value) =>
             value !== null && (
@@ -1084,43 +1099,43 @@ export function createMemoryRunUtilityService(
 
       const inputHash = memoryExecutionSha256({
         domain: "aiqsa.memory.evidence-aggregation-input",
-        evidence: input.evidence.map((item) => ({
+        evidence: safeInput.evidence.map((item) => ({
           handle: item.handle,
           occurredFrom: item.occurredFrom,
           occurredTo: item.occurredTo,
           sourceKind: item.sourceKind,
           textHash: memorySha256(item.text)
         })),
-        queryHash: memorySha256(input.query),
+        queryHash: memorySha256(safeInput.query),
         version: 2
       });
       let result = await runTextUtility(
         deps,
-        input,
+        safeInput,
         request,
         "MEMORY_AGGREGATE",
         MEMORY_AGGREGATION_PRIMARY_ORDINAL,
         aggregationVersions,
         inputHash,
         null,
-        (calls) => decodeAggregation(calls, input.evidence)
+        (calls) => decodeAggregation(calls, safeInput.evidence)
       );
       if (
         result.status !== "READY" &&
         result.reason === "memory_run_utility_output_invalid" &&
         result.snapshotHash !== undefined &&
-        !input.signal.aborted
+        !safeInput.signal.aborted
       ) {
         result = await runTextUtility(
           deps,
-          input,
+          safeInput,
           request,
           "MEMORY_AGGREGATE",
           MEMORY_AGGREGATION_PRIMARY_ORDINAL + 1,
           aggregationVersions,
           inputHash,
           result.snapshotHash,
-          (calls) => decodeAggregation(calls, input.evidence)
+          (calls) => decodeAggregation(calls, safeInput.evidence)
         );
       }
       return result.status === "READY"
@@ -1133,17 +1148,19 @@ export function createMemoryRunUtilityService(
     },
 
     async embedQuery(input) {
-      if (!validSafeQuery(input.query)) return unavailable("memory_utility_input_blocked");
+      const safeQuery = sanitizeMemoryUtilityText(input.query);
+      if (!safeQuery.eligible || !safeQuery.safeText ||
+        !validSafeQuery(safeQuery.safeText)) return unavailable("memory_utility_input_blocked");
       const purpose = input.purpose ?? "RETRIEVAL";
       const ordinal = queryEmbeddingOrdinal(input, purpose);
       if (ordinal === null) return unavailable("memory_utility_input_blocked");
-      const renderedQuery = renderMemoryQueryEmbeddingText(input.query);
+      const renderedQuery = renderMemoryQueryEmbeddingText(safeQuery.safeText);
       const inputHash = memoryExecutionSha256({
         domain: "aiqsa.memory.query-embedding-input",
         embeddingProfileFingerprint: MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
         profile: input.profile,
         ...(purpose === "ACTION_TARGET" ? { purpose } : {}),
-        queryHash: memorySha256(input.query),
+        queryHash: memorySha256(safeQuery.safeText),
         renderedQueryHash: memorySha256(renderedQuery),
         version: purpose === "ACTION_TARGET" ? 4 : 3
       });
@@ -1247,33 +1264,45 @@ export function createMemoryRunUtilityService(
     },
 
     async rerank(input) {
-      const aggregationRequested = input.aggregationRequested === true;
-      const totalCharacters = input.candidates.reduce(
+      const safeQuery = sanitizeMemoryUtilityText(input.query);
+      const safeCandidates = input.candidates.map((candidate) => {
+        const safe = sanitizeMemoryUtilityText(candidate.text);
+        return safe.eligible && safe.safeText ? { ...candidate, text: safe.safeText } : null;
+      });
+      if (!safeQuery.eligible || !safeQuery.safeText || safeCandidates.some((item) => !item)) {
+        return unavailable("memory_utility_input_blocked");
+      }
+      const safeInput = {
+        ...input,
+        candidates: safeCandidates as typeof input.candidates,
+        query: safeQuery.safeText
+      };
+      const aggregationRequested = safeInput.aggregationRequested === true;
+      const totalCharacters = safeInput.candidates.reduce(
         (total, candidate) => total + candidate.text.length,
         0
       );
-      const handles = input.candidates.map((candidate) => candidate.handle);
+      const handles = safeInput.candidates.map((candidate) => candidate.handle);
       if (
-        !validSafeQuery(input.query) ||
-        typeof input.profileRequested !== "boolean" ||
+        !validSafeQuery(safeInput.query) ||
+        typeof safeInput.profileRequested !== "boolean" ||
         !["CURRENT_PROFILE", "TARGETED_CURRENT", "HISTORICAL_MEMORY",
-          "PAST_CHAT_SEARCH", "HISTORY_OVERVIEW"].includes(input.retrievalMode) ||
+          "PAST_CHAT_SEARCH", "HISTORY_OVERVIEW"].includes(safeInput.retrievalMode) ||
         !["CURRENT", "HISTORICAL", "AS_OF", "BETWEEN", "ANY"]
-          .includes(input.temporalIntent) ||
-        input.candidates.length < 1 ||
-        input.candidates.length > (aggregationRequested
+          .includes(safeInput.temporalIntent) ||
+        safeInput.candidates.length < 1 ||
+        safeInput.candidates.length > (aggregationRequested
           ? MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES
           : MEMORY_RERANK_TARGETED_MAX_CANDIDATES) ||
         totalCharacters > (aggregationRequested
           ? MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS
           : MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS) ||
         new Set(handles).size !== handles.length ||
-        input.candidates.some((candidate, index) =>
+        safeInput.candidates.some((candidate, index) =>
           candidate.handle !== `c${index}` ||
           candidate.text.length < 1 ||
           candidate.text.length > 4_000 ||
           candidate.text.includes("\u0000") ||
-          memoryExplicitStatementContainsSecret(candidate.text) ||
           candidate.current === candidate.historical ||
           !["EVENT", "FACT", "HISTORY"].includes(candidate.sourceKind) ||
           !["assistant", "memory_record", "mixed_conversation", "user"]
@@ -1283,12 +1312,12 @@ export function createMemoryRunUtilityService(
           [candidate.occurredFrom, candidate.occurredTo].some((value) =>
             value !== null && (value.length < 1 || value.length > 64 ||
               !Number.isFinite(Date.parse(value))))
-        ) || input.profileRequested && input.candidates.some((candidate) =>
+        ) || safeInput.profileRequested && safeInput.candidates.some((candidate) =>
           !candidate.current || candidate.sourceKind === "HISTORY")
       ) return unavailable("memory_utility_input_blocked");
       let rerankPath: MemoryRerankPath;
       try {
-        rerankPath = await deps.resolveRerankPath?.(input.userId) ??
+        rerankPath = await deps.resolveRerankPath?.(safeInput.userId) ??
           "GENERATIVE_COMPATIBILITY";
       } catch {
         // This hint controls envelope partitioning only. Immutable admission
@@ -1296,8 +1325,8 @@ export function createMemoryRunUtilityService(
         rerankPath = "GENERATIVE_COMPATIBILITY";
       }
       const candidateBatches = rerankPath === "DEDICATED"
-        ? partitionDedicatedRerankCandidates(input)
-        : partitionRerankCandidates(input);
+        ? partitionDedicatedRerankCandidates(safeInput)
+        : partitionRerankCandidates(safeInput);
       if (!candidateBatches) return unavailable("memory_utility_input_blocked");
       const results = await mapWithConcurrency(
         candidateBatches,
@@ -1324,18 +1353,18 @@ export function createMemoryRunUtilityService(
               textHash: memorySha256(candidate.text)
             })),
             domain: "aiqsa.memory.relevance-input",
-            profileRequested: input.profileRequested,
-            queryHash: memorySha256(input.query),
+            profileRequested: safeInput.profileRequested,
+            queryHash: memorySha256(safeInput.query),
             rerankPath,
-            retrievalMode: input.retrievalMode,
-            temporalIntent: input.temporalIntent,
+            retrievalMode: safeInput.retrievalMode,
+            temporalIntent: safeInput.temporalIntent,
             version: 12
           });
           const firstOrdinal = rerankBatchFirstOrdinal(batchIndex);
           if (rerankPath === "DEDICATED") {
             return runDedicatedRerankBatch(
               deps,
-              input,
+              safeInput,
               candidates,
               firstOrdinal,
               inputHash
@@ -1343,8 +1372,8 @@ export function createMemoryRunUtilityService(
           }
           let result = await runTextUtility(
             deps,
-            input,
-            rerankProviderInput(input, candidates),
+            safeInput,
+            rerankProviderInput(safeInput, candidates),
             "MEMORY_RERANK",
             firstOrdinal,
             rerankVersions,
@@ -1360,12 +1389,12 @@ export function createMemoryRunUtilityService(
             result.status !== "READY" &&
             result.reason === "memory_run_utility_output_invalid" &&
             result.snapshotHash !== undefined &&
-            !input.signal.aborted
+            !safeInput.signal.aborted
           ) {
             result = await runTextUtility(
               deps,
-              input,
-              rerankProviderInput(input, candidates),
+              safeInput,
+              rerankProviderInput(safeInput, candidates),
               "MEMORY_RERANK",
               firstOrdinal + 1,
               rerankVersions,

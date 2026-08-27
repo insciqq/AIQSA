@@ -10,9 +10,9 @@ import {
 import { MEMORY_PREFERENCE_DIMENSION_PREFIXES } from "../identity/registry";
 
 describe("Memory semantic-frame extraction prompt", () => {
-  it("locks the v5 forced-strict wire shape", () => {
+  it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v24");
+      .toBe("memory-fact-extraction-prompt-v25");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { memorySha256 } from "../../persistence/lexical";
-import type {
-  MemoryExtractedCandidate,
-  MemoryFactExtractionInput,
-  MemoryFactExtractionPlan
+import {
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  type MemoryExtractedCandidate,
+  type MemoryFactExtractionInput,
+  type MemoryFactExtractionPlan
 } from "./contract";
 import {
   decodeMemorySemanticAdjudication,
@@ -111,6 +112,7 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
       evidenceEligible: true,
       id: "message-1",
       languageCode: "und",
+      redactionSpans: [],
       role: "user",
       text: "opaque",
       updatedAt: "2026-08-25T10:00:00.000Z"
@@ -126,7 +128,7 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
       userId: "user-1"
     },
     sourceProjectionHash: "c".repeat(64),
-    sourceProjectionVersion: "memory-fact-source-projection-v4",
+    sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: "d".repeat(64),
     timeZone: "UTC"
   };

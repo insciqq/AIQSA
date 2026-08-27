@@ -54,9 +54,12 @@ import type {
   ExplicitMemoryEditable,
   ExplicitMemoryForgetUndoCandidate
 } from "./repository";
-import { memoryExplicitStatementContainsSecret } from "./safety";
 import {
-  MemoryStatementClassificationError,
+  memoryProjectionHasMeaningfulText,
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "./safety";
+import {
   memoryStatementClassificationDecision,
   type MemoryStatementClassification,
   type MemoryStatementClassifier
@@ -240,18 +243,6 @@ function publicPersistenceCode(
   }
 }
 
-function controlSafetyClassification(
-  execution: MemoryOperationExecutionContext | undefined
-): MemoryFactSafetyClassificationInput | undefined {
-  if (!execution?.safetyClassifierExecutionId) return undefined;
-  if (!execution.safetyClassifierIntent) return failure("memory_contract_invalid");
-  return {
-    executionId: execution.safetyClassifierExecutionId,
-    intent: execution.safetyClassifierIntent,
-    kind: "CONTROL"
-  };
-}
-
 function statementSafetyClassification(
   classification: StorableMemoryStatementClassification | null,
   inputStatement: string,
@@ -293,16 +284,34 @@ async function persisted<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-function requireStatement(statement: string): void {
+type ExplicitStatementProjection = Readonly<{
+  redacted: boolean;
+  statement: string;
+}>;
+
+function requireStatement(statement: string): ExplicitStatementProjection {
+  const redaction = redactMemorySecrets(statement);
+  const redactionPlaceholderOnly = statement.includes("[REDACTED:") &&
+    !memoryProjectionHasMeaningfulText(statement);
   if (
-    !normalizeMemorySearchText(statement) ||
-    statement.length > 2_000
+    statement.length > 2_000 ||
+    (redaction.containsSecret &&
+      (!memoryRedactionHasMeaningfulRemainder(statement, redaction) ||
+        !memoryProjectionHasMeaningfulText(redaction.redactedText))) ||
+    redactionPlaceholderOnly
   ) {
+    return failure(redaction.containsSecret || redactionPlaceholderOnly
+      ? "memory_secret_rejected"
+      : "memory_statement_invalid");
+  }
+  const projected = redaction.redactedText;
+  if (!normalizeMemorySearchText(projected) || projected.length > 2_000) {
     return failure("memory_statement_invalid");
   }
-  if (memoryExplicitStatementContainsSecret(statement)) {
-    return failure("memory_secret_rejected");
-  }
+  return {
+    redacted: redaction.containsSecret || statement.includes("[REDACTED:"),
+    statement: projected
+  };
 }
 
 function languageCode(_statement: string): string {
@@ -351,6 +360,7 @@ function valueFor(input: Readonly<{
   canonicalKey: string;
   category: string;
   modality: MemoryFactValueInput["modality"];
+  redactionApplied?: boolean;
   safetyClassification?: MemoryFactValueInput["safetyClassification"];
   sensitivityClass?: MemoryFactValueInput["sensitivityClass"];
   statement: string;
@@ -367,6 +377,7 @@ function valueFor(input: Readonly<{
     languageCode: languageCode(input.statement),
     modality: input.modality,
     pipelineVersion: MEMORY_EXPLICIT_PIPELINE_VERSION,
+    ...(input.redactionApplied ? { redactionApplied: true } : {}),
     ...(input.safetyClassification
       ? { safetyClassification: input.safetyClassification }
       : {}),
@@ -476,45 +487,19 @@ export function createExplicitMemoryService(input: Readonly<{
   }
 
   async function classifyStatement(
-    userId: string,
-    mutationAuthorizationId: string,
-    statement: string
+    _userId: string,
+    _mutationAuthorizationId: string,
+    _statement: string
   ): Promise<StorableMemoryStatementClassification | null> {
-    if (!input.statementClassifier) return null;
-    let classification: MemoryStatementClassification;
-    try {
-      classification = await input.statementClassifier.classify(statement, {
-        execution: { mutationAuthorizationId, userId }
-      });
-    } catch (error) {
-      return failure(error instanceof MemoryStatementClassificationError &&
-        error.code === "memory_statement_classification_unavailable"
-        ? "memory_unavailable"
-        : "memory_action_failed");
-    }
-    if (classification.sensitivity === "SECRET" ||
-      classification.sensitivity === "UNCERTAIN") {
-      return failure("memory_secret_rejected");
-    }
-    if (classification.storageDecision !== "ALLOW") {
-      return failure("memory_statement_invalid");
-    }
-    requireStatement(classification.normalizedStatement);
-    return {
-      ...classification,
-      category: canonicalStorableCategory(
-        classification.category,
-        classification.responsePreference
-      ) as
-        StorableMemoryStatementClassification["category"],
-      sensitivity: "NORMAL",
-      storageDecision: "ALLOW"
-    };
+    // Safety Lite owns the complete new-path safety decision locally. Keep
+    // the optional dependency in the construction contract only so legacy
+    // callers can roll forward without accidentally restoring provider I/O.
+    return null;
   }
 
   return Object.freeze({
     async create(userId, createInput, execution) {
-      requireStatement(createInput.statement);
+      const projection = requireStatement(createInput.statement);
       const authorizedPayloadHash = execution?.authorizedPayloadHash ??
         memorySha256(createInput.statement);
       const authorization = authorizationUse({
@@ -533,9 +518,9 @@ export function createExplicitMemoryService(input: Readonly<{
         : await classifyStatement(
             userId,
             createInput.mutationAuthorizationId,
-            createInput.statement
+            projection.statement
           );
-      const statement = classification?.normalizedStatement ?? createInput.statement;
+      const statement = classification?.normalizedStatement ?? projection.statement;
       const sensitivityClass = canonicalStorableSensitivity(
         execution?.sensitivityClass ?? classification?.sensitivity ?? "NORMAL"
       );
@@ -563,9 +548,11 @@ export function createExplicitMemoryService(input: Readonly<{
           canonicalKey: customCanonicalKey(statement),
           category: classification?.category ?? createInput.category ?? "other",
           modality: classifiedModality(classification, createInput.modality ?? "STATE"),
-          safetyClassification: execution?.safetyClassifierExecutionId
-            ? controlSafetyClassification(execution)
-            : statementSafetyClassification(classification, createInput.statement),
+          redactionApplied: projection.redacted,
+          safetyClassification: statementSafetyClassification(
+            classification,
+            projection.statement
+          ),
           sensitivityClass,
           statement,
           validFrom: dateOrNull(createInput.validFrom),
@@ -687,10 +674,10 @@ export function createExplicitMemoryService(input: Readonly<{
         : anchorVersionId;
       const selected = conflict.versions.find(({ id }) => id === selectedVersionId);
       if (!selected) return failure("memory_version_stale");
-      const statement = resolveInput.resolution.kind === "CORRECT"
+      const requestedStatement = resolveInput.resolution.kind === "CORRECT"
         ? resolveInput.resolution.statement
         : selected.displayText;
-      requireStatement(statement);
+      const projection = requireStatement(requestedStatement);
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
         action: "EDIT",
         expectedTargetVersionId: anchorVersionId,
@@ -710,10 +697,10 @@ export function createExplicitMemoryService(input: Readonly<{
         ? await classifyStatement(
             userId,
             resolveInput.mutationAuthorizationId,
-            statement
+            projection.statement
           )
         : null;
-      const storedStatement = classification?.normalizedStatement ?? statement;
+      const storedStatement = classification?.normalizedStatement ?? projection.statement;
       const sensitivityClass = resolveInput.resolution.kind === "CORRECT"
         ? mostRestrictiveSensitivity([
             ...conflict.versions.map((version) => version.sensitivityClass),
@@ -739,7 +726,11 @@ export function createExplicitMemoryService(input: Readonly<{
           canonicalKey: conflict.canonicalKey,
           category: classification?.category ?? conflict.category,
           modality: classifiedModality(classification, selected.modality),
-          safetyClassification: statementSafetyClassification(classification, statement),
+          redactionApplied: projection.redacted,
+          safetyClassification: statementSafetyClassification(
+            classification,
+            projection.statement
+          ),
           sensitivityClass,
           statement: storedStatement,
           validFrom: selected.validFrom,
@@ -760,7 +751,7 @@ export function createExplicitMemoryService(input: Readonly<{
         )
       );
       if (!candidate) return failure("memory_undo_unavailable");
-      requireStatement(candidate.displayText);
+      const projection = requireStatement(candidate.displayText);
       const authorization = authorizationUse({
         action: "SAVE",
         authorizationId: undoInput.mutationAuthorizationId,
@@ -772,7 +763,7 @@ export function createExplicitMemoryService(input: Readonly<{
       const revived = await persisted(() => input.factRepository.save(userId, {
         authorization,
         evidence: evidenceFor(
-          candidate.displayText,
+          projection.statement,
           resolved.confirmedAt,
           candidate.sensitivityClass
         ),
@@ -794,8 +785,9 @@ export function createExplicitMemoryService(input: Readonly<{
           canonicalKey: candidate.canonicalKey,
           category: candidate.category,
           modality: candidate.modality,
+          redactionApplied: projection.redacted,
           sensitivityClass: candidate.sensitivityClass,
-          statement: candidate.displayText,
+          statement: projection.statement,
           validFrom: candidate.validFrom,
           validTo: candidate.validTo
         })
@@ -829,6 +821,7 @@ export function createExplicitMemoryService(input: Readonly<{
           "validTo"
         ].some((key) => Object.hasOwn(updateInput, key));
         if (mixedMove) return failure("memory_contract_invalid");
+        const projection = requireStatement(current.displayText);
         const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
           action: "MOVE_SCOPE",
           expectedTargetVersionId: updateInput.expectedVersionId,
@@ -847,7 +840,7 @@ export function createExplicitMemoryService(input: Readonly<{
         const moved = await persisted(() => input.factRepository.move(userId, {
           authorization,
           evidence: evidenceFor(
-            current.displayText,
+            projection.statement,
             resolved.confirmedAt,
             current.sensitivityClass
           ),
@@ -871,8 +864,9 @@ export function createExplicitMemoryService(input: Readonly<{
             canonicalKey: current.canonicalKey,
             category: current.category,
             modality: current.modality,
+            redactionApplied: projection.redacted,
             sensitivityClass: current.sensitivityClass,
-            statement: current.displayText,
+            statement: projection.statement,
             validFrom: current.validFrom,
             validTo: current.validTo
           })
@@ -883,7 +877,7 @@ export function createExplicitMemoryService(input: Readonly<{
         return failure("memory_scope_unavailable");
       }
       const requestedStatement = updateInput.statement ?? current.displayText;
-      requireStatement(requestedStatement);
+      const projection = requireStatement(requestedStatement);
       const validFrom = Object.hasOwn(updateInput, "validFrom")
         ? dateOrNull(updateInput.validFrom)
         : current.validFrom;
@@ -919,12 +913,10 @@ export function createExplicitMemoryService(input: Readonly<{
         ? await classifyStatement(
             userId,
             updateInput.mutationAuthorizationId,
-            requestedStatement
+            projection.statement
           )
         : null;
-      const statement = execution?.exactStatementHash === undefined
-        ? classification?.normalizedStatement ?? requestedStatement
-        : requestedStatement;
+      const statement = classification?.normalizedStatement ?? projection.statement;
       const sensitivityClass = execution?.sensitivityClass || classification
         ? mostRestrictiveSensitivity([
             current.sensitivityClass,
@@ -959,15 +951,11 @@ export function createExplicitMemoryService(input: Readonly<{
             classification,
             updateInput.modality ?? current.modality
           ),
-          safetyClassification: execution?.safetyClassifierExecutionId
-            ? controlSafetyClassification(execution)
-            : statementSafetyClassification(
-                classification,
-                requestedStatement,
-                execution?.exactStatementHash === undefined
-                  ? "CLASSIFIER_NORMALIZED"
-                  : "EXACT_INPUT"
-              ),
+          redactionApplied: projection.redacted,
+          safetyClassification: statementSafetyClassification(
+            classification,
+            projection.statement
+          ),
           sensitivityClass,
           statement,
           validFrom,

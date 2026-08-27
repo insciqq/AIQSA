@@ -30,6 +30,10 @@ import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../explicit/safety";
+import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
@@ -343,7 +347,11 @@ async function eligibleFacts(
     rows
   );
   return rows.flatMap((row) => {
-    const normalizedSearchText = normalizeMemorySearchText(row.displayText);
+    const redaction = redactMemorySecrets(row.displayText);
+    if (redaction.containsSecret &&
+      !memoryRedactionHasMeaningfulRemainder(row.displayText, redaction)) return [];
+    const safeDisplayText = redaction.redactedText;
+    const normalizedSearchText = normalizeMemorySearchText(safeDisplayText);
     if (!normalizedSearchText) return [];
     const sources = sourceSnapshots.get(row.versionId) ?? [];
     if (row.sourceMode === "AUTOMATIC" && sources.length === 0) return [];
@@ -352,7 +360,7 @@ async function eligibleFacts(
       itemType: "FACT_VERSION" as const,
       languageCode: row.languageCode,
       safeContentHash: memorySha256({
-        displayText: row.displayText,
+        displayText: safeDisplayText,
         structuredValue: row.structuredValue
       }),
       normalizedSearchText,

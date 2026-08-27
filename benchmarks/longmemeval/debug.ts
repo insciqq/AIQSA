@@ -1,4 +1,4 @@
-import { parseMemorySecret } from
+import { memorySecretSafeObjectKey, redactMemorySecrets } from
   "../../lib/server/memory/explicit/secretParser";
 
 const MAX_DEBUG_VALUE_DEPTH = 64;
@@ -14,10 +14,7 @@ export function redactLongMemEvalDebugArtifact(
     throw new Error("longmemeval_debug_value_too_deep");
   }
   if (typeof value === "string") {
-    const parsed = parseMemorySecret(value);
-    return parsed.containsSecret
-      ? `[REDACTED:${parsed.findings.join("+")}]`
-      : value;
+    return redactMemorySecrets(value).redactedText;
   }
   if (value === null || typeof value === "number" || typeof value === "boolean") {
     return value;
@@ -28,10 +25,11 @@ export function redactLongMemEvalDebugArtifact(
     return value.map((entry) => redactLongMemEvalDebugArtifact(entry, depth + 1));
   }
   if (typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-      key,
-      redactLongMemEvalDebugArtifact(entry, depth + 1)
-    ]));
+    const usedKeys = new Set<string>();
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+      const safeKey = memorySecretSafeObjectKey(key, usedKeys);
+      return [safeKey, redactLongMemEvalDebugArtifact(entry, depth + 1)];
+    }));
   }
   throw new Error("longmemeval_debug_value_invalid");
 }

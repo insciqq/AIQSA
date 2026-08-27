@@ -15,6 +15,10 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import {
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../explicit/safety";
 import { memoryHistoryChunkSourceAuthorityPredicate } from "../persistence/pauseIntervals";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
@@ -226,9 +230,15 @@ async function loadFactTarget(
   `);
   const current = rows[0];
   if (!current) return null;
-  const normalizedSearchText = normalizeMemorySearchText(current.versionDisplayText);
+  const redaction = redactMemorySecrets(current.versionDisplayText);
+  if (redaction.containsSecret && !memoryRedactionHasMeaningfulRemainder(
+    current.versionDisplayText,
+    redaction
+  )) return null;
+  const safeDisplayText = redaction.redactedText;
+  const normalizedSearchText = normalizeMemorySearchText(safeDisplayText);
   const safeContentHash = memorySha256({
-    displayText: current.versionDisplayText,
+    displayText: safeDisplayText,
     structuredValue: current.structuredValue
   });
   if (

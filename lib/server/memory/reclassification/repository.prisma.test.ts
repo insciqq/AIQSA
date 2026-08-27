@@ -1,16 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
-import {
-  createPrismaMemoryExecutionService,
-  type MemoryExecutionAuthorityDependencies
-} from "../execution";
-import {
-  MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-  resolveCurrentMemoryUtilityPolicy
-} from "../execution/policy";
+import type { MemoryJobClaim } from "../coordinator/types";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
@@ -19,6 +12,7 @@ import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { applyMemoryScopeTargetDeletion } from "../scopeLifecycle";
+import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import {
   memoryShadowRebuildJobFingerprint,
   MEMORY_SHADOW_REBUILD_PIPELINE_VERSION
@@ -26,10 +20,8 @@ import {
 import {
   MEMORY_RECLASSIFICATION_PIPELINE_VERSION,
   MEMORY_RECLASSIFICATION_POLICY_VERSION,
-  MEMORY_RECLASSIFICATION_VERSIONS,
   memoryReclassificationAcceptedOutputHash,
   memoryReclassificationInputHash,
-  type MemoryReclassificationProvider,
   type MemoryReclassificationResult
 } from "./classifier";
 import { createPrismaMemoryReclassificationHandler } from "./handler";
@@ -41,199 +33,6 @@ import {
   createPrismaMemoryReclassificationRepository,
   type MemoryReclassificationCandidate
 } from "./repository";
-
-const reclassificationSystemConfiguration = Object.freeze({
-  adapterKind: "openai_responses_compatible",
-  answerSelectable: true,
-  capabilities: {
-    nativePdfInput: false,
-    nativeSearch: false,
-    pdf: false,
-    reasoning: false,
-    streaming: false,
-    toolCalling: true,
-    vision: false
-  },
-  defaultParams: {},
-  modelClass: "answer",
-  upstreamModelId: "memory-reclassification-system-test"
-} as const);
-
-async function createReclassificationAuthorityFixture(
-  userId: string
-): Promise<Readonly<{
-  authority: MemoryExecutionAuthorityDependencies;
-  cleanup(): Promise<void>;
-  modelId: string;
-  now: Date;
-  providerId: string;
-}>> {
-  const suffix = randomUUID();
-  const connectionId = `memory-reclass-authority-connection-${suffix}`;
-  const credentialId = `memory-reclass-authority-credential-${suffix}`;
-  const credentialVersionId = `memory-reclass-authority-version-${suffix}`;
-  const modelId = `memory-reclass-authority-model-${suffix}`;
-  const now = new Date();
-  const connectionConfiguration = {
-    allowPrivateNetwork: false,
-    apiRoot: "https://memory-reclassification.example.test/v1",
-    authenticationMode: "bearer",
-    responseTimeoutMs: 30_000
-  };
-  const originalSystemPolicy = await prisma.systemModelPolicy.findUniqueOrThrow({
-    select: {
-      providerModelId: true,
-      reasoningEffort: true,
-      updatedByUserId: true
-    },
-    where: { id: "installation" }
-  });
-  await prisma.providerConnection.create({
-    data: {
-      activeConfig: connectionConfiguration,
-      activeVersion: 1,
-      activatedAt: now,
-      displayName: "Memory reclassification authority provider",
-      draftConfig: connectionConfiguration,
-      draftVersion: 1,
-      enabled: true,
-      family: "openai_compatible",
-      id: connectionId,
-      unassignedPolicy: "use_default"
-    }
-  });
-  await prisma.providerCredential.create({
-    data: {
-      activatedAt: now,
-      connectionId,
-      draftVersion: 1,
-      enabled: true,
-      id: credentialId,
-      label: "Memory reclassification authority credential",
-      testedAt: now
-    }
-  });
-  await prisma.providerCredentialVersion.create({
-    data: {
-      activatedAt: now,
-      credentialId,
-      id: credentialVersionId,
-      secretEnvelope: "memory-reclassification-test-only-envelope",
-      testedAt: now,
-      testEvidence: { authenticationMode: "bearer" },
-      version: 1
-    }
-  });
-  await prisma.providerCredential.update({
-    data: { activeVersionId: credentialVersionId },
-    where: { id: credentialId }
-  });
-  await prisma.providerConnection.update({
-    data: { defaultCredentialId: credentialId },
-    where: { id: connectionId }
-  });
-  await prisma.providerModel.create({
-    data: {
-      activeConfig: reclassificationSystemConfiguration,
-      activeVersion: 1,
-      activatedAt: now,
-      capabilities: reclassificationSystemConfiguration.capabilities,
-      connectionId,
-      defaultParams: {},
-      displayName: "Memory reclassification authority model",
-      draftConfig: reclassificationSystemConfiguration,
-      draftVersion: 1,
-      enabled: true,
-      id: modelId,
-      modelClass: "answer",
-      modelId: reclassificationSystemConfiguration.upstreamModelId,
-      provider: "openai_compatible"
-    }
-  });
-  await prisma.providerModelCredentialCheck.create({
-    data: {
-      checkedAt: now,
-      connectionId,
-      connectionVersion: 1,
-      credentialId,
-      credentialVersionId,
-      evidence: {
-        detail: "ok",
-        structuredOutput: {
-          adapterKind: reclassificationSystemConfiguration.adapterKind,
-          probeVersion: 2,
-          upstreamModelId: reclassificationSystemConfiguration.upstreamModelId,
-          verified: true
-        }
-      },
-      modelVersion: 1,
-      providerModelId: modelId,
-      status: "available"
-    }
-  });
-  await prisma.systemModelPolicy.update({
-    data: {
-      providerModelId: modelId,
-      reasoningEffort: null,
-      updatedByUserId: null,
-      version: { increment: 1 }
-    },
-    where: { id: "installation" }
-  });
-  const policy = await prisma.$transaction(async (tx) => {
-    const settings = await tx.userMemorySettings.findUniqueOrThrow({
-      where: { userId }
-    });
-    return resolveCurrentMemoryUtilityPolicy(tx, userId, settings);
-  });
-  if (!policy.targets.has("MEMORY_RECLASSIFY")) {
-    throw new Error("memory_reclassification_authority_fixture_unavailable");
-  }
-  await prisma.userMemorySettings.update({
-    data: {
-      acceptedUtilityEgressAt: now,
-      acceptedUtilityEgressFingerprint: policy.fingerprint,
-      acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
-    },
-    where: { userId }
-  });
-  const authority = {
-    egressConsentMode: "PER_USER" as const,
-    now: () => new Date(now)
-  };
-  return {
-    authority,
-    async cleanup() {
-      await prisma.usageEvent.deleteMany({ where: { userId } });
-      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
-      await prisma.systemModelPolicy.update({
-        data: {
-          providerModelId: originalSystemPolicy.providerModelId,
-          reasoningEffort: originalSystemPolicy.reasoningEffort,
-          updatedByUserId: originalSystemPolicy.updatedByUserId,
-          version: { increment: 1 }
-        },
-        where: { id: "installation" }
-      });
-      await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
-      await prisma.providerConnection.updateMany({
-        data: { defaultCredentialId: null },
-        where: { id: connectionId }
-      });
-      await prisma.providerCredential.updateMany({
-        data: { activeVersionId: null },
-        where: { id: credentialId }
-      });
-      await prisma.providerModel.deleteMany({ where: { id: modelId } });
-      await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
-      await prisma.providerCredential.deleteMany({ where: { id: credentialId } });
-      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
-    },
-    modelId,
-    now,
-    providerId: "openai_compatible"
-  };
-}
 
 async function createPendingVersion(
   userId: string,
@@ -527,6 +326,26 @@ function localSecretResult(): MemoryReclassificationResult {
   };
 }
 
+function localLiteResult(
+  candidate: MemoryReclassificationCandidate
+): MemoryReclassificationResult {
+  return {
+    classifiedAt: new Date("2026-08-21T10:00:00.000Z"),
+    decision: {
+      category: candidate.category === "about_you" ? "about_you" : "other",
+      reasonCode: "ordinary_personal",
+      responsePreference: candidate.modality === "PREFERENCE",
+      sensitivity: "NORMAL",
+      storageDecision: "ALLOW",
+      subjectScope: "USER"
+    },
+    executionId: null,
+    modelId: MEMORY_SAFETY_LITE_POLICY_VERSION,
+    policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+    providerId: "aiqsa-local-policy"
+  };
+}
+
 async function createShadowWakeFixture(userId: string): Promise<Readonly<{
   activeGenerationId: string;
   rebuildJobId: string;
@@ -619,6 +438,15 @@ describe("Prisma Memory safety reclassification", () => {
           modality: "PREFERENCE"
         },
         where: { id: legacyReset.versionId }
+      });
+      const legacySecret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+      await prisma.memoryFactVersion.update({
+        data: {
+          displayText: legacySecret,
+          normalizedSearchText: legacySecret,
+          structuredValue: { credential: legacySecret }
+        },
+        where: { id: secret.versionId }
       });
       const [normalExecutionId, legacyResetExecutionId,
         thirdPartyExecutionId] = await Promise.all([
@@ -954,186 +782,319 @@ describe("Prisma Memory safety reclassification", () => {
     }
   });
 
-  it("rejects a settled reclassification output tuple swapped before the default authorized commit", async () => {
-    const fact = await createPendingFact("authorized-output-swap");
-    let authorityFixture: Awaited<
-      ReturnType<typeof createReclassificationAuthorityFixture>
-    > | null = null;
-    try {
-      authorityFixture = await createReclassificationAuthorityFixture(fact.userId);
-      await expect(reconcileMemoryFactReclassificationJobs(prisma))
-        .resolves.toBeGreaterThanOrEqual(1);
-      const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
-      const claimAt = new Date(authorityFixture.now.getTime() + 1_000);
-      const claim = await coordinator.claimJob({
+  it("reprojects pending and surviving legacy safety states without provider egress", async () => {
+    const mixed = await createPendingFact("lite-mixed-uncertain");
+    const secretOnly = await createPendingFact("lite-secret-only");
+    const legacyFenced = await createPendingFact("lite-surviving-secret-fenced");
+    const legacyAutomatic = await createPendingFact(
+      "lite-legacy-automatic-pending",
+      "AUTOMATIC"
+    );
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const mixedText =
+      `I moved to Helsinki. API key ${token}; the move is permanent.`;
+    const fencedText =
+      `I work in Espoo. Credential ${token}; keep the commute preference.`;
+    const now = new Date("2026-08-27T09:30:00.000Z");
+    const repository = createPrismaMemoryReclassificationRepository(prisma);
+    const classify = vi.fn(async () => {
+      throw new Error("semantic safety provider must remain unused");
+    });
+    const handler = createPrismaMemoryReclassificationHandler(prisma, {
+      provider: { classify },
+      repository
+    });
+
+    async function applyLite(userId: string): Promise<void> {
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        select: { memoryGeneration: true, memoryRevision: true },
+        where: { userId }
+      });
+      const claim: MemoryJobClaim = {
+        activeLeafMessageId: null,
+        attemptCount: 1,
+        branchGeneration: null,
+        chatId: null,
         claimToken: randomUUID(),
-        kinds: ["RECLASSIFY_FACTS"],
-        leaseExpiresAt: new Date(claimAt.getTime() + 60_000),
-        now: claimAt
-      });
-      expect(claim).not.toBeNull();
-      if (!claim) throw new Error("memory_reclassification_swap_claim_missing");
-      expect(claim).toMatchObject({
-        id: expect.any(String),
+        id: randomUUID(),
+        idempotencyFingerprint: memorySha256({
+          domain: "memory-safety-lite-stateful",
+          userId
+        }),
+        kind: "RECLASSIFY_FACTS",
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
         pipelineVersion: MEMORY_RECLASSIFICATION_PIPELINE_VERSION,
-        userId: fact.userId
-      });
-      const repository = createPrismaMemoryReclassificationRepository(prisma);
-      const [candidate] = await repository.pending(fact.userId);
-      if (!candidate) throw new Error("memory_reclassification_swap_candidate_missing");
-      const baselineSettings = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId: fact.userId }
-      });
-      const inputHash = memoryReclassificationInputHash(
-        candidate.displayText,
-        candidate.sourceMode
-      );
-      const firstDecision = result("NORMAL").decision;
-      const secondDecision = result("SENSITIVE", {
-        category: "sensitive",
-        reasonCode: "private_personal",
-        responsePreference: false,
-        storageDecision: "ALLOW",
-        subjectScope: "USER"
-      }).decision;
-      const firstOutputHash = memoryReclassificationAcceptedOutputHash(
-        inputHash,
-        firstDecision
-      );
-      const secondOutputHash = memoryReclassificationAcceptedOutputHash(
-        inputHash,
-        secondDecision
-      );
-      expect(secondOutputHash).not.toBe(firstOutputHash);
-      const executionService = createPrismaMemoryExecutionService(
-        authorityFixture.authority,
-        prisma
-      );
-      const firstBinding = await executionService.admission.bind(fact.userId, {
-        inputHash,
-        ordinal: 0,
-        owner: { memoryJobId: claim.id, type: "JOB" },
-        role: "MEMORY_RECLASSIFY",
-        versions: MEMORY_RECLASSIFICATION_VERSIONS
-      });
-      const secondBinding = await executionService.admission.bind(fact.userId, {
-        inputHash,
-        ordinal: 1,
-        owner: { memoryJobId: claim.id, type: "JOB" },
-        role: "MEMORY_RECLASSIFY",
-        versions: MEMORY_RECLASSIFICATION_VERSIONS
-      });
-      for (const receipt of [
-        { bindingId: firstBinding.id, outputHash: firstOutputHash },
-        { bindingId: secondBinding.id, outputHash: secondOutputHash }
-      ]) {
-        await executionService.admission.start(fact.userId, receipt.bindingId);
-        await executionService.lifecycle.settle(fact.userId, receipt.bindingId, {
-          acceptedOutputHash: receipt.outputHash,
-          errorCode: null,
-          providerResponseId: `memory-reclassification-${randomUUID()}`,
-          state: "SUCCEEDED",
-          usage: {
-            cachedInputTokens: 0,
-            completeness: "COMPLETE",
-            estimatedCostMicros: null,
-            inputTokens: 5,
-            outputTokens: 2,
-            reasoningTokens: 0,
-            totalTokens: 7
-          }
-        });
-      }
-      const swappedProvider: MemoryReclassificationProvider = Object.freeze({
-        async classify(statement, _signal, sourceMode, execution) {
-          expect(statement).toBe(candidate.displayText);
-          expect(sourceMode).toBe(candidate.sourceMode);
-          expect(execution).toEqual({
-            jobId: claim.id,
-            ordinal: 0,
-            userId: fact.userId
-          });
-          return {
-            acceptedOutputHash: secondOutputHash,
-            classifiedAt: authorityFixture!.now,
-            decision: secondDecision,
-            executionId: firstBinding.id,
-            inputHash,
-            modelId: authorityFixture!.modelId,
-            policyVersion: MEMORY_RECLASSIFICATION_POLICY_VERSION,
-            providerId: authorityFixture!.providerId
-          };
-        }
-      });
-      const handler = createPrismaMemoryReclassificationHandler(prisma, {
-        authority: authorityFixture.authority,
-        provider: swappedProvider,
-        repository
-      });
+        recoveredLease: false,
+        sourceHash: null,
+        sourceMessageId: null,
+        sourceRevision: null,
+        stage: null,
+        targetFactVersionId: null,
+        userId
+      };
       await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
-      const commitAt = new Date(claimAt.getTime() + 1_000);
       const execution = await handler.execute(claim, {
-        now: () => commitAt,
+        now: () => now,
         setStage: async () => undefined,
         signal: new AbortController().signal
       });
-      await expect(coordinator.commitJobSuccess({
-        acceptedResultHash: execution.acceptedResultHash,
-        apply: execution.apply,
-        claim,
-        now: commitAt,
-        stage: execution.stage ?? null
-      })).rejects.toMatchObject({ code: "memory_execution_state_conflict" });
+      expect(execution.apply).toBeDefined();
+      await prisma.$transaction((tx) => execution.apply!(tx, claim));
+    }
 
-      await expect(prisma.memoryFact.findUniqueOrThrow({
-        where: { id: fact.factId }
-      })).resolves.toMatchObject({
-        currentVersionId: fact.versionId,
-        state: "ACTIVE"
+    try {
+      const uncertainExecutionId = await createReclassificationExecution(
+        mixed.userId,
+        now
+      );
+      const mixedVersion = await prisma.memoryFactVersion.findUniqueOrThrow({
+        select: { createdByEventId: true },
+        where: { id: mixed.versionId }
       });
-      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
-        where: { id: fact.versionId }
-      })).resolves.toMatchObject({
+      if (!mixedVersion.createdByEventId) {
+        throw new Error("memory_safety_lite_explicit_event_missing");
+      }
+      await prisma.memoryFactVersion.update({
+        data: {
+          displayText: mixedText,
+          normalizedSearchText: mixedText.toLowerCase(),
+          safetyClassificationReasonCode: "uncertain",
+          safetyClassificationState: "UNCERTAIN",
+          safetyClassifiedAt: new Date(now.getTime() - 1_000),
+          safetyClassifierExecutionId: uncertainExecutionId,
+          safetyClassifierModelId: "reclass-model-v1",
+          safetyClassifierPolicyVersion: MEMORY_RECLASSIFICATION_POLICY_VERSION,
+          safetyClassifierProviderId: "fixture-provider",
+          sensitivityClass: "HIGHLY_SENSITIVE",
+          structuredValue: {
+            [token]: token,
+            location: "Helsinki",
+            nested: { credential: token }
+          }
+        },
+        where: { id: mixed.versionId }
+      });
+      await prisma.memoryEvidence.create({
+        data: {
+          factVersionId: mixed.versionId,
+          memoryEventId: mixedVersion.createdByEventId,
+          observedAt: now,
+          safeExcerpt: mixedText,
+          safeSourceHash: memorySha256(mixedText),
+          safetyClass: "HIGHLY_SENSITIVE",
+          sourceProjectionVersion: "legacy-memory-source-v1",
+          sourceType: "EXPLICIT_ACTION",
+          stance: "SUPPORTS",
+          userId: mixed.userId
+        }
+      });
+      await prisma.memoryFactVersion.update({
+        data: {
+          displayText: token,
+          normalizedSearchText: token,
+          structuredValue: { credential: token }
+        },
+        where: { id: secretOnly.versionId }
+      });
+      await prisma.memoryFactVersion.update({
+        data: {
+          displayText: fencedText,
+          normalizedSearchText: fencedText.toLowerCase(),
+          safetyClassificationReasonCode: "secret_material",
+          safetyClassificationState: "SECRET_FENCED",
+          safetyClassifiedAt: new Date(now.getTime() - 1_000),
+          safetyClassifierExecutionId: null,
+          safetyClassifierModelId: "format-aware-secret-parser-v1",
+          safetyClassifierPolicyVersion: "memory-local-secret-parser-v1",
+          safetyClassifierProviderId: "aiqsa-local-policy",
+          sensitivityClass: "SECRET",
+          structuredValue: { credential: token, location: "Espoo" }
+        },
+        where: { id: legacyFenced.versionId }
+      });
+      await attachAutomaticEvidence({
+        factVersionId: legacyAutomatic.versionId,
+        userId: legacyAutomatic.userId
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryEvidence.updateMany({
+          data: {
+            evidenceFingerprint: null,
+            sourceEndOffset: null,
+            sourceMessageContentHash: null,
+            sourceProjectionVersion: "memory-fact-source-projection-v4",
+            sourceStartOffset: null
+          },
+          where: {
+            factVersionId: legacyAutomatic.versionId,
+            userId: legacyAutomatic.userId
+          }
+        });
+        await tx.memoryFactVersion.update({
+          data: {
+            ingestionFingerprint: null,
+            pipelineVersion: "memory-fact-extraction-vnext-v5",
+            structuredValue: {
+              credential: token,
+              preference: "tea"
+            }
+          },
+          where: { id: legacyAutomatic.versionId }
+        });
+      });
+      await Promise.all([
+        createShadowWakeFixture(mixed.userId),
+        createShadowWakeFixture(legacyFenced.userId),
+        createShadowWakeFixture(legacyAutomatic.userId)
+      ]);
+      await expect(reconcileMemoryFactReclassificationJobs(prisma, now))
+        .resolves.toBeGreaterThanOrEqual(4);
+
+      await expect(repository.pending(mixed.userId)).resolves.toEqual([
+        expect.objectContaining({
+          id: mixed.versionId,
+          safetyClassificationState: "UNCERTAIN"
+        })
+      ]);
+      await expect(repository.pending(legacyFenced.userId)).resolves.toEqual([
+        expect.objectContaining({
+          id: legacyFenced.versionId,
+          safetyClassificationState: "SECRET_FENCED"
+        })
+      ]);
+      await expect(repository.pending(legacyAutomatic.userId)).resolves.toEqual([
+        expect.objectContaining({
+          id: legacyAutomatic.versionId,
+          safetyClassificationState: "PENDING",
+          sourceMode: "AUTOMATIC"
+        })
+      ]);
+
+      await applyLite(mixed.userId);
+      await applyLite(secretOnly.userId);
+      await applyLite(legacyFenced.userId);
+      await applyLite(legacyAutomatic.userId);
+
+      const mixedProjection = await prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: mixed.versionId }
+      });
+      expect(mixedProjection).toMatchObject({
         contentPurgedAt: null,
-        displayText: "I prefer tea",
-        safetyClassificationReasonCode: null,
-        safetyClassificationState: "PENDING",
+        displayText:
+          "I moved to Helsinki. API key [REDACTED:TOKEN]; the move is permanent.",
+        safetyClassificationReasonCode: "lite_span_redacted",
+        safetyClassificationState: "CLASSIFIED",
         safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        safetyClassifierProviderId: null,
+        sensitivityClass: "NORMAL",
         state: "ACTIVE"
       });
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId: fact.userId }
+      expect(JSON.stringify(mixedProjection.structuredValue)).not.toContain(token);
+      expect(JSON.stringify(mixedProjection.structuredValue))
+        .toContain("[REDACTED:TOKEN]");
+      await expect(prisma.memoryEvidence.findFirstOrThrow({
+        where: { factVersionId: mixed.versionId, userId: mixed.userId }
       })).resolves.toMatchObject({
-        memoryGeneration: baselineSettings.memoryGeneration,
-        memoryRevision: baselineSettings.memoryRevision,
-        settingsRevision: baselineSettings.settingsRevision
+        safeExcerpt:
+          "I moved to Helsinki. API key [REDACTED:TOKEN]; the move is permanent.",
+        sourceProjectionVersion: MEMORY_SAFETY_LITE_POLICY_VERSION
       });
-      await expect(prisma.memoryJob.findUniqueOrThrow({
-        where: { id: claim.id }
+      const mixedEntry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: mixed.versionId, userId: mixed.userId }
+      });
+      expect(mixedEntry.normalizedSearchText).toContain("helsinki");
+      expect(mixedEntry.normalizedSearchText).not.toContain(token);
+
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: secretOnly.versionId }
       })).resolves.toMatchObject({
-        acceptedResultHash: null,
-        state: "CLAIMED"
+        contentPurgedAt: now,
+        displayText: null,
+        safetyClassificationReasonCode: "lite_secret_only",
+        safetyClassificationState: "SECRET_FENCED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        safetyClassifierProviderId: null,
+        state: "RETRACTED",
+        structuredValue: null
       });
-      await expect(prisma.memoryExecutionBinding.findMany({
-        orderBy: { ordinal: "asc" },
-        where: { id: { in: [firstBinding.id, secondBinding.id] } }
-      })).resolves.toMatchObject([{
-        acceptedOutputHash: firstOutputHash,
-        state: "SUCCEEDED"
-      }, {
-        acceptedOutputHash: secondOutputHash,
-        state: "SUCCEEDED"
-      }]);
-      await expect(Promise.all([
-        prisma.memoryFact.count({ where: { userId: fact.userId } }),
-        prisma.memoryFactVersion.count({ where: { userId: fact.userId } }),
-        prisma.memoryEvidence.count({ where: { userId: fact.userId } }),
-        prisma.memoryEvent.count({ where: { userId: fact.userId } }),
-        prisma.memorySearchEntry.count({ where: { userId: fact.userId } })
-      ])).resolves.toEqual([1, 1, 0, 1, 0]);
+      await expect(prisma.memoryFact.findUniqueOrThrow({
+        where: { id: secretOnly.factId }
+      })).resolves.toMatchObject({
+        currentVersionId: null,
+        state: "RETRACTED"
+      });
+
+      const restoredProjection = await prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: legacyFenced.versionId }
+      });
+      expect(restoredProjection).toMatchObject({
+        contentPurgedAt: null,
+        displayText:
+          "I work in Espoo. Credential [REDACTED:TOKEN]; keep the commute preference.",
+        safetyClassificationReasonCode: "lite_span_redacted",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        safetyClassifierProviderId: null,
+        sensitivityClass: "NORMAL",
+        state: "ACTIVE"
+      });
+      expect(JSON.stringify(restoredProjection.structuredValue)).not.toContain(token);
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          factVersionId: legacyFenced.versionId,
+          userId: legacyFenced.userId
+        }
+      })).resolves.toBe(1);
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: legacyAutomatic.versionId }
+      })).resolves.toMatchObject({
+        pipelineVersion: "memory-fact-extraction-vnext-v5",
+        safetyClassificationReasonCode: "lite_span_redacted",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        safetyClassifierProviderId: null,
+        sourceMode: "AUTOMATIC",
+        state: "ACTIVE"
+      });
+      const legacyAutomaticProjection = await prisma.memoryFactVersion
+        .findUniqueOrThrow({ where: { id: legacyAutomatic.versionId } });
+      expect(JSON.stringify(legacyAutomaticProjection.structuredValue))
+        .not.toContain(token);
+      expect(JSON.stringify(legacyAutomaticProjection.structuredValue))
+        .toContain("[REDACTED:TOKEN]");
+      // Safety reprojection may inspect source-authorized legacy facts, but it
+      // must not relabel their extraction provenance or make them retrievable
+      // under the stricter vNext authority contract.
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          factVersionId: legacyAutomatic.versionId,
+          userId: legacyAutomatic.userId
+        }
+      })).resolves.toBe(0);
+      expect(classify).not.toHaveBeenCalled();
     } finally {
-      await authorityFixture?.cleanup();
-      await prisma.user.deleteMany({ where: { id: fact.userId } });
+      await prisma.user.deleteMany({
+        where: {
+          id: {
+            in: [
+              mixed.userId,
+              secretOnly.userId,
+              legacyFenced.userId,
+              legacyAutomatic.userId
+            ]
+          }
+        }
+      });
     }
   });
 
@@ -1335,20 +1296,24 @@ describe("Prisma Memory safety reclassification", () => {
         const version = await prisma.memoryFactVersion.findUniqueOrThrow({
           where: { id: fact.versionId }
         });
+        const candidate: MemoryReclassificationCandidate = {
+          category: version.category,
+          coreEligible: version.coreEligible,
+          coreSalience: version.coreSalience,
+          displayText: version.displayText!,
+          factId: fact.factId,
+          id: fact.versionId,
+          modality: version.modality,
+          safetyClassificationState: "PENDING",
+          semanticState: "ACTIVE",
+          sourceMode: version.sourceMode,
+          structuredValue: version.structuredValue!,
+          systemFrom: version.systemFrom,
+          userId
+        };
         return {
-          candidate: {
-            coreEligible: version.coreEligible,
-            coreSalience: version.coreSalience,
-            displayText: version.displayText!,
-            factId: fact.factId,
-            id: fact.versionId,
-            modality: version.modality,
-            semanticState: "ACTIVE",
-            sourceMode: version.sourceMode,
-            systemFrom: version.systemFrom,
-            userId
-          },
-          result: localSecretResult()
+          candidate,
+          result: localLiteResult(candidate)
         } satisfies Readonly<{
           candidate: MemoryReclassificationCandidate;
           result: MemoryReclassificationResult;

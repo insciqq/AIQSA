@@ -4,7 +4,11 @@ import type {
   MemoryActionResultItem
 } from "../../../contracts/memoryClient";
 import type { MemoryActionIntent } from "../../../contracts/memoryActionIntent";
-import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
+import {
+  memoryProjectionHasMeaningfulText,
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../explicit/safety";
 import {
   MemoryControlledMutationCommittedError,
   type ExplicitMemoryService
@@ -23,6 +27,7 @@ import type {
 } from "../persistence/authorizations";
 import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import {
   defaultMemoryClientRefService,
   type MemoryClientRefService
@@ -300,6 +305,32 @@ function mutationRejected(
   };
 }
 
+function safeMutationStatement(value: string | null): string | null {
+  if (!value) return null;
+  const redaction = redactMemorySecrets(value);
+  if (redaction.containsSecret && (
+    !memoryRedactionHasMeaningfulRemainder(value, redaction) ||
+    !memoryProjectionHasMeaningfulText(redaction.redactedText)
+  )) return null;
+  if (value.includes("[REDACTED:") && !memoryProjectionHasMeaningfulText(value)) {
+    return null;
+  }
+  return redaction.redactedText;
+}
+
+function mutationIntentContainsRecognizedSecret(intent: MemoryActionIntent): boolean {
+  return [
+    intent.queryText,
+    intent.referencedMemoryRef,
+    intent.replacementStatement,
+    intent.sensitiveDomainHint,
+    intent.statement,
+    intent.targetQuery,
+    ...(intent.entityMentions ?? []).flatMap((mention) =>
+      [mention.resolvedRef, mention.text])
+  ].some((value) => value !== null && redactMemorySecrets(value).containsSecret);
+}
+
 async function mutationAuthorityCurrent(
   selector: MemoryTargetSelector | undefined,
   execution: MemoryIntentActionExecutionInput,
@@ -388,15 +419,19 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
         };
       }
 
-      if (intent.confidenceBand !== "HIGH" || intent.sensitivity === "SECRET" ||
-        intent.sensitivity === "UNCERTAIN") {
+      if (mutationIntentContainsRecognizedSecret(intent)) {
+        return mutationRejected(intent.action);
+      }
+
+      if (intent.confidenceBand !== "HIGH") {
         return mutationRejected(intent.action);
       }
       if (intent.action === "SAVE") {
-        const statement = intent.statement;
-        if (!statement || memoryExplicitStatementContainsSecret(statement)) {
-          return mutationRejected("SAVE");
-        }
+        const statement = safeMutationStatement(intent.statement);
+        if (!statement || execution.currentUserText.includes("[REDACTED:") && (
+          !memoryProjectionHasMeaningfulText(execution.currentUserText) ||
+          !memoryProjectionHasMeaningfulText(statement)
+        )) return mutationRejected("SAVE");
         if (intent.thisChatOnly) {
           return { operation: "SAVE", statement, status: "THIS_CHAT_ONLY" };
         }
@@ -414,7 +449,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
             chatId: execution.chatId,
             controlIntent: intent,
             modelRunId: execution.modelRunId,
-            sourceText: execution.currentUserText
+            sourceText: sanitizeMemoryUtilityText(execution.currentUserText).safeText
           },
           now
         );
@@ -432,8 +467,6 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
             authorizedPayloadHash: authorization.authorizedPayloadHash,
             modelRunId: execution.modelRunId,
             persistedToolCallId: null,
-            safetyClassifierExecutionId: execution.bindingId,
-            safetyClassifierIntent: intent,
             sensitivityClass: "NORMAL"
           });
         } catch (error) {
@@ -466,12 +499,17 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
       }
 
       const operation = intent.action === "UPDATE" ? "EDIT" as const : "FORGET" as const;
-      if (intent.action === "UPDATE" && (
-        !intent.replacementStatement ||
-        memoryExplicitStatementContainsSecret(intent.replacementStatement)
-      )) {
+      const replacementStatement = intent.action === "UPDATE"
+        ? safeMutationStatement(intent.replacementStatement)
+        : null;
+      if (intent.action === "UPDATE" && !replacementStatement) {
         return mutationRejected("UPDATE");
       }
+      if (intent.action === "UPDATE" &&
+        execution.currentUserText.includes("[REDACTED:") && (
+          !memoryProjectionHasMeaningfulText(execution.currentUserText) ||
+          !memoryProjectionHasMeaningfulText(replacementStatement!)
+        )) return mutationRejected("UPDATE");
       const resolution = await resolveTarget(
         input.explicitService,
         refs,
@@ -485,8 +523,8 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
           candidates: resolution.targets.map((target) =>
             resultItem(refs, execution.userId, execution.modelRunId, target, now)),
           operation: intent.action,
-          ...(intent.action === "UPDATE" && intent.replacementStatement
-            ? { statement: intent.replacementStatement }
+          ...(intent.action === "UPDATE" && replacementStatement
+            ? { statement: replacementStatement }
             : {}),
           status: "AMBIGUOUS"
         };
@@ -508,7 +546,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
         action: operation,
         expectedTargetVersionId: target.versionId,
         replacementStatementHash: intent.action === "UPDATE"
-          ? memorySha256(intent.replacementStatement!)
+          ? memorySha256(replacementStatement!)
           : undefined,
         targetFactId: target.factId
       });
@@ -529,14 +567,14 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
             targetSelectionOutputHash: resolution.selectionEvidence.acceptedOutputHash,
             targetSelectionSelectedHandle: resolution.selectionEvidence.selectedHandle
           } : {}),
-          sourceText: execution.currentUserText,
+          sourceText: sanitizeMemoryUtilityText(execution.currentUserText).safeText,
           targetFactId: target.factId
         },
         now
       );
       assertActionAdmissionActive(execution.signal);
       if (intent.action === "UPDATE") {
-        const statement = intent.replacementStatement!;
+        const statement = replacementStatement!;
         let response: Awaited<ReturnType<ExplicitMemoryService["update"]>>;
         try {
           response = await input.explicitService.update(execution.userId, target.factId, {
@@ -549,8 +587,6 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
             admissionDeadlineAtMs: execution.admissionDeadlineAtMs,
             modelRunId: execution.modelRunId,
             persistedToolCallId: null,
-            safetyClassifierExecutionId: execution.bindingId,
-            safetyClassifierIntent: intent,
             sensitivityClass: "NORMAL"
           });
         } catch (error) {

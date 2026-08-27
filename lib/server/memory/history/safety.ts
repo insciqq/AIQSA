@@ -1,4 +1,9 @@
-import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
+import {
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets,
+  type MemorySecretSourceMapEntry
+} from "../explicit/safety";
+export { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 
 export const MEMORY_DERIVED_SAFETY_CLASSES = [
   "NORMAL",
@@ -17,6 +22,7 @@ export type MemorySafeTextProjection = Readonly<
       eligible: false;
       providerSafeText: null;
       redactionReasonCodes: readonly string[];
+      redactionSourceMap: readonly MemorySecretSourceMapEntry[];
       redactionState: "EXCLUDED";
       safetyClass: "HIGHLY_SENSITIVE" | "SECRET_TAINTED";
       safeText: null;
@@ -25,6 +31,7 @@ export type MemorySafeTextProjection = Readonly<
       eligible: true;
       providerSafeText: string;
       redactionReasonCodes: readonly string[];
+      redactionSourceMap: readonly MemorySecretSourceMapEntry[];
       redactionState: "NOT_NEEDED" | "REDACTED";
       safetyClass: "NORMAL" | "SENSITIVE";
       safeText: string;
@@ -71,29 +78,39 @@ export function projectMemoryHistorySafeText(value: string): MemorySafeTextProje
             ? "SOURCE_TEXT_LIMIT"
             : "UNSAFE_CONTROL"
       ],
+      redactionSourceMap: [],
       redactionState: "EXCLUDED",
       safetyClass: "HIGHLY_SENSITIVE",
       safeText: null
     };
   }
 
-  if (memoryExplicitStatementContainsSecret(sourceText)) {
+  const redaction = redactMemorySecrets(sourceText);
+  if (
+    redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(sourceText, redaction)
+  ) {
     return {
       eligible: false,
       providerSafeText: null,
-      redactionReasonCodes: ["SECRET_PATTERN"],
+      redactionReasonCodes: ["SECRET_ONLY"],
+      redactionSourceMap: redaction.sourceMap,
       redactionState: "EXCLUDED",
       safetyClass: "SECRET_TAINTED",
       safeText: null
     };
   }
 
+  const reasonCodes = [...new Set(redaction.spans.map((span) =>
+    `SECRET_REDACTED_${span.finding}`))].sort();
+
   return {
     eligible: true,
-    providerSafeText: sourceText,
-    redactionReasonCodes: [],
-    redactionState: "NOT_NEEDED",
+    providerSafeText: redaction.redactedText,
+    redactionReasonCodes: reasonCodes,
+    redactionSourceMap: redaction.sourceMap,
+    redactionState: redaction.containsSecret ? "REDACTED" : "NOT_NEEDED",
     safetyClass: "NORMAL",
-    safeText: sourceText
+    safeText: redaction.redactedText
   };
 }

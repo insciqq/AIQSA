@@ -19,29 +19,205 @@ export const MEMORY_SECRET_FINDINGS = [
 
 export type MemorySecretFinding = (typeof MEMORY_SECRET_FINDINGS)[number];
 
+export type MemorySecretConfidence = "HIGH" | "LOW" | "MEDIUM";
+export type MemorySecretDetectorClass =
+  | "CHECKSUM"
+  | "HEURISTIC_ENTROPY"
+  | "KNOWN_FORMAT"
+  | "STRUCTURAL_FORMAT";
+export type MemorySecretPolicyAction = "AUDIT_ONLY" | "REDACT";
+
 export type MemorySecretParseResult = Readonly<{
   containsSecret: boolean;
   findings: readonly MemorySecretFinding[];
+  spans: readonly MemorySecretSpan[];
 }>;
 
 export type MemorySecretSpan = Readonly<{
+  action: MemorySecretPolicyAction;
+  confidence: MemorySecretConfidence;
+  detectorClass: MemorySecretDetectorClass;
+  end: number;
+  finding: MemorySecretFinding;
+  placeholder: string;
+  start: number;
+}>;
+
+export type MemorySecretSourceMapEntry = Readonly<{
+  kind: "REDACTION" | "SOURCE";
+  outputEnd: number;
+  outputStart: number;
+  sourceEnd: number;
+  sourceStart: number;
+}>;
+
+export type MemorySecretRedactionResult = Readonly<{
+  containsSecret: boolean;
+  detections: readonly MemorySecretSpan[];
+  findings: readonly MemorySecretFinding[];
+  redactedText: string;
+  sourceMap: readonly MemorySecretSourceMapEntry[];
+  spans: readonly MemorySecretSpan[];
+}>;
+
+/** Redacts a JSON/object key and assigns a deterministic collision suffix.
+ * The suffix loop must advance: a prior literal key can already occupy the
+ * first generated suffix after two distinct secrets collapse to one key. */
+export function memorySecretSafeObjectKey(
+  key: string,
+  usedKeys: Set<string>
+): string {
+  const baseKey = redactMemorySecrets(key).redactedText;
+  let safeKey = baseKey;
+  let suffix = 2;
+  while (usedKeys.has(safeKey)) {
+    safeKey = `${baseKey}#${suffix}`;
+    suffix += 1;
+  }
+  usedKeys.add(safeKey);
+  return safeKey;
+}
+
+/** Recursive last-line check for JSON/provider structures. Generic entropy is
+ * still audit-only because the scalar parser reports containsSecret only for
+ * v1 REDACT findings. Cycles are ignored after their first visit so defensive
+ * callers can inspect arbitrary decoded objects without recursing forever. */
+export function memoryValueContainsRecognizedSecret(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet()
+): boolean {
+  if (typeof value === "string") return redactMemorySecrets(value).containsSecret;
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((entry) => memoryValueContainsRecognizedSecret(entry, seen));
+  }
+  return Object.entries(value).some(([key, entry]) =>
+    redactMemorySecrets(key).containsSecret ||
+    memoryValueContainsRecognizedSecret(entry, seen));
+}
+
+export const MEMORY_SECRET_REDACTION_PLACEHOLDER = "[REDACTED_SECRET]" as const;
+
+type MemorySecretCandidateSpan = Readonly<{
   end: number;
   finding: MemorySecretFinding;
   start: number;
 }>;
 
-export type MemorySecretRedactionResult = Readonly<{
-  containsSecret: boolean;
-  findings: readonly MemorySecretFinding[];
-  redactedText: string;
-  spans: readonly MemorySecretSpan[];
-}>;
+const MEMORY_SECRET_POLICY = Object.freeze({
+  CREDENTIAL_URL: Object.freeze({
+    action: "REDACT",
+    confidence: "HIGH",
+    detectorClass: "STRUCTURAL_FORMAT",
+    placeholder: "[REDACTED:CREDENTIAL_URL]"
+  }),
+  HIGH_ENTROPY_TOKEN: Object.freeze({
+    action: "AUDIT_ONLY",
+    confidence: "LOW",
+    detectorClass: "HEURISTIC_ENTROPY",
+    placeholder: "[REDACTED:HIGH_ENTROPY_TOKEN]"
+  }),
+  JSON_WEB_TOKEN: Object.freeze({
+    action: "REDACT",
+    confidence: "HIGH",
+    detectorClass: "STRUCTURAL_FORMAT",
+    placeholder: "[REDACTED:JWT]"
+  }),
+  KNOWN_TOKEN: Object.freeze({
+    action: "REDACT",
+    confidence: "HIGH",
+    detectorClass: "KNOWN_FORMAT",
+    placeholder: "[REDACTED:TOKEN]"
+  }),
+  PAYMENT_CARD: Object.freeze({
+    action: "REDACT",
+    confidence: "HIGH",
+    detectorClass: "CHECKSUM",
+    placeholder: "[REDACTED:PAYMENT_CARD]"
+  }),
+  PEM_PRIVATE_KEY: Object.freeze({
+    action: "REDACT",
+    confidence: "HIGH",
+    detectorClass: "STRUCTURAL_FORMAT",
+    placeholder: "[REDACTED:PRIVATE_KEY]"
+  }),
+  RECOVERY_CODE: Object.freeze({
+    action: "REDACT",
+    confidence: "MEDIUM",
+    detectorClass: "STRUCTURAL_FORMAT",
+    placeholder: "[REDACTED:RECOVERY_CODE]"
+  })
+} satisfies Readonly<Record<MemorySecretFinding, Readonly<{
+  action: MemorySecretPolicyAction;
+  confidence: MemorySecretConfidence;
+  detectorClass: MemorySecretDetectorClass;
+  placeholder: string;
+}>>>);
 
-export const MEMORY_SECRET_REDACTION_PLACEHOLDER = "[REDACTED_SECRET]" as const;
+const NON_MEANINGFUL_REDACTION_LABELS = new Set([
+  "api",
+  "card",
+  "code",
+  "credential",
+  "credentials",
+  "is",
+  "key",
+  "my",
+  "password",
+  "private",
+  "recovery",
+  "secret",
+  "the",
+  "token",
+  "карта",
+  "ключ",
+  "код",
+  "мой",
+  "моя",
+  "пароль",
+  "секрет",
+  "токен"
+]);
+
+const MEMORY_MUTATION_WRAPPER_WORDS = new Set([
+  ...NON_MEANINGFUL_REDACTION_LABELS,
+  "across",
+  "all",
+  "chat",
+  "chats",
+  "conversation",
+  "conversations",
+  "for",
+  "future",
+  "in",
+  "keep",
+  "please",
+  "remember",
+  "save",
+  "store",
+  "use",
+  "будущих",
+  "будущее",
+  "в",
+  "все",
+  "диалогах",
+  "диалоги",
+  "запомни",
+  "пожалуйста",
+  "сохрани",
+  "храни"
+]);
+
+const MEMORY_REDACTION_PLACEHOLDER_PATTERN = /\[REDACTED:[A-Z_]+\]/gu;
 
 const ASCII_DIGITS = "0123456789";
 const ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const TOKEN_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}+/_=-.`;
+// '=' is a common assignment delimiter around credentials (for example
+// api_key=sk-...). Treating it as part of the surrounding run would hide a
+// known-format prefix behind an ordinary label. Padding itself is not needed
+// by any v1 known-token detector.
+const TOKEN_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}+/_-.`;
 const BASE64URL_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}_-`;
 const ASCII_HEXADECIMAL = `${ASCII_DIGITS}abcdefABCDEF`;
 const PEM_BEGIN = "-----BEGIN ";
@@ -97,22 +273,10 @@ function isRecoveryGroup(value: string): boolean {
   return hasLetter;
 }
 
-function tokenRuns(value: string): string[] {
-  const runs: string[] = [];
-  let start = -1;
-  for (let index = 0; index <= value.length; index += 1) {
-    const character = value[index];
-    const allowed = character !== undefined && TOKEN_CHARACTERS.includes(character);
-    if (allowed && start < 0) start = index;
-    if ((!allowed || index === value.length) && start >= 0) {
-      runs.push(value.slice(start, index));
-      start = -1;
-    }
-  }
-  return runs;
-}
-
-function tokenRunSpans(value: string): readonly Readonly<{
+function characterRunSpans(
+  value: string,
+  characters: string
+): readonly Readonly<{
   end: number;
   start: number;
   text: string;
@@ -121,7 +285,7 @@ function tokenRunSpans(value: string): readonly Readonly<{
   let start = -1;
   for (let index = 0; index <= value.length; index += 1) {
     const character = value[index];
-    const allowed = character !== undefined && TOKEN_CHARACTERS.includes(character);
+    const allowed = character !== undefined && characters.includes(character);
     if (allowed && start < 0) start = index;
     if ((!allowed || index === value.length) && start >= 0) {
       runs.push({ end: index, start, text: value.slice(start, index) });
@@ -131,66 +295,8 @@ function tokenRunSpans(value: string): readonly Readonly<{
   return runs;
 }
 
-function hasPemPrivateKey(value: string): boolean {
-  let offset = 0;
-  while (offset < value.length) {
-    const begin = value.indexOf(PEM_BEGIN, offset);
-    if (begin < 0) return false;
-    const labelStart = begin + PEM_BEGIN.length;
-    const labelEnd = value.indexOf("-----", labelStart);
-    if (labelEnd > labelStart) {
-      const label = value.slice(labelStart, labelEnd);
-      if (label === PEM_PRIVATE_KEY_SUFFIX || label.endsWith(` ${PEM_PRIVATE_KEY_SUFFIX}`)) {
-        return true;
-      }
-    }
-    offset = labelStart;
-  }
-  return false;
-}
-
-function whitespaceTokens(value: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  const flush = () => {
-    if (current) tokens.push(current);
-    current = "";
-  };
-  for (const character of value) {
-    if (character === " " || character === "\t" || character === "\n" || character === "\r") {
-      flush();
-    } else {
-      current += character;
-    }
-  }
-  flush();
-  return tokens;
-}
-
-function trimDelimiters(value: string): string {
-  const delimiters = "\t\n\r,.;:!?()[]{}<>\"'";
-  let start = 0;
-  let end = value.length;
-  while (start < end && delimiters.includes(value[start] ?? "")) start += 1;
-  while (end > start && delimiters.includes(value[end - 1] ?? "")) end -= 1;
-  return value.slice(start, end);
-}
-
-function hasCredentialUrl(value: string): boolean {
-  // URL parsing is intentionally used instead of a broad text pattern.  A
-  // credential is present only when the parsed URI has both user and password
-  // components in its authority section.
-  for (const rawToken of whitespaceTokens(value)) {
-    const token = trimDelimiters(rawToken);
-    if (!token.includes("://")) continue;
-    try {
-      const parsed = new URL(token);
-      if (parsed.username.length > 0 && parsed.password.length > 0) return true;
-    } catch {
-      // Malformed text is not treated as a credential format by this parser.
-    }
-  }
-  return false;
+function tokenRunSpans(value: string): ReturnType<typeof characterRunSpans> {
+  return characterRunSpans(value, TOKEN_CHARACTERS);
 }
 
 function base64UrlSegment(value: string, minimumLength: number): boolean {
@@ -206,66 +312,6 @@ function looksLikeJsonObject(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function hasJsonWebToken(value: string): boolean {
-  for (const token of tokenRuns(value)) {
-    const segments = token.split(".");
-    if (segments.length !== 3) continue;
-    if (!base64UrlSegment(segments[0] ?? "", 8) ||
-      !base64UrlSegment(segments[1] ?? "", 8) ||
-      !base64UrlSegment(segments[2] ?? "", 8)) continue;
-    if (looksLikeJsonObject(segments[0] ?? "") && looksLikeJsonObject(segments[1] ?? "")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function knownToken(value: string): boolean {
-  for (const token of tokenRuns(value)) {
-    if (token.startsWith("AKIA") && token.length === 20 &&
-      everyCharacter(token.slice(4), `${ASCII_DIGITS}ABCDEFGHIJKLMNOPQRSTUVWXYZ`)) {
-      return true;
-    }
-    if (token.startsWith("sk-") && token.length >= 20 &&
-      everyCharacter(token.slice(3), TOKEN_CHARACTERS)) {
-      return true;
-    }
-    if (token.startsWith("gh") && token.length >= 24 &&
-      "pousr".includes(token[2] ?? "") && token[3] === "_" &&
-      everyCharacter(token.slice(4), TOKEN_CHARACTERS)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasRecoveryCode(value: string): boolean {
-  // Four arbitrary four-letter prose words are not a recognizable recovery
-  // code. Require the explicit grouped format instead of discarding ordinary
-  // text such as "user said they were" as secret-tainted.
-  for (let start = 0; start < value.length; start += 1) {
-    if (isAsciiAlphanumeric(value[start - 1])) continue;
-    let cursor = start;
-    let valid = true;
-    for (let ordinal = 0; ordinal < 4; ordinal += 1) {
-      if (!isRecoveryGroup(value.slice(cursor, cursor + 4))) {
-        valid = false;
-        break;
-      }
-      cursor += 4;
-      if (ordinal < 3) {
-        if (value[cursor] !== "-") {
-          valid = false;
-          break;
-        }
-        cursor += 1;
-      }
-    }
-    if (valid && !isAsciiAlphanumeric(value[cursor])) return true;
-  }
-  return false;
 }
 
 function digitsOnly(value: string): string {
@@ -301,32 +347,6 @@ function luhnValid(value: string): boolean {
   return sum % 10 === 0;
 }
 
-function hasPaymentCard(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    if (!isAsciiDigit(value[index]) || isAsciiDigit(value[index - 1])) continue;
-    let end = index;
-    let separators = 0;
-    while (end < value.length) {
-      const character = value[end];
-      if (isAsciiDigit(character)) {
-        end += 1;
-        continue;
-      }
-      if ((character === " " || character === "-") && separators < 8 &&
-        isAsciiDigit(value[end + 1])) {
-        separators += 1;
-        end += 1;
-        continue;
-      }
-      break;
-    }
-    const candidate = value.slice(index, end);
-    const digits = digitsOnly(candidate);
-    if (digits.length >= 13 && digits.length <= 19 && luhnValid(candidate)) return true;
-  }
-  return false;
-}
-
 function shannonEntropy(value: string): number {
   const frequencies = new Map<string, number>();
   for (const character of value) {
@@ -356,29 +376,8 @@ function highEntropy(value: string): boolean {
     hasCharacter(compact, ASCII_DIGITS) && shannonEntropy(compact) >= 3.5;
 }
 
-function hasHighEntropyToken(value: string): boolean {
-  return tokenRuns(value).some((token) => highEntropy(token));
-}
-
-function findingList(value: string): MemorySecretFinding[] {
-  const findings: MemorySecretFinding[] = [];
-  const checks: readonly [MemorySecretFinding, () => boolean][] = [
-    ["PEM_PRIVATE_KEY", () => hasPemPrivateKey(value)],
-    ["CREDENTIAL_URL", () => hasCredentialUrl(value)],
-    ["JSON_WEB_TOKEN", () => hasJsonWebToken(value)],
-    ["KNOWN_TOKEN", () => knownToken(value)],
-    ["RECOVERY_CODE", () => hasRecoveryCode(value)],
-    ["PAYMENT_CARD", () => hasPaymentCard(value)],
-    ["HIGH_ENTROPY_TOKEN", () => hasHighEntropyToken(value)]
-  ];
-  for (const [finding, check] of checks) {
-    if (check()) findings.push(finding);
-  }
-  return findings;
-}
-
-function privateKeySpans(value: string): readonly MemorySecretSpan[] {
-  const spans: MemorySecretSpan[] = [];
+function privateKeySpans(value: string): readonly MemorySecretCandidateSpan[] {
+  const spans: MemorySecretCandidateSpan[] = [];
   let offset = 0;
   while (offset < value.length) {
     const start = value.indexOf(PEM_BEGIN, offset);
@@ -408,48 +407,39 @@ function privateKeySpans(value: string): readonly MemorySecretSpan[] {
   return spans;
 }
 
-function whitespaceTokenSpans(value: string): readonly Readonly<{
-  end: number;
-  start: number;
-  text: string;
-}>[] {
-  const spans: Array<Readonly<{ end: number; start: number; text: string }>> = [];
-  let start = -1;
-  for (let index = 0; index <= value.length; index += 1) {
-    const character = value[index];
-    const whitespace = character === undefined || character === " " ||
-      character === "\t" || character === "\n" || character === "\r";
-    if (!whitespace && start < 0) start = index;
-    if (whitespace && start >= 0) {
-      spans.push({ end: index, start, text: value.slice(start, index) });
-      start = -1;
+function credentialUrlSpans(value: string): readonly MemorySecretCandidateSpan[] {
+  const spans: MemorySecretCandidateSpan[] = [];
+  const schemeCharacters = `${ASCII_DIGITS}${ASCII_LETTERS}+.-`;
+  const terminalDelimiters = "\t\n\r ,;!?()[]{}<>\"'";
+  let searchFrom = 0;
+  while (searchFrom < value.length) {
+    const separator = value.indexOf("://", searchFrom);
+    if (separator < 0) break;
+    let start = separator;
+    while (start > 0 && schemeCharacters.includes(value[start - 1] ?? "")) {
+      start -= 1;
     }
+    let end = separator + 3;
+    while (end < value.length &&
+      !terminalDelimiters.includes(value[end] ?? "")) end += 1;
+    while (end > separator + 3 && ".:".includes(value[end - 1] ?? "")) end -= 1;
+    const token = value.slice(start, end);
+    try {
+      const parsed = new URL(token);
+      if (parsed.username.length > 0 && parsed.password.length > 0) {
+        spans.push({ end, finding: "CREDENTIAL_URL", start });
+      }
+    } catch {
+      // A malformed candidate has no trustworthy local URL boundary and is
+      // not promoted by this exact-format detector.
+    }
+    searchFrom = Math.max(separator + 3, end);
   }
   return spans;
 }
 
-function credentialUrlSpans(value: string): readonly MemorySecretSpan[] {
-  const delimiters = "\t\n\r,.;:!?()[]{}<>\"'";
-  return whitespaceTokenSpans(value).flatMap((raw) => {
-    let start = raw.start;
-    let end = raw.end;
-    while (start < end && delimiters.includes(value[start] ?? "")) start += 1;
-    while (end > start && delimiters.includes(value[end - 1] ?? "")) end -= 1;
-    const token = value.slice(start, end);
-    if (!token.includes("://")) return [];
-    try {
-      const parsed = new URL(token);
-      return parsed.username.length > 0 && parsed.password.length > 0
-        ? [{ end, finding: "CREDENTIAL_URL" as const, start }]
-        : [];
-    } catch {
-      return [];
-    }
-  });
-}
-
-function jwtSpans(value: string): readonly MemorySecretSpan[] {
-  return tokenRunSpans(value).flatMap((run) => {
+function jwtSpans(value: string): readonly MemorySecretCandidateSpan[] {
+  return characterRunSpans(value, `${BASE64URL_CHARACTERS}.`).flatMap((run) => {
     const segments = run.text.split(".");
     if (segments.length !== 3 ||
       !base64UrlSegment(segments[0] ?? "", 8) ||
@@ -461,24 +451,39 @@ function jwtSpans(value: string): readonly MemorySecretSpan[] {
   });
 }
 
-function knownTokenSpans(value: string): readonly MemorySecretSpan[] {
-  return tokenRunSpans(value).flatMap((run) => {
-    const token = run.text;
-    const aws = token.startsWith("AKIA") && token.length === 20 &&
-      everyCharacter(token.slice(4), `${ASCII_DIGITS}ABCDEFGHIJKLMNOPQRSTUVWXYZ`);
-    const openAi = token.startsWith("sk-") && token.length >= 20 &&
-      everyCharacter(token.slice(3), TOKEN_CHARACTERS);
-    const github = token.startsWith("gh") && token.length >= 24 &&
-      "pousr".includes(token[2] ?? "") && token[3] === "_" &&
-      everyCharacter(token.slice(4), TOKEN_CHARACTERS);
-    return aws || openAi || github
-      ? [{ end: run.end, finding: "KNOWN_TOKEN" as const, start: run.start }]
-      : [];
-  });
+function knownTokenSpans(value: string): readonly MemorySecretCandidateSpan[] {
+  const spans: MemorySecretCandidateSpan[] = [];
+  for (let start = 0; start < value.length; start += 1) {
+    const previous = value[start - 1];
+    if (isAsciiAlphanumeric(previous) || previous === "_") continue;
+    if (value.startsWith("AKIA", start)) {
+      const end = start + 20;
+      if (end <= value.length && everyCharacter(
+        value.slice(start + 4, end),
+        `${ASCII_DIGITS}ABCDEFGHIJKLMNOPQRSTUVWXYZ`
+      ) && !isAsciiAlphanumeric(value[end])) {
+        spans.push({ end, finding: "KNOWN_TOKEN", start });
+        start = end - 1;
+      }
+      continue;
+    }
+    const openAi = value.startsWith("sk-", start);
+    const github = value.startsWith("gh", start) &&
+      "pousr".includes(value[start + 2] ?? "") && value[start + 3] === "_";
+    if (!openAi && !github) continue;
+    let end = start + (openAi ? 3 : 4);
+    while (end < value.length && TOKEN_CHARACTERS.includes(value[end] ?? "")) end += 1;
+    const minimumLength = openAi ? 20 : 24;
+    if (end - start >= minimumLength) {
+      spans.push({ end, finding: "KNOWN_TOKEN", start });
+      start = end - 1;
+    }
+  }
+  return spans;
 }
 
-function recoveryCodeSpans(value: string): readonly MemorySecretSpan[] {
-  const spans: MemorySecretSpan[] = [];
+function recoveryCodeSpans(value: string): readonly MemorySecretCandidateSpan[] {
+  const spans: MemorySecretCandidateSpan[] = [];
   for (let start = 0; start < value.length; start += 1) {
     if (isAsciiAlphanumeric(value[start - 1])) continue;
     let cursor = start;
@@ -505,8 +510,8 @@ function recoveryCodeSpans(value: string): readonly MemorySecretSpan[] {
   return spans;
 }
 
-function paymentCardSpans(value: string): readonly MemorySecretSpan[] {
-  const spans: MemorySecretSpan[] = [];
+function paymentCardSpans(value: string): readonly MemorySecretCandidateSpan[] {
+  const spans: MemorySecretCandidateSpan[] = [];
   for (let start = 0; start < value.length; start += 1) {
     if (!isAsciiDigit(value[start]) || isAsciiDigit(value[start - 1])) continue;
     let end = start;
@@ -535,14 +540,14 @@ function paymentCardSpans(value: string): readonly MemorySecretSpan[] {
   return spans;
 }
 
-function highEntropySpans(value: string): readonly MemorySecretSpan[] {
+function highEntropySpans(value: string): readonly MemorySecretCandidateSpan[] {
   return tokenRunSpans(value).flatMap((run) => highEntropy(run.text)
     ? [{ end: run.end, finding: "HIGH_ENTROPY_TOKEN" as const, start: run.start }]
     : []);
 }
 
 function secretSpans(value: string): readonly MemorySecretSpan[] {
-  const spans = [
+  const candidates = [
     ...privateKeySpans(value),
     ...credentialUrlSpans(value),
     ...jwtSpans(value),
@@ -552,14 +557,34 @@ function secretSpans(value: string): readonly MemorySecretSpan[] {
     ...highEntropySpans(value)
   ];
   const seen = new Set<string>();
-  return Object.freeze(spans.filter((span) => {
+  return Object.freeze(candidates.filter((span) => {
     if (span.start < 0 || span.end <= span.start || span.end > value.length) return false;
     const key = `${span.finding}:${span.start}:${span.end}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).sort((left, right) => left.start - right.start || right.end - left.end ||
+  }).map((span): MemorySecretSpan => Object.freeze({
+    ...span,
+    ...MEMORY_SECRET_POLICY[span.finding]
+  })).sort((left, right) => left.start - right.start || right.end - left.end ||
     left.finding.localeCompare(right.finding)));
+}
+
+function normalizedRedactionSpans(
+  detections: readonly MemorySecretSpan[]
+): readonly MemorySecretSpan[] {
+  const longestFirst = detections.filter((span) => span.action === "REDACT")
+    .sort((left, right) =>
+      (right.end - right.start) - (left.end - left.start) ||
+      left.start - right.start || left.finding.localeCompare(right.finding));
+  const selected: MemorySecretSpan[] = [];
+  for (const candidate of longestFirst) {
+    const overlaps = selected.some((span) =>
+      candidate.start < span.end && candidate.end > span.start);
+    if (!overlaps) selected.push(candidate);
+  }
+  return Object.freeze(selected.sort((left, right) => left.start - right.start ||
+    left.end - right.end || left.finding.localeCompare(right.finding)));
 }
 
 /**
@@ -573,53 +598,118 @@ export function redactMemorySecrets(value: string): MemorySecretRedactionResult 
   if (typeof value !== "string" || value.length === 0) {
     return {
       containsSecret: false,
+      detections: Object.freeze([]),
       findings: Object.freeze([]),
       redactedText: typeof value === "string" ? value : "",
+      sourceMap: Object.freeze([]),
+      spans: Object.freeze([])
+    };
+  }
+  const detections = secretSpans(value);
+  const spans = normalizedRedactionSpans(detections);
+  const findings = MEMORY_SECRET_FINDINGS.filter((finding) =>
+    detections.some((span) => span.finding === finding));
+  if (spans.length === 0) {
+    return {
+      containsSecret: false,
+      detections,
+      findings: Object.freeze(findings),
+      redactedText: value,
+      sourceMap: Object.freeze([{
+        kind: "SOURCE",
+        outputEnd: value.length,
+        outputStart: 0,
+        sourceEnd: value.length,
+        sourceStart: 0
+      }]),
+      spans
+    };
+  }
+  let cursor = 0;
+  let redactedText = "";
+  const sourceMap: MemorySecretSourceMapEntry[] = [];
+  for (const span of spans) {
+    if (cursor < span.start) {
+      const outputStart = redactedText.length;
+      redactedText += value.slice(cursor, span.start);
+      sourceMap.push({
+        kind: "SOURCE",
+        outputEnd: redactedText.length,
+        outputStart,
+        sourceEnd: span.start,
+        sourceStart: cursor
+      });
+    }
+    const outputStart = redactedText.length;
+    redactedText += span.placeholder;
+    sourceMap.push({
+      kind: "REDACTION",
+      outputEnd: redactedText.length,
+      outputStart,
+      sourceEnd: span.end,
+      sourceStart: span.start
+    });
+    cursor = span.end;
+  }
+  if (cursor < value.length) {
+    const outputStart = redactedText.length;
+    redactedText += value.slice(cursor);
+    sourceMap.push({
+      kind: "SOURCE",
+      outputEnd: redactedText.length,
+      outputStart,
+      sourceEnd: value.length,
+      sourceStart: cursor
+    });
+  }
+  return {
+    containsSecret: true,
+    detections,
+    findings: Object.freeze(findings),
+    redactedText,
+    sourceMap: Object.freeze(sourceMap),
+    spans
+  };
+}
+
+/** True when copied source characters retain information beyond a label for
+ * the removed value. Placeholders never make a secret-only projection
+ * eligible on their own. */
+export function memoryRedactionHasMeaningfulRemainder(
+  value: string,
+  result: MemorySecretRedactionResult = redactMemorySecrets(value)
+): boolean {
+  const retained = result.sourceMap
+    .filter((entry) => entry.kind === "SOURCE")
+    .map((entry) => value.slice(entry.sourceStart, entry.sourceEnd))
+    .join(" ");
+  const tokens = retained.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens.some((token) => !NON_MEANINGFUL_REDACTION_LABELS.has(token));
+}
+
+/** Determines whether an already-redacted projection still carries content
+ * beyond a secret label or Memory-command wrapper. */
+export function memoryProjectionHasMeaningfulText(value: string): boolean {
+  const tokens = value.replace(MEMORY_REDACTION_PLACEHOLDER_PATTERN, " ")
+    .toLowerCase()
+    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens.some((token) => !MEMORY_MUTATION_WRAPPER_WORDS.has(token));
+}
+
+export function parseMemorySecret(value: string): MemorySecretParseResult {
+  if (typeof value !== "string" || value.length === 0) {
+    return {
+      containsSecret: false,
+      findings: Object.freeze([]),
       spans: Object.freeze([])
     };
   }
   const spans = secretSpans(value);
   const findings = MEMORY_SECRET_FINDINGS.filter((finding) =>
     spans.some((span) => span.finding === finding));
-  if (spans.length === 0) {
-    return {
-      containsSecret: false,
-      findings: Object.freeze([]),
-      redactedText: value,
-      spans
-    };
-  }
-  const merged: Array<{ end: number; start: number }> = [];
-  for (const span of spans) {
-    const previous = merged[merged.length - 1];
-    if (previous && span.start < previous.end) {
-      previous.end = Math.max(previous.end, span.end);
-    } else {
-      merged.push({ end: span.end, start: span.start });
-    }
-  }
-  let cursor = 0;
-  let redactedText = "";
-  for (const span of merged) {
-    redactedText += value.slice(cursor, span.start) + MEMORY_SECRET_REDACTION_PLACEHOLDER;
-    cursor = span.end;
-  }
-  redactedText += value.slice(cursor);
   return {
-    containsSecret: true,
+    containsSecret: spans.some((span) => span.action === "REDACT"),
     findings: Object.freeze(findings),
-    redactedText,
     spans
-  };
-}
-
-export function parseMemorySecret(value: string): MemorySecretParseResult {
-  if (typeof value !== "string" || value.length === 0) {
-    return { containsSecret: false, findings: Object.freeze([]) };
-  }
-  const findings = findingList(value);
-  return {
-    containsSecret: findings.length > 0,
-    findings: Object.freeze(findings)
   };
 }

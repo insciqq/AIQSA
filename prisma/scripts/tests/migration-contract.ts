@@ -1666,9 +1666,11 @@ function runKnowledgeH2DurableDispatchMigrationProof(
         '{}'::jsonb, 'x', repeat('2', 64), 1, 1, 0, 0, 0
       );
       UPDATE "KnowledgeProviderAttempt" SET
-        state = 'dispatched', "dispatchedAt" = CURRENT_TIMESTAMP,
-        "leaseExpiresAt" = CURRENT_TIMESTAMP + interval '5 minutes',
-        "updatedAt" = CURRENT_TIMESTAMP
+        state = 'dispatched',
+        "dispatchedAt" = GREATEST(CURRENT_TIMESTAMP, "createdAt"),
+        "leaseExpiresAt" = GREATEST(CURRENT_TIMESTAMP, "createdAt") +
+          interval '5 minutes',
+        "updatedAt" = GREATEST(CURRENT_TIMESTAMP, "createdAt")
       WHERE id = 'knowledge-h2-attempt';
       SELECT 'knowledge-h2-manifest-sealed';
     `);

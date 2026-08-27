@@ -2788,21 +2788,21 @@ describe("Personal Memory v1 run admission", () => {
         componentMetrics: {
           safetyFindingCounts: { KNOWN_TOKEN: 1 }
         },
-        querySafetyVersion: "memory-read-query-safety-v1"
+        querySafetyVersion: "memory-read-query-safety-v2"
       },
       items: [{ exactItemId: "safe-query-result" }],
-      querySnapshot: "Where do I live? token [REDACTED_SECRET]"
+      querySnapshot: "Where do I live? token [REDACTED:TOKEN]"
     });
     expect(options.control.decide).toHaveBeenCalledWith(expect.objectContaining({
       context: expect.objectContaining({
-        currentUserMessage: "Where do I live? token [REDACTED_SECRET]"
+        currentUserMessage: "Where do I live? token [REDACTED:TOKEN]"
       })
     }));
     expect(options.utilities.embedQuery).toHaveBeenCalledWith(expect.objectContaining({
-      query: "Where do I live? token [REDACTED_SECRET]"
+      query: "Where do I live? token [REDACTED:TOKEN]"
     }));
     expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
-      query: "Where do I live? token [REDACTED_SECRET]"
+      query: "Where do I live? token [REDACTED:TOKEN]"
     }));
     expect(JSON.stringify([
       local.retrieve.mock.calls,
@@ -2810,6 +2810,26 @@ describe("Personal Memory v1 run admission", () => {
       vi.mocked(options.utilities.embedQuery).mock.calls,
       vi.mocked(options.utilities.rerank).mock.calls
     ])).not.toContain(secret);
+  });
+
+  it("redacts legacy metadata before persisting retrieval diagnostics", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const candidate = factLaneCandidate("safe-fact", 0.9);
+    const local = repository({
+      candidates: [{
+        ...candidate,
+        metadata: { ...candidate.metadata, category: `legacy ${secret}` }
+      }]
+    });
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      retrievalOptions(["c0"])
+    ).retrieve(runInput("What do you remember?"));
+
+    expect(result.budgetSnapshot).toMatchObject({
+      relevanceDecisions: [{ category: "legacy [REDACTED:TOKEN]" }]
+    });
+    expect(JSON.stringify(result.budgetSnapshot)).not.toContain(secret);
   });
 
   it("sends low-similarity cross-language Saved facts to the mandatory reranker only", async () => {

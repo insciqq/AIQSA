@@ -304,10 +304,10 @@ enum MemorySensitivityClass {
   SECRET
 }
 
-/// Safety classification is a separate admission fence from the semantic
-/// sensitivity value. Pending rows cannot be retrieved, embedded, or rebuilt
-/// until an independently governed decision is recorded; explicit and legacy
-/// write boundaries set their completed classification fields deliberately.
+/// Safety classification is a separate admission fence from semantic
+/// sensitivity. New projections complete local Safety Lite synchronously;
+/// PENDING and legacy terminal rows remain non-reusable until bounded local
+/// reprojection records a completed state.
 enum MemorySafetyClassificationState {
   PENDING
   CLASSIFIED
@@ -3750,7 +3750,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v3") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v4") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String

@@ -2,7 +2,6 @@ import type { PrismaClient } from "@prisma/client";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import type { MemorySettingsResponse } from "../../../contracts/memory";
 import {
-  memoryVectorSpaceFingerprint,
   type ResolvedMemoryExecutionTarget,
   type ResolvedMemoryUtilityPolicy
 } from "../execution/policy";
@@ -10,7 +9,8 @@ import type { MemoryExecutionRole } from "../execution/roles";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
-  MEMORY_LEXICAL_NORMALIZATION_VERSION
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../persistence/lexical";
 import type { MemorySettingsPersistenceSnapshot } from "../persistence/settings";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
@@ -54,25 +54,6 @@ function strictSystemTargetAvailable(
   );
 }
 
-function embeddingTargetAvailable(
-  policy: ResolvedMemoryUtilityPolicy,
-  role: "MEMORY_DOCUMENT_EMBED" | "MEMORY_QUERY_EMBED"
-): boolean {
-  const resolved = target(policy, role);
-  const model = resolved?.snapshot.model;
-  return Boolean(model && "modelClass" in model && model.modelClass === "embedding");
-}
-
-function rerankerTargetAvailable(policy: ResolvedMemoryUtilityPolicy): boolean {
-  const resolved = target(policy, "MEMORY_RERANK");
-  const model = resolved?.snapshot.model;
-  return Boolean(model && "modelClass" in model && (
-    model.modelClass === "reranker" && model.adapterKind === "openrouter_rerank" ||
-    model.modelClass === "answer" && model.capabilities.toolCalling === true &&
-      model.capabilities.structuredOutput === true
-  ));
-}
-
 function egressAccepted(
   settings: MemorySettingsPersistenceSnapshot,
   policy: ResolvedMemoryUtilityPolicy,
@@ -111,43 +92,27 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
     MemoryExecutionRole,
     "MEMORY_DOCUMENT_EMBED" | "MEMORY_QUERY_EMBED"
   >) => strictSystemTargetAvailable(input.policy, role) && accepted(role);
-  const embeddingRoleAvailable = (
-    role: "MEMORY_DOCUMENT_EMBED" | "MEMORY_QUERY_EMBED"
-  ) => embeddingTargetAvailable(input.policy, role) && accepted(role);
   const controlAvailable = strictRoleAvailable("MEMORY_CONTROL");
   const extractionAvailable = strictRoleAvailable("MEMORY_FACT_EXTRACT");
   const consolidationAvailable = strictRoleAvailable("MEMORY_CONSOLIDATE");
-  const rerankerAvailable = rerankerTargetAvailable(input.policy) &&
-    accepted("MEMORY_RERANK");
   const synthesisTargetAvailable = strictRoleAvailable("MEMORY_SYNTHESIZE");
-  const statementClassifierAvailable = strictRoleAvailable("MEMORY_STATEMENT_CLASSIFY");
-  const historyClassifierAvailable = strictRoleAvailable("MEMORY_HISTORY_CLASSIFY");
-  const documentEmbeddingAvailable = embeddingRoleAvailable("MEMORY_DOCUMENT_EMBED");
-  const queryEmbeddingAvailable = embeddingRoleAvailable("MEMORY_QUERY_EMBED");
   const masterOn = input.settings.useMemoryFacts;
   const managementAvailable = true;
   const administratorSetupRequired = masterOn && !(
-    statementClassifierAvailable &&
-    controlAvailable &&
-    rerankerAvailable &&
-    queryEmbeddingAvailable &&
     (!input.settings.learnAutomatically ||
-      extractionAvailable && consolidationAvailable && documentEmbeddingAvailable) &&
-    (!input.settings.referenceChatHistory ||
-      historyClassifierAvailable && documentEmbeddingAvailable) &&
+      extractionAvailable && consolidationAvailable) &&
     (!input.settings.synthesisEnabled ||
       synthesisTargetAvailable && input.operations.workerAvailable)
   );
-  const naturalLanguageActionsAvailable = masterOn && controlAvailable &&
-    statementClassifierAvailable;
-  const retrievalAvailable = masterOn && controlAvailable &&
-    rerankerAvailable && queryEmbeddingAvailable && input.operations.retrievalIndexAvailable;
+  const naturalLanguageActionsAvailable = masterOn && controlAvailable;
+  // Query embeddings and reranking are optional accelerators. The local
+  // planner plus the active lexical generation remain a complete read path.
+  const retrievalAvailable = masterOn && input.operations.retrievalIndexAvailable;
   const automaticLearningAvailable = masterOn && input.settings.learnAutomatically &&
-    extractionAvailable && consolidationAvailable && documentEmbeddingAvailable &&
-    queryEmbeddingAvailable && input.operations.retrievalIndexAvailable &&
+    extractionAvailable && consolidationAvailable &&
+    input.operations.retrievalIndexAvailable &&
     input.operations.workerAvailable;
   const pastChatIndexingAvailable = masterOn && input.settings.referenceChatHistory &&
-    historyClassifierAvailable && documentEmbeddingAvailable &&
     input.operations.retrievalIndexAvailable && input.operations.workerAvailable;
   const synthesisAvailable = masterOn && input.settings.synthesisEnabled &&
     synthesisTargetAvailable && input.operations.workerAvailable;
@@ -219,25 +184,20 @@ export async function readMemoryCapabilityOperationalState(
       where: { id: "installation" }
     })
   ]);
-  const queryEmbedding = target(input.policy, "MEMORY_QUERY_EMBED");
-  const expectedVectorSpace = queryEmbedding
-    ? memoryVectorSpaceFingerprint(queryEmbedding)
-    : null;
+  const indexMode = generation?.indexMode;
+  const expectedRetrievalPipeline = indexMode === "HYBRID"
+    ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+    : indexMode === "LEXICAL_ONLY"
+      ? MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
+      : null;
   const retrievalIndexAvailable = Boolean(
     generation &&
-    queryEmbedding &&
-    expectedVectorSpace &&
     generation.state === "ACTIVE" &&
-    generation.indexMode === "HYBRID" &&
+    (indexMode === "HYBRID" || indexMode === "LEXICAL_ONLY") &&
     generation.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
     generation.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
     generation.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
-    generation.retrievalPipelineVersion === MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION &&
-    generation.embeddingProviderModelId === input.settings.embeddingProviderModelId &&
-    generation.embeddingProviderModelId === queryEmbedding.snapshot.providerModelId &&
-    generation.embeddingConfigurationFingerprint ===
-      queryEmbedding.compatibilityFingerprints.configFingerprint &&
-    generation.vectorSpaceFingerprint === expectedVectorSpace
+    generation.retrievalPipelineVersion === expectedRetrievalPipeline
   );
   const nowMs = input.now.getTime();
   const workerAge = heartbeat ? nowMs - heartbeat.lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
