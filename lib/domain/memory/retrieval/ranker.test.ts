@@ -88,6 +88,33 @@ describe("relative-rank Memory fusion", () => {
     expect(first[0]?.finalScore).toBe(first[0]?.rrfScore);
   });
 
+  it("fuses English, Russian, and trigram ranks as independent signals", () => {
+    const multilingual = candidate("multilingual", "FACT_FTS_ENGLISH", 0.000001);
+    const ranked = fuseMemoryRetrievalCandidates(plan, [{
+      candidates: [multilingual],
+      lane: "FACT_FTS_ENGLISH"
+    }, {
+      candidates: [{ ...multilingual, lane: "FACT_FTS_RUSSIAN", rawScore: 1_000_000 }],
+      lane: "FACT_FTS_RUSSIAN"
+    }, {
+      candidates: [{ ...multilingual, lane: "FACT_TRIGRAM", rawScore: -1_000_000 }],
+      lane: "FACT_TRIGRAM"
+    }, {
+      candidates: [candidate("raw-scale-decoy", "FACT_FTS_SIMPLE", Number.MAX_VALUE)],
+      lane: "FACT_FTS_SIMPLE"
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual([
+      "multilingual", "raw-scale-decoy"
+    ]);
+    expect(ranked[0]?.rrfScore).toBeCloseTo((1 + 1 + 0.85) / 61);
+    expect(ranked[0]?.laneRanks).toEqual({
+      FACT_FTS_ENGLISH: 1,
+      FACT_FTS_RUSSIAN: 1,
+      FACT_TRIGRAM: 1
+    });
+  });
+
   it("uses versioned lane weights and authority only as deterministic tie-breakers", () => {
     const weighted = fuseMemoryRetrievalCandidates(plan, [{
       lane: "FACT_ENTITY",

@@ -14,8 +14,9 @@ import {
   parseMemoryTemporalQuery,
   type MemoryTemporalQueryParseResult
 } from "./temporal";
+import { normalizeMemoryLexicalProjection } from "./lexical";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v14";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v15";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
@@ -306,7 +307,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     includePatterns,
     lexicalQuery: lexicalQuery(semanticQueryVariants.map(({ text }) => text)),
     mode,
-    normalizedExactQuery: normalizedQuery.toLocaleLowerCase("und"),
+    normalizedExactQuery: normalizeMemoryLexicalProjection(normalizedQuery),
     normalizedQuery,
     originalSanitizedQuery: normalizedQuery,
     plannerVersion: MEMORY_RETRIEVAL_PLANNER_VERSION,

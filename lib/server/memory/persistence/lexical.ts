@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { normalizeMemoryLexicalProjection } from
+  "../../../domain/memory/retrieval/lexical";
 
-export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_SIMPLE_V3";
-export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v3";
+export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_EN_RU_TRIGRAM_V4";
+export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v4";
 export const MEMORY_LEXICAL_CHUNKING_VERSION = "memory-no-chunking-v1";
 export const MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION =
-  "memory-personal-retrieval-v5-lexical";
+  "memory-personal-retrieval-v6-lexical";
 
 function canonicalJson(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
@@ -30,10 +32,5 @@ export function memorySha256(value: unknown): string {
 }
 
 export function normalizeMemorySearchText(value: string): string {
-  return value
-    .normalize("NFKC")
-    .toLocaleLowerCase("und")
-    .replaceAll("ё", "е")
-    .trim()
-    .replace(/\s+/gu, " ");
+  return normalizeMemoryLexicalProjection(value);
 }

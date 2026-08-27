@@ -16,6 +16,7 @@ import {
   MEMORY_TEMPORAL_QUERY_MAX_MATCHED_EXPRESSIONS,
   MEMORY_TEMPORAL_QUERY_EXPRESSION_TYPES,
   MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
+  analyzeMemoryLexicalQuery,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
   type MemoryCoreCandidate,
@@ -36,6 +37,9 @@ import {
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256
 } from "../persistence/lexical";
@@ -55,7 +59,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v11";
+  "memory-local-retrieval-repository-v12";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -116,6 +120,9 @@ type SnapshotRow = Readonly<{
   folderOwnerId: string | null;
   generationId: string | null;
   generationIndexMode: "HYBRID" | "LEXICAL_ONLY" | null;
+  generationChunkingVersion: string | null;
+  generationLanguageProfile: string | null;
+  generationNormalizationVersion: string | null;
   generationPipelineVersion: string | null;
   generationState: string | null;
   memoryGeneration: number | null;
@@ -472,6 +479,9 @@ async function loadSnapshot(
       generation."id" AS "generationId",
       generation."state"::text AS "generationState",
       generation."indexMode"::text AS "generationIndexMode",
+      generation."chunkingVersion" AS "generationChunkingVersion",
+      generation."languageProfile" AS "generationLanguageProfile",
+      generation."normalizationVersion" AS "generationNormalizationVersion",
       generation."retrievalPipelineVersion" AS "generationPipelineVersion"
     FROM "User" AS owner
     LEFT JOIN "Chat" AS current_chat
@@ -506,6 +516,9 @@ async function loadSnapshot(
     row.generationId === row.activeIndexGenerationId &&
     row.generationState === "ACTIVE" &&
     (indexMode === "HYBRID" || indexMode === "LEXICAL_ONLY") &&
+    row.generationChunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
+    row.generationLanguageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    row.generationNormalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
     row.generationPipelineVersion === expectedGenerationPipeline(indexMode);
   const base = {
     activeGenerationId: row.activeIndexGenerationId,
@@ -821,6 +834,10 @@ function factEligibleSelect(
           AND generation."id" = settings."activeIndexGenerationId"
           AND generation."id" = entry."indexGenerationId"
           AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+          AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
+          AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+          AND generation."normalizationVersion" =
+            ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
           AND generation."retrievalPipelineVersion" =
             ${expectedGenerationPipeline(snapshot.indexMode!)}
         INNER JOIN "MemoryFactVersion" AS version
@@ -843,6 +860,15 @@ function factEligibleSelect(
   const searchVector = searchAuthority === "INDEXED"
     ? Prisma.sql`entry."searchVectorSimple"`
     : Prisma.sql`NULL::tsvector`;
+  const searchVectorEnglish = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."searchVectorEnglish"`
+    : Prisma.sql`NULL::tsvector`;
+  const searchVectorRussian = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."searchVectorRussian"`
+    : Prisma.sql`NULL::tsvector`;
+  const trigramSearchText = searchAuthority === "INDEXED"
+    ? Prisma.sql`entry."trigramSearchText"`
+    : Prisma.sql`NULL::text`;
   const indexedEntry = searchAuthority === "INDEXED"
     ? Prisma.sql`AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"`
     : Prisma.sql``;
@@ -852,6 +878,9 @@ function factEligibleSelect(
       SELECT ${factColumns(entryId, Prisma.sql`NULL::text`, safeContentHash)},
         ${normalizedSearchText} AS "normalizedSearchText",
         ${searchVector} AS "searchVectorSimple",
+        ${searchVectorEnglish} AS "searchVectorEnglish",
+        ${searchVectorRussian} AS "searchVectorRussian",
+        ${trigramSearchText} AS "trigramSearchText",
         (fact."id" = root_fact."id") AS "canonicalSource"
       ${source}
     AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
@@ -1039,7 +1068,10 @@ function historyDigestEligibleSelect(
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", digest."occurredFrom", digest."occurredTo",
       digest."normalizedSafeSearchText" AS "normalizedSearchText",
-      to_tsvector('simple', digest."normalizedSafeSearchText") AS "searchVectorSimple"
+      to_tsvector('simple', digest."normalizedSafeSearchText") AS "searchVectorSimple",
+      NULL::tsvector AS "searchVectorEnglish",
+      NULL::tsvector AS "searchVectorRussian",
+      NULL::text AS "trigramSearchText"
     FROM "ChatMemoryDigest" AS digest
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = digest."userId"
@@ -1168,7 +1200,8 @@ function historyDigestEligibleSelect(
 
 function historyEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
 ): Prisma.Sql {
   if (plan.mode === "HISTORY_OVERVIEW") {
     return historyDigestEligibleSelect(snapshot, plan);
@@ -1208,7 +1241,9 @@ function historyEligibleSelect(
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", chunk."occurredFrom", chunk."occurredTo",
-      entry."normalizedSearchText", entry."searchVectorSimple"
+      entry."normalizedSearchText", entry."searchVectorSimple",
+      entry."searchVectorEnglish", entry."searchVectorRussian",
+      entry."trigramSearchText"
     FROM "MemorySearchEntry" AS entry
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
@@ -1219,6 +1254,9 @@ function historyEligibleSelect(
       ON generation."userId" = settings."userId" AND generation."id" = settings."activeIndexGenerationId"
       AND generation."id" = entry."indexGenerationId"
       AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+      AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
       AND generation."retrievalPipelineVersion" =
         ${expectedGenerationPipeline(snapshot.indexMode!)}
     INNER JOIN "MemoryRecallChunk" AS chunk
@@ -1229,6 +1267,7 @@ function historyEligibleSelect(
       ON checkpoint."userId" = chunk."userId" AND checkpoint."chatId" = chunk."chatId"
     WHERE entry."userId" = ${snapshot.userId}
       AND entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
+      AND (${candidatePredicate})
       AND entry."safeContentHash" = chunk."contentHash"
       AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
       AND chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
@@ -1599,9 +1638,8 @@ function profileSql(
   `;
 }
 
-function distinctiveFtsTerms(plan: MemoryRetrievalPlan): readonly string[] {
-  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const distinctTerms = [...new Set(plan.lexicalQuery.split(" "))].slice(0, 64);
+function distinctiveFtsTerms(terms: readonly string[]): readonly string[] {
+  const distinctTerms = [...new Set(terms)].slice(0, 64);
   // A natural-language question contains short connective terms that are
   // common to unrelated memories. Search the longer, more distinctive half
   // independently; authoritative rejoin and bounded packing still own admission.
@@ -1613,41 +1651,129 @@ function distinctiveFtsTerms(plan: MemoryRetrievalPlan): readonly string[] {
     .map(({ term }) => term);
 }
 
+type MemoryFtsLaneSettings = Readonly<{
+  configuration: Prisma.Sql;
+  eligibleVector: Prisma.Sql;
+  entryVector: Prisma.Sql;
+  terms: readonly string[];
+}>;
+
+function ftsLaneSettings(
+  plan: MemoryRetrievalPlan,
+  lane: MemoryRetrievalLane
+): MemoryFtsLaneSettings {
+  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
+  const analysis = analyzeMemoryLexicalQuery(plan.lexicalQuery);
+  if (lane === "FACT_FTS_SIMPLE" || lane === "HISTORY_RECALL_FTS_SIMPLE") {
+    return {
+      configuration: Prisma.sql`'simple'::regconfig`,
+      eligibleVector: Prisma.sql`eligible."searchVectorSimple"`,
+      entryVector: Prisma.sql`entry."searchVectorSimple"`,
+      terms: distinctiveFtsTerms(analysis.simpleTerms)
+    };
+  }
+  if (lane === "FACT_FTS_ENGLISH" || lane === "HISTORY_RECALL_FTS_ENGLISH") {
+    return {
+      configuration: Prisma.sql`'english'::regconfig`,
+      eligibleVector: Prisma.sql`eligible."searchVectorEnglish"`,
+      entryVector: Prisma.sql`entry."searchVectorEnglish"`,
+      terms: distinctiveFtsTerms(analysis.englishTerms)
+    };
+  }
+  if (lane === "FACT_FTS_RUSSIAN" || lane === "HISTORY_RECALL_FTS_RUSSIAN") {
+    return {
+      configuration: Prisma.sql`'russian'::regconfig`,
+      eligibleVector: Prisma.sql`eligible."searchVectorRussian"`,
+      entryVector: Prisma.sql`entry."searchVectorRussian"`,
+      terms: distinctiveFtsTerms(analysis.russianTerms)
+    };
+  }
+  throw new Error("memory_retrieval_lane_invalid");
+}
+
 function ftsSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
+  lane: MemoryRetrievalLane,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
   limit: number
 ): Prisma.Sql {
-  const terms = distinctiveFtsTerms(plan);
+  const settings = ftsLaneSettings(plan, lane);
+  const { terms } = settings;
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
+  const candidatePredicate = Prisma.sql`(${Prisma.join(terms.map((term) => Prisma.sql`
+    ${settings.entryVector} @@ plainto_tsquery(${settings.configuration}, ${term})
+  `), " OR ")})`;
   const eligible = itemType === "FACT_VERSION"
-    ? factEligibleSelect(
-        snapshot,
-        plan,
-        "INDEXED",
-        Prisma.sql`(${Prisma.join(terms.map((term) => Prisma.sql`
-          entry."searchVectorSimple" @@ plainto_tsquery('simple', ${term})
-        `), " OR ")})`
-      )
-    : historyEligibleSelect(snapshot, plan);
+    ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
+    : historyEligibleSelect(snapshot, plan, candidatePredicate);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible}),
     query_terms AS MATERIALIZED (
       SELECT DISTINCT term, char_length(term)::integer AS "termLength",
-        plainto_tsquery('simple', term) AS query
+        plainto_tsquery(${settings.configuration}, term) AS query
       FROM unnest(${terms}::text[]) AS terms(term)
-      WHERE plainto_tsquery('simple', term) <> ''::tsquery
+      WHERE plainto_tsquery(${settings.configuration}, term) <> ''::tsquery
     )
     SELECT ${candidateColumns(Prisma.sql`term_match."rankScore"`)}
     FROM eligible
     CROSS JOIN LATERAL (
       SELECT COUNT(*)::integer AS "matchedTermCount",
         COALESCE(MAX(query_terms."termLength"), 0)::integer AS "maximumMatchedTermLength",
-        COALESCE(SUM(ts_rank_cd(eligible."searchVectorSimple", query_terms.query)),
+        COALESCE(SUM(ts_rank_cd(${settings.eligibleVector}, query_terms.query)),
           0.0)::double precision AS "rankScore"
       FROM query_terms
-      WHERE eligible."searchVectorSimple" @@ query_terms.query
+      WHERE ${settings.eligibleVector} @@ query_terms.query
+    ) AS term_match
+    WHERE term_match."matchedTermCount" > 0
+    ORDER BY term_match."maximumMatchedTermLength" DESC,
+      term_match."matchedTermCount" DESC, term_match."rankScore" DESC,
+      eligible."itemId" LIMIT ${limit}
+  `;
+}
+
+function trigramSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  itemType: "FACT_VERSION" | "RECALL_CHUNK",
+  limit: number
+): Prisma.Sql {
+  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
+  const terms = distinctiveFtsTerms(
+    analyzeMemoryLexicalQuery(plan.lexicalQuery).trigramTerms
+  );
+  if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
+  const indexedMatches = terms.flatMap((term) => [
+    Prisma.sql`${term} <% entry."trigramSearchText"`,
+    Prisma.sql`aiqsa_memory_transliterate_ru(${term}) <% entry."trigramSearchText"`
+  ]);
+  const candidatePredicate = Prisma.sql`(${Prisma.join(indexedMatches, " OR ")})`;
+  const eligible = itemType === "FACT_VERSION"
+    ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
+    : historyEligibleSelect(snapshot, plan, candidatePredicate);
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${eligible}),
+    query_terms AS MATERIALIZED (
+      SELECT DISTINCT variant.term,
+        char_length(variant.term)::integer AS "termLength"
+      FROM unnest(${terms}::text[]) AS requested(term)
+      CROSS JOIN LATERAL (
+        VALUES (requested.term), (aiqsa_memory_transliterate_ru(requested.term))
+      ) AS variant(term)
+      WHERE char_length(variant.term) >= 3
+    )
+    SELECT ${candidateColumns(Prisma.sql`term_match."rankScore"`)}
+    FROM eligible
+    CROSS JOIN LATERAL (
+      SELECT COUNT(*)::integer AS "matchedTermCount",
+        COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+          "maximumMatchedTermLength",
+        COALESCE(SUM(word_similarity(
+          query_terms.term,
+          eligible."trigramSearchText"
+        )), 0.0)::double precision AS "rankScore"
+      FROM query_terms
+      WHERE query_terms.term <% eligible."trigramSearchText"
     ) AS term_match
     WHERE term_match."matchedTermCount" > 0
     ORDER BY term_match."maximumMatchedTermLength" DESC,
@@ -1664,7 +1790,10 @@ function targetedDigestFtsSql(
   if (plan.mode !== "PAST_CHAT_SEARCH" || plan.aggregationRequested) {
     throw new Error("memory_retrieval_lane_invalid");
   }
-  const terms = distinctiveFtsTerms(plan);
+  if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
+  const terms = distinctiveFtsTerms(
+    analyzeMemoryLexicalQuery(plan.lexicalQuery).simpleTerms
+  );
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)}),
@@ -1752,6 +1881,9 @@ function localLexicalLanes(
   plan: MemoryRetrievalPlan
 ): readonly MemoryRetrievalLane[] {
   if (!plan.queryPresent) return [];
+  const lexical = plan.lexicalQuery
+    ? analyzeMemoryLexicalQuery(plan.lexicalQuery)
+    : null;
   const indexed = snapshot.activeGenerationId !== null && snapshot.indexMode !== null;
   const temporal = !plan.profileRequested && plan.temporalQueryVariants.some(({ kind }) =>
     kind === "FILTERED");
@@ -1766,7 +1898,12 @@ function localLexicalLanes(
       if (temporal) {
         lanes.push("FACT_TEMPORAL_FILTERED", "FACT_TEMPORAL_UNRESTRICTED");
       }
-      if (indexed && plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
+      if (indexed && lexical) {
+        lanes.push("FACT_FTS_SIMPLE");
+        if (lexical.hasLatin) lanes.push("FACT_FTS_ENGLISH");
+        if (lexical.hasCyrillic) lanes.push("FACT_FTS_RUSSIAN");
+        if (lexical.trigramTerms.length > 0) lanes.push("FACT_TRIGRAM");
+      }
       if (indexed && plan.recencyRequested) lanes.push("FACT_RECENT");
     }
   }
@@ -1780,13 +1917,18 @@ function localLexicalLanes(
       );
     }
     if (plan.mode === "HISTORY_OVERVIEW") {
-      if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
+      if (lexical) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
       lanes.push("HISTORY_RECALL_RECENT");
     } else {
       lanes.push("HISTORY_RECALL_EXACT");
       if (plan.mode === "PAST_CHAT_SEARCH" && !plan.aggregationRequested &&
-        plan.lexicalQuery) lanes.push("HISTORY_DIGEST_FTS_SIMPLE");
-      if (plan.lexicalQuery) lanes.push("HISTORY_RECALL_FTS_SIMPLE");
+        lexical) lanes.push("HISTORY_DIGEST_FTS_SIMPLE");
+      if (lexical) {
+        lanes.push("HISTORY_RECALL_FTS_SIMPLE");
+        if (lexical.hasLatin) lanes.push("HISTORY_RECALL_FTS_ENGLISH");
+        if (lexical.hasCyrillic) lanes.push("HISTORY_RECALL_FTS_RUSSIAN");
+        if (lexical.trigramTerms.length > 0) lanes.push("HISTORY_RECALL_TRIGRAM");
+      }
       if (plan.recencyRequested) lanes.push("HISTORY_RECALL_RECENT");
     }
   }
@@ -1825,7 +1967,11 @@ function laneSql(
   if (lane === "FACT_PROFILE") return profileSql(snapshot, plan, limit);
   if (lane === "FACT_ENTITY") return entitySql(snapshot, plan, limit);
   if (lane.endsWith("_EXACT")) return exactSql(snapshot, plan, itemType, limit);
-  if (lane.endsWith("_FTS_SIMPLE")) return ftsSql(snapshot, plan, itemType, limit);
+  if (lane.endsWith("_FTS_SIMPLE") || lane.endsWith("_FTS_ENGLISH") ||
+    lane.endsWith("_FTS_RUSSIAN")) {
+    return ftsSql(snapshot, plan, lane, itemType, limit);
+  }
+  if (lane.endsWith("_TRIGRAM")) return trigramSql(snapshot, plan, itemType, limit);
   if (lane.endsWith("_RECENT")) return recentSql(snapshot, plan, itemType, limit);
   throw new Error("memory_retrieval_lane_contract_invalid");
 }

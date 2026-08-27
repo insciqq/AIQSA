@@ -4,7 +4,12 @@ import {
   planMemoryRetrieval,
   type MemoryRankedCandidate
 } from "../../../domain/memory/retrieval";
-import { MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION } from "../persistence/lexical";
+import {
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
+} from "../persistence/lexical";
 import {
   createPrismaLocalMemoryRetrievalRepository,
   selectMemoryAggregationSessionRepresentatives
@@ -51,6 +56,9 @@ function snapshotRow(overrides: Record<string, unknown> = {}) {
     folderOwnerId: null,
     generationId: "generation-1",
     generationIndexMode: "LEXICAL_ONLY",
+    generationChunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+    generationLanguageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+    generationNormalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
     generationPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
     generationState: "ACTIVE",
     memoryGeneration: 2,
@@ -162,8 +170,10 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('term_match."maximumMatchedTermLength" DESC');
     expect(sql).toContain('term_match."matchedTermCount" DESC');
     expect(sql).not.toContain("whole_query");
-    expect(sql).not.toContain("plainto_tsquery('russian'");
-    expect(sql).not.toContain("plainto_tsquery('english'");
+    expect(sql).toContain("plainto_tsquery('russian'");
+    expect(sql).toContain("plainto_tsquery('english'");
+    expect(sql).toContain('aiqsa_memory_transliterate_ru(');
+    expect(sql).toContain('<% entry."trigramSearchText"');
     expect(sql).not.toContain("websearch_to_tsquery");
     expect(sql).not.toContain('message."content"');
     expect(sql).not.toContain('attachment."extractedText"');
@@ -215,10 +225,57 @@ describe("local Memory retrieval repository", () => {
         userId: "user-1"
       });
       expect(result.laneResults.map(({ lane }) => lane)).toEqual([
-        "FACT_EXACT", "FACT_ENTITY", "FACT_FTS_SIMPLE"
+        "FACT_EXACT", "FACT_ENTITY", "FACT_FTS_SIMPLE",
+        "FACT_FTS_ENGLISH", "FACT_TRIGRAM"
       ]);
       expect(mocked.laneSql.length).toBeGreaterThan(0);
     }
+  });
+
+  it("routes mixed-script queries through independent indexed lexical lanes", async () => {
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "Qwen3 модель Москва 2025",
+        now
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.laneResults.map(({ lane }) => lane)).toEqual(expect.arrayContaining([
+      "FACT_FTS_SIMPLE", "FACT_FTS_ENGLISH", "FACT_FTS_RUSSIAN", "FACT_TRIGRAM"
+    ]));
+    const sql = mocked.laneSql.join("\n");
+    expect(sql).toContain('entry."searchVectorSimple"');
+    expect(sql).toContain('entry."searchVectorEnglish"');
+    expect(sql).toContain('entry."searchVectorRussian"');
+    expect(sql).toContain('entry."trigramSearchText"');
+  });
+
+  it("fails stale lexical generation profiles closed before indexed lanes", async () => {
+    const mocked = mockClient(snapshotRow({
+      generationLanguageProfile: "UNICODE_SIMPLE_V3",
+      referenceChatHistory: false
+    }));
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({ currentUserText: "Qwen3 Москва", now }),
+      userId: "user-1"
+    });
+
+    expect(result.snapshot).toMatchObject({
+      indexMode: null,
+      reason: "memory_index_unavailable",
+      status: "READY"
+    });
+    expect(result.laneResults.map(({ lane }) => lane)).not.toEqual(expect.arrayContaining([
+      "FACT_FTS_SIMPLE", "FACT_FTS_ENGLISH", "FACT_FTS_RUSSIAN", "FACT_TRIGRAM"
+    ]));
   });
 
   it("accepts owner-validated encrypted entity refs at the wire maximum scale", async () => {
@@ -322,9 +379,11 @@ describe("local Memory retrieval repository", () => {
 
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
-      "HISTORY_RECALL_FTS_SIMPLE"
+      "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_FTS_ENGLISH",
+      "HISTORY_RECALL_TRIGRAM"
     ]);
-    expect(mocked.laneSql).toHaveLength(2);
+    expect(mocked.laneSql).toHaveLength(4);
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemorySearchEntry" AS entry');
     expect(sql).toContain('entry."normalizedSearchText"');
@@ -371,6 +430,8 @@ describe("local Memory retrieval repository", () => {
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
       "HISTORY_RECALL_FTS_SIMPLE",
+      "HISTORY_RECALL_FTS_ENGLISH",
+      "HISTORY_RECALL_TRIGRAM",
       "HISTORY_RECALL_VECTOR"
     ]);
     expect(result.vectorState).toBe("DEGRADED");

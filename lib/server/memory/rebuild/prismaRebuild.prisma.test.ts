@@ -1530,8 +1530,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             generation: 0,
             indexMode: "LEXICAL_ONLY",
             indexedThroughMemoryRevision: initialSettings.memoryRevision,
-            languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
-            normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+            languageProfile: "UNICODE_SIMPLE_V3",
+            normalizationVersion: "memory-search-normalization-v3",
             readyAt: now,
             retrievalPipelineVersion: "memory-personal-retrieval-v3-lexical",
             state: "ACTIVE",
@@ -1599,6 +1599,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         where: { userId }
       });
       expect(beforeRollback.activeIndexGenerationId).not.toBe(firstCurrentGenerationId);
+      const secondCurrentGenerationId = beforeRollback.activeIndexGenerationId;
+      if (!secondCurrentGenerationId) throw new Error("cutover_generation_missing");
       await expect(cutover.rollback(userId, firstCurrentGenerationId, {
         expectedMemoryRevision: beforeRollback.memoryRevision,
         expectedSettingsRevision: beforeRollback.settingsRevision
@@ -1619,6 +1621,25 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         eligibleItems: 1,
         ready: true
       });
+      await saveExplicit(
+        explicit,
+        userId,
+        "I also prefer exact-set rollback fences.",
+        "cutover-rollback-source-set-change"
+      );
+      const afterSourceSetChange = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await expect(cutover.rollback(userId, secondCurrentGenerationId, {
+        expectedMemoryRevision: afterSourceSetChange.memoryRevision,
+        expectedSettingsRevision: afterSourceSetChange.settingsRevision
+      })).resolves.toEqual({
+        activeGenerationId: firstCurrentGenerationId,
+        kind: "generation_incompatible"
+      });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({ activeIndexGenerationId: firstCurrentGenerationId });
       expect(JSON.stringify({ admitted, before, current })).not.toContain(statement);
     } finally {
       await cleanupOwner(userId);

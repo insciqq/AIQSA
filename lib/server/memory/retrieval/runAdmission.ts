@@ -1181,7 +1181,8 @@ function degradationFor(
   if (!dynamicAllowed) return null;
   if (result.lexicalState === "FAILED" || result.lexicalState === "DEGRADED") {
     const families = new Set(result.lexicalFailures.map((lane) =>
-      lane === "FACT_ENTITY" ? "entity" : lane.endsWith("_FTS_SIMPLE") ? "fts"
+      lane === "FACT_ENTITY" ? "entity" :
+        lane.includes("_FTS_") || lane.endsWith("_TRIGRAM") ? "fts"
         : lane.endsWith("_EXACT") ? "exact" : "recent"));
     if (families.size === 1 && families.has("entity")) return "memory_entity_unavailable";
     if (families.size === 1 && families.has("fts")) return "memory_fts_unavailable";
