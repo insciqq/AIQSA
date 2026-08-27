@@ -234,15 +234,23 @@ describe("Memory retrieval execution sequence", () => {
     ], true)).toBe(false);
   });
 
-  it("allows only the six exact control, target, retrieval, and retry bindings", () => {
+  it("allows bounded control, target, retrieval, and read-only retry bindings", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 }
+    ])).toBe(false);
   });
 
   it.each([
@@ -266,6 +274,26 @@ describe("Memory retrieval execution sequence", () => {
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 }
     ], false, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 2 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 4 }
+    ], false, true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 4 }
+    ], false, true)).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 2 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 4 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 6 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 8 },
+      { logicalRole: "MEMORY_AGGREGATE", ordinal: 10 }
+    ], false, true)).toBe(false);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
@@ -304,7 +332,25 @@ describe("Memory retrieval execution sequence", () => {
       logicalRole: "MEMORY_RERANK",
       ordinal: 2,
       state: "FAILED"
+    }, retry])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "rerank_provider_request_failed",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 2,
+      state: "OUTCOME_UNKNOWN"
+    }, retry])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "rerank_provider_http_error",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 2,
+      state: "FAILED"
     }, retry])).toBe(false);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_reranker_transient_http_failure",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 2,
+      state: "FAILED"
+    }, retry])).toBe(true);
     expect(validMemoryRerankRetrySettlement([{
       errorCode: "memory_run_utility_output_invalid",
       logicalRole: "MEMORY_RERANK",
@@ -332,6 +378,78 @@ describe("Memory retrieval execution sequence", () => {
       ...retry,
       ordinal: 11
     }])).toBe(true);
+  });
+
+  it("requires each aggregation map or reduce retry to follow its own invalid output", () => {
+    const retry = {
+      errorCode: null,
+      logicalRole: "MEMORY_AGGREGATE",
+      ordinal: 5,
+      state: "SUCCEEDED"
+    };
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_output_invalid",
+      logicalRole: "MEMORY_AGGREGATE",
+      ordinal: 4,
+      state: "FAILED"
+    }, retry])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: null,
+      logicalRole: "MEMORY_AGGREGATE",
+      ordinal: 4,
+      state: "SUCCEEDED"
+    }, retry])).toBe(false);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_provider_failed",
+      logicalRole: "MEMORY_AGGREGATE",
+      ordinal: 8,
+      state: "FAILED"
+    }, {
+      ...retry,
+      ordinal: 9
+    }])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_outcome_unknown",
+      logicalRole: "MEMORY_AGGREGATE",
+      ordinal: 8,
+      state: "OUTCOME_UNKNOWN"
+    }, {
+      ...retry,
+      ordinal: 9
+    }])).toBe(true);
+  });
+
+  it("requires a transport-uncertain query embedding before its bounded retry", () => {
+    const retry = {
+      errorCode: null,
+      logicalRole: "MEMORY_QUERY_EMBED",
+      ordinal: 2,
+      state: "SUCCEEDED"
+    };
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "embedding_provider_request_failed",
+      logicalRole: "MEMORY_QUERY_EMBED",
+      ordinal: 1,
+      state: "OUTCOME_UNKNOWN"
+    }, retry])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "embedding_provider_request_failed",
+      logicalRole: "MEMORY_QUERY_EMBED",
+      ordinal: 1,
+      state: "FAILED"
+    }, retry])).toBe(false);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_query_embedding_output_invalid",
+      logicalRole: "MEMORY_QUERY_EMBED",
+      ordinal: 1,
+      state: "FAILED"
+    }, retry])).toBe(false);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_query_embedding_transient_http_failure",
+      logicalRole: "MEMORY_QUERY_EMBED",
+      ordinal: 1,
+      state: "FAILED"
+    }, retry])).toBe(true);
   });
 });
 

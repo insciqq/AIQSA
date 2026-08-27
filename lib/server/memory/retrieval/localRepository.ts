@@ -10,12 +10,14 @@ import {
   MEMORY_RETRIEVAL_FUSION_VERSION,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
+  MEMORY_LEXICAL_QUERY_MAX_TERMS,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
   MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS,
   MEMORY_TEMPORAL_QUERY_MAX_MATCHED_EXPRESSIONS,
   MEMORY_TEMPORAL_QUERY_EXPRESSION_TYPES,
   MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
+  MEMORY_TRIGRAM_QUERY_MAX_TERMS,
   analyzeMemoryLexicalQuery,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
@@ -71,7 +73,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v13";
+  "memory-local-retrieval-repository-v18";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -442,6 +444,25 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
     itemType: row.itemType as MemoryExpandedCandidate["itemType"],
     safeText
   };
+}
+
+function orderedExpandedCandidates(
+  candidates: readonly MemoryRankedCandidate[],
+  rows: readonly ExpandedRow[]
+): readonly MemoryExpandedCandidate[] {
+  const decoded = rows.flatMap((row) => {
+    const expanded = decodeExpanded(row);
+    return expanded ? [expanded] : [];
+  });
+  const keys = decoded.map((row) => `${row.itemType}:${row.itemId}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("memory_expansion_result_invalid");
+  }
+  const byKey = new Map(decoded.map((row) => [`${row.itemType}:${row.itemId}`, row]));
+  return candidates.flatMap((candidate) => {
+    const value = byKey.get(`${candidate.itemType}:${candidate.itemId}`);
+    return value ? [value] : [];
+  });
 }
 
 function valuesSql(values: readonly string[]): Prisma.Sql {
@@ -1895,7 +1916,7 @@ function profileSql(
 }
 
 function distinctiveFtsTerms(terms: readonly string[]): readonly string[] {
-  const distinctTerms = [...new Set(terms)].slice(0, 64);
+  const distinctTerms = [...new Set(terms)].slice(0, MEMORY_LEXICAL_QUERY_MAX_TERMS);
   // A natural-language question contains short connective terms that are
   // common to unrelated memories. Search the longer, more distinctive half
   // independently; authoritative rejoin and bounded packing still own admission.
@@ -1907,11 +1928,77 @@ function distinctiveFtsTerms(terms: readonly string[]): readonly string[] {
     .map(({ term }) => term);
 }
 
+type MemorySemanticLexicalTermKind =
+  "ENGLISH" | "RUSSIAN" | "SIMPLE" | "TRIGRAM";
+
+/** Preserves bounded evidence from every semantic query variant instead of
+ * letting a verbose rewrite evict the original user's distinctive terms. */
+export function memorySemanticLexicalTerms(
+  plan: MemoryRetrievalPlan,
+  kind: MemorySemanticLexicalTermKind
+): readonly string[] {
+  return memorySemanticLexicalTermVariants(plan, kind).map(({ term }) => term);
+}
+
+function memorySemanticLexicalTermVariants(
+  plan: MemoryRetrievalPlan,
+  kind: MemorySemanticLexicalTermKind
+): readonly Readonly<{ term: string; variantOrdinal: number }>[] {
+  const texts = plan.semanticQueryVariants.length > 0
+    ? plan.semanticQueryVariants.map(({ text }) => text)
+    : plan.lexicalQuery ? [plan.lexicalQuery] : [];
+  const maximumTerms = kind === "TRIGRAM"
+    ? MEMORY_TRIGRAM_QUERY_MAX_TERMS
+    : MEMORY_LEXICAL_QUERY_MAX_TERMS;
+  const candidates = texts.map((text, variantOrdinal) => {
+    const analysis = analyzeMemoryLexicalQuery(text);
+    const terms = kind === "TRIGRAM"
+      ? analysis.trigramTerms
+      : distinctiveFtsTerms(kind === "SIMPLE"
+          ? analysis.simpleTerms
+          : kind === "ENGLISH" ? analysis.englishTerms : analysis.russianTerms);
+    return { terms, variantOrdinal };
+  });
+  const selectedByVariant = candidates.map(() =>
+    [] as Array<Readonly<{ term: string; variantOrdinal: number }>>);
+  const nextIndexes = candidates.map(() => 0);
+  const seen = new Set<string>();
+  let selectedCount = 0;
+  while (selectedCount < maximumTerms) {
+    let progressed = false;
+    for (const candidate of candidates) {
+      let term: string | undefined;
+      while (nextIndexes[candidate.variantOrdinal]! < candidate.terms.length) {
+        const next = candidate.terms[nextIndexes[candidate.variantOrdinal]!]!;
+        nextIndexes[candidate.variantOrdinal]! += 1;
+        if (!seen.has(next)) {
+          term = next;
+          break;
+        }
+      }
+      if (term === undefined) continue;
+      seen.add(term);
+      selectedByVariant[candidate.variantOrdinal]!.push({
+        term,
+        variantOrdinal: candidate.variantOrdinal
+      });
+      selectedCount += 1;
+      progressed = true;
+      if (selectedCount >= maximumTerms) break;
+    }
+    if (!progressed) break;
+  }
+  // Keep the original variant first in the materialized query while the
+  // round-robin allocation above prevents any verbose variant from consuming
+  // the complete bounded term budget.
+  return selectedByVariant.flat();
+}
+
 type MemoryFtsLaneSettings = Readonly<{
   configuration: Prisma.Sql;
   eligibleVector: Prisma.Sql;
   entryVector: Prisma.Sql;
-  terms: readonly string[];
+  termVariants: readonly Readonly<{ term: string; variantOrdinal: number }>[];
 }>;
 
 function ftsLaneSettings(
@@ -1919,13 +2006,12 @@ function ftsLaneSettings(
   lane: MemoryRetrievalLane
 ): MemoryFtsLaneSettings {
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const analysis = analyzeMemoryLexicalQuery(plan.lexicalQuery);
   if (lane === "FACT_FTS_SIMPLE" || lane === "HISTORY_RECALL_FTS_SIMPLE") {
     return {
       configuration: Prisma.sql`'simple'::regconfig`,
       eligibleVector: Prisma.sql`eligible."searchVectorSimple"`,
       entryVector: Prisma.sql`entry."searchVectorSimple"`,
-      terms: distinctiveFtsTerms(analysis.simpleTerms)
+      termVariants: memorySemanticLexicalTermVariants(plan, "SIMPLE")
     };
   }
   if (lane === "FACT_FTS_ENGLISH" || lane === "HISTORY_RECALL_FTS_ENGLISH") {
@@ -1933,7 +2019,7 @@ function ftsLaneSettings(
       configuration: Prisma.sql`'english'::regconfig`,
       eligibleVector: Prisma.sql`eligible."searchVectorEnglish"`,
       entryVector: Prisma.sql`entry."searchVectorEnglish"`,
-      terms: distinctiveFtsTerms(analysis.englishTerms)
+      termVariants: memorySemanticLexicalTermVariants(plan, "ENGLISH")
     };
   }
   if (lane === "FACT_FTS_RUSSIAN" || lane === "HISTORY_RECALL_FTS_RUSSIAN") {
@@ -1941,7 +2027,7 @@ function ftsLaneSettings(
       configuration: Prisma.sql`'russian'::regconfig`,
       eligibleVector: Prisma.sql`eligible."searchVectorRussian"`,
       entryVector: Prisma.sql`entry."searchVectorRussian"`,
-      terms: distinctiveFtsTerms(analysis.russianTerms)
+      termVariants: memorySemanticLexicalTermVariants(plan, "RUSSIAN")
     };
   }
   throw new Error("memory_retrieval_lane_invalid");
@@ -1955,7 +2041,9 @@ function ftsSql(
   limit: number
 ): Prisma.Sql {
   const settings = ftsLaneSettings(plan, lane);
-  const { terms } = settings;
+  const terms = settings.termVariants.map(({ term }) => term);
+  const variantOrdinals = settings.termVariants.map(({ variantOrdinal }) =>
+    variantOrdinal);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const candidatePredicate = Prisma.sql`(${Prisma.join(terms.map((term) => Prisma.sql`
     ${settings.entryVector} @@ plainto_tsquery(${settings.configuration}, ${term})
@@ -1966,24 +2054,52 @@ function ftsSql(
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible}),
     query_terms AS MATERIALIZED (
-      SELECT DISTINCT term, char_length(term)::integer AS "termLength",
+      SELECT DISTINCT term, "variantOrdinal",
+        char_length(term)::integer AS "termLength",
         plainto_tsquery(${settings.configuration}, term) AS query
-      FROM unnest(${terms}::text[]) AS terms(term)
+      FROM unnest(${terms}::text[], ${variantOrdinals}::integer[])
+        AS terms(term, "variantOrdinal")
       WHERE plainto_tsquery(${settings.configuration}, term) <> ''::tsquery
+    ),
+    matched_variants AS MATERIALIZED (
+      SELECT eligible.*, term_match."variantOrdinal",
+        term_match."matchedTermCount", term_match."maximumMatchedTermLength",
+        term_match."rankScore"
+      FROM eligible
+      CROSS JOIN LATERAL (
+        SELECT query_terms."variantOrdinal",
+          COUNT(*)::integer AS "matchedTermCount",
+          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+            "maximumMatchedTermLength",
+          COALESCE(SUM(ts_rank_cd(${settings.eligibleVector}, query_terms.query)),
+            0.0)::double precision AS "rankScore"
+        FROM query_terms
+        WHERE ${settings.eligibleVector} @@ query_terms.query
+        GROUP BY query_terms."variantOrdinal"
+      ) AS term_match
+    ),
+    ranked_variants AS MATERIALIZED (
+      SELECT matched_variants.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY matched_variants."variantOrdinal"
+          ORDER BY matched_variants."maximumMatchedTermLength" DESC,
+            matched_variants."matchedTermCount" DESC,
+            matched_variants."rankScore" DESC, matched_variants."itemId"
+        )::integer AS "rankWithinVariant"
+      FROM matched_variants
+    ),
+    balanced_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (ranked_variants."itemType", ranked_variants."itemId")
+        ranked_variants.*
+      FROM ranked_variants
+      ORDER BY ranked_variants."itemType", ranked_variants."itemId",
+        ranked_variants."rankWithinVariant", ranked_variants."variantOrdinal"
     )
-    SELECT ${candidateColumns(Prisma.sql`term_match."rankScore"`)}
-    FROM eligible
-    CROSS JOIN LATERAL (
-      SELECT COUNT(*)::integer AS "matchedTermCount",
-        COALESCE(MAX(query_terms."termLength"), 0)::integer AS "maximumMatchedTermLength",
-        COALESCE(SUM(ts_rank_cd(${settings.eligibleVector}, query_terms.query)),
-          0.0)::double precision AS "rankScore"
-      FROM query_terms
-      WHERE ${settings.eligibleVector} @@ query_terms.query
-    ) AS term_match
-    WHERE term_match."matchedTermCount" > 0
-    ORDER BY term_match."maximumMatchedTermLength" DESC,
-      term_match."matchedTermCount" DESC, term_match."rankScore" DESC,
+    SELECT ${candidateColumns(Prisma.sql`eligible."rankScore"`)}
+    FROM balanced_candidates AS eligible
+    ORDER BY eligible."rankWithinVariant", eligible."variantOrdinal",
+      eligible."maximumMatchedTermLength" DESC,
+      eligible."matchedTermCount" DESC, eligible."rankScore" DESC,
       eligible."itemId" LIMIT ${limit}
   `;
 }
@@ -1995,9 +2111,9 @@ function trigramSql(
   limit: number
 ): Prisma.Sql {
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const terms = distinctiveFtsTerms(
-    analyzeMemoryLexicalQuery(plan.lexicalQuery).trigramTerms
-  );
+  const termVariants = memorySemanticLexicalTermVariants(plan, "TRIGRAM");
+  const terms = termVariants.map(({ term }) => term);
+  const variantOrdinals = termVariants.map(({ variantOrdinal }) => variantOrdinal);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const indexedMatches = terms.flatMap((term) => [
     Prisma.sql`${term} <% entry."trigramSearchText"`,
@@ -2010,30 +2126,56 @@ function trigramSql(
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible}),
     query_terms AS MATERIALIZED (
-      SELECT DISTINCT variant.term,
+      SELECT DISTINCT variant.term, requested."variantOrdinal",
         char_length(variant.term)::integer AS "termLength"
-      FROM unnest(${terms}::text[]) AS requested(term)
+      FROM unnest(${terms}::text[], ${variantOrdinals}::integer[])
+        AS requested(term, "variantOrdinal")
       CROSS JOIN LATERAL (
         VALUES (requested.term), (aiqsa_memory_transliterate_ru(requested.term))
       ) AS variant(term)
       WHERE char_length(variant.term) >= 3
+    ),
+    matched_variants AS MATERIALIZED (
+      SELECT eligible.*, term_match."variantOrdinal",
+        term_match."matchedTermCount", term_match."maximumMatchedTermLength",
+        term_match."rankScore"
+      FROM eligible
+      CROSS JOIN LATERAL (
+        SELECT query_terms."variantOrdinal",
+          COUNT(*)::integer AS "matchedTermCount",
+          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+            "maximumMatchedTermLength",
+          COALESCE(SUM(word_similarity(
+            query_terms.term,
+            eligible."trigramSearchText"
+          )), 0.0)::double precision AS "rankScore"
+        FROM query_terms
+        WHERE query_terms.term <% eligible."trigramSearchText"
+        GROUP BY query_terms."variantOrdinal"
+      ) AS term_match
+    ),
+    ranked_variants AS MATERIALIZED (
+      SELECT matched_variants.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY matched_variants."variantOrdinal"
+          ORDER BY matched_variants."maximumMatchedTermLength" DESC,
+            matched_variants."matchedTermCount" DESC,
+            matched_variants."rankScore" DESC, matched_variants."itemId"
+        )::integer AS "rankWithinVariant"
+      FROM matched_variants
+    ),
+    balanced_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (ranked_variants."itemType", ranked_variants."itemId")
+        ranked_variants.*
+      FROM ranked_variants
+      ORDER BY ranked_variants."itemType", ranked_variants."itemId",
+        ranked_variants."rankWithinVariant", ranked_variants."variantOrdinal"
     )
-    SELECT ${candidateColumns(Prisma.sql`term_match."rankScore"`)}
-    FROM eligible
-    CROSS JOIN LATERAL (
-      SELECT COUNT(*)::integer AS "matchedTermCount",
-        COALESCE(MAX(query_terms."termLength"), 0)::integer AS
-          "maximumMatchedTermLength",
-        COALESCE(SUM(word_similarity(
-          query_terms.term,
-          eligible."trigramSearchText"
-        )), 0.0)::double precision AS "rankScore"
-      FROM query_terms
-      WHERE query_terms.term <% eligible."trigramSearchText"
-    ) AS term_match
-    WHERE term_match."matchedTermCount" > 0
-    ORDER BY term_match."maximumMatchedTermLength" DESC,
-      term_match."matchedTermCount" DESC, term_match."rankScore" DESC,
+    SELECT ${candidateColumns(Prisma.sql`eligible."rankScore"`)}
+    FROM balanced_candidates AS eligible
+    ORDER BY eligible."rankWithinVariant", eligible."variantOrdinal",
+      eligible."maximumMatchedTermLength" DESC,
+      eligible."matchedTermCount" DESC, eligible."rankScore" DESC,
       eligible."itemId" LIMIT ${limit}
   `;
 }
@@ -2043,65 +2185,109 @@ function targetedDigestFtsSql(
   plan: MemoryRetrievalPlan,
   limit: number
 ): Prisma.Sql {
-  if (plan.mode !== "PAST_CHAT_SEARCH" || plan.aggregationRequested) {
+  if (plan.mode !== "PAST_CHAT_SEARCH") {
     throw new Error("memory_retrieval_lane_invalid");
   }
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
-  const terms = distinctiveFtsTerms(
-    analyzeMemoryLexicalQuery(plan.lexicalQuery).simpleTerms
-  );
+  const termVariants = memorySemanticLexicalTermVariants(plan, "SIMPLE");
+  const terms = termVariants.map(({ term }) => term);
+  const variantOrdinals = termVariants.map(({ variantOrdinal }) => variantOrdinal);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)}),
     all_digest_navigation AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)}),
     query_terms AS MATERIALIZED (
-      SELECT DISTINCT term, char_length(term)::integer AS "termLength",
+      SELECT DISTINCT term, "variantOrdinal",
+        char_length(term)::integer AS "termLength",
         plainto_tsquery('simple', term) AS query
-      FROM unnest(${terms}::text[]) AS terms(term)
+      FROM unnest(${terms}::text[], ${variantOrdinals}::integer[])
+        AS terms(term, "variantOrdinal")
       WHERE plainto_tsquery('simple', term) <> ''::tsquery
     ),
     matched_navigation AS MATERIALIZED (
-      SELECT navigation.*, term_match."matchedTermCount",
+      SELECT navigation.*, term_match."variantOrdinal",
+        term_match."matchedTermCount",
         term_match."maximumMatchedTermLength", term_match."rankScore"
       FROM all_digest_navigation AS navigation
       CROSS JOIN LATERAL (
-        SELECT COUNT(*)::integer AS "matchedTermCount",
+        SELECT query_terms."variantOrdinal",
+          COUNT(*)::integer AS "matchedTermCount",
           COALESCE(MAX(query_terms."termLength"), 0)::integer AS
             "maximumMatchedTermLength",
           COALESCE(SUM(ts_rank_cd(navigation."searchVectorSimple", query_terms.query)),
             0.0)::double precision AS "rankScore"
         FROM query_terms
         WHERE navigation."searchVectorSimple" @@ query_terms.query
+        GROUP BY query_terms."variantOrdinal"
       ) AS term_match
-      WHERE term_match."matchedTermCount" > 0
+    ),
+    ranked_navigation AS MATERIALIZED (
+      SELECT matched_navigation.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY matched_navigation."variantOrdinal"
+          ORDER BY matched_navigation."maximumMatchedTermLength" DESC,
+            matched_navigation."matchedTermCount" DESC,
+            matched_navigation."rankScore" DESC,
+            matched_navigation."occurredTo" DESC NULLS LAST,
+            matched_navigation."itemId"
+        )::integer AS "rankWithinVariant"
+      FROM matched_navigation
     ),
     digest_navigation AS MATERIALIZED (
       SELECT DISTINCT ON (navigation."sourceChatId") navigation.*
-      FROM matched_navigation AS navigation
+      FROM ranked_navigation AS navigation
       ORDER BY navigation."sourceChatId",
-        navigation."maximumMatchedTermLength" DESC,
-        navigation."matchedTermCount" DESC, navigation."rankScore" DESC,
-        navigation."occurredTo" DESC NULLS LAST, navigation."itemId"
-    )
-    SELECT ${candidateColumns(Prisma.sql`navigation."rankScore"`)}
-    FROM eligible
-    INNER JOIN digest_navigation AS navigation
-      ON navigation."sourceChatId" = eligible."sourceChatId"
-    CROSS JOIN LATERAL (
-      SELECT COUNT(*)::integer AS "matchedTermCount",
-        COALESCE(MAX(query_terms."termLength"), 0)::integer AS
-          "maximumMatchedTermLength",
+        navigation."rankWithinVariant", navigation."variantOrdinal"
+    ),
+    source_anchors AS MATERIALIZED (
+      SELECT DISTINCT ON (navigation."sourceChatId") eligible.*,
+        navigation."variantOrdinal" AS "navigationVariantOrdinal",
+        navigation."rankWithinVariant" AS "navigationRankWithinVariant",
+        navigation."maximumMatchedTermLength" AS
+          "navigationMaximumMatchedTermLength",
+        navigation."matchedTermCount" AS "navigationMatchedTermCount",
+        navigation."rankScore" AS "navigationRankScore",
+        raw_match."minimumVariantOrdinal" AS "rawMinimumVariantOrdinal",
+        raw_match."maximumMatchedTermLength" AS "rawMaximumMatchedTermLength",
+        raw_match."matchedTermCount" AS "rawMatchedTermCount",
+        raw_match."rankScore" AS "rawRankScore"
+      FROM eligible
+      INNER JOIN digest_navigation AS navigation
+        ON navigation."sourceChatId" = eligible."sourceChatId"
+      CROSS JOIN LATERAL (
+        SELECT COUNT(*)::integer AS "matchedTermCount",
+          COALESCE(MIN(query_terms."variantOrdinal"), 2147483647)::integer AS
+            "minimumVariantOrdinal",
+          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
+            "maximumMatchedTermLength",
         COALESCE(SUM(ts_rank_cd(
-          eligible."searchVectorSimple",
-          query_terms.query
-        )), 0.0)::double precision AS "rankScore"
-      FROM query_terms
-      WHERE eligible."searchVectorSimple" @@ query_terms.query
-    ) AS raw_match
-    ORDER BY navigation."maximumMatchedTermLength" DESC,
-      navigation."matchedTermCount" DESC, navigation."rankScore" DESC,
-      raw_match."maximumMatchedTermLength" DESC,
-      raw_match."matchedTermCount" DESC, raw_match."rankScore" DESC,
+            eligible."searchVectorSimple",
+            query_terms.query
+          )), 0.0)::double precision AS "rankScore"
+        FROM query_terms
+        WHERE eligible."searchVectorSimple" @@ query_terms.query
+      ) AS raw_match
+      ORDER BY navigation."sourceChatId",
+        (raw_match."matchedTermCount" > 0) DESC,
+        raw_match."maximumMatchedTermLength" DESC,
+        raw_match."matchedTermCount" DESC, raw_match."rankScore" DESC,
+        raw_match."minimumVariantOrdinal",
+        (eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType") DESC,
+        (eligible."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
+          AND eligible."itemId" = navigation."itemId") DESC,
+        eligible."occurredTo" DESC NULLS LAST, eligible."itemId"
+    )
+    SELECT ${candidateColumns(Prisma.sql`eligible."navigationRankScore"`)}
+    FROM source_anchors AS eligible
+    ORDER BY eligible."navigationRankWithinVariant",
+      eligible."navigationVariantOrdinal",
+      eligible."navigationMaximumMatchedTermLength" DESC,
+      eligible."navigationMatchedTermCount" DESC,
+      eligible."navigationRankScore" DESC,
+      (eligible."rawMatchedTermCount" > 0) DESC,
+      eligible."rawMaximumMatchedTermLength" DESC,
+      eligible."rawMatchedTermCount" DESC, eligible."rawRankScore" DESC,
+      eligible."rawMinimumVariantOrdinal",
       (eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType") DESC,
       eligible."occurredTo" DESC NULLS LAST, eligible."itemId" LIMIT ${limit}
   `;
@@ -2135,14 +2321,49 @@ async function queryLane(
   client: PrismaClient,
   lane: MemoryRetrievalLane,
   limit: number,
-  sql: Prisma.Sql
+  sql: Prisma.Sql,
+  options: Readonly<{
+    maximumRows?: number;
+    sourceDiversity?: boolean;
+  }> = {}
 ): Promise<MemoryLaneResult> {
   const rows = await client.$queryRaw<CandidateRow[]>(sql);
-  if (rows.length > limit) throw new Error("memory_retrieval_result_invalid");
-  const candidates = rows.map((row) => decodeCandidate(row, lane));
-  if (new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
-    candidates.length) throw new Error("memory_retrieval_result_invalid");
+  const maximumRows = options.maximumRows ?? limit;
+  if (!Number.isSafeInteger(maximumRows) || maximumRows < limit ||
+    maximumRows > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+    rows.length > maximumRows) throw new Error("memory_retrieval_result_invalid");
+  const decoded = rows.map((row) => decodeCandidate(row, lane));
+  if (new Set(decoded.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
+    decoded.length) throw new Error("memory_retrieval_result_invalid");
+  const candidates = options.sourceDiversity
+    ? selectMemorySourceDiverseLaneCandidates(decoded, limit)
+    : decoded;
+  if (candidates.length > limit) throw new Error("memory_retrieval_result_invalid");
   return { candidates, lane };
+}
+
+export function selectMemorySourceDiverseLaneCandidates<T extends Readonly<{
+  itemId: string;
+  metadata: Readonly<{ sourceChatId: string | null }>;
+}>>(candidates: readonly T[], limit: number): readonly T[] {
+  if (!Number.isSafeInteger(limit) || limit < 1 ||
+    limit > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+    candidates.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+    candidates.some(({ metadata }) => !metadata.sourceChatId)) {
+    throw new Error("memory_retrieval_result_invalid");
+  }
+  const firstBySource: T[] = [];
+  const remaining: T[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const sourceChatId = candidate.metadata.sourceChatId!;
+    if (seen.has(sourceChatId)) remaining.push(candidate);
+    else {
+      seen.add(sourceChatId);
+      firstBySource.push(candidate);
+    }
+  }
+  return [...firstBySource, ...remaining].slice(0, limit);
 }
 
 function localLexicalLanes(
@@ -2190,8 +2411,9 @@ function localLexicalLanes(
       lanes.push("HISTORY_RECALL_RECENT");
     } else {
       lanes.push("HISTORY_RECALL_EXACT");
-      if (plan.mode === "PAST_CHAT_SEARCH" && !plan.aggregationRequested &&
-        lexical) lanes.push("HISTORY_DIGEST_FTS_SIMPLE");
+      if (plan.mode === "PAST_CHAT_SEARCH" && lexical) {
+        lanes.push("HISTORY_DIGEST_FTS_SIMPLE");
+      }
       if (lexical) {
         lanes.push("HISTORY_RECALL_FTS_SIMPLE");
         if (lexical.hasLatin) lanes.push("HISTORY_RECALL_FTS_ENGLISH");
@@ -2259,7 +2481,12 @@ function pushLexicalTasks(
   const lanes = localLexicalLanes(snapshot, plan);
   for (const lane of lanes) {
     const limit = allocatedLimit(allocation, lane, plan.aggregationRequested);
-    const sql = laneSql(snapshot, plan, lane, limit);
+    const sourceDiversity = plan.aggregationRequested &&
+      lane.startsWith("HISTORY_RECALL_");
+    const queryLimit = sourceDiversity
+      ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
+      : limit;
+    const sql = laneSql(snapshot, plan, lane, queryLimit);
     tasks.push({
       async execute() {
         try {
@@ -2267,7 +2494,10 @@ function pushLexicalTasks(
             !await hasPotentialEntityAlias(client, snapshot, plan)) {
             return { candidates: [], lane };
           }
-          return await queryLane(client, lane, limit, sql);
+          return await queryLane(client, lane, limit, sql, {
+            maximumRows: queryLimit,
+            sourceDiversity
+          });
         } catch {
           failures.push(lane);
           return { candidates: [], lane };
@@ -2401,7 +2631,10 @@ function pushVectorTasks(
           : hit.itemType === "RECALL_CHUNK" || hit.itemType === "RECALL_ROUND");
         return hits.length === 0 ? { candidates: [], lane }
           : queryLane(client, lane, laneLimit,
-              vectorMetadataSql(snapshot, input.plan, itemType, hits, laneLimit));
+              vectorMetadataSql(snapshot, input.plan, itemType, hits, laneLimit), {
+                sourceDiversity: input.plan.aggregationRequested &&
+                  lane === "HISTORY_RECALL_VECTOR"
+              });
       },
       lane
     });
@@ -2570,6 +2803,30 @@ function aggregationDigestCandidatesSql(
   `;
 }
 
+/** Replaces a session-navigation representative with the authoritative digest
+ * anchor identity as one atomic item reference. Mixing a round itemType with a
+ * chunk itemId makes the subsequent authoritative expansion query the wrong
+ * table and silently loses the selected source. */
+export function projectMemoryAggregationDigestRepresentative(
+  representative: MemoryRankedCandidate,
+  digest: Pick<MemoryLaneCandidate, "itemId" | "itemType" | "metadata">
+): MemoryRankedCandidate {
+  if (
+    representative.itemType === "FACT_VERSION" ||
+    digest.itemType !== "RECALL_CHUNK" ||
+    !representative.metadata.sourceChatId ||
+    digest.metadata.sourceChatId !== representative.metadata.sourceChatId
+  ) throw new Error("memory_aggregation_projection_result_invalid");
+  return {
+    ...representative,
+    entryId: null,
+    itemId: digest.itemId,
+    itemType: digest.itemType,
+    metadata: digest.metadata,
+    selectionReason: `${representative.selectionReason}+aggregation_session_digest`
+  };
+}
+
 function validPlan(plan: MemoryRetrievalPlan): boolean {
   const requestedKinds = plan.filters.sourceKinds;
   const facts = requestedKinds.includes("FACT") || requestedKinds.includes("EVENT");
@@ -2700,8 +2957,7 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (factIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
         currentFactExpansionSql(snapshot, plan, factIds)));
       if (chunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
-        plan.mode === "HISTORY_OVERVIEW" ||
-          plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
+        plan.mode === "HISTORY_OVERVIEW"
           ? digestExpansionSql(snapshot, plan, chunkIds)
           : chunkExpansionSql(snapshot, plan, chunkIds)));
       if (roundIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
@@ -2709,17 +2965,52 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           ...row,
           safeText: boundedMemoryRecallRoundEvidenceText(row.safeText)
         }))));
-      const decoded = (await Promise.all(queries)).flat().flatMap((row) => {
-        const expanded = decodeExpanded(row);
-        return expanded ? [expanded] : [];
-      });
-      const keys = decoded.map((row) => `${row.itemType}:${row.itemId}`);
-      if (new Set(keys).size !== keys.length) throw new Error("memory_expansion_result_invalid");
-      const byKey = new Map(decoded.map((row) => [`${row.itemType}:${row.itemId}`, row]));
-      return candidates.flatMap((candidate) => {
-        const value = byKey.get(`${candidate.itemType}:${candidate.itemId}`);
-        return value ? [value] : [];
-      });
+      return orderedExpandedCandidates(candidates, (await Promise.all(queries)).flat());
+    },
+
+    async expandAggregationNavigation(
+      snapshot: MemoryLocalRetrievalSnapshot,
+      plan: MemoryRetrievalPlan,
+      candidates: readonly MemoryRankedCandidate[]
+    ): Promise<readonly MemoryExpandedCandidate[]> {
+      if (
+        snapshot.status !== "READY" ||
+        !plan.aggregationRequested || plan.mode !== "PAST_CHAT_SEARCH" ||
+        candidates.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
+        new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
+          candidates.length || candidates.some((candidate) => !validToken(candidate.itemId))
+      ) throw new Error("memory_aggregation_navigation_contract_invalid");
+      const factIds = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION")
+        .map((candidate) => candidate.itemId);
+      const chunkIds = candidates.filter((candidate) => candidate.itemType === "RECALL_CHUNK")
+        .map((candidate) => candidate.itemId);
+      const roundIds = candidates.filter((candidate) => candidate.itemType === "RECALL_ROUND")
+        .map((candidate) => candidate.itemId);
+      if ((chunkIds.length > 0 || roundIds.length > 0) &&
+        (!snapshot.activeGenerationId || !snapshot.indexMode)) {
+        throw new Error("memory_aggregation_navigation_contract_invalid");
+      }
+      const initialQueries: Promise<ExpandedRow[]>[] = [];
+      if (factIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+        currentFactExpansionSql(snapshot, plan, factIds)));
+      if (chunkIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+        digestExpansionSql(snapshot, plan, chunkIds)));
+      if (roundIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+        roundExpansionSql(snapshot, plan, roundIds)).then((rows) => rows.map((row) => ({
+          ...row,
+          safeText: boundedMemoryRecallRoundEvidenceText(row.safeText)
+        }))));
+      const initialRows = (await Promise.all(initialQueries)).flat();
+      const digestChunkIds = new Set(initialRows.flatMap((row) =>
+        row.itemType === "RECALL_CHUNK" && row.projectionKind === "CHAT_DIGEST_SAFE_TEXT"
+          ? [row.itemId]
+          : []));
+      const rawFallbackIds = chunkIds.filter((itemId) => !digestChunkIds.has(itemId));
+      const rawFallbackRows = rawFallbackIds.length === 0
+        ? []
+        : await client.$queryRaw<ExpandedRow[]>(
+            chunkExpansionSql(snapshot, plan, rawFallbackIds));
+      return orderedExpandedCandidates(candidates, [...initialRows, ...rawFallbackRows]);
     },
 
     async projectAggregationSessions(
@@ -2742,26 +3033,24 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       const rows = await client.$queryRaw<CandidateRow[]>(
         aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds)
       );
-      const bySource = new Map<string, CandidateRow>();
+      const bySource = new Map<string, MemoryLaneCandidate>();
       for (const row of rows) {
-        const metadata = decodeMetadata(row);
-        if (row.itemType !== "RECALL_CHUNK" || !metadata.sourceChatId ||
-          bySource.has(metadata.sourceChatId)) {
+        const candidate = decodeCandidate(row, "HISTORY_DIGEST_FTS_SIMPLE");
+        const sourceChatId = candidate.metadata.sourceChatId;
+        if (candidate.itemType !== "RECALL_CHUNK" || !sourceChatId ||
+          bySource.has(sourceChatId)) {
           throw new Error("memory_aggregation_projection_result_invalid");
         }
-        bySource.set(metadata.sourceChatId, row);
+        bySource.set(sourceChatId, candidate);
       }
       const history = representatives.flatMap((representative) => {
         const sourceChatId = representative.metadata.sourceChatId;
         const row = sourceChatId ? bySource.get(sourceChatId) : undefined;
-        if (!row) return [];
-        return [{
+        if (!row) return [{
           ...representative,
-          entryId: null,
-          itemId: row.itemId,
-          metadata: decodeMetadata(row),
-          selectionReason: `${representative.selectionReason}+aggregation_session_digest`
+          selectionReason: `${representative.selectionReason}+aggregation_session_raw_fallback`
         } satisfies MemoryRankedCandidate];
+        return [projectMemoryAggregationDigestRepresentative(representative, row)];
       });
       return [...facts, ...history];
     },

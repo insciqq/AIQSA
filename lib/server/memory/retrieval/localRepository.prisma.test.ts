@@ -1519,6 +1519,61 @@ describe("local Memory retrieval on PostgreSQL", () => {
           userId
         })
       ];
+      const extraCedarChunkId = await createChunk({
+        chatId: histories[0]!.chatId,
+        chunkOrdinal: 1,
+        generationId,
+        messageId: await prisma.chat.findUniqueOrThrow({
+          select: { activeLeafMessageId: true },
+          where: { id: histories[0]!.chatId }
+        }).then(({ activeLeafMessageId }) => activeLeafMessageId!),
+        occurredAt: new Date("2026-07-10T09:01:00.000Z"),
+        safeText: "User:\nAn ancillary note about an unrelated request.",
+        sourceRevisionAtCreation: 1,
+        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
+        userId
+      });
+      const relevantCedarChunkId = await createChunk({
+        chatId: histories[0]!.chatId,
+        chunkOrdinal: 2,
+        generationId,
+        messageId: await prisma.chat.findUniqueOrThrow({
+          select: { activeLeafMessageId: true },
+          where: { id: histories[0]!.chatId }
+        }).then(({ activeLeafMessageId }) => activeLeafMessageId!),
+        occurredAt: new Date("2026-07-10T08:59:00.000Z"),
+        safeText: "User:\nThe pastry schedule belongs to the selected source conversation.",
+        sourceRevisionAtCreation: 1,
+        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
+        userId
+      });
+      const rawOnlySource = await createChatWithLeaf({
+        createdAt: new Date("2026-07-13T09:00:00.000Z"),
+        title: "Oak deployment without digest",
+        userId,
+        userText: "The oak deployment selected a canary rollout."
+      });
+      const rawOnlySourceHash = memorySha256({
+        chatId: rawOnlySource.chatId,
+        messageId: rawOnlySource.messageId,
+        version: 1
+      });
+      await createCheckpoint({
+        chatId: rawOnlySource.chatId,
+        messageId: rawOnlySource.messageId,
+        sourceHash: rawOnlySourceHash,
+        userId
+      });
+      const rawOnlyChunkId = await createChunk({
+        chatId: rawOnlySource.chatId,
+        generationId,
+        messageId: rawOnlySource.messageId,
+        occurredAt: new Date("2026-07-13T09:00:00.000Z"),
+        safeText: "User:\nThe oak deployment selected a canary rollout.",
+        sourceRevisionAtCreation: 1,
+        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
+        userId
+      });
       const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
       const overviewPlan = planMemoryRetrieval({
         currentUserText: "Give me an overview of our deployment chats.",
@@ -1600,7 +1655,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
         targetedRanked
       );
       expect(new Set(targetedExpanded.map(({ itemId }) => itemId))).toEqual(
-        new Set(histories.map(({ chunkId }) => chunkId))
+        new Set([...histories.map(({ chunkId }) => chunkId), rawOnlyChunkId])
       );
       expect(targetedExpanded.every(({ projectionKind, supportingItemId }) =>
         projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
@@ -1610,6 +1665,52 @@ describe("local Memory retrieval on PostgreSQL", () => {
           history.digestText
         );
       }
+
+      const balancedVariantPlan = planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: "sequoiaonly",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: fixtureNow,
+        semanticRewrite: "maple rollback owner",
+        temporalIntent: "ANY"
+      });
+      const balancedVariantResult = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan: balancedVariantPlan,
+        userId
+      });
+      expect(balancedVariantResult.laneResults.find(({ lane }) =>
+        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates.slice(0, 2)
+        .map(({ metadata }) => metadata.sourceChatId)).toEqual([
+        histories[0]!.chatId,
+        histories[2]!.chatId
+      ]);
+
+      const sourceLocalPlan = planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: "sequoiaonly pastry",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: fixtureNow,
+        temporalIntent: "ANY"
+      });
+      const sourceLocal = await repository.retrieve({
+        assistantId: null,
+        chatId: current.chatId,
+        now: fixtureNow,
+        plan: sourceLocalPlan,
+        userId
+      });
+      expect(sourceLocal.laneResults.find(({ lane }) =>
+        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates).toEqual([
+        expect.objectContaining({
+          itemId: relevantCedarChunkId,
+          metadata: expect.objectContaining({ sourceChatId: histories[0]!.chatId })
+        })
+      ]);
 
       const digestOnlyPlan = planMemoryRetrieval({
         currentUserText: "sequoiaonly",
@@ -1628,6 +1729,10 @@ describe("local Memory retrieval on PostgreSQL", () => {
       expect(digestOnly.laneResults.find(({ lane }) =>
         lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates.map(({ itemId }) => itemId))
         .toEqual([histories[0]!.chunkId]);
+      expect(digestOnly.laneResults.flatMap(({ candidates }) =>
+        candidates.map(({ itemId }) => itemId))).not.toContain(extraCedarChunkId);
+      expect(digestOnly.laneResults.flatMap(({ candidates }) =>
+        candidates.map(({ itemId }) => itemId))).not.toContain(relevantCedarChunkId);
       const digestOnlyRanked = fuseMemoryRetrievalCandidates(
         digestOnlyPlan,
         digestOnly.laneResults,
@@ -1666,6 +1771,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       });
       expect(aggregation.laneResults.map(({ lane }) => lane)).toEqual([
         "HISTORY_RECALL_EXACT",
+        "HISTORY_DIGEST_FTS_SIMPLE",
         "HISTORY_RECALL_FTS_SIMPLE",
         "HISTORY_RECALL_FTS_ENGLISH",
         "HISTORY_RECALL_TRIGRAM"
@@ -1680,17 +1786,39 @@ describe("local Memory retrieval on PostgreSQL", () => {
         aggregationPlan,
         aggregationRanked
       );
-      const aggregationExpanded = await repository.expand(
+      expect(aggregationSessions).toHaveLength(4);
+      expect(aggregationSessions).toContainEqual(expect.objectContaining({
+        itemId: rawOnlyChunkId,
+        selectionReason: expect.stringContaining("aggregation_session_raw_fallback")
+      }));
+      const aggregationNavigation = await repository.expandAggregationNavigation(
         aggregation.snapshot,
         aggregationPlan,
         aggregationSessions
       );
-      expect(aggregationExpanded).toHaveLength(3);
-      expect(aggregationExpanded.every(({ projectionKind, supportingItemId }) =>
-        projectionKind === "CHAT_DIGEST_SAFE_TEXT" &&
-        supportingItemId !== null)).toBe(true);
-      expect(new Set(aggregationExpanded.map(({ safeText }) => safeText))).toEqual(
-        new Set(histories.map(({ digestText }) => digestText))
+      expect(aggregationNavigation).toHaveLength(4);
+      expect(aggregationNavigation.filter(({ projectionKind }) =>
+        projectionKind === "CHAT_DIGEST_SAFE_TEXT")).toHaveLength(3);
+      expect(aggregationNavigation).toContainEqual(expect.objectContaining({
+        itemId: rawOnlyChunkId,
+        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+        safeText: "User:\nThe oak deployment selected a canary rollout.",
+        supportingItemId: null
+      }));
+      const aggregationRaw = await repository.expand(
+        aggregation.snapshot,
+        aggregationPlan,
+        aggregationSessions
+      );
+      expect(aggregationRaw).toHaveLength(4);
+      expect(aggregationRaw.every(({ projectionKind, supportingItemId }) =>
+        projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
+        supportingItemId === null)).toBe(true);
+      expect(new Set(aggregationRaw.map(({ safeText }) => safeText))).toEqual(
+        new Set([
+          ...histories.map(({ safeChunkText }) => safeChunkText),
+          "User:\nThe oak deployment selected a canary rollout."
+        ])
       );
     } finally {
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });

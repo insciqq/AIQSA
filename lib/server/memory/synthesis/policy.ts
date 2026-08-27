@@ -6,22 +6,117 @@ import type {
 import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
-export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v2";
+export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v3";
 export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v3";
 export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v2";
 export const MEMORY_SYNTHESIS_RETRIEVAL_CONFIG_FINGERPRINT =
   "memory-synthesis-retrieval-none-v1";
 
-export const MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES = 20;
 export const MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES = 3;
+export const MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES =
+  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES;
+export const MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER = 8;
+export const MEMORY_SYNTHESIS_NEW_FACT_TRIGGER = 12;
+export const MEMORY_SYNTHESIS_QUIET_PERIOD_MS = 30 * 60 * 1_000;
+export const MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS = 24 * 60 * 60 * 1_000;
 export const MEMORY_SYNTHESIS_MAX_SOURCES = 40;
 export const MEMORY_SYNTHESIS_MAX_CLUSTERS = 8;
 export const MEMORY_SYNTHESIS_MAX_PATTERNS = 4;
 export const MEMORY_SYNTHESIS_MAX_SOURCE_CHARACTERS = 48_000;
 export const MEMORY_SYNTHESIS_CLUSTER_WINDOW_MS = 365 * 24 * 60 * 60 * 1_000;
-export const MEMORY_SYNTHESIS_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1_000;
+export const MEMORY_SYNTHESIS_COOLDOWN_MS = 12 * 60 * 60 * 1_000;
 export const MEMORY_SYNTHESIS_MAX_SCHEDULED_OWNERS = 24;
 export const MEMORY_SYNTHESIS_AUTHORITY_MULTIPLIER = 0.5;
+
+export type MemorySynthesisActivity = Readonly<{
+  changedFactCount: number;
+  eligibleSourceCount: number;
+  firstChangedAt: Date | null;
+  lastChangedAt: Date | null;
+  lastSynthesisAt: Date | null;
+  newEvidenceChatCount: number;
+}>;
+
+export type MemorySynthesisScheduleReason =
+  | "ACCUMULATING"
+  | "CHAT_ACTIVITY"
+  | "COOLDOWN"
+  | "FACT_ACTIVITY"
+  | "INSUFFICIENT_SOURCES"
+  | "INVALID"
+  | "LOW_ACTIVITY_FALLBACK"
+  | "NO_NEW_ACTIVITY"
+  | "QUIET_PERIOD";
+
+export type MemorySynthesisScheduleDecision = Readonly<{
+  due: boolean;
+  reason: MemorySynthesisScheduleReason;
+}>;
+
+function nonNegativeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Dream scheduling follows evidence-bearing activity, never wall-clock polling
+ * alone. The quiet period avoids synthesizing a conversation while it is still
+ * changing; the cooldown is only a cost/race ceiling, not a periodic trigger.
+ */
+export function decideMemorySynthesisSchedule(
+  activity: MemorySynthesisActivity,
+  now: Date
+): MemorySynthesisScheduleDecision {
+  const datesValid = validDate(now) &&
+    (activity.firstChangedAt === null || validDate(activity.firstChangedAt)) &&
+    (activity.lastChangedAt === null || validDate(activity.lastChangedAt)) &&
+    (activity.lastSynthesisAt === null || validDate(activity.lastSynthesisAt));
+  if (
+    !datesValid ||
+    !nonNegativeInteger(activity.changedFactCount) ||
+    !nonNegativeInteger(activity.eligibleSourceCount) ||
+    !nonNegativeInteger(activity.newEvidenceChatCount) ||
+    (activity.firstChangedAt === null) !== (activity.lastChangedAt === null) ||
+    (activity.firstChangedAt !== null && activity.lastChangedAt !== null &&
+      activity.firstChangedAt > activity.lastChangedAt)
+  ) {
+    return { due: false, reason: "INVALID" };
+  }
+  if (activity.eligibleSourceCount < MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES) {
+    return { due: false, reason: "INSUFFICIENT_SOURCES" };
+  }
+  if (
+    activity.firstChangedAt === null || activity.lastChangedAt === null ||
+    (activity.changedFactCount === 0 && activity.newEvidenceChatCount === 0)
+  ) {
+    return { due: false, reason: "NO_NEW_ACTIVITY" };
+  }
+  if (
+    activity.lastSynthesisAt !== null &&
+    activity.lastSynthesisAt.getTime() + MEMORY_SYNTHESIS_COOLDOWN_MS >
+      now.getTime()
+  ) {
+    return { due: false, reason: "COOLDOWN" };
+  }
+  if (
+    activity.lastChangedAt.getTime() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS >
+      now.getTime()
+  ) {
+    return { due: false, reason: "QUIET_PERIOD" };
+  }
+  if (activity.newEvidenceChatCount >= MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER) {
+    return { due: true, reason: "CHAT_ACTIVITY" };
+  }
+  if (activity.changedFactCount >= MEMORY_SYNTHESIS_NEW_FACT_TRIGGER) {
+    return { due: true, reason: "FACT_ACTIVITY" };
+  }
+  if (
+    activity.firstChangedAt.getTime() +
+      MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS <= now.getTime()
+  ) {
+    return { due: true, reason: "LOW_ACTIVITY_FALLBACK" };
+  }
+  return { due: false, reason: "ACCUMULATING" };
+}
 
 export type MemorySynthesisSource = Readonly<{
   canonicalKey: string;
@@ -152,13 +247,24 @@ export function memorySynthesisPatternFingerprint(input: Readonly<{
 }
 
 function clusterKey(source: MemorySynthesisSource): string {
+  // Automatic-fact admission has already proved CURRENT_USER subject scope.
+  // Bucket those observations by owner/category/modality so Dream can discover
+  // a relationship across different predicates and mentioned entities. An
+  // explicit fact can describe somebody else, so it keeps an exact structured
+  // subject/entity anchor and falls back to its own identity when neither is
+  // available.
   const entityAnchor = [...source.entityIds].sort()[0] ?? null;
-  const subject = source.subjectKey ?? source.canonicalKey;
+  const subject = source.sourceMode === "AUTOMATIC"
+    ? "owner:automatic-current-user"
+    : source.subjectKey
+      ? `subject:${source.subjectKey}`
+      : entityAnchor
+        ? `entity:${entityAnchor}`
+        : `fact:${source.canonicalKey}`;
   return [
-    entityAnchor ? `entity:${entityAnchor}` : `subject:${subject}`,
+    subject,
     `category:${source.category}`,
-    `modality:${source.modality}`,
-    `predicate:${source.predicateKey ?? "none"}`
+    `modality:${source.modality}`
   ].join("|");
 }
 

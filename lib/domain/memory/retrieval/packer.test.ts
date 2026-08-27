@@ -148,7 +148,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v14");
+    expect(pack.packerVersion).toBe("memory-context-packer-v16");
   });
 
   it("packs a recall-round hit only from its authoritative raw projection", () => {
@@ -478,7 +478,7 @@ describe("Personal Memory context pack", () => {
     })).toThrow("memory_context_budget_invalid");
   });
 
-  it("packs distinct aggregation sources before repeats without a per-chat quota", () => {
+  it("softly balances aggregation depth and source breadth without a per-chat quota", () => {
     const distinct = Array.from({ length: 10 }, (_, index) => ({
       candidate: ranked(`event-${index}`, true, "DYNAMIC", `chat-${index}`),
       expansion: expansion(
@@ -515,8 +515,10 @@ describe("Personal Memory context pack", () => {
     expect(pack.items).toHaveLength(22);
     expect(new Set(pack.items.map(({ sourceChatId }) => sourceChatId)).size).toBe(10);
     expect(pack.items.filter(({ sourceChatId }) => sourceChatId === "chat-0")).toHaveLength(13);
-    expect(pack.items.slice(0, 10).map(({ sourceChatId }) => sourceChatId))
-      .toEqual(Array.from({ length: 10 }, (_, index) => `chat-${index}`));
+    expect(pack.items.findIndex(({ itemId }) => itemId === "event-repeat-1"))
+      .toBeLessThan(pack.items.findIndex(({ itemId }) => itemId === "event-7"));
+    expect(pack.items.slice(0, 12).filter(({ sourceChatId }) =>
+      sourceChatId === "chat-0")).toHaveLength(3);
     expect(pack.approxTokens).toBeLessThanOrEqual(24_000);
     expect(pack).toMatchObject({
       budgetProfile: "COMPLEX",
@@ -551,6 +553,29 @@ describe("Personal Memory context pack", () => {
 
     expect(pack.items.map(({ itemId }) => itemId)).toEqual([
       "history-a-1", "fact-between", "history-b", "history-a-2"
+    ]);
+  });
+
+  it("keeps repeated evidence from the strongest source reachable without exceeding 25 percent", () => {
+    const ids = [
+      "a-1", "a-2", "a-3", "b-1", "c-1", "d-1",
+      "e-1", "f-1", "g-1", "h-1", "i-1", "j-1"
+    ];
+    const candidates = ids.map((id) => ranked(id, true, "DYNAMIC", `chat-${id[0]}`));
+    const pack = packMemoryPersonalContext({
+      expanded: candidates.map((candidate) => expansion(
+        candidate.itemId,
+        true,
+        `bounded evidence ${candidate.itemId}`,
+        candidate.metadata.sourceChatId!
+      )),
+      plan,
+      ranked: candidates
+    });
+
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual([
+      "a-1", "b-1", "c-1", "d-1", "e-1", "f-1",
+      "g-1", "a-2", "h-1", "i-1", "j-1", "a-3"
     ]);
   });
 

@@ -87,11 +87,13 @@ describe("Memory retrieval lane scheduler", () => {
     });
     const aggregationHistoryLanes = [
       "HISTORY_RECALL_EXACT",
+      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_FTS_SIMPLE",
       "HISTORY_RECALL_VECTOR"
     ] as const;
     expect(allocateMemoryRetrievalLaneLimits(aggregationHistoryLanes, true)).toEqual({
       HISTORY_RECALL_EXACT: 8,
+      HISTORY_DIGEST_FTS_SIMPLE: 30,
       HISTORY_RECALL_FTS_SIMPLE: 40,
       HISTORY_RECALL_VECTOR: 120
     });

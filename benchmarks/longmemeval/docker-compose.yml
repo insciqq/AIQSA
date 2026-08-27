@@ -8,8 +8,8 @@ services:
       AIQSA_MEMORY_BENCHMARK_TARGET: longmemeval
       AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "1000"
       AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: "64"
-      AIQSA_MEMORY_JOB_PARALLELISM: "16"
-      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "16"
+      AIQSA_MEMORY_JOB_PARALLELISM: "8"
+      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "4"
       DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
     ports: !override
       - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}:3000"

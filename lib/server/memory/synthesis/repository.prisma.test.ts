@@ -36,13 +36,17 @@ import {
   memorySynthesisJobFingerprint,
   memorySynthesisSourceEligibilityHash,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
-  MEMORY_SYNTHESIS_POLICY_VERSION
+  MEMORY_SYNTHESIS_POLICY_VERSION,
+  MEMORY_SYNTHESIS_QUIET_PERIOD_MS
 } from "./policy";
 import {
   memorySynthesisAcceptedOutputHash,
   memorySynthesisInputHash
 } from "./provider";
-import { reconcileMemorySynthesisWork } from "./reconcile";
+import {
+  loadMemorySynthesisScheduleStatus,
+  reconcileMemorySynthesisWork
+} from "./reconcile";
 import {
   createPrismaMemorySynthesisRepository,
   loadMemorySynthesisSnapshot,
@@ -420,21 +424,38 @@ describe("Prisma Memory Dream synthesis", () => {
         }
       }
 
+      const cadenceNow = new Date(Date.now() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1);
+      await expect(loadMemorySynthesisScheduleStatus(
+        prisma,
+        userId,
+        new Date()
+      )).resolves.toMatchObject({
+        activity: { changedFactCount: 20, eligibleSourceCount: 20 },
+        decision: { due: false, reason: "QUIET_PERIOD" }
+      });
+      await expect(loadMemorySynthesisScheduleStatus(
+        prisma,
+        userId,
+        cadenceNow
+      )).resolves.toMatchObject({
+        activity: { changedFactCount: 20, eligibleSourceCount: 20 },
+        decision: { due: true, reason: "FACT_ACTIVITY" }
+      });
       const deniedReconcile = await reconcileMemorySynthesisWork(
         prisma,
-        new Date(),
+        cadenceNow,
         async () => false
       );
       expect(deniedReconcile.scheduled).toBe(0);
       const firstReconcile = await reconcileMemorySynthesisWork(
         prisma,
-        new Date(),
+        cadenceNow,
         async () => true
       );
       expect(firstReconcile.scheduled).toBe(1);
       const secondReconcile = await reconcileMemorySynthesisWork(
         prisma,
-        new Date(),
+        cadenceNow,
         async () => true
       );
       expect(secondReconcile.scheduled).toBe(0);

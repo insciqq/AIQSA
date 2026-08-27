@@ -168,11 +168,22 @@ function responseUsage(value: unknown): RerankUsage {
   return { inputTokens, searchUnits, totalTokens };
 }
 
-function responseModelMatches(actual: string, expected: string): boolean {
+function responseModelMatches(
+  actual: string,
+  expected: string,
+  provider: string | null
+): boolean {
   const normalizedActual = actual.toLocaleLowerCase("und");
   const normalizedExpected = expected.toLocaleLowerCase("und");
-  return normalizedActual === normalizedExpected ||
-    normalizedActual === normalizedExpected.split("/").at(-1);
+  const expectedSlug = normalizedExpected.split("/").at(-1);
+  if (normalizedActual === normalizedExpected || normalizedActual === expectedSlug) {
+    return true;
+  }
+  const providerNativeParts = normalizedActual.split("/");
+  return provider !== null && providerNativeParts.length === 4 &&
+    providerNativeParts[0] === "accounts" && providerNativeParts[2] === "models" &&
+    providerNativeParts[1] === provider.toLocaleLowerCase("und") &&
+    providerNativeParts[3] === expectedSlug;
 }
 
 function responseBody(
@@ -183,12 +194,13 @@ function responseBody(
 ): RerankResult {
   const body = isRecord(value) ? value : null;
   const responseModel = boundedIdentifier(body?.model);
+  const responseProvider = boundedIdentifier(body?.provider);
   if (!body || !responseModel ||
-    !responseModelMatches(responseModel, model.upstreamModelId) ||
+    !responseModelMatches(responseModel, model.upstreamModelId, responseProvider) ||
     !Array.isArray(body.results) ||
     body.results.length > MAX_RERANK_DOCUMENTS * 4) {
     if (isRecord(value) && typeof value.model === "string" &&
-      !responseModelMatches(value.model, model.upstreamModelId)) {
+      !responseModelMatches(value.model, model.upstreamModelId, responseProvider)) {
       throw new RerankAdapterError("rerank_response_model_mismatch");
     }
     throw new RerankAdapterError("rerank_response_invalid");
@@ -213,7 +225,7 @@ function responseBody(
   if (scores.length < 1) throw new RerankAdapterError("rerank_response_invalid");
   return {
     model: responseModel,
-    provider: boundedIdentifier(body.provider),
+    provider: responseProvider,
     requestId: boundedIdentifier(body.id) ?? headerRequestId,
     scores,
     usage: responseUsage(body.usage)

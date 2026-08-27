@@ -6,4 +6,5 @@ export * from "./lexical";
 export * from "./packer";
 export * from "./planner";
 export * from "./ranker";
+export * from "./sourceDiversity";
 export * from "./temporal";

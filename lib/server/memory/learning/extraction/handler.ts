@@ -151,8 +151,12 @@ async function recoverPriorExecution(
   const compatibleBindings = bindings.filter((binding) =>
     bindingUsesVersions(binding, MEMORY_FACT_EXTRACTION_VERSIONS) ||
     bindingUsesVersions(binding, MEMORY_SEMANTIC_ADJUDICATION_VERSIONS));
+  const replaySensitiveBindings = extractionBindings.filter((binding) =>
+    binding.state === "RUNNING" || binding.state === "OUTCOME_UNKNOWN" ||
+    binding.state === "SUCCEEDED");
   if (compatibleBindings.length !== bindings.length ||
-    extractionBindings.some((binding) => binding.inputHash !== input.inputHash)) {
+    replaySensitiveBindings.some((binding) =>
+      binding.inputHash !== input.inputHash)) {
     await deps.repository.discardStale(job, "source_stale");
     throw new MemoryCoordinatorError("memory_fact_binding_stale", false);
   }

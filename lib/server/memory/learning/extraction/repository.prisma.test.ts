@@ -25,11 +25,7 @@ import {
   withLockedMemoryTransaction
 } from "../../persistence/transaction";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../../retrieval/vector";
-import {
-  memoryReclassificationAcceptedOutputHash,
-  memoryReclassificationInputHash
-} from "../../reclassification/classifier";
-import { createPrismaMemoryReclassificationRepository } from "../../reclassification/repository";
+import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../../safetyLite";
 import { defaultMemorySourceMutationHooks } from "../../sourceHooks";
 import {
   applyMemorySourceMutations,
@@ -625,46 +621,6 @@ async function prepare(claim: MemoryJobClaim): Promise<MemoryFactExtractionInput
   return result.input;
 }
 
-async function classifyNormalFactVersion(
-  userId: string,
-  factVersionId: string,
-  executionId: string,
-  classifiedAt: Date
-): Promise<void> {
-  const safety = createPrismaMemoryReclassificationRepository(prisma);
-  const pending = (await safety.pending(userId)).find(({ id }) =>
-    id === factVersionId);
-  if (!pending) throw new Error("memory_test_pending_classification_missing");
-  const decision = {
-    category: "about_you" as const,
-    reasonCode: "ordinary_personal" as const,
-    responsePreference: false,
-    sensitivity: "NORMAL" as const,
-    storageDecision: "ALLOW" as const,
-    subjectScope: "USER" as const
-  };
-  const inputHash = memoryReclassificationInputHash(
-    pending.displayText,
-    pending.sourceMode
-  );
-  await prisma.$transaction((tx) => safety.apply(tx, userId, [{
-    candidate: pending,
-    result: {
-      acceptedOutputHash: memoryReclassificationAcceptedOutputHash(
-        inputHash,
-        decision
-      ),
-      classifiedAt,
-      decision,
-      executionId,
-      inputHash,
-      modelId: "memory-vnext-test-model",
-      policyVersion: "memory-test-classification-v1",
-      providerId: "openai_compatible"
-    }
-  }], classifiedAt));
-}
-
 async function semanticAdjudicationForPlan(
   userId: string,
   plan: MemoryFactExtractionPlan
@@ -1045,9 +1001,14 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       expect(facts).toHaveLength(1);
       expect(versions).toHaveLength(1);
       expect(versions[0]).toMatchObject({
-        safetyClassificationState: "PENDING",
         observedAt: first.userMessage.createdAt,
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        safetyClassificationReasonCode: "lite_non_secret_default",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        safetyClassifierProviderId: null,
         sourceMode: "AUTOMATIC",
         state: "ACTIVE"
       });
@@ -1770,39 +1731,12 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       const sourceVersion = await prisma.memoryFactVersion.findFirstOrThrow({
         where: { userId }
       });
-      const safety = createPrismaMemoryReclassificationRepository(prisma);
-      const pending = (await safety.pending(userId)).find(({ id }) =>
-        id === sourceVersion.id);
-      if (!pending) throw new Error("memory_context_source_pending_missing");
-      const classifiedAt = new Date("2026-08-24T06:00:30.000Z");
-      const decision = {
-        category: "about_you" as const,
-        reasonCode: "ordinary_personal" as const,
-        responsePreference: false,
-        sensitivity: "NORMAL" as const,
-        storageDecision: "ALLOW" as const,
-        subjectScope: "USER" as const
-      };
-      const classifierInputHash = memoryReclassificationInputHash(
-        pending.displayText,
-        pending.sourceMode
-      );
-      await prisma.$transaction((tx) => safety.apply(tx, userId, [{
-        candidate: pending,
-        result: {
-          acceptedOutputHash: memoryReclassificationAcceptedOutputHash(
-            classifierInputHash,
-            decision
-          ),
-          classifiedAt,
-          decision,
-          executionId: sourceBinding,
-          inputHash: classifierInputHash,
-          modelId: "memory-vnext-test-model",
-          policyVersion: "memory-context-test-v1",
-          providerId: "openai_compatible"
-        }
-      }], classifiedAt));
+      expect(sourceVersion).toMatchObject({
+        safetyClassificationReasonCode: "lite_non_secret_default",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION
+      });
 
       const contextChat = await prisma.chat.create({
         data: { title: "MacBook context", userId }
@@ -2042,9 +1976,12 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await expect(repository().preflight(originalJob)).resolves.toEqual({
         status: "READY"
       });
-      await expect(prepare(originalJob)).resolves.toMatchObject({
-        inputHash: originalInput.inputHash,
-        timeZone: "Europe/Moscow"
+      await expect(prisma.memoryFactExtractionExecution.findFirstOrThrow({
+        select: { appliedAt: true, inputHash: true },
+        where: { memoryJobId: originalJob.id, userId }
+      })).resolves.toMatchObject({
+        appliedAt: expect.any(Date),
+        inputHash: originalInput.inputHash
       });
       await expect(loadPersonalEligibleFactVersionIds(
         prisma,
@@ -2348,7 +2285,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("commits safety-pending semantics without creating an index or embedding job", async () => {
+  it("indexes a Safety Lite fact and batches its hybrid embedding", async () => {
     const userId = await createOwner("embedding-outage");
     try {
       await activateHybridIndex(userId);
@@ -2375,11 +2312,16 @@ describe("Prisma Memory vNext source-message ingestion", () => {
 
       await expect(prisma.memoryFactVersion.count({ where: { userId } }))
         .resolves.toBe(1);
-      await expect(prisma.memorySearchEntry.count({ where: { userId } }))
-        .resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.findFirstOrThrow({
+        select: { embeddingState: true, itemType: true },
+        where: { userId }
+      })).resolves.toEqual({
+        embeddingState: "PENDING",
+        itemType: "FACT_VERSION"
+      });
       await expect(prisma.memoryJob.count({
         where: { kind: "EMBED_ITEMS", state: "QUEUED", userId }
-      })).resolves.toBe(0);
+      })).resolves.toBe(1);
     } finally {
       await cleanupOwner(userId);
     }
@@ -2510,7 +2452,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("stages a different SLOT value and safety rejection preserves the older current", async () => {
+  it("stages a Safety Lite-classified SLOT value behind relation resolution", async () => {
     const userId = await createOwner("pending-relation");
     try {
       const chat = await prisma.chat.create({
@@ -2557,12 +2499,11 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       const orderedVersion = await prisma.memoryFactVersion.findFirstOrThrow({
         where: { userId }
       });
-      await classifyNormalFactVersion(
-        userId,
-        orderedVersion.id,
-        orderedBinding,
-        new Date("2026-08-24T08:00:30.000Z")
-      );
+      expect(orderedVersion).toMatchObject({
+        safetyClassificationReasonCode: "lite_non_secret_default",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null
+      });
 
       const purchasedClaim = await claimFactJob(userId, purchased.userMessage.id);
       const purchasedInput = await prepare(purchasedClaim);
@@ -2605,49 +2546,27 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         state
       }))).toEqual([
         { safetyClassificationState: "CLASSIFIED", state: "ACTIVE" },
-        { safetyClassificationState: "PENDING", state: "PENDING_RELATION" }
+        { safetyClassificationState: "CLASSIFIED", state: "PENDING_RELATION" }
       ]);
       await expect(prisma.memorySearchEntry.findMany({
         select: { factVersionId: true },
         where: { userId }
       })).resolves.toEqual([{ factVersionId: orderedVersion.id }]);
-
-      const safety = createPrismaMemoryReclassificationRepository(prisma);
-      const pending = (await safety.pending(userId))
-        .find(({ semanticState }) => semanticState === "PENDING_RELATION");
-      if (!pending) throw new Error("memory_pending_relation_fixture_missing");
-      const rejectedAt = new Date("2026-08-24T09:00:00.000Z");
-      await prisma.$transaction((tx) => safety.apply(tx, userId, [{
-        candidate: pending,
-        result: {
-          classifiedAt: rejectedAt,
-          decision: {
-            category: "other",
-            reasonCode: "secret_material",
-            responsePreference: false,
-            sensitivity: "SECRET",
-            storageDecision: "REJECT_SECRET",
-            subjectScope: "USER"
-          },
-          executionId: null,
-          modelId: "format-aware-secret-parser-v1",
-          policyVersion: "memory-local-secret-parser-v1",
-          providerId: "aiqsa-local-policy"
-        }
-      }], rejectedAt));
-
       await expect(prisma.memoryFact.findUniqueOrThrow({
         where: { id: fact.id }
       })).resolves.toMatchObject({
-        currentVersionId: fact.currentVersionId,
+        currentVersionId: orderedVersion.id,
         state: "ACTIVE"
       });
-      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
-        where: { id: pending.id }
+      await expect(prisma.memoryFactVersion.findFirstOrThrow({
+        where: { state: "PENDING_RELATION", userId }
       })).resolves.toMatchObject({
-        contentPurgedAt: rejectedAt,
-        safetyClassificationState: "SECRET_FENCED",
-        state: "RETRACTED"
+        contentPurgedAt: null,
+        safetyClassificationReasonCode: "lite_non_secret_default",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        state: "PENDING_RELATION"
       });
       await expect(prisma.memoryEvidence.count({
         where: { factVersionId: fact.currentVersionId!, userId }

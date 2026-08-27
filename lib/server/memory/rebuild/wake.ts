@@ -2,6 +2,7 @@ import type { MemoryJobKind, Prisma } from "@prisma/client";
 import { memoryShadowRebuildJobPrefixes } from "./contract";
 
 export const MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS = Object.freeze([
+  "EMBED_ITEMS",
   "EXTRACT_FACTS",
   "INDEX_HISTORY",
   "RECLASSIFY_FACTS",

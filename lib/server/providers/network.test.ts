@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_PROVIDER_STREAM_LIMITS, getProviderStreamLimits, PROVIDER_STREAM_LIMIT_CEILINGS, ProviderRequestTimeoutError, ProviderResponseTooLargeError, providerResponseMaxBytes, providerStreamTimingLimits, readBoundedResponseText, resolveProviderStreamLimits, withTimeoutSignal } from "./network";
+import { DEFAULT_PROVIDER_STREAM_LIMITS, getProviderStreamLimits, isProviderRetryableHttpStatus, PROVIDER_STREAM_LIMIT_CEILINGS, ProviderRequestTimeoutError, ProviderResponseTooLargeError, providerResponseMaxBytes, providerStreamTimingLimits, readBoundedResponseText, resolveProviderStreamLimits, withTimeoutSignal } from "./network";
 
 const encoder = new TextEncoder();
 
 describe("provider network response bounds", () => {
+  it("classifies only replay-safe transient HTTP statuses as retryable", () => {
+    expect([408, 409, 429, 500, 502, 503, 504]
+      .every(isProviderRetryableHttpStatus)).toBe(true);
+    expect([null, undefined, 0, 400, 401, 403, 404, 422, 501]
+      .some(isProviderRetryableHttpStatus)).toBe(false);
+  });
+
   it("resolves independent provider-stream defaults", () => {
     expect(getProviderStreamLimits({})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
     expect(getProviderStreamLimits({})).toEqual({

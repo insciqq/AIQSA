@@ -1019,7 +1019,7 @@ async function resolveChunk(
     };
   }
   if (projection.kind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" ||
-    projection.supportingItemId !== null || digestMode) {
+    projection.supportingItemId !== null) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
   const row = await resolveChunkRow(tx, authority, input.recallChunkId);

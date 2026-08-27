@@ -839,6 +839,25 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
       }
       await expect(prisma.memoryFeedback.count({ where: { userId } })).resolves.toBe(0);
 
+      // The consumer chat only drives the accepted-read fixture above. Remove
+      // it from future Personal history admission so this rebuild proves the
+      // transferred source cannot resurrect without inventing an incomplete
+      // checkpoint for an otherwise eligible chat.
+      await prisma.$transaction(async (tx) => {
+        const locked = await lockMemorySourceChat(tx, {
+          chatId: consumerChat.id,
+          lock: "UPDATE",
+          userId
+        });
+        if (!locked) throw new Error("data_002_consumer_chat_missing");
+        await applyMemorySourceMutations(tx, {
+          chat: locked,
+          hooks: defaultMemorySourceMutationHooks,
+          mutations: ["SOURCE_EXCLUDE"],
+          patch: { memoryMode: "EXCLUDED" }
+        });
+      });
+
       const afterFenceSettings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });

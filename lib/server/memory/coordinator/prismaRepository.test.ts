@@ -73,8 +73,17 @@ describe("Prisma memory coordinator repository preflight", () => {
       clientVersion: "6.19.3",
       code: "P2010",
       meta: { code: "40001" }
+    }),
+    new Prisma.PrismaClientKnownRequestError("transaction expired", {
+      clientVersion: "6.19.3",
+      code: "P2028"
+    }),
+    new Prisma.PrismaClientKnownRequestError("lock timeout", {
+      clientVersion: "6.19.3",
+      code: "P2010",
+      meta: { code: "55P03" }
     })
-  ])("retries only the rollback-safe commit transaction", async (conflict) => {
+  ])("retries a rollback-safe commit transaction failure", async (conflict) => {
     const apply = vi.fn(async (_tx: unknown, _claim: MemoryJobClaim) => undefined);
     const tx = {
       $queryRaw: vi.fn(async () => [{ id: "job-commit" }]),
@@ -174,6 +183,93 @@ describe("Prisma memory coordinator repository preflight", () => {
     });
     expect(transaction).toHaveBeenCalledOnce();
     expect(apply).toHaveBeenCalledOnce();
+  });
+
+  it("gives only full-set rebuild commits a lease-bounded transaction budget", async () => {
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: "job-commit" }]),
+      memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    const transaction = vi.fn(async (
+      consume: (value: typeof tx) => Promise<boolean>,
+      _options?: Readonly<{ timeout: number }>
+    ) => consume(tx));
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: transaction
+    } as never);
+
+    await expect(repository.commitJobSuccess({
+      acceptedResultHash: "a".repeat(64),
+      claim: jobClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "catching_up"
+    })).resolves.toBe(true);
+    expect(transaction.mock.calls[0]?.[1]).toEqual({ timeout: 20_000 });
+
+    transaction.mockClear();
+    await expect(repository.commitJobSuccess({
+      acceptedResultHash: "b".repeat(64),
+      claim: { ...jobClaim(), kind: "CONSOLIDATE_CANDIDATE" },
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "consolidation_applied"
+    })).resolves.toBe(true);
+    expect(transaction.mock.calls[0]).toHaveLength(1);
+  });
+
+  it("exhausts rolled-back commit timeouts as retryable without retaining details", async () => {
+    const failure = new Prisma.PrismaClientKnownRequestError(
+      "private transaction detail",
+      { clientVersion: "6.19.3", code: "P2028" }
+    );
+    const transaction = vi.fn(async () => {
+      throw failure;
+    });
+    const delays: number[] = [];
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: transaction
+    } as never, {
+      jobCommitRetryDelay: async (retryOrdinal) => {
+        delays.push(retryOrdinal);
+      }
+    });
+
+    await expect(repository.commitJobSuccess({
+      acceptedResultHash: "a".repeat(64),
+      claim: jobClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "catching_up"
+    })).rejects.toMatchObject({
+      code: "memory_job_commit_timeout",
+      message: "memory_job_commit_timeout",
+      retryable: true
+    });
+    expect(transaction).toHaveBeenCalledTimes(8);
+    expect(delays).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("preserves only code-owned safe commit failures", async () => {
+    const safeFailure = new Error("memory_embedding_batch_parent_invalid");
+    const privateFailure = new Error("private source detail");
+    const failures = [safeFailure, privateFailure];
+    const transaction = vi.fn(async () => {
+      throw failures.shift();
+    });
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: transaction
+    } as never);
+    const input = {
+      acceptedResultHash: "a".repeat(64),
+      claim: jobClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "catching_up"
+    } as const;
+
+    await expect(repository.commitJobSuccess(input)).rejects.toMatchObject({
+      code: "memory_embedding_batch_parent_invalid"
+    });
+    await expect(repository.commitJobSuccess(input)).rejects.toMatchObject({
+      code: "memory_job_commit_failed"
+    });
   });
 
   it("preserves an explicit coordinator failure from the commit closure", async () => {

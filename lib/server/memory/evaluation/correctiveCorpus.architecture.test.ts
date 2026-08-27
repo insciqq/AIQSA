@@ -427,7 +427,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       adjudication: [
         "memory-semantic-adjudication-v1",
         "memory-semantic-adjudication-policy-v2",
-        "memory-semantic-adjudication-prompt-v3",
+        "memory-semantic-adjudication-prompt-v4",
         "memory-semantic-adjudication-schema-v1"
       ],
       digest: [
@@ -440,7 +440,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       extraction: [
         "memory-fact-extraction-vnext-v7",
         "memory-fact-extraction-policy-v10",
-        "memory-fact-extraction-prompt-v26",
+        "memory-fact-extraction-prompt-v27",
         "memory-fact-extraction-schema-v5"
       ],
       history: "memory-history-incremental-v5",
@@ -450,10 +450,10 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v20",
+      retrieval: "memory-personal-retrieval-v29",
       synthesis: [
         "memory-synthesis-v2",
-        "memory-synthesis-policy-v2",
+        "memory-synthesis-policy-v3",
         "memory-synthesis-prompt-v3",
         "memory-synthesis-schema-v2"
       ],

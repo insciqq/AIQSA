@@ -31,8 +31,13 @@ const DELETION_CURSOR = "memory-delete";
 const JOB_COMMIT_TRANSACTION_ATTEMPTS = 8;
 const JOB_COMMIT_RETRY_BASE_DELAY_MS = 25;
 const JOB_COMMIT_RETRY_MAX_DELAY_MS = 500;
+// A shadow rebuild proves and writes the complete eligible set atomically.
+// Its set-based commit is intentionally larger than ordinary single-item job
+// commits, but must remain shorter than the default 30-second job lease.
+const REBUILD_JOB_COMMIT_TIMEOUT_MS = 20_000;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
+const safeInternalFailure = /^memory_[a-z0-9_]{1,56}$/u;
 
 function rollbackSafeTransactionConflict(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
@@ -42,6 +47,46 @@ function rollbackSafeTransactionConflict(error: unknown): boolean {
     error.meta !== null &&
     "code" in error.meta &&
     (error.meta.code === "40001" || error.meta.code === "40P01");
+}
+
+function rollbackSafeJobCommitTimeout(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code === "P2028") return true;
+  return error.code === "P2010" &&
+    typeof error.meta === "object" &&
+    error.meta !== null &&
+    "code" in error.meta &&
+    (error.meta.code === "57014" || error.meta.code === "55P03");
+}
+
+function jobCommitTimedOut(error: unknown): boolean {
+  if (rollbackSafeJobCommitTimeout(error)) return true;
+  return error instanceof Prisma.PrismaClientUnknownRequestError &&
+    /transaction(?: api)? error|transaction already closed|timed? out|expired/iu
+      .test(error.message);
+}
+
+function jobCommitFailureCode(error: unknown): string {
+  if (jobCommitTimedOut(error)) return "memory_job_commit_timeout";
+  // Commit closures execute only code-owned persistence logic. Preserve an
+  // already content-free internal code, while arbitrary exception text is
+  // never copied into queue state or logs.
+  if (error instanceof Error && safeInternalFailure.test(error.message)) {
+    return error.message;
+  }
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    const prismaCode = error.code.toLowerCase();
+    return /^[a-z][a-z0-9]{0,15}$/u.test(prismaCode)
+      ? `memory_job_commit_database_${prismaCode}`
+      : "memory_job_commit_database_failed";
+  }
+  if (
+    error instanceof Prisma.PrismaClientUnknownRequestError ||
+    error instanceof Prisma.PrismaClientValidationError
+  ) {
+    return "memory_job_commit_database_failed";
+  }
+  return "memory_job_commit_failed";
 }
 
 async function waitForJobCommitRetry(retryOrdinal: number): Promise<void> {
@@ -859,18 +904,27 @@ export function createPrismaMemoryCoordinatorRepository(
       }
       for (let attempt = 0; attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS; attempt += 1) {
         try {
-          return await client.$transaction((tx) =>
-            commitJobSuccessWithAuthority(tx, input));
+          const commit = (tx: Prisma.TransactionClient) =>
+            commitJobSuccessWithAuthority(tx, input);
+          return await (input.claim.kind === "REBUILD_INDEX"
+            ? client.$transaction(commit, {
+                timeout: REBUILD_JOB_COMMIT_TIMEOUT_MS
+              })
+            : client.$transaction(commit));
         } catch (error) {
           if (
             attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS - 1 &&
-            rollbackSafeTransactionConflict(error)
+            (rollbackSafeTransactionConflict(error) ||
+              rollbackSafeJobCommitTimeout(error))
           ) {
             await (options.jobCommitRetryDelay ?? waitForJobCommitRetry)(attempt + 1);
             continue;
           }
           if (error instanceof MemoryCoordinatorError) throw error;
-          throw new MemoryCoordinatorError("memory_job_commit_failed", false);
+          throw new MemoryCoordinatorError(
+            jobCommitFailureCode(error),
+            rollbackSafeJobCommitTimeout(error)
+          );
         }
       }
       return false;

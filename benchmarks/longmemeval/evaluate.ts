@@ -19,10 +19,13 @@ import {
   LONGMEMEVAL_ORACLE_SHA256,
   LONGMEMEVAL_REPOSITORY_COMMIT,
   LONGMEMEVAL_S_SHA256,
+  decodeLongMemEvalProfileManifest,
+  longMemEvalQualificationGate,
   mapConcurrentOrdered,
   mergeLongMemEvalEvaluationResults,
   partitionLongMemEvalEvaluation,
-  type LongMemEvalEvaluationValue
+  type LongMemEvalEvaluationValue,
+  type LongMemEvalProfileManifest
 } from "./contract";
 
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
@@ -36,12 +39,14 @@ const pythonPath = resolve(upstreamRoot, ".venv/bin/python");
 type Hypothesis = Readonly<{ hypothesis: string; questionId: string }>;
 type ScoredCase = Readonly<{
   executionFailed: boolean;
+  memoryOutcome: string | null;
   questionId: string;
   questionType: string;
 }>;
 type EvaluationContract = Readonly<{
   cases: readonly ScoredCase[];
   hypotheses: readonly Hypothesis[];
+  profile: LongMemEvalProfileManifest;
 }>;
 type OfficialEvaluationRow = Readonly<{
   label: boolean;
@@ -147,8 +152,18 @@ function decodeCaseSummary(
     !value.questionType) {
     throw new Error("longmemeval_run_summary_invalid");
   }
+  const memoryOutcome = executionFailed
+    ? null
+    : isRecord(value.answer) && typeof value.answer.memoryOutcome === "string" &&
+        value.answer.memoryOutcome
+      ? value.answer.memoryOutcome
+      : null;
+  if (!executionFailed && memoryOutcome === null) {
+    throw new Error("longmemeval_run_summary_invalid");
+  }
   return Object.freeze({
     executionFailed,
+    memoryOutcome,
     questionId: value.questionId,
     questionType: value.questionType
   });
@@ -196,7 +211,8 @@ async function decodeEvaluationContract(
   }
   return Object.freeze({
     cases: Object.freeze(cases),
-    hypotheses
+    hypotheses,
+    profile: decodeLongMemEvalProfileManifest(rawSummary.profile)
   });
 }
 
@@ -332,7 +348,7 @@ async function writeAggregateScore(
   labels: ReadonlyMap<string, boolean>,
   evaluatorConcurrency: number,
   evaluatorShards: number
-): Promise<void> {
+): Promise<boolean> {
   const categories = new Map<string, { correct: number; total: number }>();
   let correct = 0;
   for (const entry of contract.cases) {
@@ -344,6 +360,12 @@ async function writeAggregateScore(
     categories.set(entry.questionType, category);
   }
   const total = contract.cases.length;
+  const qualification = longMemEvalQualificationGate({
+    executionFailures: contract.cases.filter(({ executionFailed }) =>
+      executionFailed).length,
+    memoryOutcomes: contract.cases.flatMap(({ memoryOutcome }) =>
+      memoryOutcome === null ? [] : [memoryOutcome])
+  });
   const score = {
     accuracy: correct / total,
     answeredCases: contract.hypotheses.length,
@@ -355,8 +377,8 @@ async function writeAggregateScore(
         total: value.total
       }])),
     correctCases: correct,
-    executionFailedCases: contract.cases.filter(({ executionFailed }) =>
-      executionFailed).length,
+    executionFailedCases: qualification.executionFailures,
+    memoryDegradedCases: qualification.degradedMemoryOutcomes,
     officialEvaluator: {
       evaluatedCases: labels.size,
       model: "gpt-4o-2024-08-06",
@@ -365,8 +387,10 @@ async function writeAggregateScore(
       shards: evaluatorShards,
       unchanged: true
     },
+    profile: contract.profile,
+    qualificationPassed: qualification.passed,
     totalCases: total,
-    version: 2
+    version: 4
   };
   await writeFile(scorePath, `${JSON.stringify(score, null, 2)}\n`, {
     flag: "wx",
@@ -378,8 +402,13 @@ async function writeAggregateScore(
     correctCases: score.correctCases,
     event: "benchmark_score",
     executionFailedCases: score.executionFailedCases,
+    memoryDegradedCases: score.memoryDegradedCases,
+    officialComparable: contract.profile.officialComparable,
+    profile: contract.profile.id,
+    qualificationPassed: score.qualificationPassed,
     totalCases: score.totalCases
   })}\n`);
+  return qualification.passed;
 }
 
 async function main(): Promise<void> {
@@ -412,13 +441,14 @@ async function main(): Promise<void> {
     contract.hypotheses,
     options.concurrency
   );
-  await writeAggregateScore(
+  const qualificationPassed = await writeAggregateScore(
     scorePath,
     contract,
     evaluation.labels,
     options.concurrency,
     evaluation.shards
   );
+  if (!qualificationPassed) process.exitCode = 2;
 }
 
 void main().catch((error: unknown) => {

@@ -12,7 +12,10 @@ import {
 } from "../persistence/lexical";
 import {
   createPrismaLocalMemoryRetrievalRepository,
-  selectMemoryAggregationSessionRepresentatives
+  memorySemanticLexicalTerms,
+  projectMemoryAggregationDigestRepresentative,
+  selectMemoryAggregationSessionRepresentatives,
+  selectMemorySourceDiverseLaneCandidates
 } from "./localRepository";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
@@ -100,6 +103,68 @@ function mockClient(
 }
 
 describe("local Memory retrieval repository", () => {
+  it("balances bounded lexical terms without letting a verbose rewrite evict the original", () => {
+    const plan = planMemoryRetrieval({
+      aggregationRequested: true,
+      currentUserText: "cedar pastry",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      semanticRewrite: Array.from({ length: 80 }, (_, index) =>
+        `extraordinarilyverbose${index}`).join(" "),
+      temporalIntent: "ANY"
+    });
+
+    const terms = memorySemanticLexicalTerms(plan, "SIMPLE");
+    expect(new Set(terms.slice(0, 2)))
+      .toEqual(new Set(["cedar", "pastry"]));
+    expect(terms.some((term) => term.startsWith("extraordinarilyverbose")))
+      .toBe(true);
+    expect(terms.length).toBeGreaterThan(2);
+    expect(terms.length).toBeLessThanOrEqual(64);
+  });
+
+  it("gives every bounded aggregation source one pass before preserving repeat order", () => {
+    const candidates = [
+      { itemId: "a-1", metadata: { sourceChatId: "source-a" } },
+      { itemId: "a-2", metadata: { sourceChatId: "source-a" } },
+      { itemId: "b-1", metadata: { sourceChatId: "source-b" } },
+      { itemId: "a-3", metadata: { sourceChatId: "source-a" } },
+      { itemId: "c-1", metadata: { sourceChatId: "source-c" } },
+      { itemId: "b-2", metadata: { sourceChatId: "source-b" } }
+    ];
+
+    expect(selectMemorySourceDiverseLaneCandidates(candidates, 5)
+      .map(({ itemId }) => itemId)).toEqual([
+      "a-1", "b-1", "c-1", "a-2", "a-3"
+    ]);
+  });
+
+  it("replaces a round representative with the complete digest-anchor chunk identity", () => {
+    const representative = {
+      ...sessionCandidate("round-1", "source-a", 0.8, {
+        HISTORY_RECALL_VECTOR: 1
+      }),
+      itemType: "RECALL_ROUND" as const
+    };
+    const digestMetadata = {
+      ...representative.metadata,
+      evidenceRootHash: "digest-anchor-root"
+    };
+
+    expect(projectMemoryAggregationDigestRepresentative(representative, {
+      itemId: "chunk-anchor-1",
+      itemType: "RECALL_CHUNK",
+      metadata: digestMetadata
+    })).toMatchObject({
+      entryId: null,
+      itemId: "chunk-anchor-1",
+      itemType: "RECALL_CHUNK",
+      metadata: digestMetadata,
+      selectionReason: expect.stringContaining("aggregation_session_digest")
+    });
+  });
+
   it("collapses broad chunk signals to one scored representative per aggregation session", () => {
     const selected = selectMemoryAggregationSessionRepresentatives([
       sessionCandidate("a-1", "source-a", 0.4, { HISTORY_RECALL_VECTOR: 1 }),
@@ -167,8 +232,10 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('"MemorySourceBarrier"');
     expect(sql).toContain("plainto_tsquery('simple'");
     expect(sql).toContain("unnest(");
-    expect(sql).toContain('term_match."maximumMatchedTermLength" DESC');
-    expect(sql).toContain('term_match."matchedTermCount" DESC');
+    expect(sql).toContain('PARTITION BY matched_variants."variantOrdinal"');
+    expect(sql).toContain('eligible."rankWithinVariant"');
+    expect(sql).toContain('matched_variants."maximumMatchedTermLength" DESC');
+    expect(sql).toContain('matched_variants."matchedTermCount" DESC');
     expect(sql).not.toContain("whole_query");
     expect(sql).toContain("plainto_tsquery('russian'");
     expect(sql).toContain("plainto_tsquery('english'");
@@ -179,7 +246,7 @@ describe("local Memory retrieval repository", () => {
     expect(sql).not.toContain('attachment."extractedText"');
   });
 
-  it("uses targeted digests only as a navigation lane to an authoritative raw anchor", async () => {
+  it("uses targeted digests as navigation before query-aware authoritative raw selection", async () => {
     const mocked = mockClient();
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     const result = await repository.retrieve({
@@ -201,9 +268,23 @@ describe("local Memory retrieval repository", () => {
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain("all_digest_navigation");
     expect(sql).toContain("matched_navigation");
-    expect(sql).toContain("FROM matched_navigation AS navigation");
+    expect(sql).toContain("FROM ranked_navigation AS navigation");
+    expect(sql).toContain("source_anchors AS MATERIALIZED");
+    expect(sql).toContain('SELECT DISTINCT ON (navigation."sourceChatId")');
     expect(sql).toContain('navigation."searchVectorSimple"');
+    expect(sql).toContain('PARTITION BY matched_navigation."variantOrdinal"');
+    expect(sql).toContain('navigation."rankWithinVariant"');
     expect(sql).toContain('navigation."sourceChatId" = eligible."sourceChatId"');
+    expect(sql).toContain('eligible."itemId" = navigation."itemId"');
+    expect(sql).toContain('(raw_match."matchedTermCount" > 0) DESC');
+    expect(sql).not.toContain(
+      'query_terms."variantOrdinal" = navigation."variantOrdinal"'
+    );
+    expect(sql.indexOf('(raw_match."matchedTermCount" > 0) DESC')).toBeLessThan(
+      sql.indexOf('(eligible."itemType" = \'RECALL_CHUNK\'::"MemorySearchItemType"\n' +
+        '          AND eligible."itemId" = navigation."itemId") DESC')
+    );
+    expect(sql).toContain('FROM source_anchors AS eligible');
     expect(sql).toContain("(eligible.\"itemType\" = 'RECALL_ROUND'");
     expect(sql).toContain('eligible."searchVectorSimple"');
     expect(sql.indexOf("matched_navigation AS MATERIALIZED")).toBeLessThan(
@@ -435,16 +516,18 @@ describe("local Memory retrieval repository", () => {
 
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
+      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_FTS_SIMPLE",
       "HISTORY_RECALL_FTS_ENGLISH",
       "HISTORY_RECALL_TRIGRAM"
     ]);
-    expect(mocked.laneSql).toHaveLength(4);
+    expect(mocked.laneSql).toHaveLength(5);
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemorySearchEntry" AS entry');
     expect(sql).toContain('entry."normalizedSearchText"');
     expect(sql).toContain('INNER JOIN "MemoryRecallChunk" AS chunk');
-    expect(sql).not.toContain('FROM "ChatMemoryDigest" AS digest');
+    expect(sql).toContain('FROM "ChatMemoryDigest" AS digest');
+    expect(sql).not.toContain('digest."safeDigestText"');
     expect(sql).not.toContain('chunk."safeProjectedText"');
     expect(sql).not.toContain('message."content"');
   });
@@ -485,6 +568,7 @@ describe("local Memory retrieval repository", () => {
 
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
+      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_FTS_SIMPLE",
       "HISTORY_RECALL_FTS_ENGLISH",
       "HISTORY_RECALL_TRIGRAM",

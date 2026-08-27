@@ -308,6 +308,9 @@ describe("preparing Memory item finalization", () => {
     for (const featureSnapshot of [undefined, {
       aggregationRequested: false,
       retrievalMode: "PAST_CHAT_SEARCH"
+    }, {
+      aggregationRequested: true,
+      retrievalMode: "PAST_CHAT_SEARCH"
     }]) {
       await expect(resolvePreparingMemoryItem(
         tx,
