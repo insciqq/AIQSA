@@ -78,6 +78,74 @@ describe("administrator Knowledge settings handlers", () => {
     });
   });
 
+  it("updates the ingestion parallelism with optimistic versioning", async () => {
+    const service = {
+      activateProfile: vi.fn(),
+      list: vi.fn().mockResolvedValue({ answerPolicy: { ingestionParallelism: 6 } }),
+      rollbackProfile: vi.fn(),
+      updateIngestionParallelism: vi.fn()
+    };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/knowledge", {
+      body: JSON.stringify({
+        action: "update_ingestion_parallelism",
+        expectedVersion: 3,
+        ingestionParallelism: 6
+      }),
+      headers: { "content-type": "application/json" },
+      method: "PATCH"
+    }));
+
+    expect(response.status).toBe(200);
+    expect(service.updateIngestionParallelism).toHaveBeenCalledWith({
+      expectedVersion: 3,
+      ingestionParallelism: 6,
+      userId: "user-1"
+    });
+    await expect(response.json()).resolves.toEqual({
+      knowledge: { answerPolicy: { ingestionParallelism: 6 } }
+    });
+  });
+
+  it("rejects an out-of-bounds or malformed ingestion parallelism before the service", async () => {
+    const service = {
+      activateProfile: vi.fn(),
+      list: vi.fn(),
+      rollbackProfile: vi.fn(),
+      updateIngestionParallelism: vi.fn()
+    };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    for (const body of [
+      { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 0 },
+      { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 17 },
+      { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 2.5 },
+      { action: "update_ingestion_parallelism", expectedVersion: 0, ingestionParallelism: 4 },
+      {
+        action: "update_ingestion_parallelism",
+        expectedVersion: 1,
+        ingestionParallelism: 4,
+        maximumKnowledgeSearches: 12
+      }
+    ]) {
+      const response = await handlers.PATCH(new Request("http://local.test/api/admin/knowledge", {
+        body: JSON.stringify(body),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "knowledge_ingestion_parallelism_invalid"
+      });
+    }
+    expect(service.updateIngestionParallelism).not.toHaveBeenCalled();
+  });
+
   it("admits only an embedding profile activation and maps conflicts", async () => {
     const service = {
       activateProfile: vi.fn().mockRejectedValue(

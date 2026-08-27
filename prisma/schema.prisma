@@ -973,6 +973,7 @@ model SystemModelPolicy {
 model KnowledgeAnswerPolicy {
   id                       String   @id
   maximumKnowledgeSearches Int      @default(12)
+  ingestionParallelism     Int      @default(8)
   version                  Int      @default(1)
   updatedByUserId          String?
   createdAt                DateTime @default(now())

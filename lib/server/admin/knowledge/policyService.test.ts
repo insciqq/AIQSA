@@ -20,7 +20,8 @@ describe("administrator Knowledge settings service", () => {
       }),
       answerPolicyService: {
         list: vi.fn(async () => adminKnowledgeAnswerPolicyFixture()),
-        update: vi.fn()
+        update: vi.fn(),
+        updateIngestionParallelism: vi.fn()
       },
       operationsService: {
         read: vi.fn(async () => adminKnowledgeOperationsFixture())
@@ -35,7 +36,10 @@ describe("administrator Knowledge settings service", () => {
     expect(settings).toMatchObject({
       answerPolicy: {
         fullContextThresholdPercent: 70,
-        maximumKnowledgeSearches: 12
+        ingestionParallelism: 8,
+        maximumKnowledgeSearches: 12,
+        parallelismMaximum: 16,
+        parallelismMinimum: 1
       },
       ingestionLimits: {
         maxChunksPerDocument: 300,
@@ -56,7 +60,7 @@ describe("administrator Knowledge settings service", () => {
   it("delegates an optimistic answer-policy update", async () => {
     const update = vi.fn();
     const service = createAdminKnowledgePolicyService({} as PrismaClient, {
-      answerPolicyService: { list: vi.fn(), update },
+      answerPolicyService: { list: vi.fn(), update, updateIngestionParallelism: vi.fn() },
       operationsService: { read: vi.fn() },
       profileService: {
         activate: vi.fn(),
@@ -72,6 +76,29 @@ describe("administrator Knowledge settings service", () => {
     expect(update).toHaveBeenCalledWith({
       expectedVersion: 3,
       maximumKnowledgeSearches: 18,
+      userId: "admin-1"
+    });
+  });
+
+  it("delegates an optimistic ingestion-parallelism update", async () => {
+    const updateIngestionParallelism = vi.fn();
+    const service = createAdminKnowledgePolicyService({} as PrismaClient, {
+      answerPolicyService: { list: vi.fn(), update: vi.fn(), updateIngestionParallelism },
+      operationsService: { read: vi.fn() },
+      profileService: {
+        activate: vi.fn(),
+        list: vi.fn(),
+        rollback: vi.fn()
+      }
+    });
+    await service.updateIngestionParallelism({
+      expectedVersion: 2,
+      ingestionParallelism: 6,
+      userId: "admin-1"
+    });
+    expect(updateIngestionParallelism).toHaveBeenCalledWith({
+      expectedVersion: 2,
+      ingestionParallelism: 6,
       userId: "admin-1"
     });
   });

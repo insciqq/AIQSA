@@ -1,7 +1,10 @@
 import { createPrismaEmbeddingRuntime } from "../providerRuntime/embeddingRuntime";
 import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
-import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
+import {
+  KNOWLEDGE_INGESTION_PARALLELISM_DEFAULT,
+  KnowledgeIngestionCoordinator
+} from "./ingestionCoordinator";
 import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
 import { createKnowledgeModelPdfParser } from "./modelPdfParser";
 import { createPrismaKnowledgeSourceIngestionRepository } from "./prismaSourceIngestionRepository";
@@ -16,6 +19,16 @@ type KnowledgeIngestionGlobal = typeof globalThis & {
 
 function createDefaultKnowledgeIngestionCoordinator(): KnowledgeIngestionCoordinator {
   return new KnowledgeIngestionCoordinator({
+    // Each drain cycle re-reads the installation setting so administrator
+    // changes apply to future background processing without a restart. The
+    // coordinator clamps the value and falls back to the default on failure.
+    maxParallel: async () => {
+      const policy = await prisma.knowledgeAnswerPolicy.findUnique({
+        select: { ingestionParallelism: true },
+        where: { id: "installation" }
+      });
+      return policy?.ingestionParallelism ?? KNOWLEDGE_INGESTION_PARALLELISM_DEFAULT;
+    },
     process: createKnowledgeIngestionProcessor({
       embeddingRuntime: createPrismaEmbeddingRuntime(prisma),
       modelPdfParser: createKnowledgeModelPdfParser(prisma),

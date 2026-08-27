@@ -56,6 +56,8 @@ export function createAdminKnowledgePolicyService(
 
     updateAnswerPolicy: answerPolicyService.update,
 
+    updateIngestionParallelism: answerPolicyService.updateIngestionParallelism,
+
     rollbackProfile: profileService.rollback
   };
 }
