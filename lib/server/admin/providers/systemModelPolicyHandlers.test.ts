@@ -96,6 +96,111 @@ describe("administrator system model policy handlers", () => {
     await expect(response.json()).resolves.toEqual({ systemModelPolicy: catalog });
   });
 
+  it("preserves the reranker role when the PATCH field is absent", async () => {
+    const service = {
+      list: vi.fn().mockResolvedValue({
+        candidates: [],
+        rerankerCandidates: [],
+        policy: {
+          reasoningEffort: null,
+          rerankerModel: null,
+          systemModel: null,
+          updatedAt: "2026-08-08T00:00:00.000Z",
+          updatedBy: null,
+          version: 3
+        }
+      }),
+      update: vi.fn().mockResolvedValue(undefined)
+    };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request(
+      "http://local.test/api/admin/providers/system-model-policy",
+      {
+        body: JSON.stringify({
+          expectedVersion: 2,
+          providerModelId: null,
+          reasoningEffort: null
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(service.update).toHaveBeenCalledWith({
+      expectedVersion: 2,
+      providerModelId: null,
+      reasoningEffort: null,
+      userId: "user-1"
+    });
+  });
+
+  it("preserves the utility role for a reranker-only PATCH", async () => {
+    const service = {
+      list: vi.fn().mockResolvedValue({
+        candidates: [],
+        rerankerCandidates: [],
+        policy: {
+          reasoningEffort: "xhigh",
+          rerankerModel: null,
+          systemModel: null,
+          updatedAt: "2026-08-08T00:00:00.000Z",
+          updatedBy: null,
+          version: 3
+        }
+      }),
+      update: vi.fn().mockResolvedValue(undefined)
+    };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request(
+      "http://local.test/api/admin/providers/system-model-policy",
+      {
+        body: JSON.stringify({
+          expectedVersion: 2,
+          rerankerProviderModelId: null
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(service.update).toHaveBeenCalledWith({
+      expectedVersion: 2,
+      rerankerProviderModelId: null,
+      userId: "user-1"
+    });
+  });
+
+  it("rejects a partial utility update and an empty update", async () => {
+    const service = { list: vi.fn(), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    for (const body of [
+      { expectedVersion: 2, providerModelId: null },
+      { expectedVersion: 2 }
+    ]) {
+      const response = await handlers.PATCH(new Request(
+        "http://local.test/api/admin/providers/system-model-policy",
+        {
+          body: JSON.stringify(body),
+          headers: { "content-type": "application/json" },
+          method: "PATCH"
+        }
+      ));
+      expect(response.status).toBe(400);
+    }
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
   it("runs explicit structured-output verification and returns the refreshed projection", async () => {
     const catalog = {
       candidates: [],

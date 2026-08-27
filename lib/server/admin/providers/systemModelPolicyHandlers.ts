@@ -72,19 +72,29 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
+      const hasUtilityUpdate = record(value) &&
+        Object.hasOwn(value, "providerModelId");
+      const hasReasoningUpdate = record(value) &&
+        Object.hasOwn(value, "reasoningEffort");
+      const hasRerankerUpdate = record(value) &&
+        Object.hasOwn(value, "rerankerProviderModelId");
       if (!record(value) || !Number.isSafeInteger(value.expectedVersion) ||
         Number(value.expectedVersion) < 1 ||
-        !(value.providerModelId === null || typeof value.providerModelId === "string" &&
+        hasUtilityUpdate !== hasReasoningUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate ||
+        hasUtilityUpdate && !(value.providerModelId === null ||
+          typeof value.providerModelId === "string" &&
           value.providerModelId.trim() === value.providerModelId &&
           value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
           !/[\u0000-\u001f\u007f]/u.test(value.providerModelId)) ||
-        !(value.rerankerProviderModelId === null ||
+        hasRerankerUpdate && !(value.rerankerProviderModelId === null ||
           typeof value.rerankerProviderModelId === "string" &&
           value.rerankerProviderModelId.trim() === value.rerankerProviderModelId &&
           value.rerankerProviderModelId.length > 0 &&
           value.rerankerProviderModelId.length <= 256 &&
           !/[\u0000-\u001f\u007f]/u.test(value.rerankerProviderModelId)) ||
-        !(value.reasoningEffort === null || typeof value.reasoningEffort === "string" &&
+        hasReasoningUpdate && !(value.reasoningEffort === null ||
+          typeof value.reasoningEffort === "string" &&
           value.reasoningEffort.trim() === value.reasoningEffort &&
           value.reasoningEffort.length > 0 && value.reasoningEffort.length <= 32 &&
           !/[\u0000-\u001f\u007f]/u.test(value.reasoningEffort)) ||
@@ -94,9 +104,13 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       try {
         await input.service.update({
           expectedVersion: Number(value.expectedVersion),
-          providerModelId: value.providerModelId,
-          rerankerProviderModelId: value.rerankerProviderModelId,
-          reasoningEffort: value.reasoningEffort,
+          ...(hasUtilityUpdate ? {
+            providerModelId: value.providerModelId as string | null,
+            reasoningEffort: value.reasoningEffort as string | null
+          } : {}),
+          ...(hasRerankerUpdate
+            ? { rerankerProviderModelId: value.rerankerProviderModelId as string | null }
+            : {}),
           userId: auth.session.userId
         });
         return Response.json({ systemModelPolicy: await input.service.list() });

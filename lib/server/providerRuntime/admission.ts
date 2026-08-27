@@ -647,9 +647,10 @@ export async function loadInstallationAnswerProviderRole(
   }
 }
 
-/** Resolve the installation-owned Memory reranker through the connection's
- * exact default credential. It is deliberately a distinct model class and
- * can never enter answer or embedding admission. */
+/** Resolve the installation-owned reranker role (Knowledge retrieval
+ * reranking and Memory semantic sorting) through the connection's exact
+ * default credential. It is deliberately a distinct model class and can
+ * never enter answer or embedding admission. */
 export async function loadInstallationRerankerProviderRole(
   db: AdmissionPrisma,
   input: { providerModelId: string }
