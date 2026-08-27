@@ -1,7 +1,17 @@
 import { parseMemorySecret } from "./secretParser";
 
-export type { MemorySecretFinding, MemorySecretParseResult } from "./secretParser";
-export { MEMORY_SECRET_FINDINGS, parseMemorySecret } from "./secretParser";
+export type {
+  MemorySecretFinding,
+  MemorySecretParseResult,
+  MemorySecretRedactionResult,
+  MemorySecretSpan
+} from "./secretParser";
+export {
+  MEMORY_SECRET_FINDINGS,
+  MEMORY_SECRET_REDACTION_PLACEHOLDER,
+  parseMemorySecret,
+  redactMemorySecrets
+} from "./secretParser";
 
 /**
  * Compatibility predicate for existing Memory admission callers. The parser

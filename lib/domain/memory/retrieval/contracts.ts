@@ -30,6 +30,24 @@ export type MemoryRetrievalHistorySafetyClass =
 
 export type MemoryRetrievalSourceKind = "EVENT" | "FACT" | "HISTORY";
 
+export type MemorySemanticQueryVariantKind =
+  | "DECOMPOSED"
+  | "ENTITY_EXPANSION"
+  | "ORIGINAL"
+  | "PLANNER_REWRITE";
+
+export type MemoryTemporalQueryVariantKind = "FILTERED" | "UNRESTRICTED";
+
+export type MemorySemanticQueryVariant = Readonly<{
+  kind: MemorySemanticQueryVariantKind;
+  text: string;
+}>;
+
+export type MemoryTemporalQueryVariant = Readonly<{
+  kind: MemoryTemporalQueryVariantKind;
+  text: string;
+}>;
+
 export type MemoryRetrievalEntityMention = Readonly<{
   occurrenceIndex: number;
   resolvedRef: string | null;
@@ -65,12 +83,17 @@ export type MemoryRetrievalPlan = Readonly<{
   mode: MemoryRetrievalMode;
   normalizedExactQuery: string;
   normalizedQuery: string;
+  /** Locally redacted, bounded direct current-turn query; never a model rewrite. */
+  originalSanitizedQuery: string;
   plannerVersion: string;
   /** Broad, System-Model-authorized inventory of current Personal Memory facts. */
   profileRequested: boolean;
   queryPresent: boolean;
   recencyRequested: boolean;
+  /** Bounded, deterministic bundle. ORIGINAL is always first when a query exists. */
+  semanticQueryVariants: readonly MemorySemanticQueryVariant[];
   temporalIntent: MemoryTemporalIntent;
+  temporalQueryVariants: readonly MemoryTemporalQueryVariant[];
 }>;
 
 export type MemoryRetrievalPlannerInput = Readonly<{
@@ -85,6 +108,7 @@ export type MemoryRetrievalPlannerInput = Readonly<{
   now: Date;
   profileRequested?: boolean;
   recencyRequested?: boolean;
+  semanticRewrite?: string | null;
   temporalIntent?: MemoryTemporalIntent;
 }>;
 

@@ -441,11 +441,11 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
-  it("fails safe at the single hard deadline when control is still pending", async () => {
+  it("times out optional control early and keeps deterministic local evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
-      const local = repository({});
+      const local = repository({ candidates: [laneCandidate("control-timeout-local")] });
       const base = retrievalOptions([]);
       const receivedSignals: AbortSignal[] = [];
       const decide = vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) => {
@@ -462,7 +462,7 @@ describe("Personal Memory v1 run admission", () => {
         control: { decide }
       }).retrieve(runInput("What do I prefer?"));
 
-      await vi.advanceTimersByTimeAsync(24);
+      await vi.advanceTimersByTimeAsync(11);
       expect(receivedSignals[0]?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const result = await pending;
@@ -471,23 +471,23 @@ describe("Personal Memory v1 run admission", () => {
       expect(result).toMatchObject({
         budgetSnapshot: {
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
-          reason: "memory_admission_deadline_exceeded"
+          degradationCode: "memory_action_intent_unavailable",
+          plannerFallbackReason: "memory_action_intent_unavailable"
         },
-        items: [],
-        outcome: "FAILED_SAFE",
-        preparedContext: null
+        items: [{ exactItemId: "control-timeout-local" }],
+        outcome: "DEGRADED"
       });
-      expect(base.utilities.embedQuery).not.toHaveBeenCalled();
+      expect(base.utilities.embedQuery).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("uses the same deadline signal and fails safe while query embedding is pending", async () => {
+  it("times out optional query embedding without hiding lexical evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
-      const local = repository({});
+      const local = repository({ candidates: [laneCandidate("embedding-timeout-local")] });
       const base = retrievalOptions([]);
       const controlSignals: AbortSignal[] = [];
       const embeddingSignals: AbortSignal[] = [];
@@ -516,26 +516,27 @@ describe("Personal Memory v1 run admission", () => {
         utilities: utilitiesWithHangingEmbedding
       }).retrieve(runInput("What do I prefer?"));
 
-      await vi.advanceTimersByTimeAsync(25);
+      await vi.advanceTimersByTimeAsync(8);
       const result = await pending;
 
-      expect(controlSignals[0]).toBe(embeddingSignals[0]);
+      expect(controlSignals[0]).not.toBe(embeddingSignals[0]);
+      expect(controlSignals[0]?.aborted).toBe(false);
       expect(embeddingSignals[0]?.aborted).toBe(true);
       expect(result).toMatchObject({
         budgetSnapshot: {
-          reason: "memory_admission_deadline_exceeded",
+          degradationCode: "memory_query_embedding_unavailable",
           utilityEgressMode: "CONSENTED_EXTERNAL"
         },
-        items: [],
-        outcome: "FAILED_SAFE"
+        items: [{ exactItemId: "embedding-timeout-local" }],
+        outcome: "DEGRADED"
       });
-      expect(local.retrieve).not.toHaveBeenCalled();
+      expect(local.retrieve).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("uses the same deadline signal and fails safe while reranking is pending", async () => {
+  it("times out optional reranking and preserves RRF order", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -574,19 +575,21 @@ describe("Personal Memory v1 run admission", () => {
         utilities: utilitiesWithHangingRerank
       }).retrieve(runInput("What do I prefer?"));
 
-      await vi.advanceTimersByTimeAsync(25);
+      await vi.advanceTimersByTimeAsync(12);
       const result = await pending;
 
-      expect(controlSignals[0]).toBe(embeddingSignals[0]);
-      expect(embeddingSignals[0]).toBe(rerankSignals[0]);
+      expect(controlSignals[0]).not.toBe(embeddingSignals[0]);
+      expect(embeddingSignals[0]).not.toBe(rerankSignals[0]);
+      expect(controlSignals[0]?.aborted).toBe(false);
+      expect(embeddingSignals[0]?.aborted).toBe(false);
       expect(rerankSignals[0]?.aborted).toBe(true);
       expect(result).toMatchObject({
         budgetSnapshot: {
-          reason: "memory_admission_deadline_exceeded",
+          degradationCode: "memory_relevance_unavailable",
           utilityEgressMode: "CONSENTED_EXTERNAL"
         },
-        items: [],
-        outcome: "FAILED_SAFE"
+        items: [{ exactItemId: "pending-rerank" }],
+        outcome: "DEGRADED"
       });
     } finally {
       vi.useRealTimers();
@@ -689,7 +692,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("uses the exact outer administrator-selected deadline", async () => {
+  it("reserves half the administrator-selected deadline for local fallback", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -714,12 +717,15 @@ describe("Personal Memory v1 run admission", () => {
         return result;
       });
 
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(14_999);
       expect(settled).toBe(false);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(1);
       await expect(pending).resolves.toMatchObject({
-        budgetSnapshot: { reason: "memory_admission_deadline_exceeded" },
-        outcome: "FAILED_SAFE"
+        budgetSnapshot: {
+          degradationCode: "memory_action_intent_unavailable",
+          plannerFallbackReason: "memory_action_intent_unavailable"
+        },
+        outcome: "EMPTY"
       });
     } finally {
       vi.useRealTimers();
@@ -1340,7 +1346,7 @@ describe("Personal Memory v1 run admission", () => {
   });
 
   it("reports System-Model control outage as unavailable without invoking an action", async () => {
-    const local = repository({});
+    const local = repository({ candidates: [laneCandidate("fallback-answer-evidence")] });
     const actionExecutor = { execute: vi.fn() };
     const result = await createMemoryRunRetrievalService(local.value, {
       actionExecutor,
@@ -1351,11 +1357,82 @@ describe("Personal Memory v1 run admission", () => {
         }))
       }
     }).retrieve(runInput("Remember this and also answer my question."));
-    expect(result).toMatchObject({ outcome: "FAILED_SAFE" });
+    expect(result).toMatchObject({
+      degradationCode: "memory_action_intent_unavailable",
+      items: [{ exactItemId: "fallback-answer-evidence" }],
+      outcome: "DEGRADED",
+      querySnapshot: "Remember this and also answer my question."
+    });
     expect(result.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 1 }
+      memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 1 },
+      plan: {
+        filterSourceKinds: ["FACT", "EVENT", "HISTORY"],
+        temporalIntent: "ANY"
+      },
+      plannerFallbackReason: "memory_action_intent_unavailable"
+    });
+    expect(local.retrieve).toHaveBeenCalledOnce();
+    expect(actionExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it("treats invalid control output as mutation NONE plus degraded local read", async () => {
+    const local = repository({ candidates: [laneCandidate("invalid-control-evidence")] });
+    const actionExecutor = { execute: vi.fn() };
+    const result = await createMemoryRunRetrievalService(local.value, {
+      actionExecutor,
+      control: {
+        decide: vi.fn(async () => ({
+          reason: "memory_action_intent_invalid",
+          status: "UNAVAILABLE" as const
+        }))
+      }
+    }).retrieve(runInput("What did I decide?"));
+
+    expect(result).toMatchObject({
+      degradationCode: "memory_action_intent_invalid",
+      items: [{ exactItemId: "invalid-control-evidence" }],
+      outcome: "DEGRADED"
     });
     expect(actionExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it("reuses an unavailable control fallback without another control call", async () => {
+    const local = repository({ candidates: [laneCandidate("reused-fallback-evidence")] });
+    const control = {
+      decide: vi.fn(async () => ({
+        bindingId: "failed-control-binding",
+        reason: "memory_action_intent_unavailable",
+        status: "UNAVAILABLE" as const
+      }))
+    };
+    const controlCache: MemoryRunControlCache = {};
+    const service = createMemoryRunRetrievalService(local.value, { control });
+    await service.retrieve({ ...runInput("What did I decide?"), controlCache });
+    const retry = await service.retrieve({
+      ...runInput("What did I decide?"),
+      attemptId: "attempt-2",
+      controlCache
+    });
+
+    expect(control.decide).toHaveBeenCalledOnce();
+    expect(retry).toMatchObject({
+      budgetSnapshot: {
+        fallbackControlReuse: {
+          reason: "memory_action_intent_unavailable",
+          sourceAttemptId: "attempt-1",
+          version: 1
+        },
+        plannerFallbackReason: "memory_action_intent_unavailable",
+        utilityEgressMode: "LOCAL_ONLY",
+        utilityExecutions: expect.arrayContaining([expect.objectContaining({
+          externalCall: false,
+          role: "MEMORY_CONTROL",
+          state: "UNAVAILABLE"
+        })])
+      },
+      items: [{ exactItemId: "reused-fallback-evidence" }],
+      outcome: "DEGRADED"
+    });
   });
 
   it("keeps the no-commit bridge when control returns a false-negative NONE", async () => {
@@ -1376,6 +1453,67 @@ describe("Personal Memory v1 run admission", () => {
         version: 1
       }
     });
+  });
+
+  it("does not let a valid useful=false decision disable ordinary raw-query retrieval", async () => {
+    const local = repository({ candidates: [laneCandidate("raw-query-evidence")] });
+    const options = intentOptions({
+      applyResponsePreferences: false,
+      memoryUseful: false,
+      pastChatsUseful: false,
+      queryText: null
+    });
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Which codename did I choose?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        componentMetrics: { plannerFallbackUsed: true },
+        plannerFallbackReason: "memory_control_read_not_requested"
+      },
+      items: [{ exactItemId: "raw-query-evidence" }],
+      outcome: "USED",
+      querySnapshot: "Which codename did I choose?"
+    });
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        originalSanitizedQuery: "Which codename did I choose?",
+        semanticQueryVariants: [
+          { kind: "ORIGINAL", text: "Which codename did I choose?" }
+        ]
+      })
+    }));
+  });
+
+  it("supplements the original query with a planner rewrite without replacing it", async () => {
+    const local = repository({ candidates: [laneCandidate("rewritten-evidence")] });
+    const options = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "Helsinki project codename",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("What did I call it?"));
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        lexicalQuery: expect.stringMatching(/What.*Helsinki/u),
+        originalSanitizedQuery: "What did I call it?",
+        semanticQueryVariants: [
+          { kind: "ORIGINAL", text: "What did I call it?" },
+          { kind: "PLANNER_REWRITE", text: "Helsinki project codename" }
+        ]
+      })
+    }));
+    expect(options.utilities.embedQuery).toHaveBeenCalledWith(expect.objectContaining({
+      query: "Helsinki project codename"
+    }));
+    expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
+      query: "What did I call it?"
+    }));
+    expect(result.querySnapshot).toBe("What did I call it?");
   });
 
   it("keeps Temporary and disabled paths on the no-commit bridge without utility work", async () => {
@@ -1706,7 +1844,51 @@ describe("Personal Memory v1 run admission", () => {
     expect(result.preparedContext?.text).not.toContain("distinct_members=");
   });
 
-  it("fails safe instead of throwing when a control decision violates planner semantics", async () => {
+  it("times out optional aggregation and keeps the underlying source pack", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("aggregation-timeout-evidence")] });
+      const aggregationUtilities = utilities(["c0"]);
+      const receivedSignals: AbortSignal[] = [];
+      vi.mocked(aggregationUtilities.aggregate).mockImplementation((input) => {
+        receivedSignals.push(input.signal);
+        return resolveWhenAborted(input.signal, {
+          reason: "memory_aggregation_unavailable",
+          status: "UNAVAILABLE" as const
+        });
+      });
+      const options = {
+        ...intentOptions({
+          aggregationRequested: true,
+          memoryUseful: false,
+          pastChatsUseful: true,
+          retrievalMode: "PAST_CHAT_SEARCH",
+          temporalIntent: "ANY"
+        }),
+        admissionDeadlineMs: 40,
+        clock: Date.now,
+        utilities: aggregationUtilities
+      };
+      const pending = createMemoryRunRetrievalService(local.value, options)
+        .retrieve(runInput("Which releases did I complete?"));
+
+      await vi.advanceTimersByTimeAsync(20);
+      const result = await pending;
+
+      expect(receivedSignals[0]?.aborted).toBe(true);
+      expect(result).toMatchObject({
+        degradationCode: "memory_aggregation_unavailable",
+        items: [{ exactItemId: "aggregation-timeout-evidence" }],
+        outcome: "DEGRADED"
+      });
+      expect(result.preparedContext?.text).toContain("aggregation-timeout-evidence");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses the deterministic base plan when control violates planner semantics", async () => {
     const local = repository({ candidates: [laneCandidate("past-chat")] });
     const options = intentOptions({
       memoryUseful: false,
@@ -1718,14 +1900,21 @@ describe("Personal Memory v1 run admission", () => {
       .retrieve(runInput("What codename did I choose for that event?"));
 
     expect(result).toMatchObject({
-      budgetSnapshot: { reason: "memory_plan_invalid" },
-      items: [],
-      outcome: "FAILED_SAFE",
-      querySnapshot: null
+      budgetSnapshot: {
+        degradationCode: "memory_plan_invalid",
+        plan: {
+          filterSourceKinds: ["FACT", "EVENT", "HISTORY"],
+          temporalIntent: "ANY"
+        },
+        plannerFallbackReason: "memory_plan_invalid"
+      },
+      items: [{ exactItemId: "past-chat" }],
+      outcome: "DEGRADED",
+      querySnapshot: "What codename did I choose for that event?"
     });
-    expect(local.retrieve).not.toHaveBeenCalled();
-    expect(options.utilities.embedQuery).not.toHaveBeenCalled();
-    expect(options.utilities.rerank).not.toHaveBeenCalled();
+    expect(local.retrieve).toHaveBeenCalledOnce();
+    expect(options.utilities.embedQuery).toHaveBeenCalledOnce();
+    expect(options.utilities.rerank).toHaveBeenCalledOnce();
   });
 
   it("admits only the narrow response-preference lane when dynamic Memory is vetoed", async () => {
@@ -1788,7 +1977,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NOT_AVAILABLE",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v2"
+        version: "memory-retrieval-component-metrics-v3"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
@@ -2381,7 +2570,8 @@ describe("Personal Memory v1 run admission", () => {
     expect(result).toMatchObject({
       budgetSnapshot: {
         plan: {
-          entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
+          entityMentionCount: 1,
+          resolvedEntityMentionCount: 1,
           includePatterns: true
         }
       },
@@ -2503,13 +2693,41 @@ describe("Personal Memory v1 run admission", () => {
     expect(options.utilities.rerank).not.toHaveBeenCalled();
   });
 
-  it("blocks recognizable-secret input before local or provider retrieval", async () => {
-    const local = repository({ core: [core()] });
-    const result = await createMemoryRunRetrievalService(local.value, retrievalOptions(null))
-      .retrieve(runInput("sk-abcdefghijklmnopqrstuvwxyz123456"));
-    expect(local.retrieve).not.toHaveBeenCalled();
-    expect(result.querySnapshot).toBeNull();
-    expect(result.queryHash).toMatch(/^[a-f0-9]{64}$/u);
+  it("redacts recognizable-secret spans and retrieves with the safe remainder", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const local = repository({ candidates: [laneCandidate("safe-query-result")] });
+    const options = retrievalOptions(["c0"]);
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput(`Where do I live? token ${secret}`));
+
+    expect(local.retrieve).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        componentMetrics: {
+          safetyFindingCounts: { KNOWN_TOKEN: 1 }
+        },
+        querySafetyVersion: "memory-read-query-safety-v1"
+      },
+      items: [{ exactItemId: "safe-query-result" }],
+      querySnapshot: "Where do I live? token [REDACTED_SECRET]"
+    });
+    expect(options.control.decide).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        currentUserMessage: "Where do I live? token [REDACTED_SECRET]"
+      })
+    }));
+    expect(options.utilities.embedQuery).toHaveBeenCalledWith(expect.objectContaining({
+      query: "Where do I live? token [REDACTED_SECRET]"
+    }));
+    expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
+      query: "Where do I live? token [REDACTED_SECRET]"
+    }));
+    expect(JSON.stringify([
+      local.retrieve.mock.calls,
+      vi.mocked(options.control.decide).mock.calls,
+      vi.mocked(options.utilities.embedQuery).mock.calls,
+      vi.mocked(options.utilities.rerank).mock.calls
+    ])).not.toContain(secret);
   });
 
   it("sends low-similarity cross-language Saved facts to the mandatory reranker only", async () => {

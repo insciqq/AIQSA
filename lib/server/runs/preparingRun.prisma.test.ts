@@ -2352,7 +2352,7 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("fails Memory closed without System Model control while the ordinary run finalizes", async () => {
+  it("degrades to the deterministic local read without System Model control", async () => {
     await withPreparingUser(async ({ userId }) => {
       await createPrismaMemorySettingsRepository(prisma).patch(userId, {
         expectedMemoryRevision: 0,
@@ -2361,12 +2361,13 @@ describe("PREPARING run orchestration", () => {
       });
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
       const fact = await saveExplicitFact(userId, scope.id, "My preferred editor\nis  Vim.");
+      await classifyExplicitFact(userId, fact.versionId);
       await prisma.memoryFactVersion.update({
         data: { coreEligible: true, coreSalience: "HIGH" },
         where: { id: fact.versionId }
       });
       const chat = await prisma.chat.create({ data: { title: "Explicit recall", userId } });
-      const request = normalizedRequest(chat.id, "What is my preferred editor?");
+      const request = normalizedRequest(chat.id, "My preferred editor is Vim.");
       const repository = createPrismaRunRepository(prisma, {
         memoryExecutionAuthority: { egressConsentMode: "PER_USER" }
       });
@@ -2416,16 +2417,25 @@ describe("PREPARING run orchestration", () => {
         where: { bindingId: binding.id }
       });
 
-      expect(created.materializedRequest?.normalizedRequest.prompt).toMatchObject({
-        memoryActionAnswerResult: {
-          operation: "NONE",
-          status: "UNAVAILABLE",
-          version: 1
+      expect(created.materializedRequest?.normalizedRequest).toMatchObject({
+        personalContext: {
+          itemCount: 1,
+          text: expect.stringContaining("Vim")
+        },
+        prompt: {
+          memoryActionAnswerResult: {
+            operation: "NONE",
+            status: "UNAVAILABLE",
+            version: 1
+          }
         }
       });
       expect(run).toMatchObject({ status: "streaming" });
-      expect(run.normalizedRequest).not.toHaveProperty("personalContext");
       expect(run.normalizedRequest).toMatchObject({
+        personalContext: {
+          itemCount: 1,
+          text: expect.stringContaining("Vim")
+        },
         prompt: {
           memoryActionAnswerResult: {
             operation: "NONE",
@@ -2436,21 +2446,34 @@ describe("PREPARING run orchestration", () => {
       });
       expect(attempt).toMatchObject({
         acceptedUtilityEgressFingerprint: null,
-        boundedSafeQuerySnapshot: null,
+        boundedSafeQuerySnapshot: "My preferred editor is Vim.",
         externalRolesUsed: [],
-        outcome: "FAILED_SAFE",
+        outcome: "DEGRADED",
         state: "CONSUMED",
         utilityEgressMode: "LOCAL_ONLY"
       });
       expect(attempt.budgetSnapshot).toMatchObject({
-        reason: "memory_action_intent_unavailable"
+        degradationCode: "memory_action_intent_unavailable",
+        plan: {
+          originalQueryHash: memorySha256("My preferred editor is Vim."),
+          semanticQueryVariants: [{
+            hash: memorySha256("My preferred editor is Vim."),
+            kind: "ORIGINAL"
+          }],
+          temporalQueryVariants: [{
+            hash: memorySha256("My preferred editor is Vim."),
+            kind: "UNRESTRICTED"
+          }]
+        },
+        plannerFallbackReason: "memory_action_intent_unavailable"
       });
       expect(binding).toMatchObject({
-        boundedSafeQuerySnapshot: null,
-        outcome: "FAILED_SAFE",
+        boundedSafeQuerySnapshot: "My preferred editor is Vim.",
+        outcome: "DEGRADED",
         retrievalAttemptId: attempt.id
       });
-      expect(items).toEqual([]);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ factVersionId: fact.versionId });
 
       const chatUpdate = await repository.getChatUpdateForRun({
         assistantMessageId: created.assistantMessageId,
@@ -2460,8 +2483,28 @@ describe("PREPARING run orchestration", () => {
       });
       expect(chatUpdate?.messages.find(({ id }) => id === created.assistantMessageId)
         ?.artifactSummary).toMatchObject({
-        memoryStatus: "UNAVAILABLE"
+        memoryStatus: "LIMITED"
       });
+
+      const frozenBudgetSnapshot = attempt.budgetSnapshot;
+      await expect(repository.recoverPreparingRun({
+        now: new Date(),
+        runId: created.runId,
+        userId
+      })).resolves.toBe("finalized");
+      const [recoveredAttempt, retrievalExecutionCount] = await Promise.all([
+        prisma.memoryRetrievalAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+        prisma.memoryExecutionBinding.count({
+          where: { retrievalAttemptId: attempt.id, userId }
+        })
+      ]);
+      expect(recoveredAttempt).toMatchObject({
+        boundedSafeQuerySnapshot: "My preferred editor is Vim.",
+        outcome: "DEGRADED",
+        state: "CONSUMED"
+      });
+      expect(recoveredAttempt.budgetSnapshot).toEqual(frozenBudgetSnapshot);
+      expect(retrievalExecutionCount).toBe(0);
 
       const { systemFrom } = await prisma.memoryFactVersion.findUniqueOrThrow({
         select: { systemFrom: true },

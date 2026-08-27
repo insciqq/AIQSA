@@ -420,6 +420,21 @@ describe("local Memory retrieval repository", () => {
     expect(mocked.$queryRaw).not.toHaveBeenCalled();
   });
 
+  it("rejects a query bundle without its unrestricted temporal fallback", async () => {
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const ordinary = planMemoryRetrieval({ currentUserText: "answer", now });
+
+    await expect(repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: { ...ordinary, temporalQueryVariants: [] },
+      userId: "user-1"
+    })).rejects.toThrow("memory_retrieval_plan_invalid");
+    expect(mocked.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it("adds a bounded recent lane only for an explicit System-plan recency request", async () => {
     const withoutRecency = mockClient(snapshotRow({ referenceChatHistory: false }));
     const ordinary = await createPrismaLocalMemoryRetrievalRepository(withoutRecency.client)

@@ -11,6 +11,8 @@ import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
+  MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
+  MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
   type MemoryCoreCandidate,
@@ -50,7 +52,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v10";
+  "memory-local-retrieval-repository-v11";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -219,6 +221,10 @@ const retrievalModes = new Set([
   "PAST_CHAT_SEARCH", "HISTORY_OVERVIEW"
 ]);
 const temporalIntents = new Set(["CURRENT", "HISTORICAL", "AS_OF", "BETWEEN", "ANY"]);
+const semanticVariantKinds = new Set([
+  "DECOMPOSED", "ENTITY_EXPANSION", "ORIGINAL", "PLANNER_REWRITE"
+]);
+const temporalVariantKinds = new Set(["FILTERED", "UNRESTRICTED"]);
 const opaqueEntityRefPattern = /^[^\u0000-\u0020\u007f]{1,2048}$/u;
 
 function validToken(value: unknown): value is string {
@@ -1336,7 +1342,7 @@ function plannedEntityTerms(plan: MemoryRetrievalPlan): Readonly<{
   return {
     hinted,
     terms: [...new Set([
-      ...entityQueryTerms(plan.normalizedQuery),
+      ...plan.semanticQueryVariants.flatMap(({ text }) => entityQueryTerms(text)),
       ...hinted
     ])]
   };
@@ -1637,7 +1643,8 @@ function localLexicalLanes(
     if (plan.profileRequested) lanes.push("FACT_PROFILE");
     else {
       lanes.push("FACT_EXACT");
-      if (entityQueryTerms(plan.normalizedQuery).length > 0) lanes.push("FACT_ENTITY");
+      if (plan.semanticQueryVariants.some(({ text }) =>
+        entityQueryTerms(text).length > 0)) lanes.push("FACT_ENTITY");
       if (indexed && plan.lexicalQuery) lanes.push("FACT_FTS_SIMPLE");
       if (indexed && plan.recencyRequested) lanes.push("FACT_RECENT");
     }
@@ -2003,7 +2010,7 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
     ? plan.profileRequested && facts && !history && plan.temporalIntent === "CURRENT"
     : plan.mode === "TARGETED_CURRENT"
       ? !plan.profileRequested && (facts || requestedKinds.length === 0) &&
-        plan.temporalIntent === "CURRENT"
+        (plan.temporalIntent === "CURRENT" || plan.temporalIntent === "ANY")
       : plan.mode === "HISTORICAL_MEMORY"
         ? !plan.profileRequested && facts && !history && plan.temporalIntent !== "CURRENT"
         : plan.mode === "PAST_CHAT_SEARCH"
@@ -2031,9 +2038,39 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
     (requestedKinds.length > 0 || plan.applyResponsePreferences) &&
     new Set(requestedKinds).size === requestedKinds.length &&
     requestedKinds.every((kind) => retrievalSourceKinds.has(kind)) &&
+    typeof plan.originalSanitizedQuery === "string" &&
+    plan.originalSanitizedQuery === plan.normalizedQuery &&
     plan.normalizedQuery.length <= 2_000 &&
     plan.normalizedExactQuery.length <= 2_000 &&
-    plan.queryPresent === (plan.normalizedQuery.length > 0) &&
+    plan.queryPresent === (plan.originalSanitizedQuery.length > 0) &&
+    Array.isArray(plan.semanticQueryVariants) &&
+    plan.semanticQueryVariants.length <= MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS &&
+    (plan.queryPresent
+      ? plan.semanticQueryVariants.length >= 1
+      : plan.semanticQueryVariants.length === 0) &&
+    plan.semanticQueryVariants.every((variant) =>
+      semanticVariantKinds.has(variant.kind) && typeof variant.text === "string" &&
+      variant.text.length > 0 && variant.text.length <= 2_000) &&
+    new Set(plan.semanticQueryVariants.map(({ text }) =>
+      text.toLocaleLowerCase("und"))).size === plan.semanticQueryVariants.length &&
+    (!plan.queryPresent || plan.semanticQueryVariants[0]?.kind === "ORIGINAL" &&
+      plan.semanticQueryVariants[0].text === plan.originalSanitizedQuery) &&
+    Array.isArray(plan.temporalQueryVariants) &&
+    plan.temporalQueryVariants.length <= MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS &&
+    (plan.queryPresent
+      ? plan.temporalQueryVariants.length >= 1
+      : plan.temporalQueryVariants.length === 0) &&
+    plan.temporalQueryVariants.every((variant) =>
+      temporalVariantKinds.has(variant.kind) && typeof variant.text === "string" &&
+      variant.text.length > 0 && variant.text.length <= 2_000) &&
+    new Set(plan.temporalQueryVariants.map(({ kind, text }) =>
+      `${kind}:${text.toLocaleLowerCase("und")}`)).size === plan.temporalQueryVariants.length &&
+    (!plan.queryPresent || plan.temporalQueryVariants.some((variant) =>
+      variant.kind === "UNRESTRICTED" && variant.text === plan.originalSanitizedQuery)) &&
+    (plan.temporalIntent === "AS_OF" || plan.temporalIntent === "BETWEEN"
+      ? plan.temporalQueryVariants.some((variant) =>
+          variant.kind === "FILTERED" && variant.text === plan.originalSanitizedQuery)
+      : plan.temporalQueryVariants.every((variant) => variant.kind === "UNRESTRICTED")) &&
     typeof plan.recencyRequested === "boolean" &&
     validDate(plan.filters.asOf) && validDate(plan.filters.from) && validDate(plan.filters.to) &&
     !(plan.filters.asOf && (plan.filters.from || plan.filters.to)) &&

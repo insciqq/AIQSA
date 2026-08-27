@@ -5,14 +5,18 @@ import type {
   MemoryRetrievalPlan,
   MemoryRetrievalPlannerInput,
   MemoryRetrievalSourceKind,
+  MemorySemanticQueryVariant,
+  MemoryTemporalQueryVariant,
   MemoryTemporalIntent
 } from "./contracts";
 import { MEMORY_RETRIEVAL_MODES, MEMORY_TEMPORAL_INTENTS } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v12";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v13";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
+export const MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS = 4;
+export const MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS = 2;
 
 const sourceKinds = new Set<MemoryRetrievalSourceKind>(["EVENT", "FACT", "HISTORY"]);
 const scopeTypes = new Set(["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"]);
@@ -25,10 +29,16 @@ function boundedUnicode(value: string): string {
     .join("");
 }
 
-function lexicalQuery(value: string): string | null {
-  const tokens = value.match(/[\p{L}\p{N}]+/gu);
-  if (!tokens || tokens.length === 0) return null;
-  return tokens.join(" ").slice(0, MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS);
+function lexicalQuery(values: readonly string[]): string | null {
+  const tokens = values.flatMap((value) => value.match(/[\p{L}\p{N}]+/gu) ?? []);
+  if (tokens.length === 0) return null;
+  const seen = new Set<string>();
+  return tokens.filter((token) => {
+    const key = token.toLocaleLowerCase("und");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(" ").slice(0, MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS);
 }
 
 function validDate(value: Date | null): boolean {
@@ -56,7 +66,7 @@ function exactOccurrenceExists(
 
 function entityMentionsFor(
   input: MemoryRetrievalPlannerInput,
-  normalizedQuery: string
+  queryTexts: readonly string[]
 ): readonly MemoryRetrievalEntityMention[] {
   const mentions = input.entityMentions ?? [];
   const allowedRefs = input.allowedEntityRefs ?? [];
@@ -77,7 +87,8 @@ function entityMentionsFor(
       (mention.resolvedRef !== null && !validOpaqueRef(mention.resolvedRef))) {
       throw new Error("memory_retrieval_plan_invalid");
     }
-    if (!exactOccurrenceExists(normalizedQuery, mention.text, mention.occurrenceIndex)) return [];
+    if (!queryTexts.some((query) =>
+      exactOccurrenceExists(query, mention.text, mention.occurrenceIndex))) return [];
     const key = `${mention.text}\u0000${mention.occurrenceIndex}`;
     if (seen.has(key)) return [];
     seen.add(key);
@@ -89,6 +100,41 @@ function entityMentionsFor(
       text: mention.text
     })];
   }));
+}
+
+function semanticVariants(
+  originalSanitizedQuery: string,
+  semanticRewrite: string,
+  entityMentions: readonly MemoryRetrievalEntityMention[]
+): readonly MemorySemanticQueryVariant[] {
+  const values: MemorySemanticQueryVariant[] = [];
+  const seen = new Set<string>();
+  const add = (kind: MemorySemanticQueryVariant["kind"], text: string) => {
+    if (!text) return;
+    const key = text.toLocaleLowerCase("und");
+    if (seen.has(key) || values.length >= MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS) return;
+    seen.add(key);
+    values.push(Object.freeze({ kind, text }));
+  };
+  add("ORIGINAL", originalSanitizedQuery);
+  add("PLANNER_REWRITE", semanticRewrite);
+  add("ENTITY_EXPANSION", boundedUnicode(
+    [...new Set(entityMentions.map(({ text }) => text))].join(" ")
+  ));
+  return Object.freeze(values);
+}
+
+function temporalVariants(
+  originalSanitizedQuery: string,
+  intent: MemoryTemporalIntent
+): readonly MemoryTemporalQueryVariant[] {
+  if (!originalSanitizedQuery) return Object.freeze([]);
+  const variants: MemoryTemporalQueryVariant[] = [];
+  if (intent === "AS_OF" || intent === "BETWEEN") {
+    variants.push(Object.freeze({ kind: "FILTERED", text: originalSanitizedQuery }));
+  }
+  variants.push(Object.freeze({ kind: "UNRESTRICTED", text: originalSanitizedQuery }));
+  return Object.freeze(variants.slice(0, MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS));
 }
 
 function filtersFor(
@@ -162,7 +208,8 @@ function validModeContract(
   }
   if (profileRequested) return false;
   if (mode === "TARGETED_CURRENT") {
-    return (facts || filters.sourceKinds.length === 0) && temporalIntent === "CURRENT";
+    return (facts || filters.sourceKinds.length === 0) &&
+      (temporalIntent === "CURRENT" || temporalIntent === "ANY");
   }
   if (mode === "HISTORICAL_MEMORY") {
     return facts && !history && temporalIntent !== "CURRENT";
@@ -201,13 +248,21 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   if (input.profileRequested !== undefined && typeof input.profileRequested !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
+  if (input.semanticRewrite !== undefined && input.semanticRewrite !== null &&
+    typeof input.semanticRewrite !== "string") {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
   const applyResponsePreferences = input.applyResponsePreferences === true;
   const profileRequested = input.profileRequested === true;
   if (profileRequested && input.recencyRequested === true) {
     throw new Error("memory_retrieval_plan_invalid");
   }
   const normalizedQuery = boundedUnicode(input.currentUserText);
-  const entityMentions = entityMentionsFor(input, input.currentUserText);
+  const normalizedRewrite = boundedUnicode(input.semanticRewrite ?? "");
+  const entityMentions = entityMentionsFor(input, [
+    input.currentUserText,
+    input.semanticRewrite ?? ""
+  ]);
   const filters = filtersFor(input, applyResponsePreferences);
   const mode = inferredMode(input, filters, profileRequested);
   const temporalIntent = inferredTemporalIntent(input, filters, mode);
@@ -226,20 +281,28 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     aggregationRequested && mode !== "PAST_CHAT_SEARCH" &&
       mode !== "HISTORY_OVERVIEW"
   ) throw new Error("memory_retrieval_plan_invalid");
+  const semanticQueryVariants = semanticVariants(
+    normalizedQuery,
+    normalizedRewrite,
+    entityMentions
+  );
   return {
     aggregationRequested,
     applyResponsePreferences,
     entityMentions,
     filters,
     includePatterns,
-    lexicalQuery: lexicalQuery(normalizedQuery),
+    lexicalQuery: lexicalQuery(semanticQueryVariants.map(({ text }) => text)),
     mode,
     normalizedExactQuery: normalizedQuery.toLocaleLowerCase("und"),
     normalizedQuery,
+    originalSanitizedQuery: normalizedQuery,
     plannerVersion: MEMORY_RETRIEVAL_PLANNER_VERSION,
     profileRequested,
     queryPresent: normalizedQuery.length > 0,
     recencyRequested: input.recencyRequested === true,
-    temporalIntent
+    semanticQueryVariants,
+    temporalIntent,
+    temporalQueryVariants: temporalVariants(normalizedQuery, temporalIntent)
   };
 }
