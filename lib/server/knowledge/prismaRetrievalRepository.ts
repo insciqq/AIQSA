@@ -51,6 +51,7 @@ import {
 import {
   executeKnowledgeRetrievalCore
 } from "./prismaRetrievalCore";
+import { decodeKnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import {
   decodeKnowledgeBudgetPolicy,
   estimatedKnowledgeEmbeddingCostMicros,
@@ -392,6 +393,7 @@ export function createPrismaKnowledgeRetrievalStore(
         candidateLimit: input.candidateLimit,
         excludedContentHashes: input.excludedContentHashes,
         query: input.query,
+        ...(input.rerank ? { rerank: input.rerank } : {}),
         resultLimit: input.resultLimit,
         runId: input.runId,
         ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
@@ -423,6 +425,7 @@ export function createPrismaKnowledgeRetrievalStore(
           knowledgeBaseId: passage.knowledgeBaseId,
           layoutKind: passage.layoutKind,
           page: passage.page,
+          ...(passage.rerankScore !== undefined ? { rerankScore: passage.rerankScore } : {}),
           sectionId: passage.sectionId,
           signalProvenance: passage.signals,
           sourceArtifactId: passage.sourceArtifactId,
@@ -432,6 +435,7 @@ export function createPrismaKnowledgeRetrievalStore(
           vectorScore: passage.vectorScore
         })),
         rankingEvidence: result.rankingEvidence,
+        ...(result.rerankerBinding ? { rerankerBinding: result.rerankerBinding } : {}),
         vectorSearchEvidence:
           input.operation === "find_exact" || input.operation === "discover_sources"
             ? []
@@ -1084,7 +1088,11 @@ export function createPrismaKnowledgeRetrievalStore(
             ? { exact: receipt.readReceipt }
             : receipt.operation === "discover_sources"
               ? { discovery: receipt.readReceipt }
-              : {};
+              : receipt.operation === "automatic_search" &&
+                  record(receipt.readReceipt) &&
+                  receipt.readReceipt.rerankerBinding !== undefined
+                ? { rerankerBinding: receipt.readReceipt.rerankerBinding }
+                : {};
       return decodeKnowledgeRetrievalEvidence({
         ...common,
         ...operationReceipt,
@@ -1425,15 +1433,26 @@ export function createPrismaKnowledgeRetrievalStore(
         receiptCount > 1) {
         throw new Error("knowledge_operation_receipt_invalid");
       }
+      // Legacy planner-era ranking fields stay rejected; only the current
+      // content-free hosted reranker execution evidence (V2) may be written,
+      // and only with an automatic-search receipt.
+      const rerankerBinding = input.evidence.rerankerBinding === undefined
+        ? undefined
+        : decodeKnowledgeRerankerBindingEvidenceV2(input.evidence.rerankerBinding);
+      const rerankScoresAllowed = Boolean(rerankerBinding &&
+        (rerankerBinding.status === "complete" || rerankerBinding.status === "partial"));
       if (input.evidence.postRerankOrder !== undefined ||
         input.evidence.preRerankOrder !== undefined ||
-        input.evidence.rerankerBinding !== undefined || input.evidence.threshold !== undefined ||
+        rerankerBinding === null || input.evidence.threshold !== undefined ||
+        rerankerBinding &&
+          (input.evidence.operation ?? "automatic_search") !== "automatic_search" ||
         input.evidence.budget && (
           "noveltyRatio" in input.evidence.budget ||
           "lowNoveltyStreak" in input.evidence.budget.usage
         ) ||
         input.evidence.results.some((result) =>
-          result.confidence !== undefined || result.rerankScore !== undefined)) {
+          result.confidence !== undefined ||
+          result.rerankScore !== undefined && !rerankScoresAllowed)) {
         throw new Error("knowledge_legacy_ranking_write_forbidden");
       }
       if (input.evidence.results.some((result) =>
@@ -1701,6 +1720,9 @@ export function createPrismaKnowledgeRetrievalStore(
           degradedFlags.add(`retrieval_${input.evidence.outcome}`);
         }
         if (input.evidence.budget?.stopReason) degradedFlags.add("budget_exhausted");
+        if (rerankerBinding?.status === "degraded") {
+          degradedFlags.add("knowledge_reranker_degraded");
+        }
         await tx.knowledgeRetrievalSession.update({
           data: {
             degradedFlags: [...degradedFlags].sort(),
@@ -1750,7 +1772,9 @@ export function createPrismaKnowledgeRetrievalStore(
               ? {
                   readReceipt: json(evidence.read ?? evidence.exact ?? evidence.discovery)
                 }
-              : {}),
+              : rerankerBinding
+                ? { readReceipt: json({ rerankerBinding }) }
+                : {}),
           }
         });
         if (evidenceItems.length > 0) {

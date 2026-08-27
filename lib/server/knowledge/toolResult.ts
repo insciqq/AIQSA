@@ -50,6 +50,11 @@ import type {
   KnowledgeRerankerBindingEvidence,
   KnowledgeRetrievalLane
 } from "./retrievalRanking";
+import {
+  decodeKnowledgeRerankerBindingEvidenceV2,
+  KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
+  type KnowledgeRerankerBindingEvidenceV2
+} from "./rerankEvidence";
 
 function persistedContentMarker(version: KnowledgeResultVersion) {
   return Object.freeze({
@@ -380,7 +385,9 @@ function decodePassage(
     structuredAnalysis !== undefined && visualAnalysis !== undefined ||
     (version === KNOWLEDGE_RESULT_VERSION && (
       !sourceAlias || !sourceArtifactId || !sourceName ||
-      confidence !== undefined || rerankScore !== undefined
+      confidence !== undefined ||
+      rerankScore !== undefined && rerankScore !== null &&
+        (rerankScore < 0 || rerankScore > 1)
     )) ||
     (!advanced && Math.abs(fusedScore - expectedFusedScore) > 1e-12) ||
     (advanced && (
@@ -1132,7 +1139,16 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     : null;
   const rerankerBinding = value.rerankerBinding === undefined
     ? undefined
-    : value.rerankerBinding === null ? null : decodeRerankerBinding(value.rerankerBinding);
+    : value.rerankerBinding === null
+      ? null
+      : isRecord(value.rerankerBinding) &&
+          value.rerankerBinding.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
+        ? decodeKnowledgeRerankerBindingEvidenceV2(value.rerankerBinding)
+        : decodeRerankerBinding(value.rerankerBinding);
+  const rerankerBindingV2: KnowledgeRerankerBindingEvidenceV2 | null =
+    rerankerBinding && rerankerBinding.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
+      ? rerankerBinding
+      : null;
   const preRerankOrder = value.preRerankOrder === undefined
     ? undefined
     : value.preRerankOrder === null ? null : decodeCandidateOrder(value.preRerankOrder);
@@ -1140,8 +1156,8 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     ? undefined
     : value.postRerankOrder === null ? null : decodeCandidateOrder(value.postRerankOrder);
   const legacyRankingFields = value.threshold !== undefined ||
-    value.rerankerBinding !== undefined || value.preRerankOrder !== undefined ||
-    value.postRerankOrder !== undefined;
+    value.preRerankOrder !== undefined || value.postRerankOrder !== undefined ||
+    value.rerankerBinding !== undefined && !rerankerBindingV2;
   const completeLegacyRankingFields = value.threshold !== undefined &&
     value.rerankerBinding !== undefined && value.preRerankOrder !== undefined &&
     value.postRerankOrder !== undefined;
@@ -1172,7 +1188,9 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (value.postRerankOrder !== undefined && value.postRerankOrder !== null &&
       postRerankOrder === null) ||
     (version === KNOWLEDGE_RESULT_VERSION && legacyRankingFields) ||
-    (version === KNOWLEDGE_LEGACY_RESULT_VERSION && !completeLegacyRankingFields) ||
+    (version === KNOWLEDGE_RESULT_VERSION && value.rerankerBinding === null) ||
+    (version === KNOWLEDGE_LEGACY_RESULT_VERSION &&
+      (!completeLegacyRankingFields || rerankerBindingV2 !== null)) ||
     (fusion === "none" && (
       rerankerBinding != null || preRerankOrder != null || postRerankOrder != null
     )) ||
@@ -1355,6 +1373,17 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (version === KNOWLEDGE_RESULT_VERSION &&
       (operation === "read_source") !== (read !== undefined)) ||
     invalidV2SourceBindings ||
+    (version === KNOWLEDGE_RESULT_VERSION && rerankerBindingV2 !== null && (
+      (operation ?? "automatic_search") !== "automatic_search" ||
+      (rerankerBindingV2.status === "complete" || rerankerBindingV2.status === "partial"
+        ? decodedResults.some((result) => result.rerankScore === undefined) ||
+          rerankerBindingV2.status === "complete" &&
+            rerankerBindingV2.relevanceScores.some((score) => score !== null) &&
+            decodedResults.some((result) => result.rerankScore == null)
+        : decodedResults.some((result) => result.rerankScore !== undefined))
+    )) ||
+    (version === KNOWLEDGE_RESULT_VERSION && rerankerBindingV2 === null &&
+      decodedResults.some((result) => result.rerankScore !== undefined)) ||
     candidateCount < decodedResults.length ||
     (!embeddingForbidden && retrievalCompleted && !embeddingDegraded && (
       decodedEmbeddings.some((entry) => entry.status !== "complete") ||

@@ -12,26 +12,36 @@ import {
   knowledgeExactQueryValues
 } from "./hierarchicalIndex";
 import {
-  KNOWLEDGE_CANDIDATE_LIMIT,
   KNOWLEDGE_PRIOR_CONTENT_HASH_MAX,
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_SCOPED_RESULT_LIMIT,
   KNOWLEDGE_SCOPE_MAX_BINDINGS
 } from "./retrievalTypes";
 import {
+  eligibleKnowledgeCandidates,
   fuseKnowledgeCandidates,
   knowledgeCandidateSignalEligible,
+  KNOWLEDGE_BROAD_RERANK_INPUT_MAX,
+  KNOWLEDGE_LANE_CANDIDATE_LIMIT,
   KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR,
   KNOWLEDGE_METADATA_RELEVANCE_FLOOR,
+  KNOWLEDGE_RETRIEVAL_FUSION,
   KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS,
+  KNOWLEDGE_SCOPED_RERANK_INPUT_MAX,
   KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR,
+  orderRerankedKnowledgeCandidates,
   rankKnowledgeCandidates,
+  selectKnowledgePreRerankPool,
+  selectRerankedKnowledgeCandidates,
   type KnowledgeCandidateSignal,
+  type KnowledgeRankedCandidate,
   type KnowledgeRankingEvidence,
   type KnowledgeRetrievalCandidate,
   type KnowledgeRetrievalLane,
   type KnowledgeVectorSearchMode
 } from "./retrievalRanking";
+import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import type { KnowledgeRerankExecutor } from "./rerankExecution";
 
 const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
 const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
@@ -101,8 +111,15 @@ export type KnowledgeRetrievalCorePassage = KnowledgeRetrievalCandidate & Readon
   ftsRank: number | null;
   ftsScore: number | null;
   fusedScore: number;
+  rerankScore?: number | null;
   vectorDistance: number | null;
   vectorScore: number | null;
+}>;
+
+/** Hosted rerank stage wiring for one retrieval operation. */
+export type KnowledgeRetrievalRerank = Readonly<{
+  executor: KnowledgeRerankExecutor;
+  signal?: AbortSignal;
 }>;
 
 export type KnowledgeRetrievalCoreResult = Readonly<{
@@ -112,6 +129,7 @@ export type KnowledgeRetrievalCoreResult = Readonly<{
   canonicalSourceProvenance: readonly KnowledgeCanonicalSourceProvenance[];
   passages: readonly KnowledgeRetrievalCorePassage[];
   rankingEvidence: KnowledgeRankingEvidence;
+  rerankerBinding?: KnowledgeRerankerBindingEvidenceV2;
   vectorSearchEvidence: readonly KnowledgeVectorSearchEvidence[];
 }>;
 
@@ -463,6 +481,7 @@ function vectorDistanceExpression(vector: QueryVector, alias: string): Prisma.Sq
 function knowledgeVectorLaneSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
+  relaxRelevanceFloors?: boolean;
   runId: string;
   sourceIds?: readonly string[];
   userId: string;
@@ -471,6 +490,12 @@ function knowledgeVectorLaneSql(input: Readonly<{
   const bindings = retrievalBindingsSql(input);
   const scopedPassages = scopedPassagesSql();
   const globalDistance = vectorDistanceExpression(input.vector, "embedding");
+  // When a hosted reranker is configured, the global absolute dense floor
+  // must not drop candidates before reranking; the per-lane limit still
+  // bounds the scan.
+  const denseFloor = input.relaxRelevanceFloors
+    ? Prisma.empty
+    : Prisma.sql`AND ${globalDistance} <= ${1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR}`;
   return Prisma.sql`
     WITH
     bindings AS MATERIALIZED (${bindings}),
@@ -486,7 +511,7 @@ function knowledgeVectorLaneSql(input: Readonly<{
        AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
        AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
       WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
-        AND ${globalDistance} <= ${1 - KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR}
+        ${denseFloor}
         AND EXISTS (
           SELECT 1
           FROM scoped_passages AS scoped
@@ -612,6 +637,7 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   query: string;
+  relaxRelevanceFloors?: boolean;
   runId: string;
   sourceIds?: readonly string[];
   userId: string;
@@ -808,7 +834,9 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       WHERE lane = 'exact'
         OR lane = 'metadata' AND "rawScore" >= ${KNOWLEDGE_METADATA_RELEVANCE_FLOOR}
         OR lane IN ('document_lexical', 'passage_lexical', 'section_lexical')
-          AND "rawScore" >= ${KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR}
+          ${input.relaxRelevanceFloors
+            ? Prisma.empty
+            : Prisma.sql`AND "rawScore" >= ${KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR}`}
     ),
     ranked AS (
       SELECT eligible_lane_rows.*,
@@ -860,6 +888,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
   bindingOrdinals?: readonly number[];
   candidateLimit: number;
   query: string;
+  relaxRelevanceFloors?: boolean;
   resultLimit: number;
   runId: string;
   sourceIds?: readonly string[];
@@ -876,6 +905,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
       const query = knowledgeVectorLaneSql({
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
+        ...(input.relaxRelevanceFloors ? { relaxRelevanceFloors: true } : {}),
         runId: input.runId,
         ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
         userId: input.userId,
@@ -1373,6 +1403,7 @@ export async function executeKnowledgeRetrievalCore(
     bindingOrdinals?: readonly number[];
     excludedContentHashes: readonly string[];
     query: string;
+    rerank?: KnowledgeRetrievalRerank;
     resultLimit: number;
     runId: string;
     sourceIds?: readonly string[];
@@ -1384,7 +1415,7 @@ export async function executeKnowledgeRetrievalCore(
   const requestedSourceIds = input.sourceIds ?? [];
   const excludedContentHashes = new Set(input.excludedContentHashes);
   if (
-    input.candidateLimit !== KNOWLEDGE_CANDIDATE_LIMIT ||
+    input.candidateLimit !== KNOWLEDGE_LANE_CANDIDATE_LIMIT ||
     (input.resultLimit !== KNOWLEDGE_RESULT_LIMIT &&
       input.resultLimit !== KNOWLEDGE_SCOPED_RESULT_LIMIT) ||
     typeof input.query !== "string" || !input.query.trim() ||
@@ -1423,12 +1454,14 @@ export async function executeKnowledgeRetrievalCore(
       vector.vector.some((value) => !Number.isFinite(value)))
   ) throw new Error("knowledge_query_vector_invalid");
 
+  const rerankConfigured = Boolean(input.rerank);
   const envelope = decodeHybridQueryEnvelope(await client.$queryRaw<unknown[]>(
     knowledgeFocusedHybridSearchSql({
       ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
       ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
       candidateLimit: input.candidateLimit,
       query: input.query,
+      ...(rerankConfigured ? { relaxRelevanceFloors: true } : {}),
       resultLimit: input.resultLimit,
       runId: input.runId,
       ...(input.sourceIds ? { sourceIds: input.sourceIds } : {}),
@@ -1475,24 +1508,98 @@ export async function executeKnowledgeRetrievalCore(
       targetDimension: scope.targetDimension as 1_024 | 1_536
     });
   });
-  const eligibleRows = envelope.candidates.filter((candidate) =>
-    candidate.lane === "neighbor" || knowledgeCandidateSignalEligible({
-      exactKind: candidate.exactKind,
-      lane: candidate.lane,
-      rank: candidate.laneRank,
-      rawScore: candidate.rawScore,
-      vectorDistance: candidate.vectorDistance,
-      vectorMode: candidate.vectorMode
-    }));
+  // Row-level relevance eligibility. When a hosted reranker is configured,
+  // global absolute dense/lexical floors must not drop candidates before
+  // reranking; the deterministic path keeps today's floors exactly.
+  const eligibleRows = rerankConfigured
+    ? envelope.candidates
+    : envelope.candidates.filter((candidate) =>
+      candidate.lane === "neighbor" || knowledgeCandidateSignalEligible({
+        exactKind: candidate.exactKind,
+        lane: candidate.lane,
+        rank: candidate.laneRank,
+        rawScore: candidate.rawScore,
+        vectorDistance: candidate.vectorDistance,
+        vectorMode: candidate.vectorMode
+      }));
   const merged = mergedCandidates(eligibleRows, byOrdinal);
   const canonical = canonicalizeKnowledgeSourceCandidates(
     merged.candidates,
     merged.sourceBindings
   );
-  const candidates = fuseKnowledgeCandidates(
-    canonical.candidates.filter(hasPrimarySignal).filter((candidate) =>
-      !excludedContentHashes.has(candidate.contentHash))
-  ).slice(0, input.candidateLimit);
+  const primaryPool = canonical.candidates.filter(hasPrimarySignal).filter((candidate) =>
+    !excludedContentHashes.has(candidate.contentHash));
+
+  let candidates: readonly KnowledgeRankedCandidate[];
+  let rankingEvidence: KnowledgeRankingEvidence;
+  let selected: readonly (KnowledgeRankedCandidate & Readonly<{
+    rerankScore?: number | null;
+  }>)[];
+  let rerankerBinding: KnowledgeRerankerBindingEvidenceV2 | undefined;
+  if (!input.rerank) {
+    const deterministic = Object.freeze(
+      fuseKnowledgeCandidates(primaryPool).slice(0, input.candidateLimit)
+    );
+    const ranking = await rankKnowledgeCandidates({
+      candidates: deterministic,
+      resultLimit: input.resultLimit
+    });
+    candidates = deterministic;
+    rankingEvidence = ranking.evidence;
+    selected = ranking.selected;
+  } else {
+    // Merged pre-rerank pool: candidates are already tenant/Base/Source/
+    // Version/authority scoped by the repository query above; the provider
+    // request never sees anything outside this pool.
+    const poolMaximum = input.resultLimit === KNOWLEDGE_SCOPED_RESULT_LIMIT
+      ? KNOWLEDGE_SCOPED_RERANK_INPUT_MAX
+      : KNOWLEDGE_BROAD_RERANK_INPUT_MAX;
+    const pool = Object.freeze(selectKnowledgePreRerankPool({
+      bindingOrdinals: acceptedScopes.map((scope) => scope.bindingOrdinal),
+      candidates: primaryPool,
+      maximum: poolMaximum
+    }));
+    const stage = await input.rerank.executor({
+      candidates: pool.map((candidate) => ({
+        chunkId: candidate.chunkId,
+        headingPath: candidate.headingPath,
+        sourceName: candidate.sourceName,
+        text: candidate.text
+      })),
+      ...(input.rerank.signal ? { signal: input.rerank.signal } : {})
+    });
+    rerankerBinding = stage.evidence;
+    if (stage.status === "degraded") {
+      // Deterministic weighted RRF fallback: no retrieval or embedding is
+      // repeated, today's named relevance floors apply, and exact candidates
+      // stay eligible by definition.
+      const fallback = Object.freeze(
+        fuseKnowledgeCandidates(eligibleKnowledgeCandidates(pool))
+          .slice(0, input.candidateLimit)
+      );
+      const ranking = await rankKnowledgeCandidates({
+        candidates: fallback,
+        resultLimit: input.resultLimit
+      });
+      candidates = fallback;
+      rankingEvidence = ranking.evidence;
+      selected = ranking.selected;
+    } else {
+      const ordered = Object.freeze(orderRerankedKnowledgeCandidates({
+        pool,
+        rerankScores: stage.scores
+      }));
+      candidates = ordered;
+      rankingEvidence = Object.freeze({
+        candidateOrder: Object.freeze(ordered.map((candidate) => candidate.chunkId)),
+        fusion: KNOWLEDGE_RETRIEVAL_FUSION
+      });
+      selected = Object.freeze(selectRerankedKnowledgeCandidates({
+        candidates: ordered,
+        resultLimit: input.resultLimit
+      }));
+    }
+  }
   const retainedChunkIds = new Set(candidates.map((candidate) => candidate.chunkId));
   const retainedCandidateProvenance = canonical.candidateProvenance.filter((entry) =>
     retainedChunkIds.has(entry.chunkId));
@@ -1507,10 +1614,6 @@ export async function executeKnowledgeRetrievalCore(
     JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
   const canonicalSourceProvenance = canonical.sourceProvenance.filter((entry) =>
     retainedSourceKeys.has(JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
-  const ranking = await rankKnowledgeCandidates({
-    candidates,
-    resultLimit: input.resultLimit
-  });
 
   const candidateCounts: Record<number, number> = Object.fromEntries(
     acceptedScopes.map((scope) => [
@@ -1518,9 +1621,9 @@ export async function executeKnowledgeRetrievalCore(
       candidates.filter((candidate) => candidate.bindingOrdinal === scope.bindingOrdinal).length
     ])
   );
-  const selectedContentHashes = new Set(ranking.selected.map((candidate) => candidate.contentHash));
+  const selectedContentHashes = new Set(selected.map((candidate) => candidate.contentHash));
   const assignedContextHashes = new Set<string>();
-  const passages = ranking.selected.map((candidate): KnowledgeRetrievalCorePassage => {
+  const passages = selected.map((candidate): KnowledgeRetrievalCorePassage => {
     const semantic = candidate.signals
       .filter((signal) => signal.lane === "passage_semantic")
       .sort((left, right) => left.rank - right.rank)[0] ?? null;
@@ -1556,7 +1659,8 @@ export async function executeKnowledgeRetrievalCore(
     candidateCounts: Object.freeze(candidateCounts),
     canonicalSourceProvenance: Object.freeze(canonicalSourceProvenance),
     passages: Object.freeze(passages),
-    rankingEvidence: ranking.evidence,
+    rankingEvidence,
+    ...(rerankerBinding ? { rerankerBinding } : {}),
     vectorSearchEvidence: Object.freeze(vectorEvidence.sort((left, right) =>
       left.bindingOrdinal - right.bindingOrdinal))
   });
