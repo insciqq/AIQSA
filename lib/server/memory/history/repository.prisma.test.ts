@@ -986,14 +986,21 @@ describe("Memory lexical history index persistence", () => {
       expect(JSON.stringify(evidence)).not.toContain(userId);
       console.info("memory_history_qualification", evidence);
 
-      const lexical = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-        SELECT entry."id"
+      const lexical = await prisma.$queryRaw<Array<{
+        id: string;
+        itemType: "RECALL_CHUNK" | "RECALL_ROUND";
+      }>>(Prisma.sql`
+        SELECT entry."id", entry."itemType"::text AS "itemType"
         FROM "MemorySearchEntry" AS entry
         WHERE entry."userId" = ${userId}
           AND entry."indexGenerationId" = ${generation.id}
           AND entry."searchVectorSimple" @@ plainto_tsquery('simple', 'кофе')
       `);
-      expect(lexical).toEqual([{ id: entries[0]!.id }]);
+      expect(lexical).toHaveLength(2);
+      expect(lexical).toEqual(expect.arrayContaining([
+        { id: entries[0]!.id, itemType: "RECALL_CHUNK" },
+        { id: expect.any(String), itemType: "RECALL_ROUND" }
+      ]));
 
       await prisma.$transaction(async (tx) => {
         await result.apply?.(tx, claim);
@@ -1022,7 +1029,7 @@ describe("Memory lexical history index persistence", () => {
         where: { chatId: chat.id, state: "ACTIVE", userId }
       })).resolves.toBe(1);
       await expect(prisma.memorySearchEntry.count({ where: { userId } }))
-        .resolves.toBe(1);
+        .resolves.toBe(2);
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
       })).resolves.toMatchObject({ status: "PENDING" });
@@ -1310,7 +1317,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("[E08] bounds a 4,000-message append to the indexed tail plus one overlap", async () => {
+  it("[E08] bounds a 4,000-message append to the indexed tail plus contextual overlap", async () => {
     const userId = await createOwner("memory-history-4000-message-append");
     try {
       const chat = await prisma.chat.create({
@@ -1439,7 +1446,7 @@ describe("Memory lexical history index persistence", () => {
           FROM "ChatMemoryCheckpointMessage" AS checkpoint_message
           WHERE checkpoint_message."userId" = ${userId}
             AND checkpoint_message."chatId" = ${chat.id}
-            AND checkpoint_message."ordinal" >= 3998
+            AND checkpoint_message."ordinal" >= 3996
           ORDER BY checkpoint_message."userId", checkpoint_message."chatId",
             checkpoint_message."ordinal"
           LIMIT 8
@@ -1558,19 +1565,25 @@ describe("Memory lexical history index persistence", () => {
       expect(prepared.plan.incremental).toMatchObject({
         commonPathMessageCount: 4_000,
         mode: "APPEND",
-        rebuildFromMessageOrdinal: 3_998
+        rebuildFromMessageOrdinal: 3_996
       });
       expect(prepared.plan.timeZone).toBe("Europe/Moscow");
       expect(prepared.plan.work).toEqual({
         chunksBuilt: 1,
         chunksReplaced: 0,
         chunksReused: 1,
+        contextualProviderRequests: 0,
+        contextualRoundsFallback: 0,
+        contextualRoundsGenerated: 0,
         digestSegmentsProcessed: 0,
         digestSourceChunksProcessed: 0,
-        messageContentRowsLoaded: 4,
-        messagesProjected: 4,
-        modelRunRowsLoaded: 2,
-        pathMetadataRowsRead: 4_002
+        messageContentRowsLoaded: 6,
+        messagesProjected: 6,
+        modelRunRowsLoaded: 3,
+        pathMetadataRowsRead: 4_002,
+        roundsBuilt: 3,
+        roundsReplaced: 0,
+        roundsReused: 0
       });
       expect(prepared.plan.chunks[0]?.id).toBe(initialChunkId);
       expect(prepared.plan.rebuiltChunkIds).toHaveLength(1);

@@ -103,7 +103,8 @@ async function factEntity(
 async function factRefs(
   tx: MemoryTransaction,
   userId: string,
-  limit: number
+  limit: number,
+  excludedSourceMessageIds: readonly string[]
 ): Promise<readonly MemoryFactContextRef[]> {
   if (limit <= 0) return [];
   const facts = await tx.$queryRaw<ContextFact[]>(Prisma.sql`
@@ -132,6 +133,17 @@ async function factRefs(
       AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
       AND ${memoryExactVNextDirectAuthorityPredicate(userId)}
       AND aiqsa_memory_fact_dependencies_valid(${userId}, version."id")
+      ${excludedSourceMessageIds.length === 0 ? Prisma.empty : Prisma.sql`
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "MemoryEvidence" AS evidence
+          WHERE evidence."userId" = version."userId"
+            AND evidence."factVersionId" = version."id"
+            AND evidence."messageId" IN (
+              ${Prisma.join(excludedSourceMessageIds)}
+            )
+        )
+      `}
     ORDER BY fact."pinned" DESC, fact."lastConfirmedAt" DESC NULLS LAST,
       version."systemFrom" DESC, version."id"
     LIMIT ${limit}
@@ -171,7 +183,8 @@ export async function loadMemoryFactContextRefs(
   const facts = await factRefs(
     tx,
     input.userId,
-    MEMORY_FACT_MAX_CONTEXT_REFS - messages.length
+    MEMORY_FACT_MAX_CONTEXT_REFS - messages.length,
+    input.messages.filter(({ evidenceEligible }) => evidenceEligible).map(({ id }) => id)
   );
   const bounded: MemoryFactContextRef[] = [];
   let characters = 0;

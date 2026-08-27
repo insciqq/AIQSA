@@ -129,6 +129,7 @@ async function createPendingFact(
 
 async function attachAutomaticEvidence(input: Readonly<{
   factVersionId: string;
+  legacyProvenance?: boolean;
   userId: string;
 }>): Promise<void> {
   const sourceText = "I prefer tea";
@@ -155,24 +156,30 @@ async function attachAutomaticEvidence(input: Readonly<{
     data: {
       branchGeneration: 0,
       chatId: chat.id,
-      evidenceFingerprint: memorySha256({
-        endOffset: sourceText.length,
-        messageId: message.id,
-        sourceMessageContentHash,
-        startOffset: 0,
-        version: 1
-      }),
+      evidenceFingerprint: input.legacyProvenance
+        ? null
+        : memorySha256({
+            endOffset: sourceText.length,
+            messageId: message.id,
+            sourceMessageContentHash,
+            startOffset: 0,
+            version: 1
+          }),
       factVersionId: input.factVersionId,
       messageId: message.id,
       observedAt: message.createdAt,
       safeExcerpt: sourceText,
       safeSourceHash: sourceMessageContentHash,
       safetyClass: "NORMAL",
-      sourceEndOffset: sourceText.length,
-      sourceMessageContentHash,
-      sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+      sourceEndOffset: input.legacyProvenance ? null : sourceText.length,
+      sourceMessageContentHash: input.legacyProvenance
+        ? null
+        : sourceMessageContentHash,
+      sourceProjectionVersion: input.legacyProvenance
+        ? "memory-fact-source-projection-v4"
+        : MEMORY_FACT_SOURCE_PROJECTION_VERSION,
       sourceRole: "user",
-      sourceStartOffset: 0,
+      sourceStartOffset: input.legacyProvenance ? null : 0,
       sourceType: "MESSAGE",
       stance: "SUPPORTS",
       userId: input.userId
@@ -180,13 +187,17 @@ async function attachAutomaticEvidence(input: Readonly<{
   });
   await prisma.memoryFactVersion.update({
     data: {
-      ingestionFingerprint: memorySha256({
-        domain: "memory-reclassification-test",
-        factVersionId: input.factVersionId,
-        messageId: message.id
-      }),
+      ingestionFingerprint: input.legacyProvenance
+        ? null
+        : memorySha256({
+            domain: "memory-reclassification-test",
+            factVersionId: input.factVersionId,
+            messageId: message.id
+          }),
       observedAt: message.createdAt,
-      pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
+      pipelineVersion: input.legacyProvenance
+        ? "memory-fact-extraction-vnext-v5"
+        : MEMORY_FACT_EXTRACTION_PIPELINE_VERSION
     },
     where: { id: input.factVersionId }
   });
@@ -916,33 +927,17 @@ describe("Prisma Memory safety reclassification", () => {
       });
       await attachAutomaticEvidence({
         factVersionId: legacyAutomatic.versionId,
+        legacyProvenance: true,
         userId: legacyAutomatic.userId
       });
-      await prisma.$transaction(async (tx) => {
-        await tx.memoryEvidence.updateMany({
-          data: {
-            evidenceFingerprint: null,
-            sourceEndOffset: null,
-            sourceMessageContentHash: null,
-            sourceProjectionVersion: "memory-fact-source-projection-v4",
-            sourceStartOffset: null
-          },
-          where: {
-            factVersionId: legacyAutomatic.versionId,
-            userId: legacyAutomatic.userId
+      await prisma.memoryFactVersion.update({
+        data: {
+          structuredValue: {
+            credential: token,
+            preference: "tea"
           }
-        });
-        await tx.memoryFactVersion.update({
-          data: {
-            ingestionFingerprint: null,
-            pipelineVersion: "memory-fact-extraction-vnext-v5",
-            structuredValue: {
-              credential: token,
-              preference: "tea"
-            }
-          },
-          where: { id: legacyAutomatic.versionId }
-        });
+        },
+        where: { id: legacyAutomatic.versionId }
       });
       await Promise.all([
         createShadowWakeFixture(mixed.userId),

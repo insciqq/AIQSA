@@ -1554,6 +1554,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
           branchGeneration: 0,
           chatId: chat.id,
           lastIndexedMessageId: assistantMessage.id,
+          lastSucceededAt: new Date(),
           pipelineVersion: "memory-history-incremental-v4",
           sourceContentHash,
           sourceRevision: 1,
@@ -1578,12 +1579,19 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         rebuildJob.idempotencyFingerprint
       );
       if (!identity || identity.type !== "SHADOW") throw new Error("shadow_missing");
+      const shadow = await prisma.memoryIndexGeneration.findUniqueOrThrow({
+        select: { sourceIndexGenerationId: true },
+        where: { id: identity.generationId }
+      });
+      if (!shadow.sourceIndexGenerationId) {
+        throw new Error("shadow_source_generation_missing");
+      }
 
       await processRebuildJob(admitted.jobId, rebuild);
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       })).resolves.toMatchObject({
-        activeIndexGenerationId: before.activeIndexGenerationId,
+        activeIndexGenerationId: shadow.sourceIndexGenerationId,
         memoryGeneration: before.memoryGeneration,
         memoryRevision: before.memoryRevision
       });

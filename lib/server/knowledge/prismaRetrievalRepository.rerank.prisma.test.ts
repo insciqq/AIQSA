@@ -19,6 +19,10 @@ import {
 } from "./retrievalTypes";
 
 const vectorSpaceFingerprint = "e".repeat(64);
+
+function basisVector(axis: number): number[] {
+  return Array.from({ length: 1_024 }, (_, index) => index === axis ? 1 : 0);
+}
 const profileFixture = Object.freeze({
   connectionId: "knowledge-rerank-test-connection",
   credentialId: "knowledge-rerank-test-credential",
@@ -119,7 +123,10 @@ type RunFixture = Readonly<{
   userId: string;
 }>;
 
-async function createRunFixture(query: string): Promise<RunFixture> {
+async function createRunFixture(
+  query: string,
+  options: Readonly<{ deferArtifactReady?: boolean }> = {}
+): Promise<RunFixture> {
   const suffix = randomUUID();
   const profileRevisionId = await ensureProfileFixture();
   const userId = `knowledge-rerank-owner-${suffix}`;
@@ -198,15 +205,16 @@ async function createRunFixture(query: string): Promise<RunFixture> {
   const artifact = await prisma.knowledgeSourceIndexArtifact.create({
     data: {
       chunkCount: 1,
-      embeddedPassageCount: 1,
+      embeddedPassageCount: options.deferArtifactReady ? 0 : 1,
       normalizedTextByteSize: 256,
       normalizedTextChecksum: "b".repeat(64),
       normalizedTextStorageKey: `knowledge-rerank/${suffix}/normalized`,
       pageCount: 1,
+      ...(options.deferArtifactReady ? { processingStage: "embedding" as const } : {}),
       profileRevisionId,
-      readyAt: new Date(),
+      ...(options.deferArtifactReady ? {} : { readyAt: new Date() }),
       sourceVersionId,
-      state: "ready"
+      state: options.deferArtifactReady ? "processing" : "ready"
     },
     select: { id: true }
   });
@@ -512,8 +520,8 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
   });
 
   it("performs authority scoping before the hosted rerank stage sees any candidate", async () => {
-    const owner = await createRunFixture("rerank question");
-    const foreign = await createRunFixture("rerank question");
+    const owner = await createRunFixture("rerank question", { deferArtifactReady: true });
+    const foreign = await createRunFixture("rerank question", { deferArtifactReady: true });
     const suffix = randomUUID();
     const ownedPassage = `knowledge-rerank-own-passage-${suffix}`;
     const foreignPassage = `knowledge-rerank-foreign-passage-${suffix}`;
@@ -524,18 +532,21 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
       const hierarchyId = `knowledge-rerank-hierarchy-${snapshotOrdinal}-${suffix}`;
       await prisma.knowledgeHierarchicalIndexArtifact.create({
         data: {
-          checksum: "b".repeat(64),
           derivationMode: "normalized_v2",
-          documentCount: 1,
-          exactEntryCount: 0,
           id: hierarchyId,
-          passageCount: 1,
-          readyAt: new Date(),
           schemaVersion: KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,
-          sectionCount: 0,
           sourceArtifactId: fixture.artifactId,
-          sourceVersionId: fixture.sourceVersionId,
-          state: "ready"
+          sourceVersionId: fixture.sourceVersionId
+        }
+      });
+      await prisma.knowledgeArtifactDocumentIndex.create({
+        data: {
+          contentHash: (snapshotOrdinal === 0 ? "a" : "b").repeat(64),
+          documentType: "text/markdown",
+          fileName: "rerank.md",
+          indexArtifactId: hierarchyId,
+          pageCount: 1,
+          sourceName: "Rerank policy"
         }
       });
       const sectionRowId = `knowledge-rerank-section-${snapshotOrdinal}-${suffix}`;
@@ -571,6 +582,50 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
           text: "Retention evidence passage.",
           tokenCount: 3
         }
+      });
+      await prisma.knowledgeArtifactExactEntry.create({
+        data: {
+          id: `knowledge-rerank-exact-${snapshotOrdinal}-${suffix}`,
+          indexArtifactId: hierarchyId,
+          kind: "heading",
+          normalizedValue: "retention",
+          ordinal: 0,
+          page: 1,
+          pageEnd: 1,
+          sectionId: sectionRowId,
+          value: "Retention",
+          valueHash: `${snapshotOrdinal + 5}`.repeat(64)
+        }
+      });
+      const vector = `[${basisVector(snapshotOrdinal).join(",")}]`;
+      await prisma.$executeRaw`
+        INSERT INTO "KnowledgeArtifactPassageEmbedding" (
+          "passageId", "indexArtifactId", "embeddingTextHash", "embeddingDimension", "embedding"
+        ) VALUES (
+          ${passageId}, ${hierarchyId}, ${`${snapshotOrdinal + 3}`.repeat(64)},
+          1024, ${vector}::vector
+        )
+      `;
+      await prisma.knowledgeHierarchicalIndexArtifact.update({
+        data: {
+          checksum: "b".repeat(64),
+          documentCount: 1,
+          exactEntryCount: 1,
+          passageCount: 1,
+          readyAt: new Date(),
+          sectionCount: 1,
+          state: "ready"
+        },
+        where: { id: hierarchyId }
+      });
+      await prisma.knowledgeSourceIndexArtifact.update({
+        data: {
+          embeddedPassageCount: 1,
+          processingStage: null,
+          readyAt: new Date(),
+          state: "ready"
+        },
+        where: { id: fixture.artifactId }
       });
       const binding = await prisma.knowledgeRunProfileBinding.findFirstOrThrow({
         select: { id: true },

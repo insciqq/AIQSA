@@ -2029,7 +2029,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     const canonicalToolCall = await prisma.modelRunToolCall.create({
       data: {
         arguments: {
-          candidateLimit: 40,
+          candidateLimit: 64,
           fusion: "weighted_rrf_v2",
           neighborWindow: 1,
           originalQuery: `private focused Base query ${suffix}`,
@@ -2053,7 +2053,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       data: {
         baseEvidence: [{ knowledgeBaseId: h2Audit.profileBindingId }],
         candidateCount: 2,
-        candidateLimit: 40,
+        candidateLimit: 64,
         durationMs: 1,
         embeddingUsage: [],
         fusion: "weighted_rrf_v2",
