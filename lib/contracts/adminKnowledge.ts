@@ -130,9 +130,12 @@ export type AdminKnowledgeOperations = Readonly<{
 export type AdminKnowledgeSettings = Readonly<{
   answerPolicy: Readonly<{
     fullContextThresholdPercent: 70;
+    ingestionParallelism: number;
     maximum: 32;
     maximumKnowledgeSearches: number;
     minimum: 1;
+    parallelismMaximum: 16;
+    parallelismMinimum: 1;
     updatedAt: string;
     updatedBy: { displayName: string; id: string } | null;
     version: number;
@@ -450,6 +453,9 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
     answerPolicy.fullContextThresholdPercent !== 70 || answerPolicy.minimum !== 1 ||
     answerPolicy.maximum !== 32 || !positiveInteger(answerPolicy.maximumKnowledgeSearches) ||
     Number(answerPolicy.maximumKnowledgeSearches) > 32 ||
+    answerPolicy.parallelismMinimum !== 1 || answerPolicy.parallelismMaximum !== 16 ||
+    !positiveInteger(answerPolicy.ingestionParallelism) ||
+    Number(answerPolicy.ingestionParallelism) > 16 ||
     !positiveInteger(answerPolicy.version) || !isoDate(answerPolicy.updatedAt) ||
     answerPolicyUpdatedBy !== null && (!record(answerPolicyUpdatedBy) ||
       !safeString(answerPolicyUpdatedBy.id) ||
@@ -463,9 +469,12 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
     knowledge: {
       answerPolicy: {
         fullContextThresholdPercent: 70,
+        ingestionParallelism: Number(answerPolicy.ingestionParallelism),
         maximum: 32,
         maximumKnowledgeSearches: Number(answerPolicy.maximumKnowledgeSearches),
         minimum: 1,
+        parallelismMaximum: 16,
+        parallelismMinimum: 1,
         updatedAt: answerPolicy.updatedAt as string,
         updatedBy: answerPolicyUpdatedBy as { displayName: string; id: string } | null,
         version: Number(answerPolicy.version)

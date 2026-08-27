@@ -42,7 +42,12 @@ describe("administrator Knowledge section", () => {
     expect(screen.getByRole("spinbutton", {
       name: /Maximum Knowledge searches per answer/
     })).toHaveValue(12);
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("spinbutton", {
+      name: /Parallel document processing/
+    })).toHaveValue(8);
+    for (const save of screen.getAllByRole("button", { name: "Save" })) {
+      expect(save).toBeDisabled();
+    }
     expect(screen.queryByLabelText(/candidate passages/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Hybrid candidates")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/visual-analysis destination/i)).not.toBeInTheDocument();
@@ -79,6 +84,74 @@ describe("administrator Knowledge section", () => {
     expect(await screen.findByText("1 active alert")).toBeVisible();
     expect(screen.getByText("The legacy-to-Source reconciliation is incomplete.")).toBeVisible();
     expect(screen.queryByText("knowledge_v1_reconciliation_incomplete")).not.toBeInTheDocument();
+  });
+
+  it("saves a bounded parallel document processing width for future work", async () => {
+    const onMutationCommitted = vi.fn();
+    const saved = {
+      ...settings,
+      answerPolicy: adminKnowledgeAnswerPolicyFixture({
+        ingestionParallelism: 12,
+        version: 2
+      })
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ knowledge: settings }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ knowledge: saved }), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<AdminKnowledgeSection active onMutationCommitted={onMutationCommitted} />);
+
+    const parallelism = await screen.findByRole("spinbutton", {
+      name: /Parallel document processing/
+    });
+    expect(screen.getByText(/Applies only to future background processing/)).toBeVisible();
+    const row = screen.getByTestId("knowledge-ingestion-parallelism-row");
+    fireEvent.change(parallelism, { target: { value: "12" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(
+      "Document processing settings saved. Future background processing uses the updated limit."
+    );
+    expect(parallelism).toHaveValue(12);
+    const [, init] = fetcher.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      action: "update_ingestion_parallelism",
+      expectedVersion: 1,
+      ingestionParallelism: 12
+    });
+    expect(onMutationCommitted).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an out-of-range or cleared parallelism unsendable and surfaces conflicts", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ knowledge: settings }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: "knowledge_ingestion_parallelism_stale" }),
+        { status: 409 }
+      ));
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<AdminKnowledgeSection active />);
+
+    const parallelism = await screen.findByRole("spinbutton", {
+      name: /Parallel document processing/
+    });
+    const row = screen.getByTestId("knowledge-ingestion-parallelism-row");
+    const save = within(row).getByRole("button", { name: "Save" });
+
+    fireEvent.change(parallelism, { target: { value: "17" } });
+    expect(save).toBeDisabled();
+    fireEvent.change(parallelism, { target: { value: "" } });
+    expect(save).toBeDisabled();
+    fireEvent.change(parallelism, { target: { value: "4" } });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Document processing settings changed elsewhere. Refresh and try again."
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("shows the content route and activates only a tested embedding destination", async () => {

@@ -29,6 +29,21 @@ describe("administrator Knowledge contract", () => {
     expect(decodeAdminKnowledgeResponse(response)).toEqual(response);
   });
 
+  it("rejects a missing, out-of-range, or drifted ingestion parallelism", () => {
+    const answerPolicy = response.knowledge.answerPolicy;
+    const withPolicy = (overrides: Record<string, unknown>) => ({
+      knowledge: { ...response.knowledge, answerPolicy: { ...answerPolicy, ...overrides } }
+    });
+    expect(decodeAdminKnowledgeResponse(withPolicy({ ingestionParallelism: undefined }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withPolicy({ ingestionParallelism: 0 }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withPolicy({ ingestionParallelism: 17 }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withPolicy({ ingestionParallelism: 2.5 }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withPolicy({ parallelismMaximum: 32 }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withPolicy({ parallelismMinimum: 0 }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withPolicy({ ingestionParallelism: 16 })))
+      .toEqual(withPolicy({ ingestionParallelism: 16 }));
+  });
+
   it("rejects retrieval drift and malformed profile or operations state", () => {
     expect(decodeAdminKnowledgeResponse({
       knowledge: {

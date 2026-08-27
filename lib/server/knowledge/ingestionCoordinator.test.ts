@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
+import {
+  clampKnowledgeIngestionParallelism,
+  KnowledgeIngestionCoordinator
+} from "./ingestionCoordinator";
 import { KnowledgeIngestionError, type KnowledgeSourceWorkClaim } from "./ingestionTypes";
 
 function claim(id: string, attemptCount: number): KnowledgeSourceWorkClaim {
@@ -211,5 +214,104 @@ describe("Knowledge ingestion coordinator", () => {
     expect(retryLater).toHaveBeenCalledWith(expect.objectContaining({
       nextAttemptAt: new Date(baseNow.getTime() + 15 * 60_000)
     }));
+  });
+
+  it("applies the configured parallelism width at each drain cycle", async () => {
+    const widths = [1, 3];
+    const parallelism = vi.fn(async () => widths.shift() ?? 3);
+    const queue = [claim("first-1", 1), claim("first-2", 1)];
+    const peaks = [0, 0];
+    let active = 0;
+    let cycle = 0;
+    const reconcile = vi.fn(async () => {
+      if (cycle > 0) return false;
+      cycle = 1;
+      queue.push(claim("second-1", 1), claim("second-2", 1), claim("second-3", 1));
+      return true;
+    });
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: parallelism,
+      process: async () => {
+        active += 1;
+        peaks[cycle] = Math.max(peaks[cycle] ?? 0, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+      },
+      repository: {
+        claim: vi.fn(async () => queue.shift() ?? null),
+        heartbeat: vi.fn(async () => true),
+        reconcile,
+        retryLater: vi.fn(async () => true),
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(parallelism).toHaveBeenCalledTimes(2);
+    expect(peaks[0]).toBe(1);
+    expect(peaks[1]).toBe(3);
+  });
+
+  it("keeps draining with the default width when the parallelism read fails", async () => {
+    const queue = [claim("fallback-1", 1), claim("fallback-2", 1)];
+    const processed: string[] = [];
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: () => {
+        throw new Error("parallelism_read_failed");
+      },
+      process: async (work) => {
+        processed.push(work.sourceVersionId);
+      },
+      repository: {
+        claim: vi.fn(async () => queue.shift() ?? null),
+        heartbeat: vi.fn(async () => true),
+        reconcile: vi.fn(async () => false),
+        retryLater: vi.fn(async () => true),
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(processed.sort()).toEqual(["version-fallback-1", "version-fallback-2"]);
+  });
+
+  it("clamps an out-of-range configured width instead of stopping work", async () => {
+    const queue = [claim("clamped", 1)];
+    const processed: string[] = [];
+    const coordinator = new KnowledgeIngestionCoordinator({
+      maxParallel: async () => 0,
+      process: async (work) => {
+        processed.push(work.sourceVersionId);
+      },
+      repository: {
+        claim: vi.fn(async () => queue.shift() ?? null),
+        heartbeat: vi.fn(async () => true),
+        reconcile: vi.fn(async () => false),
+        retryLater: vi.fn(async () => true),
+        settleFailed: vi.fn(async () => true)
+      }
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(processed).toEqual(["version-clamped"]);
+  });
+});
+
+describe("Knowledge ingestion parallelism clamp", () => {
+  it("clamps invalid, missing, and out-of-range widths to safe bounds", () => {
+    expect(clampKnowledgeIngestionParallelism(undefined)).toBe(8);
+    expect(clampKnowledgeIngestionParallelism(null)).toBe(8);
+    expect(clampKnowledgeIngestionParallelism("4")).toBe(8);
+    expect(clampKnowledgeIngestionParallelism(Number.NaN)).toBe(8);
+    expect(clampKnowledgeIngestionParallelism(2.5)).toBe(8);
+    expect(clampKnowledgeIngestionParallelism(0)).toBe(1);
+    expect(clampKnowledgeIngestionParallelism(-3)).toBe(1);
+    expect(clampKnowledgeIngestionParallelism(99)).toBe(16);
+    expect(clampKnowledgeIngestionParallelism(1)).toBe(1);
+    expect(clampKnowledgeIngestionParallelism(8)).toBe(8);
+    expect(clampKnowledgeIngestionParallelism(16)).toBe(16);
   });
 });
