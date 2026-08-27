@@ -319,7 +319,12 @@ describe("Memory safe source snapshot", () => {
 
       const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
 
-      expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
+      expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(1);
+      expect(snapshot.recallChunkProjection.turnGroups[0]).toMatchObject({
+        assistantMessageId: null,
+        kind: "STANDALONE",
+        userMessageId: user.id
+      });
       expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
         .toEqual([user.id]);
       expect(snapshot.provenanceGraph[1]).toMatchObject({

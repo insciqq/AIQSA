@@ -391,6 +391,7 @@ enum MemoryFeedbackType {
 enum MemoryFeedbackTargetKind {
   FACT_VERSION
   RECALL_CHUNK
+  RECALL_ROUND
 }
 
 enum MemorySuppressionScope {
@@ -510,6 +511,7 @@ enum MemoryReceiptOutcome {
 enum MemorySearchItemType {
   FACT_VERSION
   RECALL_CHUNK
+  RECALL_ROUND
 }
 
 enum MemoryHistoryCheckpointStatus {
@@ -3750,7 +3752,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v4") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v5") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String
@@ -3793,6 +3795,7 @@ model MemoryRecallChunk {
   sourceRevisionAtCreation Int
   chunkOrdinal             Int
   contentHash              String                   @db.VarChar(128)
+  evidenceRootHash         String?                  @db.Char(64)
   safeProjectedText        String
   normalizedSafeSearchText String
   languageCode             String                   @db.VarChar(35)
@@ -3812,6 +3815,7 @@ model MemoryRecallChunk {
   @@unique([userId, id, chatId, branchGeneration, sourceRevisionAtCreation, contentHash], map: "MemoryRecallChunk_source_identity_key")
   @@unique([userId, chatId, branchGeneration, sourceRevisionAtCreation, chunkingVersion, sourceProjectionVersion, chunkOrdinal], map: "MemoryRecallChunk_source_ordinal_key")
   @@index([userId, chatId, state, branchGeneration, sourceRevisionAtCreation])
+  @@index([userId, evidenceRootHash, state])
   @@index([userId, sourceFolderId, state])
   @@index([userId, sourceAssistantId, state])
   @@index([userId, occurredFrom, occurredTo])
@@ -3832,6 +3836,67 @@ model MemoryRecallChunkMessage {
 
   @@id([chunkId, messageId])
   @@unique([chunkId, ordinal])
+  @@index([userId, chatId, messageId])
+}
+
+model MemoryRecallRound {
+  id                         String                   @id
+  userId                     String
+  chatId                     String
+  parentChunkId              String
+  sourceFolderId             String?
+  sourceAssistantId          String?
+  branchGeneration           Int
+  sourceRevisionAtCreation   Int
+  roundOrdinal               Int
+  groupKind                  String                   @db.VarChar(32)
+  evidenceRootHash           String                   @db.Char(64)
+  contentHash                String                   @db.VarChar(128)
+  rawSafeText                String
+  contextualNarrativeText    String
+  contextualSearchText       String
+  contextualSearchHash       String                   @db.Char(64)
+  contextualKeyState         String                   @db.VarChar(32)
+  contextualKeyPolicyVersion String                   @db.VarChar(64)
+  languageCode               String                   @db.VarChar(35)
+  occurredFrom               DateTime
+  occurredTo                 DateTime
+  state                      MemoryHistoryItemState   @default(ACTIVE)
+  projectionVersion          String                   @db.VarChar(64)
+  sourceProjectionVersion    String                   @db.VarChar(64)
+  safetyClass                MemoryDerivedSafetyClass
+  redactionState             MemoryRedactionState
+  redactionReasonCodes       String[]                 @default([])
+  createdAt                  DateTime                 @default(now())
+  invalidatedAt              DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@unique([userId, id, chatId, branchGeneration, sourceRevisionAtCreation, contentHash], map: "MemoryRecallRound_source_identity_key")
+  @@unique([userId, chatId, branchGeneration, sourceRevisionAtCreation, projectionVersion, sourceProjectionVersion, roundOrdinal], map: "MemoryRecallRound_source_ordinal_key")
+  @@index([userId, chatId, state, branchGeneration, sourceRevisionAtCreation])
+  @@index([userId, parentChunkId, state])
+  @@index([userId, evidenceRootHash, state])
+  @@index([userId, occurredFrom, occurredTo])
+}
+
+model MemoryRecallRoundMessage {
+  userId                   String
+  roundId                  String
+  chatId                   String
+  messageId                String
+  ordinal                  Int
+  role                     String   @db.VarChar(32)
+  safeTextHash             String   @db.VarChar(128)
+  sourceMessageContentHash String   @db.VarChar(128)
+  sourceMessageUpdatedAt   DateTime
+  sourceStartOffset        Int
+  sourceEndOffset          Int
+  roundStartOffset         Int
+  roundEndOffset           Int
+
+  @@id([roundId, messageId])
+  @@unique([roundId, ordinal])
   @@index([userId, chatId, messageId])
 }
 
@@ -4358,6 +4423,7 @@ model MemoryFeedback {
   memoryFactId                   String?
   memoryFactVersionId            String?
   recallChunkId                  String?
+  recallRoundId                  String?
   modelRunId                     String?
   modelRunMemoryItemId           String?
   modelRunToolCallId             String?
@@ -4375,6 +4441,7 @@ model MemoryFeedback {
   @@unique([userId, retractsFeedbackId])
   @@index([userId, memoryFactId, memoryFactVersionId, createdAt])
   @@index([userId, recallChunkId, createdAt])
+  @@index([userId, recallRoundId, createdAt])
   @@index([userId, modelRunId, modelRunMemoryItemId])
   @@index([userId, modelRunId, modelRunToolCallId])
   @@index([userId, sourceChatIdSnapshot, createdAt])
@@ -4496,6 +4563,8 @@ model MemoryIndexGeneration {
   languageProfile                   String                     @db.VarChar(64)
   normalizationVersion              String                     @db.VarChar(64)
   chunkingVersion                   String                     @db.VarChar(64)
+  roundProjectionVersion            String?                    @db.VarChar(64)
+  contextualKeyPolicyVersion        String?                    @db.VarChar(64)
   retrievalPipelineVersion          String                     @db.VarChar(64)
   createdAt                         DateTime                   @default(now())
   readyAt                           DateTime?
@@ -4516,6 +4585,7 @@ model MemorySearchEntry {
   itemType                    MemorySearchItemType
   factVersionId               String?
   recallChunkId               String?
+  recallRoundId               String?
   normalizedSearchText        String
   safeContentHash             String                   @db.VarChar(128)
   languageCode                String                   @db.VarChar(35)
@@ -4536,6 +4606,7 @@ model MemorySearchEntry {
   @@index([userId, indexGenerationId, embeddingState])
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
+  @@index([userId, recallRoundId])
 }
 
 model MemoryEmbeddingBatchItem {
@@ -4698,6 +4769,7 @@ model MemoryRetrievalAttemptItem {
   exactItemId                    String
   factVersionId                  String?
   recallChunkId                  String?
+  recallRoundId                  String?
   sourceChatIdSnapshot           String?
   sourceBranchGenerationSnapshot Int?
   sourceRevisionSnapshot         Int?
@@ -4716,6 +4788,7 @@ model MemoryRetrievalAttemptItem {
   @@unique([userId, attemptId, itemType, exactItemId], map: "MemoryRetrievalAttemptItem_target_key")
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
+  @@index([userId, recallRoundId])
 }
 
 model MemoryExecutionBinding {
@@ -4803,6 +4876,7 @@ model ModelRunMemoryItem {
   exactItemId                    String
   factVersionId                  String?
   recallChunkId                  String?
+  recallRoundId                  String?
   sourceChatIdSnapshot           String?
   sourceBranchGenerationSnapshot Int?
   sourceRevisionSnapshot         Int?
@@ -4824,6 +4898,7 @@ model ModelRunMemoryItem {
   @@unique([userId, bindingId, factVersionId], map: "ModelRunMemoryItem_binding_fact_version_key")
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
+  @@index([userId, recallRoundId])
 }
 
 model MemoryHistoryRun {

@@ -40,6 +40,7 @@ function repository(
       compatibleAutomaticFactVersions: 0,
       compatibleExplicitFactVersions: 0,
       compatibleHistoryChunks: 0,
+      compatibleHistoryRounds: 0,
       eligibleIdentityFingerprint: "a".repeat(64),
       eligibleItems: 0,
       incompatibleAutomaticFactVersions: 0,

@@ -63,6 +63,9 @@ describe("Memory operational PostgreSQL contracts", () => {
           operationalCounters: {
             digestIncremental: 1,
             digestNoop: 2,
+            contextualProviderRequests: 1,
+            contextualRoundsFallback: 2,
+            contextualRoundsGenerated: 6,
             embeddingBatchItems: 16,
             embeddingFailedItems: 1,
             embeddingProviderRequests: 1,
@@ -70,7 +73,11 @@ describe("Memory operational PostgreSQL contracts", () => {
             embeddingStaleItems: 1,
             historyChunksBuilt: 3,
             historyChunksReplaced: 4,
-            historyMessagesProjected: 5
+            historyChunksReused: 5,
+            historyMessagesProjected: 5,
+            historyRoundsBuilt: 6,
+            historyRoundsReplaced: 7,
+            historyRoundsReused: 8
           },
           state: "SUCCEEDED"
         },
@@ -81,10 +88,17 @@ describe("Memory operational PostgreSQL contracts", () => {
       expect(snapshot.history).toEqual({
         chunksBuilt: 3,
         chunksReplaced: 4,
+        chunksReused: 5,
+        contextualProviderRequests: 1,
+        contextualRoundsFallback: 2,
+        contextualRoundsGenerated: 6,
         digestFullRebuild: 0,
         digestIncremental: 1,
         digestNoop: 2,
-        messagesProjected: 5
+        messagesProjected: 5,
+        roundsBuilt: 6,
+        roundsReplaced: 7,
+        roundsReused: 8
       });
       expect(snapshot.embeddings).toEqual({
         batchItems: 16,

@@ -74,10 +74,15 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
   return expansion.itemType === "FACT_VERSION"
     ? expansion.projectionKind === "FACT_DISPLAY_TEXT" &&
       expansion.sourceChatId === null && expansion.supportingItemId === null
-    : expansion.itemType === "RECALL_CHUNK" && expansion.sourceChatId !== null && (
-      (expansion.projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
+    : expansion.sourceChatId !== null && (
+      (expansion.itemType === "RECALL_CHUNK" &&
+        expansion.projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
         expansion.supportingItemId === null) ||
-      (expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT" &&
+      (expansion.itemType === "RECALL_CHUNK" &&
+        expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT" &&
+        expansion.supportingItemId !== null) ||
+      (expansion.itemType === "RECALL_ROUND" &&
+        expansion.projectionKind === "RECALL_ROUND_RAW_SAFE_TEXT" &&
         expansion.supportingItemId !== null)
     );
 }
@@ -109,7 +114,7 @@ function packedSafeText(
 ): string {
   // Recall chunks carry canonical speaker and message boundaries. Preserve
   // them verbatim; only atomic facts are compacted to one line.
-  return candidate.itemType === "RECALL_CHUNK"
+  return candidate.itemType !== "FACT_VERSION"
     ? expansion.safeText.trim()
     : compactSafeText(expansion.safeText);
 }
@@ -258,7 +263,8 @@ MemoryPackedItem["evidenceType"] {
       ? "historical_fact"
       : "current_fact";
   }
-  return expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT" ? "digest" : "raw_chunk";
+  if (expansion.projectionKind === "CHAT_DIGEST_SAFE_TEXT") return "digest";
+  return candidate.itemType === "RECALL_ROUND" ? "raw_round" : "raw_chunk";
 }
 
 function sourceAuthority(candidate: MemoryRankedCandidate):
@@ -273,7 +279,7 @@ MemoryPackedItem["sourceAuthority"] {
 
 function speakerScope(candidate: MemoryRankedCandidate): MemoryPackedItem["speakerScope"] {
   if (candidate.metadata.sourceAuthority === "SYNTHESIS") return "derived";
-  return candidate.itemType === "RECALL_CHUNK" ? "mixed_conversation" : "user";
+  return candidate.itemType === "FACT_VERSION" ? "user" : "mixed_conversation";
 }
 
 function evidenceStatus(candidate: MemoryRankedCandidate): MemoryPackedItem["status"] {
@@ -376,7 +382,7 @@ function sourceDiversityOrder(
   const remaining: MemoryRankedCandidate[] = [];
   const seenSources = new Set<string>();
   for (const candidate of ranked) {
-    if (candidate.itemType !== "RECALL_CHUNK") continue;
+    if (candidate.itemType === "FACT_VERSION") continue;
     const sourceChatId = candidate.metadata.sourceChatId;
     if (sourceChatId && !seenSources.has(sourceChatId)) {
       seenSources.add(sourceChatId);
@@ -390,7 +396,7 @@ function sourceDiversityOrder(
   // original relevance-selected positions.
   const history = [...firstBySource, ...remaining];
   let historyIndex = 0;
-  return ranked.map((candidate) => candidate.itemType === "RECALL_CHUNK"
+  return ranked.map((candidate) => candidate.itemType !== "FACT_VERSION"
     ? history[historyIndex++]!
     : candidate);
 }
@@ -537,7 +543,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       increment(omissionCounts, "pattern_not_authorized");
       continue;
     }
-    if (input.plan.profileRequested && candidate.itemType === "RECALL_CHUNK") {
+    if (input.plan.profileRequested && candidate.itemType !== "FACT_VERSION") {
       increment(omissionCounts, "profile_history_excluded");
       continue;
     }

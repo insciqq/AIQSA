@@ -12,6 +12,10 @@ import {
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
+import {
   loadPersonalMemoryEvidenceSnapshots,
   loadPersonalMemoryRunIds
 } from "../persistence/eligibility";
@@ -32,6 +36,8 @@ type MemoryRunSourceClient = Pick<
   | "memoryScope"
   | "memoryRecallChunk"
   | "memoryRecallChunkMessage"
+  | "memoryRecallRound"
+  | "memoryRecallRoundMessage"
   | "message"
   | "modelRun"
   | "modelRunMemoryBinding"
@@ -87,6 +93,7 @@ export async function loadMemoryRunSources(
       includedText: true,
       itemType: true,
       recallChunkId: true,
+      recallRoundId: true,
       sourceBranchGenerationSnapshot: true,
       sourceChatIdSnapshot: true,
       sourceContentHashSnapshot: true,
@@ -97,6 +104,7 @@ export async function loadMemoryRunSources(
   });
   const factVersionIds = items.flatMap((item) => item.factVersionId ? [item.factVersionId] : []);
   const chunkIds = items.flatMap((item) => item.recallChunkId ? [item.recallChunkId] : []);
+  const roundIds = items.flatMap((item) => item.recallRoundId ? [item.recallRoundId] : []);
   const sourceChatIds = items.flatMap((item) => item.sourceChatIdSnapshot
     ? [item.sourceChatIdSnapshot]
     : []);
@@ -109,9 +117,11 @@ export async function loadMemoryRunSources(
   const [
     versions,
     chunks,
+    rounds,
     chats,
     checkpoints,
     chunkMessageJoins,
+    roundMessageJoins,
     sourceMessages,
     sourceSuppressions,
     checkpointMessages,
@@ -150,6 +160,27 @@ export async function loadMemoryRunSources(
             state: true
           },
           where: { id: { in: chunkIds }, userId: input.userId }
+        })
+      : Promise.resolve([]),
+    roundIds.length > 0
+      ? client.memoryRecallRound.findMany({
+          select: {
+            branchGeneration: true,
+            chatId: true,
+            contentHash: true,
+            contextualKeyPolicyVersion: true,
+            contextualKeyState: true,
+            id: true,
+            occurredTo: true,
+            parentChunkId: true,
+            projectionVersion: true,
+            redactionState: true,
+            safetyClass: true,
+            sourceProjectionVersion: true,
+            sourceRevisionAtCreation: true,
+            state: true
+          },
+          where: { id: { in: roundIds }, userId: input.userId }
         })
       : Promise.resolve([]),
     sourceChatIds.length > 0
@@ -192,6 +223,18 @@ export async function loadMemoryRunSources(
             sourceMessageUpdatedAt: true
           },
           where: { chunkId: { in: chunkIds }, userId: input.userId }
+        })
+      : Promise.resolve([]),
+    roundIds.length > 0
+      ? client.memoryRecallRoundMessage.findMany({
+          orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
+          select: {
+            chatId: true,
+            messageId: true,
+            roundId: true,
+            sourceMessageUpdatedAt: true
+          },
+          where: { roundId: { in: roundIds }, userId: input.userId }
         })
       : Promise.resolve([]),
     sourceChatIds.length > 0 && sourceMessageIds.length > 0
@@ -301,7 +344,28 @@ export async function loadMemoryRunSources(
         }
       })).map(({ id }) => id)
     : []);
-  const chunkById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
+  const missingParentIds = [...new Set(rounds.map(({ parentChunkId }) => parentChunkId))]
+    .filter((id) => !chunks.some((chunk) => chunk.id === id));
+  const roundParents = missingParentIds.length > 0
+    ? await client.memoryRecallChunk.findMany({
+        select: {
+          branchGeneration: true,
+          chatId: true,
+          chunkingVersion: true,
+          contentHash: true,
+          id: true,
+          occurredTo: true,
+          redactionState: true,
+          safetyClass: true,
+          sourceProjectionVersion: true,
+          sourceRevisionAtCreation: true,
+          state: true
+        },
+        where: { id: { in: missingParentIds }, userId: input.userId }
+      })
+    : [];
+  const chunkById = new Map([...chunks, ...roundParents].map((chunk) => [chunk.id, chunk]));
+  const roundById = new Map(rounds.map((round) => [round.id, round]));
   const chatById = new Map(chats.map((chat) => [chat.id, chat]));
   const checkpointByChatId = new Map(checkpoints.map((checkpoint) => [
     checkpoint.chatId,
@@ -321,6 +385,13 @@ export async function loadMemoryRunSources(
   for (const join of chunkMessageJoins) {
     joinsByChunkId.set(join.chunkId, [
       ...(joinsByChunkId.get(join.chunkId) ?? []),
+      join
+    ]);
+  }
+  const joinsByRoundId = new Map<string, typeof roundMessageJoins>();
+  for (const join of roundMessageJoins) {
+    joinsByRoundId.set(join.roundId, [
+      ...(joinsByRoundId.get(join.roundId) ?? []),
       join
     ]);
   }
@@ -376,6 +447,7 @@ export async function loadMemoryRunSources(
           factVersionId: version.id,
           itemType: "FACT_VERSION",
           recallChunkId: null,
+          recallRoundId: null,
           sourceChatId: sourceNavigationAvailable ? evidenceChat!.id : null,
           sourceMessageIds: sourceNavigationAvailable
             ? item.sourceMessageIdsSnapshot
@@ -491,6 +563,7 @@ export async function loadMemoryRunSources(
             factVersionId: null,
             itemType: "RECALL_CHUNK",
             recallChunkId: chunk.id,
+            recallRoundId: null,
             sourceChatId: chat!.id,
             sourceMessageIds: joinedMessageIds
           }
@@ -498,6 +571,88 @@ export async function loadMemoryRunSources(
         ...(chat!.title.trim()
           ? { origin: boundedText(chat!.title, 200) }
           : {}),
+        sourceAvailable: true,
+        sourceType: "PAST_CHAT",
+        text: boundedText(item.includedText, 1_000)
+      };
+    } else if (item.itemType === "RECALL_ROUND" && item.recallRoundId &&
+      item.sourceChatIdSnapshot) {
+      const round = roundById.get(item.recallRoundId);
+      const parent = round ? chunkById.get(round.parentChunkId) : null;
+      const chat = chatById.get(item.sourceChatIdSnapshot);
+      const checkpoint = checkpointByChatId.get(item.sourceChatIdSnapshot);
+      const roundJoins = joinsByRoundId.get(item.recallRoundId) ?? [];
+      const joinedMessageIds = roundJoins.map((join) => join.messageId);
+      const sourceSuppressed = sourceSuppressions.some((suppression) =>
+        suppression.sourceChatId === item.sourceChatIdSnapshot &&
+        suppression.sourceMessageId !== null &&
+        item.sourceMessageIdsSnapshot.includes(suppression.sourceMessageId) &&
+        (suppression.sourceBranchGeneration === null ||
+          suppression.sourceBranchGeneration === round?.branchGeneration));
+      const currentCheckpoint = Boolean(
+        chat && checkpoint && chat.activeLeafMessageId !== null &&
+        checkpoint.status === "READY" &&
+        checkpoint.pipelineVersion === MEMORY_HISTORY_INDEX_PIPELINE_VERSION &&
+        checkpoint.branchGeneration === chat.memoryBranchGeneration &&
+        checkpoint.sourceRevision === chat.memorySourceRevision &&
+        checkpoint.activeLeafMessageId === chat.activeLeafMessageId &&
+        checkpoint.lastIndexedMessageId === checkpoint.activeLeafMessageId &&
+        chat.memoryMode === "NORMAL" && chat.permanentDeletionAt === null &&
+        chat.projectId === null
+      );
+      const frozenRound = Boolean(
+        round && chat && round.chatId === chat.id && round.state === "ACTIVE" &&
+        item.sourceBranchGenerationSnapshot !== null &&
+        item.sourceContentHashSnapshot !== null &&
+        round.projectionVersion === MEMORY_RECALL_ROUND_PROJECTION_VERSION &&
+        round.contextualKeyPolicyVersion === MEMORY_CONTEXTUAL_KEY_POLICY_VERSION &&
+        (round.contextualKeyState === "GENERATED" ||
+          round.contextualKeyState === "RAW_FALLBACK") &&
+        round.sourceProjectionVersion === MEMORY_HISTORY_SOURCE_PROJECTION_VERSION &&
+        round.branchGeneration === item.sourceBranchGenerationSnapshot &&
+        round.contentHash === item.sourceContentHashSnapshot &&
+        round.redactionState !== "EXCLUDED" &&
+        (round.safetyClass === "NORMAL" || round.safetyClass === "SENSITIVE") &&
+        round.sourceRevisionAtCreation === item.sourceRevisionSnapshot
+      );
+      const frozenParent = Boolean(
+        parent && round && parent.id === round.parentChunkId && parent.chatId === round.chatId &&
+        parent.state === "ACTIVE" &&
+        parent.chunkingVersion === MEMORY_HISTORY_CHUNKING_VERSION &&
+        parent.sourceProjectionVersion === MEMORY_HISTORY_SOURCE_PROJECTION_VERSION &&
+        parent.redactionState !== "EXCLUDED" &&
+        (parent.safetyClass === "NORMAL" || parent.safetyClass === "SENSITIVE")
+      );
+      const currentRoundMap = Boolean(chat && roundJoins.length > 0 &&
+        sameStrings(joinedMessageIds, item.sourceMessageIdsSnapshot) &&
+        roundJoins.every((join) => join.chatId === chat.id &&
+          messageKeys.has(`${chat.id}\u0000${join.messageId}`) &&
+          messageUpdatedAtKeys.has(
+            `${chat.id}\u0000${join.messageId}\u0000${join.sourceMessageUpdatedAt.toISOString()}`
+          ) && checkpointMessageKeys.has(
+            `${chat.id}\u0000${join.messageId}\u0000${join.sourceMessageUpdatedAt.toISOString()}`
+          )));
+      const available = currentCheckpoint && frozenRound && frozenParent && currentRoundMap &&
+        !sourceSuppressed;
+      if (!round || !available || !item.includedText) continue;
+      source = {
+        actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+        date: round.occurredTo.toISOString(),
+        memoryRef: refs.mint(input.userId, {
+          allowedOperations: ["EDIT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+          originatingRunId: runId,
+          target: {
+            exactItemId: round.id,
+            factId: null,
+            factVersionId: null,
+            itemType: "RECALL_ROUND",
+            recallChunkId: null,
+            recallRoundId: round.id,
+            sourceChatId: chat!.id,
+            sourceMessageIds: joinedMessageIds
+          }
+        }),
+        ...(chat!.title.trim() ? { origin: boundedText(chat!.title, 200) } : {}),
         sourceAvailable: true,
         sourceType: "PAST_CHAT",
         text: boundedText(item.includedText, 1_000)

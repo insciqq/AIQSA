@@ -601,6 +601,7 @@ const feedbackContributor: MemoryDeletionContributor = Object.freeze({
         "memoryFactId" = NULL,
         "memoryFactVersionId" = NULL,
         "recallChunkId" = NULL,
+        "recallRoundId" = NULL,
         "modelRunId" = NULL,
         "modelRunMemoryItemId" = NULL,
         "modelRunToolCallId" = NULL,

@@ -8,7 +8,7 @@ import {
 } from "./safety";
 
 export const MEMORY_HISTORY_SOURCE_PROJECTION_VERSION =
-  "memory-history-source-projection-v4";
+  "memory-history-source-projection-v5";
 
 export const MEMORY_HISTORY_SOURCE_ORIGINS = [
   "DEVELOPER",
@@ -95,10 +95,11 @@ export type MemoryHistoryProjectedMessage = Readonly<{
 }>;
 
 export type MemoryHistoryRecallTurnGroup = Readonly<{
-  assistantMessageId: string;
+  assistantMessageId: string | null;
   id: string;
+  kind: "STANDALONE" | "TURN";
   languageCode: MemoryTextLanguage;
-  messages: readonly [MemoryHistoryProjectedMessage, MemoryHistoryProjectedMessage];
+  messages: readonly MemoryHistoryProjectedMessage[];
   occurredFrom: string;
   occurredTo: string;
   ordinal: number;
@@ -107,7 +108,7 @@ export type MemoryHistoryRecallTurnGroup = Readonly<{
   safeTextHash: string;
   safetyClass: "NORMAL" | "SENSITIVE";
   sourceAssistantId: string | null;
-  userMessageId: string;
+  userMessageId: string | null;
 }>;
 
 export type MemoryHistoryProvenanceNode = Readonly<{
@@ -399,11 +400,14 @@ function evaluateMessages(
         reasons.add("DIRECT_USER_PROVENANCE_INVALID");
       }
     } else if (input.role === "assistant") {
-      const previous = path[index - 1];
+      const hasDirectUserInfluence = influencedByMessageIds.some((messageId) => {
+        const influencedIndex = pathIndex.get(messageId);
+        return influencedIndex !== undefined && influencedIndex < index &&
+          path[influencedIndex]?.role === "user";
+      });
       if (
         provenance.modelRunId === null ||
-        previous?.role !== "user" ||
-        !influencedByMessageIds.includes(previous.id)
+        !hasDirectUserInfluence
       ) {
         reasons.add("ASSISTANT_SOURCE_EDGE_MISSING");
       }
@@ -483,58 +487,58 @@ function evaluateMessages(
 
 function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTurnGroup[] {
   const groups: MemoryHistoryRecallTurnGroup[] = [];
-  for (let index = 0; index < evaluated.length - 1; index += 1) {
-    const user = evaluated[index]!;
-    const assistant = evaluated[index + 1]!;
-    if (
-      user.input.role !== "user" ||
-      assistant.input.role !== "assistant" ||
-      !user.projected ||
-      !assistant.projected ||
-      user.transitiveTaint ||
-      assistant.transitiveTaint
-    ) {
-      continue;
-    }
-    const combinedText = `${user.projected.safeText}\n\n${assistant.projected.safeText}`;
-    if (assistant.createdAt < user.createdAt) {
-      fail("memory_history_turn_time_invalid");
-    }
+  for (let index = 0; index < evaluated.length; index += 1) {
+    const current = evaluated[index]!;
+    if (!current.projected || current.transitiveTaint) continue;
+    const following = evaluated[index + 1];
+    const paired = current.input.role === "user" &&
+      following?.input.role === "assistant" &&
+      following.projected !== null &&
+      !following.transitiveTaint &&
+      following.influencedByMessageIds.includes(current.input.id);
+    const selected = paired ? [current, following] : [current];
+    const messages = selected.map((message) => message.projected!);
+    const combinedText = messages.map((message) => message.safeText).join("\n\n");
+    const occurredFrom = selected[0]!.createdAt;
+    const occurredTo = selected.at(-1)!.createdAt;
+    if (occurredTo < occurredFrom) fail("memory_history_turn_time_invalid");
     const groupSafety = projectMemoryHistorySafeText(combinedText);
     if (!groupSafety.eligible || groupSafety.safeText !== combinedText) {
-      user.reasonCodes = uniqueSorted([...user.reasonCodes, "TURN_GROUP_SAFETY_EXCLUDED"]);
-      assistant.reasonCodes = uniqueSorted([
-        ...assistant.reasonCodes,
-        "TURN_GROUP_SAFETY_EXCLUDED"
-      ]);
+      for (const message of selected) {
+        message.reasonCodes = uniqueSorted([
+          ...message.reasonCodes,
+          "TURN_GROUP_SAFETY_EXCLUDED"
+        ]);
+      }
       continue;
     }
-    user.recallEligible = true;
-    assistant.recallEligible = true;
-    const messages = [user.projected, assistant.projected] as const;
+    for (const message of selected) message.recallEligible = true;
     const reasonCodes = uniqueSorted(messages.flatMap((message) =>
       message.redactionReasonCodes));
     const ordinal = groups.length;
+    const userMessage = selected.find((message) => message.input.role === "user") ?? null;
+    const assistantMessage = selected.find((message) =>
+      message.input.role === "assistant") ?? null;
     groups.push({
-      assistantMessageId: assistant.input.id,
+      assistantMessageId: assistantMessage?.input.id ?? null,
       id: memorySha256({
-        assistantMessageId: assistant.input.id,
+        messageIds: selected.map((message) => message.input.id),
         projectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-        userMessageId: user.input.id
       }),
+      kind: paired ? "TURN" : "STANDALONE",
       languageCode: detectMemoryTextLanguage(combinedText),
       messages,
-      occurredFrom: user.createdAt,
-      occurredTo: assistant.createdAt,
+      occurredFrom,
+      occurredTo,
       ordinal,
       redactionReasonCodes: reasonCodes,
       redactionState: reasonCodes.length > 0 ? "REDACTED" : "NOT_NEEDED",
       safeTextHash: memorySha256(combinedText),
       safetyClass: "NORMAL",
-      sourceAssistantId: assistant.projected.provenance.assistantId,
-      userMessageId: user.input.id
+      sourceAssistantId: assistantMessage?.projected?.provenance.assistantId ?? null,
+      userMessageId: userMessage?.input.id ?? null
     });
-    index += 1;
+    if (paired) index += 1;
   }
   return groups;
 }

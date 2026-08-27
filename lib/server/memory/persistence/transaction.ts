@@ -12,6 +12,10 @@ import {
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "./lexical";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 
 // Provider work can complete in a burst for one user. Every authoritative
@@ -59,8 +63,10 @@ export type MemoryCounterSnapshot = Readonly<{
 }>;
 
 export type MemoryActiveIndex = Readonly<{
+  contextualKeyPolicyVersion: string | null;
   id: string;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
+  roundProjectionVersion: string | null;
 }>;
 
 export type MemoryTransactionOptions = Readonly<{
@@ -224,7 +230,12 @@ export async function requireActiveMemoryIndex(
 ): Promise<MemoryActiveIndex | null> {
   if (!settings.activeIndexGenerationId) return null;
   const generation = await tx.memoryIndexGeneration.findFirst({
-    select: { id: true, indexMode: true },
+    select: {
+      contextualKeyPolicyVersion: true,
+      id: true,
+      indexMode: true,
+      roundProjectionVersion: true
+    },
     where: {
       id: settings.activeIndexGenerationId,
       state: "ACTIVE",
@@ -264,13 +275,20 @@ export async function ensureActiveLexicalGeneration(
       indexedThroughMemoryRevision: settings.memoryRevision,
       languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
       normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+      contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
       readyAt: now,
       retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+      roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
       state: "ACTIVE",
       targetMemoryRevision,
       userId: settings.userId
     },
-    select: { id: true, indexMode: true }
+    select: {
+      contextualKeyPolicyVersion: true,
+      id: true,
+      indexMode: true,
+      roundProjectionVersion: true
+    }
   });
   await tx.userMemorySettings.update({
     data: { activeIndexGenerationId: generation.id },

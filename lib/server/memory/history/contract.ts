@@ -3,10 +3,11 @@ import { canonicalMemoryTimeZone } from "../../../domain/memory/temporal/calenda
 import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
+import type { MemoryRecallRoundProjection } from "./rounds";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v4";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v5";
 export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
-  "memory-history-rebuild-required-v3";
+  "memory-history-rebuild-required-v4";
 export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
@@ -36,6 +37,15 @@ export type MemoryHistoryPreparedChunk = Omit<
   "redactionState" | "safetyClass"
 > & Readonly<{
   id: string;
+  publicationState: "ACTIVE" | "SUPPRESSED";
+  redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
+  safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
+}>;
+
+export type MemoryHistoryPreparedRound = Omit<
+  MemoryRecallRoundProjection,
+  "redactionState" | "safetyClass"
+> & Readonly<{
   publicationState: "ACTIVE" | "SUPPRESSED";
   redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
   safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
@@ -74,12 +84,18 @@ export type MemoryHistoryWorkCounters = Readonly<{
   chunksBuilt: number;
   chunksReplaced: number;
   chunksReused: number;
+  contextualProviderRequests: number;
+  contextualRoundsFallback: number;
+  contextualRoundsGenerated: number;
   digestSegmentsProcessed: number;
   digestSourceChunksProcessed: number;
   messageContentRowsLoaded: number;
   messagesProjected: number;
   modelRunRowsLoaded: number;
   pathMetadataRowsRead: number;
+  roundsBuilt: number;
+  roundsReplaced: number;
+  roundsReused: number;
 }>;
 
 export const EMPTY_MEMORY_HISTORY_WORK_COUNTERS: MemoryHistoryWorkCounters =
@@ -87,12 +103,18 @@ export const EMPTY_MEMORY_HISTORY_WORK_COUNTERS: MemoryHistoryWorkCounters =
     chunksBuilt: 0,
     chunksReplaced: 0,
     chunksReused: 0,
+    contextualProviderRequests: 0,
+    contextualRoundsFallback: 0,
+    contextualRoundsGenerated: 0,
     digestSegmentsProcessed: 0,
     digestSourceChunksProcessed: 0,
     messageContentRowsLoaded: 0,
     messagesProjected: 0,
     modelRunRowsLoaded: 0,
-    pathMetadataRowsRead: 0
+    pathMetadataRowsRead: 0,
+    roundsBuilt: 0,
+    roundsReplaced: 0,
+    roundsReused: 0
   });
 
 export type MemoryHistoryIndexPlan = Readonly<{
@@ -108,8 +130,11 @@ export type MemoryHistoryIndexPlan = Readonly<{
   }>;
   preparedResultHash: string;
   rebuiltChunkIds: readonly string[];
+  rebuiltRoundIds: readonly string[];
   resultHash: string;
   reusedChunkIds: readonly string[];
+  reusedRoundIds: readonly string[];
+  rounds: readonly MemoryHistoryPreparedRound[];
   source: MemoryHistoryIndexSourceIdentity;
   suppressionIdentitySnapshot: string;
   timeZone: string;
@@ -222,7 +247,10 @@ export function memoryHistoryIndexResultHash(
     digestPolicyVersion?: string | null;
     incremental?: MemoryHistoryIndexPlan["incremental"];
     rebuiltChunkIds?: readonly string[];
+    rebuiltRoundIds?: readonly string[];
     reusedChunkIds?: readonly string[];
+    reusedRoundIds?: readonly string[];
+    rounds?: readonly MemoryHistoryPreparedRound[];
     work?: MemoryHistoryWorkCounters;
   }> = {}
 ): string {
@@ -249,7 +277,38 @@ export function memoryHistoryIndexResultHash(
     incremental: options.incremental ?? null,
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
     rebuiltChunkIds: options.rebuiltChunkIds ?? [],
+    rebuiltRoundIds: options.rebuiltRoundIds ?? [],
+    rounds: (options.rounds ?? []).map((round) => ({
+      branchGeneration: round.branchGeneration,
+      contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
+      contextualKeyState: round.contextualKeyState,
+      contextualNarrativeText: round.contextualNarrativeText,
+      contextualSearchHash: round.contextualSearchHash,
+      contextualSearchText: round.contextualSearchText,
+      contentHash: round.contentHash,
+      evidenceRootHash: round.evidenceRootHash,
+      folderId: round.folderId,
+      groupKind: round.groupKind,
+      id: round.id,
+      languageCode: round.languageCode,
+      messageJoins: round.messageJoins,
+      occurredFrom: round.occurredFrom,
+      occurredTo: round.occurredTo,
+      ordinal: round.ordinal,
+      parentChunkId: round.parentChunkId,
+      projectionVersion: round.projectionVersion,
+      publicationState: round.publicationState,
+      rawSafeText: round.rawSafeText,
+      redactionReasonCodes: round.redactionReasonCodes,
+      redactionState: round.redactionState,
+      safetyClass: round.safetyClass,
+      sourceAssistantId: round.sourceAssistantId,
+      sourceContentHash: round.sourceContentHash,
+      sourceProjectionVersion: round.sourceProjectionVersion,
+      sourceRevision: round.sourceRevision
+    })),
     reusedChunkIds: options.reusedChunkIds ?? [],
+    reusedRoundIds: options.reusedRoundIds ?? [],
     source,
     suppressionIdentitySnapshot,
     timeZone: canonicalTimeZone,

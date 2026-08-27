@@ -77,6 +77,8 @@ export async function loadAccountMemoryOwnedCounts(
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryCheckpointMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryRecallChunk" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryRecallChunkMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryRecallRound" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryRecallRoundMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryDigest" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryDigestChunk" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryDigestMessage" row INNER JOIN requested USING ("userId") GROUP BY row."userId"

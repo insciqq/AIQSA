@@ -44,7 +44,7 @@ function chunks(
 }
 
 describe("incremental Memory history planning", () => {
-  it("retains every proven chunk and reads one overlap turn for an append", () => {
+  it("retains every proven chunk and reads two prior groups for an append", () => {
     const previousMessages = messages(3);
     const currentMessages = messages(4);
     const result = planMemoryHistoryTailUpdate({
@@ -56,7 +56,7 @@ describe("incremental Memory history planning", () => {
     expect(result).toEqual({
       commonPathMessageCount: 6,
       mode: "APPEND",
-      rebuildFromMessageOrdinal: 4,
+      rebuildFromMessageOrdinal: 2,
       reusedChunkIds: ["chunk-0", "chunk-1", "chunk-2"]
     });
   });
@@ -107,7 +107,7 @@ describe("incremental Memory history planning", () => {
     })).toEqual({
       commonPathMessageCount: 6,
       mode: "UNCHANGED",
-      rebuildFromMessageOrdinal: 4,
+      rebuildFromMessageOrdinal: 2,
       reusedChunkIds: ["chunk-0", "chunk-1", "chunk-2"]
     });
 
@@ -131,7 +131,7 @@ describe("incremental Memory history planning", () => {
     });
   });
 
-  it("plans a 4,000-message append before content with one overlap turn", () => {
+  it("plans a 4,000-message append before content with two prior groups", () => {
     const previousMessages = messages(2_000);
     const currentMessages = messages(2_001);
     const result = planMemoryHistoryTailUpdate({
@@ -142,7 +142,7 @@ describe("incremental Memory history planning", () => {
 
     expect(result.mode).toBe("APPEND");
     expect(result.commonPathMessageCount).toBe(4_000);
-    expect(result.rebuildFromMessageOrdinal).toBe(3_998);
+    expect(result.rebuildFromMessageOrdinal).toBe(3_996);
     expect(result.reusedChunkIds).toHaveLength(2_000);
   });
 

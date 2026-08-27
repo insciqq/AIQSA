@@ -258,7 +258,7 @@ describe("Memory history recall chunking", () => {
     const snapshot = multiTurnSnapshot(3);
     const groups = snapshot.recallChunkProjection.turnGroups;
     const chunks = chunkMemoryRecallProjection(snapshot, undefined, {
-      excludedMessageIds: [groups[2]!.userMessageId],
+      excludedMessageIds: [groups[2]!.messages[0]!.id],
       sourceCreatedAtCutoff: groups[0]!.occurredTo
     });
 

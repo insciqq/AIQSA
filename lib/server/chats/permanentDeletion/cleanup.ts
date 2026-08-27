@@ -35,6 +35,7 @@ type AggregateIds = Readonly<{
   jobIds: readonly string[];
   originFactIds: readonly string[];
   retrievalAttemptIds: readonly string[];
+  roundIds: readonly string[];
   runIds: readonly string[];
 }>;
 
@@ -179,7 +180,7 @@ async function aggregateIds(
   tx: Prisma.TransactionClient,
   claim: MemoryDeletionClaim
 ): Promise<AggregateIds> {
-  const [runs, jobs, chunks, candidates, originFacts] = await Promise.all([
+  const [runs, jobs, chunks, rounds, candidates, originFacts] = await Promise.all([
     tx.modelRun.findMany({
       select: { id: true },
       where: { chatId: claim.targetId, userId: claim.userId }
@@ -189,6 +190,10 @@ async function aggregateIds(
       where: { chatId: claim.targetId, userId: claim.userId }
     }),
     tx.memoryRecallChunk.findMany({
+      select: { id: true },
+      where: { chatId: claim.targetId, userId: claim.userId }
+    }),
+    tx.memoryRecallRound.findMany({
       select: { id: true },
       where: { chatId: claim.targetId, userId: claim.userId }
     }),
@@ -249,6 +254,7 @@ async function aggregateIds(
     jobIds,
     originFactIds: originFacts.map(({ factId }) => factId),
     retrievalAttemptIds,
+    roundIds: rounds.map(({ id }) => id),
     runIds
   };
 }
@@ -256,13 +262,16 @@ async function aggregateIds(
 async function settleDestinationAttemptItems(
   tx: Prisma.TransactionClient,
   claim: MemoryDeletionClaim,
-  ids: Pick<AggregateIds, "chunkIds">
+  ids: Pick<AggregateIds, "chunkIds" | "roundIds">
 ): Promise<void> {
   const predicates: Prisma.Sql[] = [
     Prisma.sql`item."sourceChatIdSnapshot" = ${claim.targetId}`
   ];
   if (ids.chunkIds.length > 0) {
     predicates.push(Prisma.sql`item."recallChunkId" IN (${Prisma.join(ids.chunkIds)})`);
+  }
+  if (ids.roundIds.length > 0) {
+    predicates.push(Prisma.sql`item."recallRoundId" IN (${Prisma.join(ids.roundIds)})`);
   }
   await tx.$executeRaw(Prisma.sql`
     WITH deleted AS (
@@ -436,6 +445,8 @@ async function auditCleanup(
         FROM "ChatMemoryCheckpointMessage" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'chunks', COUNT(*)::integer
         FROM "MemoryRecallChunk" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
+      UNION ALL SELECT 'rounds', COUNT(*)::integer
+        FROM "MemoryRecallRound" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'digests', COUNT(*)::integer
         FROM "ChatMemoryDigest" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'digest-chunks', COUNT(*)::integer
@@ -469,7 +480,7 @@ async function auditCleanup(
   const feedbackResidual = await inspectMemoryFeedbackPermanentChat(
     tx,
     claim.userId,
-    { chatId: claim.targetId, chunkIds: [], runIds: [] }
+    { chatId: claim.targetId, chunkIds: [], roundIds: [], runIds: [] }
   );
   const inventoryResidual = rows.reduce((sum, row) => sum + row.residual, 0);
   if (inventoryResidual + feedbackResidual > 0) {
@@ -565,14 +576,18 @@ async function applyAggregateDeletion(
   await purgeMemoryFeedbackPermanentChat(tx, claim.userId, {
     chatId: claim.targetId,
     chunkIds: ids.chunkIds,
+    roundIds: ids.roundIds,
     runIds: ids.runIds
   });
   await settleDestinationAttemptItems(tx, claim, ids);
 
-  if (ids.chunkIds.length > 0) {
+  if (ids.chunkIds.length > 0 || ids.roundIds.length > 0) {
     await tx.memorySearchEntry.deleteMany({
       where: {
-        recallChunkId: { in: [...ids.chunkIds] },
+        OR: [
+          { recallChunkId: { in: [...ids.chunkIds] } },
+          { recallRoundId: { in: [...ids.roundIds] } }
+        ],
         userId: claim.userId
       }
     });
@@ -601,6 +616,14 @@ async function applyAggregateDeletion(
   await tx.chatMemoryDigest.deleteMany({
     where: { chatId: claim.targetId, userId: claim.userId }
   });
+  if (ids.roundIds.length > 0) {
+    await tx.memoryRecallRoundMessage.deleteMany({
+      where: { roundId: { in: [...ids.roundIds] }, userId: claim.userId }
+    });
+    await tx.memoryRecallRound.deleteMany({
+      where: { id: { in: [...ids.roundIds] }, userId: claim.userId }
+    });
+  }
   if (ids.chunkIds.length > 0) {
     await tx.memoryRecallChunkMessage.deleteMany({
       where: { chunkId: { in: [...ids.chunkIds] }, userId: claim.userId }

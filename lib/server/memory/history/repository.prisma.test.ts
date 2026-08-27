@@ -45,6 +45,7 @@ import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { createPrismaMemoryHistoryIndexRepository } from "./repository";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
+import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
 
 async function mutateSource(
   userId: string,
@@ -1722,7 +1723,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("indexes eligible recall chunks", async () => {
+  it("indexes chunks and rounds with exact stateful round rejoin", async () => {
     const userId = await createOwner("memory-history-chunks");
     try {
       const chat = await prisma.chat.create({
@@ -1762,6 +1763,73 @@ describe("Memory lexical history index persistence", () => {
           userId
         }
       })).resolves.toBe(1);
+      const rounds = await prisma.memoryRecallRound.findMany({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(rounds).toHaveLength(1);
+      expect(rounds[0]).toMatchObject({
+        contextualKeyState: "RAW_FALLBACK",
+        parentChunkId: chunks[0]?.id,
+        rawSafeText:
+          "User: Для выпуска используем сине-зелёное развёртывание.\n\n" +
+          "Assistant: Подтверждаю выбранный сине-зелёный выпуск."
+      });
+      const roundMessages = await prisma.memoryRecallRoundMessage.findMany({
+        orderBy: { ordinal: "asc" },
+        where: { roundId: rounds[0]!.id, userId }
+      });
+      expect(roundMessages.map(({ messageId, role }) => ({ messageId, role }))).toEqual([
+        { messageId: turn.userMessage.id, role: "user" },
+        { messageId: turn.assistantMessage.id, role: "assistant" }
+      ]);
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          itemType: "RECALL_ROUND",
+          recallRoundId: rounds[0]!.id,
+          userId
+        }
+      })).resolves.toBe(1);
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const rejoined = await prisma.$transaction((tx) => resolvePreparingMemoryItem(
+        tx,
+        {
+          assistantId: null,
+          chatId: chat.id,
+          folderId: null,
+          indexGenerationId: settings.activeIndexGenerationId,
+          userId
+        },
+        null,
+        {
+          exactItemId: rounds[0]!.id,
+          exactSafeText: rounds[0]!.rawSafeText,
+          finalScore: 0.9,
+          itemType: "RECALL_ROUND",
+          laneRanks: { HISTORY_RECALL_FTS_SIMPLE: 1 },
+          projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+          recallRoundId: rounds[0]!.id,
+          selectionReason: "history_recall_exact",
+          supportingItemId: chunks[0]!.id
+        }
+      ));
+      expect(rejoined).toMatchObject({
+        exactItemId: rounds[0]!.id,
+        itemType: "RECALL_ROUND",
+        recallRoundId: rounds[0]!.id,
+        sourceMessageIdsSnapshot: [
+          turn.userMessage.id,
+          turn.assistantMessage.id
+        ]
+      });
+      await expect(prisma.$transaction((tx) =>
+        tx.memoryRecallRoundMessage.deleteMany({
+          where: { roundId: rounds[0]!.id, userId }
+        }))).rejects.toThrow();
+      await expect(prisma.memoryRecallRoundMessage.count({
+        where: { roundId: rounds[0]!.id, userId }
+      })).resolves.toBe(2);
       await expect(prisma.$transaction((tx) =>
         tx.memoryRecallChunkMessage.deleteMany({
           where: { chunkId: chunks[0]!.id, userId }

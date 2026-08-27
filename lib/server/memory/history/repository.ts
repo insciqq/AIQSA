@@ -48,7 +48,8 @@ import {
   memoryHistoryIndexResultHash,
   type MemoryHistoryIndexPlan,
   type MemoryHistoryIndexSourceIdentity,
-  type MemoryHistoryPreparedChunk
+  type MemoryHistoryPreparedChunk,
+  type MemoryHistoryPreparedRound
 } from "./contract";
 import {
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
@@ -61,6 +62,17 @@ import {
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
 } from "./sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+  projectMemoryRecallRounds,
+  type MemoryRecallRoundMessageJoin
+} from "./rounds";
+import {
+  memoryHistoryChunkEvidenceRootHash,
+  memoryHistoryEvidenceRootHash
+} from "./evidenceRoot";
+import { memoryHistorySuppressionIdentitySnapshot } from "./admissionIdentity";
 
 type MemoryHistoryPrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -92,6 +104,35 @@ type CurrentChunkRow = Readonly<{
   sourceRevisionAtCreation: number;
   state: MemoryHistoryItemState;
   messageJoins: readonly MemoryRecallChunkMessageJoin[];
+}>;
+
+type CurrentRoundRow = Readonly<{
+  branchGeneration: number;
+  contentHash: string;
+  contextualKeyPolicyVersion: string;
+  contextualKeyState: string;
+  contextualNarrativeText: string;
+  contextualSearchHash: string;
+  contextualSearchText: string;
+  evidenceRootHash: string;
+  groupKind: string;
+  id: string;
+  languageCode: string;
+  occurredFrom: Date;
+  occurredTo: Date;
+  parentChunkId: string;
+  projectionVersion: string;
+  rawSafeText: string;
+  redactionReasonCodes: string[];
+  redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
+  roundOrdinal: number;
+  safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
+  sourceAssistantId: string | null;
+  sourceFolderId: string | null;
+  sourceProjectionVersion: string;
+  sourceRevisionAtCreation: number;
+  state: MemoryHistoryItemState;
+  messageJoins: readonly MemoryRecallRoundMessageJoin[];
 }>;
 
 type HistoryPathMessageMetadata = Readonly<{
@@ -357,26 +398,11 @@ async function loadHistoryAdmission(
   return {
     excludedMessageIds: [...new Set(excludedMessageIds)].sort(),
     sourceCreatedAtCutoff: cutoff?.toISOString() ?? null,
-    suppressionIdentitySnapshot: memorySha256({
-      barriers: barriers.map((barrier) => ({
-        createdAt: barrier.createdAt,
-        explicitOverrideAllowed: barrier.explicitOverrideAllowed,
-        id: barrier.id,
-        kind: barrier.kind,
-        memoryGeneration: barrier.memoryGeneration,
-        sourceCreatedAtCutoff: barrier.sourceCreatedAtCutoff
-      })),
+    suppressionIdentitySnapshot: memoryHistorySuppressionIdentitySnapshot({
+      barriers,
       checkpointResumeCutoff: chatResumeCutoff,
       pauseIntervals,
-      suppressions: suppressions.map((suppression) => ({
-        expiresAt: suppression.expiresAt,
-        fingerprintKeyVersion: suppression.fingerprintKeyVersion,
-        id: suppression.id,
-        scope: suppression.scope,
-        sourceBranchGeneration: suppression.sourceBranchGeneration,
-        sourceChatId: suppression.sourceChatId,
-        sourceMessageId: suppression.sourceMessageId
-      }))
+      suppressions
     })
   };
 }
@@ -391,8 +417,9 @@ async function loadIncrementalHistoryState(
     messageId: string;
     sourceMessageUpdatedAt: string;
   }>[];
+  rounds: readonly CurrentRoundRow[];
 }>> {
-  const [checkpoint, rows, messageRows] = await Promise.all([
+  const [checkpoint, rows, roundRows, messageRows] = await Promise.all([
     tx.chatMemoryCheckpoint.findUnique({
       select: { pipelineVersion: true },
       where: { userId_chatId: { chatId: source.id, userId: source.userId } }
@@ -407,6 +434,16 @@ async function loadIncrementalHistoryState(
         userId: source.userId
       }
     }),
+    tx.memoryRecallRound.findMany({
+      orderBy: [{ roundOrdinal: "asc" }, { id: "asc" }],
+      where: {
+        chatId: source.id,
+        projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: source.userId
+      }
+    }),
     tx.chatMemoryCheckpointMessage.findMany({
       orderBy: { ordinal: "asc" },
       select: { messageId: true, sourceMessageUpdatedAt: true },
@@ -414,12 +451,17 @@ async function loadIncrementalHistoryState(
     })
   ]);
   const chunkIds = rows.map((row) => row.id);
-  const joins = chunkIds.length === 0
-    ? []
-    : await tx.memoryRecallChunkMessage.findMany({
+  const roundIds = roundRows.map((row) => row.id);
+  const [joins, roundJoins] = await Promise.all([
+    chunkIds.length === 0 ? Promise.resolve([]) : tx.memoryRecallChunkMessage.findMany({
         orderBy: [{ chunkId: "asc" }, { ordinal: "asc" }],
         where: { chunkId: { in: chunkIds }, userId: source.userId }
-      });
+      }),
+    roundIds.length === 0 ? Promise.resolve([]) : tx.memoryRecallRoundMessage.findMany({
+      orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
+      where: { roundId: { in: roundIds }, userId: source.userId }
+    })
+  ]);
   const joinsByChunk = new Map<string, MemoryRecallChunkMessageJoin[]>();
   for (const join of joins) {
     const values = joinsByChunk.get(join.chunkId) ?? [];
@@ -435,6 +477,23 @@ async function loadIncrementalHistoryState(
     });
     joinsByChunk.set(join.chunkId, values);
   }
+  const joinsByRound = new Map<string, MemoryRecallRoundMessageJoin[]>();
+  for (const join of roundJoins) {
+    const values = joinsByRound.get(join.roundId) ?? [];
+    values.push({
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as MemoryRecallRoundMessageJoin["role"],
+      roundEndOffset: join.roundEndOffset,
+      roundStartOffset: join.roundStartOffset,
+      safeTextHash: join.safeTextHash,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      sourceStartOffset: join.sourceStartOffset
+    });
+    joinsByRound.set(join.roundId, values);
+  }
   return Object.freeze({
     checkpointPipelineVersion: checkpoint?.pipelineVersion ?? null,
     chunks: Object.freeze(rows.flatMap((row): CurrentChunkRow[] => {
@@ -444,7 +503,11 @@ async function loadIncrementalHistoryState(
     messages: Object.freeze(messageRows.map((message) => ({
       messageId: message.messageId,
       sourceMessageUpdatedAt: message.sourceMessageUpdatedAt.toISOString()
-    })))
+    }))),
+    rounds: Object.freeze(roundRows.flatMap((row): CurrentRoundRow[] => {
+      const messageJoins = joinsByRound.get(row.id) ?? [];
+      return messageJoins.length === 0 ? [] : [{ ...row, messageJoins }];
+    }))
   });
 }
 
@@ -479,6 +542,51 @@ function storedChunkProjection(
     sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
     sourceRevision: source.memorySourceRevision,
     turnGroupIds: [],
+    userId: source.userId
+  };
+}
+
+function storedRoundProjection(
+  row: CurrentRoundRow,
+  source: MemorySourceSnapshot,
+  ordinal: number
+): MemoryHistoryPreparedRound {
+  return {
+    approxTokens: estimateApproxTokens(row.rawSafeText),
+    branchGeneration: row.branchGeneration,
+    chatId: source.id,
+    contextualKeyPolicyVersion: row.contextualKeyPolicyVersion,
+    contextualKeyState: row.contextualKeyState as
+      MemoryHistoryPreparedRound["contextualKeyState"],
+    contextualNarrativeText: row.contextualNarrativeText,
+    contextualSearchHash: row.contextualSearchHash,
+    contextualSearchText: row.contextualSearchText,
+    contentHash: row.contentHash,
+    evidenceRootHash: row.evidenceRootHash,
+    folderId: row.sourceFolderId,
+    groupId: memorySha256({
+      messageIds: row.messageJoins.map((join) => join.messageId),
+      projectionVersion: row.sourceProjectionVersion
+    }),
+    groupKind: row.groupKind as MemoryHistoryPreparedRound["groupKind"],
+    id: row.id,
+    languageCode: row.languageCode as MemoryHistoryPreparedRound["languageCode"],
+    messageJoins: row.messageJoins,
+    occurredFrom: row.occurredFrom.toISOString(),
+    occurredTo: row.occurredTo.toISOString(),
+    ordinal,
+    parentChunkId: row.parentChunkId,
+    projectionVersion: row.projectionVersion as
+      MemoryHistoryPreparedRound["projectionVersion"],
+    publicationState: row.state === "SUPPRESSED" ? "SUPPRESSED" : "ACTIVE",
+    rawSafeText: row.rawSafeText,
+    redactionReasonCodes: Object.freeze([...row.redactionReasonCodes]),
+    redactionState: row.redactionState as MemoryHistoryPreparedRound["redactionState"],
+    safetyClass: row.safetyClass as MemoryHistoryPreparedRound["safetyClass"],
+    sourceAssistantId: row.sourceAssistantId,
+    sourceContentHash: source.sourceHash,
+    sourceProjectionVersion: row.sourceProjectionVersion,
+    sourceRevision: row.sourceRevisionAtCreation,
     userId: source.userId
   };
 }
@@ -710,9 +818,7 @@ async function prepareWith(
     sourceRevision: source.memorySourceRevision,
     userId: source.userId
   };
-  const projectedChunks = messages.length === 0
-    ? []
-    : chunkMemoryRecallProjection(buildMemorySafeSourceSnapshot({
+  const tailSnapshot = buildMemorySafeSourceSnapshot({
         activeLeafMessageId: tailPath.at(-1)?.id ?? null,
         branchGeneration: source.memoryBranchGeneration,
         chatId: source.id,
@@ -723,7 +829,10 @@ async function prepareWith(
         sourceRevision: source.memorySourceRevision,
         timeZone,
         userId: source.userId
-      }), undefined, {
+      });
+  const projectedChunks = messages.length === 0
+    ? []
+    : chunkMemoryRecallProjection(tailSnapshot, undefined, {
         excludedMessageIds: admission.excludedMessageIds,
         sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
       }).map((chunk, ordinal): MemoryHistoryPreparedChunk => ({
@@ -740,6 +849,42 @@ async function prepareWith(
   }
   const reusedChunkIds = retained.map((chunk) => chunk.id);
   const rebuiltChunkIds = rebuilt.map((chunk) => chunk.id);
+  const pathOrdinalById = new Map(path.map((message, ordinal) => [message.id, ordinal]));
+  const projectedChunkIds = new Set(chunks.map((chunk) => chunk.id));
+  const retainedRoundRows = previousIsCurrent && incremental.mode !== "FULL_REBUILD"
+    ? previous.rounds.filter((round) =>
+        projectedChunkIds.has(round.parentChunkId) &&
+        round.messageJoins.every((join) => {
+          const ordinal = pathOrdinalById.get(join.messageId);
+          const message = pathById.get(join.messageId);
+          return ordinal !== undefined && ordinal < tailStart && Boolean(
+            message &&
+            !excluded.has(join.messageId) &&
+            (cutoff === null || message.createdAt > cutoff)
+          );
+        }))
+    : [];
+  const retainedRounds = retainedRoundRows.map((row, ordinal) =>
+    storedRoundProjection(row, source, ordinal));
+  const projectedRounds = messages.length === 0
+    ? []
+    : projectMemoryRecallRounds(tailSnapshot, projectedChunks, {
+        excludedMessageIds: admission.excludedMessageIds,
+        sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
+      }).map((round, ordinal): MemoryHistoryPreparedRound => ({
+        ...round,
+        ordinal: retainedRounds.length + ordinal,
+        publicationState: "ACTIVE"
+      }));
+  const retainedRoundIds = new Set(retainedRounds.map((round) => round.id));
+  const rebuiltRounds = projectedRounds.filter((round) =>
+    !retainedRoundIds.has(round.id));
+  const rounds = [...retainedRounds, ...rebuiltRounds];
+  if (rounds.length > MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES) {
+    throw new MemoryCoordinatorError("memory_history_round_limit_exceeded", false);
+  }
+  const reusedRoundIds = retainedRounds.map((round) => round.id);
+  const rebuiltRoundIds = rebuiltRounds.map((round) => round.id);
   const incrementalSnapshot = {
     commonPathMessageCount: incremental.commonPathMessageCount,
     mode: incremental.mode,
@@ -749,12 +894,18 @@ async function prepareWith(
     chunksBuilt: projectedChunks.length,
     chunksReplaced: Math.max(0, previous.chunks.length - retained.length),
     chunksReused: retained.length,
+    contextualProviderRequests: 0,
+    contextualRoundsFallback: 0,
+    contextualRoundsGenerated: 0,
     digestSegmentsProcessed: 0,
     digestSourceChunksProcessed: 0,
     messageContentRowsLoaded: rows.length,
     messagesProjected: messages.length,
     modelRunRowsLoaded: runs.length,
-    pathMetadataRowsRead: path.length
+    pathMetadataRowsRead: path.length,
+    roundsBuilt: projectedRounds.length,
+    roundsReplaced: Math.max(0, previous.rounds.length - retainedRounds.length),
+    roundsReused: retainedRounds.length
   } as const;
   const resultHash = memoryHistoryIndexResultHash(
     sourceIdentity,
@@ -768,7 +919,10 @@ async function prepareWith(
       digestPolicyVersion: null,
       incremental: incrementalSnapshot,
       rebuiltChunkIds,
+      rebuiltRoundIds,
       reusedChunkIds,
+      reusedRoundIds,
+      rounds,
       work
     }
   );
@@ -782,8 +936,11 @@ async function prepareWith(
       incremental: incrementalSnapshot,
       preparedResultHash: resultHash,
       rebuiltChunkIds,
+      rebuiltRoundIds,
       resultHash,
       reusedChunkIds,
+      reusedRoundIds,
+      rounds,
       source: sourceIdentity,
       suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
       timeZone,
@@ -810,9 +967,42 @@ function expectedSearchEntry(
     sourceIdentitySnapshot: memorySha256({
       chatId: chunk.chatId,
       contentHash: chunk.contentHash,
+      evidenceRootHash: memoryHistoryChunkEvidenceRootHash({
+        chatId: chunk.chatId,
+        messageJoins: chunk.messageJoins,
+        userId: chunk.userId
+      }),
       messageJoins: chunk.messageJoins,
       sourceProjectionVersion: chunk.sourceProjectionVersion,
       userId: chunk.userId
+    }),
+    suppressionIdentitySnapshot: plan.suppressionIdentitySnapshot
+  };
+}
+
+function expectedRoundSearchEntry(
+  plan: MemoryHistoryIndexPlan,
+  round: MemoryHistoryPreparedRound
+): ExpectedSearchEntry {
+  return {
+    languageCode: round.languageCode,
+    safeContentHash: round.contextualSearchHash,
+    normalizedSearchText: normalizeMemorySearchText(round.contextualSearchText),
+    safetyIdentitySnapshot: memorySha256({
+      classificationPolicyVersion: plan.classificationPolicyVersion,
+      contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
+      projectionVersion: round.projectionVersion,
+      redactionReasonCodes: round.redactionReasonCodes,
+      redactionState: round.redactionState,
+      safetyClass: round.safetyClass
+    }),
+    sourceIdentitySnapshot: memorySha256({
+      chatId: round.chatId,
+      contentHash: round.contentHash,
+      evidenceRootHash: round.evidenceRootHash,
+      messageJoins: round.messageJoins,
+      sourceProjectionVersion: round.sourceProjectionVersion,
+      userId: round.userId
     }),
     suppressionIdentitySnapshot: plan.suppressionIdentitySnapshot
   };
@@ -835,6 +1025,37 @@ function chunkMatches(left: CurrentChunkRow, right: MemoryHistoryPreparedChunk):
     left.sourceFolderId === right.folderId &&
     left.sourceProjectionVersion === right.sourceProjectionVersion &&
     left.state === right.publicationState;
+}
+
+function roundMatches(left: CurrentRoundRow, right: MemoryHistoryPreparedRound): boolean {
+  return left.id === right.id &&
+    left.roundOrdinal === right.ordinal &&
+    left.contentHash === right.contentHash &&
+    left.contextualKeyPolicyVersion === right.contextualKeyPolicyVersion &&
+    left.contextualKeyState === right.contextualKeyState &&
+    left.contextualNarrativeText === right.contextualNarrativeText &&
+    left.contextualSearchHash === right.contextualSearchHash &&
+    left.contextualSearchText === right.contextualSearchText &&
+    left.evidenceRootHash === right.evidenceRootHash &&
+    left.groupKind === right.groupKind &&
+    left.languageCode === right.languageCode &&
+    left.occurredFrom.toISOString() === right.occurredFrom &&
+    left.occurredTo.toISOString() === right.occurredTo &&
+    left.parentChunkId === right.parentChunkId &&
+    left.projectionVersion === right.projectionVersion &&
+    left.rawSafeText === right.rawSafeText &&
+    JSON.stringify(left.redactionReasonCodes) === JSON.stringify(right.redactionReasonCodes) &&
+    left.redactionState === right.redactionState &&
+    left.safetyClass === right.safetyClass &&
+    left.sourceAssistantId === right.sourceAssistantId &&
+    left.sourceFolderId === right.folderId &&
+    left.sourceProjectionVersion === right.sourceProjectionVersion &&
+    left.state === right.publicationState;
+}
+
+function activeIndexAcceptsRounds(activeIndex: MemoryActiveIndex): boolean {
+  return activeIndex.roundProjectionVersion === MEMORY_RECALL_ROUND_PROJECTION_VERSION &&
+    activeIndex.contextualKeyPolicyVersion === MEMORY_CONTEXTUAL_KEY_POLICY_VERSION;
 }
 
 function embeddingStateMatchesIndex(
@@ -930,9 +1151,58 @@ async function planAlreadyApplied(
     })
   ) return false;
 
+  const roundRows = await tx.memoryRecallRound.findMany({
+    where: {
+      chatId: plan.source.chatId,
+      projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
+      userId: plan.source.userId
+    }
+  });
+  const roundIds = plan.rounds.map((round) => round.id);
+  const roundJoins = roundIds.length === 0 ? [] :
+    await tx.memoryRecallRoundMessage.findMany({
+      orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
+      where: { roundId: { in: roundIds }, userId: plan.source.userId }
+    });
+  const joinsByRound = new Map<string, MemoryRecallRoundMessageJoin[]>();
+  for (const join of roundJoins) {
+    const current = joinsByRound.get(join.roundId) ?? [];
+    current.push({
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as MemoryRecallRoundMessageJoin["role"],
+      roundEndOffset: join.roundEndOffset,
+      roundStartOffset: join.roundStartOffset,
+      safeTextHash: join.safeTextHash,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      sourceStartOffset: join.sourceStartOffset
+    });
+    joinsByRound.set(join.roundId, current);
+  }
+  const rounds: CurrentRoundRow[] = roundRows.map((round) => ({
+    ...round,
+    messageJoins: joinsByRound.get(round.id) ?? []
+  }));
+  if (
+    rounds.length !== plan.rounds.length ||
+    plan.rounds.some((round) => {
+      const current = rounds.find((candidate) => candidate.id === round.id);
+      return !current || !roundMatches(current, round) ||
+        current.messageJoins.length !== round.messageJoins.length ||
+        round.messageJoins.some((expected, index) =>
+          JSON.stringify(expected) !== JSON.stringify(current.messageJoins[index]));
+    })
+  ) return false;
+
   const activePlanChunks = plan.chunks.filter((chunk) =>
     chunk.publicationState === "ACTIVE");
-  if (activePlanChunks.length > 0) {
+  const activePlanRounds = plan.rounds.filter((round) =>
+    round.publicationState === "ACTIVE");
+  if (activePlanChunks.length > 0 || activePlanRounds.length > 0) {
     const activeIndex = await requireActiveMemoryIndex(tx, settings);
     if (!activeIndex) return false;
     const entries = await tx.memorySearchEntry.findMany({
@@ -956,6 +1226,30 @@ async function planAlreadyApplied(
           entry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
           entry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
       })) return false;
+    const roundEntries = await tx.memorySearchEntry.findMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        itemType: "RECALL_ROUND",
+        recallRoundId: { in: activePlanRounds.map((round) => round.id) },
+        userId: plan.source.userId
+      }
+    });
+    if (activeIndexAcceptsRounds(activeIndex)) {
+      if (roundEntries.length !== activePlanRounds.length ||
+        activePlanRounds.some((round) => {
+          const entry = roundEntries.find((candidate) =>
+            candidate.recallRoundId === round.id);
+          const expected = expectedRoundSearchEntry(plan, round);
+          return !entry ||
+            !embeddingStateMatchesIndex(activeIndex.indexMode, entry.embeddingState) ||
+            entry.languageCode !== expected.languageCode ||
+            entry.safeContentHash !== expected.safeContentHash ||
+            entry.normalizedSearchText !== expected.normalizedSearchText ||
+            entry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
+            entry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
+            entry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
+        })) return false;
+    } else if (roundEntries.length !== 0) return false;
   }
   const activeDigest = await tx.chatMemoryDigest.findFirst({
     where: { chatId: plan.source.chatId, state: "ACTIVE", userId: plan.source.userId }
@@ -998,6 +1292,11 @@ async function persistChunk(
       chunkOrdinal: chunk.ordinal,
       chunkingVersion: chunk.chunkingVersion,
       contentHash: chunk.contentHash,
+      evidenceRootHash: memoryHistoryChunkEvidenceRootHash({
+        chatId: chunk.chatId,
+        messageJoins: chunk.messageJoins,
+        userId: chunk.userId
+      }),
       id: chunk.id,
       languageCode: chunk.languageCode,
       normalizedSafeSearchText: chunk.normalizedSafeSearchText,
@@ -1018,6 +1317,11 @@ async function persistChunk(
       chunkOrdinal: chunk.ordinal,
       chunkingVersion: chunk.chunkingVersion,
       contentHash: chunk.contentHash,
+      evidenceRootHash: memoryHistoryChunkEvidenceRootHash({
+        chatId: chunk.chatId,
+        messageJoins: chunk.messageJoins,
+        userId: chunk.userId
+      }),
       invalidatedAt: null,
       languageCode: chunk.languageCode,
       normalizedSafeSearchText: chunk.normalizedSafeSearchText,
@@ -1108,6 +1412,173 @@ async function persistChunk(
       sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
       suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot,
       userId: chunk.userId
+    },
+    select: { embeddingState: true, id: true }
+  });
+}
+
+async function persistRound(
+  tx: MemoryTransaction,
+  activeIndex: MemoryActiveIndex | null,
+  plan: MemoryHistoryIndexPlan,
+  round: MemoryHistoryPreparedRound
+): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }> | null> {
+  await tx.memoryRecallRound.upsert({
+    create: {
+      branchGeneration: round.branchGeneration,
+      chatId: round.chatId,
+      contentHash: round.contentHash,
+      contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
+      contextualKeyState: round.contextualKeyState,
+      contextualNarrativeText: round.contextualNarrativeText,
+      contextualSearchHash: round.contextualSearchHash,
+      contextualSearchText: round.contextualSearchText,
+      evidenceRootHash: round.evidenceRootHash,
+      groupKind: round.groupKind,
+      id: round.id,
+      languageCode: round.languageCode,
+      occurredFrom: new Date(round.occurredFrom),
+      occurredTo: new Date(round.occurredTo),
+      parentChunkId: round.parentChunkId,
+      projectionVersion: round.projectionVersion,
+      rawSafeText: round.rawSafeText,
+      redactionReasonCodes: [...round.redactionReasonCodes],
+      redactionState: round.redactionState,
+      roundOrdinal: round.ordinal,
+      safetyClass: round.safetyClass,
+      sourceAssistantId: round.sourceAssistantId,
+      sourceFolderId: round.folderId,
+      sourceProjectionVersion: round.sourceProjectionVersion,
+      sourceRevisionAtCreation: round.sourceRevision,
+      state: round.publicationState,
+      userId: round.userId
+    },
+    update: {
+      contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
+      contextualKeyState: round.contextualKeyState,
+      contextualNarrativeText: round.contextualNarrativeText,
+      contextualSearchHash: round.contextualSearchHash,
+      contextualSearchText: round.contextualSearchText,
+      invalidatedAt: null,
+      languageCode: round.languageCode,
+      occurredFrom: new Date(round.occurredFrom),
+      occurredTo: new Date(round.occurredTo),
+      parentChunkId: round.parentChunkId,
+      rawSafeText: round.rawSafeText,
+      redactionReasonCodes: [...round.redactionReasonCodes],
+      redactionState: round.redactionState,
+      roundOrdinal: round.ordinal,
+      safetyClass: round.safetyClass,
+      sourceAssistantId: round.sourceAssistantId,
+      sourceFolderId: round.folderId,
+      state: round.publicationState
+    },
+    where: { id: round.id }
+  });
+  await tx.memoryRecallRoundMessage.deleteMany({
+    where: { roundId: round.id, userId: round.userId }
+  });
+  await tx.memoryRecallRoundMessage.createMany({
+    data: round.messageJoins.map((join) => ({
+      chatId: round.chatId,
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role,
+      roundEndOffset: join.roundEndOffset,
+      roundId: round.id,
+      roundStartOffset: join.roundStartOffset,
+      safeTextHash: join.safeTextHash,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: new Date(join.sourceMessageUpdatedAt),
+      sourceStartOffset: join.sourceStartOffset,
+      userId: round.userId
+    }))
+  });
+  if (round.publicationState === "SUPPRESSED") {
+    await tx.memorySearchEntry.deleteMany({
+      where: { recallRoundId: round.id, userId: round.userId }
+    });
+    return null;
+  }
+  if (!activeIndex) return null;
+  if (!activeIndexAcceptsRounds(activeIndex)) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        recallRoundId: round.id,
+        userId: round.userId
+      }
+    });
+    return null;
+  }
+  const existing = await tx.memorySearchEntry.findFirst({
+    orderBy: { id: "asc" },
+    where: {
+      indexGenerationId: activeIndex.id,
+      itemType: "RECALL_ROUND",
+      recallRoundId: round.id,
+      userId: round.userId
+    }
+  });
+  const expected = expectedRoundSearchEntry(plan, round);
+  if (existing) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        id: { not: existing.id },
+        indexGenerationId: activeIndex.id,
+        recallRoundId: round.id,
+        userId: round.userId
+      }
+    });
+    const embeddingInputChanged =
+      existing.safeContentHash !== expected.safeContentHash ||
+      existing.normalizedSearchText !== expected.normalizedSearchText ||
+      existing.languageCode !== expected.languageCode;
+    if (activeIndex.indexMode === "HYBRID" && embeddingInputChanged) {
+      const reset = await tx.$executeRaw(Prisma.sql`
+        UPDATE "MemorySearchEntry"
+        SET "embedding" = NULL,
+          "embeddingDimension" = NULL,
+          "embeddingState" = 'PENDING'::"MemoryEmbeddingState"
+        WHERE "userId" = ${round.userId}
+          AND "id" = ${existing.id}
+          AND "indexGenerationId" = ${activeIndex.id}
+          AND "itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
+          AND "recallRoundId" = ${round.id}
+      `);
+      if (reset !== 1) {
+        throw new MemoryCoordinatorError("memory_history_search_entry_stale", true);
+      }
+    }
+    return tx.memorySearchEntry.update({
+      data: {
+        languageCode: expected.languageCode,
+        normalizedSearchText: expected.normalizedSearchText,
+        safeContentHash: expected.safeContentHash,
+        safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+        sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+        suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot
+      },
+      select: { embeddingState: true, id: true },
+      where: { id: existing.id }
+    });
+  }
+  return tx.memorySearchEntry.create({
+    data: {
+      embeddingState: activeIndex.indexMode === "LEXICAL_ONLY"
+        ? "NOT_APPLICABLE"
+        : "PENDING",
+      indexGenerationId: activeIndex.id,
+      itemType: "RECALL_ROUND",
+      languageCode: expected.languageCode,
+      normalizedSearchText: expected.normalizedSearchText,
+      recallRoundId: round.id,
+      safeContentHash: expected.safeContentHash,
+      safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+      sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+      suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot,
+      userId: round.userId
     },
     select: { embeddingState: true, id: true }
   });
@@ -1283,7 +1754,10 @@ async function applyPlan(
         digestPolicyVersion: plan.digestPolicyVersion,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
+        rebuiltRoundIds: plan.rebuiltRoundIds,
         reusedChunkIds: plan.reusedChunkIds,
+        reusedRoundIds: plan.reusedRoundIds,
+        rounds: plan.rounds,
         work: plan.work
       }
     ) !== plan.resultHash
@@ -1314,11 +1788,22 @@ async function applyPlan(
       where: {
         embeddingState: "PENDING",
         indexGenerationId: settings.activeIndexGenerationId!,
-        itemType: "RECALL_CHUNK",
-        recallChunkId: {
-          in: plan.chunks.flatMap((chunk) =>
-            chunk.publicationState === "ACTIVE" ? [chunk.id] : [])
-        },
+        OR: [
+          {
+            itemType: "RECALL_CHUNK",
+            recallChunkId: {
+              in: plan.chunks.flatMap((chunk) =>
+                chunk.publicationState === "ACTIVE" ? [chunk.id] : [])
+            }
+          },
+          {
+            itemType: "RECALL_ROUND",
+            recallRoundId: {
+              in: plan.rounds.flatMap((round) =>
+                round.publicationState === "ACTIVE" ? [round.id] : [])
+            }
+          }
+        ],
         userId: plan.source.userId
       }
     });
@@ -1342,6 +1827,14 @@ async function applyPlan(
       userId: claim.userId
     }
   });
+  const currentRounds = await tx.memoryRecallRound.findMany({
+    select: { id: true, state: true },
+    where: {
+      chatId: claim.chatId,
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
+      userId: claim.userId
+    }
+  });
   const currentDigest = await tx.chatMemoryDigest.findFirst({
     select: { contentHash: true, id: true },
     where: { chatId: claim.chatId, state: "ACTIVE", userId: claim.userId }
@@ -1350,7 +1843,12 @@ async function applyPlan(
     chunk.state === "ACTIVE" ? [chunk.id] : []).sort();
   const nextVisible = plan.chunks.flatMap((chunk) =>
     chunk.publicationState === "ACTIVE" ? [chunk.id] : []).sort();
+  const currentVisibleRounds = currentRounds.flatMap((round) =>
+    round.state === "ACTIVE" ? [round.id] : []).sort();
+  const nextVisibleRounds = plan.rounds.flatMap((round) =>
+    round.publicationState === "ACTIVE" ? [round.id] : []).sort();
   const visibilityChanged = currentVisible.join("\u0000") !== nextVisible.join("\u0000") ||
+    currentVisibleRounds.join("\u0000") !== nextVisibleRounds.join("\u0000") ||
     (currentDigest?.id ?? null) !== (plan.digest?.id ?? null) ||
     (currentDigest?.contentHash ?? null) !== (plan.digest?.contentHash ?? null);
   let activeIndex: MemoryActiveIndex | null = null;
@@ -1364,6 +1862,22 @@ async function applyPlan(
     }
   }
   const desiredIds = new Set(plan.chunks.map((chunk) => chunk.id));
+  const desiredRoundIds = new Set(plan.rounds.map((round) => round.id));
+  const staleRoundIds = currentRounds.flatMap((round) =>
+    desiredRoundIds.has(round.id) ? [] : [round.id]);
+  if (staleRoundIds.length > 0) {
+    await tx.memorySearchEntry.deleteMany({
+      where: { recallRoundId: { in: staleRoundIds }, userId: claim.userId }
+    });
+    await tx.memoryRecallRound.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        id: { in: staleRoundIds },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: claim.userId
+      }
+    });
+  }
   const staleIds = currentChunks.flatMap((chunk) =>
     desiredIds.has(chunk.id) ? [] : [chunk.id]);
   if (staleIds.length > 0) {
@@ -1408,6 +1922,48 @@ async function applyPlan(
         retainedEntry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
     if (!rebuilt.has(chunk.id) && !searchArtifactNeedsRepair) continue;
     const entry = await persistChunk(tx, activeIndex, plan, chunk);
+    if (entry) {
+      await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
+    }
+  }
+  const retainedRoundEntries = plan.rounds.length === 0
+    ? []
+    : await tx.memorySearchEntry.findMany({
+        where: {
+          itemType: "RECALL_ROUND",
+          recallRoundId: { in: plan.rounds.map((round) => round.id) },
+          userId: claim.userId
+        }
+      });
+  const rebuiltRounds = new Set(plan.rebuiltRoundIds);
+  for (const round of plan.rounds) {
+    const expected = expectedRoundSearchEntry(plan, round);
+    const retainedEntry = activeIndex && activeIndexAcceptsRounds(activeIndex)
+      ? retainedRoundEntries.find((entry) =>
+          entry.indexGenerationId === activeIndex.id &&
+          entry.recallRoundId === round.id)
+      : null;
+    const activeGenerationEntry = activeIndex
+      ? retainedRoundEntries.find((entry) =>
+          entry.indexGenerationId === activeIndex.id &&
+          entry.recallRoundId === round.id)
+      : null;
+    const shouldHaveEntry = round.publicationState === "ACTIVE" &&
+      Boolean(activeIndex && activeIndexAcceptsRounds(activeIndex));
+    const searchArtifactNeedsRepair = shouldHaveEntry
+      ? !retainedEntry ||
+        !embeddingStateMatchesIndex(activeIndex!.indexMode, retainedEntry.embeddingState) ||
+        retainedEntry.languageCode !== expected.languageCode ||
+        retainedEntry.safeContentHash !== expected.safeContentHash ||
+        retainedEntry.normalizedSearchText !== expected.normalizedSearchText ||
+        retainedEntry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
+        retainedEntry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
+        retainedEntry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot
+      : round.publicationState === "SUPPRESSED"
+        ? retainedRoundEntries.some((entry) => entry.recallRoundId === round.id)
+        : activeGenerationEntry !== undefined;
+    if (!rebuiltRounds.has(round.id) && !searchArtifactNeedsRepair) continue;
+    const entry = await persistRound(tx, activeIndex, plan, round);
     if (entry) {
       await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
     }

@@ -343,6 +343,7 @@ describe("Memory intent action executor", () => {
         factVersionId: "memory-version-1",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: null,
         sourceMessageIds: []
       }

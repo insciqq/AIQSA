@@ -9,7 +9,14 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
-import { createMemorySourceActionService } from "./actionService";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
+import {
+  createMemorySourceActionService,
+  recallSourceSuppressionId
+} from "./actionService";
 
 const now = new Date("2026-08-21T05:00:00.000Z");
 
@@ -53,6 +60,8 @@ function setup() {
     },
     memoryRecallChunk: { findFirst: vi.fn() },
     memoryRecallChunkMessage: { findMany: vi.fn(async () => []) },
+    memoryRecallRound: { findFirst: vi.fn() },
+    memoryRecallRoundMessage: { findMany: vi.fn(async () => []) },
     memoryRetrievalAttempt: { findFirst: vi.fn() },
     memorySuppression: {
       findMany: vi.fn(async (): Promise<Array<{
@@ -68,6 +77,7 @@ function setup() {
       id: "item-1",
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      recallRoundId: null,
       sourceBranchGenerationSnapshot: null,
       sourceChatIdSnapshot: null,
       sourceContentHashSnapshot: null,
@@ -91,6 +101,7 @@ function setup() {
       factVersionId: "version-1",
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      recallRoundId: null,
       sourceChatId: null,
       sourceMessageIds: []
     }
@@ -99,6 +110,27 @@ function setup() {
 }
 
 describe("Memory source actions", () => {
+  it("preserves issued chunk suppression fingerprints while namespacing rounds", () => {
+    const common = {
+      messageId: "message-1",
+      requestNonce: "request-1",
+      userId: "user-1"
+    };
+
+    expect(recallSourceSuppressionId({ ...common, chunkId: "chunk-1" })).toBe(memorySha256({
+      chunkId: "chunk-1",
+      domain: "aiqsa.memory.source-recall-forget",
+      ...common,
+      version: 1
+    }));
+    expect(recallSourceSuppressionId({ ...common, roundId: "round-1" })).toBe(memorySha256({
+      roundId: "round-1",
+      domain: "aiqsa.memory.source-recall-forget",
+      ...common,
+      version: 1
+    }));
+  });
+
   it("records owner- and run-bound Not relevant feedback without returning identifiers", async () => {
     const { event, feedback, ref, service } = setup();
     await expect(service.execute("user-1", {
@@ -158,6 +190,7 @@ describe("Memory source actions", () => {
         factVersionId: "version-1",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: "source-chat-1",
         sourceMessageIds: ["source-message-1"]
       }
@@ -176,6 +209,7 @@ describe("Memory source actions", () => {
       id: "item-1",
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      recallRoundId: null,
       sourceBranchGenerationSnapshot: 4,
       sourceChatIdSnapshot: "source-chat-1",
       sourceContentHashSnapshot: null,
@@ -241,6 +275,7 @@ describe("Memory source actions", () => {
         factVersionId: "version-1",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: null,
         sourceMessageIds: []
       }
@@ -254,6 +289,7 @@ describe("Memory source actions", () => {
         factVersionId: "version-2",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: null,
         sourceMessageIds: []
       }
@@ -389,6 +425,7 @@ describe("Memory source actions", () => {
         factVersionId: "version-1",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: null,
         sourceMessageIds: []
       }
@@ -525,6 +562,7 @@ describe("Memory source actions", () => {
         id: "item-history-1",
         itemType: "RECALL_CHUNK",
         recallChunkId: "chunk-1",
+        recallRoundId: null,
         sourceBranchGenerationSnapshot: 4,
         sourceChatIdSnapshot: "source-chat-1",
         sourceContentHashSnapshot: "c".repeat(64),
@@ -555,6 +593,7 @@ describe("Memory source actions", () => {
         factVersionId: null,
         itemType: "RECALL_CHUNK",
         recallChunkId: "chunk-1",
+        recallRoundId: null,
         sourceChatId: "source-chat-1",
         sourceMessageIds: ["source-message-1"]
       }
@@ -642,6 +681,140 @@ describe("Memory source actions", () => {
     });
   });
 
+  it("rejoins round actions and forgets the exact round over a reusable older parent", async () => {
+    const { client, feedback } = setup();
+    const updatedAt = new Date("2026-08-21T04:00:00.000Z");
+    const key = randomBytes(32);
+    const refs = createMemoryClientRefService({ encryptionKey: () => key });
+    client.modelRunMemoryItem.findFirst.mockResolvedValue({
+      factVersionId: null,
+      featureSnapshot: {
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        supportingItemId: "parent-chunk-1"
+      },
+      id: "item-round-1",
+      itemType: "RECALL_ROUND",
+      recallChunkId: null,
+      recallRoundId: "round-1",
+      sourceBranchGenerationSnapshot: 4,
+      sourceChatIdSnapshot: "source-chat-1",
+      sourceContentHashSnapshot: "r".repeat(64),
+      sourceMessageIdsSnapshot: ["source-message-1"],
+      sourceRevisionSnapshot: 8
+    } as never);
+    client.chat.findFirst.mockResolvedValue({
+      activeLeafMessageId: "source-message-1",
+      id: "source-chat-1",
+      memoryBranchGeneration: 4,
+      memoryMode: "NORMAL",
+      memorySourceRevision: 8
+    } as never);
+    client.chatMemoryCheckpoint.findUnique.mockResolvedValue({
+      activeLeafMessageId: "source-message-1",
+      branchGeneration: 4,
+      lastIndexedMessageId: "source-message-1",
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+      sourceRevision: 8,
+      status: "READY"
+    } as never);
+    client.chatMemoryCheckpointMessage.findMany.mockResolvedValue([{
+      messageId: "source-message-1",
+      sourceMessageUpdatedAt: updatedAt
+    }] as never);
+    client.memoryRecallRound.findFirst.mockResolvedValue({
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      contentHash: "r".repeat(64),
+      contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+      contextualKeyState: "GENERATED",
+      parentChunkId: "parent-chunk-1",
+      projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 8,
+      state: "ACTIVE"
+    } as never);
+    client.memoryRecallChunk.findFirst.mockResolvedValue({
+      branchGeneration: 3,
+      chatId: "source-chat-1",
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+      contentHash: "p".repeat(64),
+      id: "parent-chunk-1",
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 7,
+      state: "ACTIVE"
+    } as never);
+    client.memoryRecallRoundMessage.findMany.mockResolvedValue([{
+      chatId: "source-chat-1",
+      messageId: "source-message-1",
+      sourceMessageUpdatedAt: updatedAt
+    }] as never);
+    client.message.findMany.mockResolvedValue([{
+      id: "source-message-1",
+      updatedAt
+    }] as never);
+    const suppress = vi.fn(async () => undefined);
+    const service = createMemorySourceActionService({
+      authorizationRepository: { mint: vi.fn() },
+      client: client as never,
+      clientRefs: refs,
+      explicitService: {} as never,
+      lifecycleService: {} as never,
+      recallMutationRepository: { suppress }
+    });
+    const ref = refs.mint("user-1", {
+      allowedOperations: ["FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+      originatingRunId: "run-1",
+      target: {
+        exactItemId: "round-1",
+        factId: null,
+        factVersionId: null,
+        itemType: "RECALL_ROUND",
+        recallChunkId: null,
+        recallRoundId: "round-1",
+        sourceChatId: "source-chat-1",
+        sourceMessageIds: ["source-message-1"]
+      }
+    }, now);
+
+    await expect(service.resolveOpenSource("user-1", ref, now)).resolves.toEqual({
+      chatId: "source-chat-1",
+      messageId: "source-message-1"
+    });
+    await expect(service.execute("user-1", {
+      action: "NOT_RELEVANT",
+      memoryRef: ref,
+      requestNonce: "round-not-relevant"
+    }, now)).resolves.toEqual({ status: "COMMITTED" });
+    expect(feedback.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modelRunMemoryItemId: "item-round-1",
+        recallChunkId: null,
+        recallRoundId: "round-1",
+        targetKind: "RECALL_ROUND"
+      })
+    });
+
+    await expect(service.execute("user-1", {
+      action: "FORGET",
+      memoryRef: ref,
+      requestNonce: "round-forget"
+    }, now)).resolves.toEqual({ status: "COMMITTED" });
+    expect(suppress).toHaveBeenCalledWith("user-1", {
+      branchGeneration: 4,
+      chatId: "source-chat-1",
+      chunkId: "parent-chunk-1",
+      contentHash: "p".repeat(64),
+      messageIds: ["source-message-1"],
+      requestNonce: "round-forget",
+      round: { contentHash: "r".repeat(64), id: "round-1" },
+      sourceRevision: 8
+    });
+  });
+
   it("revalidates a digest source while targeting its stable anchor chunk", async () => {
     const { client } = setup();
     const updatedAt = new Date("2026-08-21T04:00:00.000Z");
@@ -656,6 +829,7 @@ describe("Memory source actions", () => {
       id: "item-digest-1",
       itemType: "RECALL_CHUNK",
       recallChunkId: "chunk-anchor",
+      recallRoundId: null,
       sourceBranchGenerationSnapshot: 4,
       sourceChatIdSnapshot: "source-chat-1",
       sourceContentHashSnapshot: "c".repeat(64),
@@ -746,6 +920,7 @@ describe("Memory source actions", () => {
         factVersionId: null,
         itemType: "RECALL_CHUNK",
         recallChunkId: "chunk-anchor",
+        recallRoundId: null,
         sourceChatId: "source-chat-1",
         sourceMessageIds: ["source-message-1"]
       }

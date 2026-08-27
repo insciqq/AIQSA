@@ -59,23 +59,29 @@ export function memoryAutomaticEvidencePausePredicate(
 }
 
 /**
- * Stable chunks carry creation counters only for audit/frozen receipts. Their
+ * Stable history projections carry creation counters only for audit/frozen receipts. Their
  * reusable authority is the READY current checkpoint plus an exact source map
  * whose immutable message identities still lie on the retained active DAG.
  * A checkpoint may trail only while the current leaf is inside a pause.
  *
  * Callers expose the candidate history row as `chunk`.
  */
-export function memoryHistoryChunkSourceAuthorityPredicate(
+function memoryHistorySourceAuthorityPredicate(
+  kind: "CHUNK" | "ROUND",
   aliases?: JoinedHistorySourceAliases
 ): Prisma.Sql {
   const chat = Prisma.raw(`"${aliases?.chat ?? "retained_source_chat"}"`);
   const checkpoint = Prisma.raw(
     `"${aliases?.checkpoint ?? "retained_checkpoint"}"`
   );
+  const source = Prisma.raw(kind === "CHUNK" ? `"chunk"` : `"round"`);
+  const sourceMap = Prisma.raw(kind === "CHUNK"
+    ? `"MemoryRecallChunkMessage"`
+    : `"MemoryRecallRoundMessage"`);
+  const sourceMapId = Prisma.raw(kind === "CHUNK" ? `"chunkId"` : `"roundId"`);
   const authority = Prisma.sql`
-    ${chat}."userId" = chunk."userId"
-    AND ${chat}."id" = chunk."chatId"
+    ${chat}."userId" = ${source}."userId"
+    AND ${chat}."id" = ${source}."chatId"
     AND ${chat}."projectId" IS NULL
     AND ${chat}."memoryMode" = 'NORMAL'::"MemoryChatMode"
     AND ${checkpoint}."userId" = ${chat}."userId"
@@ -84,14 +90,14 @@ export function memoryHistoryChunkSourceAuthorityPredicate(
     AND ${checkpoint}."lastIndexedMessageId" = ${checkpoint}."activeLeafMessageId"
     AND ${checkpoint}."status" = 'READY'::"MemoryHistoryCheckpointStatus"
     AND EXISTS (
-      SELECT 1 FROM "MemoryRecallChunkMessage" AS authority_source_map
-      WHERE authority_source_map."userId" = chunk."userId"
-        AND authority_source_map."chatId" = chunk."chatId"
-        AND authority_source_map."chunkId" = chunk."id"
+      SELECT 1 FROM ${sourceMap} AS authority_source_map
+      WHERE authority_source_map."userId" = ${source}."userId"
+        AND authority_source_map."chatId" = ${source}."chatId"
+        AND authority_source_map.${sourceMapId} = ${source}."id"
     )
     AND NOT EXISTS (
       SELECT 1
-      FROM "MemoryRecallChunkMessage" AS authority_source_map
+      FROM ${sourceMap} AS authority_source_map
       LEFT JOIN "Message" AS authority_source_message
         ON authority_source_message."chatId" = authority_source_map."chatId"
         AND authority_source_message."id" = authority_source_map."messageId"
@@ -99,9 +105,9 @@ export function memoryHistoryChunkSourceAuthorityPredicate(
         ON authority_checkpoint_message."userId" = authority_source_map."userId"
         AND authority_checkpoint_message."chatId" = authority_source_map."chatId"
         AND authority_checkpoint_message."messageId" = authority_source_map."messageId"
-      WHERE authority_source_map."userId" = chunk."userId"
-        AND authority_source_map."chatId" = chunk."chatId"
-        AND authority_source_map."chunkId" = chunk."id"
+      WHERE authority_source_map."userId" = ${source}."userId"
+        AND authority_source_map."chatId" = ${source}."chatId"
+        AND authority_source_map.${sourceMapId} = ${source}."id"
         AND (
           authority_source_message."id" IS NULL
           OR authority_source_message."updatedAt" <>
@@ -146,4 +152,17 @@ export function memoryHistoryChunkSourceAuthorityPredicate(
       WHERE ${authority}
     )
   `;
+}
+
+export function memoryHistoryChunkSourceAuthorityPredicate(
+  aliases?: JoinedHistorySourceAliases
+): Prisma.Sql {
+  return memoryHistorySourceAuthorityPredicate("CHUNK", aliases);
+}
+
+/** Round equivalent of the exact current-source authority fence. */
+export function memoryHistoryRoundSourceAuthorityPredicate(
+  aliases?: JoinedHistorySourceAliases
+): Prisma.Sql {
+  return memoryHistorySourceAuthorityPredicate("ROUND", aliases);
 }

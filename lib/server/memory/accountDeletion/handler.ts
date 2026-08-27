@@ -193,6 +193,8 @@ async function purgeReusableAndPrivateMemory(
   await tx.chatMemoryDigestChunk.deleteMany({ where: { userId } });
   await tx.chatMemoryDigestMessage.deleteMany({ where: { userId } });
   await tx.chatMemoryDigest.deleteMany({ where: { userId } });
+  await tx.memoryRecallRoundMessage.deleteMany({ where: { userId } });
+  await tx.memoryRecallRound.deleteMany({ where: { userId } });
   await tx.memoryRecallChunkMessage.deleteMany({ where: { userId } });
   await tx.memoryRecallChunk.deleteMany({ where: { userId } });
   await tx.chatMemoryCheckpointMessage.deleteMany({ where: { userId } });
@@ -322,6 +324,8 @@ export async function inspectAccountMemoryDeletionResiduals(
       UNION ALL SELECT 'checkpoint-messages', COUNT(*)::integer FROM "ChatMemoryCheckpointMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'chunks', COUNT(*)::integer FROM "MemoryRecallChunk" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'chunk-messages', COUNT(*)::integer FROM "MemoryRecallChunkMessage" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'rounds', COUNT(*)::integer FROM "MemoryRecallRound" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'round-messages', COUNT(*)::integer FROM "MemoryRecallRoundMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'digests', COUNT(*)::integer FROM "ChatMemoryDigest" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'digest-chunks', COUNT(*)::integer FROM "ChatMemoryDigestChunk" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'digest-messages', COUNT(*)::integer FROM "ChatMemoryDigestMessage" WHERE "userId" = ${input.userId}

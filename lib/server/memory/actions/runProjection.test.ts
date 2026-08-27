@@ -16,6 +16,7 @@ function memoryRef(runId = "run-1"): string {
       factVersionId: "version-1",
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      recallRoundId: null,
       sourceChatId: null,
       sourceMessageIds: []
     }
@@ -295,6 +296,7 @@ describe("Memory run action projection", () => {
         factVersionId: "version-2",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: null,
         sourceMessageIds: []
       }

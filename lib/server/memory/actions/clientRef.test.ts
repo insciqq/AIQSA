@@ -17,6 +17,7 @@ describe("Memory client refs", () => {
         factVersionId: "version-private-1",
         itemType: "FACT_VERSION",
         recallChunkId: null,
+        recallRoundId: null,
         sourceChatId: null,
         sourceMessageIds: []
       }
@@ -40,6 +41,7 @@ describe("Memory client refs", () => {
         factVersionId: null,
         itemType: "RECALL_CHUNK",
         recallChunkId: "chunk-1",
+        recallRoundId: null,
         sourceChatId: "chat-1",
         sourceMessageIds: ["message-1"]
       }

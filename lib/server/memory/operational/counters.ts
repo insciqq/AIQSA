@@ -4,6 +4,9 @@ export const MEMORY_OPERATIONAL_COUNTER_KEYS = Object.freeze([
   "digestNoop",
   "digestSegmentsProcessed",
   "digestSourceChunksProcessed",
+  "contextualProviderRequests",
+  "contextualRoundsFallback",
+  "contextualRoundsGenerated",
   "embeddingBatchItems",
   "embeddingFailedItems",
   "embeddingProviderRequests",
@@ -15,7 +18,10 @@ export const MEMORY_OPERATIONAL_COUNTER_KEYS = Object.freeze([
   "historyMessageContentRowsLoaded",
   "historyMessagesProjected",
   "historyModelRunRowsLoaded",
-  "historyPathMetadataRowsRead"
+  "historyPathMetadataRowsRead",
+  "historyRoundsBuilt",
+  "historyRoundsReplaced",
+  "historyRoundsReused"
 ] as const);
 
 export type MemoryOperationalCounterKey =

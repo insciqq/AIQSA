@@ -48,6 +48,10 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
 import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
 
 type SourceActionClient = Pick<
@@ -65,6 +69,8 @@ type SourceActionClient = Pick<
   | "memoryScope"
   | "memoryRecallChunk"
   | "memoryRecallChunkMessage"
+  | "memoryRecallRound"
+  | "memoryRecallRoundMessage"
   | "memorySuppression"
   | "message"
   | "memoryRetrievalAttempt"
@@ -88,6 +94,10 @@ export type MemoryRecallSourceMutationInput = Readonly<{
   contentHash: string;
   messageIds: readonly string[];
   requestNonce: string;
+  round?: Readonly<{
+    contentHash: string;
+    id: string;
+  }>;
   sourceRevision: number;
 }>;
 
@@ -128,14 +138,19 @@ function digestIdFromFeatureSnapshot(value: unknown): string | null {
     : null;
 }
 
-function recallSourceSuppressionId(input: Readonly<{
-  chunkId: string;
+export function recallSourceSuppressionId(input: Readonly<{
   messageId: string;
   requestNonce: string;
   userId: string;
-}>): string {
+}> & (
+  | Readonly<{ chunkId: string; roundId?: never }>
+  | Readonly<{ chunkId?: never; roundId: string }>
+)): string {
   return memorySha256({
-    chunkId: input.chunkId,
+    ...(input.roundId
+      ? { roundId: input.roundId }
+      // Preserve the already-issued chunk fingerprint byte-for-byte.
+      : { chunkId: input.chunkId }),
     domain: "aiqsa.memory.source-recall-forget",
     messageId: input.messageId,
     requestNonce: input.requestNonce,
@@ -175,11 +190,17 @@ export function createPrismaMemoryRecallSourceMutationRepository(
         if (!sourceChat?.activeLeafMessageId) {
           throw new MemorySourceActionError("memory_not_found");
         }
-        const [chunk, checkpoint, joins, messages, checkpointMessages] = await Promise.all([
+        const [
+          chunk,
+          round,
+          checkpoint,
+          joins,
+          messages,
+          checkpointMessages
+        ] = await Promise.all([
           tx.memoryRecallChunk.findFirst({
             select: { id: true },
             where: {
-              branchGeneration: mutation.branchGeneration,
               chatId: mutation.chatId,
               chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
               contentHash: mutation.contentHash,
@@ -187,11 +208,35 @@ export function createPrismaMemoryRecallSourceMutationRepository(
               redactionState: { not: "EXCLUDED" },
               safetyClass: { in: ["NORMAL", "SENSITIVE"] },
               sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-              sourceRevisionAtCreation: mutation.sourceRevision,
               state: "ACTIVE",
-              userId
+              userId,
+              ...(mutation.round ? {} : {
+                branchGeneration: mutation.branchGeneration,
+                sourceRevisionAtCreation: mutation.sourceRevision
+              })
             }
           }),
+          mutation.round
+            ? tx.memoryRecallRound.findFirst({
+                select: { id: true },
+                where: {
+                  branchGeneration: mutation.branchGeneration,
+                  chatId: mutation.chatId,
+                  contentHash: mutation.round.contentHash,
+                  contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+                  contextualKeyState: { in: ["GENERATED", "RAW_FALLBACK"] },
+                  id: mutation.round.id,
+                  parentChunkId: mutation.chunkId,
+                  projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+                  redactionState: { not: "EXCLUDED" },
+                  safetyClass: { in: ["NORMAL", "SENSITIVE"] },
+                  sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+                  sourceRevisionAtCreation: mutation.sourceRevision,
+                  state: "ACTIVE",
+                  userId
+                }
+              })
+            : Promise.resolve(null),
           tx.chatMemoryCheckpoint.findUnique({
             select: {
               activeLeafMessageId: true,
@@ -203,11 +248,17 @@ export function createPrismaMemoryRecallSourceMutationRepository(
             },
             where: { userId_chatId: { chatId: mutation.chatId, userId } }
           }),
-          tx.memoryRecallChunkMessage.findMany({
-            orderBy: { ordinal: "asc" },
-            select: { chatId: true, messageId: true, sourceMessageUpdatedAt: true },
-            where: { chunkId: mutation.chunkId, userId }
-          }),
+          mutation.round
+            ? tx.memoryRecallRoundMessage.findMany({
+                orderBy: { ordinal: "asc" },
+                select: { chatId: true, messageId: true, sourceMessageUpdatedAt: true },
+                where: { roundId: mutation.round.id, userId }
+              })
+            : tx.memoryRecallChunkMessage.findMany({
+                orderBy: { ordinal: "asc" },
+                select: { chatId: true, messageId: true, sourceMessageUpdatedAt: true },
+                where: { chunkId: mutation.chunkId, userId }
+              }),
           tx.message.findMany({
             select: { id: true, updatedAt: true },
             where: {
@@ -232,7 +283,8 @@ export function createPrismaMemoryRecallSourceMutationRepository(
           message.messageId,
           message.sourceMessageUpdatedAt.getTime()
         ]));
-        if (!chunk || checkpoint?.pipelineVersion !== MEMORY_HISTORY_INDEX_PIPELINE_VERSION ||
+        if (!chunk || (mutation.round !== undefined && !round) ||
+          checkpoint?.pipelineVersion !== MEMORY_HISTORY_INDEX_PIPELINE_VERSION ||
           checkpoint.status !== "READY" ||
           checkpoint.branchGeneration !== sourceChat.memoryBranchGeneration ||
           checkpoint.sourceRevision !== sourceChat.memorySourceRevision ||
@@ -259,7 +311,9 @@ export function createPrismaMemoryRecallSourceMutationRepository(
               messageId,
               scope: "SOURCE_MESSAGE",
               suppressionId: recallSourceSuppressionId({
-                chunkId: mutation.chunkId,
+                ...(mutation.round
+                  ? { roundId: mutation.round.id }
+                  : { chunkId: mutation.chunkId }),
                 messageId,
                 requestNonce: mutation.requestNonce,
                 userId
@@ -345,6 +399,7 @@ export function createMemorySourceActionService(input: Readonly<{
         id: true,
         itemType: true,
         recallChunkId: true,
+        recallRoundId: true,
         sourceBranchGenerationSnapshot: true,
         sourceChatIdSnapshot: true,
         sourceContentHashSnapshot: true,
@@ -363,6 +418,7 @@ export function createMemorySourceActionService(input: Readonly<{
     if (item && (item.itemType !== ref.target.itemType ||
       item.factVersionId !== ref.target.factVersionId ||
       item.recallChunkId !== ref.target.recallChunkId ||
+      item.recallRoundId !== ref.target.recallRoundId ||
       item.sourceChatIdSnapshot !== ref.target.sourceChatId ||
       (digestId === null &&
         !sameStrings(item.sourceMessageIdsSnapshot, ref.target.sourceMessageIds)))) {
@@ -485,10 +541,218 @@ export function createMemorySourceActionService(input: Readonly<{
       if (requestedOperation === "OPEN_SOURCE" && !sourceNavigation) {
         throw new MemorySourceActionError("memory_not_found");
       }
-      return { actionResultProof, item, ref, sourceNavigation, version };
+      return {
+        actionResultProof,
+        item,
+        recallMutation: null,
+        ref,
+        sourceNavigation,
+        version
+      };
     }
 
     if (!item) throw new MemorySourceActionError("memory_not_found");
+    if (ref.target.itemType === "RECALL_ROUND") {
+      if (!ref.target.recallRoundId || ref.target.recallChunkId !== null ||
+        !ref.target.sourceChatId || item.sourceBranchGenerationSnapshot === null ||
+        item.sourceContentHashSnapshot === null || item.sourceRevisionSnapshot === null ||
+        ref.target.sourceMessageIds.length === 0) {
+        throw new MemorySourceActionError("memory_not_found");
+      }
+      const round = await input.client.memoryRecallRound.findFirst({
+        select: {
+          branchGeneration: true,
+          chatId: true,
+          contentHash: true,
+          contextualKeyPolicyVersion: true,
+          contextualKeyState: true,
+          parentChunkId: true,
+          projectionVersion: true,
+          redactionState: true,
+          safetyClass: true,
+          sourceProjectionVersion: true,
+          sourceRevisionAtCreation: true,
+          state: true
+        },
+        where: { id: ref.target.recallRoundId, userId }
+      });
+      const [
+        parent,
+        chat,
+        checkpoint,
+        joins,
+        messages,
+        checkpointMessages,
+        sourceSuppressions
+      ] = await Promise.all([
+        input.client.memoryRecallChunk.findFirst({
+          select: {
+            branchGeneration: true,
+            chatId: true,
+            chunkingVersion: true,
+            contentHash: true,
+            id: true,
+            redactionState: true,
+            safetyClass: true,
+            sourceProjectionVersion: true,
+            sourceRevisionAtCreation: true,
+            state: true
+          },
+          where: { id: round?.parentChunkId ?? "", userId }
+        }),
+        input.client.chat.findFirst({
+          select: {
+            activeLeafMessageId: true,
+            id: true,
+            memoryBranchGeneration: true,
+            memoryMode: true,
+            memorySourceRevision: true
+          },
+          where: {
+            id: ref.target.sourceChatId,
+            permanentDeletionAt: null,
+            projectId: null,
+            userId
+          }
+        }),
+        input.client.chatMemoryCheckpoint.findUnique({
+          select: {
+            activeLeafMessageId: true,
+            branchGeneration: true,
+            lastIndexedMessageId: true,
+            pipelineVersion: true,
+            sourceRevision: true,
+            status: true
+          },
+          where: { userId_chatId: { chatId: ref.target.sourceChatId, userId } }
+        }),
+        input.client.memoryRecallRoundMessage.findMany({
+          orderBy: { ordinal: "asc" },
+          select: { chatId: true, messageId: true, sourceMessageUpdatedAt: true },
+          where: { roundId: ref.target.recallRoundId, userId }
+        }),
+        input.client.message.findMany({
+          select: { id: true, updatedAt: true },
+          where: {
+            chatId: ref.target.sourceChatId,
+            id: { in: [...ref.target.sourceMessageIds] }
+          }
+        }),
+        input.client.chatMemoryCheckpointMessage.findMany({
+          select: { messageId: true, sourceMessageUpdatedAt: true },
+          where: {
+            chatId: ref.target.sourceChatId,
+            messageId: { in: [...ref.target.sourceMessageIds] },
+            userId
+          }
+        }),
+        input.client.memorySuppression.findMany({
+          select: { id: true, sourceMessageId: true },
+          where: {
+            AND: [
+              { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+              {
+                OR: [
+                  { sourceBranchGeneration: null },
+                  { sourceBranchGeneration: item.sourceBranchGenerationSnapshot }
+                ]
+              }
+            ],
+            scope: "SOURCE_MESSAGE",
+            sourceChatId: ref.target.sourceChatId,
+            sourceMessageId: { in: [...ref.target.sourceMessageIds] },
+            userId
+          }
+        })
+      ]);
+      const joinedMessageIds = joins.map((join) => join.messageId);
+      const currentMessageUpdatedAt = new Map(messages.map((message) => [
+        message.id,
+        message.updatedAt.getTime()
+      ]));
+      const checkpointMessageUpdatedAt = new Map(checkpointMessages.map((message) => [
+        message.messageId,
+        message.sourceMessageUpdatedAt.getTime()
+      ]));
+      const exactForgetReplay = requestedOperation === "FORGET" &&
+        requestNonce !== undefined && sourceSuppressions.length > 0 &&
+        sourceSuppressions.every((suppression) =>
+          suppression.sourceMessageId !== null &&
+          ref.target.sourceMessageIds.includes(suppression.sourceMessageId) &&
+          suppression.id === recallSourceSuppressionId({
+            roundId: ref.target.recallRoundId!,
+            messageId: suppression.sourceMessageId,
+            requestNonce,
+            userId
+          })) &&
+        ref.target.sourceMessageIds.every((messageId) => sourceSuppressions.some((suppression) =>
+          suppression.sourceMessageId === messageId &&
+          suppression.id === recallSourceSuppressionId({
+            roundId: ref.target.recallRoundId!,
+            messageId,
+            requestNonce,
+            userId
+          })));
+      const checkpointCurrent = Boolean(chat && checkpoint && chat.activeLeafMessageId &&
+        checkpoint.pipelineVersion === MEMORY_HISTORY_INDEX_PIPELINE_VERSION &&
+        checkpoint.status === "READY" &&
+        checkpoint.branchGeneration === chat.memoryBranchGeneration &&
+        checkpoint.sourceRevision === chat.memorySourceRevision &&
+        checkpoint.activeLeafMessageId === chat.activeLeafMessageId &&
+        checkpoint.lastIndexedMessageId === checkpoint.activeLeafMessageId);
+      const currentRoundMap = Boolean(chat && joins.length > 0 &&
+        sameStrings(joinedMessageIds, item.sourceMessageIdsSnapshot) &&
+        sameStrings(joinedMessageIds, ref.target.sourceMessageIds) &&
+        joins.every((join) => join.chatId === chat.id &&
+          currentMessageUpdatedAt.get(join.messageId) ===
+            join.sourceMessageUpdatedAt.getTime() &&
+          checkpointMessageUpdatedAt.get(join.messageId) ===
+            join.sourceMessageUpdatedAt.getTime()));
+      if (!round || !parent || !chat || !checkpoint || !checkpointCurrent ||
+        (sourceSuppressions.length > 0 && !exactForgetReplay) ||
+        round.chatId !== chat.id || round.state !== "ACTIVE" ||
+        round.projectionVersion !== MEMORY_RECALL_ROUND_PROJECTION_VERSION ||
+        round.contextualKeyPolicyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
+        (round.contextualKeyState !== "GENERATED" &&
+          round.contextualKeyState !== "RAW_FALLBACK") ||
+        round.sourceProjectionVersion !== MEMORY_HISTORY_SOURCE_PROJECTION_VERSION ||
+        round.redactionState === "EXCLUDED" ||
+        (round.safetyClass !== "NORMAL" && round.safetyClass !== "SENSITIVE") ||
+        round.branchGeneration !== item.sourceBranchGenerationSnapshot ||
+        round.contentHash !== item.sourceContentHashSnapshot ||
+        round.sourceRevisionAtCreation !== item.sourceRevisionSnapshot ||
+        parent.chatId !== chat.id || parent.state !== "ACTIVE" ||
+        parent.chunkingVersion !== MEMORY_HISTORY_CHUNKING_VERSION ||
+        parent.sourceProjectionVersion !== MEMORY_HISTORY_SOURCE_PROJECTION_VERSION ||
+        parent.redactionState === "EXCLUDED" ||
+        (parent.safetyClass !== "NORMAL" && parent.safetyClass !== "SENSITIVE") ||
+        chat.memoryMode !== "NORMAL" || !currentRoundMap) {
+        throw new MemorySourceActionError("memory_not_found");
+      }
+      return {
+        actionResultProof,
+        item,
+        recallMutation: {
+          branchGeneration: item.sourceBranchGenerationSnapshot,
+          chatId: chat.id,
+          chunkId: parent.id,
+          contentHash: parent.contentHash,
+          messageIds: ref.target.sourceMessageIds,
+          requestNonce: requestNonce ?? "",
+          round: { contentHash: round.contentHash, id: ref.target.recallRoundId },
+          sourceRevision: item.sourceRevisionSnapshot
+        },
+        ref,
+        sourceNavigation: {
+          chatId: chat.id,
+          messageId: ref.target.sourceMessageIds[0]!
+        },
+        version: null
+      };
+    }
+    if (ref.target.itemType !== "RECALL_CHUNK" || ref.target.recallRoundId !== null) {
+      throw new MemorySourceActionError("memory_not_found");
+    }
     if (!ref.target.recallChunkId || !ref.target.sourceChatId ||
       item.sourceBranchGenerationSnapshot === null || item.sourceContentHashSnapshot === null ||
       item.sourceRevisionSnapshot === null || ref.target.sourceMessageIds.length === 0) {
@@ -709,6 +973,15 @@ export function createMemorySourceActionService(input: Readonly<{
     return {
       actionResultProof,
       item,
+      recallMutation: {
+        branchGeneration: item.sourceBranchGenerationSnapshot,
+        chatId: chat.id,
+        chunkId: ref.target.recallChunkId,
+        contentHash: item.sourceContentHashSnapshot,
+        messageIds: ref.target.sourceMessageIds,
+        requestNonce: requestNonce ?? "",
+        sourceRevision: item.sourceRevisionSnapshot
+      },
       ref,
       sourceNavigation: {
         chatId: chat.id,
@@ -817,6 +1090,7 @@ export function createMemorySourceActionService(input: Readonly<{
               modelRunId: ref.originatingRunId,
               modelRunMemoryItemId: item.id,
               recallChunkId: ref.target.recallChunkId,
+              recallRoundId: ref.target.recallRoundId,
               requestId: actionInput.requestNonce,
               sourceChatIdSnapshot: ref.target.sourceChatId,
               targetKind: ref.target.itemType,
@@ -827,12 +1101,9 @@ export function createMemorySourceActionService(input: Readonly<{
         return { status: "COMMITTED" };
       }
 
-      if (ref.target.itemType === "RECALL_CHUNK") {
-        if (!item || !ref.target.recallChunkId || !ref.target.sourceChatId ||
-          item.sourceBranchGenerationSnapshot === null ||
-          item.sourceContentHashSnapshot === null ||
-          item.sourceRevisionSnapshot === null ||
-          ref.target.sourceMessageIds.length === 0) {
+      if (ref.target.itemType === "RECALL_CHUNK" ||
+        ref.target.itemType === "RECALL_ROUND") {
+        if (!item || !target.recallMutation) {
           throw new MemorySourceActionError("memory_not_found");
         }
         if (actionInput.action === "CORRECT") {
@@ -871,13 +1142,8 @@ export function createMemorySourceActionService(input: Readonly<{
             throw new MemorySourceActionError("memory_action_failed");
           }
           await input.recallMutationRepository.suppress(userId, {
-            branchGeneration: item.sourceBranchGenerationSnapshot,
-            chatId: ref.target.sourceChatId,
-            chunkId: ref.target.recallChunkId,
-            contentHash: item.sourceContentHashSnapshot,
-            messageIds: ref.target.sourceMessageIds,
-            requestNonce: actionInput.requestNonce,
-            sourceRevision: item.sourceRevisionSnapshot
+            ...target.recallMutation,
+            requestNonce: actionInput.requestNonce
           });
           return { status: "COMMITTED" };
         }

@@ -3,7 +3,7 @@ import { prisma } from "../../prisma";
 import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v2";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v3";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 
 type CountRow = Readonly<Record<string, string>>;
@@ -74,10 +74,17 @@ export type MemoryOperationalSnapshot = Readonly<{
   history: Readonly<{
     chunksBuilt: number;
     chunksReplaced: number;
+    chunksReused: number;
+    contextualProviderRequests: number;
+    contextualRoundsFallback: number;
+    contextualRoundsGenerated: number;
     digestFullRebuild: number;
     digestIncremental: number;
     digestNoop: number;
     messagesProjected: number;
+    roundsBuilt: number;
+    roundsReplaced: number;
+    roundsReused: number;
   }>;
   latencies: readonly MemoryOperationalDistribution[];
   observations: Readonly<{
@@ -379,6 +386,41 @@ export async function loadMemoryOperationalSnapshot(
               AND "completedAt" < ${input.to}
           )::text AS "historyChunksReplaced",
           (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyChunksReused')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyChunksReused",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyRoundsBuilt')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyRoundsBuilt",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyRoundsReplaced')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyRoundsReplaced",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyRoundsReused')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyRoundsReused",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'contextualProviderRequests')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "contextualProviderRequests",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'contextualRoundsFallback')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "contextualRoundsFallback",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'contextualRoundsGenerated')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "contextualRoundsGenerated",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
               'digestNoop')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
               AND "completedAt" < ${input.to}
@@ -552,10 +594,17 @@ export async function loadMemoryOperationalSnapshot(
     history: Object.freeze({
       chunksBuilt: safeCount(counts.historyChunksBuilt),
       chunksReplaced: safeCount(counts.historyChunksReplaced),
+      chunksReused: safeCount(counts.historyChunksReused),
+      contextualProviderRequests: safeCount(counts.contextualProviderRequests),
+      contextualRoundsFallback: safeCount(counts.contextualRoundsFallback),
+      contextualRoundsGenerated: safeCount(counts.contextualRoundsGenerated),
       digestFullRebuild: safeCount(counts.digestFullRebuild),
       digestIncremental: safeCount(counts.digestIncremental),
       digestNoop: safeCount(counts.digestNoop),
-      messagesProjected: safeCount(counts.historyMessagesProjected)
+      messagesProjected: safeCount(counts.historyMessagesProjected),
+      roundsBuilt: safeCount(counts.historyRoundsBuilt),
+      roundsReplaced: safeCount(counts.historyRoundsReplaced),
+      roundsReused: safeCount(counts.historyRoundsReused)
     }),
     latencies: Object.freeze(latencyRows.map(distribution)),
     observations: Object.freeze({

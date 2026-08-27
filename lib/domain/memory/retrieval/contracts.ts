@@ -20,7 +20,10 @@ export type {
   MemoryTemporalIntent
 } from "../../../contracts/memoryRetrieval";
 
-export type MemoryRetrievalItemType = "FACT_VERSION" | "RECALL_CHUNK";
+export type MemoryRetrievalItemType =
+  | "FACT_VERSION"
+  | "RECALL_CHUNK"
+  | "RECALL_ROUND";
 export type MemoryRetrievalDirectness = "DIRECT" | "INFERRED" | "PARAPHRASED";
 export type MemoryRetrievalTemperatureClass = "COLD" | "HOT" | "WARM";
 export type MemoryRetrievalHistorySafetyClass =
@@ -136,6 +139,8 @@ export type MemoryCandidateMetadata = Readonly<{
   directness: MemoryRetrievalDirectness | null;
   dimensionKey: string | null;
   entityIds: readonly string[];
+  /** Exact ordered-message-set identity shared by equivalent history projections. */
+  evidenceRootHash?: string | null;
   expectedAt: Date | null;
   expiresAt: Date | null;
   factId: string | null;
@@ -154,6 +159,7 @@ export type MemoryCandidateMetadata = Readonly<{
   occurredFrom: Date | null;
   occurredTo: Date | null;
   pinned: boolean;
+  parentChunkId?: string | null;
   predicateKey: string | null;
   relationDepth: number;
   scopeAffinity: number;
@@ -224,7 +230,8 @@ export type MemoryCoreCandidate = Readonly<{
 export const MEMORY_SAFE_PROJECTION_KINDS = [
   "CHAT_DIGEST_SAFE_TEXT",
   "FACT_DISPLAY_TEXT",
-  "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
+  "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+  "RECALL_ROUND_RAW_SAFE_TEXT"
 ] as const;
 
 export type MemorySafeProjectionKind = (typeof MEMORY_SAFE_PROJECTION_KINDS)[number];
