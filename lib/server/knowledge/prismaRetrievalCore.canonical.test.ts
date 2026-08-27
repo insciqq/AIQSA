@@ -379,9 +379,10 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(result.passages[0]!.layoutKind).toBe("table_row");
     expect(client.$queryRaw).toHaveBeenCalledOnce();
     const neighborSql = sqlText(client.$queryRaw.mock.calls[0]![0]);
+    // One generic language-neutral lexical configuration only (FR-9).
     expect(neighborSql).toContain("websearch_to_tsquery('simple'::regconfig");
-    expect(neighborSql).toContain("websearch_to_tsquery('english'::regconfig");
-    expect(neighborSql).toContain("websearch_to_tsquery('russian'::regconfig");
+    expect(neighborSql).not.toContain("'english'::regconfig");
+    expect(neighborSql).not.toContain("'russian'::regconfig");
     expect(neighborSql).toContain("<=>");
     expect(neighborSql).toContain(`60.0 + candidate."laneRank"`);
     expect(neighborSql).toContain(

@@ -20,16 +20,25 @@ import {
   KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION,
   KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION,
-  KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
+  KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
+  KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION,
+  KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import type {
   KnowledgeNormalizedBlock,
   KnowledgeNormalizedFieldGroup,
   StoredKnowledgeNormalizedDocument
 } from "./normalizedDocument";
+import type { KnowledgeTokenCounter } from "./tokenizer/types";
 
 export const KNOWLEDGE_CHUNK_MAX_TOKENS = 400;
 export const KNOWLEDGE_CHUNK_OVERLAP_TOKENS = 48;
+/**
+ * FR-14 child-to-parent expansion budget in model tokens, counted with the
+ * profile token counter. Constant only in this slice; the expansion itself is
+ * a later vertical slice.
+ */
+export const KNOWLEDGE_PARENT_CONTEXT_MAX_TOKENS = 900;
 /** Hard defensive ceiling; v2 admission is token-oriented. */
 export const KNOWLEDGE_CHUNK_MAX_CHARS = 12_000;
 export const KNOWLEDGE_CHUNK_MAX_UTF8_BYTES = 48_000;
@@ -43,6 +52,14 @@ export const KNOWLEDGE_FURNITURE_EDGE_FRACTION = 0.15;
 export const KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION = 0.5;
 export const KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT = 0.05;
 
+export type KnowledgeChunkLayoutKind =
+  | "body"
+  | "field_ambiguous"
+  | "field_pair"
+  | "table_ambiguous"
+  | "table_row"
+  | "table_row_projection";
+
 export type KnowledgeChunkPlanEntry = Readonly<{
   contentHash: string;
   contextPrefix: string;
@@ -51,6 +68,9 @@ export type KnowledgeChunkPlanEntry = Readonly<{
   embeddingTextHash: string;
   headingPath: readonly string[];
   index: number;
+  /** Structured layout identity (FR-12): persisted on the passage row instead
+   * of being encoded as an English marker inside the dense embedding text. */
+  layoutKind: KnowledgeChunkLayoutKind;
   page: number;
   pageEnd: number;
   sourceBlockEnd: number;
@@ -122,6 +142,22 @@ export function approximateKnowledgeTokenCount(text: string): number {
     Math.ceil(codePoints / 2),
     hostileRunEstimate
   );
+}
+
+/**
+ * Model-profile token counting for token-sized chunking profiles. Profile 7
+ * counts with the deployment's resolved token counter (model-native BPE for
+ * the built-in Qwen3 embedding profile, the generic Unicode estimator for
+ * custom deployments); profile 6 keeps the generic estimator exactly. Both
+ * entry points below are synchronous, so the active counter is scoped to one
+ * call with try/finally and never observed concurrently.
+ */
+let activeTokenCounter: KnowledgeTokenCounter | null = null;
+
+function sizedTokenCount(text: string): number {
+  return activeTokenCounter
+    ? Math.max(1, activeTokenCounter.countTokens(text))
+    : approximateKnowledgeTokenCount(text);
 }
 
 function tokenBoundaries(text: string): Array<{ end: number; start: number }> {
@@ -359,7 +395,7 @@ function boundedChunkText(text: string, currentSizing = false): boolean {
     ? KNOWLEDGE_CHUNK_MAX_TOKENS - KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS - 4
     : KNOWLEDGE_CHUNK_MAX_TOKENS;
   const tokenCount = currentSizing
-    ? approximateKnowledgeTokenCount(text)
+    ? sizedTokenCount(text)
     : legacyKnowledgeTokenCount(text);
   return Boolean(text.trim()) && text.length <= KNOWLEDGE_CHUNK_MAX_CHARS &&
     tokenCount <= maximumTokens;
@@ -663,7 +699,7 @@ function profile4TableSegments(
         pageStart: block.locator.pageStart,
         text,
         tokenCount: currentSizing
-          ? approximateKnowledgeTokenCount(text)
+          ? sizedTokenCount(text)
           : legacyKnowledgeTokenCount(text),
         type: block.type
       }));
@@ -704,7 +740,7 @@ function profile4TableSegments(
       pageStart: block.locator.pageStart,
       text: projection.text,
       tokenCount: currentSizing
-        ? approximateKnowledgeTokenCount(projection.text)
+        ? sizedTokenCount(projection.text)
         : legacyKnowledgeTokenCount(projection.text),
       type: block.type
     })));
@@ -972,7 +1008,7 @@ function profile4FieldSegments(
         pageStart: group.locator.pageStart,
         text,
         tokenCount: currentSizing
-          ? approximateKnowledgeTokenCount(text)
+          ? sizedTokenCount(text)
           : legacyKnowledgeTokenCount(text),
         type: "table" as const
       });
@@ -1008,7 +1044,7 @@ function profile4FieldSegments(
       pageStart: group.locator.pageStart,
       text: field.text,
       tokenCount: currentSizing
-        ? approximateKnowledgeTokenCount(field.text)
+        ? sizedTokenCount(field.text)
         : legacyKnowledgeTokenCount(field.text),
       type: "table"
     })];
@@ -1022,7 +1058,7 @@ function structuralSegments(
   const blocks = document.blocks;
   const excluded = repeatedFurniture(document, profileVersion);
   const result: Segment[] = [];
-  const currentSizing = profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION;
+  const currentSizing = profileVersion >= KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
   const fieldGroupsByReadingOrder = new Map<number, KnowledgeNormalizedFieldGroup[]>();
   if (profileVersion >= KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION) {
     for (const group of document.fieldGroups) {
@@ -1109,36 +1145,50 @@ function contextPrefix(
   document: StoredKnowledgeNormalizedDocument,
   segment: Segment,
   withLayoutEvidence: boolean,
-  currentSizing: boolean
+  currentSizing: boolean,
+  neutralFormat: boolean
 ): string {
-  const layout = !withLayoutEvidence
-    ? []
-    : segment.layoutKind === "table_ambiguous"
-      ? ["Evidence layout: table_ambiguous_v1"]
-      : segment.layoutKind === "table_row"
-        ? ["Evidence layout: table_row_v1"]
-        : segment.layoutKind === "table_row_projection"
-          ? ["Evidence layout: table_row_v1", "Evidence unit: table_row_projection_v1"]
-          : segment.layoutKind === "field_pair"
-            ? ["Evidence layout: field_pair_v1"]
-            : segment.layoutKind === "field_ambiguous"
-              ? ["Evidence layout: field_ambiguous_v1"]
-              : [];
-  const parts = [
-    ...layout,
-    document.source.displayName
-      ? `Source: ${normalizedContextValue(document.source.displayName)}`
-      : null,
-    document.title ? `Title: ${normalizedContextValue(document.title)}` : null,
-    segment.headingPath.length > 0
-      ? `Section: ${segment.headingPath.map(normalizedContextValue).join(" › ")}`
-      : null,
-    `Location: ${segment.pageStart === segment.pageEnd
-      ? `page ${segment.pageStart}`
-      : `pages ${segment.pageStart}–${segment.pageEnd}`}`
-  ].filter((value): value is string => Boolean(value));
+  // Profile 7 (FR-12): language-neutral embedding text carries only the
+  // source title and the heading path before the atomic evidence text. Page,
+  // bbox, and layout kind stay structured metadata on the passage row
+  // (documentContext / page columns) and never enter the dense text; layout
+  // identity for profile >= 4 always comes from documentContext, so the old
+  // English "Evidence layout:" markers are no longer written anywhere.
+  const parts = neutralFormat
+    ? [
+        normalizedContextValue(document.source.displayName || document.title || ""),
+        segment.headingPath
+          .map(normalizedContextValue)
+          .filter(Boolean)
+          .join(" / ")
+      ].filter(Boolean)
+    : [
+        ...(!withLayoutEvidence
+          ? []
+          : segment.layoutKind === "table_ambiguous"
+            ? ["Evidence layout: table_ambiguous_v1"]
+            : segment.layoutKind === "table_row"
+              ? ["Evidence layout: table_row_v1"]
+              : segment.layoutKind === "table_row_projection"
+                ? ["Evidence layout: table_row_v1", "Evidence unit: table_row_projection_v1"]
+                : segment.layoutKind === "field_pair"
+                  ? ["Evidence layout: field_pair_v1"]
+                  : segment.layoutKind === "field_ambiguous"
+                    ? ["Evidence layout: field_ambiguous_v1"]
+                    : []),
+        document.source.displayName
+          ? `Source: ${normalizedContextValue(document.source.displayName)}`
+          : null,
+        document.title ? `Title: ${normalizedContextValue(document.title)}` : null,
+        segment.headingPath.length > 0
+          ? `Section: ${segment.headingPath.map(normalizedContextValue).join(" › ")}`
+          : null,
+        `Location: ${segment.pageStart === segment.pageEnd
+          ? `page ${segment.pageStart}`
+          : `pages ${segment.pageStart}–${segment.pageEnd}`}`
+      ].filter((value): value is string => Boolean(value));
   const value = parts.join("\n").slice(0, 1_024);
-  if (!currentSizing || approximateKnowledgeTokenCount(value) <=
+  if (!currentSizing || sizedTokenCount(value) <=
     KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS) return value;
   let low = 1;
   let high = value.length;
@@ -1150,7 +1200,7 @@ function contextPrefix(
       continue;
     }
     const candidate = value.slice(0, midpoint).trimEnd();
-    if (candidate && approximateKnowledgeTokenCount(candidate) <=
+    if (candidate && sizedTokenCount(candidate) <=
       KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS) {
       acceptedEnd = midpoint;
       low = midpoint + 1;
@@ -1178,7 +1228,7 @@ function currentEmbeddingInputFits(prefix: string, text: string): boolean {
   const embeddingText = currentEmbeddingText(prefix, text);
   return embeddingText.length <= Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) &&
     Buffer.byteLength(embeddingText, "utf8") <= KNOWLEDGE_CHUNK_MAX_UTF8_BYTES &&
-    approximateKnowledgeTokenCount(embeddingText) <= KNOWLEDGE_CHUNK_MAX_TOKENS;
+    sizedTokenCount(embeddingText) <= KNOWLEDGE_CHUNK_MAX_TOKENS;
 }
 
 function currentOverlapStart(text: string, start: number, end: number): number {
@@ -1186,7 +1236,7 @@ function currentOverlapStart(text: string, start: number, end: number): number {
   let overlapStart = end;
   for (let index = boundaries.length - 1; index >= 0; index -= 1) {
     const candidate = start + boundaries[index]!.start;
-    if (approximateKnowledgeTokenCount(text.slice(candidate, end)) >
+    if (sizedTokenCount(text.slice(candidate, end)) >
       KNOWLEDGE_CHUNK_OVERLAP_TOKENS) break;
     overlapStart = candidate;
   }
@@ -1196,13 +1246,14 @@ function currentOverlapStart(text: string, start: number, end: number): number {
 function fitCurrentEmbeddingSegments(
   document: StoredKnowledgeNormalizedDocument,
   segment: Segment,
-  withLayoutEvidence: boolean
+  withLayoutEvidence: boolean,
+  neutralFormat: boolean
 ): Segment[] {
-  const prefix = contextPrefix(document, segment, withLayoutEvidence, true);
+  const prefix = contextPrefix(document, segment, withLayoutEvidence, true, neutralFormat);
   if (currentEmbeddingInputFits(prefix, segment.text)) {
     return [Object.freeze({
       ...segment,
-      tokenCount: approximateKnowledgeTokenCount(segment.text)
+      tokenCount: sizedTokenCount(segment.text)
     })];
   }
   if (segment.documentContext !== null) {
@@ -1246,7 +1297,7 @@ function fitCurrentEmbeddingSegments(
     parts.push(Object.freeze({
       ...segment,
       text,
-      tokenCount: approximateKnowledgeTokenCount(text)
+      tokenCount: sizedTokenCount(text)
     }));
     if (acceptedEnd >= segment.text.length) break;
     start = segment.type === "table"
@@ -1263,10 +1314,11 @@ function planEntry(
   index: number,
   withContext: boolean,
   withLayoutEvidence: boolean,
-  currentSizing: boolean
+  currentSizing: boolean,
+  neutralFormat: boolean
 ): KnowledgeChunkPlanEntry {
   const prefix = withContext
-    ? contextPrefix(document, segment, withLayoutEvidence, currentSizing)
+    ? contextPrefix(document, segment, withLayoutEvidence, currentSizing, neutralFormat)
     : "";
   const embeddingText = prefix ? `${prefix}\n\n${segment.text}` : segment.text;
   if (currentSizing && !currentEmbeddingInputFits(prefix, segment.text)) {
@@ -1286,6 +1338,7 @@ function planEntry(
     embeddingTextHash: sha256(embeddingText),
     headingPath: Object.freeze([...segment.headingPath]),
     index,
+    layoutKind: withLayoutEvidence ? segment.layoutKind : "body",
     page: segment.pageStart,
     pageEnd: segment.pageEnd,
     sourceBlockEnd: segment.blockEnd,
@@ -1293,7 +1346,7 @@ function planEntry(
     sourceBlockStart: segment.blockStart,
     text: segment.text,
     tokenCount: currentSizing
-      ? approximateKnowledgeTokenCount(segment.text)
+      ? sizedTokenCount(segment.text)
       : segment.tokenCount
   });
 }
@@ -1367,44 +1420,59 @@ export function chunkKnowledgeDocument(input: Readonly<{
   document: StoredKnowledgeNormalizedDocument;
   maxChunks: number;
   profileVersion: number;
+  /** Required for profile 7: the deployment-resolved model-profile counter. */
+  tokenCounter?: KnowledgeTokenCounter;
 }>): KnowledgeChunkPlanEntry[] {
+  const neutralFormat = input.profileVersion >=
+    KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION;
   if (
-    ![1, 2, 3, 4, 5, KNOWLEDGE_CHUNKING_PROFILE_VERSION].includes(input.profileVersion) ||
-    !Number.isSafeInteger(input.maxChunks) || input.maxChunks < 1
+    !Number.isSafeInteger(input.profileVersion) || input.profileVersion < 1 ||
+    input.profileVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
+    !Number.isSafeInteger(input.maxChunks) || input.maxChunks < 1 ||
+    (neutralFormat && !input.tokenCounter)
   ) throw new KnowledgeChunkingError("chunking_failed");
 
-  const structural = input.profileVersion === 1
-    ? legacyCharacterSegments(input.document)
-    : mergeStructuralSegments(structuralSegments(input.document, input.profileVersion));
-  const currentSizing = input.profileVersion === KNOWLEDGE_CHUNKING_PROFILE_VERSION;
-  const withLayoutEvidence = input.profileVersion >=
-    KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION;
-  const segments = currentSizing
-    ? structural.flatMap((segment) => fitCurrentEmbeddingSegments(
-        input.document,
-        segment,
-        withLayoutEvidence
-      ))
-    : structural;
-  if (segments.length === 0) throw new KnowledgeChunkingError("chunking_failed");
-  if (segments.length > input.maxChunks) {
-    throw new KnowledgeChunkingError("knowledge_chunk_limit_exceeded");
+  activeTokenCounter = neutralFormat ? input.tokenCounter ?? null : null;
+  try {
+    const structural = input.profileVersion === 1
+      ? legacyCharacterSegments(input.document)
+      : mergeStructuralSegments(structuralSegments(input.document, input.profileVersion));
+    const currentSizing = input.profileVersion >=
+      KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
+    const withLayoutEvidence = input.profileVersion >=
+      KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION;
+    const segments = currentSizing
+      ? structural.flatMap((segment) => fitCurrentEmbeddingSegments(
+          input.document,
+          segment,
+          withLayoutEvidence,
+          neutralFormat
+        ))
+      : structural;
+    if (segments.length === 0) throw new KnowledgeChunkingError("chunking_failed");
+    if (segments.length > input.maxChunks) {
+      throw new KnowledgeChunkingError("knowledge_chunk_limit_exceeded");
+    }
+    return segments.map((segment, index) => planEntry(
+      input.document,
+      segment,
+      index,
+      input.profileVersion >= 2,
+      withLayoutEvidence,
+      currentSizing,
+      neutralFormat
+    ));
+  } finally {
+    activeTokenCounter = null;
   }
-  return segments.map((segment, index) => planEntry(
-    input.document,
-    segment,
-    index,
-    input.profileVersion >= 2,
-    withLayoutEvidence,
-    currentSizing
-  ));
 }
 
 export function knowledgeEmbeddingBatches(
   chunks: readonly KnowledgeChunkPlanEntry[],
-  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION
+  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  tokenCounter?: KnowledgeTokenCounter
 ): Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> {
-  if (profileVersion < KNOWLEDGE_CHUNKING_PROFILE_VERSION) {
+  if (profileVersion < KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION) {
     const legacyBatches: Array<Readonly<{
       batchIndex: number;
       chunks: readonly KnowledgeChunkPlanEntry[];
@@ -1417,9 +1485,14 @@ export function knowledgeEmbeddingBatches(
     }
     return legacyBatches;
   }
-  if (profileVersion !== KNOWLEDGE_CHUNKING_PROFILE_VERSION) {
+  const neutralFormat = profileVersion >=
+    KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION;
+  if (profileVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
+    (neutralFormat && !tokenCounter)) {
     throw new KnowledgeChunkingError("chunking_failed");
   }
+  activeTokenCounter = neutralFormat ? tokenCounter ?? null : null;
+  try {
   const batches: Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> = [];
   let current: KnowledgeChunkPlanEntry[] = [];
   let currentTokens = 0;
@@ -1435,7 +1508,7 @@ export function knowledgeEmbeddingBatches(
     currentBytes = 0;
   };
   for (const chunk of chunks) {
-    const tokens = approximateKnowledgeTokenCount(chunk.embeddingText);
+    const tokens = sizedTokenCount(chunk.embeddingText);
     const bytes = Buffer.byteLength(chunk.embeddingText, "utf8");
     if (!chunk.embeddingText.trim() || chunk.embeddingText.length >
       Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) ||
@@ -1456,4 +1529,7 @@ export function knowledgeEmbeddingBatches(
   }
   flush();
   return batches;
+  } finally {
+    activeTokenCounter = null;
+  }
 }

@@ -20,12 +20,16 @@ export const embeddingModelPresets: readonly EmbeddingModelPreset[] = Object.fre
   {
     contextWindow: 32_768,
     default: true,
-    description: "Default multilingual retrieval preset; queries receive the retrieval instruction and documents remain bare.",
+    description: "Default multilingual retrieval preset; queries receive the private knowledge-base retrieval instruction and documents remain bare.",
     displayName: "Qwen3 Embedding 8B",
     id: DEFAULT_EMBEDDING_MODEL_PRESET_ID,
     nativeDimension: 4_096,
     providerFamily: "openrouter",
-    queryInstructionTemplate: "Instruct: Given a retrieval query, retrieve relevant passages that answer the query\nQuery: {text}",
+    // Private-KB retrieval semantics (FR-11). The template is part of the
+    // stored embedding configuration, hashed into the vector-space
+    // fingerprint, applied identically to every query language, and never
+    // translates or replaces the query text.
+    queryInstructionTemplate: "Instruct: Retrieve evidence passages from a private document knowledge base that best answer the query. Preserve exact names, identifiers, dates, numbers, units, and constraints.\nQuery: {text}",
     supportsMrl: true,
     targetDimension: 1_536,
     upstreamModelId: "qwen/qwen3-embedding-8b"

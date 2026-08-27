@@ -9,10 +9,10 @@ import {
   KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES_PER_PASSAGE,
   KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,
   knowledgeExactNormalizedValue,
-  knowledgeExactQueryValues,
-  knowledgeLexicalLanguage
+  knowledgeExactQueryValues
 } from "./hierarchicalIndex";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
+import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "./tokenizer/knowledgeTokenCounter";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 
 const config = {
@@ -70,7 +70,8 @@ function fixture() {
   const chunks = chunkKnowledgeDocument({
     document,
     maxChunks: 20,
-    profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+    profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+    tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
   });
   return { chunks, document };
 }
@@ -98,7 +99,7 @@ describe("Knowledge hierarchical index derivation", () => {
       document: {
         documentType: "application/pdf",
         fileName: "atlas-policy.pdf",
-        languageConfig: "mixed",
+        languages: ["en", "ru"],
         pageCount: 2,
         sourceName: "Atlas policy",
         tags: ["retention", "contract"],
@@ -114,11 +115,14 @@ describe("Knowledge hierarchical index derivation", () => {
       first.sections.map((section) => section.id)
     );
     expect(first.passages[1]).toMatchObject({
-      languageConfig: "russian",
+      languages: ["ru"],
       page: 1,
       text: "Контракт AX20260842 действует с 2026-08-18. Стоимость 840000."
     });
-    expect(first.passages[1]!.contextPrefix).toContain("Section: Условия");
+    // Language-neutral embedding format: source title and heading path only,
+    // no English labels and no page prose in the dense text.
+    expect(first.passages[1]!.contextPrefix).toBe("atlas-policy.pdf\nУсловия");
+    expect(first.passages[1]!.contextPrefix).not.toMatch(/Source:|Title:|Section:|Location:|Evidence layout/u);
 
     const values = (kind: (typeof first.exactEntries)[number]["kind"]) =>
       first.exactEntries.filter((entry) => entry.kind === kind).map((entry) => entry.value);
@@ -142,7 +146,7 @@ describe("Knowledge hierarchical index derivation", () => {
       .toBe(first.exactEntries.length);
   });
 
-  it("keeps legacy chunk fallback labeled and infers Russian without rewriting exact text", () => {
+  it("keeps legacy chunk fallback labeled without rewriting exact text", () => {
     const { chunks } = fixture();
     const russianChunk = chunks[1]!;
     const result = buildKnowledgeHierarchicalIndex({
@@ -155,9 +159,7 @@ describe("Knowledge hierarchical index derivation", () => {
     });
 
     expect(result.derivationMode).toBe("legacy_chunks");
-    expect(result.document.languageConfig).toBe("russian");
     expect(result.passages[0]).toMatchObject({
-      languageConfig: "russian",
       text: russianChunk.text
     });
   });
@@ -213,7 +215,6 @@ describe("Knowledge hierarchical index derivation", () => {
 
   it("normalizes exact values without stemming identifiers and rejects malformed chunk plans", () => {
     expect(knowledgeExactNormalizedValue("  SAFE-2718  ")).toBe("safe-2718");
-    expect(knowledgeLexicalLanguage(["ru", "en-US"], "ignored")).toBe("mixed");
     const { chunks, document } = fixture();
     expect(() => buildKnowledgeHierarchicalIndex({
       chunks: [{ ...chunks[0]!, index: 2 }],

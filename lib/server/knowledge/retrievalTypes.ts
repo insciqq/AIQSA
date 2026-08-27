@@ -155,6 +155,9 @@ export type KnowledgeBaseRetrievalEvidence = Readonly<{
   ordinal: number;
   state: "empty" | "indexing" | "ready";
   targetDimension: 1024 | 1536;
+  /** Content-free tokenizer identity (name:version[:asset fingerprint])
+   * derived from the pinned embedding profile; absent on older receipts. */
+  tokenizerProfile?: string;
   vectorSearch?: KnowledgeVectorSearchEvidence;
   vectorSpaceFingerprint: string;
 }>;

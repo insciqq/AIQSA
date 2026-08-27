@@ -4,6 +4,7 @@ import type { ParsedDocumentBlock } from "../parsing";
 import { withLayoutAwareTables } from "./layoutTables";
 import { chunkKnowledgeDocument } from "./chunking";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
+import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "./tokenizer/knowledgeTokenCounter";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 
 function positionedBlocks(rowCount = 3): readonly ParsedDocumentBlock[] {
@@ -110,7 +111,8 @@ describe("positioned loose-block table reconstruction", () => {
       const chunks = chunkKnowledgeDocument({
         document: normalized,
         maxChunks: 20,
-        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
       });
 
       expect(parsed.blocks).toHaveLength(4);
@@ -119,7 +121,7 @@ describe("positioned loose-block table reconstruction", () => {
       expect(parsed.warnings).toContain("table_extraction_degraded");
       expect(chunks.map((chunk) => chunk.text)).toEqual(["Metric", "Actual", "Alpha", "1.5"]);
       expect(chunks.every((chunk) => chunk.documentContext === null &&
-        chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1"))).toBe(true);
+        chunk.layoutKind === "table_ambiguous")).toBe(true);
     }
   );
 
@@ -154,7 +156,8 @@ describe("positioned loose-block table reconstruction", () => {
     const chunks = chunkKnowledgeDocument({
       document: normalized,
       maxChunks: 20,
-      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
     });
 
     expect(parsed.blocks).toHaveLength(4);
@@ -163,6 +166,6 @@ describe("positioned loose-block table reconstruction", () => {
     expect(parsed.warnings).toContain("table_extraction_degraded");
     expect(chunks.map((chunk) => chunk.text)).toEqual(["Metric", "Actual", "Alpha", "1.5"]);
     expect(chunks.every((chunk) => chunk.documentContext === null &&
-      chunk.contextPrefix.startsWith("Evidence layout: table_ambiguous_v1"))).toBe(true);
+      chunk.layoutKind === "table_ambiguous")).toBe(true);
   });
 });

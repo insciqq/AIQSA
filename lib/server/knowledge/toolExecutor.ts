@@ -78,6 +78,7 @@ import {
 } from "./rerankExecution";
 import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
+import { knowledgeTokenizerEvidenceLabel } from "./tokenizer/knowledgeTokenCounter";
 
 export { knowledgeRetrievalTool } from "./knowledgeTools";
 
@@ -313,6 +314,18 @@ function completedResult(
   };
 }
 
+/** Content-free tokenizer identity derived from the accepted embedding
+ * snapshot; recorded next to the vector-space fingerprint that already
+ * carries the index-profile identity. Never fails the operation. */
+function bindingTokenizerProfile(binding: KnowledgeAcceptedBinding): string | null {
+  try {
+    const snapshot = normalizeProviderExecutionSnapshot(binding.embeddingExecutionSnapshot);
+    return knowledgeTokenizerEvidenceLabel(snapshot.model.upstreamModelId);
+  } catch {
+    return null;
+  }
+}
+
 function baseEvidence(
   bindings: readonly KnowledgeAcceptedBinding[],
   candidateCounts: Readonly<Record<number, number>> = {},
@@ -326,6 +339,7 @@ function baseEvidence(
   return bindings.map((binding) => {
     const candidateCount = candidateCounts[binding.ordinal] ?? 0;
     const vectorSearch = vectorByBinding.get(binding.ordinal);
+    const tokenizerProfile = bindingTokenizerProfile(binding);
     return {
       baseContentRevision: binding.baseContentRevision,
       baseName: binding.baseName,
@@ -338,6 +352,7 @@ function baseEvidence(
         ? "indexing"
         : candidateCount === 0 && !readyWhenEmpty ? "empty" : "ready",
       targetDimension: binding.targetDimension,
+      ...(tokenizerProfile ? { tokenizerProfile } : {}),
       ...(vectorSearch ? { vectorSearch } : {}),
       vectorSpaceFingerprint: binding.vectorSpaceFingerprint
     };

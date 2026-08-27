@@ -454,6 +454,7 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       embeddingTextHash: "e".repeat(64),
       headingPath: [] as string[],
       index: 0,
+      layoutKind: "body" as const,
       page: 1,
       pageEnd: 1,
       sourceBlockEnd: 0,

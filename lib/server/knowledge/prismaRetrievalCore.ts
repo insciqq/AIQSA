@@ -7,7 +7,7 @@ import {
 } from "./canonicalSourceCandidates";
 import { decodeKnowledgeDocumentContext } from "./documentContext";
 import {
-  KNOWLEDGE_HIERARCHICAL_INDEX_VERSION,
+  KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS,
   knowledgeExactNormalizedValue,
   knowledgeExactQueryValues
 } from "./hierarchicalIndex";
@@ -52,6 +52,14 @@ const KNOWLEDGE_LINEAR_CONTEXT_MAX = 2;
 const KNOWLEDGE_TABLE_CONTEXT_MAX = 8;
 
 type RetrievalCoreClient = Pick<PrismaClient, "$queryRaw">;
+
+/** Ready compatible hierarchical index versions for retrieval reads. Each
+ * artifact contributes exactly one index (highest ready compatible version)
+ * so pre-cutover version-3 rows stay retrievable until superseded through the
+ * safe profile reindex, without double-counting any artifact. */
+const compatibleIndexVersionsSql = Prisma.sql`ANY(ARRAY[${Prisma.join([
+  ...KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS
+])}]::integer[])`;
 
 type QueryVector = Readonly<{
   bindingOrdinal: number;
@@ -348,6 +356,10 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."headingPath",
       passage."documentContext",
       CASE
+        -- Structured layout identity for current builds; the marker branches
+        -- below are decode-only compatibility for legacy rows whose layout
+        -- was encoded in the retired English contextPrefix markers.
+        WHEN passage."layoutKind" IS NOT NULL THEN passage."layoutKind"
         WHEN passage."documentContext"->'locator'->>'kind' = 'field_ambiguous'
           THEN 'field_ambiguous'::text
         WHEN passage."documentContext"->'locator'->>'kind' = 'field_pair'
@@ -366,8 +378,6 @@ function scopedPassagesSql(): Prisma.Sql {
       passage."sourceName",
       passage."text",
       passage."simpleSearchVector",
-      passage."englishSearchVector",
-      passage."russianSearchVector",
       embedding."embeddingDimension",
       embedding."embedding"
     FROM canonical_binding_sources AS source_binding
@@ -383,11 +393,16 @@ function scopedPassagesSql(): Prisma.Sql {
       ON source_artifact."id" = source_binding."artifactId"
      AND source_artifact."sourceVersionId" = source_binding."sourceVersionId"
      AND source_artifact."state" = 'ready'::"KnowledgeSourceArtifactState"
-    INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
-      ON hierarchy."sourceArtifactId" = source_artifact."id"
-     AND hierarchy."sourceVersionId" = source_artifact."sourceVersionId"
-     AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-     AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
+    INNER JOIN LATERAL (
+      SELECT candidate_hierarchy."id"
+      FROM "KnowledgeHierarchicalIndexArtifact" AS candidate_hierarchy
+      WHERE candidate_hierarchy."sourceArtifactId" = source_artifact."id"
+        AND candidate_hierarchy."sourceVersionId" = source_artifact."sourceVersionId"
+        AND candidate_hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
+        AND candidate_hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
+      ORDER BY candidate_hierarchy."schemaVersion" DESC
+      LIMIT 1
+    ) AS hierarchy ON TRUE
     INNER JOIN "KnowledgeArtifactPassageIndex" AS passage
       ON passage."indexArtifactId" = hierarchy."id"
     LEFT JOIN "KnowledgeArtifactPassageEmbedding" AS embedding
@@ -509,7 +524,7 @@ function knowledgeVectorLaneSql(input: Readonly<{
       INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
         ON hierarchy."id" = indexed_passage."indexArtifactId"
        AND hierarchy."state" = 'ready'::"KnowledgeHierarchicalIndexState"
-       AND hierarchy."schemaVersion" = ${KNOWLEDGE_HIERARCHICAL_INDEX_VERSION}
+       AND hierarchy."schemaVersion" = ${compatibleIndexVersionsSql}
       WHERE embedding."embeddingDimension" = ${input.vector.targetDimension}
         ${denseFloor}
         AND EXISTS (
@@ -566,29 +581,22 @@ function knowledgeVectorLaneSql(input: Readonly<{
   `;
 }
 
+/**
+ * One generic language-neutral lexical lane: Unicode-normalized queries
+ * against the PostgreSQL `simple` configuration only. No script detection,
+ * no per-language algorithm selection, no per-language rank summing.
+ */
 type LexicalQueryColumns = Readonly<{
-  english: Prisma.Sql;
-  englishStrict: Prisma.Sql;
-  russian: Prisma.Sql;
-  russianStrict: Prisma.Sql;
   simple: Prisma.Sql;
   simpleStrict: Prisma.Sql;
 }>;
 
 const MODEL_LEXICAL_QUERY_COLUMNS: LexicalQueryColumns = Object.freeze({
-  english: Prisma.sql`query_terms."modelEnglishQuery"`,
-  englishStrict: Prisma.sql`query_terms."modelEnglishStrictQuery"`,
-  russian: Prisma.sql`query_terms."modelRussianQuery"`,
-  russianStrict: Prisma.sql`query_terms."modelRussianStrictQuery"`,
   simple: Prisma.sql`query_terms."modelSimpleQuery"`,
   simpleStrict: Prisma.sql`query_terms."modelSimpleStrictQuery"`
 });
 
 const ANCHOR_LEXICAL_QUERY_COLUMNS: LexicalQueryColumns = Object.freeze({
-  english: Prisma.sql`query_terms."anchorEnglishQuery"`,
-  englishStrict: Prisma.sql`query_terms."anchorEnglishStrictQuery"`,
-  russian: Prisma.sql`query_terms."anchorRussianQuery"`,
-  russianStrict: Prisma.sql`query_terms."anchorRussianStrictQuery"`,
   simple: Prisma.sql`query_terms."anchorSimpleQuery"`,
   simpleStrict: Prisma.sql`query_terms."anchorSimpleStrictQuery"`
 });
@@ -599,23 +607,15 @@ function lexicalRank(
   strict = true
 ): Prisma.Sql {
   const row = Prisma.raw(alias);
-  return Prisma.sql`GREATEST(
+  return Prisma.sql`(
     ts_rank_cd(${row}."simpleSearchVector", ${queries.simple}) +
-      ${strict ? Prisma.sql`CASE WHEN ${row}."simpleSearchVector" @@ ${queries.simpleStrict} THEN 1 ELSE 0 END` : Prisma.sql`0`},
-    ts_rank_cd(${row}."englishSearchVector", ${queries.english}) +
-      ${strict ? Prisma.sql`CASE WHEN ${row}."englishSearchVector" @@ ${queries.englishStrict} THEN 1 ELSE 0 END` : Prisma.sql`0`},
-    ts_rank_cd(${row}."russianSearchVector", ${queries.russian}) +
-      ${strict ? Prisma.sql`CASE WHEN ${row}."russianSearchVector" @@ ${queries.russianStrict} THEN 1 ELSE 0 END` : Prisma.sql`0`}
+      ${strict ? Prisma.sql`CASE WHEN ${row}."simpleSearchVector" @@ ${queries.simpleStrict} THEN 1 ELSE 0 END` : Prisma.sql`0`}
   )`;
 }
 
 function lexicalMatch(alias: string, queries: LexicalQueryColumns): Prisma.Sql {
   const row = Prisma.raw(alias);
-  return Prisma.sql`(
-    ${row}."simpleSearchVector" @@ ${queries.simple}
-    OR ${row}."englishSearchVector" @@ ${queries.english}
-    OR ${row}."russianSearchVector" @@ ${queries.russian}
-  )`;
+  return Prisma.sql`${row}."simpleSearchVector" @@ ${queries.simple}`;
 }
 
 function combinedLexicalRank(alias: string, hasDistinctAnchor: boolean): Prisma.Sql {
@@ -664,29 +664,13 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
     query_terms AS (
       SELECT
         websearch_to_tsquery('simple'::regconfig, ${input.query}) AS "modelSimpleStrictQuery",
-        websearch_to_tsquery('english'::regconfig, ${input.query}) AS "modelEnglishStrictQuery",
-        websearch_to_tsquery('russian'::regconfig, ${input.query}) AS "modelRussianStrictQuery",
         to_tsquery('simple'::regconfig,
           replace(plainto_tsquery('simple'::regconfig, ${input.query})::text, ' & ', ' | ')
         ) AS "modelSimpleQuery",
-        to_tsquery('english'::regconfig,
-          replace(plainto_tsquery('english'::regconfig, ${input.query})::text, ' & ', ' | ')
-        ) AS "modelEnglishQuery",
-        to_tsquery('russian'::regconfig,
-          replace(plainto_tsquery('russian'::regconfig, ${input.query})::text, ' & ', ' | ')
-        ) AS "modelRussianQuery",
         websearch_to_tsquery('simple'::regconfig, ${literalQuery}) AS "anchorSimpleStrictQuery",
-        websearch_to_tsquery('english'::regconfig, ${literalQuery}) AS "anchorEnglishStrictQuery",
-        websearch_to_tsquery('russian'::regconfig, ${literalQuery}) AS "anchorRussianStrictQuery",
         to_tsquery('simple'::regconfig,
           replace(plainto_tsquery('simple'::regconfig, ${literalQuery})::text, ' & ', ' | ')
-        ) AS "anchorSimpleQuery",
-        to_tsquery('english'::regconfig,
-          replace(plainto_tsquery('english'::regconfig, ${literalQuery})::text, ' & ', ' | ')
-        ) AS "anchorEnglishQuery",
-        to_tsquery('russian'::regconfig,
-          replace(plainto_tsquery('russian'::regconfig, ${literalQuery})::text, ' & ', ' | ')
-        ) AS "anchorRussianQuery"
+        ) AS "anchorSimpleQuery"
     ),
     exact_query_values AS MATERIALIZED (
       SELECT query_value."normalizedValue", query_value."queryOrdinal"::integer

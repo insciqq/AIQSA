@@ -1,12 +1,22 @@
 import { createHash } from "node:crypto";
-import type { KnowledgeChunkPlanEntry } from "./chunking";
+import type { KnowledgeChunkLayoutKind, KnowledgeChunkPlanEntry } from "./chunking";
 import {
   decodeKnowledgeDocumentContext,
   type KnowledgeDocumentContextV1
 } from "./documentContext";
 import type { StoredKnowledgeNormalizedDocument } from "./normalizedDocument";
 
-export const KNOWLEDGE_HIERARCHICAL_INDEX_VERSION = 3;
+/**
+ * Version 4 is the language-neutral lexical derivation: no per-language
+ * routing metadata, no stopword dictionaries, no heuristic frequency
+ * keywords. Version-3 rows built before the cutover stay readable and
+ * retrievable until their artifacts are superseded through the normal safe
+ * profile reindex; retrieval selects exactly one ready index per artifact,
+ * preferring the highest compatible version.
+ */
+export const KNOWLEDGE_HIERARCHICAL_INDEX_VERSION = 4;
+export const KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS =
+  Object.freeze([3, KNOWLEDGE_HIERARCHICAL_INDEX_VERSION] as const);
 export const KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES = 10_000;
 export const KNOWLEDGE_HIERARCHICAL_MAX_EXACT_ENTRIES_PER_PASSAGE = 50;
 export const KNOWLEDGE_EXACT_QUERY_MAX_VALUES = 64;
@@ -14,11 +24,9 @@ export const KNOWLEDGE_DOCUMENT_CONTEXT_MAX_BYTES = 256 * 1_024;
 
 const MAX_SUMMARY_CHARACTERS = 4_000;
 const MAX_METADATA_CHARACTERS = 16_384;
-const MAX_KEYWORDS = 64;
 const MAX_ENTITIES = 64;
 const MAX_TAGS = 64;
 
-export type KnowledgeLexicalLanguage = "english" | "mixed" | "russian" | "unknown";
 export type KnowledgeExactEntryKind =
   | "date"
   | "filename"
@@ -34,8 +42,7 @@ export type KnowledgeHierarchicalDocumentPlan = Readonly<{
   documentType: string;
   entities: readonly string[];
   fileName: string;
-  keywords: readonly string[];
-  languageConfig: KnowledgeLexicalLanguage;
+  /** Parser-provided language hints; display/diagnostics only, never routing. */
   languages: readonly string[];
   metadataText: string;
   outline: readonly string[];
@@ -51,9 +58,8 @@ export type KnowledgeHierarchicalSectionPlan = Readonly<{
   entities: readonly string[];
   headingPath: readonly string[];
   id: string;
-  keywords: readonly string[];
   label: string;
-  languageConfig: KnowledgeLexicalLanguage;
+  /** Parser-provided language hints; display/diagnostics only, never routing. */
   languages: readonly string[];
   ordinal: number;
   page: number;
@@ -70,8 +76,10 @@ export type KnowledgeHierarchicalPassagePlan = Readonly<{
   embeddingTextHash: string;
   headingPath: readonly string[];
   id: string;
-  languageConfig: KnowledgeLexicalLanguage;
+  /** Parser-provided language hints; display/diagnostics only, never routing. */
   languages: readonly string[];
+  /** Structured layout identity persisted on the passage row (FR-12). */
+  layoutKind: KnowledgeChunkLayoutKind;
   ordinal: number;
   page: number;
   pageEnd: number;
@@ -124,12 +132,6 @@ export class KnowledgeHierarchicalIndexError extends Error {
   }
 }
 
-const STOP_WORDS = new Set([
-  "about", "after", "also", "and", "are", "for", "from", "into", "its", "that", "the",
-  "their", "this", "through", "under", "was", "were", "with",
-  "без", "был", "для", "или", "как", "над", "под", "при", "про", "что", "это"
-]);
-
 function sha256(...values: readonly string[]): string {
   const hash = createHash("sha256");
   for (const value of values) hash.update(value, "utf8").update("\0", "utf8");
@@ -166,22 +168,17 @@ function uniqueBounded(values: readonly string[], maximum: number, itemMaximum =
   return result;
 }
 
+/**
+ * FR-10 decision: heuristic frequency keywords were removed from ranking
+ * signals entirely instead of re-deriving them without stopword dictionaries.
+ * Their only ranking consumers were the B-weighted document/section FTS text
+ * and the metadata text, where a language-neutral top-by-frequency list
+ * degenerates into function words for every language; the full body text is
+ * already lexically indexed, and titles, filenames, headings, tags, and typed
+ * entities remain first-class signals.
+ */
 function words(value: string): string[] {
   return value.normalize("NFKC").match(/[\p{L}\p{M}\p{N}_-]+/gu) ?? [];
-}
-
-function keywords(value: string): string[] {
-  const counts = new Map<string, number>();
-  for (const word of words(value)) {
-    const normalized = word.toLocaleLowerCase("und");
-    if (normalized.length < 3 || STOP_WORDS.has(normalized) || /^\d+$/u.test(normalized)) continue;
-    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
-  }
-  return [...counts]
-    .sort(([left, leftCount], [right, rightCount]) =>
-      rightCount - leftCount || left.localeCompare(right, "und"))
-    .slice(0, MAX_KEYWORDS)
-    .map(([value]) => value);
 }
 
 function entities(value: string): string[] {
@@ -194,38 +191,12 @@ function entities(value: string): string[] {
   ), MAX_ENTITIES, 128);
 }
 
+/** Bounded BCP-47-shaped parser hints; display/diagnostics only, never used
+ * to select an FTS configuration, retriever, threshold, or chunker. */
 function canonicalLanguages(values: readonly string[]): string[] {
   return uniqueBounded(values.map((value) => value.toLowerCase()), 16, 32)
     .filter((value) => /^[a-z]{2,8}(?:-[a-z0-9]{1,8}){0,2}$/u.test(value))
     .sort((left, right) => left.localeCompare(right, "und"));
-}
-
-function inferredLanguage(text: string): KnowledgeLexicalLanguage {
-  const russianCharacters = text.match(/[А-Яа-яЁё]/gu)?.length ?? 0;
-  const englishCharacters = text.match(/[A-Za-z]/gu)?.length ?? 0;
-  if (russianCharacters > 0 && englishCharacters > 0) {
-    const smaller = Math.min(russianCharacters, englishCharacters);
-    const larger = Math.max(russianCharacters, englishCharacters);
-    return smaller / larger >= 0.1 ? "mixed" : russianCharacters > englishCharacters
-      ? "russian"
-      : "english";
-  }
-  if (russianCharacters > 0) return "russian";
-  if (englishCharacters > 0) return "english";
-  return "unknown";
-}
-
-export function knowledgeLexicalLanguage(
-  languages: readonly string[],
-  fallbackText: string
-): KnowledgeLexicalLanguage {
-  const bases = new Set(languages.map((value) => value.toLowerCase().split("-")[0]));
-  const russian = bases.has("ru");
-  const english = bases.has("en");
-  if (russian && english) return "mixed";
-  if (russian) return "russian";
-  if (english) return "english";
-  return inferredLanguage(fallbackText);
 }
 
 export function knowledgeExactNormalizedValue(value: string): string {
@@ -240,12 +211,22 @@ export function knowledgeHierarchicalIndexArtifactId(sourceArtifactId: string): 
   );
 }
 
+const chunkLayoutKinds = new Set<KnowledgeChunkLayoutKind>([
+  "body",
+  "field_ambiguous",
+  "field_pair",
+  "table_ambiguous",
+  "table_row",
+  "table_row_projection"
+]);
+
 function assertChunks(chunks: readonly KnowledgeChunkPlanEntry[]): void {
   if (
     chunks.length < 1 ||
     chunks.some((chunk, index) =>
       chunk.index !== index ||
       !chunk.text.trim() ||
+      !chunkLayoutKinds.has(chunk.layoutKind) ||
       !Number.isSafeInteger(chunk.page) || chunk.page < 1 ||
       !Number.isSafeInteger(chunk.pageEnd) || chunk.pageEnd < chunk.page ||
       !Number.isSafeInteger(chunk.sourceBlockStart) || chunk.sourceBlockStart < 0 ||
@@ -464,7 +445,6 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
     chunk.headingPath.length > 0 ? [chunk.headingPath.join(" › ")] : []
   ), 512, 512);
   const summary = boundedSummary(input.chunks.map((chunk) => chunk.text));
-  const documentKeywords = keywords(allText);
   const documentEntities = entities(allText);
   const document: KnowledgeHierarchicalDocumentPlan = Object.freeze({
     contentHash: input.document?.contentHash ?? sha256(...input.chunks.map((chunk) => chunk.contentHash)),
@@ -472,8 +452,6 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
     documentType: mimeType,
     entities: Object.freeze(documentEntities),
     fileName,
-    keywords: Object.freeze(documentKeywords),
-    languageConfig: knowledgeLexicalLanguage(documentLanguages, allText),
     languages: Object.freeze(documentLanguages),
     metadataText: compactText([
       fileName,
@@ -482,7 +460,6 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
       description,
       ...tags,
       ...outline,
-      ...documentKeywords,
       ...documentEntities
     ].join(" "), MAX_METADATA_CHARACTERS).toLocaleLowerCase("und"),
     outline: Object.freeze(outline),
@@ -520,9 +497,7 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
       entities: Object.freeze(entities(sectionText)),
       headingPath: Object.freeze([...group.headingPath]),
       id: sectionId,
-      keywords: Object.freeze(keywords(sectionText)),
       label: compactText(group.headingPath.at(-1) ?? title ?? fileName, 512),
-      languageConfig: knowledgeLexicalLanguage(languages, sectionText),
       languages: Object.freeze(languages),
       ordinal: group.ordinal,
       page: Math.min(...group.chunks.map((chunk) => chunk.page)),
@@ -546,8 +521,8 @@ export function buildKnowledgeHierarchicalIndex(input: Readonly<{
       embeddingTextHash: chunk.embeddingTextHash,
       headingPath: Object.freeze([...chunk.headingPath]),
       id: stableId("kip", id, String(chunk.index), chunk.contentHash),
-      languageConfig: knowledgeLexicalLanguage(languages, chunk.text),
       languages: Object.freeze(languages),
+      layoutKind: chunk.layoutKind,
       ordinal: chunk.index,
       page: chunk.page,
       pageEnd: chunk.pageEnd,
