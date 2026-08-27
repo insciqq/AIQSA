@@ -43,9 +43,11 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 
 export function updateAdminSystemModelPolicy(input: Readonly<{
   expectedVersion: number;
-  providerModelId: string | null;
-  rerankerProviderModelId: string | null;
-  reasoningEffort: string | null;
+  /** Omit both utility fields to preserve the independent utility role. */
+  providerModelId?: string | null;
+  /** Omit to preserve the independent reranker role. */
+  rerankerProviderModelId?: string | null;
+  reasoningEffort?: string | null;
 }>, fetcher: Fetcher = fetch) {
   return request({
     body: JSON.stringify(input),

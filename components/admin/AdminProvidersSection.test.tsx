@@ -1293,12 +1293,12 @@ describe("AdminProvidersSection", () => {
     render(<AdminProvidersSection active groups={[]} />);
 
     openTask("Models");
-    expect(screen.getByRole("heading", { name: "Memory reranker presets" }))
+    expect(screen.getByRole("heading", { name: "Reranker presets" }))
       .toBeVisible();
     expect(screen.getByText("Answer").parentElement).toHaveTextContent("Blocked");
     expect(screen.getByText("Embed").parentElement).toHaveTextContent("Blocked");
     expect(screen.getByText("Rerank").parentElement).toHaveTextContent("Allowed");
-    expect(screen.getByText(/Qwen3 Reranker 8B · Qualification default/u))
+    expect(screen.getByText(/Qwen3 Reranker 8B · Default/u))
       .toBeVisible();
 
     fireEvent.click(screen.getByRole("button", {

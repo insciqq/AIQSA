@@ -58,6 +58,46 @@ describe("OpenRouter account-filtered discovery", () => {
     ]);
   });
 
+  it("filters rerank models upstream and locally by the rerank output modality", async () => {
+    const requests: McpPinnedHttpRequest[] = [];
+    const client = createOpenRouterDiscoveryClient({
+      apiRoot: "https://openrouter.example.test/api/v1",
+      bearerToken: "rerank-key",
+      network: {
+        dispatch: async (request) => {
+          requests.push(request);
+          return responseJson({
+            data: [
+              {
+                architecture: { output_modalities: ["rerank"] },
+                id: "qwen/qwen3-reranker-8b",
+                name: "Qwen3 Reranker 8B"
+              },
+              {
+                architecture: { output_modalities: ["text"] },
+                id: "vendor/chat-model",
+                name: "Loosely filtered chat model"
+              }
+            ]
+          });
+        },
+        lookupHostname: publicLookup
+      }
+    });
+
+    await expect(client.listRerankModels()).resolves.toEqual([{
+      id: "qwen/qwen3-reranker-8b",
+      inputModalities: [],
+      name: "Qwen3 Reranker 8B",
+      outputModalities: ["rerank"],
+      pricing: {},
+      supportedParameters: []
+    }]);
+    expect(requests.map(({ url }) =>
+      `${url.pathname}?${url.searchParams.toString()}`
+    )).toEqual(["/api/v1/models?output_modalities=rerank"]);
+  });
+
   it("uses exact draft bearer paths and returns only bounded safe model and endpoint metadata", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const responses = [

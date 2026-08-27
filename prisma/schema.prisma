@@ -956,6 +956,10 @@ model SystemModelPolicy {
   id                      String         @id
   providerModelId         String?
   rerankerProviderModelId String?
+  /// Set only by an explicit administrator save or clear of the reranker role.
+  /// NULL means the role was never configured, which permits one-time
+  /// fresh-install default adoption; automatic adoption keeps it NULL.
+  rerankerConfiguredAt    DateTime?
   reasoningEffort         String?        @db.VarChar(32)
   version                 Int            @default(1)
   updatedByUserId         String?
