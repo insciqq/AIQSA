@@ -283,6 +283,7 @@ describe("Memory run utility provider runtime", () => {
   it("serializes ordinary, profile, and aggregation requests distinctly", async () => {
     const fixture = client();
     const requestBodies: string[] = [];
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const decision = JSON.stringify({
       decisions: [{
         applicable: true,
@@ -329,9 +330,9 @@ describe("Memory run utility provider runtime", () => {
         sensitivityClass: "NORMAL" as const,
         speakerScope: "memory_record" as const,
         sourceKind: "FACT" as const,
-        text: "The user's name is Nebula."
+        text: `The user's name is Nebula. Token ${token}`
       }],
-      query: "What do you know about me?",
+      query: `What do you know about me? Token ${token}`,
       role: "MEMORY_RERANK" as const
     };
 
@@ -358,6 +359,8 @@ describe("Memory run utility provider runtime", () => {
     );
 
     expect(requestBodies).toHaveLength(3);
+    expect(requestBodies.join("\n")).not.toContain(token);
+    expect(requestBodies.join("\n")).toContain("REDACTED");
     expect(requestBodies[0]).toContain('\\"profile_requested\\":false');
     expect(requestBodies[0]).toContain('\\"aggregation_requested\\":false');
     expect(requestBodies[0]).toContain("Cross-language paraphrases count as direct relevance");

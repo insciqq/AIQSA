@@ -518,7 +518,11 @@ describe("Prisma Memory Dream synthesis", () => {
       expect(pattern).toMatchObject({
         directness: "INFERRED",
         ingestionFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        safetyClassificationState: "PENDING",
+        safetyClassificationReasonCode: "lite_non_secret_default",
+        safetyClassificationState: "CLASSIFIED",
+        safetyClassifierExecutionId: null,
+        safetyClassifierModelId: null,
+        safetyClassifierProviderId: null,
         sourceMode: "AUTOMATIC",
         state: "ACTIVE",
         synthesisDepth: 1,
@@ -533,12 +537,11 @@ describe("Prisma Memory Dream synthesis", () => {
       await expect(prisma.memoryFactVersion.count({
         where: {
           id: { in: patterns.map(({ id }) => id) },
-          safetyClassificationState: "PENDING",
+          safetyClassificationState: "CLASSIFIED",
           state: "ACTIVE",
           userId
         }
       })).resolves.toBe(2);
-      await classifySources(userId, patterns.map(({ id }) => id));
       expect(await prisma.memorySearchEntry.count({
         where: { factVersionId: pattern.id, userId }
       })).toBe(0);

@@ -14,7 +14,6 @@ import {
   type MemoryClientRefService
 } from "../actions/clientRef";
 import { defaultExplicitMemoryService } from "../explicit/defaultExplicit";
-import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import {
   ExplicitMemoryServiceError,
   type ExplicitMemoryService
@@ -837,9 +836,6 @@ export function createMemorySourceActionService(input: Readonly<{
           throw new MemorySourceActionError("memory_not_found");
         }
         if (actionInput.action === "CORRECT") {
-          if (memoryExplicitStatementContainsSecret(actionInput.statement)) {
-            throw new MemorySourceActionError("memory_secret_rejected");
-          }
           try {
             const authorization = await input.explicitService.mintAuthorization(userId, {
               action: "SAVE",
@@ -895,10 +891,6 @@ export function createMemorySourceActionService(input: Readonly<{
         (actionInput.action !== "CORRECT" ||
           actionInput.statement !== target.actionResultProof.frozenReplacementStatement)) {
         throw new MemorySourceActionError("memory_contract_invalid");
-      }
-      if (actionInput.action === "CORRECT" &&
-        memoryExplicitStatementContainsSecret(actionInput.statement)) {
-        throw new MemorySourceActionError("memory_secret_rejected");
       }
       const mutationAction = actionInput.action === "CORRECT" ? "EDIT" as const : "FORGET" as const;
       const exactStatementHash = actionInput.action === "CORRECT"

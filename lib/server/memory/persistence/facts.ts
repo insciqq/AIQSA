@@ -23,6 +23,14 @@ import {
   type MemoryStatementClassificationDecision
 } from "../explicit/statementClassifier";
 import {
+  memoryExplicitStatementContainsSecret,
+  memoryValueContainsRecognizedSecret
+} from "../explicit/safety";
+import {
+  memorySafetyLiteFactClassification,
+  memorySafetyLiteReasonForRedaction
+} from "../safetyLite";
+import {
   consumeMemoryMutationAuthorization,
   type MemoryMutationAuthorizationUse
 } from "./authorizations";
@@ -73,6 +81,7 @@ export type MemoryFactValueInput = Readonly<{
   languageCode: string;
   modality: MemoryModality;
   pipelineVersion: string;
+  redactionApplied?: boolean;
   safetyClassification?: MemoryFactSafetyClassificationInput;
   secretTaintedSourceWindow: boolean;
   sensitivityClass: MemorySensitivityClass;
@@ -241,6 +250,7 @@ function validateEvidence(
   }
   if (
     !validPlaintext(evidence.safeExcerpt, 2_000) ||
+    memoryExplicitStatementContainsSecret(evidence.safeExcerpt) ||
     !validBounded(evidence.safeSourceHash, 128) ||
     !validBounded(evidence.sourceProjectionVersion, 64) ||
     !Number.isFinite(evidence.observedAt.getTime()) ||
@@ -283,15 +293,19 @@ function validateValue(value: MemoryFactValueInput): void {
     !canonicalKeyPattern.test(value.canonicalKey) ||
     !categoryPattern.test(value.category) ||
     !validPlaintext(value.displayText, 2_000) ||
+    memoryExplicitStatementContainsSecret(value.displayText) ||
     !normalizedSearchText ||
     normalizedSearchText.length > 4_000 ||
     !languageCodePattern.test(value.languageCode) ||
     !validBounded(value.pipelineVersion, 64) ||
     (value.safetyClassification !== undefined &&
       !validSafetyClassification(value.safetyClassification)) ||
+    (value.redactionApplied !== undefined &&
+      typeof value.redactionApplied !== "boolean") ||
     !validUnitInterval(value.confidence) ||
     !validUnitInterval(value.importance) ||
     value.structuredValue === null ||
+    memoryValueContainsRecognizedSecret(value.structuredValue) ||
     (value.validFrom !== undefined && value.validFrom !== null &&
       !Number.isFinite(value.validFrom.getTime())) ||
     (value.validTo !== undefined && value.validTo !== null &&
@@ -807,47 +821,14 @@ type MemoryFactSafetyData = Readonly<{
   safetyClassifierProviderId: string | null;
 }>;
 
-const pendingFactSafety: MemoryFactSafetyData = Object.freeze({
-  safetyClassificationReasonCode: null,
-  safetyClassificationState: "PENDING",
-  safetyClassifiedAt: null,
-  safetyClassifierExecutionId: null,
-  safetyClassifierModelId: null,
-  safetyClassifierPolicyVersion: null,
-  safetyClassifierProviderId: null
-});
-
-function inheritedFactSafety(
-  version: Pick<
-    Prisma.MemoryFactVersionGetPayload<{ select: typeof currentVersionSelect }>,
-    | "safetyClassificationReasonCode"
-    | "safetyClassificationState"
-    | "safetyClassifiedAt"
-    | "safetyClassifierExecutionId"
-    | "safetyClassifierModelId"
-    | "safetyClassifierPolicyVersion"
-    | "safetyClassifierProviderId"
-  >
+function liteFactSafety(
+  input: MemoryFactMutationCommonInput,
+  now: Date = input.evidence.observedAt
 ): MemoryFactSafetyData {
-  if (version.safetyClassificationState === "PENDING") return pendingFactSafety;
-  if (
-    !version.safetyClassificationReasonCode ||
-    !version.safetyClassifiedAt ||
-    !version.safetyClassifierModelId ||
-    !version.safetyClassifierPolicyVersion ||
-    !version.safetyClassifierProviderId
-  ) {
-    return memoryPersistenceFailure("memory_fact_version_stale");
-  }
-  return {
-    safetyClassificationReasonCode: version.safetyClassificationReasonCode,
-    safetyClassificationState: version.safetyClassificationState,
-    safetyClassifiedAt: version.safetyClassifiedAt,
-    safetyClassifierExecutionId: version.safetyClassifierExecutionId,
-    safetyClassifierModelId: version.safetyClassifierModelId,
-    safetyClassifierPolicyVersion: version.safetyClassifierPolicyVersion,
-    safetyClassifierProviderId: version.safetyClassifierProviderId
-  };
+  return memorySafetyLiteFactClassification(
+    now,
+    memorySafetyLiteReasonForRedaction(input.value.redactionApplied === true)
+  );
 }
 
 async function governedFactSafety(
@@ -856,7 +837,7 @@ async function governedFactSafety(
   input: MemoryFactMutationCommonInput
 ): Promise<MemoryFactSafetyData> {
   const requested = input.value.safetyClassification;
-  if (!requested) return pendingFactSafety;
+  if (!requested) return liteFactSafety(input);
   if (input.value.sourceMode !== "EXPLICIT") {
     return memoryPersistenceFailure("memory_input_invalid");
   }
@@ -1122,9 +1103,7 @@ export function createPrismaMemoryFactRepository(
           }
         });
         if (!currentVersion) return memoryPersistenceFailure("memory_fact_version_stale");
-        const safety = input.value.safetyClassification
-          ? await governedFactSafety(tx, userId, input)
-          : inheritedFactSafety(currentVersion);
+        const safety = await governedFactSafety(tx, userId, input);
 
         await requireEvidenceOwner(tx, userId, input.evidence);
         await assertMemoryWriteNotSuppressed(
@@ -1329,7 +1308,6 @@ export function createPrismaMemoryFactRepository(
         if (!sourceVersion.displayText || sourceVersion.structuredValue === null) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
-        const safety = inheritedFactSafety(sourceVersion);
         const movedValue: MemoryFactValueInput = {
           canonicalKey: sourceFact.canonicalKey,
           category: sourceVersion.category,
@@ -1340,6 +1318,7 @@ export function createPrismaMemoryFactRepository(
           languageCode: sourceVersion.languageCode,
           modality: sourceVersion.modality,
           pipelineVersion: sourceVersion.pipelineVersion,
+          redactionApplied: sourceVersion.displayText.includes("[REDACTED:"),
           secretTaintedSourceWindow: false,
           sensitivityClass: sourceVersion.sensitivityClass,
           sourceMode: "EXPLICIT",
@@ -1348,6 +1327,7 @@ export function createPrismaMemoryFactRepository(
           validTo: sourceVersion.validTo
         };
         const movedInput: MemoryFactMoveInput = { ...input, value: movedValue };
+        const safety = await governedFactSafety(tx, userId, movedInput);
         if (sourceFact.state === "ORPHANED") {
           const latest = await tx.memoryFactVersion.findFirst({
             orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
@@ -1644,9 +1624,7 @@ export function createPrismaMemoryFactRepository(
         if (!selectedVersion) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
-        const safety = input.value.safetyClassification
-          ? await governedFactSafety(tx, userId, input)
-          : inheritedFactSafety(selectedVersion);
+        const safety = await governedFactSafety(tx, userId, input);
 
         await requireEvidenceOwner(tx, userId, input.evidence);
         await assertMemoryWriteNotSuppressed(
@@ -1805,7 +1783,6 @@ export function createPrismaMemoryFactRepository(
           select: typeof currentVersionSelect;
         }>>> = null;
         let revivalVersionId: string | null = null;
-        let revivalSafety: MemoryFactSafetyData | null = null;
         if (existing?.state === "ACTIVE" && existing.currentVersionId) {
           currentVersion = await tx.memoryFactVersion.findFirst({
             select: currentVersionSelect,
@@ -1839,7 +1816,6 @@ export function createPrismaMemoryFactRepository(
           });
           if (!prior) return memoryPersistenceFailure("memory_fact_version_stale");
           revivalVersionId = prior.id;
-          revivalSafety = inheritedFactSafety(prior);
         }
 
         if (input.undoForget) {
@@ -1900,9 +1876,7 @@ export function createPrismaMemoryFactRepository(
         const eventId = randomUUID();
         const factId = existing?.id ?? randomUUID();
         const versionId = randomUUID();
-        const safety = input.value.safetyClassification
-          ? await governedFactSafety(tx, userId, input)
-          : revivalSafety ?? pendingFactSafety;
+        const safety = await governedFactSafety(tx, userId, input);
         if (existing) {
           const revived = await tx.memoryFact.updateMany({
             data: {

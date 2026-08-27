@@ -14,7 +14,8 @@ import {
   buildMemorySafeSourceSnapshot,
   type MemoryHistorySourceMessageInput
 } from "../../history/sourceProjection";
-import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
+import { projectMemoryHistorySafeText } from "../../history/safety";
+import { memoryValueContainsRecognizedSecret } from "../../explicit/safety";
 import { memorySha256 } from "../../persistence/lexical";
 import {
   memoryDestructiveSourceCutoff,
@@ -94,22 +95,6 @@ const disabledDecision = Object.freeze({
   status: "CANCELLED" as const
 });
 
-function modelValueContainsSecret(
-  value: unknown,
-  seen: WeakSet<object> = new WeakSet()
-): boolean {
-  if (typeof value === "string") {
-    return memoryExplicitStatementContainsSecret(value);
-  }
-  if (typeof value !== "object" || value === null || seen.has(value)) return false;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return value.some((entry) => modelValueContainsSecret(entry, seen));
-  }
-  return Object.entries(value).some(([key, entry]) =>
-    memoryExplicitStatementContainsSecret(key) || modelValueContainsSecret(entry, seen));
-}
-
 /** Final local defense before model-authored candidate text crosses storage. */
 export function memoryAutomaticCandidateContainsSecret(
   candidate: MemoryExtractedCandidate
@@ -127,9 +112,9 @@ export function memoryAutomaticCandidateContainsSecret(
     ]),
     ...candidate.evidence.map((evidence) => evidence.quote)
   ];
-  return values.some((value) => modelValueContainsSecret(value)) ||
-    modelValueContainsSecret(candidate.proposedValue) ||
-    modelValueContainsSecret(candidate.temporalResolutionEvidence);
+  return values.some((value) => memoryValueContainsRecognizedSecret(value)) ||
+    memoryValueContainsRecognizedSecret(candidate.proposedValue) ||
+    memoryValueContainsRecognizedSecret(candidate.temporalResolutionEvidence);
 }
 
 type MemoryFactSourceMessage = Readonly<{
@@ -424,10 +409,31 @@ async function loadBoundContext(
       taintSources: []
     }
   }];
-  const contextRefs = await loadMemoryFactContextRefs(tx, {
+  const rawContextRefs = await loadMemoryFactContextRefs(tx, {
     activePathMessageIds: source.activePathMessageIds,
     sourceMessageId: source.message.id,
     userId: source.chat.userId
+  });
+  const contextRefs = rawContextRefs.flatMap((ref) => {
+    const text = projectMemoryHistorySafeText(ref.text);
+    if (!text.eligible) return [];
+    const displayName = ref.displayName === null
+      ? null
+      : projectMemoryHistorySafeText(ref.displayName);
+    const entityType = ref.entityType === null
+      ? null
+      : projectMemoryHistorySafeText(ref.entityType);
+    const aliases = ref.aliases.flatMap((alias) => {
+      const projected = projectMemoryHistorySafeText(alias);
+      return projected.eligible ? [projected.safeText] : [];
+    });
+    return [{
+      ...ref,
+      aliases,
+      displayName: displayName?.eligible ? displayName.safeText : null,
+      entityType: entityType?.eligible ? entityType.safeText : null,
+      text: text.safeText
+    }];
   });
   return {
     activeLeafMessageId: source.message.id,
@@ -513,6 +519,10 @@ async function prepareWith(
       evidenceEligible,
       id: message.id,
       languageCode: message.languageCode,
+      redactionSpans: message.redactionSourceMap.flatMap((entry) =>
+        entry.kind === "REDACTION"
+          ? [{ endOffset: entry.outputEnd, startOffset: entry.outputStart }]
+          : []),
       role: message.role,
       text: message.safeText,
       updatedAt: message.updatedAt

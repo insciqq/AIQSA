@@ -132,7 +132,7 @@ describe("Memory chat digests", () => {
     const segments = partitionMemoryChatDigestSourceChunks(selected);
     expect(segments.map((segment) => segment.length)).toEqual([24, 5]);
     const request = buildMemoryChatDigestRequest(segments[0]!, "Europe/Moscow");
-    expect(request.name).toBe("memory_chat_digest_v4");
+    expect(request.name).toBe("memory_chat_digest_v5");
     expect(request.userPrompt.length).toBeLessThan(32_000);
     expect(request.systemPrompt).toContain("untrusted quoted data");
     expect(request.systemPrompt).toContain("user-authored events");
@@ -181,7 +181,7 @@ describe("Memory chat digests", () => {
     expect(first.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(first.updateMode).toBe("FULL_REBUILD");
     expect(first.safeDigestText).toContain("Summary:");
-    expect(MEMORY_CHAT_DIGEST_PIPELINE_VERSION).toBe("memory-chat-digest-v4");
+    expect(MEMORY_CHAT_DIGEST_PIPELINE_VERSION).toBe("memory-chat-digest-v5");
 
     expectDigestOutputInvalid({
       decisions: [],
@@ -195,6 +195,17 @@ describe("Memory chat digests", () => {
       summary: "A short visible prefix.",
       topics: Array(12).fill("T".repeat(200))
     }, "aggregate_limit");
+  });
+
+  it("redacts mixed source text at the digest provider boundary", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const request = buildMemoryChatDigestRequest([chunk(0, {
+      safeProjectedText: `User: I moved to Helsinki. Token ${token}`
+    })], "UTC");
+
+    expect(request.userPrompt).not.toContain(token);
+    expect(request.userPrompt).toContain("I moved to Helsinki");
+    expect(request.userPrompt).toContain("REDACTED");
   });
 
   it("[E08] reuses an unchanged digest with zero provider executions", async () => {

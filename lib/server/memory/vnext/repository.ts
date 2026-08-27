@@ -13,6 +13,7 @@ import {
 } from "../learning/extraction/contract";
 import type { MemorySemanticAdjudication } from "../learning/extraction/contract";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { memorySafetyLiteFactClassification } from "../safetyLite";
 import { memoryExactVNextDirectAuthorityPredicate } from
   "../persistence/eligibility";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
@@ -101,6 +102,9 @@ function exactEvidence(
       evidence.startOffset < 0 ||
       evidence.endOffset <= evidence.startOffset ||
       evidence.endOffset > message.text.length ||
+      message.redactionSpans.some((redacted) =>
+        evidence.startOffset < redacted.endOffset &&
+        evidence.endOffset > redacted.startOffset) ||
       !quote || evidence.quote !== quote
     ) {
       throw new Error("memory_vnext_evidence_invalid");
@@ -318,7 +322,7 @@ async function insertVersion(
       occurredAt: candidate.occurredAt ? new Date(candidate.occurredAt) : null,
       pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
       rawTemporalExpression: candidate.rawTemporalExpression,
-      safetyClassificationState: "PENDING",
+      ...memorySafetyLiteFactClassification(input.now),
       sensitivityClass: "NORMAL",
       semanticAdjudication: input.semanticAdjudication === null
         ? Prisma.DbNull

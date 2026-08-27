@@ -216,6 +216,46 @@ describe("Memory safe source snapshot", () => {
     expect(serialized).toContain("supplied credential");
   });
 
+  it("retains mixed safe text with exact redaction mapping in recall and fact sources", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const user = userMessage({
+      id: "user-mixed-secret",
+      parentMessageId: null,
+      text: `I moved to Helsinki; token ${token}; my new district is Kallio.`
+    });
+    const assistant = assistantMessage({
+      id: "assistant-mixed-secret",
+      parentMessageId: user.id,
+      text: "I can help with Helsinki and Kallio without retaining the token."
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+    const projectedUser = snapshot.factEvidenceProjection.messages[0];
+    const group = snapshot.recallChunkProjection.turnGroups[0];
+    const serialized = JSON.stringify(snapshot);
+
+    expect(projectedUser).toMatchObject({
+      id: user.id,
+      redactionState: "REDACTED",
+      safeText:
+        "I moved to Helsinki; token [REDACTED:TOKEN]; my new district is Kallio."
+    });
+    expect(projectedUser?.redactionSourceMap).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "REDACTION",
+        sourceEnd: expect.any(Number),
+        sourceStart: expect.any(Number)
+      })
+    ]));
+    expect(group).toMatchObject({
+      redactionReasonCodes: ["SECRET_REDACTED_KNOWN_TOKEN"],
+      redactionState: "REDACTED"
+    });
+    expect(serialized).not.toContain(token);
+    expect(serialized).toContain("Helsinki");
+    expect(serialized).toContain("Kallio");
+  });
+
   it("omits attachment blocks while retaining visible assistant recall and user-only facts", () => {
     const user = userMessage({
       content: {

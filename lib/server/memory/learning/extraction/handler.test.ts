@@ -61,6 +61,7 @@ function extractionInput(text = "I prefer tea."): MemoryFactExtractionInput {
       evidenceEligible: true,
       id: "message-1",
       languageCode: "en",
+      redactionSpans: [],
       role: "user",
       text,
       updatedAt: "2026-08-11T09:00:00.000Z"

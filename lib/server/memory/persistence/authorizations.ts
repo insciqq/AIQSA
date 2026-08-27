@@ -15,6 +15,12 @@ import {
 } from "../actions/controlRuntime";
 import { memoryTargetSelectionAcceptedOutputHash } from "../actions/targetSelector";
 import { parseMemoryExecutionSnapshot } from "../execution/snapshot";
+import {
+  memoryProjectionHasMeaningfulText,
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../explicit/safety";
+import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import { memoryPersistenceFailure } from "./errors";
 import { memorySha256 } from "./lexical";
 import { memoryCanonicalGlobalScopePredicate } from "./scopes";
@@ -350,20 +356,21 @@ function controlIntentMatchesMutation(
   input: Pick<MemoryMutationControlAuthorizationMint,
     "action" | "authorizedPayloadHash" | "expectedTargetVersionId" | "targetFactId">
 ): boolean {
-  if (intent.confidenceBand !== "HIGH" || intent.sensitivity === "SECRET" ||
-    intent.sensitivity === "UNCERTAIN") return false;
+  if (intent.confidenceBand !== "HIGH") return false;
   if (input.action === "SAVE") {
-    return intent.action === "SAVE" && intent.statement !== null && !intent.thisChatOnly &&
-      input.authorizedPayloadHash === memorySha256(intent.statement) &&
+    const statement = safeControlMutationStatement(intent.statement);
+    return intent.action === "SAVE" && statement !== null && !intent.thisChatOnly &&
+      input.authorizedPayloadHash === memorySha256(statement) &&
       input.targetFactId == null && input.expectedTargetVersionId == null;
   }
   if (input.action === "EDIT") {
-    return intent.action === "UPDATE" && intent.replacementStatement !== null &&
+    const replacementStatement = safeControlMutationStatement(intent.replacementStatement);
+    return intent.action === "UPDATE" && replacementStatement !== null &&
       input.targetFactId != null && input.expectedTargetVersionId != null &&
       input.authorizedPayloadHash === memoryTargetAuthorizationPayloadHash({
         action: "EDIT",
         expectedTargetVersionId: input.expectedTargetVersionId,
-        replacementStatementHash: memorySha256(intent.replacementStatement),
+        replacementStatementHash: memorySha256(replacementStatement),
         targetFactId: input.targetFactId
       });
   }
@@ -377,6 +384,19 @@ function controlIntentMatchesMutation(
       });
   }
   return false;
+}
+
+function safeControlMutationStatement(value: string | null): string | null {
+  if (!value) return null;
+  const redaction = redactMemorySecrets(value);
+  if (redaction.containsSecret && (
+    !memoryRedactionHasMeaningfulRemainder(value, redaction) ||
+    !memoryProjectionHasMeaningfulText(redaction.redactedText)
+  )) return null;
+  if (value.includes("[REDACTED:") && !memoryProjectionHasMeaningfulText(value)) {
+    return null;
+  }
+  return redaction.redactedText;
 }
 
 async function requireCurrentControlMutationLifecycle(
@@ -850,9 +870,14 @@ export function createPrismaMemoryMutationAuthorizationRepository(
         ? (stored as { blocks: unknown[] }).blocks
         : null;
       const exactText = blocks ? textFromContentBlocks({ blocks }) : null;
+      const safeExactText = exactText === null
+        ? null
+        : sanitizeMemoryUtilityText(exactText);
       if (
         !run || run.userMessageId !== attempt.admittedUserMessageId ||
-        run.userMessage.role !== "user" || exactText === null || exactText !== input.sourceText
+        run.userMessage.role !== "user" || exactText === null ||
+        safeExactText === null || !safeExactText.eligible ||
+        safeExactText.safeText !== input.sourceText
       ) return memoryPersistenceFailure("memory_mutation_authorization_invalid");
       const requestId = encodeControlMutationEvidence({
         candidateMapHash: input.targetSelectionCandidateMapHash ?? null,

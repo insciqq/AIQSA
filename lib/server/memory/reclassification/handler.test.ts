@@ -3,42 +3,26 @@ import {
   createMemoryReclassificationHandler
 } from "./handler";
 import {
-  MEMORY_RECLASSIFICATION_PIPELINE_VERSION,
-  memoryReclassificationAcceptedOutputHash,
-  memoryReclassificationInputHash,
-  type MemoryReclassificationResult
+  MEMORY_RECLASSIFICATION_PIPELINE_VERSION
 } from "./classifier";
+import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import type { MemoryReclassificationCandidate } from "./repository";
 
 const candidate: MemoryReclassificationCandidate = {
+  category: "preferences",
   coreEligible: true,
   coreSalience: "HIGH",
   displayText: "I prefer tea",
   factId: "fact-1",
   id: "version-1",
   modality: "PREFERENCE",
+  safetyClassificationState: "PENDING",
   semanticState: "ACTIVE",
   sourceMode: "EXPLICIT",
+  structuredValue: { statement: "I prefer tea" },
   systemFrom: new Date("2026-01-01T00:00:00.000Z"),
   userId: "user-1"
 };
-
-const providerDecision = {
-  category: "about_you" as const,
-  reasonCode: "ordinary_personal" as const,
-  responsePreference: false,
-  sensitivity: "NORMAL" as const,
-  subjectScope: "USER" as const,
-  storageDecision: "ALLOW" as const
-};
-const providerInputHash = memoryReclassificationInputHash(
-  candidate.displayText,
-  candidate.sourceMode
-);
-const providerOutputHash = memoryReclassificationAcceptedOutputHash(
-  providerInputHash,
-  providerDecision
-);
 
 function job() {
   return {
@@ -68,19 +52,10 @@ describe("memory reclassification handler", () => {
   it("returns an idempotent apply closure for classified batches", async () => {
     const apply = vi.fn(async () => undefined);
     const authorizeResults = vi.fn(async () => undefined);
+    const classify = vi.fn();
     const handler = createMemoryReclassificationHandler({
       authorizeResults,
-      provider: {
-        classify: vi.fn(async (): Promise<MemoryReclassificationResult> => ({
-          acceptedOutputHash: providerOutputHash,
-          decision: providerDecision,
-          executionId: "reclassification-binding-1",
-          inputHash: providerInputHash,
-          modelId: "model-1",
-          policyVersion: "memory-safety-policy-v1:7",
-          providerId: "openai"
-        }))
-      },
+      provider: { classify },
       repository: {
         apply,
         preflight: vi.fn(async () => ({ status: "READY" as const })),
@@ -95,27 +70,23 @@ describe("memory reclassification handler", () => {
     });
     expect(result.stage).toBe("reclassification_applied");
     expect(result.acceptedResultHash).toMatch(/^[a-f0-9]{64}$/u);
-    expect(setStage).toHaveBeenCalledWith("provider_call");
-    const tx = {
-      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: "user-1" }])
-    };
+    expect(setStage).toHaveBeenCalledWith("local_safety_projection");
+    const tx = {};
     const acceptedClaim = job();
     await result.apply?.(tx as never, acceptedClaim);
-    expect(authorizeResults).toHaveBeenCalledWith(
+    expect(classify).not.toHaveBeenCalled();
+    expect(authorizeResults).not.toHaveBeenCalled();
+    expect(apply).toHaveBeenCalledWith(
       tx,
-      { userId: "user-1" },
       "user-1",
-      acceptedClaim.id,
-      [{
-        acceptedOutputHash: providerOutputHash,
-        bindingId: "reclassification-binding-1",
-        inputHash: providerInputHash,
-        modelId: "model-1",
-        policyVersion: "memory-safety-policy-v1:7",
-        providerId: "openai"
-      }]
+      [expect.objectContaining({
+        result: expect.objectContaining({
+          executionId: null,
+          policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION
+        })
+      })],
+      new Date("2026-08-21T00:00:00.000Z")
     );
-    expect(apply).toHaveBeenCalledOnce();
   });
 
   it("settles an empty job without a provider call", async () => {
@@ -137,21 +108,14 @@ describe("memory reclassification handler", () => {
     expect(classify).not.toHaveBeenCalled();
   });
 
-  it("rejects a decision swapped onto another accepted classifier receipt", async () => {
+  it("does not depend on a legacy classifier outage", async () => {
     const apply = vi.fn(async () => undefined);
+    const classify = vi.fn(async () => {
+      throw new Error("classifier unavailable");
+    });
     const handler = createMemoryReclassificationHandler({
       authorizeResults: vi.fn(async () => undefined),
-      provider: {
-        classify: vi.fn(async (): Promise<MemoryReclassificationResult> => ({
-          acceptedOutputHash: providerOutputHash,
-          decision: { ...providerDecision, category: "goals" },
-          executionId: "reclassification-binding-1",
-          inputHash: providerInputHash,
-          modelId: "model-1",
-          policyVersion: "memory-safety-policy-v1:7",
-          providerId: "openai"
-        }))
-      },
+      provider: { classify },
       repository: {
         apply,
         preflight: vi.fn(async () => ({ status: "READY" as const })),
@@ -159,15 +123,14 @@ describe("memory reclassification handler", () => {
       }
     });
 
-    await expect(handler.execute(job(), {
+    const result = await handler.execute(job(), {
       now: () => new Date("2026-08-21T00:00:00.000Z"),
       setStage: vi.fn(async () => undefined),
       signal: new AbortController().signal
-    })).rejects.toMatchObject({
-      code: "memory_reclassification_invalid",
-      retryable: false
     });
-    expect(apply).not.toHaveBeenCalled();
+    await result.apply?.({} as never, job());
+    expect(classify).not.toHaveBeenCalled();
+    expect(apply).toHaveBeenCalledOnce();
   });
 
   it("fences recognized legacy secrets locally without provider egress", async () => {
@@ -205,7 +168,7 @@ describe("memory reclassification handler", () => {
       [expect.objectContaining({
         result: expect.objectContaining({
           executionId: null,
-          policyVersion: "memory-local-secret-parser-v1",
+          policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
           providerId: "aiqsa-local-policy"
         })
       })],

@@ -12,13 +12,33 @@ describe("Memory history safety projection", () => {
       expect(projection).toMatchObject({
         eligible: false,
         providerSafeText: null,
-        redactionReasonCodes: ["SECRET_PATTERN"],
+        redactionReasonCodes: ["SECRET_ONLY"],
         redactionState: "EXCLUDED",
         safetyClass: "SECRET_TAINTED",
         safeText: null
       });
       expect(JSON.stringify(projection)).not.toContain(value.split(": ")[1]);
     }
+  });
+
+  it("retains every meaningful character around a recognized secret", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const projection = projectMemoryHistorySafeText(
+      `I moved to Helsinki; token ${token}; ask about my new city.`
+    );
+
+    expect(projection).toMatchObject({
+      eligible: true,
+      redactionReasonCodes: ["SECRET_REDACTED_KNOWN_TOKEN"],
+      redactionState: "REDACTED",
+      safeText:
+        "I moved to Helsinki; token [REDACTED:TOKEN]; ask about my new city.",
+      safetyClass: "NORMAL"
+    });
+    expect(projection.redactionSourceMap).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "REDACTION" }),
+      expect.objectContaining({ kind: "SOURCE", sourceStart: 0 })
+    ]));
   });
 
   it("does not classify natural-language secret or sensitivity labels", () => {

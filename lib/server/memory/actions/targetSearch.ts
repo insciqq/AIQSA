@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { MemorySummary } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
 import type { ExplicitMemoryService } from "../explicit/service";
-import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
+import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import {
   memoryActiveSuppressionPredicate
 } from "../retrieval/localRepository";
@@ -210,8 +210,10 @@ function localFallbackTargets(
   memories: readonly MemorySummary[],
   fallbackText: string | undefined
 ): readonly MemoryActionTarget[] {
-  if (!fallbackText || memoryExplicitStatementContainsSecret(fallbackText)) return [];
-  const requested = semanticTokens(fallbackText);
+  if (!fallbackText) return [];
+  const safe = sanitizeMemoryUtilityText(fallbackText);
+  if (!safe.eligible || !safe.safeText) return [];
+  const requested = semanticTokens(safe.safeText);
   if (requested.size === 0) return [];
   const scored = memories.flatMap((summary) => {
     const target = eligibleSemanticTarget(summary);
@@ -263,8 +265,9 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
 }>): MemoryActionTargetSearchService {
   return Object.freeze({
     async exact(request) {
-      const normalized = normalizeMemorySearchText(request.query);
-      if (!normalized || memoryExplicitStatementContainsSecret(request.query)) {
+      const safe = sanitizeMemoryUtilityText(request.query);
+      const normalized = normalizeMemorySearchText(safe.safeText);
+      if (!safe.eligible || !normalized) {
         return { reason: "memory_action_target_input_blocked", status: "UNAVAILABLE" };
       }
       try {
@@ -283,8 +286,9 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
     },
 
     async semantic(request) {
-      const normalized = normalizeMemorySearchText(request.query);
-      if (!normalized || memoryExplicitStatementContainsSecret(request.query)) {
+      const safe = sanitizeMemoryUtilityText(request.query);
+      const normalized = normalizeMemorySearchText(safe.safeText);
+      if (!safe.eligible || !normalized) {
         return { reason: "memory_action_target_input_blocked", status: "UNAVAILABLE" };
       }
       try {

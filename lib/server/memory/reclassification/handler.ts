@@ -6,34 +6,36 @@ import type {
   MemoryJobExecutionResult,
   MemoryJobHandler
 } from "../coordinator/types";
-import {
-  authorizeMemoryExecutionResultsForCommit,
-  MemoryExecutionError,
-  probeMemoryStructuredOutputAuthority,
-  type MemoryExecutionAuthorityDependencies,
-  type MemoryStructuredOutputProvider
+import type {
+  MemoryExecutionAuthorityDependencies,
+  MemoryStructuredOutputProvider
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
-import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import {
-  lockMemorySettings,
-  type LockedMemorySettings
-} from "../persistence/transaction";
+  memoryRedactionHasMeaningfulRemainder,
+  memoryValueContainsRecognizedSecret,
+  redactMemorySecrets
+} from "../explicit/safety";
 import {
-  createPrismaMemoryReclassificationProvider,
-  memoryReclassificationAcceptedOutputHash,
-  memoryReclassificationInputHash,
+  MEMORY_V1_CATEGORY_ALLOWLIST,
+  type MemoryV1Category
+} from "../learning/extraction/contract";
+import type { LockedMemorySettings } from "../persistence/transaction";
+import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
+import {
   MEMORY_RECLASSIFICATION_PIPELINE_VERSION,
-  MEMORY_RECLASSIFICATION_VERSIONS,
-  type MemoryReclassificationProvider
+  type MemoryReclassificationProvider,
+  type MemoryReclassificationResult
 } from "./classifier";
 import {
   createPrismaMemoryReclassificationRepository,
   MEMORY_RECLASSIFICATION_BATCH_SIZE,
+  type MemoryReclassificationCandidate,
   type MemoryReclassificationRepository
 } from "./repository";
 
+/** Legacy dependency fields remain accepted so in-process composition does
+ * not need an atomic rollout. Safety Lite deliberately never invokes them. */
 export type MemoryReclassificationHandlerDependencies = Readonly<{
   authorizeResults?: (
     tx: Prisma.TransactionClient,
@@ -50,24 +52,11 @@ export type MemoryReclassificationHandlerDependencies = Readonly<{
     }>[]
   ) => Promise<void>;
   probeAuthority?: (userId: string) => Promise<void>;
-  provider: MemoryReclassificationProvider;
+  provider?: MemoryReclassificationProvider;
   repository: MemoryReclassificationRepository;
 }>;
 
-function authorityGate(error: unknown) {
-  if (error instanceof MemoryExecutionError) {
-    if (
-      error.code === "memory_execution_egress_consent_required" ||
-      error.code === "memory_execution_target_unavailable" ||
-      error.code === "memory_execution_capability_unavailable" ||
-      error.code === "memory_execution_policy_unavailable"
-    ) {
-      return { errorCode: error.code, status: "WAITING_FOR_EGRESS_CONSENT" as const };
-    }
-    return { errorCode: error.code, status: "CANCELLED" as const };
-  }
-  throw error;
-}
+const durableCategories = new Set<string>(MEMORY_V1_CATEGORY_ALLOWLIST);
 
 function validClaim(job: MemoryJobDescriptor): boolean {
   return job.kind === "RECLASSIFY_FACTS" &&
@@ -94,9 +83,39 @@ function terminalResult(
       inputHash,
       jobId: job.id,
       reason,
-      version: 1
+      version: 2
     }),
     stage: reason
+  };
+}
+
+function categoryFor(candidate: MemoryReclassificationCandidate): MemoryV1Category {
+  return durableCategories.has(candidate.category)
+    ? candidate.category as MemoryV1Category
+    : "other";
+}
+
+function localResult(
+  candidate: MemoryReclassificationCandidate,
+  classifiedAt: Date
+): MemoryReclassificationResult {
+  const redaction = redactMemorySecrets(candidate.displayText);
+  const secretOnly = redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(candidate.displayText, redaction);
+  return {
+    classifiedAt,
+    decision: {
+      category: categoryFor(candidate),
+      reasonCode: secretOnly ? "secret_material" : "ordinary_personal",
+      responsePreference: candidate.modality === "PREFERENCE",
+      sensitivity: secretOnly ? "SECRET" : "NORMAL",
+      storageDecision: secretOnly ? "REJECT_SECRET" : "ALLOW",
+      subjectScope: "USER"
+    },
+    executionId: null,
+    modelId: MEMORY_SAFETY_LITE_POLICY_VERSION,
+    policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+    providerId: "aiqsa-local-policy"
   };
 }
 
@@ -110,26 +129,7 @@ export function createMemoryReclassificationHandler(
       if (!validClaim(job)) {
         return { errorCode: "memory_reclassification_job_invalid", status: "CANCELLED" };
       }
-      const source = await deps.repository.preflight(job);
-      if (source.status !== "READY" || !deps.probeAuthority) return source;
-      const candidates = await deps.repository.pending(
-        job.userId,
-        MEMORY_RECLASSIFICATION_BATCH_SIZE
-      );
-      if (
-        candidates.length === 0 ||
-        candidates.every(({ displayText }) =>
-          memoryExplicitStatementContainsSecret(displayText)
-        )
-      ) {
-        return source;
-      }
-      try {
-        await deps.probeAuthority(job.userId);
-        return source;
-      } catch (error) {
-        return authorityGate(error);
-      }
+      return deps.repository.preflight(job);
     },
 
     async execute(job, context) {
@@ -143,135 +143,42 @@ export function createMemoryReclassificationHandler(
         return terminalResult(job, "reclassification_empty");
       }
 
-      await context.setStage("provider_call");
-      const plans = [] as Array<{
-        candidate: (typeof candidates)[number];
-        result: Awaited<ReturnType<MemoryReclassificationProvider["classify"]>>;
-      }>;
-      for (const candidate of candidates) {
+      await context.setStage("local_safety_projection");
+      const classifiedAt = context.now();
+      const plans = candidates.map((candidate) => {
         if (context.signal.aborted) {
           throw new MemoryCoordinatorError("memory_reclassification_cancelled", false);
         }
-        if (memoryExplicitStatementContainsSecret(candidate.displayText)) {
-          plans.push({
-            candidate,
-            result: {
-              classifiedAt: context.now(),
-              decision: {
-                category: "other",
-                reasonCode: "secret_material",
-                responsePreference: false,
-                sensitivity: "SECRET",
-                storageDecision: "REJECT_SECRET",
-                subjectScope: "USER"
-              },
-              executionId: null,
-              modelId: "format-aware-secret-parser-v1",
-              policyVersion: "memory-local-secret-parser-v1",
-              providerId: "aiqsa-local-policy"
-            }
-          });
-          continue;
-        }
-        try {
-          plans.push({
-            candidate,
-            result: await deps.provider.classify(
-              candidate.displayText,
-              context.signal,
-              candidate.sourceMode,
-              {
-                jobId: job.id,
-                ordinal: plans.length,
-                userId: job.userId
-              }
-            )
-          });
-        } catch (error) {
-          if (error instanceof MemoryCoordinatorError) throw error;
-          throw new MemoryCoordinatorError(
-            error instanceof Error && error.message === "memory_reclassification_invalid"
-              ? "memory_reclassification_invalid"
-              : "memory_reclassification_provider_unavailable",
-            true
-          );
-        }
-      }
-
-      for (const { candidate, result } of plans) {
-        if (!result.executionId) continue;
-        const inputHash = memoryReclassificationInputHash(
-          candidate.displayText,
-          candidate.sourceMode
-        );
-        if (!result.inputHash || !result.acceptedOutputHash ||
-          result.inputHash !== inputHash ||
-          result.acceptedOutputHash !== memoryReclassificationAcceptedOutputHash(
-            inputHash,
-            result.decision
-          )) {
-          throw new MemoryCoordinatorError("memory_reclassification_invalid", false);
-        }
-      }
-
+        return { candidate, result: localResult(candidate, classifiedAt) };
+      });
       const acceptedResultHash = memoryExecutionSha256({
-        decisions: plans.map(({ candidate, result }) => ({
-          category: result.decision.category,
-          executionId: result.executionId ?? null,
-          id: candidate.id,
-          inputHash: result.inputHash ?? null,
-          modelId: result.modelId,
-          outputHash: result.acceptedOutputHash ?? null,
-          policyVersion: result.policyVersion,
-          providerId: result.providerId,
-          reasonCode: result.decision.reasonCode,
-          responsePreference: result.decision.responsePreference,
-          sourceMode: candidate.sourceMode,
-          storageDecision: result.decision.storageDecision,
-          subjectScope: result.decision.subjectScope,
-          sensitivity: result.decision.sensitivity
-        })),
+        decisions: plans.map(({ candidate, result }) => {
+          const projection = redactMemorySecrets(candidate.displayText);
+          return {
+            id: candidate.id,
+            policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+            projectedTextHash: projection.containsSecret &&
+              memoryRedactionHasMeaningfulRemainder(candidate.displayText, projection)
+              ? memoryExecutionSha256(projection.redactedText)
+              : null,
+            reasonCode: result.decision.sensitivity === "SECRET"
+              ? "lite_secret_only"
+              : projection.containsSecret ||
+                  memoryValueContainsRecognizedSecret(candidate.structuredValue)
+                ? "lite_span_redacted"
+                : "lite_non_secret_default",
+            sourceMode: candidate.sourceMode
+          };
+        }),
         domain: "aiqsa.memory.reclassification",
         jobId: job.id,
         pipelineVersion: MEMORY_RECLASSIFICATION_PIPELINE_VERSION
       });
-      await context.setStage("authorized_apply");
-      const executionResults = plans.flatMap(({ result }) =>
-        result.executionId && result.acceptedOutputHash
-          ? [{
-              acceptedOutputHash: result.acceptedOutputHash,
-              bindingId: result.executionId,
-              inputHash: result.inputHash!,
-              modelId: result.modelId,
-              policyVersion: result.policyVersion,
-              providerId: result.providerId
-            }]
-          : []);
+      await context.setStage("local_apply");
       return {
         acceptedResultHash,
-        apply: async (tx, claim) => {
-          if (executionResults.length > 0) {
-            if (!deps.authorizeResults) {
-              throw new Error("memory_reclassification_authority_missing");
-            }
-            const settings = await lockMemorySettings(tx, claim.userId, true);
-            try {
-              await deps.authorizeResults(
-                tx,
-                settings,
-                claim.userId,
-                claim.id,
-                executionResults
-              );
-            } catch (error) {
-              if (error instanceof MemoryExecutionError) {
-                throw new MemoryCoordinatorError(error.code, false);
-              }
-              throw error;
-            }
-          }
-          await deps.repository.apply(tx, claim.userId, plans, context.now());
-        },
+        apply: (tx, claim) =>
+          deps.repository.apply(tx, claim.userId, plans, classifiedAt),
         stage: "reclassification_applied"
       };
     }
@@ -287,42 +194,7 @@ export function createPrismaMemoryReclassificationHandler(
     repository?: MemoryReclassificationRepository;
   }> = {}
 ): MemoryJobHandler {
-  const authority = options.authority ?? defaultMemoryExecutionAuthority;
   return createMemoryReclassificationHandler({
-    authorizeResults: async (tx, settings, userId, jobId, results) => {
-      const evidence = await authorizeMemoryExecutionResultsForCommit(
-        authority,
-        tx,
-        settings,
-        userId,
-        { memoryJobId: jobId, role: "MEMORY_RECLASSIFY" },
-        results.map(({ acceptedOutputHash, bindingId, inputHash }) => ({
-          acceptedOutputHash,
-          bindingId,
-          inputHash
-        }))
-      );
-      if (evidence.length !== results.length || results.some((result) => {
-        const authorized = evidence.find(({ bindingId }) =>
-          bindingId === result.bindingId);
-        return !authorized || authorized.modelId !== result.modelId ||
-          authorized.policyVersion !== result.policyVersion ||
-          authorized.providerId !== result.providerId;
-      })) {
-        throw new Error("memory_reclassification_authority_mismatch");
-      }
-    },
-    probeAuthority: (userId) => probeMemoryStructuredOutputAuthority({
-      authority,
-      client,
-      role: "MEMORY_RECLASSIFY",
-      userId,
-      versions: MEMORY_RECLASSIFICATION_VERSIONS
-    }),
-    provider: options.provider ?? createPrismaMemoryReclassificationProvider(
-      client,
-      { authority, provider: options.structuredProvider }
-    ),
     repository: options.repository ?? createPrismaMemoryReclassificationRepository(client)
   });
 }

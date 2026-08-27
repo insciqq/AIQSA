@@ -431,19 +431,19 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-semantic-adjudication-schema-v1"
       ],
       digest: [
-        "memory-chat-digest-v4",
-        "memory-chat-digest-policy-v3",
-        "memory-chat-digest-prompt-v4",
+        "memory-chat-digest-v5",
+        "memory-chat-digest-policy-v4",
+        "memory-chat-digest-prompt-v5",
         "memory-chat-digest-schema-v2"
       ],
       entity: ["memory-entity-resolution-v2", "slot-v3"],
       extraction: [
-        "memory-fact-extraction-vnext-v5",
-        "memory-fact-extraction-policy-v8",
-        "memory-fact-extraction-prompt-v24",
+        "memory-fact-extraction-vnext-v6",
+        "memory-fact-extraction-policy-v9",
+        "memory-fact-extraction-prompt-v25",
         "memory-fact-extraction-schema-v5"
       ],
-      history: "memory-history-incremental-v3",
+      history: "memory-history-incremental-v4",
       relation: [
         "memory-fact-relation-v2",
         "memory-fact-relation-policy-v3",

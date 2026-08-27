@@ -1,5 +1,8 @@
 import type { ModelToolCall } from "../../../tools/types";
-import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
+import {
+  memoryExplicitStatementContainsSecret,
+  memoryValueContainsRecognizedSecret
+} from "../../explicit/safety";
 import { memorySha256 } from "../../persistence/lexical";
 import {
   resolveMemoryIdentity,
@@ -179,6 +182,10 @@ function exactEvidence(
   const source = targetSource(input);
   const span = projectMemoryExactTextRef(source.text, ref);
   if (!span) fail("memory_fact_evidence_invalid");
+  if ((source.redactionSpans ?? []).some((redacted) =>
+    span.startOffset < redacted.endOffset && span.endOffset > redacted.startOffset)) {
+    fail("memory_fact_secret");
+  }
   return [{
     endOffset: span.endOffset,
     messageId: source.id,
@@ -590,6 +597,9 @@ function decodeObservation(
   const memoryType = boundedString(value.memory_type, 32);
   const rawIdentity = parseIdentity(value.identity);
   const valueProposal = parseValue(value.value);
+  if (memoryValueContainsRecognizedSecret(valueProposal)) {
+    fail("memory_fact_secret");
+  }
   const parsedEntities = parseEntities(
     value.entities,
     input,

@@ -304,6 +304,7 @@ describe("Memory run utility execution", () => {
     purpose
   }) => {
     const log: string[] = [];
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const bound = execution(log);
     const embed = vi.fn(async () => {
       log.push("provider");
@@ -331,7 +332,7 @@ describe("Memory run utility execution", () => {
       ...baseInput(),
       profile,
       purpose,
-      query: "what did we discuss about postgres"
+      query: `what did we discuss about postgres; token ${token}`
     });
     expect(result).toMatchObject({
       bindingId: "binding-MEMORY_QUERY_EMBED",
@@ -357,9 +358,10 @@ describe("Memory run utility execution", () => {
       mode: "document",
       signal: expect.any(AbortSignal),
       texts: [expect.stringMatching(
-        /prior personal conversational evidence.*English, Russian, and mixed-language.*what did we discuss about postgres/su
+        /prior personal conversational evidence.*English, Russian, and mixed-language.*what did we discuss about postgres.*REDACTED/su
       )]
     });
+    expect(JSON.stringify(embed.mock.calls)).not.toContain(token);
     expect(JSON.stringify(embed.mock.calls)).not.toContain("web search");
   });
 

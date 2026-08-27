@@ -456,7 +456,6 @@ export function createMemoryFactExtractionHandler(
       // authority work: recognizable raw credentials must never be included
       // in a model request merely to ask whether they are credentials.
       if (input.messages.some((message) =>
-        message.evidenceEligible &&
         memoryExplicitStatementContainsSecret(message.text)) ||
         input.contextRefs.some((context) =>
           memoryExplicitStatementContainsSecret(context.text) ||

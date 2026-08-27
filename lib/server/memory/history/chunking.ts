@@ -12,10 +12,11 @@ import {
 } from "./sourceProjection";
 import { projectMemoryHistorySafeText } from "./safety";
 
-// v3 makes chunk identity independent of the chat-wide branch/source counters.
+// v4 retains v3 identity stability while binding chunks to the Safety Lite
+// span-redaction projection and source maps.
 // Exact message identities and normalized projected content keep unchanged
 // prefix chunks stable across appends while the source map still fences edits.
-export const MEMORY_HISTORY_CHUNKING_VERSION = "memory-history-chunking-v3";
+export const MEMORY_HISTORY_CHUNKING_VERSION = "memory-history-chunking-v4";
 
 export type MemoryHistoryChunkingOptions = Readonly<{
   maxApproxTokens: number;

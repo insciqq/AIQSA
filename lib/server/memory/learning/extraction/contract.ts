@@ -5,17 +5,17 @@ import type { MemoryTextLanguage } from "../../history/language";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
 
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
-  "memory-fact-extraction-vnext-v5";
+  "memory-fact-extraction-vnext-v6";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v8";
+  "memory-fact-extraction-policy-v9";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v24";
+  "memory-fact-extraction-prompt-v25";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   MEMORY_TEMPORAL_RESOLVER_VERSION;
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
-  "memory-fact-source-projection-v4";
+  "memory-fact-source-projection-v5";
 export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 
 // Context-dependent interpretation is disabled until every accepted
@@ -190,6 +190,10 @@ export type MemoryFactInputMessage = Readonly<{
   evidenceEligible: boolean;
   id: string;
   languageCode: MemoryTextLanguage;
+  redactionSpans: readonly Readonly<{
+    endOffset: number;
+    startOffset: number;
+  }>[];
   role: "assistant" | "user";
   text: string;
   updatedAt: string;

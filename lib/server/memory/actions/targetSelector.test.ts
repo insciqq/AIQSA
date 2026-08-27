@@ -180,6 +180,37 @@ describe("Memory target selector", () => {
     );
   });
 
+  it("redacts mixed selector inputs before provider I/O", async () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const deps = dependencies({
+      confidenceBand: "HIGH",
+      reasonCode: "SELECTED",
+      selectedHandle: "c1"
+    });
+    const mixedRequest = {
+      ...request,
+      candidates: request.candidates.map((candidate, index) => index === 0
+        ? {
+            ...candidate,
+            target: {
+              ...candidate.target,
+              statement: `I prefer tea. Token ${token}`
+            }
+          }
+        : candidate),
+      currentUserText: `Forget the second preference; token ${token}`,
+      targetQuery: `the second preference beside ${token}`
+    };
+
+    await expect(createMemoryTargetSelector(deps as never).select(mixedRequest))
+      .resolves.toMatchObject({ status: "READY" });
+
+    const serialized = JSON.stringify(deps.provider.run.mock.calls);
+    expect(serialized).not.toContain(token);
+    expect(serialized).toContain("REDACTED");
+    expect(serialized).toContain("I prefer tea");
+  });
+
   it("fails closed on original control target drift before selector provider I/O", async () => {
     const deps = dependencies({
       confidenceBand: "HIGH",

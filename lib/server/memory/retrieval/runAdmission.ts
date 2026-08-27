@@ -43,6 +43,7 @@ import {
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
+import { redactMemorySecrets } from "../explicit/safety";
 import {
   createMemoryReadOnlyControlReuseProof,
   createPrismaMemoryControlService,
@@ -814,7 +815,9 @@ function relevanceEvidence(
         return [{
           applicable: decision.applicable,
           authorityLevel: candidate.authorityLevel,
-          category: candidate.candidate.metadata.category,
+          category: candidate.candidate.metadata.category === null
+            ? null
+            : redactMemorySecrets(candidate.candidate.metadata.category).redactedText,
           current: decision.current,
           deterministicMatches:
             candidate.candidate.featureSnapshot.deterministicMatches ?? [],
@@ -1387,7 +1390,7 @@ export function createMemoryRunRetrievalService(
               admissionDeadlineAtMs: controlCache.admissionDeadlineAtMs!,
               bindingId: control.bindingId,
               chatId: input.chatId,
-              currentUserText,
+              currentUserText: querySafety.safeText,
               intent: control.intent,
               modelRunId: input.modelRunId,
               now: input.now,

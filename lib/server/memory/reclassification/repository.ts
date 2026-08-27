@@ -11,12 +11,23 @@ import {
   type LockedMemorySettings
 } from "../persistence/transaction";
 import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
+import {
+  memoryRedactionHasMeaningfulRemainder,
+  memorySecretSafeObjectKey,
+  memoryValueContainsRecognizedSecret,
+  redactMemorySecrets
+} from "../explicit/safety";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
+import {
+  MEMORY_SAFETY_LITE_POLICY_VERSION,
+  memorySafetyLiteReasonForRedaction
+} from "../safetyLite";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { loadMemoryReusableFactSourceSnapshots } from
   "../synthesis/authoritySnapshots";
 import { removeUnsupportedMemoryEntityLinks } from "../learning/entities/lifecycle";
+import { MEMORY_V1_CATEGORY_ALLOWLIST } from "../learning/extraction/contract";
 import {
   memoryReclassificationAcceptedOutputHash,
   memoryReclassificationInputHash,
@@ -27,6 +38,7 @@ import {
 export const MEMORY_RECLASSIFICATION_BATCH_SIZE = 8;
 
 export type MemoryReclassificationCandidate = Readonly<{
+  category: string;
   id: string;
   factId: string;
   userId: string;
@@ -35,8 +47,10 @@ export type MemoryReclassificationCandidate = Readonly<{
   coreSalience: "HIGH" | "MEDIUM" | "LOW" | "NONE";
   modality: "CONSIDERATION" | "CONSTRAINT" | "EVENT" | "HABIT" |
     "INTENTION" | "PATTERN" | "PLAN" | "PREFERENCE" | "STATE" | "WORKFLOW";
+  safetyClassificationState: "PENDING" | "SECRET_FENCED" | "UNCERTAIN";
   semanticState: "ACTIVE" | "PENDING_RELATION";
   sourceMode: "EXPLICIT" | "AUTOMATIC";
+  structuredValue: Prisma.JsonValue;
   systemFrom: Date;
 }>;
 
@@ -56,7 +70,48 @@ export type MemoryReclassificationRepository = Readonly<{
   ): Promise<void>;
 }>;
 
+/** One authority owner for bounded Safety Lite discovery. Terminal legacy
+ * rows are eligible only when their content and ordinary source/lifecycle
+ * authority still survive; purged or retracted rows remain unreachable. */
+export function memoryReclassificationCandidateAuthorityPredicate(
+  userId: string | Prisma.Sql
+): Prisma.Sql {
+  return Prisma.sql`(
+    (
+      version."safetyClassificationState" =
+        'PENDING'::"MemorySafetyClassificationState"
+      AND ${memoryReusableFactAuthorityPredicate(userId, {
+        allowLegacySafetyReprojection: true,
+        classification: "PENDING",
+        includePatterns: true,
+        lifecycle: "RECLASSIFICATION"
+      })}
+    )
+    OR (
+      version."safetyClassificationState" =
+        'UNCERTAIN'::"MemorySafetyClassificationState"
+      AND ${memoryReusableFactAuthorityPredicate(userId, {
+        allowLegacySafetyReprojection: true,
+        classification: "UNCERTAIN",
+        includePatterns: true,
+        lifecycle: "RECLASSIFICATION"
+      })}
+    )
+    OR (
+      version."safetyClassificationState" =
+        'SECRET_FENCED'::"MemorySafetyClassificationState"
+      AND ${memoryReusableFactAuthorityPredicate(userId, {
+        allowLegacySafetyReprojection: true,
+        classification: "SECRET_FENCED",
+        includePatterns: true,
+        lifecycle: "RECLASSIFICATION"
+      })}
+    )
+  )`;
+}
+
 const safeToken = /^[A-Za-z0-9][A-Za-z0-9._:+@/=-]{0,255}$/u;
+const durableCategories = new Set<string>(MEMORY_V1_CATEGORY_ALLOWLIST);
 
 function validNow(now: Date): boolean {
   return now instanceof Date && Number.isFinite(now.getTime());
@@ -109,15 +164,33 @@ function safeClassificationResult(
       expectedInputHash,
       result.decision
     );
-  const localSecret = result.executionId === null &&
+  const redaction = redactMemorySecrets(candidate.displayText);
+  const secretOnly = redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(candidate.displayText, redaction);
+  const localLite = result.executionId === null &&
+    result.inputHash === undefined && result.acceptedOutputHash === undefined &&
+    result.providerId === "aiqsa-local-policy" &&
+    result.modelId === MEMORY_SAFETY_LITE_POLICY_VERSION &&
+    result.policyVersion === MEMORY_SAFETY_LITE_POLICY_VERSION &&
+    result.decision.category === (durableCategories.has(candidate.category)
+      ? candidate.category
+      : "other") &&
+    result.decision.reasonCode === (secretOnly
+      ? "secret_material"
+      : "ordinary_personal") &&
+    result.decision.responsePreference === (candidate.modality === "PREFERENCE") &&
+    result.decision.sensitivity === (secretOnly ? "SECRET" : "NORMAL") &&
+    result.decision.storageDecision === (secretOnly ? "REJECT_SECRET" : "ALLOW") &&
+    result.decision.subjectScope === "USER";
+  const legacyLocalSecret = result.executionId === null &&
     result.inputHash === undefined && result.acceptedOutputHash === undefined &&
     result.providerId === "aiqsa-local-policy" &&
     result.modelId === "format-aware-secret-parser-v1" &&
     result.policyVersion === "memory-local-secret-parser-v1" &&
     result.decision.reasonCode === "secret_material" &&
     result.decision.sensitivity === "SECRET" &&
-    result.decision.storageDecision === "REJECT_SECRET";
-  return (governed || localSecret) && safeToken.test(result.providerId) &&
+    result.decision.storageDecision === "REJECT_SECRET" && secretOnly;
+  return (governed || localLite || legacyLocalSecret) && safeToken.test(result.providerId) &&
     safeToken.test(result.modelId) &&
     safeToken.test(result.policyVersion) &&
     (result.classifiedAt === undefined || validNow(result.classifiedAt)) &&
@@ -141,6 +214,51 @@ function safeClassificationResult(
       result.decision.sensitivity === "SENSITIVE" ||
       result.decision.sensitivity === "SECRET" ||
       result.decision.sensitivity === "UNCERTAIN");
+}
+
+function redactStructuredValue(value: Prisma.JsonValue): Prisma.JsonValue {
+  if (typeof value === "string") return redactMemorySecrets(value).redactedText;
+  if (Array.isArray(value)) return value.map(redactStructuredValue);
+  if (value !== null && typeof value === "object") {
+    const usedKeys = new Set<string>();
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      const safeKey = memorySecretSafeObjectKey(key, usedKeys);
+      return [safeKey, redactStructuredValue(child as Prisma.JsonValue)];
+    }));
+  }
+  return value;
+}
+
+async function reprojectLegacyEvidence(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  factVersionId: string
+): Promise<void> {
+  const rows = await tx.memoryEvidence.findMany({
+    select: { id: true, safeExcerpt: true, sourceType: true },
+    where: { factVersionId, userId }
+  });
+  for (const row of rows) {
+    const redaction = redactMemorySecrets(row.safeExcerpt);
+    if (!redaction.containsSecret) continue;
+    // Exact Message evidence needs a source-map-aware rebuild from the
+    // authoritative Message. Dropping this unsafe derivative makes the fact
+    // ineligible until that rebuild, while leaving the Chat source untouched.
+    if (row.sourceType === "MESSAGE" ||
+      !memoryRedactionHasMeaningfulRemainder(row.safeExcerpt, redaction)) {
+      await tx.memoryEvidence.delete({ where: { id: row.id } });
+      continue;
+    }
+    await tx.memoryEvidence.update({
+      data: {
+        evidenceFingerprint: null,
+        safeExcerpt: redaction.redactedText,
+        safeSourceHash: memorySha256(redaction.redactedText),
+        sourceProjectionVersion: MEMORY_SAFETY_LITE_POLICY_VERSION
+      },
+      where: { id: row.id }
+    });
+  }
 }
 
 type IndexableClassifiedFact = Readonly<{
@@ -201,7 +319,11 @@ export async function ensureClassifiedSearchEntry(
   if (!row) return;
   const index = await requireActiveMemoryIndex(tx, settings);
   if (!index) throw new Error("memory_active_generation_invalid");
-  const normalizedSearchText = normalizeMemorySearchText(row.displayText);
+  const redaction = redactMemorySecrets(row.displayText);
+  if (redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(row.displayText, redaction)) return;
+  const safeDisplayText = redaction.redactedText;
+  const normalizedSearchText = normalizeMemorySearchText(safeDisplayText);
   if (!normalizedSearchText) return;
   const snapshots = await loadMemoryReusableFactSourceSnapshots(
     tx,
@@ -209,6 +331,7 @@ export async function ensureClassifiedSearchEntry(
     [row]
   );
   const sources = snapshots.get(factVersionId) ?? [];
+  if (row.sourceMode === "AUTOMATIC" && sources.length === 0) return;
   let entry = await tx.memorySearchEntry.findFirst({
     select: { embeddingState: true, id: true },
     where: {
@@ -228,7 +351,7 @@ export async function ensureClassifiedSearchEntry(
       languageCode: row.languageCode,
       normalizedSearchText,
       safeContentHash: memorySha256({
-        displayText: row.displayText,
+        displayText: safeDisplayText,
         structuredValue: row.structuredValue
       }),
       safetyIdentitySnapshot: memorySha256({
@@ -302,8 +425,10 @@ export function createPrismaMemoryReclassificationRepository(
       return client.$queryRaw<MemoryReclassificationCandidate[]>(Prisma.sql`
         SELECT
           version."id", version."factId", version."userId", version."displayText",
+          version."category", version."structuredValue",
           version."coreEligible", version."coreSalience"::text AS "coreSalience",
           version."modality"::text AS "modality",
+          version."safetyClassificationState"::text AS "safetyClassificationState",
           version."state"::text AS "semanticState",
           version."sourceMode"::text AS "sourceMode", version."systemFrom"
         FROM "MemoryFactVersion" AS version
@@ -335,16 +460,10 @@ export function createPrismaMemoryReclassificationRepository(
               )
             )
           )
-          AND version."safetyClassificationState" =
-            'PENDING'::"MemorySafetyClassificationState"
           AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
           AND version."displayText" IS NOT NULL
           AND ${memoryCanonicalGlobalScopePredicate()}
-          AND ${memoryReusableFactAuthorityPredicate(userId, {
-            classification: "PENDING",
-            includePatterns: true,
-            lifecycle: "RECLASSIFICATION"
-          })}
+          AND ${memoryReclassificationCandidateAuthorityPredicate(userId)}
         ORDER BY version."createdAt", version."id"
         LIMIT ${limit}
       `);
@@ -367,11 +486,20 @@ export function createPrismaMemoryReclassificationRepository(
         const { candidate, result } = plan;
         if (candidate.userId !== userId || !safeToken.test(candidate.id) ||
           !safeToken.test(candidate.factId) ||
+          (candidate.safetyClassificationState !== "PENDING" &&
+            candidate.safetyClassificationState !== "SECRET_FENCED" &&
+            candidate.safetyClassificationState !== "UNCERTAIN") ||
           (candidate.semanticState !== "ACTIVE" &&
             candidate.semanticState !== "PENDING_RELATION") ||
           !safeClassificationResult(candidate, result)) {
           throw new Error("memory_reclassification_input_invalid");
         }
+        const authority = memoryReusableFactAuthorityPredicate(userId, {
+          allowLegacySafetyReprojection: true,
+          classification: candidate.safetyClassificationState,
+          includePatterns: true,
+          lifecycle: "RECLASSIFICATION"
+        });
         const [current] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT version."id"
           FROM "MemoryFactVersion" AS version
@@ -408,17 +536,21 @@ export function createPrismaMemoryReclassificationRepository(
               )
             )
             AND version."safetyClassificationState" =
-              'PENDING'::"MemorySafetyClassificationState"
+              ${candidate.safetyClassificationState}::"MemorySafetyClassificationState"
             AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
             AND ${memoryCanonicalGlobalScopePredicate()}
-            AND ${memoryReusableFactAuthorityPredicate(userId, {
-              classification: "PENDING",
-              includePatterns: true,
-              lifecycle: "RECLASSIFICATION"
-            })}
+            AND ${authority}
           FOR UPDATE OF version, fact, scope
         `);
         if (!current) continue;
+        const lite = result.executionId === null &&
+          result.policyVersion === MEMORY_SAFETY_LITE_POLICY_VERSION;
+        const projection = redactMemorySecrets(candidate.displayText);
+        const structuredRedacted = memoryValueContainsRecognizedSecret(
+          candidate.structuredValue
+        );
+        const safeDisplayText = projection.redactedText;
+        const safeStructuredValue = redactStructuredValue(candidate.structuredValue);
         const state = classifiedState(
           result.decision.sensitivity,
           result.decision.storageDecision,
@@ -432,7 +564,13 @@ export function createPrismaMemoryReclassificationRepository(
         const canonicalCategory = canonicalStorableCategory(
           result.decision.category
         );
-        const effectiveReasonCode = candidate.sourceMode === "AUTOMATIC" &&
+        const effectiveReasonCode = lite
+          ? state === "SECRET_FENCED"
+            ? "lite_secret_only"
+            : memorySafetyLiteReasonForRedaction(
+                projection.containsSecret || structuredRedacted
+              )
+          : candidate.sourceMode === "AUTOMATIC" &&
           result.decision.subjectScope !== "USER"
           ? result.decision.subjectScope === "UNCERTAIN"
             ? "uncertain"
@@ -468,9 +606,9 @@ export function createPrismaMemoryReclassificationRepository(
               "coreEligible" = FALSE,
               "coreSalience" = 'NONE'::"MemoryCoreSalience",
               "safetyClassificationState" = ${state}::"MemorySafetyClassificationState",
-              "safetyClassifierExecutionId" = ${result.executionId ?? null},
-              "safetyClassifierProviderId" = ${result.providerId},
-              "safetyClassifierModelId" = ${result.modelId},
+              "safetyClassifierExecutionId" = ${lite ? null : result.executionId ?? null},
+              "safetyClassifierProviderId" = ${lite ? null : result.providerId},
+              "safetyClassifierModelId" = ${lite ? null : result.modelId},
               "safetyClassifierPolicyVersion" = ${result.policyVersion},
               "safetyClassificationReasonCode" = ${effectiveReasonCode},
               "safetyClassifiedAt" = ${result.classifiedAt ?? now}
@@ -478,7 +616,8 @@ export function createPrismaMemoryReclassificationRepository(
               AND "id" = ${candidate.id}
               AND "factId" = ${candidate.factId}
               AND "state" = ${candidate.semanticState}::"MemoryFactVersionState"
-              AND "safetyClassificationState" = 'PENDING'::"MemorySafetyClassificationState"
+              AND "safetyClassificationState" =
+                ${candidate.safetyClassificationState}::"MemorySafetyClassificationState"
           `);
           if (fenced !== 1) continue;
           // Delete derivatives only after the compare-and-set wins. A stale
@@ -538,6 +677,11 @@ export function createPrismaMemoryReclassificationRepository(
               : canonicalCategory,
             coreEligible,
             coreSalience,
+            ...(lite ? {
+              displayText: safeDisplayText,
+              normalizedSearchText: normalizeMemorySearchText(safeDisplayText),
+              structuredValue: safeStructuredValue as Prisma.InputJsonValue
+            } : {}),
             modality: pattern
               ? "PATTERN"
               : result.decision.responsePreference
@@ -545,10 +689,10 @@ export function createPrismaMemoryReclassificationRepository(
               : candidate.modality === "PREFERENCE" ? "STATE" : candidate.modality,
             safetyClassifiedAt: result.classifiedAt ?? now,
             safetyClassificationState: state,
-            safetyClassifierExecutionId: result.executionId ?? null,
-            safetyClassifierModelId: result.modelId,
+            safetyClassifierExecutionId: lite ? null : result.executionId ?? null,
+            safetyClassifierModelId: lite ? null : result.modelId,
             safetyClassifierPolicyVersion: result.policyVersion,
-            safetyClassifierProviderId: result.providerId,
+            safetyClassifierProviderId: lite ? null : result.providerId,
             safetyClassificationReasonCode: effectiveReasonCode,
             sensitivityClass: canonicalSensitivity === "UNCERTAIN"
               ? "HIGHLY_SENSITIVE"
@@ -557,12 +701,15 @@ export function createPrismaMemoryReclassificationRepository(
           where: {
             factId: candidate.factId,
             id: candidate.id,
-            safetyClassificationState: "PENDING",
+            safetyClassificationState: candidate.safetyClassificationState,
             state: candidate.semanticState,
             userId
           }
         });
         if (classified.count !== 1) continue;
+        if (lite) {
+          await reprojectLegacyEvidence(tx, userId, candidate.id);
+        }
         changed = true;
         if (candidate.semanticState === "ACTIVE" && state === "CLASSIFIED") {
           admittedActiveVersions.push({

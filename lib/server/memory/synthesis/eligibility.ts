@@ -1,12 +1,18 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { memoryExactVNextDirectAuthorityPredicate } from
-  "../persistence/eligibility";
+import {
+  memoryExactVNextDirectAuthorityPredicate,
+  memoryPersonalFactEvidencePredicate
+} from "../persistence/eligibility";
 import {
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
   MEMORY_SYNTHESIS_POLICY_VERSION
 } from "./policy";
 
-export type MemoryReusableFactAuthorityClassification = "CLASSIFIED" | "PENDING";
+export type MemoryReusableFactAuthorityClassification =
+  | "CLASSIFIED"
+  | "PENDING"
+  | "SECRET_FENCED"
+  | "UNCERTAIN";
 export type MemoryReusableFactAuthorityLifecycle =
   | "CURRENT"
   | "CURRENT_OR_HISTORICAL"
@@ -20,6 +26,7 @@ type AuthorityAliases = Readonly<{
 }>;
 
 export type MemoryReusableFactAuthorityInput = AuthorityAliases & Readonly<{
+  allowLegacySafetyReprojection?: boolean;
   classification?: MemoryReusableFactAuthorityClassification;
   includePatterns?: boolean;
   lifecycle?: MemoryReusableFactAuthorityLifecycle;
@@ -111,6 +118,7 @@ function commonAuthorityPredicate(
   userId: string | Prisma.Sql,
   aliases: Required<AuthorityAliases>,
   input: Readonly<{
+    allowLegacySafetyReprojection?: boolean;
     classification: MemoryReusableFactAuthorityClassification;
     lifecycle: MemoryReusableFactAuthorityLifecycle;
   }>
@@ -134,9 +142,16 @@ function commonAuthorityPredicate(
     AND ${version}."sourceMode" IN (
       'EXPLICIT'::"MemoryFactSourceMode", 'AUTOMATIC'::"MemoryFactSourceMode"
     )
-    AND ${version}."sensitivityClass" IN (
-      'NORMAL'::"MemorySensitivityClass", 'SENSITIVE'::"MemorySensitivityClass"
-    )
+    AND ${input.allowLegacySafetyReprojection === true
+      ? Prisma.sql`${version}."sensitivityClass" IN (
+          'NORMAL'::"MemorySensitivityClass",
+          'SENSITIVE'::"MemorySensitivityClass",
+          'HIGHLY_SENSITIVE'::"MemorySensitivityClass",
+          'SECRET'::"MemorySensitivityClass"
+        )`
+      : Prisma.sql`${version}."sensitivityClass" IN (
+          'NORMAL'::"MemorySensitivityClass", 'SENSITIVE'::"MemorySensitivityClass"
+        )`}
     AND (
       ${fact}."subjectEntityId" IS NULL
       OR aiqsa_memory_entity_root_is_active(${userId}, ${fact}."subjectEntityId")
@@ -148,7 +163,8 @@ function commonAuthorityPredicate(
 
 function directAuthorityPredicate(
   userId: string | Prisma.Sql,
-  version: Prisma.Sql
+  version: Prisma.Sql,
+  allowLegacySafetyReprojection = false
 ): Prisma.Sql {
   return Prisma.sql`
     ${version}."modality" <> 'PATTERN'::"MemoryFactModality"
@@ -158,11 +174,16 @@ function directAuthorityPredicate(
     AND ${version}."synthesisDepth" = 0
     AND ${version}."synthesisGeneration" IS NULL
     AND ${version}."synthesisSourceSetFingerprint" IS NULL
-    AND ${memoryExactVNextDirectAuthorityPredicate(userId, {
-      factVersionId: Prisma.sql`${version}."id"`,
-      sourceMode: Prisma.sql`${version}."sourceMode"`,
-      version
-    })}
+    AND ${allowLegacySafetyReprojection
+      ? memoryPersonalFactEvidencePredicate(userId, {
+          factVersionId: Prisma.sql`${version}."id"`,
+          sourceMode: Prisma.sql`${version}."sourceMode"`
+        })
+      : memoryExactVNextDirectAuthorityPredicate(userId, {
+          factVersionId: Prisma.sql`${version}."id"`,
+          sourceMode: Prisma.sql`${version}."sourceMode"`,
+          version
+        })}
   `;
 }
 
@@ -278,6 +299,7 @@ function sourceEligibilityHashExpression(
 export function memorySynthesisPatternAuthorityPredicate(
   userId: string | Prisma.Sql,
   input: AuthorityAliases & Readonly<{
+    allowLegacySafetyReprojection?: boolean;
     classification?: MemoryReusableFactAuthorityClassification;
     patternVersionId?: Prisma.Sql;
   }> = {}
@@ -290,6 +312,7 @@ export function memorySynthesisPatternAuthorityPredicate(
   const patternVersionId = input.patternVersionId ?? Prisma.sql`${version}."id"`;
   return Prisma.sql`(
     ${commonAuthorityPredicate(userId, { fact, scope, settings, version }, {
+      allowLegacySafetyReprojection: input.allowLegacySafetyReprojection,
       classification,
       lifecycle: "CURRENT"
     })}
@@ -359,12 +382,10 @@ export function memorySynthesisPatternAuthorityPredicate(
   )`;
 }
 
-/** A freshly applied pattern is intentionally PENDING until the independent
- * safety classifier admits it. Reconciliation must validate that row against
- * the authority contract for its current classification phase; treating every
- * non-CLASSIFIED row as invalid races the classifier and retracts safe patterns
- * before they can ever become reusable. Terminal/non-admissible classification
- * states remain fail-closed. */
+/** New patterns receive synchronous Safety Lite admission. Reconciliation also
+ * preserves source-authorized legacy safety states until bounded local
+ * reprojection can classify or purge them; ordinary retrieval still admits
+ * only CLASSIFIED rows. */
 export function memorySynthesisPatternInvalidationPredicate(
   userId: string | Prisma.Sql,
   input: AuthorityAliases & Readonly<{
@@ -396,9 +417,29 @@ export function memorySynthesisPatternInvalidationPredicate(
         classification: "CLASSIFIED"
       })})
     )
+    OR (
+      ${version}."safetyClassificationState" =
+        'UNCERTAIN'::"MemorySafetyClassificationState"
+      AND NOT (${memorySynthesisPatternAuthorityPredicate(userId, {
+        ...aliases,
+        allowLegacySafetyReprojection: true,
+        classification: "UNCERTAIN"
+      })})
+    )
+    OR (
+      ${version}."safetyClassificationState" =
+        'SECRET_FENCED'::"MemorySafetyClassificationState"
+      AND NOT (${memorySynthesisPatternAuthorityPredicate(userId, {
+        ...aliases,
+        allowLegacySafetyReprojection: true,
+        classification: "SECRET_FENCED"
+      })})
+    )
     OR ${version}."safetyClassificationState" NOT IN (
       'PENDING'::"MemorySafetyClassificationState",
-      'CLASSIFIED'::"MemorySafetyClassificationState"
+      'CLASSIFIED'::"MemorySafetyClassificationState",
+      'UNCERTAIN'::"MemorySafetyClassificationState",
+      'SECRET_FENCED'::"MemorySafetyClassificationState"
     )
   )`;
 }
@@ -423,9 +464,14 @@ export function memoryReusableFactAuthorityPredicate(
   const common = commonAuthorityPredicate(
     userId,
     { fact, scope, settings, version },
-    { classification, lifecycle }
+    {
+      allowLegacySafetyReprojection: input.allowLegacySafetyReprojection,
+      classification,
+      lifecycle
+    }
   );
   const pattern = memorySynthesisPatternAuthorityPredicate(userId, {
+    allowLegacySafetyReprojection: input.allowLegacySafetyReprojection,
     classification,
     fact,
     scope,
@@ -435,7 +481,11 @@ export function memoryReusableFactAuthorityPredicate(
   return Prisma.sql`(
     (
       ${common}
-      AND ${directAuthorityPredicate(userId, version)}
+      AND ${directAuthorityPredicate(
+        userId,
+        version,
+        input.allowLegacySafetyReprojection === true
+      )}
     )
     OR (
       ${includePatterns}

@@ -4,6 +4,11 @@ import type {
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { memorySha256 } from "../persistence/lexical";
+import {
+  memoryProjectionHasMeaningfulText,
+  memoryRedactionHasMeaningfulRemainder,
+  redactMemorySecrets
+} from "../explicit/safety";
 
 export const MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION = "memory-item-embed-v1";
 export const MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION = "memory-item-embed-v2";
@@ -170,6 +175,18 @@ export type MemoryEmbeddingBatchJobIdentity = Readonly<{
   triggerHash: string;
 }>;
 
+export function memorySafeEmbeddingText(value: string): string {
+  const redaction = redactMemorySecrets(value);
+  if (redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(value, redaction)) {
+    throw new Error("memory_embedding_text_secret_only");
+  }
+  if (!memoryProjectionHasMeaningfulText(redaction.redactedText)) {
+    throw new Error("memory_embedding_text_empty");
+  }
+  return redaction.redactedText;
+}
+
 export function parseMemoryEmbeddingJobFingerprint(
   value: string
 ): MemoryEmbeddingJobIdentity | null {
@@ -198,11 +215,11 @@ export function renderMemoryDocumentEmbeddingText(
   const projection = target.itemType === "FACT_VERSION"
     ? "Authoritative personal memory fact"
     : "Prior conversational evidence";
-  return `${projection}; preserve speaker attribution, entities, dates, corrections, and exact details.\nEvidence: ${target.normalizedSearchText}`;
+  return `${projection}; preserve speaker attribution, entities, dates, corrections, and exact details.\nEvidence: ${memorySafeEmbeddingText(target.normalizedSearchText)}`;
 }
 
 export function renderMemoryQueryEmbeddingText(query: string): string {
-  return `Instruct: ${MEMORY_EMBEDDING_PROFILE.queryInstruction}\nQuery: ${query}`;
+  return `Instruct: ${MEMORY_EMBEDDING_PROFILE.queryInstruction}\nQuery: ${memorySafeEmbeddingText(query)}`;
 }
 
 export type MemoryEmbeddingBatchInputItem = Readonly<{

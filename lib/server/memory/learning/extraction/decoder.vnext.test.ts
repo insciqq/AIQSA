@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { memorySha256 } from "../../persistence/lexical";
-import type {
-  MemoryFactContextRef,
-  MemoryFactExtractionInput
+import {
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  type MemoryFactContextRef,
+  type MemoryFactExtractionInput
 } from "./contract";
 import { decodeMemoryFactExtraction } from "./decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
@@ -10,7 +11,8 @@ import { memoryCandidateRequiresSemanticAdjudication } from "./adjudication";
 
 function input(
   text: string,
-  contextRefs: readonly MemoryFactContextRef[] = []
+  contextRefs: readonly MemoryFactContextRef[] = [],
+  redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = []
 ): MemoryFactExtractionInput {
   const source = {
     activeLeafMessageId: "assistant-1",
@@ -32,13 +34,14 @@ function input(
       evidenceEligible: true,
       id: source.sourceMessageId,
       languageCode: "und",
+      redactionSpans,
       role: "user",
       text,
       updatedAt: "2026-08-25T10:00:00.000Z"
     }],
     source,
     sourceProjectionHash: "c".repeat(64),
-    sourceProjectionVersion: "memory-fact-source-projection-v4",
+    sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: "d".repeat(64),
     timeZone: "UTC"
   };
@@ -148,13 +151,14 @@ function productObservation(
 function decode(
   sourceText: string,
   observations: readonly unknown[],
-  contextRefs: readonly MemoryFactContextRef[] = []
+  contextRefs: readonly MemoryFactContextRef[] = [],
+  redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = []
 ) {
   return decodeMemoryFactExtraction([{
     arguments: { observations },
     id: "call-1",
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
-  }], input(sourceText, contextRefs));
+  }], input(sourceText, contextRefs, redactionSpans));
 }
 
 describe("Memory v5 semantic-frame decoder", () => {
@@ -174,6 +178,41 @@ describe("Memory v5 semantic-frame decoder", () => {
       plan.candidates[0]!.evidence[0]!.startOffset,
       plan.candidates[0]!.evidence[0]!.endOffset
     )).toBe(quote);
+  });
+
+  it("rejects only candidates whose exact evidence intersects a redacted span", () => {
+    const safeQuote = "I moved to Helsinki";
+    const placeholder = "[REDACTED:TOKEN]";
+    const source = `${safeQuote}; token ${placeholder}.`;
+    const startOffset = source.indexOf(placeholder);
+    const plan = decode(source, [
+      observation(safeQuote, { candidate_ref: "C1" }),
+      observation(placeholder, {
+        candidate_ref: "C2",
+        statement: "The current user supplied a token."
+      })
+    ], [], [{ endOffset: startOffset + placeholder.length, startOffset }]);
+
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]?.evidence[0]?.quote).toBe(safeQuote);
+    expect(plan.rejections).toEqual([{
+      candidateOrdinal: 1,
+      reasonCode: "REJECT_SECRET"
+    }]);
+  });
+
+  it("rejects a recognized secret hallucinated inside the structured value", () => {
+    const quote = "I prefer tea.";
+    const token = `sk-${"a1".repeat(16)}`;
+    const plan = decode(quote, [observation(quote, {
+      value: { ...nullValue, value: token }
+    })]);
+
+    expect(plan.candidates).toEqual([]);
+    expect(plan.rejections).toEqual([{
+      candidateOrdinal: 0,
+      reasonCode: "REJECT_SECRET"
+    }]);
   });
 
   it.each([
@@ -335,6 +374,22 @@ describe("Memory v5 semantic-frame decoder", () => {
     })]);
     expect(plan.candidates).toHaveLength(1);
     expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!)).toBe(true);
+  });
+
+  it("admits direct ordinary current-user relationship context", () => {
+    const quote = "My spouse is Alex.";
+    const plan = decode(quote, [observation(quote, {
+      memory_type: "STATE",
+      statement: "The current user's spouse is Alex."
+    })]);
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]).toMatchObject({
+      directness: "DIRECT",
+      sensitivity: "NORMAL",
+      statement: "The current user's spouse is Alex."
+    });
   });
 
   it("uses structural PRONOMINAL context and never writes it as an alias", () => {

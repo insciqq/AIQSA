@@ -1,5 +1,11 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import {
+  memoryRedactionHasMeaningfulRemainder,
+  memorySecretSafeObjectKey,
+  redactMemorySecrets
+} from "../explicit/safety";
 import { detectMemoryTextLanguage } from "../history/language";
+import { memorySafetyLiteFactClassification } from "../safetyLite";
 import type {
   MemoryJobClaim,
   MemoryJobDescriptor,
@@ -95,12 +101,28 @@ type StagedExecution = MemorySynthesisExecutionResult & Readonly<{
   sourceSnapshotHash: string;
 }>;
 
-function source(row: SynthesisSourceRow): MemorySynthesisSource {
+function redactStructuredValue(value: Prisma.JsonValue): Prisma.JsonValue {
+  if (typeof value === "string") return redactMemorySecrets(value).redactedText;
+  if (Array.isArray(value)) return value.map(redactStructuredValue);
+  if (value !== null && typeof value === "object") {
+    const usedKeys = new Set<string>();
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      const safeKey = memorySecretSafeObjectKey(key, usedKeys);
+      return [safeKey, redactStructuredValue(child as Prisma.JsonValue)];
+    }));
+  }
+  return value;
+}
+
+function source(row: SynthesisSourceRow): MemorySynthesisSource | null {
+  const redaction = redactMemorySecrets(row.displayText);
+  if (redaction.containsSecret &&
+    !memoryRedactionHasMeaningfulRemainder(row.displayText, redaction)) return null;
   return Object.freeze({
     canonicalKey: row.canonicalKey,
     category: row.category,
     directness: row.directness,
-    displayText: row.displayText,
+    displayText: redaction.redactedText,
     eligibilityHash: memorySynthesisSourceEligibilityHash({
       canonicalKey: row.canonicalKey,
       directness: row.directness,
@@ -123,7 +145,7 @@ function source(row: SynthesisSourceRow): MemorySynthesisSource {
     sourceChatIds: Object.freeze(row.sourceChatIds),
     sourceMessageIds: Object.freeze(row.sourceMessageIds),
     sourceMode: row.sourceMode,
-    structuredValue: row.structuredValue,
+    structuredValue: redactStructuredValue(row.structuredValue),
     subjectKey: row.subjectKey,
     versionId: row.versionId
   });
@@ -205,7 +227,10 @@ async function loadSources(
     ORDER BY source_version."observedAt" DESC, source_version."id"
     LIMIT ${sourceLimit}
   `);
-  return Object.freeze(rows.map(source));
+  return Object.freeze(rows.flatMap((row) => {
+    const projected = source(row);
+    return projected ? [projected] : [];
+  }));
 }
 
 async function loadTargetedPlan(
@@ -846,7 +871,7 @@ export function createPrismaMemorySynthesisRepository(
             normalizedSearchText: normalized,
             observedAt: now,
             pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
-            safetyClassificationState: "PENDING",
+            ...memorySafetyLiteFactClassification(now),
             sensitivityClass: "NORMAL",
             sourceMode: "AUTOMATIC",
             state: "ACTIVE",

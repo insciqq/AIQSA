@@ -22,6 +22,7 @@ function input(text: string): MemoryFactExtractionInput {
       evidenceEligible: true,
       id: "current-user-message",
       languageCode: "en",
+      redactionSpans: [],
       role: "user",
       text,
       updatedAt: "2026-08-21T09:00:00.000Z"

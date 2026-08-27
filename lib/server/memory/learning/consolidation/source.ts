@@ -3,6 +3,12 @@ import type {
   MemoryJobDescriptor,
   MemoryJobGateDecision
 } from "../../coordinator/types";
+import {
+  memoryRedactionHasMeaningfulRemainder,
+  memorySecretSafeObjectKey,
+  memoryValueContainsRecognizedSecret,
+  redactMemorySecrets
+} from "../../explicit/safety";
 import { projectMemoryHistorySafeText } from "../../history/safety";
 import {
   memorySha256,
@@ -84,6 +90,21 @@ const modalities = new Set([
   "STATE",
   "WORKFLOW"
 ]);
+
+function redactConsolidationStructuredValue(
+  value: Prisma.JsonValue
+): Prisma.JsonValue {
+  if (typeof value === "string") return redactMemorySecrets(value).redactedText;
+  if (Array.isArray(value)) return value.map(redactConsolidationStructuredValue);
+  if (value !== null && typeof value === "object") {
+    const usedKeys = new Set<string>();
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      const safeKey = memorySecretSafeObjectKey(key, usedKeys);
+      return [safeKey, redactConsolidationStructuredValue(child as Prisma.JsonValue)];
+    }));
+  }
+  return value;
+}
 
 type CandidateRecord = Readonly<{
   branchGeneration: number;
@@ -473,12 +494,14 @@ async function loadCandidate(
     const projected = projectMemoryHistorySafeText(text);
     if (
       !projected.eligible || projected.safetyClass !== "NORMAL" ||
-      projected.redactionState !== "NOT_NEEDED" || projected.safeText !== text ||
-      memorySha256(text) !== item.sourceTextHash ||
+      memorySha256(projected.safeText) !== item.sourceTextHash ||
       item.startOffset < 0 || item.endOffset <= item.startOffset ||
-      item.endOffset > text.length
+      item.endOffset > projected.safeText.length ||
+      projected.redactionSourceMap.some((entry) =>
+        entry.kind === "REDACTION" &&
+        item.startOffset < entry.outputEnd && item.endOffset > entry.outputStart)
     ) return null;
-    const quote = text.slice(item.startOffset, item.endOffset);
+    const quote = projected.safeText.slice(item.startOffset, item.endOffset);
     if (!quote || quote.length > 2_000) return null;
     evidence.push({
       endOffset: item.endOffset,
@@ -489,6 +512,13 @@ async function loadCandidate(
       startOffset: item.startOffset
     });
   }
+  if (
+    redactMemorySecrets(row.proposedCanonicalKey).containsSecret ||
+    redactMemorySecrets(row.proposedCategory).containsSecret ||
+    redactMemorySecrets(row.proposedDisplayText).containsSecret ||
+    memoryValueContainsRecognizedSecret(row.proposedValue) ||
+    memoryValueContainsRecognizedSecret(row.temporalResolutionEvidence)
+  ) return null;
   try {
     const encoded = memoryStableJson(row.proposedValue);
     if (!encoded || encoded.length > 8_192) return null;
@@ -641,12 +671,17 @@ async function loadRelatedFacts(
   const byFact = new Map<string, MemoryRelatedFactVersionSnapshot[]>();
   for (const version of versions) {
     if (version.displayText === null || version.structuredValue === null) continue;
+    const redaction = redactMemorySecrets(version.displayText);
+    if (redaction.containsSecret && !memoryRedactionHasMeaningfulRemainder(
+      version.displayText,
+      redaction
+    )) continue;
     const list = byFact.get(version.factId) ?? [];
     list.push({
       category: version.category,
       confidence: version.confidence,
       directness: version.directness,
-      displayText: version.displayText,
+      displayText: redaction.redactedText,
       id: version.id,
       importance: version.importance,
       languageCode: version.languageCode,
@@ -654,7 +689,7 @@ async function loadRelatedFacts(
       modality: version.modality,
       sourceMode: version.sourceMode,
       state: version.state,
-      structuredValue: version.structuredValue,
+      structuredValue: redactConsolidationStructuredValue(version.structuredValue),
       supportCount: Number(version.supportCount),
       systemFrom: version.systemFrom.toISOString(),
       systemTo: version.systemTo?.toISOString() ?? null,
@@ -673,8 +708,8 @@ async function loadRelatedFacts(
         : null;
     if (!scope) return [];
     return [{
-      canonicalKey: row.canonicalKey,
-      category: row.category,
+      canonicalKey: redactMemorySecrets(row.canonicalKey).redactedText,
+      category: redactMemorySecrets(row.category).redactedText,
       currentVersionId: row.currentVersionId,
       id: row.id,
       scope,

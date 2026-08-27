@@ -4,10 +4,10 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v3";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v4";
 export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
-  "memory-history-rebuild-required-v2";
-export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v4";
+  "memory-history-rebuild-required-v3";
+export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES = 8_192;
@@ -59,6 +59,7 @@ export type MemoryHistoryDigestPlan = Readonly<{
   occurredFrom: string;
   occurredTo: string;
   openLoops: readonly string[];
+  redactionState: "NOT_NEEDED" | "REDACTED";
   safeDigestText: string;
   rebuildPolicyVersion: string;
   sourceChunkIds: readonly string[];

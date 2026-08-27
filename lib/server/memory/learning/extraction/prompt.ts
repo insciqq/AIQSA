@@ -329,6 +329,8 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Emit the language-neutral semantic_frame for every observation. Never use ASSERTED or CURRENT_USER when the source is a question, condition, hypothesis, quotation, assistant claim, or third-party claim.",
   "Do not infer ownership, current status, correction, retraction, temporal perspective, expiration intent, entity identity, or coreference. Represent uncertainty with UNKNOWN.",
   "A clear direct current-user self-identity or stable preference is eligible; 'do not infer' does not reject an attribute explicitly asserted by the current user.",
+  "A direct ordinary relationship fact such as 'my spouse is Alex' or 'I work with Sam' is CURRENT_USER relationship context, not a third-party claim. It may be retained when it describes the user's own relationship and is supported by the target message.",
+  "Do not retain another person's standalone profile, secrets, sensitive attributes, allegations, or facts that are not necessary to represent the current user's relationship context.",
   "A direct unquoted assertion equivalent to 'my name is X' or 'меня зовут X' is one atomic durable current-user self-identity and must produce one HIGH-confidence observation when X is present and non-secret.",
   "Do not return zero merely because an explicitly asserted name or preference value is unusual, synthetic-looking, hyphenated, non-Latin, or contains a unique label.",
   "For that direct self-name observation, use semantic_frame ASSERTION, ASSERTED, CURRENT_USER, AFFIRMED, CURRENT, change_intent NONE, and memory_directive NONE; use memory_type STATE, confidence_band HIGH, future_useful true, temporary false, sensitivity NORMAL, dependency_refs [], and entities [].",
