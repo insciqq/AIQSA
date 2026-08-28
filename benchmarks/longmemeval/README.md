@@ -7,8 +7,8 @@ revision, and SHA-256 in `upstream.json`. Generated downloads and results are
 ignored by Git.
 
 The qualification profiles use an explicitly selected reviewed System Model
-through codex-lb for the answer and structured Memory roles: `gpt-5.6-sol` is
-the default, and `gpt-5.6-luna` is the only tracked alternate.
+through codex-lb for the answer and structured Memory roles: `gpt-5.6-luna` is
+the frozen default, and `gpt-5.6-sol` is the only tracked alternate.
 `qwen/qwen3-embedding-8b` through OpenRouter handles document and query
 embeddings, and the installation's selected dedicated reranker is used when
 one is configured. The `official` profile intentionally disables
@@ -76,7 +76,7 @@ Start the isolated stack and prepare the existing local development profile:
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml up -d app
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts ensure
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-sol
+docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-luna
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-embedding qwen/qwen3-embedding-8b
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker qwen/qwen3-reranker-8b
 ```
@@ -91,13 +91,21 @@ AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-b
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE --sample-size 1
 ```
 
-Use repeated `--question-id ID` arguments for an explicit set, or combine
+FU-09's content-free blind selection is frozen as
+`qualifications/fu09-blind-50-v1.json`. It selects 50 previously unused case
+IDs across all six upstream categories and fixes Luna, the official profile,
+provider targets, timeouts, and conservative concurrency. Run that exact batch
+with `--qualification-manifest fu09-blind-50-v1`; selection or runtime override
+flags are rejected when the manifest is present. The paid/disposable guards
+remain mandatory and the manifest does not authorize a provider run.
+
+Use repeated `--question-id ID` arguments for an explicit ad hoc set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.
 Use `--case-concurrency N` and `--session-concurrency N` to lower either
 bounded concurrency limit; the defaults are `2` and `16` respectively.
-Use `--system-model gpt-5.6-luna` only after selecting that exact active
+Use `--system-model gpt-5.6-sol` only after selecting that exact active
 codex-lb System Model in the disposable profile. Omitting the flag preserves
-the `gpt-5.6-sol` default. The flag does not mutate provider configuration:
+the `gpt-5.6-luna` default. The flag does not mutate provider configuration:
 the runner fails closed unless its allowlisted model, the installation policy,
 the authenticated catalog, and the governed runtime binding all agree, and the
 actual selected model is recorded in the summary.
