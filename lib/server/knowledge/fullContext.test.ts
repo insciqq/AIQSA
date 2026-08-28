@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION } from "./answerInstructions";
+import {
+  KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION,
+  KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION
+} from "./answerInstructions";
 import { textMessageContent } from "../../domain/content";
 import type { ProviderRunRequest } from "../providers/types";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
@@ -131,7 +134,8 @@ describe("adaptive Knowledge answering", () => {
     expect(plan.dispatchDraft.message).toContain("LDL cholesterol 3.5 mmol/L");
     expect(plan.dispatchDraft.message).toContain("inspect every admitted Source systematically");
     expect(plan.dispatchDraft.header).toContain(KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION);
-    expect(plan.dispatchDraft.promptFragmentVersion).toBe(5);
+    expect(plan.dispatchDraft.header).toContain(KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION);
+    expect(plan.dispatchDraft.promptFragmentVersion).toBe(6);
   });
 
   it("falls back before provider dispatch when the corpus or exact passages do not fit", () => {

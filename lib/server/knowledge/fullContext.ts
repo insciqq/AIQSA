@@ -3,7 +3,10 @@ import { estimateApproxTokens } from "../../domain/contextBudget";
 import { KNOWLEDGE_CITATION_V2_MAX } from "../../contracts/knowledge";
 import type { ProviderRunRequest } from "../providers/types";
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
-import { KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION } from "./answerInstructions";
+import {
+  KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION,
+  KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION
+} from "./answerInstructions";
 import {
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate,
@@ -115,6 +118,7 @@ function fullContextHeader(): string {
     "Every passage of every admitted ready Source is supplied below. Answer from these SOURCE blocks without requesting Knowledge tools.",
     "Use only supplied [K…] handles and place citations next to every Source-derived statement. Never invent values, dates, filenames, pages, coverage, or handles.",
     "Present conflicting Source values separately with their own citations. Do not reveal internal IDs, profile configuration, storage identities, or routing internals.",
+    KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION,
     "For trend or comparison questions, inspect every admitted Source systematically and compare every repeated relevant measure; distinguish a genuinely absent value from one merely overlooked.",
     KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION,
     "Your first output line must be exactly AIQSA_KB_STATUS=ANSWERED or AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE.",
@@ -227,7 +231,7 @@ export function planKnowledgeAnswering(input: Readonly<{
       maximumBytes: maximumTokens * 4,
       maximumTokens,
       profileId: `${input.request.provider}:${input.request.modelId}`,
-      promptFragmentVersion: 5,
+      promptFragmentVersion: 6,
       runtimeVersion: 2
     });
   } catch {

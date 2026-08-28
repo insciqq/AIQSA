@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION } from "./answerInstructions";
+import {
+  KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION,
+  KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION
+} from "./answerInstructions";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import {
   knowledgeRetrievalTool,
@@ -49,6 +52,9 @@ describe("Knowledge request parsing", () => {
     );
     expect(knowledgeRetrievalTool.description).toContain(
       KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION
     );
     expect(knowledgeRetrievalTool.description).toContain("written operand order");
     expect(knowledgeRetrievalTool.description).toContain(
