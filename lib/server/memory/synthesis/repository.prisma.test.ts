@@ -626,6 +626,34 @@ describe("Prisma Memory Dream synthesis", () => {
         relation.executionId === executionId &&
         /^[a-f0-9]{64}$/u.test(relation.sourceEligibilityHash ?? "")
       )).toBe(true);
+      const supportVersions = await prisma.memoryFactVersion.findMany({
+        select: {
+          displayText: true,
+          id: true,
+          observedAt: true,
+          sourceMode: true
+        },
+        where: {
+          id: { in: relations.map(({ targetVersionId }) => targetVersionId) },
+          userId
+        }
+      });
+      const supportVersionById = new Map(supportVersions.map((version) =>
+        [version.id, version]));
+      const patternSupportingEvidence = relations.map((relation) => {
+        const support = supportVersionById.get(relation.targetVersionId);
+        if (!support?.displayText || !support.observedAt || support.sourceMode !== "EXPLICIT") {
+          throw new Error("memory_synthesis_test_pattern_support_missing");
+        }
+        return {
+          factVersionId: support.id,
+          observedAt: support.observedAt.toISOString(),
+          sourceAuthority: "user_saved" as const,
+          sourceRootHash: memorySha256(`explicit:${support.id}`),
+          textHash: memorySha256(support.displayText.normalize("NFKC")
+            .replace(/\s+/gu, " ").trim())
+        };
+      });
       expect(await patternAuthority(userId, pattern.id)).toBe(1);
       expect(await patternAuthority(userId, shortPattern.id)).toBe(1);
       await expect(loadMemoryReusableFactVersionIds(
@@ -777,6 +805,7 @@ describe("Prisma Memory Dream synthesis", () => {
             directFactAuthority: false,
             historical: false,
             includePatterns: true,
+            patternSupportingEvidence,
             retrievalMode: "TARGETED_CURRENT",
             tier: "DYNAMIC"
           },
@@ -867,7 +896,7 @@ describe("Prisma Memory Dream synthesis", () => {
             bindingId: created.id,
             exactItemId: pattern.id,
             factVersionId: pattern.id,
-            featureSnapshot: { includePatterns: true },
+            featureSnapshot: { includePatterns: true, patternSupportingEvidence },
             finalScore: 0.9,
             includedText: pattern.displayText!,
             includedTextHash: memorySha256(pattern.displayText!),

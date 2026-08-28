@@ -23,7 +23,13 @@ export type {
 export type MemoryRetrievalItemType =
   | "FACT_VERSION"
   | "RECALL_CHUNK"
-  | "RECALL_ROUND";
+  | "RECALL_ROUND"
+  | "TOOL_EVENT";
+export type MemoryRecallRoundSegmentPosition =
+  | "MIDDLE"
+  | "PREFIX"
+  | "SINGLE"
+  | "SUFFIX";
 export type MemoryRetrievalDirectness = "DIRECT" | "INFERRED" | "PARAPHRASED";
 export type MemoryRetrievalTemperatureClass = "COLD" | "HOT" | "WARM";
 export type MemoryRetrievalHistorySafetyClass =
@@ -104,6 +110,28 @@ export type MemoryRetrievalPlan = Readonly<{
   temporalQueryVariants: readonly MemoryTemporalQueryVariant[];
 }>;
 
+export const MEMORY_SOURCE_FAMILY_HARD_EXCLUSION_REASONS = [
+  "FACTS_SETTING_DISABLED",
+  "HISTORY_SETTING_DISABLED",
+  "EXPLICIT_SOURCE_FILTER_FACTS",
+  "EXPLICIT_SOURCE_FILTER_HISTORY",
+  "MUTATION_ONLY_READ_EXCLUDED",
+  "PROFILE_OPERATION_HISTORY_EXCLUDED",
+  "RESPONSE_PREFERENCE_ONLY_DYNAMIC_EXCLUDED",
+  "SOURCE_FAMILY_AUTHORITY_UNAVAILABLE"
+] as const;
+
+export type MemorySourceFamilyHardExclusionReason =
+  (typeof MEMORY_SOURCE_FAMILY_HARD_EXCLUSION_REASONS)[number];
+
+/** Server-owned two-tier ordinary-read contract. Model planning may enrich
+ * retrieval but cannot remove a family admitted by the baseline plan. */
+export type MemoryRetrievalPlanBundle = Readonly<{
+  baseline: MemoryRetrievalPlan | null;
+  enriched: MemoryRetrievalPlan;
+  hardExclusionReasons: readonly MemorySourceFamilyHardExclusionReason[];
+}>;
+
 export type MemoryRetrievalPlannerInput = Readonly<{
   aggregationRequested?: boolean;
   allowedEntityRefs?: readonly string[];
@@ -128,7 +156,8 @@ export type MemoryRetrievalSourceAuthority =
   | "DIRECT_AUTOMATIC"
   | "EXPLICIT"
   | "PAST_CHAT"
-  | "SYNTHESIS";
+  | "SYNTHESIS"
+  | "TOOL_OBSERVATION";
 
 export type MemoryCandidateMetadata = Readonly<{
   canonicalKey: string | null;
@@ -189,6 +218,9 @@ export type MemoryLaneCandidate = Readonly<{
   itemId: string;
   itemType: MemoryRetrievalItemType;
   lane: MemoryRetrievalLane;
+  /** Private index identity; browser/run-facing identity remains itemId. */
+  matchedSegmentId?: string | null;
+  matchedSegmentPosition?: MemoryRecallRoundSegmentPosition | null;
   metadata: MemoryCandidateMetadata;
   rawScore: number;
 }>;
@@ -220,6 +252,9 @@ export type MemoryRankedCandidate = Readonly<{
   itemId: string;
   itemType: MemoryRetrievalItemType;
   laneRanks: Readonly<Partial<Record<MemoryRetrievalLane, number>>>;
+  /** Private index identity used for exact expansion and run revalidation. */
+  matchedSegmentId?: string | null;
+  matchedSegmentPosition?: MemoryRecallRoundSegmentPosition | null;
   metadata: MemoryCandidateMetadata;
   rrfScore: number;
   selectionReason: string;
@@ -234,30 +269,35 @@ export const MEMORY_SAFE_PROJECTION_KINDS = [
   "CHAT_DIGEST_SAFE_TEXT",
   "FACT_DISPLAY_TEXT",
   "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-  "RECALL_ROUND_RAW_SAFE_TEXT"
+  "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+  "RECALL_ROUND_RAW_SAFE_TEXT",
+  "TOOL_EVENT_SAFE_TEXT"
 ] as const;
 
 export type MemorySafeProjectionKind = (typeof MEMORY_SAFE_PROJECTION_KINDS)[number];
 
 export type MemoryPackedEvidenceType =
   | "current_fact"
-  | "digest"
+  | "derived_session_synopsis"
   | "historical_fact"
   | "pattern"
   | "raw_chunk"
   | "raw_round"
-  | "supporting_observation";
+  | "supporting_observation"
+  | "tool_observation";
 
 export type MemoryPackedSourceAuthority =
   | "derived_pattern"
   | "learned_from_user"
   | "past_chat"
   | "supporting_observation"
+  | "tool_observation"
   | "user_saved";
 
 export type MemoryPackedSpeakerScope =
   | "derived"
   | "mixed_conversation"
+  | "tool"
   | "user";
 
 export type MemoryPackedStatus = "current" | "historical" | "superseded";
@@ -270,8 +310,24 @@ export type MemoryExpandedCandidate = Readonly<{
   occurredFrom: Date | null;
   occurredTo: Date | null;
   projectionKind: MemorySafeProjectionKind;
+  patternSupportingEvidence?: readonly Readonly<{
+    itemId: string;
+    observedAt: Date;
+    safeText: string;
+    sourceAuthority: "DIRECT_AUTOMATIC" | "EXPLICIT";
+    sourceChatId: string | null;
+    sourceRootHash: string;
+  }>[];
+  retrievalHint?: string | null;
   safeText: string;
   sourceChatId: string | null;
+  supportingEvidence?: readonly Readonly<{
+    itemId: string;
+    occurredFrom: Date;
+    occurredTo: Date;
+    safeText: string;
+    sourceChatId: string;
+  }>[];
   supportingItemId: string | null;
 }>;
 
@@ -288,8 +344,17 @@ export type MemoryPackedItem = Readonly<{
   itemType: MemoryRetrievalItemType;
   lastConfirmedAt: string | null;
   observedAt: string | null;
+  patternSupportingEvidence?: readonly Readonly<{
+    documentTime: string;
+    itemId: string;
+    rawSafeText: string;
+    sourceAuthority: "learned_from_user" | "user_saved";
+    sourceRootHash: string;
+    sourceSessionHandle: string;
+  }>[];
   projectionKind: MemorySafeProjectionKind;
   rawSafeText: string;
+  retrievalHint?: string | null;
   retrievalReason: "exact" | "fused" | "profile" | "semantic_sort";
   section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "PATTERN";
   sourceAuthority: MemoryPackedSourceAuthority;
@@ -297,6 +362,12 @@ export type MemoryPackedItem = Readonly<{
   sourceSessionHandle: string | null;
   speakerScope: MemoryPackedSpeakerScope;
   status: MemoryPackedStatus;
+  supportingEvidence?: readonly Readonly<{
+    documentTime: string;
+    itemId: string;
+    rawSafeText: string;
+    sourceSessionHandle: string;
+  }>[];
   supportingItemId: string | null;
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   tier: "CORE" | "DYNAMIC";

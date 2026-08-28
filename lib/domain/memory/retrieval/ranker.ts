@@ -38,6 +38,14 @@ function validUnit(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
+function validOccurredInterval(value: MemoryCandidateMetadata): boolean {
+  if (!value.occurredFrom || !value.occurredTo) return true;
+  if (value.occurredFrom < value.occurredTo) return true;
+  return value.occurredAt !== null &&
+    value.occurredFrom.getTime() === value.occurredAt.getTime() &&
+    value.occurredTo.getTime() === value.occurredAt.getTime();
+}
+
 function validMetadata(value: MemoryCandidateMetadata): boolean {
   return value.dedupeKey.length > 0 && value.dedupeKey.length <= 256 &&
     (value.evidenceRootHash === undefined || value.evidenceRootHash === null ||
@@ -50,7 +58,7 @@ function validMetadata(value: MemoryCandidateMetadata): boolean {
       value.observedAt, value.occurredAt,
       value.occurredFrom, value.occurredTo, value.systemFrom, value.validFrom, value.validTo]
       .every(validDate) &&
-    (!value.occurredFrom || !value.occurredTo || value.occurredFrom < value.occurredTo) &&
+    validOccurredInterval(value) &&
     (!value.validFrom || !value.validTo || value.validFrom < value.validTo) &&
     value.current !== value.historical &&
     Number.isSafeInteger(value.relationDepth) && value.relationDepth >= 0 &&
@@ -58,13 +66,37 @@ function validMetadata(value: MemoryCandidateMetadata): boolean {
     value.entityIds.length <= 32 && new Set(value.entityIds).size === value.entityIds.length &&
     value.entityIds.every((id) => id.length > 0 && id.length <= 256) &&
     (value.current
-      ? value.lifecycleState === "ACTIVE" || value.sourceAuthority === "PAST_CHAT"
+      ? value.lifecycleState === "ACTIVE" ||
+        value.sourceAuthority === "PAST_CHAT" ||
+        value.sourceAuthority === "TOOL_OBSERVATION"
       : true) &&
     (value.historical ? value.lifecycleState === "SUPERSEDED" : true);
 }
 
-function candidateKey(candidate: Pick<MemoryLaneCandidate, "itemId" | "itemType">): string {
-  return `${candidate.itemType}:${candidate.itemId}`;
+function candidateKey(candidate: Pick<
+  MemoryLaneCandidate,
+  "itemId" | "itemType" | "matchedSegmentId"
+>): string {
+  return `${candidate.itemType}:${candidate.itemId}` +
+    (candidate.matchedSegmentId ? `:segment:${candidate.matchedSegmentId}` : "");
+}
+
+function validSegmentIdentity(candidate: MemoryLaneCandidate): boolean {
+  const id = candidate.matchedSegmentId ?? null;
+  const position = candidate.matchedSegmentPosition ?? null;
+  if (id === null || position === null) return id === null && position === null;
+  return candidate.itemType === "RECALL_ROUND" &&
+    id.length > 0 && id.length <= 256 &&
+    ["MIDDLE", "PREFIX", "SINGLE", "SUFFIX"].includes(position);
+}
+
+function historyRepresentationPriority(candidate: Pick<
+  MemoryLaneCandidate,
+  "itemType" | "matchedSegmentId"
+>): number {
+  return candidate.itemType === "RECALL_ROUND"
+    ? candidate.matchedSegmentId ? 2 : 1
+    : 0;
 }
 
 function sameDate(left: Date | null, right: Date | null): boolean {
@@ -118,7 +150,8 @@ export function memoryCandidateIsSupportingObservation(
 export function memoryRetrievalAuthorityMultiplier(
   metadata: MemoryCandidateMetadata
 ): number {
-  if (memoryCandidateIsSupportingObservation(metadata)) {
+  if (memoryCandidateIsSupportingObservation(metadata) ||
+    metadata.sourceAuthority === "TOOL_OBSERVATION") {
     return MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER;
   }
   return metadata.sourceAuthority === "SYNTHESIS"
@@ -132,6 +165,7 @@ function authorityRank(metadata: MemoryCandidateMetadata): number {
     case "EXPLICIT": return 3;
     case "DIRECT_AUTOMATIC": return 2;
     case "SYNTHESIS": return 1;
+    case "TOOL_OBSERVATION": return 1;
     case "PAST_CHAT": return 0;
   }
 }
@@ -196,9 +230,10 @@ function boundedCandidates(
       if (
         candidate.lane !== result.lane || !candidate.hardFilterPassed ||
         !candidate.itemId || candidate.itemId.length > 256 ||
-        !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND"].includes(
+        !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND", "TOOL_EVENT"].includes(
           candidate.itemType
         ) ||
+        !validSegmentIdentity(candidate) ||
         (result.lane === "FACT_PROFILE" && candidate.itemType !== "FACT_VERSION") ||
         !Number.isFinite(candidate.rawScore) || !validMetadata(candidate.metadata)
       ) continue;
@@ -217,8 +252,8 @@ function boundedCandidates(
       const previousIndex = seen.get(key);
       if (previousIndex !== undefined) {
         const previous = laneCandidates[previousIndex]!;
-        if (candidate.itemType === "RECALL_ROUND" &&
-          previous.itemType !== "RECALL_ROUND") {
+        if (historyRepresentationPriority(candidate) >
+          historyRepresentationPriority(previous)) {
           laneCandidates[previousIndex] = candidate;
         }
         continue;
@@ -312,6 +347,8 @@ export function fuseMemoryRetrievalCandidates(
       itemId: aggregate.candidate.itemId,
       itemType: aggregate.candidate.itemType,
       laneRanks: aggregate.laneRanks,
+      matchedSegmentId: aggregate.candidate.matchedSegmentId ?? null,
+      matchedSegmentPosition: aggregate.candidate.matchedSegmentPosition ?? null,
       metadata: aggregate.candidate.metadata,
       rrfScore: aggregate.rrfScore,
       selectionReason: selectionReason(aggregate.laneRanks)
@@ -336,8 +373,8 @@ export function fuseMemoryRetrievalCandidates(
     // authoritative round representation over its parent chunk.
     if (candidate.itemType === "FACT_VERSION" ||
       previous.itemType === "FACT_VERSION") continue;
-    const representative = candidate.itemType === "RECALL_ROUND" &&
-        previous.itemType !== "RECALL_ROUND"
+    const representative = historyRepresentationPriority(candidate) >
+        historyRepresentationPriority(previous)
       ? candidate
       : previous;
     const laneRanks: Partial<Record<MemoryRetrievalLane, number>> = {

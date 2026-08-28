@@ -2,6 +2,7 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemorySecretSourceMapEntry } from "../explicit/safety";
 import { detectMemoryTextLanguage, type MemoryTextLanguage } from "./language";
 import {
+  projectMemoryHistorySafeRecallGroupText,
   projectMemoryHistorySafeText,
   type MemoryDerivedSafetyClass,
   type MemoryRedactionState
@@ -502,7 +503,7 @@ function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTur
     const occurredFrom = selected[0]!.createdAt;
     const occurredTo = selected.at(-1)!.createdAt;
     if (occurredTo < occurredFrom) fail("memory_history_turn_time_invalid");
-    const groupSafety = projectMemoryHistorySafeText(combinedText);
+    const groupSafety = projectMemoryHistorySafeRecallGroupText(combinedText);
     if (!groupSafety.eligible || groupSafety.safeText !== combinedText) {
       for (const message of selected) {
         message.reasonCodes = uniqueSorted([

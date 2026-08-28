@@ -3,14 +3,15 @@ import { prisma } from "../../prisma";
 import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v3";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v5";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 
 type CountRow = Readonly<Record<string, string>>;
 type GroupedCountRow = Readonly<{
   code: string;
   count: string;
-  family: "degradation" | "observation_rejection";
+  family: "contextual_fallback" | "contextual_language" | "degradation" |
+    "observation_rejection";
 }>;
 type DistributionRow = Readonly<{
   p50Ms: number | null;
@@ -78,10 +79,18 @@ export type MemoryOperationalSnapshot = Readonly<{
     contextualProviderRequests: number;
     contextualRoundsFallback: number;
     contextualRoundsGenerated: number;
+    contextualFallbackReasons: readonly MemoryOperationalCodeCount[];
+    contextualLanguageCounts: readonly MemoryOperationalCodeCount[];
     digestFullRebuild: number;
     digestIncremental: number;
     digestNoop: number;
     messagesProjected: number;
+    recallRoundLongCount: number;
+    recallRoundMaxSegmentCount: number;
+    recallRoundSegmentCount: number;
+    roundSegmentsBuilt: number;
+    roundSegmentsReplaced: number;
+    roundSegmentsReused: number;
     roundsBuilt: number;
     roundsReplaced: number;
     roundsReused: number;
@@ -93,8 +102,12 @@ export type MemoryOperationalSnapshot = Readonly<{
     rejectionReasons: readonly MemoryOperationalCodeCount[];
   }>;
   patterns: Readonly<{
+    clusters: number;
     indexed: number;
     rebuilt: number;
+    eligibleSources: number;
+    emptyOutputs: number;
+    proposals: number;
     rejected: number;
     rejoined: number;
     replaced: number;
@@ -370,6 +383,22 @@ export async function loadMemoryOperationalSnapshot(
             WHERE "createdAt" >= ${input.from} AND "createdAt" < ${input.to}
               AND "outcome" = 'FAILED_SAFE'::"MemoryReceiptOutcome"
           )::text AS "mandatoryFenceFailClosed",
+          (SELECT COUNT(*) FROM "MemoryRecallRoundSegment"
+            WHERE "state" = 'ACTIVE'::"MemoryHistoryItemState"
+          )::text AS "recallRoundSegmentCount",
+          (SELECT COUNT(*) FROM (
+            SELECT segment."userId", segment."roundId"
+            FROM "MemoryRecallRoundSegment" AS segment
+            WHERE segment."state" = 'ACTIVE'::"MemoryHistoryItemState"
+            GROUP BY segment."userId", segment."roundId"
+            HAVING COUNT(*) > 1
+          ) AS long_rounds)::text AS "recallRoundLongCount",
+          (SELECT COALESCE(MAX(segment_count), 0) FROM (
+            SELECT COUNT(*) AS segment_count
+            FROM "MemoryRecallRoundSegment" AS segment
+            WHERE segment."state" = 'ACTIVE'::"MemoryHistoryItemState"
+            GROUP BY segment."userId", segment."roundId"
+          ) AS round_segment_counts)::text AS "recallRoundMaxSegmentCount",
           (SELECT COALESCE(SUM(("operationalCounters" ->>
               'historyMessagesProjected')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
@@ -405,6 +434,21 @@ export async function loadMemoryOperationalSnapshot(
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
               AND "completedAt" < ${input.to}
           )::text AS "historyRoundsReused",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyRoundSegmentsBuilt')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyRoundSegmentsBuilt",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyRoundSegmentsReplaced')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyRoundSegmentsReplaced",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'historyRoundSegmentsReused')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "historyRoundSegmentsReused",
           (SELECT COALESCE(SUM(("operationalCounters" ->>
               'contextualProviderRequests')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
@@ -459,13 +503,34 @@ export async function loadMemoryOperationalSnapshot(
               'embeddingStaleItems')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
               AND "completedAt" < ${input.to}
-          )::text AS "embeddingStaleItems"
+          )::text AS "embeddingStaleItems",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'synthesisClusterCount')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "synthesisClusterCount",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'synthesisEligibleSourceCount')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "synthesisEligibleSourceCount",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'synthesisEmptyOutputCount')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "synthesisEmptyOutputCount",
+          (SELECT COALESCE(SUM(("operationalCounters" ->>
+              'synthesisProposalCount')::NUMERIC), 0)
+            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
+              AND "completedAt" < ${input.to}
+          )::text AS "synthesisProposalCount"
       `),
       client.$queryRaw<GroupedCountRow[]>(Prisma.sql`
-        SELECT family, code, COUNT(*)::text AS count
+        SELECT family, code, SUM(quantity)::text AS count
         FROM (
           SELECT 'observation_rejection'::text AS family,
-            COALESCE(receipt."reasonCode", 'unspecified') AS code
+            COALESCE(receipt."reasonCode", 'unspecified') AS code,
+            1::numeric AS quantity
           FROM "MemoryFactExtractionCandidateReceipt" receipt
           WHERE receipt."updatedAt" >= ${input.from}
             AND receipt."updatedAt" < ${input.to}
@@ -475,11 +540,37 @@ export async function loadMemoryOperationalSnapshot(
             )
           UNION ALL
           SELECT 'degradation'::text AS family,
-            attempt."degradationCode" AS code
+            attempt."degradationCode" AS code, 1::numeric AS quantity
           FROM "MemoryRetrievalAttempt" attempt
           WHERE attempt."createdAt" >= ${input.from}
             AND attempt."createdAt" < ${input.to}
             AND attempt."degradationCode" IS NOT NULL
+          UNION ALL
+          SELECT 'contextual_fallback'::text AS family, entry.key AS code,
+            entry.value::numeric AS quantity
+          FROM "MemoryJob" job
+          CROSS JOIN LATERAL jsonb_each_text(job."operationalCounters") AS entry(key, value)
+          WHERE job."completedAt" >= ${input.from}
+            AND job."completedAt" < ${input.to}
+            AND entry.key LIKE 'contextualFallback%'
+            AND entry.key NOT IN (
+              'contextualFallbackEn', 'contextualFallbackMixed',
+              'contextualFallbackOther', 'contextualFallbackRu',
+              'contextualFallbackUnd'
+            )
+          UNION ALL
+          SELECT 'contextual_language'::text AS family, entry.key AS code,
+            entry.value::numeric AS quantity
+          FROM "MemoryJob" job
+          CROSS JOIN LATERAL jsonb_each_text(job."operationalCounters") AS entry(key, value)
+          WHERE job."completedAt" >= ${input.from}
+            AND job."completedAt" < ${input.to}
+            AND (entry.key LIKE 'contextualGenerated%'
+              OR entry.key IN (
+                'contextualFallbackEn', 'contextualFallbackMixed',
+                'contextualFallbackOther', 'contextualFallbackRu',
+                'contextualFallbackUnd'
+              ))
         ) grouped
         GROUP BY family, code
         ORDER BY family, code
@@ -598,10 +689,18 @@ export async function loadMemoryOperationalSnapshot(
       contextualProviderRequests: safeCount(counts.contextualProviderRequests),
       contextualRoundsFallback: safeCount(counts.contextualRoundsFallback),
       contextualRoundsGenerated: safeCount(counts.contextualRoundsGenerated),
+      contextualFallbackReasons: codeCounts(groupedRows, "contextual_fallback"),
+      contextualLanguageCounts: codeCounts(groupedRows, "contextual_language"),
       digestFullRebuild: safeCount(counts.digestFullRebuild),
       digestIncremental: safeCount(counts.digestIncremental),
       digestNoop: safeCount(counts.digestNoop),
       messagesProjected: safeCount(counts.historyMessagesProjected),
+      recallRoundLongCount: safeCount(counts.recallRoundLongCount),
+      recallRoundMaxSegmentCount: safeCount(counts.recallRoundMaxSegmentCount),
+      recallRoundSegmentCount: safeCount(counts.recallRoundSegmentCount),
+      roundSegmentsBuilt: safeCount(counts.historyRoundSegmentsBuilt),
+      roundSegmentsReplaced: safeCount(counts.historyRoundSegmentsReplaced),
+      roundSegmentsReused: safeCount(counts.historyRoundSegmentsReused),
       roundsBuilt: safeCount(counts.historyRoundsBuilt),
       roundsReplaced: safeCount(counts.historyRoundsReplaced),
       roundsReused: safeCount(counts.historyRoundsReused)
@@ -613,7 +712,11 @@ export async function loadMemoryOperationalSnapshot(
       rejectionReasons: codeCounts(groupedRows, "observation_rejection")
     }),
     patterns: Object.freeze({
+      clusters: safeCount(counts.synthesisClusterCount),
+      eligibleSources: safeCount(counts.synthesisEligibleSourceCount),
+      emptyOutputs: safeCount(counts.synthesisEmptyOutputCount),
       indexed: safeCount(counts.patternsIndexed),
+      proposals: safeCount(counts.synthesisProposalCount),
       rebuilt: safeCount(counts.patternsRebuilt),
       rejected: safeCount(counts.patternsRejected),
       rejoined: safeCount(counts.patternsRejoined),

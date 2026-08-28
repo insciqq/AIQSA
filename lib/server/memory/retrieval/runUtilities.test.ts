@@ -3,6 +3,7 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution";
 import type { PrismaMemoryExecutionService } from "../execution";
 import {
   createMemoryRunUtilityService,
+  memoryDedicatedRerankDocument,
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
   MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS,
   MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
@@ -31,6 +32,7 @@ import {
   EmbeddingAdapterError
 } from "../../providers/embeddings";
 import {
+  MAX_RERANK_DOCUMENT_CHARACTERS,
   RerankAdapterError,
   type RerankRequest,
   type RerankResult
@@ -265,16 +267,22 @@ function dedicatedHarness(
   const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
     id: `binding-${input.ordinal}`
   }));
+  const start = vi.fn(async (_userId: string, bindingId: string) => ({
+    bindingId,
+    snapshot: accepted
+  }));
+  const settle = vi.fn(async (
+    _userId: string,
+    _bindingId: string,
+    _input: unknown
+  ) => ({}));
   const executionService = {
     admission: {
       bind,
-      start: vi.fn(async (_userId: string, bindingId: string) => ({
-        bindingId,
-        snapshot: accepted
-      }))
+      start
     },
     lifecycle: {
-      settle: vi.fn(async () => ({})),
+      settle,
       withAuthorizedResultCommit: vi.fn(async (
         _userId: string,
         _input: unknown,
@@ -290,6 +298,8 @@ function dedicatedHarness(
     provider,
     rerank,
     resolve,
+    settle,
+    start,
     service: createMemoryRunUtilityService({
       embeddingRuntime: { resolve: vi.fn() } as never,
       execution: executionService,
@@ -797,7 +807,7 @@ describe("Memory run utility execution", () => {
       profileRequested: false,
       query: "How should I respond?"
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       bindingId: "binding-MEMORY_RERANK",
       decisions: [{
         applicable: true,
@@ -815,6 +825,77 @@ describe("Memory run utility execution", () => {
       "settle",
       "authorize"
     ]);
+    expect(provider.run).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        candidates: [expect.objectContaining({
+          text: expect.stringContaining("[authoritative_evidence]")
+        })]
+      }),
+      expect.anything()
+    );
+  });
+
+  it("renders contextual hints as authority-none with cited raw support", () => {
+    const [base] = dedicatedCandidates(1);
+    const document = memoryDedicatedRerankDocument({
+      ...base!,
+      retrievalHint: "Мария выбрала стол у окна.",
+      supportingEvidence: [{
+        itemId: "prior-round",
+        occurredFrom: "2026-01-01T00:00:00.000Z",
+        occurredTo: "2026-01-01T00:01:00.000Z",
+        sourceChatId: "source-chat",
+        text: "User: Мария забронировала стол."
+      }],
+      text: "User: Она выбрала стол у окна."
+    });
+
+    expect(document).toContain("[retrieval_hint derived=true authority=none]");
+    expect(document).toContain("[authoritative_evidence]\nUser: Она выбрала стол у окна.");
+    expect(document).toContain("[supporting_authoritative_evidence]");
+    expect(document).toContain("User: Мария забронировала стол.");
+    expect(document.indexOf("[retrieval_hint"))
+      .toBeLessThan(document.indexOf("[authoritative_evidence]"));
+  });
+
+  it("labels settled tool outcomes as lower-authority tool observations", () => {
+    const [base] = dedicatedCandidates(1);
+    const document = memoryDedicatedRerankDocument({
+      ...base!,
+      authorityLevel: "SUPPORTING",
+      speakerScope: "tool",
+      sourceKind: "TOOL_OBSERVATION",
+      text: "Tool file_create completed successfully; filename=report.csv."
+    });
+
+    expect(document).toContain(
+      "[source=tool_observation speaker=tool state=current lifecycle=not_applicable]"
+    );
+    expect(document).toContain(
+      "[authoritative_evidence]\nTool file_create completed successfully; filename=report.csv."
+    );
+  });
+
+  it("bounds maximum contextual evidence to the dedicated document limit", () => {
+    const [base] = dedicatedCandidates(1);
+    const document = memoryDedicatedRerankDocument({
+      ...base!,
+      retrievalHint: "h".repeat(1_000),
+      supportingEvidence: [0, 1].map((index) => ({
+        itemId: `prior-round-${index}`,
+        occurredFrom: "2026-01-01T00:00:00.000Z",
+        occurredTo: "2026-01-01T00:01:00.000Z",
+        sourceChatId: "source-chat",
+        text: String(index).repeat(4_000)
+      })),
+      text: "r".repeat(4_000)
+    });
+
+    expect(document.length).toBeLessThanOrEqual(MAX_RERANK_DOCUMENT_CHARACTERS);
+    expect(document).toContain("[authoritative_evidence]\n" + "r".repeat(4_000));
+    expect(document).toContain("[support_1 raw_excerpt=true");
+    expect(document).toContain("[support_2 raw_excerpt=true");
   });
 
   it("globally groups grounded individual and aggregate quantities before a count", async () => {
@@ -1573,7 +1654,7 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("accepts valid broad-profile scores beside malformed entries for RRF fallback", async () => {
+  it("rejects a broad-profile batch when any decision is malformed", async () => {
     const log: string[] = [];
     const bound = execution(log);
     const provider: MemoryRunUtilityProvider = {
@@ -1642,17 +1723,31 @@ describe("Memory run utility execution", () => {
       retrievalMode: "CURRENT_PROFILE",
       query: "What do you know about me?"
     })).resolves.toMatchObject({
-      decisions: [
-        expect.objectContaining({ handle: "c0", relevanceScore: 0.95 })
-      ],
-      status: "READY"
+      diagnostics: {
+        batchCount: 1,
+        candidateCount: 2,
+        coverageRatio: 0,
+        decisionCount: 0,
+        duplicateDecisionCount: 0,
+        failedBatchCount: 1,
+        fullFallbackUsed: true,
+        invalidResponseCount: 2,
+        missingDecisionCount: 2,
+        providerModelMismatchCount: 0,
+        readyBatchCount: 0,
+        retryCount: 1
+      },
+      externalCallCount: 2,
+      reason: "memory_run_utility_output_invalid",
+      status: "UNAVAILABLE"
     });
-    expect(provider.run).toHaveBeenCalledOnce();
-    expect(bound.lifecycle.settle).toHaveBeenCalledWith(
-      "user-1",
-      expect.any(String),
-      expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
-    );
+    expect(provider.run).toHaveBeenCalledTimes(2);
+    expect(bound.lifecycle.settle).toHaveBeenCalledTimes(2);
+    expect(bound.lifecycle.settle.mock.calls.map((call) => call[2]))
+      .toEqual(Array.from({ length: 2 }, () => expect.objectContaining({
+        errorCode: "memory_run_utility_output_invalid",
+        state: "FAILED"
+      })));
   });
 
   it("accepts a broad-profile result when every supplied fact is directly relevant", async () => {
@@ -1723,7 +1818,7 @@ describe("Memory run utility execution", () => {
       profileRequested: true,
       retrievalMode: "CURRENT_PROFILE",
       query: "What do you know about me?"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       bindingId: "binding-MEMORY_RERANK",
       decisions: [{
         applicable: true,
@@ -1837,7 +1932,7 @@ describe("Memory run utility execution", () => {
         })),
       profileRequested: false,
       query: "Which facts apply?"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       reason: "memory_utility_input_blocked",
       status: "UNAVAILABLE"
     });
@@ -1875,7 +1970,7 @@ describe("Memory run utility execution", () => {
       query: "Which events happened across my chats?",
       retrievalMode: "PAST_CHAT_SEARCH",
       temporalIntent: "ANY"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       reason: "memory_utility_input_blocked",
       status: "UNAVAILABLE"
     });
@@ -1883,7 +1978,7 @@ describe("Memory run utility execution", () => {
     expect(provider.run).not.toHaveBeenCalled();
   });
 
-  it("retries one invalid reranker result once, records both attempts, then fails closed", async () => {
+  it("rejects missing and duplicate compatibility decisions across one fresh retry", async () => {
     const log: string[] = [];
     const settled: unknown[] = [];
     const executionService = {
@@ -1909,7 +2004,33 @@ describe("Memory run utility execution", () => {
         log.push("provider");
         return {
           providerResponseId: `response-${log.length}`,
-          toolCalls: [],
+          toolCalls: [{
+            arguments: {
+              decisions: log.length === 1
+                ? [{
+                    applicable: true,
+                    current: true,
+                    handle: "c0",
+                    reason_code: "DIRECT_RELEVANCE",
+                    relevance_score: 0.9
+                  }]
+                : [{
+                    applicable: true,
+                    current: true,
+                    handle: "c0",
+                    reason_code: "DIRECT_RELEVANCE",
+                    relevance_score: 0.9
+                  }, {
+                    applicable: false,
+                    current: true,
+                    handle: "c0",
+                    reason_code: "NOT_RELEVANT",
+                    relevance_score: 0.1
+                  }]
+            },
+            id: `call-${log.length}`,
+            name: MEMORY_RERANK_TOOL_NAME
+          }],
           usage: {
             cachedInputTokens: 0,
             inputTokens: 5,
@@ -1939,16 +2060,35 @@ describe("Memory run utility execution", () => {
         speakerScope: "memory_record" as const,
         sourceKind: "FACT",
         text: "The user prefers concise replies."
+      }, {
+        ...currentFactRerankCandidate,
+        authorityLevel: "LEARNED",
+        current: true,
+        handle: "c1",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL",
+        speakerScope: "memory_record" as const,
+        sourceKind: "FACT",
+        text: "The user prefers direct examples."
       }],
       profileRequested: false,
       query: "How should I respond?"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       bindingId: "binding-3",
+      diagnostics: {
+        candidateCount: 2,
+        decisionCount: 0,
+        fullFallbackUsed: true,
+        invalidResponseCount: 2,
+        missingDecisionCount: 2,
+        retryCount: 1
+      },
       externalCallCount: 2,
       reason: "memory_run_utility_output_invalid",
       status: "UNAVAILABLE"
     });
-    expect(MEMORY_RERANK_MAX_ATTEMPTS).toBe(3);
+    expect(MEMORY_RERANK_MAX_ATTEMPTS).toBe(2);
     expect(provider.run).toHaveBeenCalledTimes(2);
     expect(executionService.admission.bind).toHaveBeenCalledTimes(2);
     expect(settled).toHaveLength(2);
@@ -2053,7 +2193,7 @@ describe("Memory run utility execution", () => {
       }],
       profileRequested: false,
       query: "How should I respond?"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       bindingId: "binding-3",
       decisions: [{
         applicable: true,
@@ -2162,7 +2302,7 @@ describe("Memory run utility execution", () => {
         }],
         profileRequested: false,
         query: "How should I respond?"
-      })).resolves.toEqual({
+      })).resolves.toMatchObject({
         bindingId: "binding-2",
         decisions: [{
           applicable,
@@ -2423,7 +2563,7 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("preserves dedicated partial scores without inventing authority metadata", async () => {
+  it("discards dedicated partial scores and falls back atomically", async () => {
     const harness = dedicatedHarness(async () => ({
       model: "qwen/qwen3-reranker-8b",
       provider: "Together",
@@ -2440,30 +2580,33 @@ describe("Memory run utility execution", () => {
       candidates: dedicatedCandidates(3),
       profileRequested: false,
       query: "query"
-    })).resolves.toEqual({
-      bindingId: "binding-2",
-      decisions: [{
-        applicable: null,
-        current: null,
-        handle: "c2",
-        reasonCode: "SCORE_ONLY",
-        relevanceScore: 0.92
-      }, {
-        applicable: null,
-        current: null,
-        handle: "c0",
-        reasonCode: "SCORE_ONLY",
-        relevanceScore: 0.41
-      }],
-      status: "READY"
+    })).resolves.toMatchObject({
+      bindingId: "binding-3",
+      diagnostics: {
+        batchCount: 1,
+        candidateCount: 3,
+        coverageRatio: 0,
+        decisionCount: 0,
+        duplicateDecisionCount: 0,
+        failedBatchCount: 1,
+        fullFallbackUsed: true,
+        invalidResponseCount: 2,
+        missingDecisionCount: 3,
+        providerModelMismatchCount: 0,
+        readyBatchCount: 0,
+        retryCount: 1
+      },
+      externalCallCount: 2,
+      reason: "memory_run_utility_output_invalid",
+      status: "UNAVAILABLE"
     });
-    expect(harness.executionService.lifecycle.settle).toHaveBeenCalledWith(
-      "user-1",
-      "binding-2",
-      expect.objectContaining({
-        usage: expect.objectContaining({ completeness: "UNAVAILABLE" })
-      })
-    );
+    expect(harness.rerank).toHaveBeenCalledTimes(2);
+    expect(harness.executionService.lifecycle.settle).toHaveBeenCalledTimes(2);
+    expect(harness.settle.mock.calls.map((call) => call[2]))
+      .toEqual(Array.from({ length: 2 }, () => expect.objectContaining({
+        errorCode: "memory_run_utility_output_invalid",
+        state: "FAILED"
+      })));
   });
 
   it("retries one transport-uncertain dedicated rerank against the same snapshot", async () => {
@@ -2525,7 +2668,39 @@ describe("Memory run utility execution", () => {
     }
   });
 
-  it("backs off through two replay-safe transient rerank responses", async () => {
+  it("cancels before dedicated provider I/O and returns full fallback evidence", async () => {
+    const harness = dedicatedHarness(async () => {
+      throw new Error("provider must not run");
+    });
+    const controller = new AbortController();
+    controller.abort({ code: "memory_rerank_cancelled" });
+
+    await expect(harness.service.rerank({
+      ...baseInput(),
+      candidates: dedicatedCandidates(3),
+      profileRequested: false,
+      query: "query",
+      signal: controller.signal
+    })).resolves.toMatchObject({
+      bindingId: "binding-2",
+      diagnostics: {
+        failedBatchCount: 1,
+        fullFallbackUsed: true,
+        readyBatchCount: 0,
+        retryCount: 0
+      },
+      reason: "memory_run_utility_cancelled",
+      status: "UNAVAILABLE"
+    });
+    expect(harness.rerank).not.toHaveBeenCalled();
+    expect(harness.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-2",
+      expect.objectContaining({ state: "CANCELLED" })
+    );
+  });
+
+  it("stops after one fresh retry for replay-safe transient rerank responses", async () => {
     vi.useFakeTimers();
     try {
       let attempt = 0;
@@ -2558,13 +2733,14 @@ describe("Memory run utility execution", () => {
       const result = await pending;
 
       expect(result).toMatchObject({
-        bindingId: "binding-4",
-        externalCallCount: 3,
-        status: "READY"
+        bindingId: "binding-3",
+        externalCallCount: 2,
+        reason: "memory_reranker_transient_http_failure",
+        status: "UNAVAILABLE"
       });
-      expect(harness.rerank).toHaveBeenCalledTimes(3);
+      expect(harness.rerank).toHaveBeenCalledTimes(2);
       expect(harness.bind.mock.calls.map((call) => call[1].ordinal))
-        .toEqual([2, 3, 4]);
+        .toEqual([2, 3]);
       expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
         1,
         "user-1",
@@ -2582,12 +2758,6 @@ describe("Memory run utility execution", () => {
           errorCode: "memory_reranker_transient_http_failure",
           state: "FAILED"
         })
-      );
-      expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
-        3,
-        "user-1",
-        "binding-4",
-        expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
       );
       expect(harness.provider.run).not.toHaveBeenCalled();
     } finally {
@@ -2607,7 +2777,7 @@ describe("Memory run utility execution", () => {
       candidates: dedicatedCandidates(60),
       profileRequested: false,
       query: "query"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       bindingId: "binding-2",
       reason: "memory_reranker_failed",
       status: "UNAVAILABLE"
@@ -2623,6 +2793,37 @@ describe("Memory run utility execution", () => {
         state: "FAILED"
       })
     );
+  });
+
+  it.each([
+    ["model", "rerank_response_model_mismatch"],
+    ["provider", "rerank_response_provider_mismatch"]
+  ] as const)("fails atomically without retry when the reranker response %s drifts", async (
+    _identity,
+    errorCode
+  ) => {
+    const harness = dedicatedHarness(async () => {
+      throw new RerankAdapterError(errorCode);
+    });
+
+    await expect(harness.service.rerank({
+      ...baseInput(),
+      candidates: dedicatedCandidates(3),
+      profileRequested: false,
+      query: "query"
+    })).resolves.toMatchObject({
+      bindingId: "binding-2",
+      diagnostics: {
+        failedBatchCount: 1,
+        fullFallbackUsed: true,
+        providerModelMismatchCount: 1,
+        readyBatchCount: 0,
+        retryCount: 0
+      },
+      reason: "memory_run_utility_binding_changed",
+      status: "UNAVAILABLE"
+    });
+    expect(harness.rerank).toHaveBeenCalledOnce();
   });
 
   it("splits the 180-candidate aggregation pool only at the dedicated envelope", async () => {
@@ -2656,6 +2857,118 @@ describe("Memory run utility execution", () => {
       call[1].ordinal)).toEqual([2, 2 + MEMORY_RERANK_MAX_ATTEMPTS]);
   });
 
+  it("discards every ready batch when one dedicated batch fails", async () => {
+    const harness = dedicatedHarness(async (request) => {
+      if (request.documents[0]?.handle === "c96") {
+        throw new RerankAdapterError("rerank_provider_http_error", {
+          httpStatus: 400
+        });
+      }
+      return {
+        model: "qwen/qwen3-reranker-8b",
+        provider: "Together",
+        requestId: "rerank-first-batch",
+        scores: request.documents.map((document, index) => ({
+          handle: document.handle,
+          index,
+          relevanceScore: 0.8
+        })),
+        usage: { inputTokens: 500, searchUnits: 1, totalTokens: 500 }
+      };
+    });
+
+    const result = await harness.service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates: dedicatedCandidates(180),
+      profileRequested: false,
+      query: "Which milestones appeared across all chats?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    expect(result).toMatchObject({
+      bindingId: "binding-4",
+      diagnostics: {
+        batchCount: 2,
+        candidateCount: 180,
+        coverageRatio: 96 / 180,
+        decisionCount: 96,
+        duplicateDecisionCount: 0,
+        failedBatchCount: 1,
+        fullFallbackUsed: true,
+        invalidResponseCount: 0,
+        missingDecisionCount: 84,
+        providerModelMismatchCount: 0,
+        readyBatchCount: 1,
+        retryCount: 0
+      },
+      externalCallCount: 2,
+      reason: "memory_reranker_failed",
+      status: "UNAVAILABLE"
+    });
+    expect("decisions" in result).toBe(false);
+    expect(harness.rerank).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards complete batches when their governed snapshots differ", async () => {
+    const harness = dedicatedHarness(async (request) => ({
+      model: "qwen/qwen3-reranker-8b",
+      provider: "Together",
+      requestId: `rerank-${request.documents[0]?.handle}`,
+      scores: request.documents.map((document, index) => ({
+        handle: document.handle,
+        index,
+        relevanceScore: 0.8
+      })),
+      usage: { inputTokens: 500, searchUnits: 1, totalTokens: 500 }
+    }));
+    const changed = {
+      ...harness.accepted,
+      destinationFingerprint: "9".repeat(64)
+    } as MemorySecretFreeExecutionSnapshot;
+    harness.start.mockImplementation(async (
+      _userId,
+      bindingId
+    ) => ({
+      bindingId,
+      snapshot: bindingId === "binding-4" ? changed : harness.accepted
+    }));
+
+    const result = await harness.service.rerank({
+      ...baseInput(),
+      aggregationRequested: true,
+      candidates: dedicatedCandidates(180),
+      profileRequested: false,
+      query: "Which milestones appeared across all chats?",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    expect(result).toMatchObject({
+      bindingId: "binding-2",
+      diagnostics: {
+        batchCount: 2,
+        candidateCount: 180,
+        coverageRatio: 1,
+        decisionCount: 180,
+        duplicateDecisionCount: 0,
+        failedBatchCount: 0,
+        fullFallbackUsed: true,
+        invalidResponseCount: 0,
+        missingDecisionCount: 0,
+        providerModelMismatchCount: 1,
+        readyBatchCount: 2,
+        retryCount: 0
+      },
+      externalCallCount: 2,
+      reason: "memory_run_utility_binding_changed",
+      status: "UNAVAILABLE"
+    });
+    expect("decisions" in result).toBe(false);
+    expect(harness.rerank).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects a dedicated path bound to an answer snapshot before either provider runs", async () => {
     const executionService = {
       admission: {
@@ -2685,7 +2998,7 @@ describe("Memory run utility execution", () => {
       candidates: dedicatedCandidates(1),
       profileRequested: false,
       query: "query"
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       bindingId: "binding-2",
       reason: "memory_reranker_binding_invalid",
       status: "UNAVAILABLE"

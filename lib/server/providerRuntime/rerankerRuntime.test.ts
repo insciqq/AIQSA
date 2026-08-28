@@ -108,6 +108,7 @@ function rerankResponse(): Response {
   return new Response(JSON.stringify({
     id: "request-1",
     model: "qwen/qwen3-reranker-8b",
+    provider: "Together",
     results: [{ index: 0, relevance_score: 0.93 }],
     usage: { prompt_tokens: 4, total_tokens: 4 }
   }), { status: 200 });

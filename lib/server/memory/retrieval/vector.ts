@@ -13,6 +13,9 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import {
@@ -39,7 +42,8 @@ export type MemoryVectorDimension = 1_024 | 1_536;
 export type MemoryVectorStrategy = "EXACT" | "HNSW";
 export type CurrentMemorySearchItemType = Extract<
   MemorySearchItemType,
-  "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND"
+  "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND" | "RECALL_ROUND_SEGMENT" |
+    "TOOL_EVENT"
 >;
 
 export type MemoryVectorProfile = Readonly<{
@@ -250,7 +254,9 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
   const itemTypes = new Set<CurrentMemorySearchItemType>([
     "FACT_VERSION",
     "RECALL_CHUNK",
-    "RECALL_ROUND"
+    "RECALL_ROUND",
+    "RECALL_ROUND_SEGMENT",
+    "TOOL_EVENT"
   ]);
   const sourceChatIds = input.eligibility.sourceChatIds;
   const squaredNorm = input.vector.reduce((total, value) => total + value * value, 0);
@@ -684,15 +690,51 @@ function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   };
 }
 
-function roundEligibility(input: MemoryVectorSearchInput): EligibilitySql {
+function roundEligibility(
+  input: MemoryVectorSearchInput,
+  itemType: "RECALL_ROUND" | "RECALL_ROUND_SEGMENT"
+): EligibilitySql {
   const allowed = valuesSql(input.eligibility.allowedHistorySafety);
   const optional = optionalRoundPredicates(input);
+  const segmentGeneration = itemType === "RECALL_ROUND_SEGMENT";
+  const roundJoin = segmentGeneration
+    ? Prisma.sql`
+        INNER JOIN "MemoryRecallRoundSegment" AS segment
+          ON segment."userId" = history_settings."userId"
+          AND segment."id" = entry."recallRoundSegmentId"
+          AND segment."roundId" = entry."recallRoundId"
+        INNER JOIN "MemoryRecallRound" AS round
+          ON round."userId" = segment."userId"
+          AND round."id" = segment."roundId"`
+    : Prisma.sql`
+        INNER JOIN "MemoryRecallRound" AS round
+          ON round."userId" = history_settings."userId"
+          AND round."id" = entry."recallRoundId"`;
+  const generationPredicate = segmentGeneration
+    ? Prisma.sql`round_generation."roundSegmentProjectionVersion" =
+        ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}`
+    : Prisma.sql`round_generation."roundSegmentProjectionVersion" IS NULL`;
+  const safeContentPredicate = segmentGeneration
+    ? Prisma.sql`entry."safeContentHash" = segment."contextualSearchHash"`
+    : Prisma.sql`entry."safeContentHash" = round."contextualSearchHash"`;
+  const segmentPredicates = segmentGeneration
+    ? [
+        Prisma.sql`segment."state" = 'ACTIVE'::"MemoryHistoryItemState"`,
+        Prisma.sql`segment."projectionVersion" =
+          ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}`,
+        Prisma.sql`segment."contextualKeyPolicyVersion" =
+          ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}`,
+        Prisma.sql`segment."evidenceRootHash" = round."evidenceRootHash"`,
+        Prisma.sql`segment."safetyClass"::text IN (${allowed})`,
+        Prisma.sql`segment."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"`
+      ]
+    : [];
   return {
     itemId: Prisma.sql`entry."recallRoundId"`,
     joins: commonJoins(),
     predicates: [
       ...commonPredicates(input),
-      Prisma.sql`entry."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"`,
+      Prisma.sql`entry."itemType" = ${itemType}::"MemorySearchItemType"`,
       Prisma.sql`EXISTS (
         SELECT 1
         FROM "UserMemorySettings" AS history_settings
@@ -703,9 +745,8 @@ function roundEligibility(input: MemoryVectorSearchInput): EligibilitySql {
             ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
           AND round_generation."contextualKeyPolicyVersion" =
             ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
-        INNER JOIN "MemoryRecallRound" AS round
-          ON round."userId" = history_settings."userId"
-          AND round."id" = entry."recallRoundId"
+          AND ${generationPredicate}
+        ${roundJoin}
         INNER JOIN "MemoryRecallChunk" AS parent_chunk
           ON parent_chunk."userId" = round."userId"
           AND parent_chunk."id" = round."parentChunkId"
@@ -718,7 +759,11 @@ function roundEligibility(input: MemoryVectorSearchInput): EligibilitySql {
         WHERE history_settings."userId" = entry."userId"
           AND history_settings."useMemoryFacts" = TRUE
           AND history_settings."referenceChatHistory" = TRUE
-          AND entry."safeContentHash" = round."contextualSearchHash"
+          AND ${safeContentPredicate}
+          AND ${Prisma.join(
+            segmentPredicates.length > 0 ? segmentPredicates : [Prisma.sql`TRUE`],
+            " AND "
+          )}
           AND round."state" = 'ACTIVE'::"MemoryHistoryItemState"
           AND round."projectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
           AND round."contextualKeyPolicyVersion" =
@@ -781,6 +826,140 @@ function roundEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   };
 }
 
+function toolEventEligibility(input: MemoryVectorSearchInput): EligibilitySql {
+  const allowed = valuesSql(input.eligibility.allowedHistorySafety);
+  const optional: Prisma.Sql[] = [];
+  if (input.eligibility.sourceChatIds) {
+    optional.push(Prisma.sql`tool_event."chatId" IN (${valuesSql(
+      input.eligibility.sourceChatIds
+    )})`);
+  }
+  if (input.eligibility.sourceFolderId) {
+    optional.push(Prisma.sql`tool_event."sourceFolderId" =
+      ${input.eligibility.sourceFolderId}`);
+  }
+  if (input.eligibility.sourceAssistantId) {
+    optional.push(Prisma.sql`tool_event."sourceAssistantId" =
+      ${input.eligibility.sourceAssistantId}`);
+  }
+  if (input.eligibility.occurredFrom) {
+    optional.push(Prisma.sql`tool_event."occurredAt" >=
+      ${input.eligibility.occurredFrom}`);
+  }
+  if (input.eligibility.occurredTo) {
+    optional.push(Prisma.sql`tool_event."occurredAt" <=
+      ${input.eligibility.occurredTo}`);
+  }
+  return {
+    itemId: Prisma.sql`entry."toolEventId"`,
+    joins: commonJoins(),
+    predicates: [
+      ...commonPredicates(input),
+      Prisma.sql`entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType"`,
+      Prisma.sql`EXISTS (
+        SELECT 1
+        FROM "UserMemorySettings" AS history_settings
+        INNER JOIN "MemoryToolEvent" AS tool_event
+          ON tool_event."userId" = history_settings."userId"
+          AND tool_event."id" = entry."toolEventId"
+        INNER JOIN "Chat" AS source_chat
+          ON source_chat."userId" = tool_event."userId"
+          AND source_chat."id" = tool_event."chatId"
+        INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+          ON checkpoint."userId" = tool_event."userId"
+          AND checkpoint."chatId" = tool_event."chatId"
+        INNER JOIN "ChatMemoryCheckpointMessage" AS checkpoint_message
+          ON checkpoint_message."userId" = tool_event."userId"
+          AND checkpoint_message."chatId" = tool_event."chatId"
+          AND checkpoint_message."messageId" = tool_event."assistantMessageId"
+        INNER JOIN "Message" AS source_message
+          ON source_message."chatId" = tool_event."chatId"
+          AND source_message."id" = tool_event."assistantMessageId"
+          AND source_message."updatedAt" = checkpoint_message."sourceMessageUpdatedAt"
+        INNER JOIN "ModelRun" AS source_run
+          ON source_run."userId" = tool_event."userId"
+          AND source_run."id" = tool_event."modelRunId"
+          AND source_run."chatId" = tool_event."chatId"
+          AND source_run."assistantMessageId" = tool_event."assistantMessageId"
+          AND source_run."status" = 'complete'::"ModelRunStatus"
+        INNER JOIN "ModelRunToolCall" AS source_call
+          ON source_call."modelRunId" = tool_event."modelRunId"
+          AND source_call."id" = tool_event."modelRunToolCallId"
+          AND source_call."state" IN (
+            'complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState"
+          )
+          AND source_call."completedAt" = tool_event."occurredAt"
+          AND source_call."updatedAt" = tool_event."sourceCallUpdatedAtAtCreation"
+        WHERE history_settings."userId" = entry."userId"
+          AND history_settings."useMemoryFacts" = TRUE
+          AND history_settings."referenceChatHistory" = TRUE
+          AND entry."safeContentHash" = tool_event."contentHash"
+          AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+          AND tool_event."projectionVersion" = ${MEMORY_TOOL_EVENT_PROJECTION_VERSION}
+          AND tool_event."safetyClass"::text IN (${allowed})
+          AND tool_event."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+          AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND source_chat."projectId" IS NULL
+          AND source_chat."permanentDeletionAt" IS NULL
+          AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+          AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+          AND checkpoint."branchGeneration" = tool_event."branchGeneration"
+          AND checkpoint."sourceRevision" = tool_event."sourceRevisionAtCreation"
+          AND checkpoint."lastIndexedMessageId" = checkpoint."activeLeafMessageId"
+          AND (
+            checkpoint."sourceRevision" = source_chat."memorySourceRevision"
+            AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
+            OR EXISTS (
+              SELECT 1 FROM "Message" AS paused_leaf
+              INNER JOIN "MemoryPauseInterval" AS pause_interval
+                ON pause_interval."userId" = source_chat."userId"
+                AND pause_interval."scope" IN (
+                  'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+                )
+                AND paused_leaf."createdAt" >= pause_interval."pausedAt"
+                AND (pause_interval."resumedAt" IS NULL
+                  OR paused_leaf."createdAt" <= pause_interval."resumedAt")
+              WHERE paused_leaf."chatId" = source_chat."id"
+                AND paused_leaf."id" = source_chat."activeLeafMessageId"
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemorySuppression" AS suppression
+            WHERE suppression."userId" = tool_event."userId"
+              AND (suppression."expiresAt" IS NULL
+                OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+              AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+                suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+                AND suppression."sourceChatId" = tool_event."chatId"
+                AND suppression."sourceMessageId" = tool_event."assistantMessageId"
+              ))
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemorySourceBarrier" AS barrier
+            WHERE barrier."userId" = tool_event."userId"
+              AND barrier."kind" IN (
+                'HISTORY_INDEX'::"MemorySourceBarrierKind",
+                'ALL_REUSABLE'::"MemorySourceBarrierKind"
+              )
+              AND barrier."explicitOverrideAllowed" = FALSE
+              AND source_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemoryPauseInterval" AS source_pause
+            WHERE source_pause."userId" = tool_event."userId"
+              AND source_pause."scope" IN (
+                'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+              )
+              AND source_message."createdAt" >= source_pause."pausedAt"
+              AND (source_pause."resumedAt" IS NULL
+                OR source_message."createdAt" <= source_pause."resumedAt")
+          )
+          AND ${Prisma.join(optional.length > 0 ? optional : [Prisma.sql`TRUE`], " AND ")}
+      )`
+    ]
+  };
+}
+
 function eligibilitySql(
   input: MemoryVectorSearchInput,
   itemType: CurrentMemorySearchItemType
@@ -788,7 +967,9 @@ function eligibilitySql(
   switch (itemType) {
     case "FACT_VERSION": return factEligibility(input);
     case "RECALL_CHUNK": return chunkEligibility(input);
-    case "RECALL_ROUND": return roundEligibility(input);
+    case "RECALL_ROUND": return roundEligibility(input, itemType);
+    case "RECALL_ROUND_SEGMENT": return roundEligibility(input, itemType);
+    case "TOOL_EVENT": return toolEventEligibility(input);
   }
 }
 

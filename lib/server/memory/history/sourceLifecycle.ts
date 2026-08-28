@@ -87,7 +87,12 @@ async function invalidateAffectedHistory(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent,
   now: Date
-): Promise<Readonly<{ chunks: number; digest: number; rounds: number }>> {
+): Promise<Readonly<{
+  chunks: number;
+  digest: number;
+  rounds: number;
+  toolEvents: number;
+}>> {
   const invalidateAll = event.snapshot.memoryMode !== "NORMAL" ||
     event.snapshot.activeLeafMessageId === null ||
     event.previous.folderId !== event.snapshot.folderId ||
@@ -170,6 +175,56 @@ async function invalidateAffectedHistory(
           )
         ORDER BY round."id"
       `);
+  const toolEvents = invalidateAll
+    ? await tx.memoryToolEvent.findMany({
+        select: { id: true },
+        where: {
+          chatId: event.snapshot.id,
+          state: "ACTIVE",
+          userId: event.snapshot.userId
+        }
+      })
+    : await tx.$queryRaw<Array<{ id: string }>>`
+        WITH RECURSIVE active_path AS (
+          SELECT message."id", message."parentMessageId"
+          FROM "Message" AS message
+          WHERE message."chatId" = ${event.snapshot.id}
+            AND message."id" = ${event.snapshot.activeLeafMessageId}
+          UNION ALL
+          SELECT parent."id", parent."parentMessageId"
+          FROM active_path AS child
+          INNER JOIN "Message" AS parent
+            ON parent."chatId" = ${event.snapshot.id}
+            AND parent."id" = child."parentMessageId"
+        )
+        SELECT tool_event."id"
+        FROM "MemoryToolEvent" AS tool_event
+        LEFT JOIN "Message" AS source_message
+          ON source_message."chatId" = tool_event."chatId"
+          AND source_message."id" = tool_event."assistantMessageId"
+        LEFT JOIN "ChatMemoryCheckpointMessage" AS checkpoint_message
+          ON checkpoint_message."userId" = tool_event."userId"
+          AND checkpoint_message."chatId" = tool_event."chatId"
+          AND checkpoint_message."messageId" = tool_event."assistantMessageId"
+        LEFT JOIN "ModelRunToolCall" AS source_call
+          ON source_call."modelRunId" = tool_event."modelRunId"
+          AND source_call."id" = tool_event."modelRunToolCallId"
+        LEFT JOIN active_path ON active_path."id" = tool_event."assistantMessageId"
+        WHERE tool_event."userId" = ${event.snapshot.userId}
+          AND tool_event."chatId" = ${event.snapshot.id}
+          AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+          AND (
+            active_path."id" IS NULL
+            OR source_message."id" IS NULL
+            OR checkpoint_message."messageId" IS NULL
+            OR source_message."updatedAt" <>
+              checkpoint_message."sourceMessageUpdatedAt"
+            OR source_call."id" IS NULL
+            OR source_call."updatedAt" IS DISTINCT FROM
+              tool_event."sourceCallUpdatedAtAtCreation"
+          )
+        ORDER BY tool_event."id"
+      `;
   const activeDigest = await tx.chatMemoryDigest.findFirst({
     select: { id: true },
     where: {
@@ -184,20 +239,44 @@ async function invalidateAffectedHistory(
       where: { id: activeDigest.id }
     });
   }
-  if (chunks.length === 0 && rounds.length === 0) {
-    return { chunks: 0, digest: Number(activeDigest !== null), rounds: 0 };
+  if (chunks.length === 0 && rounds.length === 0 && toolEvents.length === 0) {
+    return {
+      chunks: 0,
+      digest: Number(activeDigest !== null),
+      rounds: 0,
+      toolEvents: 0
+    };
   }
 
   await tx.memorySearchEntry.deleteMany({
     where: {
       OR: [
         { recallChunkId: { in: chunks.map((chunk) => chunk.id) } },
-        { recallRoundId: { in: rounds.map((round) => round.id) } }
+        { recallRoundId: { in: rounds.map((round) => round.id) } },
+        { toolEventId: { in: toolEvents.map((toolEvent) => toolEvent.id) } }
       ],
       userId: event.snapshot.userId
     }
   });
+  if (toolEvents.length > 0) {
+    await tx.memoryToolEvent.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        id: { in: toolEvents.map((toolEvent) => toolEvent.id) },
+        state: "ACTIVE",
+        userId: event.snapshot.userId
+      }
+    });
+  }
   if (rounds.length > 0) {
+    await tx.memoryRecallRoundSegment.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        roundId: { in: rounds.map((round) => round.id) },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: event.snapshot.userId
+      }
+    });
     await tx.memoryRecallRound.updateMany({
       data: { invalidatedAt: now, state: "INVALIDATED" },
       where: {
@@ -218,7 +297,8 @@ async function invalidateAffectedHistory(
   return {
     chunks: chunks.length,
     digest: Number(activeDigest !== null),
-    rounds: rounds.length
+    rounds: rounds.length,
+    toolEvents: toolEvents.length
   };
 }
 
@@ -366,10 +446,12 @@ export async function applyMemoryHistorySourceMutation(
     if (!retainsVisibleHistoryWhilePaused(settings, event)) {
       const now = new Date();
       const invalidated = await invalidateAffectedHistory(tx, event, now);
-      if (invalidated.chunks > 0 || invalidated.digest > 0 || invalidated.rounds > 0) {
+      if (invalidated.chunks > 0 || invalidated.digest > 0 ||
+        invalidated.rounds > 0 || invalidated.toolEvents > 0) {
         await settleVisibleMutationCounter(tx, settings, event);
         if (!permanentDelete && (
           invalidated.chunks > 0 || invalidated.rounds > 0 ||
+            invalidated.toolEvents > 0 ||
             event.snapshot.memoryMode !== "NORMAL"
         )) {
           const deletion = await enqueueMemoryDeletion(tx, settings, {

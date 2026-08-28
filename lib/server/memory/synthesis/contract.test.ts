@@ -10,7 +10,10 @@ import {
   type MemorySynthesisPlan,
   type MemorySynthesisSource
 } from "./policy";
-import { memorySynthesisSourceAuthorityPredicate } from "./eligibility";
+import {
+  memorySynthesisPatternAuthorityPredicate,
+  memorySynthesisSourceAuthorityPredicate
+} from "./eligibility";
 
 function plan(): MemorySynthesisPlan {
   const boundary = new Date("2026-08-01T00:00:00.000Z");
@@ -49,6 +52,14 @@ describe("Dream synthesis strict contract", () => {
       .toContain('"confidence" = 1.0');
   });
 
+  it("keeps a stored PATTERN eligible only with three independent direct roots", () => {
+    const sql = memorySynthesisPatternAuthorityPredicate("user-1").sql;
+    expect(sql).toContain('COUNT(DISTINCT source_root."rootKey")');
+    expect(sql).toContain("'explicit:' || root_source_version.\"id\"");
+    expect(sql).toContain("'message:' || support.\"messageId\"");
+    expect(sql).toContain('support."sourceRole" = \'user\'');
+  });
+
   it("accepts only one-cluster, three-distinct-source depth-one proposals", () => {
     const input = plan();
     const refs = input.clusters[0]!.sources.slice(0, 3).map(({ ref }) => ref);
@@ -68,6 +79,26 @@ describe("Dream synthesis strict contract", () => {
         sourceRefs: refs
       }]
     });
+  });
+
+  it("rejects three source refs that collapse to one direct evidence root", () => {
+    const input = plan();
+    const clustered = input.clusters[0]!.sources.slice(0, 3);
+    const collapsedSources = input.sources.map((source) =>
+      clustered.some(({ ref }) => ref === source.ref)
+        ? { ...source, sourceMessageIds: ["one-message-root"] }
+        : source);
+    const collapsedPlan = { ...input, sources: collapsedSources };
+
+    expect(() => decodeMemorySynthesisOutput({
+      patterns: [{
+        confidence_band: "HIGH",
+        entity_refs: [],
+        reason_code: "repeated_workflow_pattern",
+        source_refs: clustered.map(({ ref }) => ref),
+        statement: "The user tends to follow this workflow."
+      }]
+    }, collapsedPlan)).toThrow(MemorySynthesisContractError);
   });
 
   it("collapses redundant valid proposals for one durable cluster and reason identity", () => {

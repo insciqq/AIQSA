@@ -14,8 +14,10 @@ import type {
   ProviderAdapter,
   ProviderConversationMessage,
   ProviderModelCapabilities,
+  ProviderRunRequest,
   ProviderRunRefreshResult
 } from "../providers/types";
+import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { activeRunControllerRegistry } from "./runExecution";
 import {
   activeRunControllersForTest,
@@ -306,6 +308,28 @@ function recordProviderStreamStart(adapter: ProviderAdapter, onStart: () => void
     ...adapter,
     async *stream(request, options) {
       onStart();
+      const stream = adapter.stream(request, options);
+
+      while (true) {
+        const next = await stream.next();
+        if (next.done) {
+          return next.value;
+        }
+
+        yield next.value;
+      }
+    }
+  };
+}
+
+function captureProviderRequest(
+  adapter: ProviderAdapter,
+  onStart: (request: ProviderRunRequest) => void
+): ProviderAdapter {
+  return {
+    ...adapter,
+    async *stream(request, options) {
+      onStart(request);
       const stream = adapter.stream(request, options);
 
       while (true) {
@@ -2969,6 +2993,84 @@ describe("model run route handlers", () => {
     expect(JSON.stringify(state.created?.providerRequestPreview)).toContain("prior-user-1");
     expect(JSON.stringify(state.created?.providerRequestPreview)).toContain("violet harbor");
     expect(state.completed?.finalText).toContain("Context memory: First turn secret: violet harbor");
+  });
+
+  it("carries a typed tool observation through the ordinary send HTTP boundary", async () => {
+    const { repository, state } = createMemoryRepository();
+    const secretCanary = "RAW_TOOL_RESULT_MUST_NOT_EGRESS";
+    const safeObservation =
+      "Tool observation — tool: http.request; operation: GET /limits; " +
+      "outcome: FAILURE; occurred_at: 2026-08-28T12:00:02.000Z; " +
+      "endpoint: https://api.example.test/limits; status_code: 429";
+    const personalContext = {
+      approxTokens: 96,
+      itemCount: 1,
+      memoryGeneration: 3,
+      memoryRevision: 7,
+      mode: "prefetched" as const,
+      text: [
+        PERSONAL_CONTEXT_HEADING,
+        "EVIDENCE_ITEMS_JSONL",
+        JSON.stringify({
+          document_time: "2026-08-28T12:00:02.000Z",
+          evidence_handle: "M1",
+          evidence_type: "tool_observation",
+          occurred_at: "2026-08-28T12:00:02.000Z",
+          raw_safe_evidence: safeObservation,
+          source_authority: "tool_observation",
+          speaker_scope: "tool",
+          tool_name: "http.request",
+          tool_outcome: "failure"
+        })
+      ].join("\n")
+    };
+    const createRun = repository.createRun;
+    repository.createRun = async (input) => {
+      const materialized = input.memoryMaterializer?.(personalContext);
+      if (!materialized) throw new Error("tool_observation_materialization_failed");
+      const created = await createRun({
+        ...input,
+        normalizedRequest: materialized.normalizedRequest,
+        providerRequestPreview: { ...materialized.providerRequestPreview }
+      });
+      return { ...created, materializedRequest: materialized };
+    };
+    const captured: { request: ProviderRunRequest | null } = { request: null };
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: {
+        fake: captureProviderRequest(createFakeProviderAdapter(), (request) => {
+          captured.request = request;
+        })
+      },
+      repository
+    });
+
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          modelId: "fake-qsa",
+          provider: "fake",
+          text: "What happened when we called the limits endpoint?"
+        }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured.request?.personalContext).toEqual(personalContext);
+    expect(captured.request?.personalContext?.text).toContain(
+      '"source_authority":"tool_observation"'
+    );
+    expect(captured.request?.personalContext?.text).toContain(
+      '"speaker_scope":"tool"'
+    );
+    expect(captured.request?.personalContext?.text).toContain(safeObservation);
+    expect(JSON.stringify(captured.request)).not.toContain(secretCanary);
+    expect(state.created?.normalizedRequest.personalContext).toEqual(personalContext);
   });
 
   it("still completes foreground streams when the transient chat update cannot be built", async () => {

@@ -2,6 +2,7 @@ import {
   Prisma,
   type MemoryEmbeddingState,
   type MemoryHistoryItemState,
+  type MemoryToolEvent,
   type PrismaClient
 } from "@prisma/client";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
@@ -49,7 +50,8 @@ import {
   type MemoryHistoryIndexPlan,
   type MemoryHistoryIndexSourceIdentity,
   type MemoryHistoryPreparedChunk,
-  type MemoryHistoryPreparedRound
+  type MemoryHistoryPreparedRound,
+  type MemoryHistoryPreparedToolEvent
 } from "./contract";
 import {
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
@@ -69,10 +71,22 @@ import {
   type MemoryRecallRoundMessageJoin
 } from "./rounds";
 import {
+  MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+  projectMemoryRecallRoundSegments,
+  type MemoryRecallRoundSegmentMessageJoin,
+  type MemoryRecallRoundSegmentProjection
+} from "./segments";
+import { persistMemoryRecallRoundSegmentProjection } from "./segmentPersistence";
+import {
   memoryHistoryChunkEvidenceRootHash,
   memoryHistoryEvidenceRootHash
 } from "./evidenceRoot";
 import { memoryHistorySuppressionIdentitySnapshot } from "./admissionIdentity";
+import {
+  MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS,
+  MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+  projectMemoryToolEvent
+} from "./toolEvents";
 
 type MemoryHistoryPrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -132,7 +146,37 @@ type CurrentRoundRow = Readonly<{
   sourceProjectionVersion: string;
   sourceRevisionAtCreation: number;
   state: MemoryHistoryItemState;
+  supportingRoundIds: string[];
   messageJoins: readonly MemoryRecallRoundMessageJoin[];
+}>;
+
+type CurrentRoundSegmentRow = Readonly<{
+  approxTokens: number;
+  contextualKeyPolicyVersion: string;
+  contextualKeyState: string;
+  contextualNarrativeText: string;
+  contextualSearchHash: string;
+  contextualSearchText: string;
+  evidenceRootHash: string;
+  id: string;
+  languageCode: string;
+  occurredFrom: Date;
+  occurredTo: Date;
+  position: string;
+  projectionVersion: string;
+  rawEndOffsetUtf16: number;
+  rawSafeText: string;
+  rawSafeTextHash: string;
+  rawStartOffsetUtf16: number;
+  redactionReasonCodes: string[];
+  redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
+  roundId: string;
+  safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
+  segmentOrdinal: number;
+  sourceRevisionAtCreation: number;
+  state: MemoryHistoryItemState;
+  supportingRoundIds: string[];
+  messageJoins: readonly MemoryRecallRoundSegmentMessageJoin[];
 }>;
 
 type HistoryPathMessageMetadata = Readonly<{
@@ -152,6 +196,10 @@ type ExpectedSearchEntry = Readonly<{
   safetyIdentitySnapshot: string;
   sourceIdentitySnapshot: string;
   suppressionIdentitySnapshot: string;
+}>;
+
+type ComparableSearchEntry = ExpectedSearchEntry & Readonly<{
+  embeddingState: MemoryEmbeddingState;
 }>;
 
 const staleDecision = Object.freeze({
@@ -412,16 +460,18 @@ async function loadIncrementalHistoryState(
   source: MemorySourceSnapshot
 ): Promise<Readonly<{
   chunks: readonly CurrentChunkRow[];
+  checkpointLastSucceededAt: Date | null;
   checkpointPipelineVersion: string | null;
   messages: readonly Readonly<{
     messageId: string;
     sourceMessageUpdatedAt: string;
   }>[];
   rounds: readonly CurrentRoundRow[];
+  toolEvents: readonly MemoryToolEvent[];
 }>> {
-  const [checkpoint, rows, roundRows, messageRows] = await Promise.all([
+  const [checkpoint, rows, roundRows, toolEventRows, messageRows] = await Promise.all([
     tx.chatMemoryCheckpoint.findUnique({
-      select: { pipelineVersion: true },
+      select: { lastSucceededAt: true, pipelineVersion: true },
       where: { userId_chatId: { chatId: source.id, userId: source.userId } }
     }),
     tx.memoryRecallChunk.findMany({
@@ -441,6 +491,15 @@ async function loadIncrementalHistoryState(
         projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
         sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
         state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: source.userId
+      }
+    }),
+    tx.memoryToolEvent.findMany({
+      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+      where: {
+        chatId: source.id,
+        projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+        state: "ACTIVE",
         userId: source.userId
       }
     }),
@@ -495,6 +554,7 @@ async function loadIncrementalHistoryState(
     joinsByRound.set(join.roundId, values);
   }
   return Object.freeze({
+    checkpointLastSucceededAt: checkpoint?.lastSucceededAt ?? null,
     checkpointPipelineVersion: checkpoint?.pipelineVersion ?? null,
     chunks: Object.freeze(rows.flatMap((row): CurrentChunkRow[] => {
       const messageJoins = joinsByChunk.get(row.id) ?? [];
@@ -507,7 +567,8 @@ async function loadIncrementalHistoryState(
     rounds: Object.freeze(roundRows.flatMap((row): CurrentRoundRow[] => {
       const messageJoins = joinsByRound.get(row.id) ?? [];
       return messageJoins.length === 0 ? [] : [{ ...row, messageJoins }];
-    }))
+    })),
+    toolEvents: Object.freeze(toolEventRows)
   });
 }
 
@@ -587,8 +648,49 @@ function storedRoundProjection(
     sourceContentHash: source.sourceHash,
     sourceProjectionVersion: row.sourceProjectionVersion,
     sourceRevision: row.sourceRevisionAtCreation,
+    supportingRoundIds: Object.freeze([...row.supportingRoundIds]),
     userId: source.userId
   };
+}
+
+function storedToolEventProjection(
+  row: MemoryToolEvent,
+  source: MemorySourceSnapshot
+): MemoryHistoryPreparedToolEvent {
+  const structuredIdentifiers = isRecord(row.structuredIdentifiers)
+    ? Object.freeze(Object.fromEntries(Object.entries(row.structuredIdentifiers).flatMap(
+        ([key, value]) => typeof value === "string" ? [[key, value]] : []
+      )))
+    : Object.freeze({});
+  return Object.freeze({
+    assistantMessageId: row.assistantMessageId,
+    branchGeneration: source.memoryBranchGeneration,
+    chatId: row.chatId,
+    contentHash: row.contentHash,
+    evidenceRootHash: row.evidenceRootHash,
+    id: row.id,
+    languageCode: "und",
+    modelRunId: row.modelRunId,
+    modelRunToolCallId: row.modelRunToolCallId,
+    normalizedSafeSearchText: row.normalizedSafeSearchText,
+    occurredAt: row.occurredAt.toISOString(),
+    operation: row.operation,
+    outcome: row.outcome,
+    projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+    publicationState: "ACTIVE",
+    redactionReasonCodes: Object.freeze([...row.redactionReasonCodes]),
+    redactionState: row.redactionState as "NOT_NEEDED" | "REDACTED",
+    safeProjectedText: row.safeProjectedText,
+    safetyClass: row.safetyClass as "NORMAL" | "SENSITIVE",
+    sourceAssistantId: row.sourceAssistantId,
+    sourceCallUpdatedAt: row.sourceCallUpdatedAtAtCreation.toISOString(),
+    sourceFolderId: source.folderId,
+    sourcePayloadHash: row.sourcePayloadHash,
+    sourceRevision: source.memorySourceRevision,
+    structuredIdentifiers,
+    toolName: row.toolName,
+    userId: row.userId
+  });
 }
 
 function alignHistoryTailStart(
@@ -711,8 +813,11 @@ async function prepareWith(
   const byId = new Map(rows.map((row) => [row.id, row]));
   if (tailIds.some((id) => !byId.has(id))) return { decision: staleDecision };
 
-  const runMessageIds = [...new Set([...tailIds, source.activeLeafMessageId])];
-  const runs = await tx.modelRun.findMany({
+  const canReuseToolEvents = previousIsCurrent && incremental.mode !== "FULL_REBUILD";
+  const runMessageIds = canReuseToolEvents
+    ? [...new Set([...tailIds, source.activeLeafMessageId])]
+    : path.map(({ id }) => id);
+  const baseRuns = await tx.modelRun.findMany({
     select: {
       assistantId: true,
       assistantMessageId: true,
@@ -727,6 +832,55 @@ async function prepareWith(
       userId: source.userId
     }
   });
+  const changedToolCallSources = canReuseToolEvents && previous.checkpointLastSucceededAt
+    ? await tx.modelRunToolCall.findMany({
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        select: {
+          id: true,
+          modelRun: {
+            select: { assistantMessageId: true }
+          }
+        },
+        take: MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS + 1,
+        where: {
+          completedAt: { not: null },
+          modelRun: {
+            chatId: source.id,
+            status: "complete",
+            userId: source.userId
+          },
+          state: { in: ["complete", "error"] },
+          updatedAt: { gte: previous.checkpointLastSucceededAt }
+        }
+      })
+    : [];
+  if (changedToolCallSources.length > MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS) {
+    throw new MemoryCoordinatorError("memory_tool_event_source_limit_exceeded", false);
+  }
+  const changedAssistantMessageIds = [...new Set(changedToolCallSources.flatMap(({ modelRun }) =>
+    modelRun.assistantMessageId && pathById.has(modelRun.assistantMessageId)
+      ? [modelRun.assistantMessageId]
+      : []))];
+  const changedRuns = changedAssistantMessageIds.length === 0
+    ? []
+    : await tx.modelRun.findMany({
+        select: {
+          assistantId: true,
+          assistantMessageId: true,
+          id: true,
+          normalizedRequest: true,
+          status: true,
+          userMessageId: true
+        },
+        where: {
+          assistantMessageId: { in: changedAssistantMessageIds },
+          chatId: source.id,
+          userId: source.userId
+        }
+      });
+  const runById = new Map(baseRuns.map((run) => [run.id, run]));
+  for (const run of changedRuns) runById.set(run.id, run);
+  const runs = [...runById.values()];
   const runAssistantIds = runs.flatMap((run) => run.assistantId ? [run.assistantId] : []);
   const ownedAssistants = runAssistantIds.length === 0
     ? []
@@ -746,6 +900,87 @@ async function prepareWith(
       ...(runsByAssistantMessage.get(run.assistantMessageId) ?? []),
       run
     ]);
+  }
+
+  const uniquelySettledRuns = runs.filter((run) =>
+    run.status === "complete" && run.assistantMessageId !== null &&
+    runsByAssistantMessage.get(run.assistantMessageId)?.length === 1);
+  const settledToolCalls = uniquelySettledRuns.length === 0
+    ? []
+    : await tx.modelRunToolCall.findMany({
+        orderBy: [{ completedAt: "asc" }, { id: "asc" }],
+        select: {
+          completedAt: true,
+          id: true,
+          modelRunId: true,
+          result: true,
+          state: true,
+          toolName: true,
+          updatedAt: true
+        },
+        take: MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS + 1,
+        where: {
+          completedAt: { not: null },
+          modelRunId: { in: uniquelySettledRuns.map(({ id }) => id) },
+          state: { in: ["complete", "error"] }
+        }
+      });
+  if (settledToolCalls.length > MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS) {
+    throw new MemoryCoordinatorError("memory_tool_event_source_limit_exceeded", false);
+  }
+  const settledRunById = new Map(uniquelySettledRuns.map((run) => [run.id, run]));
+  const projectedToolEvents = settledToolCalls.flatMap(
+    (call): MemoryHistoryPreparedToolEvent[] => {
+      const run = settledRunById.get(call.modelRunId);
+      if (!run?.assistantMessageId || !call.completedAt ||
+        (call.state !== "complete" && call.state !== "error")) return [];
+      const sourceMessage = pathById.get(run.assistantMessageId);
+      if (!sourceMessage || excluded.has(sourceMessage.id) ||
+        cutoff !== null && sourceMessage.createdAt <= cutoff) return [];
+      const projection = projectMemoryToolEvent({
+        assistantMessageId: run.assistantMessageId,
+        branchGeneration: source.memoryBranchGeneration,
+        chatId: source.id,
+        completedAt: call.completedAt,
+        modelRunId: run.id,
+        modelRunToolCallId: call.id,
+        result: call.result,
+        sourceAssistantId: run.assistantId && ownedAssistantIds.has(run.assistantId)
+          ? run.assistantId
+          : null,
+        sourceCallUpdatedAt: call.updatedAt,
+        sourceFolderId: source.folderId,
+        sourceRevision: source.memorySourceRevision,
+        state: call.state,
+        toolName: call.toolName,
+        userId: source.userId
+      });
+      return projection ? [{ ...projection, publicationState: "ACTIVE" }] : [];
+    });
+  const rebuiltToolCallIds = new Set([
+    ...settledToolCalls.map(({ id }) => id),
+    ...changedToolCallSources.map(({ id }) => id)
+  ]);
+  const rebuiltToolEventMessageIds = new Set(runMessageIds);
+  const retainedToolEvents = canReuseToolEvents
+    ? previous.toolEvents.flatMap((row): MemoryHistoryPreparedToolEvent[] => {
+        const sourceMessage = pathById.get(row.assistantMessageId);
+        if (!sourceMessage || excluded.has(sourceMessage.id) ||
+          cutoff !== null && sourceMessage.createdAt <= cutoff ||
+          rebuiltToolCallIds.has(row.modelRunToolCallId) ||
+          rebuiltToolEventMessageIds.has(row.assistantMessageId)) return [];
+        return [storedToolEventProjection(row, source)];
+      })
+    : [];
+  const toolEventByCallId = new Map(retainedToolEvents.map((event) =>
+    [event.modelRunToolCallId, event]));
+  for (const event of projectedToolEvents) {
+    toolEventByCallId.set(event.modelRunToolCallId, event);
+  }
+  const toolEvents = [...toolEventByCallId.values()].sort((left, right) =>
+    left.occurredAt.localeCompare(right.occurredAt) || left.id.localeCompare(right.id));
+  if (toolEvents.length > MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS) {
+    throw new MemoryCoordinatorError("memory_tool_event_source_limit_exceeded", false);
   }
 
   const messages: MemoryHistorySourceMessageInput[] = tailPath.map((metadata, ordinal) => {
@@ -885,6 +1120,14 @@ async function prepareWith(
   }
   const reusedRoundIds = retainedRounds.map((round) => round.id);
   const rebuiltRoundIds = rebuiltRounds.map((round) => round.id);
+  const previousRoundSegments = previous.rounds.reduce((count, row, ordinal) =>
+    count + projectMemoryRecallRoundSegments(
+      storedRoundProjection(row, source, ordinal)
+    ).length, 0);
+  const reusedRoundSegments = retainedRounds.reduce((count, round) =>
+    count + projectMemoryRecallRoundSegments(round).length, 0);
+  const builtRoundSegments = projectedRounds.reduce((count, round) =>
+    count + projectMemoryRecallRoundSegments(round).length, 0);
   const incrementalSnapshot = {
     commonPathMessageCount: incremental.commonPathMessageCount,
     mode: incremental.mode,
@@ -903,9 +1146,13 @@ async function prepareWith(
     messagesProjected: messages.length,
     modelRunRowsLoaded: runs.length,
     pathMetadataRowsRead: path.length,
+    roundSegmentsBuilt: builtRoundSegments,
+    roundSegmentsReplaced: Math.max(0, previousRoundSegments - reusedRoundSegments),
+    roundSegmentsReused: reusedRoundSegments,
     roundsBuilt: projectedRounds.length,
     roundsReplaced: Math.max(0, previous.rounds.length - retainedRounds.length),
-    roundsReused: retainedRounds.length
+    roundsReused: retainedRounds.length,
+    toolEventsBuilt: projectedToolEvents.length
   } as const;
   const resultHash = memoryHistoryIndexResultHash(
     sourceIdentity,
@@ -923,6 +1170,7 @@ async function prepareWith(
       reusedChunkIds,
       reusedRoundIds,
       rounds,
+      toolEvents,
       work
     }
   );
@@ -944,6 +1192,7 @@ async function prepareWith(
       source: sourceIdentity,
       suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
       timeZone,
+      toolEvents,
       work
     }
   };
@@ -980,6 +1229,35 @@ function expectedSearchEntry(
   };
 }
 
+function expectedToolEventSearchEntry(
+  plan: MemoryHistoryIndexPlan,
+  event: MemoryHistoryPreparedToolEvent
+): ExpectedSearchEntry {
+  return {
+    languageCode: event.languageCode,
+    normalizedSearchText: event.normalizedSafeSearchText,
+    safeContentHash: event.contentHash,
+    safetyIdentitySnapshot: memorySha256({
+      projectionVersion: event.projectionVersion,
+      redactionReasonCodes: event.redactionReasonCodes,
+      redactionState: event.redactionState,
+      safetyClass: event.safetyClass
+    }),
+    sourceIdentitySnapshot: memorySha256({
+      assistantMessageId: event.assistantMessageId,
+      chatId: event.chatId,
+      evidenceRootHash: event.evidenceRootHash,
+      modelRunId: event.modelRunId,
+      modelRunToolCallId: event.modelRunToolCallId,
+      projectionVersion: event.projectionVersion,
+      sourcePayloadHash: event.sourcePayloadHash,
+      sourceCallUpdatedAt: event.sourceCallUpdatedAt,
+      userId: event.userId
+    }),
+    suppressionIdentitySnapshot: plan.suppressionIdentitySnapshot
+  };
+}
+
 function expectedRoundSearchEntry(
   plan: MemoryHistoryIndexPlan,
   round: MemoryHistoryPreparedRound
@@ -1002,7 +1280,38 @@ function expectedRoundSearchEntry(
       evidenceRootHash: round.evidenceRootHash,
       messageJoins: round.messageJoins,
       sourceProjectionVersion: round.sourceProjectionVersion,
+      supportingRoundIds: round.supportingRoundIds,
       userId: round.userId
+    }),
+    suppressionIdentitySnapshot: plan.suppressionIdentitySnapshot
+  };
+}
+
+function expectedRoundSegmentSearchEntry(
+  plan: MemoryHistoryIndexPlan,
+  segment: MemoryRecallRoundSegmentProjection
+): ExpectedSearchEntry {
+  return {
+    languageCode: segment.languageCode,
+    safeContentHash: segment.contextualSearchHash,
+    normalizedSearchText: normalizeMemorySearchText(segment.contextualSearchText),
+    safetyIdentitySnapshot: memorySha256({
+      classificationPolicyVersion: plan.classificationPolicyVersion,
+      contextualKeyPolicyVersion: segment.contextualKeyPolicyVersion,
+      projectionVersion: segment.projectionVersion,
+      redactionReasonCodes: segment.redactionReasonCodes,
+      redactionState: segment.redactionState,
+      safetyClass: segment.safetyClass
+    }),
+    sourceIdentitySnapshot: memorySha256({
+      evidenceRootHash: segment.evidenceRootHash,
+      messageJoins: segment.messageJoins,
+      rawEndOffsetUtf16: segment.rawEndOffsetUtf16,
+      rawSafeTextHash: segment.rawSafeTextHash,
+      rawStartOffsetUtf16: segment.rawStartOffsetUtf16,
+      roundId: segment.roundId,
+      supportingRoundIds: segment.supportingRoundIds,
+      userId: segment.userId
     }),
     suppressionIdentitySnapshot: plan.suppressionIdentitySnapshot
   };
@@ -1029,6 +1338,7 @@ function chunkMatches(left: CurrentChunkRow, right: MemoryHistoryPreparedChunk):
 
 function roundMatches(left: CurrentRoundRow, right: MemoryHistoryPreparedRound): boolean {
   return left.id === right.id &&
+    left.branchGeneration === right.branchGeneration &&
     left.roundOrdinal === right.ordinal &&
     left.contentHash === right.contentHash &&
     left.contextualKeyPolicyVersion === right.contextualKeyPolicyVersion &&
@@ -1050,12 +1360,105 @@ function roundMatches(left: CurrentRoundRow, right: MemoryHistoryPreparedRound):
     left.sourceAssistantId === right.sourceAssistantId &&
     left.sourceFolderId === right.folderId &&
     left.sourceProjectionVersion === right.sourceProjectionVersion &&
+    left.sourceRevisionAtCreation === right.sourceRevision &&
+    left.state === right.publicationState &&
+    JSON.stringify(left.supportingRoundIds) === JSON.stringify(right.supportingRoundIds);
+}
+
+function roundSegmentMatches(
+  left: CurrentRoundSegmentRow,
+  right: MemoryRecallRoundSegmentProjection
+): boolean {
+  return left.id === right.id &&
+    left.approxTokens === right.approxTokens &&
+    left.contextualKeyPolicyVersion === right.contextualKeyPolicyVersion &&
+    left.contextualKeyState === right.contextualKeyState &&
+    left.contextualNarrativeText === right.contextualNarrativeText &&
+    left.contextualSearchHash === right.contextualSearchHash &&
+    left.contextualSearchText === right.contextualSearchText &&
+    left.evidenceRootHash === right.evidenceRootHash &&
+    left.languageCode === right.languageCode &&
+    left.occurredFrom.toISOString() === right.occurredFrom &&
+    left.occurredTo.toISOString() === right.occurredTo &&
+    left.position === right.position &&
+    left.projectionVersion === right.projectionVersion &&
+    left.rawEndOffsetUtf16 === right.rawEndOffsetUtf16 &&
+    left.rawSafeText === right.rawSafeText &&
+    left.rawSafeTextHash === right.rawSafeTextHash &&
+    left.rawStartOffsetUtf16 === right.rawStartOffsetUtf16 &&
+    JSON.stringify(left.redactionReasonCodes) === JSON.stringify(right.redactionReasonCodes) &&
+    left.redactionState === right.redactionState &&
+    left.roundId === right.roundId &&
+    left.safetyClass === right.safetyClass &&
+    left.segmentOrdinal === right.ordinal &&
+    left.sourceRevisionAtCreation === right.sourceRevision &&
+    left.state === right.publicationState &&
+    JSON.stringify(left.supportingRoundIds) === JSON.stringify(right.supportingRoundIds);
+}
+
+function toolEventMatches(
+  left: Readonly<{
+    assistantMessageId: string;
+    branchGeneration: number;
+    chatId: string;
+    contentHash: string;
+    evidenceRootHash: string;
+    id: string;
+    languageCode: string;
+    modelRunId: string;
+    modelRunToolCallId: string;
+    occurredAt: Date;
+    operation: string;
+    outcome: string;
+    projectionVersion: string;
+    redactionReasonCodes: string[];
+    redactionState: string;
+    safeProjectedText: string;
+    safetyClass: string;
+    sourceAssistantId: string | null;
+    sourceFolderId: string | null;
+    sourcePayloadHash: string;
+    sourceRevisionAtCreation: number;
+    state: string;
+    structuredIdentifiers: Prisma.JsonValue;
+    sourceCallUpdatedAtAtCreation: Date;
+    toolName: string;
+    userId: string;
+  }>,
+  right: MemoryHistoryPreparedToolEvent
+): boolean {
+  return left.id === right.id && left.userId === right.userId &&
+    left.chatId === right.chatId && left.modelRunId === right.modelRunId &&
+    left.modelRunToolCallId === right.modelRunToolCallId &&
+    left.assistantMessageId === right.assistantMessageId &&
+    left.sourceFolderId === right.sourceFolderId &&
+    left.sourceAssistantId === right.sourceAssistantId &&
+    left.sourceCallUpdatedAtAtCreation.toISOString() === right.sourceCallUpdatedAt &&
+    left.branchGeneration === right.branchGeneration &&
+    left.sourceRevisionAtCreation === right.sourceRevision &&
+    left.toolName === right.toolName && left.operation === right.operation &&
+    left.outcome === right.outcome && left.occurredAt.toISOString() === right.occurredAt &&
+    left.safeProjectedText === right.safeProjectedText &&
+    left.languageCode === right.languageCode && left.contentHash === right.contentHash &&
+    left.sourcePayloadHash === right.sourcePayloadHash &&
+    left.evidenceRootHash === right.evidenceRootHash &&
+    left.projectionVersion === right.projectionVersion &&
+    left.safetyClass === right.safetyClass &&
+    left.redactionState === right.redactionState &&
+    JSON.stringify(left.redactionReasonCodes) === JSON.stringify(right.redactionReasonCodes) &&
+    memorySha256(left.structuredIdentifiers) === memorySha256(right.structuredIdentifiers) &&
     left.state === right.publicationState;
 }
 
 function activeIndexAcceptsRounds(activeIndex: MemoryActiveIndex): boolean {
   return activeIndex.roundProjectionVersion === MEMORY_RECALL_ROUND_PROJECTION_VERSION &&
     activeIndex.contextualKeyPolicyVersion === MEMORY_CONTEXTUAL_KEY_POLICY_VERSION;
+}
+
+function activeIndexAcceptsRoundSegments(activeIndex: MemoryActiveIndex): boolean {
+  return activeIndexAcceptsRounds(activeIndex) &&
+    activeIndex.roundSegmentProjectionVersion ===
+      MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION;
 }
 
 function embeddingStateMatchesIndex(
@@ -1065,6 +1468,20 @@ function embeddingStateMatchesIndex(
   return indexMode === "LEXICAL_ONLY"
     ? state === "NOT_APPLICABLE"
     : state === "PENDING" || state === "READY" || state === "FAILED";
+}
+
+function searchEntryMatchesExpected(
+  activeIndex: MemoryActiveIndex,
+  entry: ComparableSearchEntry,
+  expected: ExpectedSearchEntry
+): boolean {
+  return embeddingStateMatchesIndex(activeIndex.indexMode, entry.embeddingState) &&
+    entry.languageCode === expected.languageCode &&
+    entry.safeContentHash === expected.safeContentHash &&
+    entry.normalizedSearchText === expected.normalizedSearchText &&
+    entry.safetyIdentitySnapshot === expected.safetyIdentitySnapshot &&
+    entry.sourceIdentitySnapshot === expected.sourceIdentitySnapshot &&
+    entry.suppressionIdentitySnapshot === expected.suppressionIdentitySnapshot;
 }
 
 async function planAlreadyApplied(
@@ -1198,11 +1615,75 @@ async function planAlreadyApplied(
     })
   ) return false;
 
+  const planSegments = plan.rounds.flatMap((round) =>
+    projectMemoryRecallRoundSegments(round));
+  const segmentRows = roundIds.length === 0 ? [] :
+    await tx.memoryRecallRoundSegment.findMany({
+      where: {
+        projectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+        roundId: { in: roundIds },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: plan.source.userId
+      }
+    });
+  const segmentIds = planSegments.map((segment) => segment.id);
+  const segmentJoins = segmentIds.length === 0 ? [] :
+    await tx.memoryRecallRoundSegmentMessage.findMany({
+      orderBy: [{ segmentId: "asc" }, { ordinal: "asc" }],
+      where: { segmentId: { in: segmentIds }, userId: plan.source.userId }
+    });
+  const joinsBySegment = new Map<string, MemoryRecallRoundSegmentMessageJoin[]>();
+  for (const join of segmentJoins) {
+    const current = joinsBySegment.get(join.segmentId) ?? [];
+    current.push({
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as MemoryRecallRoundSegmentMessageJoin["role"],
+      safeTextHash: join.safeTextHash,
+      segmentEndOffset: join.segmentEndOffset,
+      segmentStartOffset: join.segmentStartOffset,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      sourceStartOffset: join.sourceStartOffset
+    });
+    joinsBySegment.set(join.segmentId, current);
+  }
+  const currentSegments: CurrentRoundSegmentRow[] = segmentRows.map((segment) => ({
+    ...segment,
+    messageJoins: joinsBySegment.get(segment.id) ?? []
+  }));
+  if (
+    currentSegments.length !== planSegments.length ||
+    planSegments.some((segment) => {
+      const current = currentSegments.find((candidate) => candidate.id === segment.id);
+      return !current || !roundSegmentMatches(current, segment) ||
+        current.messageJoins.length !== segment.messageJoins.length ||
+        segment.messageJoins.some((expected, index) =>
+          JSON.stringify(expected) !== JSON.stringify(current.messageJoins[index]));
+    })
+  ) return false;
+
+  const toolEventRows = await tx.memoryToolEvent.findMany({
+    where: {
+      chatId: plan.source.chatId,
+      projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+      state: "ACTIVE",
+      userId: plan.source.userId
+    }
+  });
+  if (toolEventRows.length !== plan.toolEvents.length ||
+    plan.toolEvents.some((event) => {
+      const current = toolEventRows.find(({ id }) => id === event.id);
+      return !current || !toolEventMatches(current, event);
+    })) return false;
+
   const activePlanChunks = plan.chunks.filter((chunk) =>
     chunk.publicationState === "ACTIVE");
   const activePlanRounds = plan.rounds.filter((round) =>
     round.publicationState === "ACTIVE");
-  if (activePlanChunks.length > 0 || activePlanRounds.length > 0) {
+  if (activePlanChunks.length > 0 || activePlanRounds.length > 0 ||
+    plan.toolEvents.length > 0) {
     const activeIndex = await requireActiveMemoryIndex(tx, settings);
     if (!activeIndex) return false;
     const entries = await tx.memorySearchEntry.findMany({
@@ -1234,7 +1715,34 @@ async function planAlreadyApplied(
         userId: plan.source.userId
       }
     });
-    if (activeIndexAcceptsRounds(activeIndex)) {
+    const activeRoundIds = new Set(activePlanRounds.map((round) => round.id));
+    const activePlanSegments = planSegments.filter((segment) =>
+      activeRoundIds.has(segment.roundId));
+    const segmentEntries = await tx.memorySearchEntry.findMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        itemType: "RECALL_ROUND_SEGMENT",
+        recallRoundSegmentId: { in: activePlanSegments.map(({ id }) => id) },
+        userId: plan.source.userId
+      }
+    });
+    if (activeIndexAcceptsRoundSegments(activeIndex)) {
+      if (roundEntries.length !== 0 ||
+        segmentEntries.length !== activePlanSegments.length ||
+        activePlanSegments.some((segment) => {
+          const entry = segmentEntries.find((candidate) =>
+            candidate.recallRoundSegmentId === segment.id);
+          const expected = expectedRoundSegmentSearchEntry(plan, segment);
+          return !entry || entry.recallRoundId !== segment.roundId ||
+            !embeddingStateMatchesIndex(activeIndex.indexMode, entry.embeddingState) ||
+            entry.languageCode !== expected.languageCode ||
+            entry.safeContentHash !== expected.safeContentHash ||
+            entry.normalizedSearchText !== expected.normalizedSearchText ||
+            entry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
+            entry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
+            entry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
+        })) return false;
+    } else if (activeIndexAcceptsRounds(activeIndex)) {
       if (roundEntries.length !== activePlanRounds.length ||
         activePlanRounds.some((round) => {
           const entry = roundEntries.find((candidate) =>
@@ -1248,8 +1756,26 @@ async function planAlreadyApplied(
             entry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
             entry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
             entry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
-        })) return false;
-    } else if (roundEntries.length !== 0) return false;
+        }) || segmentEntries.length !== 0) return false;
+    } else if (roundEntries.length !== 0 || segmentEntries.length !== 0) return false;
+    const toolEventEntries = await tx.memorySearchEntry.findMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        itemType: "TOOL_EVENT",
+        toolEventId: { in: plan.toolEvents.map(({ id }) => id) },
+        userId: plan.source.userId
+      }
+    });
+    if (toolEventEntries.length !== plan.toolEvents.length ||
+      plan.toolEvents.some((event) => {
+        const entry = toolEventEntries.find(({ toolEventId }) =>
+          toolEventId === event.id);
+        return !entry || !searchEntryMatchesExpected(
+          activeIndex,
+          entry,
+          expectedToolEventSearchEntry(plan, event)
+        );
+      })) return false;
   }
   const activeDigest = await tx.chatMemoryDigest.findFirst({
     where: { chatId: plan.source.chatId, state: "ACTIVE", userId: plan.source.userId }
@@ -1417,13 +1943,249 @@ async function persistChunk(
   });
 }
 
+async function persistToolEvent(
+  tx: MemoryTransaction,
+  activeIndex: MemoryActiveIndex,
+  plan: MemoryHistoryIndexPlan,
+  event: MemoryHistoryPreparedToolEvent
+): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>> {
+  await tx.memoryToolEvent.upsert({
+    create: {
+      assistantMessageId: event.assistantMessageId,
+      branchGeneration: event.branchGeneration,
+      chatId: event.chatId,
+      contentHash: event.contentHash,
+      evidenceRootHash: event.evidenceRootHash,
+      id: event.id,
+      languageCode: event.languageCode,
+      modelRunId: event.modelRunId,
+      modelRunToolCallId: event.modelRunToolCallId,
+      normalizedSafeSearchText: event.normalizedSafeSearchText,
+      occurredAt: new Date(event.occurredAt),
+      operation: event.operation,
+      outcome: event.outcome,
+      projectionVersion: event.projectionVersion,
+      redactionReasonCodes: [...event.redactionReasonCodes],
+      redactionState: event.redactionState,
+      safeProjectedText: event.safeProjectedText,
+      safetyClass: event.safetyClass,
+      sourceAssistantId: event.sourceAssistantId,
+      sourceCallUpdatedAtAtCreation: new Date(event.sourceCallUpdatedAt),
+      sourceFolderId: event.sourceFolderId,
+      sourcePayloadHash: event.sourcePayloadHash,
+      sourceRevisionAtCreation: event.sourceRevision,
+      state: "ACTIVE",
+      structuredIdentifiers: { ...event.structuredIdentifiers },
+      toolName: event.toolName,
+      userId: event.userId
+    },
+    update: {
+      branchGeneration: event.branchGeneration,
+      invalidatedAt: null,
+      sourceAssistantId: event.sourceAssistantId,
+      sourceCallUpdatedAtAtCreation: new Date(event.sourceCallUpdatedAt),
+      sourceFolderId: event.sourceFolderId,
+      sourceRevisionAtCreation: event.sourceRevision,
+      state: "ACTIVE"
+    },
+    where: { id: event.id }
+  });
+  const expected = expectedToolEventSearchEntry(plan, event);
+  const existing = await tx.memorySearchEntry.findFirst({
+    orderBy: { id: "asc" },
+    where: {
+      indexGenerationId: activeIndex.id,
+      itemType: "TOOL_EVENT",
+      toolEventId: event.id,
+      userId: event.userId
+    }
+  });
+  if (existing) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        id: { not: existing.id },
+        indexGenerationId: activeIndex.id,
+        toolEventId: event.id,
+        userId: event.userId
+      }
+    });
+    const embeddingInputChanged = existing.safeContentHash !== expected.safeContentHash ||
+      existing.normalizedSearchText !== expected.normalizedSearchText ||
+      existing.languageCode !== expected.languageCode;
+    if (activeIndex.indexMode === "HYBRID" && embeddingInputChanged) {
+      const reset = await tx.$executeRaw(Prisma.sql`
+        UPDATE "MemorySearchEntry"
+        SET "embedding" = NULL,
+          "embeddingDimension" = NULL,
+          "embeddingState" = 'PENDING'::"MemoryEmbeddingState"
+        WHERE "userId" = ${event.userId}
+          AND "id" = ${existing.id}
+          AND "indexGenerationId" = ${activeIndex.id}
+          AND "itemType" = 'TOOL_EVENT'::"MemorySearchItemType"
+          AND "toolEventId" = ${event.id}
+      `);
+      if (reset !== 1) {
+        throw new MemoryCoordinatorError("memory_history_search_entry_stale", true);
+      }
+    }
+    return tx.memorySearchEntry.update({
+      data: {
+        languageCode: expected.languageCode,
+        normalizedSearchText: expected.normalizedSearchText,
+        safeContentHash: expected.safeContentHash,
+        safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+        sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+        suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot
+      },
+      select: { embeddingState: true, id: true },
+      where: { id: existing.id }
+    });
+  }
+  return tx.memorySearchEntry.create({
+    data: {
+      embeddingState: activeIndex.indexMode === "LEXICAL_ONLY"
+        ? "NOT_APPLICABLE"
+        : "PENDING",
+      indexGenerationId: activeIndex.id,
+      itemType: "TOOL_EVENT",
+      languageCode: expected.languageCode,
+      normalizedSearchText: expected.normalizedSearchText,
+      safeContentHash: expected.safeContentHash,
+      safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+      sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+      suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot,
+      toolEventId: event.id,
+      userId: event.userId
+    },
+    select: { embeddingState: true, id: true }
+  });
+}
+
+async function persistRoundSegmentSearchEntry(
+  tx: MemoryTransaction,
+  activeIndex: MemoryActiveIndex,
+  plan: MemoryHistoryIndexPlan,
+  segment: MemoryRecallRoundSegmentProjection
+): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>> {
+  const expected = expectedRoundSegmentSearchEntry(plan, segment);
+  const existing = await tx.memorySearchEntry.findFirst({
+    orderBy: { id: "asc" },
+    where: {
+      indexGenerationId: activeIndex.id,
+      itemType: "RECALL_ROUND_SEGMENT",
+      recallRoundSegmentId: segment.id,
+      userId: segment.userId
+    }
+  });
+  if (existing) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        id: { not: existing.id },
+        indexGenerationId: activeIndex.id,
+        recallRoundSegmentId: segment.id,
+        userId: segment.userId
+      }
+    });
+    const embeddingInputChanged =
+      existing.safeContentHash !== expected.safeContentHash ||
+      existing.normalizedSearchText !== expected.normalizedSearchText ||
+      existing.languageCode !== expected.languageCode;
+    if (activeIndex.indexMode === "HYBRID" && embeddingInputChanged) {
+      const reset = await tx.$executeRaw(Prisma.sql`
+        UPDATE "MemorySearchEntry"
+        SET "embedding" = NULL,
+          "embeddingDimension" = NULL,
+          "embeddingState" = 'PENDING'::"MemoryEmbeddingState"
+        WHERE "userId" = ${segment.userId}
+          AND "id" = ${existing.id}
+          AND "indexGenerationId" = ${activeIndex.id}
+          AND "itemType" = 'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+          AND "recallRoundSegmentId" = ${segment.id}
+      `);
+      if (reset !== 1) {
+        throw new MemoryCoordinatorError("memory_history_search_entry_stale", true);
+      }
+    }
+    return tx.memorySearchEntry.update({
+      data: {
+        languageCode: expected.languageCode,
+        normalizedSearchText: expected.normalizedSearchText,
+        recallRoundId: segment.roundId,
+        safeContentHash: expected.safeContentHash,
+        safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+        sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+        suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot
+      },
+      select: { embeddingState: true, id: true },
+      where: { id: existing.id }
+    });
+  }
+  return tx.memorySearchEntry.create({
+    data: {
+      embeddingState: activeIndex.indexMode === "LEXICAL_ONLY"
+        ? "NOT_APPLICABLE"
+        : "PENDING",
+      indexGenerationId: activeIndex.id,
+      itemType: "RECALL_ROUND_SEGMENT",
+      languageCode: expected.languageCode,
+      normalizedSearchText: expected.normalizedSearchText,
+      recallRoundId: segment.roundId,
+      recallRoundSegmentId: segment.id,
+      safeContentHash: expected.safeContentHash,
+      safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
+      sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
+      suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot,
+      userId: segment.userId
+    },
+    select: { embeddingState: true, id: true }
+  });
+}
+
+async function persistRoundSegments(
+  tx: MemoryTransaction,
+  activeIndex: MemoryActiveIndex | null,
+  plan: MemoryHistoryIndexPlan,
+  round: MemoryHistoryPreparedRound
+): Promise<readonly Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>[]> {
+  const segments = await persistMemoryRecallRoundSegmentProjection(
+    tx,
+    round,
+    new Date()
+  );
+  if (round.publicationState === "SUPPRESSED" || !activeIndex) return [];
+  if (!activeIndexAcceptsRoundSegments(activeIndex)) {
+    await tx.memorySearchEntry.deleteMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        itemType: "RECALL_ROUND_SEGMENT",
+        recallRoundId: round.id,
+        userId: round.userId
+      }
+    });
+    return [];
+  }
+  await tx.memorySearchEntry.deleteMany({
+    where: {
+      indexGenerationId: activeIndex.id,
+      itemType: "RECALL_ROUND",
+      recallRoundId: round.id,
+      userId: round.userId
+    }
+  });
+  const entries = [];
+  for (const segment of segments) {
+    entries.push(await persistRoundSegmentSearchEntry(tx, activeIndex, plan, segment));
+  }
+  return Object.freeze(entries);
+}
+
 async function persistRound(
   tx: MemoryTransaction,
   activeIndex: MemoryActiveIndex | null,
   plan: MemoryHistoryIndexPlan,
   round: MemoryHistoryPreparedRound
-): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }> | null> {
-  await tx.memoryRecallRound.upsert({
+): Promise<readonly Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>[]> {
+  const persistedRound = await tx.memoryRecallRound.upsert({
     create: {
       branchGeneration: round.branchGeneration,
       chatId: round.chatId,
@@ -1451,19 +2213,25 @@ async function persistRound(
       sourceProjectionVersion: round.sourceProjectionVersion,
       sourceRevisionAtCreation: round.sourceRevision,
       state: round.publicationState,
+      supportingRoundIds: [...round.supportingRoundIds],
       userId: round.userId
     },
     update: {
+      branchGeneration: round.branchGeneration,
+      contentHash: round.contentHash,
       contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
       contextualKeyState: round.contextualKeyState,
       contextualNarrativeText: round.contextualNarrativeText,
       contextualSearchHash: round.contextualSearchHash,
       contextualSearchText: round.contextualSearchText,
+      evidenceRootHash: round.evidenceRootHash,
+      groupKind: round.groupKind,
       invalidatedAt: null,
       languageCode: round.languageCode,
       occurredFrom: new Date(round.occurredFrom),
       occurredTo: new Date(round.occurredTo),
       parentChunkId: round.parentChunkId,
+      projectionVersion: round.projectionVersion,
       rawSafeText: round.rawSafeText,
       redactionReasonCodes: [...round.redactionReasonCodes],
       redactionState: round.redactionState,
@@ -1471,7 +2239,10 @@ async function persistRound(
       safetyClass: round.safetyClass,
       sourceAssistantId: round.sourceAssistantId,
       sourceFolderId: round.folderId,
-      state: round.publicationState
+      sourceProjectionVersion: round.sourceProjectionVersion,
+      sourceRevisionAtCreation: round.sourceRevision,
+      state: round.publicationState,
+      supportingRoundIds: [...round.supportingRoundIds]
     },
     where: { id: round.id }
   });
@@ -1495,13 +2266,22 @@ async function persistRound(
       userId: round.userId
     }))
   });
+  const segmentEntries = await persistRoundSegments(tx, activeIndex, plan, {
+    ...round,
+    // A stable evidence-root id may be reactivated after a later source
+    // revision. Its creation revision is audit-only but the child projection
+    // must retain the exact stored parent value enforced by the deferred
+    // source-map guard.
+    sourceRevision: persistedRound.sourceRevisionAtCreation
+  });
   if (round.publicationState === "SUPPRESSED") {
     await tx.memorySearchEntry.deleteMany({
       where: { recallRoundId: round.id, userId: round.userId }
     });
-    return null;
+    return [];
   }
-  if (!activeIndex) return null;
+  if (!activeIndex) return [];
+  if (activeIndexAcceptsRoundSegments(activeIndex)) return segmentEntries;
   if (!activeIndexAcceptsRounds(activeIndex)) {
     await tx.memorySearchEntry.deleteMany({
       where: {
@@ -1510,7 +2290,7 @@ async function persistRound(
         userId: round.userId
       }
     });
-    return null;
+    return [];
   }
   const existing = await tx.memorySearchEntry.findFirst({
     orderBy: { id: "asc" },
@@ -1551,7 +2331,7 @@ async function persistRound(
         throw new MemoryCoordinatorError("memory_history_search_entry_stale", true);
       }
     }
-    return tx.memorySearchEntry.update({
+    return [await tx.memorySearchEntry.update({
       data: {
         languageCode: expected.languageCode,
         normalizedSearchText: expected.normalizedSearchText,
@@ -1562,9 +2342,9 @@ async function persistRound(
       },
       select: { embeddingState: true, id: true },
       where: { id: existing.id }
-    });
+    })];
   }
-  return tx.memorySearchEntry.create({
+  return [await tx.memorySearchEntry.create({
     data: {
       embeddingState: activeIndex.indexMode === "LEXICAL_ONLY"
         ? "NOT_APPLICABLE"
@@ -1581,7 +2361,7 @@ async function persistRound(
       userId: round.userId
     },
     select: { embeddingState: true, id: true }
-  });
+  })];
 }
 
 async function enqueueChunkEmbedding(
@@ -1758,6 +2538,7 @@ async function applyPlan(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds: plan.rounds,
+        toolEvents: plan.toolEvents,
         work: plan.work
       }
     ) !== plan.resultHash
@@ -1802,6 +2583,17 @@ async function applyPlan(
               in: plan.rounds.flatMap((round) =>
                 round.publicationState === "ACTIVE" ? [round.id] : [])
             }
+          },
+          {
+            itemType: "RECALL_ROUND_SEGMENT",
+            recallRoundId: {
+              in: plan.rounds.flatMap((round) =>
+                round.publicationState === "ACTIVE" ? [round.id] : [])
+            }
+          },
+          {
+            itemType: "TOOL_EVENT",
+            toolEventId: { in: plan.toolEvents.map(({ id }) => id) }
           }
         ],
         userId: plan.source.userId
@@ -1835,6 +2627,14 @@ async function applyPlan(
       userId: claim.userId
     }
   });
+  const currentToolEvents = await tx.memoryToolEvent.findMany({
+    select: { id: true },
+    where: {
+      chatId: claim.chatId,
+      state: "ACTIVE",
+      userId: claim.userId
+    }
+  });
   const currentDigest = await tx.chatMemoryDigest.findFirst({
     select: { contentHash: true, id: true },
     where: { chatId: claim.chatId, state: "ACTIVE", userId: claim.userId }
@@ -1847,15 +2647,19 @@ async function applyPlan(
     round.state === "ACTIVE" ? [round.id] : []).sort();
   const nextVisibleRounds = plan.rounds.flatMap((round) =>
     round.publicationState === "ACTIVE" ? [round.id] : []).sort();
+  const currentVisibleToolEvents = currentToolEvents.map(({ id }) => id).sort();
+  const nextVisibleToolEvents = plan.toolEvents.map(({ id }) => id).sort();
   const visibilityChanged = currentVisible.join("\u0000") !== nextVisible.join("\u0000") ||
     currentVisibleRounds.join("\u0000") !== nextVisibleRounds.join("\u0000") ||
+    currentVisibleToolEvents.join("\u0000") !== nextVisibleToolEvents.join("\u0000") ||
     (currentDigest?.id ?? null) !== (plan.digest?.id ?? null) ||
     (currentDigest?.contentHash ?? null) !== (plan.digest?.contentHash ?? null);
   let activeIndex: MemoryActiveIndex | null = null;
   if (visibilityChanged) {
     await advanceMemoryMutation(tx, settings, "CHUNK_VISIBILITY_CHANGE");
   }
-  if (nextVisible.length > 0) {
+  if (nextVisible.length > 0 || nextVisibleRounds.length > 0 ||
+    nextVisibleToolEvents.length > 0) {
     activeIndex = await requireActiveMemoryIndex(tx, settings);
     if (!activeIndex) {
       throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
@@ -1863,11 +2667,35 @@ async function applyPlan(
   }
   const desiredIds = new Set(plan.chunks.map((chunk) => chunk.id));
   const desiredRoundIds = new Set(plan.rounds.map((round) => round.id));
+  const desiredToolEventIds = new Set(plan.toolEvents.map(({ id }) => id));
+  const staleToolEventIds = currentToolEvents.flatMap(({ id }) =>
+    desiredToolEventIds.has(id) ? [] : [id]);
+  if (staleToolEventIds.length > 0) {
+    await tx.memorySearchEntry.deleteMany({
+      where: { toolEventId: { in: staleToolEventIds }, userId: claim.userId }
+    });
+    await tx.memoryToolEvent.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        id: { in: staleToolEventIds },
+        state: "ACTIVE",
+        userId: claim.userId
+      }
+    });
+  }
   const staleRoundIds = currentRounds.flatMap((round) =>
     desiredRoundIds.has(round.id) ? [] : [round.id]);
   if (staleRoundIds.length > 0) {
     await tx.memorySearchEntry.deleteMany({
       where: { recallRoundId: { in: staleRoundIds }, userId: claim.userId }
+    });
+    await tx.memoryRecallRoundSegment.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        roundId: { in: staleRoundIds },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: claim.userId
+      }
     });
     await tx.memoryRecallRound.updateMany({
       data: { invalidatedAt: now, state: "INVALIDATED" },
@@ -1930,43 +2758,126 @@ async function applyPlan(
     ? []
     : await tx.memorySearchEntry.findMany({
         where: {
-          itemType: "RECALL_ROUND",
+          itemType: { in: ["RECALL_ROUND", "RECALL_ROUND_SEGMENT"] },
           recallRoundId: { in: plan.rounds.map((round) => round.id) },
           userId: claim.userId
         }
       });
+  const retainedRoundSegmentRows = plan.rounds.length === 0
+    ? []
+    : await tx.memoryRecallRoundSegment.findMany({
+        where: {
+          projectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+          roundId: { in: plan.rounds.map((round) => round.id) },
+          state: { in: ["ACTIVE", "SUPPRESSED"] },
+          userId: claim.userId
+        }
+      });
+  const retainedRoundSegmentIds = retainedRoundSegmentRows.map(({ id }) => id);
+  const retainedRoundSegmentJoins = retainedRoundSegmentIds.length === 0
+    ? []
+    : await tx.memoryRecallRoundSegmentMessage.findMany({
+        orderBy: [{ segmentId: "asc" }, { ordinal: "asc" }],
+        where: {
+          segmentId: { in: retainedRoundSegmentIds },
+          userId: claim.userId
+        }
+      });
+  const retainedJoinsBySegment = new Map<
+    string,
+    MemoryRecallRoundSegmentMessageJoin[]
+  >();
+  for (const join of retainedRoundSegmentJoins) {
+    const current = retainedJoinsBySegment.get(join.segmentId) ?? [];
+    current.push({
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as MemoryRecallRoundSegmentMessageJoin["role"],
+      safeTextHash: join.safeTextHash,
+      segmentEndOffset: join.segmentEndOffset,
+      segmentStartOffset: join.segmentStartOffset,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      sourceStartOffset: join.sourceStartOffset
+    });
+    retainedJoinsBySegment.set(join.segmentId, current);
+  }
+  const retainedRoundSegments: CurrentRoundSegmentRow[] =
+    retainedRoundSegmentRows.map((segment) => ({
+      ...segment,
+      messageJoins: retainedJoinsBySegment.get(segment.id) ?? []
+    }));
   const rebuiltRounds = new Set(plan.rebuiltRoundIds);
   for (const round of plan.rounds) {
-    const expected = expectedRoundSearchEntry(plan, round);
-    const retainedEntry = activeIndex && activeIndexAcceptsRounds(activeIndex)
-      ? retainedRoundEntries.find((entry) =>
-          entry.indexGenerationId === activeIndex.id &&
-          entry.recallRoundId === round.id)
-      : null;
-    const activeGenerationEntry = activeIndex
-      ? retainedRoundEntries.find((entry) =>
-          entry.indexGenerationId === activeIndex.id &&
-          entry.recallRoundId === round.id)
-      : null;
-    const shouldHaveEntry = round.publicationState === "ACTIVE" &&
-      Boolean(activeIndex && activeIndexAcceptsRounds(activeIndex));
-    const searchArtifactNeedsRepair = shouldHaveEntry
-      ? !retainedEntry ||
-        !embeddingStateMatchesIndex(activeIndex!.indexMode, retainedEntry.embeddingState) ||
-        retainedEntry.languageCode !== expected.languageCode ||
-        retainedEntry.safeContentHash !== expected.safeContentHash ||
-        retainedEntry.normalizedSearchText !== expected.normalizedSearchText ||
-        retainedEntry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
-        retainedEntry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
-        retainedEntry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot
-      : round.publicationState === "SUPPRESSED"
-        ? retainedRoundEntries.some((entry) => entry.recallRoundId === round.id)
-        : activeGenerationEntry !== undefined;
-    if (!rebuiltRounds.has(round.id) && !searchArtifactNeedsRepair) continue;
-    const entry = await persistRound(tx, activeIndex, plan, round);
-    if (entry) {
+    const expectedSegments = projectMemoryRecallRoundSegments(round);
+    const currentSegments = retainedRoundSegments.filter((segment) =>
+      segment.roundId === round.id);
+    const segmentArtifactNeedsRepair =
+      currentSegments.length !== expectedSegments.length ||
+      expectedSegments.some((segment) => {
+        const current = currentSegments.find((candidate) =>
+          candidate.id === segment.id);
+        return !current || !roundSegmentMatches(current, segment) ||
+          current.messageJoins.length !== segment.messageJoins.length ||
+          segment.messageJoins.some((expected, index) =>
+            JSON.stringify(expected) !== JSON.stringify(current.messageJoins[index]));
+      });
+    const allRoundEntries = retainedRoundEntries.filter((entry) =>
+      entry.recallRoundId === round.id);
+    const activeRoundEntries = activeIndex
+      ? allRoundEntries.filter((entry) =>
+          entry.indexGenerationId === activeIndex.id)
+      : [];
+    let searchArtifactNeedsRepair = false;
+    if (round.publicationState === "SUPPRESSED") {
+      searchArtifactNeedsRepair = allRoundEntries.length > 0;
+    } else if (activeIndex && activeIndexAcceptsRoundSegments(activeIndex)) {
+      const legacyEntries = activeRoundEntries.filter((entry) =>
+        entry.itemType === "RECALL_ROUND");
+      const segmentEntries = activeRoundEntries.filter((entry) =>
+        entry.itemType === "RECALL_ROUND_SEGMENT");
+      searchArtifactNeedsRepair = legacyEntries.length !== 0 ||
+        segmentEntries.length !== expectedSegments.length ||
+        expectedSegments.some((segment) => {
+          const entry = segmentEntries.find((candidate) =>
+            candidate.recallRoundSegmentId === segment.id);
+          return !entry ||
+            !searchEntryMatchesExpected(
+              activeIndex,
+              entry,
+              expectedRoundSegmentSearchEntry(plan, segment)
+            );
+        });
+    } else if (activeIndex && activeIndexAcceptsRounds(activeIndex)) {
+      const legacyEntries = activeRoundEntries.filter((entry) =>
+        entry.itemType === "RECALL_ROUND");
+      searchArtifactNeedsRepair = legacyEntries.length !== 1 ||
+        activeRoundEntries.some((entry) =>
+          entry.itemType === "RECALL_ROUND_SEGMENT") ||
+        !legacyEntries[0] ||
+        !searchEntryMatchesExpected(
+          activeIndex,
+          legacyEntries[0],
+          expectedRoundSearchEntry(plan, round)
+        );
+    } else {
+      searchArtifactNeedsRepair = activeRoundEntries.length > 0;
+    }
+    if (!rebuiltRounds.has(round.id) &&
+      !segmentArtifactNeedsRepair &&
+      !searchArtifactNeedsRepair) continue;
+    const entries = await persistRound(tx, activeIndex, plan, round);
+    for (const entry of entries) {
       await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
     }
+  }
+  if (plan.toolEvents.length > 0 && !activeIndex) {
+    throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
+  }
+  for (const event of plan.toolEvents) {
+    const entry = await persistToolEvent(tx, activeIndex!, plan, event);
+    await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
   }
   await persistDigest(tx, plan, now);
   await tx.chatMemoryCheckpoint.upsert({

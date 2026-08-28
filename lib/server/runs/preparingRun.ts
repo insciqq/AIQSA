@@ -85,6 +85,12 @@ export type MemoryPreparingItemInput = MemoryPreparingItemInputBase & (
       exactItemId: string;
       itemType: "RECALL_ROUND";
       recallRoundId: string;
+      recallRoundSegmentId?: string | null;
+    }>
+  | Readonly<{
+      exactItemId: string;
+      itemType: "TOOL_EVENT";
+      toolEventId: string;
     }>
 );
 
@@ -94,6 +100,8 @@ export type MemoryPreparingItemTarget = Readonly<{
   itemType: MemoryRetrievalItemType;
   recallChunkId: string | null;
   recallRoundId: string | null;
+  recallRoundSegmentId: string | null;
+  toolEventId: string | null;
 }>;
 
 export function memoryPreparingItemTarget(
@@ -108,7 +116,9 @@ export function memoryPreparingItemTarget(
           factVersionId: item.factVersionId,
           itemType: "FACT_VERSION",
           recallChunkId: null,
-          recallRoundId: null
+          recallRoundId: null,
+          recallRoundSegmentId: null,
+          toolEventId: null
         }
       : null;
   }
@@ -119,17 +129,38 @@ export function memoryPreparingItemTarget(
       factVersionId: null,
       itemType: "RECALL_CHUNK",
       recallChunkId: item.recallChunkId,
-      recallRoundId: null
+      recallRoundId: null,
+      recallRoundSegmentId: null,
+      toolEventId: null
     };
   }
   if (item.itemType === "RECALL_ROUND" && "recallRoundId" in item &&
     item.recallRoundId && item.exactItemId === item.recallRoundId) {
+    const segmentId = item.recallRoundSegmentId ?? null;
+    if (segmentId !== null && (
+      segmentId.length === 0 || segmentId.length > 256 ||
+      segmentId.includes("\u0000")
+    )) return null;
     return {
       exactItemId: item.exactItemId,
       factVersionId: null,
       itemType: "RECALL_ROUND",
       recallChunkId: null,
-      recallRoundId: item.recallRoundId
+      recallRoundId: item.recallRoundId,
+      recallRoundSegmentId: segmentId,
+      toolEventId: null
+    };
+  }
+  if (item.itemType === "TOOL_EVENT" && "toolEventId" in item &&
+    item.toolEventId && item.exactItemId === item.toolEventId) {
+    return {
+      exactItemId: item.exactItemId,
+      factVersionId: null,
+      itemType: "TOOL_EVENT",
+      recallChunkId: null,
+      recallRoundId: null,
+      recallRoundSegmentId: null,
+      toolEventId: item.toolEventId
     };
   }
   return null;
@@ -454,7 +485,9 @@ export function validateMemoryPreparingAttemptResult(
         item.projectionKind !== "CHAT_DIGEST_SAFE_TEXT" &&
         item.projectionKind !== "FACT_DISPLAY_TEXT" &&
         item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
-        item.projectionKind !== "RECALL_ROUND_RAW_SAFE_TEXT") ||
+        item.projectionKind !== "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" &&
+        item.projectionKind !== "RECALL_ROUND_RAW_SAFE_TEXT" &&
+        item.projectionKind !== "TOOL_EVENT_SAFE_TEXT") ||
       (item.supportingItemId !== undefined && item.supportingItemId !== null &&
         (item.supportingItemId.length === 0 || item.supportingItemId.length > 256)) ||
       (item.laneRanks !== undefined && (

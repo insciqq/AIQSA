@@ -74,6 +74,7 @@ export type RerankErrorCode =
   | "rerank_request_too_large"
   | "rerank_response_invalid"
   | "rerank_response_model_mismatch"
+  | "rerank_response_provider_mismatch"
   | "rerank_response_too_large";
 
 export class RerankAdapterError extends Error {
@@ -186,6 +187,17 @@ function responseModelMatches(
     providerNativeParts[3] === expectedSlug;
 }
 
+function responseProviderMatches(
+  actual: string | null,
+  model: ProviderModelConfiguration
+): boolean {
+  if (!actual || !model.openRouterRouting) return false;
+  if (model.openRouterRouting.mode === "automatic") return true;
+  const normalizedActual = actual.toLocaleLowerCase("und");
+  return model.openRouterRouting.providers.some((provider) =>
+    provider.toLocaleLowerCase("und") === normalizedActual);
+}
+
 function responseBody(
   value: unknown,
   documents: readonly RerankDocument[],
@@ -195,25 +207,32 @@ function responseBody(
   const body = isRecord(value) ? value : null;
   const responseModel = boundedIdentifier(body?.model);
   const responseProvider = boundedIdentifier(body?.provider);
+  const modelMatches = responseModel !== null &&
+    responseModelMatches(responseModel, model.upstreamModelId, responseProvider);
+  const providerMatches = responseProviderMatches(responseProvider, model);
   if (!body || !responseModel ||
-    !responseModelMatches(responseModel, model.upstreamModelId, responseProvider) ||
+    !modelMatches || !providerMatches ||
     !Array.isArray(body.results) ||
-    body.results.length > MAX_RERANK_DOCUMENTS * 4) {
-    if (isRecord(value) && typeof value.model === "string" &&
-      !responseModelMatches(value.model, model.upstreamModelId, responseProvider)) {
+    body.results.length !== documents.length) {
+    if (isRecord(value) && typeof value.model === "string" && !modelMatches) {
       throw new RerankAdapterError("rerank_response_model_mismatch");
+    }
+    if (isRecord(value) && !providerMatches) {
+      throw new RerankAdapterError("rerank_response_provider_mismatch");
     }
     throw new RerankAdapterError("rerank_response_invalid");
   }
   const scores: RerankScore[] = [];
   const seen = new Set<number>();
   for (const entry of body.results) {
-    if (!isRecord(entry) || !Number.isSafeInteger(entry.index)) continue;
+    if (!isRecord(entry) || !Number.isSafeInteger(entry.index)) {
+      throw new RerankAdapterError("rerank_response_invalid");
+    }
     const index = Number(entry.index);
     const score = entry.relevance_score;
     if (index < 0 || index >= documents.length || seen.has(index) ||
       typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
-      continue;
+      throw new RerankAdapterError("rerank_response_invalid");
     }
     seen.add(index);
     scores.push({
@@ -222,7 +241,9 @@ function responseBody(
       relevanceScore: score
     });
   }
-  if (scores.length < 1) throw new RerankAdapterError("rerank_response_invalid");
+  if (seen.size !== documents.length) {
+    throw new RerankAdapterError("rerank_response_invalid");
+  }
   return {
     model: responseModel,
     provider: responseProvider,

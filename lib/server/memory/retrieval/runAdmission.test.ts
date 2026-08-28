@@ -34,7 +34,10 @@ import {
   type MemoryRunControlCache,
   type MemoryRunRetrievalExpectedSnapshot
 } from "./runAdmission";
-import type { MemoryRunUtilityService } from "./runUtilities";
+import type {
+  MemoryRunRerankResult,
+  MemoryRunUtilityService
+} from "./runUtilities";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } from "./vector";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
@@ -181,6 +184,35 @@ function expandedHistory(id: string): MemoryExpandedCandidate {
   };
 }
 
+function rankedToolEvent(id: string): MemoryRankedCandidate {
+  const history = rankedHistory(id, "NORMAL");
+  return {
+    ...history,
+    itemType: "TOOL_EVENT",
+    metadata: {
+      ...history.metadata,
+      modality: "EVENT",
+      occurredAt: now,
+      occurredFrom: now,
+      occurredTo: now,
+      sourceAuthority: "TOOL_OBSERVATION"
+    }
+  };
+}
+
+function expandedToolEvent(id: string): MemoryExpandedCandidate {
+  return {
+    itemId: id,
+    itemType: "TOOL_EVENT",
+    occurredFrom: now,
+    occurredTo: now,
+    projectionKind: "TOOL_EVENT_SAFE_TEXT",
+    safeText: "Tool file_create completed successfully; filename=report.csv.",
+    sourceChatId: "chat-source",
+    supportingItemId: null
+  };
+}
+
 function core(id = "core-version"): MemoryCoreCandidate {
   const candidate: MemoryRankedCandidate = {
     entryId: null,
@@ -273,8 +305,8 @@ function repository(options: Readonly<{
   ) => ranked.map((candidate): MemoryExpandedCandidate => {
     const coreExpansion = coreByKey.get(`${candidate.itemType}:${candidate.itemId}`);
     if (coreExpansion) return coreExpansion;
-    return candidate.itemType === "RECALL_CHUNK"
-      ? {
+    if (candidate.itemType === "RECALL_CHUNK") {
+      return {
           itemId: candidate.itemId,
           itemType: "RECALL_CHUNK",
           occurredFrom: now,
@@ -283,8 +315,23 @@ function repository(options: Readonly<{
           safeText: `relevant text ${candidate.itemId}`,
           sourceChatId: candidate.metadata.sourceChatId,
           supportingItemId: null
-        }
-      : {
+        };
+    }
+    if (candidate.itemType === "RECALL_ROUND") {
+      return {
+        itemId: candidate.itemId,
+        itemType: "RECALL_ROUND",
+        occurredFrom: now,
+        occurredTo: new Date(now.getTime() + 60_000),
+        projectionKind: candidate.matchedSegmentId
+          ? "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT"
+          : "RECALL_ROUND_RAW_SAFE_TEXT",
+        safeText: `relevant round text ${candidate.matchedSegmentId ?? candidate.itemId}`,
+        sourceChatId: candidate.metadata.sourceChatId,
+        supportingItemId: candidate.metadata.parentChunkId ?? "parent-chunk"
+      };
+    }
+    return {
           itemId: candidate.itemId,
           itemType: "FACT_VERSION",
           occurredFrom: null,
@@ -534,6 +581,14 @@ describe("Personal Memory v1 run admission", () => {
     ).retrieve(input);
 
     expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      baselinePlan: expect.objectContaining({
+        filters: expect.objectContaining({
+          sourceKinds: ["FACT", "EVENT", "HISTORY"]
+        }),
+        semanticQueryVariants: [
+          { kind: "ORIGINAL", text: "What happened yesterday?" }
+        ]
+      }),
       plan: expect.objectContaining({
         temporalQuery: expect.objectContaining({
           confidence: "HIGH",
@@ -548,6 +603,17 @@ describe("Personal Memory v1 run admission", () => {
     }));
     const budget = result.budgetSnapshot as Record<string, unknown>;
     expect(budget.componentMetrics).toMatchObject({
+      baselineSourceKinds: ["FACT", "EVENT", "HISTORY"],
+      candidateCountsBySourceKind: { EVENT: 0, FACT: 2, HISTORY: 0 },
+      plannerExcludedSourceKinds: [],
+      plannerPreferredSourceKinds: ["FACT", "EVENT", "HISTORY"],
+      rerankCandidateCount: 2,
+      rerankCoverageRatio: 0,
+      rerankFullFallbackUsed: true,
+      searchHitCount: 2,
+      searchHitExpandableCount: 2,
+      searchHitWithoutExpandableEvidence: 0,
+      sourceFamilyHardExclusionReasons: [],
       temporalFilteredCandidateCount: 1,
       temporalParserConfidence: "HIGH",
       temporalParserState: "MATCHED",
@@ -566,6 +632,60 @@ describe("Personal Memory v1 run admission", () => {
     expect(metricsJson).not.toContain("What happened yesterday");
     expect(metricsJson).not.toContain("America/Los_Angeles");
     expect(metricsJson).not.toContain("user-1");
+  });
+
+  it("reports exact segment expansion and evidence-root collapse without exposing child ids", async () => {
+    const roundId = "round-with-overlap";
+    const evidenceRootHash = "e".repeat(64);
+    const base = laneCandidate(roundId);
+    const segmentCandidate = (
+      segmentId: string,
+      position: "PREFIX" | "SUFFIX",
+      lane: MemoryRetrievalLane
+    ): MemoryLaneCandidate => ({
+      ...base,
+      entryId: `entry-${segmentId}`,
+      itemType: "RECALL_ROUND",
+      lane,
+      matchedSegmentId: segmentId,
+      matchedSegmentPosition: position,
+      metadata: {
+        ...base.metadata,
+        evidenceRootHash,
+        parentChunkId: "parent-round-chunk"
+      }
+    });
+    const local = repository({
+      candidates: [
+        segmentCandidate("private-prefix-segment", "PREFIX", "HISTORY_RECALL_FTS_SIMPLE"),
+        segmentCandidate("private-suffix-segment", "SUFFIX", "HISTORY_RECALL_VECTOR")
+      ]
+    });
+    const result = await createMemoryRunRetrievalService(
+      local.value,
+      retrievalOptions(["c0"])
+    ).retrieve(runInput("What happened during the rehearsal?"));
+    const budget = result.budgetSnapshot as Record<string, unknown>;
+    const componentMetrics = budget.componentMetrics as Record<string, number>;
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        exactItemId: roundId,
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+        recallRoundId: roundId,
+        recallRoundSegmentId: expect.stringMatching(/^private-(?:prefix|suffix)-segment$/u)
+      })
+    ]);
+    expect(componentMetrics).toMatchObject({
+      rawRoundSegmentExpansions: 1,
+      readerPackSegmentCount: 1,
+      segmentsCollapsedByEvidenceRoot: 1
+    });
+    expect((componentMetrics.matchedSegmentPrefixHits ?? 0) +
+      (componentMetrics.matchedSegmentSuffixHits ?? 0)).toBe(1);
+    expect(JSON.stringify(componentMetrics)).not.toContain("private-prefix-segment");
+    expect(JSON.stringify(componentMetrics)).not.toContain("private-suffix-segment");
   });
 
   it("times out optional query embedding without hiding lexical evidence", async () => {
@@ -1213,7 +1333,58 @@ describe("Personal Memory v1 run admission", () => {
       bindingId: "binding-partial-wide-provenance",
       decisions: [],
       status: "READY"
-    })[0]?.selectionReason).toBe("rerank_partial_rrf");
+    })[0]?.selectionReason).toBe("rerank_fallback_rrf");
+  });
+
+  it("revalidates exact rerank coverage before applying any semantic score", () => {
+    const candidates = memoryRelevanceCandidates(
+      [rankedHistory("atomic-a", "NORMAL"), rankedHistory("atomic-b", "NORMAL")],
+      [expandedHistory("atomic-a"), expandedHistory("atomic-b")]
+    );
+    const decision = (handle: string, relevanceScore = 0.9) => ({
+      applicable: true,
+      current: true,
+      handle,
+      reasonCode: "DIRECT_RELEVANCE" as const,
+      relevanceScore
+    });
+    const invalidResults: MemoryRunRerankResult[] = [{
+      bindingId: "missing",
+      decisions: [decision("c0")],
+      status: "READY"
+    }, {
+      bindingId: "duplicate",
+      decisions: [decision("c0"), decision("c0", 0.8)],
+      status: "READY"
+    }, {
+      bindingId: "unknown",
+      decisions: [decision("c0"), decision("c9")],
+      status: "READY"
+    }, {
+      bindingId: "invalid-score",
+      decisions: [decision("c0"), decision("c1", Number.NaN)],
+      status: "READY"
+    }, {
+      bindingId: "invalid-score-only-metadata",
+      decisions: [decision("c0"), {
+        applicable: true,
+        current: true,
+        handle: "c1",
+        reasonCode: "SCORE_ONLY",
+        relevanceScore: 0.8
+      }],
+      status: "READY"
+    }];
+
+    for (const result of invalidResults) {
+      const applied = applyMemoryRelevance(candidates, result);
+      expect(applied.map(({ itemId }) => itemId)).toEqual(["atomic-a", "atomic-b"]);
+      expect(applied.map(({ finalScore }) => finalScore)).toEqual(
+        candidates.map(({ candidate }) => candidate.finalScore)
+      );
+      expect(applied.every(({ selectionReason }) =>
+        selectionReason.endsWith("rerank_fallback_rrf"))).toBe(true);
+    }
   });
 
   it("keeps fact relevance slots while diversifying history sources", () => {
@@ -1244,6 +1415,24 @@ describe("Personal Memory v1 run admission", () => {
     expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual([
       "history-a-1", "fact-between", "history-b", "history-a-2"
     ]);
+  });
+
+  it("preserves typed tool observation authority through rerank admission", () => {
+    const candidate = rankedToolEvent("tool-file-create");
+    const [relevance] = memoryRelevanceCandidates(
+      [candidate],
+      [expandedToolEvent(candidate.itemId)]
+    );
+
+    expect(relevance).toMatchObject({
+      authorityLevel: "SUPPORTING",
+      current: true,
+      historical: false,
+      occurredFrom: now.toISOString(),
+      occurredTo: now.toISOString(),
+      sourceKind: "TOOL_OBSERVATION",
+      speakerScope: "tool"
+    });
   });
 
   it("preserves byte-identical projections from distinct evidence roots", () => {
@@ -1846,12 +2035,88 @@ describe("Personal Memory v1 run admission", () => {
       })
     }));
     expect(options.utilities.embedQuery).toHaveBeenCalledWith(expect.objectContaining({
-      query: "Helsinki project codename"
+      query: "What did I call it?"
     }));
     expect(options.utilities.rerank).toHaveBeenCalledWith(expect.objectContaining({
       query: "What did I call it?"
     }));
     expect(result.querySnapshot).toBe("What did I call it?");
+  });
+
+  it("keeps a history opportunity when valid control prefers only facts", async () => {
+    const local = repository({ candidates: [laneCandidate("history-floor-gold")] });
+    const options = intentOptions({
+      memoryUseful: true,
+      pastChatsUseful: false,
+      queryText: "current project codename",
+      retrievalMode: "TARGETED_CURRENT",
+      temporalIntent: "CURRENT"
+    });
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("What codename did we use in that earlier chat?"));
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      baselinePlan: expect.objectContaining({
+        filters: expect.objectContaining({
+          sourceKinds: ["FACT", "EVENT", "HISTORY"]
+        })
+      }),
+      plan: expect.objectContaining({
+        filters: expect.objectContaining({ sourceKinds: ["FACT", "EVENT"] })
+      })
+    }));
+    expect(local.value.expand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          sourceKinds: ["FACT", "EVENT", "HISTORY"]
+        })
+      }),
+      expect.arrayContaining([expect.objectContaining({ itemId: "history-floor-gold" })])
+    );
+    expect(result).toMatchObject({
+      items: [{ exactItemId: "history-floor-gold", itemType: "RECALL_CHUNK" }],
+      outcome: "USED"
+    });
+  });
+
+  it("keeps a current fact opportunity when valid control prefers only history", async () => {
+    const local = repository({ candidates: [factLaneCandidate("fact-floor-gold", 1)] });
+    const options = intentOptions({
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryText: "earlier project discussion",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("What is my saved codename and where did we discuss it?"));
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      baselinePlan: expect.objectContaining({
+        filters: expect.objectContaining({
+          sourceKinds: ["FACT", "EVENT", "HISTORY"]
+        })
+      }),
+      plan: expect.objectContaining({
+        filters: expect.objectContaining({ sourceKinds: ["HISTORY"] })
+      })
+    }));
+    expect(local.value.expand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          sourceKinds: ["FACT", "EVENT", "HISTORY"]
+        })
+      }),
+      expect.arrayContaining([expect.objectContaining({ itemId: "fact-floor-gold" })])
+    );
+    expect(result).toMatchObject({
+      items: [{ factVersionId: "fact-floor-gold", itemType: "FACT_VERSION" }],
+      outcome: "USED"
+    });
   });
 
   it("preserves distinct multi-part evidence boundaries in the local query bundle", async () => {
@@ -2399,7 +2664,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v6"
+        version: "memory-retrieval-component-metrics-v7"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
@@ -2449,7 +2714,7 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("packs the relevance order while retaining lower-scored eligible evidence", async () => {
+  it("discards a partial relevance result and preserves the complete RRF order", async () => {
     const local = repository({ candidates: [laneCandidate("a"), laneCandidate("b")] });
     const options = retrievalOptions(["c1"]);
     vi.mocked(options.utilities.rerank).mockResolvedValue({
@@ -2466,13 +2731,18 @@ describe("Personal Memory v1 run admission", () => {
     const result = await createMemoryRunRetrievalService(local.value, options)
       .retrieve(runInput("cross language query"));
     expect(result.items).toEqual([
-      expect.objectContaining({ recallChunkId: "b" }),
-      expect.objectContaining({ recallChunkId: "a" })
+      expect.objectContaining({ recallChunkId: "a" }),
+      expect.objectContaining({ recallChunkId: "b" })
     ]);
-    expect(result.items?.[0]?.selectionReason).toContain("direct_relevance");
-    expect(result.items?.[1]?.selectionReason).toContain("rerank_partial_rrf");
+    expect(result.items?.every(({ selectionReason }) =>
+      selectionReason.includes("rerank_fallback_rrf"))).toBe(true);
+    expect(result.outcome).toBe("DEGRADED");
     expect(result.budgetSnapshot).toMatchObject({
-      componentMetrics: { rerankerFallbackUsed: true }
+      componentMetrics: {
+        rerankFullFallbackUsed: true,
+        rerankerFallbackUsed: true
+      },
+      degradationCode: "memory_relevance_unavailable"
     });
   });
 

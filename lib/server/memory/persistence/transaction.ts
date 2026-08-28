@@ -16,6 +16,8 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 
 // Provider work can complete in a burst for one user. Every authoritative
@@ -67,6 +69,7 @@ export type MemoryActiveIndex = Readonly<{
   id: string;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
   roundProjectionVersion: string | null;
+  roundSegmentProjectionVersion: string | null;
 }>;
 
 export type MemoryTransactionOptions = Readonly<{
@@ -234,7 +237,8 @@ export async function requireActiveMemoryIndex(
       contextualKeyPolicyVersion: true,
       id: true,
       indexMode: true,
-      roundProjectionVersion: true
+      roundProjectionVersion: true,
+      roundSegmentProjectionVersion: true
     },
     where: {
       id: settings.activeIndexGenerationId,
@@ -279,6 +283,7 @@ export async function ensureActiveLexicalGeneration(
       readyAt: now,
       retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
       roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      roundSegmentProjectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
       state: "ACTIVE",
       targetMemoryRevision,
       userId: settings.userId
@@ -287,7 +292,8 @@ export async function ensureActiveLexicalGeneration(
       contextualKeyPolicyVersion: true,
       id: true,
       indexMode: true,
-      roundProjectionVersion: true
+      roundProjectionVersion: true,
+      roundSegmentProjectionVersion: true
     }
   });
   await tx.userMemorySettings.update({

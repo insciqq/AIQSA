@@ -1547,6 +1547,20 @@ describe("local Memory retrieval on PostgreSQL", () => {
         suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
         userId
       });
+      const secondRelevantCedarChunkId = await createChunk({
+        chatId: histories[0]!.chatId,
+        chunkOrdinal: 3,
+        generationId,
+        messageId: await prisma.chat.findUniqueOrThrow({
+          select: { activeLeafMessageId: true },
+          where: { id: histories[0]!.chatId }
+        }).then(({ activeLeafMessageId }) => activeLeafMessageId!),
+        occurredAt: new Date("2026-07-10T08:58:00.000Z"),
+        safeText: "User:\nThe pastry checklist has the second query-aware detail.",
+        sourceRevisionAtCreation: 1,
+        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
+        userId
+      });
       const rawOnlySource = await createChatWithLeaf({
         createdAt: new Date("2026-07-13T09:00:00.000Z"),
         title: "Oak deployment without digest",
@@ -1640,6 +1654,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       expect(targeted.laneResults.map(({ lane }) => lane)).toEqual([
         "HISTORY_RECALL_EXACT",
         "HISTORY_DIGEST_FTS_SIMPLE",
+        "HISTORY_INTRA_CHAT_RAW",
         "HISTORY_RECALL_FTS_SIMPLE",
         "HISTORY_RECALL_FTS_ENGLISH",
         "HISTORY_RECALL_TRIGRAM"
@@ -1682,12 +1697,21 @@ describe("local Memory retrieval on PostgreSQL", () => {
         plan: balancedVariantPlan,
         userId
       });
+      expect(balancedVariantResult.digestEvidence).toMatchObject({
+        navigationCandidateCount: 2,
+        secondStageQueryCount: 1,
+        selectedChatCount: 2
+      });
       expect(balancedVariantResult.laneResults.find(({ lane }) =>
-        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates.slice(0, 2)
+        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates
         .map(({ metadata }) => metadata.sourceChatId)).toEqual([
-        histories[0]!.chatId,
-        histories[2]!.chatId
+        histories[0]!.chatId
       ]);
+      expect(balancedVariantResult.laneResults.find(({ lane }) =>
+        lane === "HISTORY_INTRA_CHAT_RAW")?.candidates
+        .map(({ metadata }) => metadata.sourceChatId)).toContain(
+        histories[2]!.chatId
+      );
 
       const sourceLocalPlan = planMemoryRetrieval({
         aggregationRequested: true,
@@ -1705,12 +1729,20 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId
       });
       expect(sourceLocal.laneResults.find(({ lane }) =>
-        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates).toEqual([
-        expect.objectContaining({
-          itemId: relevantCedarChunkId,
-          metadata: expect.objectContaining({ sourceChatId: histories[0]!.chatId })
-        })
-      ]);
+        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates).toEqual([]);
+      expect(sourceLocal.laneResults.find(({ lane }) =>
+        lane === "HISTORY_INTRA_CHAT_RAW")?.candidates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ itemId: relevantCedarChunkId }),
+          expect.objectContaining({ itemId: secondRelevantCedarChunkId })
+        ])
+      );
+      expect(sourceLocal.digestEvidence).toMatchObject({
+        digestOnlyChatCount: 0,
+        rawAnchorCount: 2,
+        secondStageQueryCount: 1,
+        selectedChatCount: 1
+      });
 
       const digestOnlyPlan = planMemoryRetrieval({
         currentUserText: "sequoiaonly",
@@ -1733,6 +1765,8 @@ describe("local Memory retrieval on PostgreSQL", () => {
         candidates.map(({ itemId }) => itemId))).not.toContain(extraCedarChunkId);
       expect(digestOnly.laneResults.flatMap(({ candidates }) =>
         candidates.map(({ itemId }) => itemId))).not.toContain(relevantCedarChunkId);
+      expect(digestOnly.laneResults.flatMap(({ candidates }) =>
+        candidates.map(({ itemId }) => itemId))).not.toContain(secondRelevantCedarChunkId);
       const digestOnlyRanked = fuseMemoryRetrievalCandidates(
         digestOnlyPlan,
         digestOnly.laneResults,
@@ -1749,9 +1783,9 @@ describe("local Memory retrieval on PostgreSQL", () => {
       );
       expect(digestOnlyExpanded).toEqual([expect.objectContaining({
         itemId: histories[0]!.chunkId,
-        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-        safeText: histories[0]!.safeChunkText,
-        supportingItemId: null
+        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+        safeText: histories[0]!.digestText,
+        supportingItemId: histories[0]!.digestId
       })]);
 
       const aggregationPlan = planMemoryRetrieval({
@@ -1772,6 +1806,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       expect(aggregation.laneResults.map(({ lane }) => lane)).toEqual([
         "HISTORY_RECALL_EXACT",
         "HISTORY_DIGEST_FTS_SIMPLE",
+        "HISTORY_INTRA_CHAT_RAW",
         "HISTORY_RECALL_FTS_SIMPLE",
         "HISTORY_RECALL_FTS_ENGLISH",
         "HISTORY_RECALL_TRIGRAM"

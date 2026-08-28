@@ -10,6 +10,7 @@ import {
   type EmbeddingResult
 } from "../../providers/embeddings";
 import {
+  MAX_RERANK_DOCUMENT_CHARACTERS,
   MAX_RERANK_DOCUMENTS,
   MAX_RERANK_REQUEST_BYTES,
   RerankAdapterError,
@@ -58,7 +59,9 @@ import {
   type MemoryAggregationUtilityProviderInput,
   type MemoryRerankUtilityProviderInput,
   type MemoryRunUtilityProvider,
-  type MemoryRunUtilityProviderInput
+  type MemoryRunUtilityProviderInput,
+  type MemoryUtilitySourceKind,
+  type MemoryUtilitySpeakerScope
 } from "./runUtilityRuntime";
 import { sanitizeMemoryUtilityText } from "./querySafety";
 import {
@@ -72,16 +75,16 @@ import {
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v6";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v23";
+  "memory-multilingual-relevance-v26";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
-  "memory-evidence-aggregation-v6";
+  "memory-evidence-aggregation-v7";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 2;
 // Remote embedding engines commonly reserve a 30-second request window. The
 // enclosing optional-role signal remains authoritative and clamps this window
 // to the installation's remaining admission budget, so this cannot extend the
 // user-visible Memory deadline.
 export const MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS = 30_000;
-export const MEMORY_RERANK_MAX_ATTEMPTS = 3;
+export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
 const MEMORY_GENERATIVE_RERANK_MAX_ATTEMPTS = 2;
 export const MEMORY_RERANK_AGGREGATION_BATCH_SIZE = 20;
 export const MEMORY_RERANK_TARGETED_MAX_CANDIDATES =
@@ -116,10 +119,11 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v20",
-  promptVersion: "memory-relevance-input-v16",
+  policyVersion: "memory-relevance-policy-v23",
+  promptVersion: "memory-relevance-input-v18",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
+    contextualHintMaxCharacters: 1_000,
     aggregationBatchSize: MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
     aggregationBatchMaxPromptCharacters: MEMORY_RERANK_MAX_PROMPT_CHARACTERS,
     maxAggregationBatches: MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
@@ -133,7 +137,8 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     maxTargetedTotalCharacters: MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS,
     maxInteractiveRetryAfterMs: 2_000,
     retryBackoff: "snapshot_hash_jittered_exponential_1000ms_cap_2000ms",
-    partialPerCandidateDecisions: true,
+    atomicFullCoverage: true,
+    partialPerCandidateDecisions: false,
     profileInventoryPostcondition: false,
     lifecycleTemporalModes: true,
     openRouterReasoning: "disabled_for_interactive_deadline",
@@ -143,19 +148,23 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     serverAuthorityOnly: true,
     sorterNotGate: true,
     transientReadOnlyRetry:
-      "up_to_two_fresh_bindings_same_snapshot_after_transport_uncertainty_or_retryable_http",
-    dedicatedRerankerAdapter: "openrouter-rerank-v1",
+      "one_fresh_binding_same_snapshot_after_failed_or_uncertain_batch",
+    dedicatedRerankerAdapter: "openrouter-rerank-v2",
+    dedicatedDocumentMaxCharacters: MAX_RERANK_DOCUMENT_CHARACTERS,
+    dedicatedSupportExcerptAllocation: "equal-share-of-remaining-document-budget",
+    contextualEvidenceDependencies: "cited-raw-rounds-v1",
+    toolObservationContract: "source=tool_observation,speaker=tool,authority=supporting",
     dedicatedWireEnvelopeReserveBytes: MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES,
     generativeCompatibilityPath: "structured-output-v19",
-    version: 23
+    version: 26
   }),
-  schemaVersion: "memory-relevance-result-v6"
+  schemaVersion: "memory-relevance-result-v7"
 });
 
 export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_AGGREGATION_PIPELINE_VERSION,
-  policyVersion: "memory-evidence-aggregation-policy-v6",
-  promptVersion: "memory-evidence-aggregation-prompt-v5",
+  policyVersion: "memory-evidence-aggregation-policy-v7",
+  promptVersion: "memory-evidence-aggregation-prompt-v6",
   retrievalConfigFingerprint: memoryExecutionSha256({
     completeEvidenceView: "bounded_map_reduce_all_reader_items",
     exactOccurrenceGrounding: true,
@@ -173,9 +182,10 @@ export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freez
     resolutionSet: MEMORY_AGGREGATION_RESOLUTIONS,
     roleSet: MEMORY_AGGREGATION_ROLES,
     serverComputedMemberCount: "sum_grounded_quantities",
+    toolObservationContract: "separate_lower_authority_source_kind",
     transientReadOnlyRetry:
       "one_fresh_binding_same_snapshot_after_transport_uncertainty",
-    version: 6
+    version: 7
   }),
   schemaVersion: "memory-evidence-aggregation-result-v2"
 });
@@ -197,14 +207,29 @@ export type MemoryRunQueryEmbeddingResult =
       vector: readonly number[];
     }>;
 
-export type MemoryRunRerankResult =
+export type MemoryRerankDiagnostics = Readonly<{
+  batchCount: number;
+  candidateCount: number;
+  coverageRatio: number;
+  decisionCount: number;
+  duplicateDecisionCount: number;
+  failedBatchCount: number;
+  fullFallbackUsed: boolean;
+  invalidResponseCount: number;
+  missingDecisionCount: number;
+  providerModelMismatchCount: number;
+  readyBatchCount: number;
+  retryCount: number;
+}>;
+
+export type MemoryRunRerankResult = (
   | MemoryRunUtilityUnavailable
   | Readonly<{
       bindingId: string;
       decisions: readonly MemoryRunRerankDecision[];
       externalCallCount?: number;
       status: "READY";
-    }>;
+    }>) & Readonly<{ diagnostics?: MemoryRerankDiagnostics }>;
 
 export type MemoryRunAggregationResult =
   | MemoryRunUtilityUnavailable
@@ -264,7 +289,7 @@ export type MemoryRunUtilityService = Readonly<{
       handle: string;
       occurredFrom: string | null;
       occurredTo: string | null;
-      sourceKind: "EVENT" | "FACT" | "HISTORY";
+      sourceKind: MemoryUtilitySourceKind;
       text: string;
     }>[];
     query: string;
@@ -286,8 +311,16 @@ export type MemoryRunUtilityService = Readonly<{
       occurredFrom: string | null;
       occurredTo: string | null;
       sensitivityClass: "NORMAL";
-      speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "user";
-      sourceKind: "EVENT" | "FACT" | "HISTORY";
+      speakerScope: MemoryUtilitySpeakerScope;
+      sourceKind: MemoryUtilitySourceKind;
+      retrievalHint?: string | null;
+      supportingEvidence?: readonly Readonly<{
+        itemId: string;
+        occurredFrom: string;
+        occurredTo: string;
+        sourceChatId: string;
+        text: string;
+      }>[];
       temporalReason: "any" | "as_of" | "between" | "current" | "historical";
       text: string;
     }>[];
@@ -339,6 +372,7 @@ const retryableTextUtilityReasons = new Set([
 ]);
 
 const retryableDedicatedRerankReasons = new Set([
+  "memory_run_utility_output_invalid",
   "memory_reranker_outcome_unknown",
   "memory_reranker_transient_http_failure"
 ]);
@@ -466,11 +500,21 @@ async function mapWithConcurrency<T, R>(
 
 function rerankProviderInput(
   input: Parameters<MemoryRunUtilityService["rerank"]>[0],
-  candidates: MemoryRerankUtilityProviderInput["candidates"]
+  candidates: readonly RerankCandidate[]
 ): MemoryRerankUtilityProviderInput {
   return {
     aggregationRequested: input.aggregationRequested === true,
-    candidates,
+    candidates: candidates.map((candidate) => {
+      const {
+        retrievalHint: _retrievalHint,
+        supportingEvidence: _supportingEvidence,
+        ...providerCandidate
+      } = candidate;
+      return {
+        ...providerCandidate,
+        text: memoryDedicatedRerankDocument(candidate)
+      };
+    }),
     profileRequested: input.profileRequested,
     query: input.query,
     retrievalMode: input.retrievalMode,
@@ -564,9 +608,9 @@ function aggregationReductionFirstOrdinal(mapBatchCount: number): number {
 
 function partitionRerankCandidates(
   input: Parameters<MemoryRunUtilityService["rerank"]>[0]
-): readonly MemoryRerankUtilityProviderInput["candidates"][] | null {
-  const batches: MemoryRerankUtilityProviderInput["candidates"][] = [];
-  let current: MemoryRerankUtilityProviderInput["candidates"] = [];
+): readonly (readonly RerankCandidate[])[] | null {
+  const batches: RerankCandidate[][] = [];
+  let current: RerankCandidate[] = [];
   for (const candidate of input.candidates) {
     const proposed = [...current, candidate];
     const request = rerankProviderInput(input, proposed);
@@ -594,6 +638,47 @@ type RerankInput = Parameters<MemoryRunUtilityService["rerank"]>[0];
 type RerankCandidate = RerankInput["candidates"][number];
 type QueryEmbeddingInput = Parameters<MemoryRunUtilityService["embedQuery"]>[0];
 
+function safeRerankCandidate(candidate: RerankCandidate): RerankCandidate | null {
+  const raw = sanitizeMemoryUtilityText(candidate.text);
+  if (!raw.eligible || !raw.safeText) return null;
+  const rawOnly = {
+    ...candidate,
+    retrievalHint: null,
+    supportingEvidence: Object.freeze([]),
+    text: raw.safeText
+  };
+  if (candidate.retrievalHint === null || candidate.retrievalHint === undefined) {
+    return rawOnly;
+  }
+  const hint = sanitizeMemoryUtilityText(candidate.retrievalHint);
+  const supports = candidate.supportingEvidence ?? [];
+  if (!hint.eligible || !hint.safeText || hint.safeText.length > 1_000 ||
+    supports.length > 2) return rawOnly;
+  const safeSupports = supports.flatMap((support) => {
+    const safe = sanitizeMemoryUtilityText(support.text);
+    const validIdentity = (value: string) => value.length > 0 &&
+      value.length <= 256 && !/[\u0000-\u0020\u007f]/u.test(value);
+    const occurredFrom = Date.parse(support.occurredFrom);
+    const occurredTo = Date.parse(support.occurredTo);
+    return safe.eligible && safe.safeText && safe.safeText.length <= 4_000 &&
+      validIdentity(support.itemId) && validIdentity(support.sourceChatId) &&
+      Number.isFinite(occurredFrom) && Number.isFinite(occurredTo) &&
+      occurredTo >= occurredFrom
+      ? [{ ...support, text: safe.safeText }]
+      : [];
+  });
+  if (safeSupports.length !== supports.length ||
+    new Set(safeSupports.map(({ itemId }) => itemId)).size !== safeSupports.length) {
+    return rawOnly;
+  }
+  return {
+    ...candidate,
+    retrievalHint: hint.safeText,
+    supportingEvidence: Object.freeze(safeSupports),
+    text: raw.safeText
+  };
+}
+
 export function memoryDedicatedRerankDocument(candidate: RerankCandidate): string {
   const safe = sanitizeMemoryUtilityText(candidate.text);
   if (!safe.eligible || !safe.safeText) {
@@ -601,13 +686,71 @@ export function memoryDedicatedRerankDocument(candidate: RerankCandidate): strin
   }
   const occurredFrom = candidate.occurredFrom ?? "unknown";
   const occurredTo = candidate.occurredTo ?? "open";
-  return [
+  const retrievalHint = candidate.retrievalHint === null ||
+    candidate.retrievalHint === undefined
+    ? null
+    : sanitizeMemoryUtilityText(candidate.retrievalHint);
+  if (retrievalHint && (!retrievalHint.eligible || !retrievalHint.safeText ||
+    retrievalHint.safeText.length > 1_000)) {
+    throw new Error("memory_reranker_document_secret_only");
+  }
+  const supportingEvidence = retrievalHint
+    ? (candidate.supportingEvidence ?? []).map((support, index) => {
+        const supportText = sanitizeMemoryUtilityText(support.text);
+        if (!supportText.eligible || !supportText.safeText) {
+          throw new Error("memory_reranker_document_secret_only");
+        }
+        return {
+          header: `[support_${index + 1} raw_excerpt=true ` +
+            `date_from=${support.occurredFrom} date_to=${support.occurredTo}]`,
+          text: supportText.safeText
+        };
+      })
+    : [];
+  if (supportingEvidence.length > 2) {
+    throw new Error("memory_reranker_document_invalid");
+  }
+  const render = (supportTexts: readonly string[]) => [
     `[date_from=${occurredFrom} date_to=${occurredTo}]`,
     `[source=${candidate.sourceKind.toLocaleLowerCase("und")} ` +
       `speaker=${candidate.speakerScope} state=${candidate.current ? "current" : "historical"} ` +
       `lifecycle=${candidate.lifecycleState?.toLocaleLowerCase("und") ?? "not_applicable"}]`,
-    safe.safeText
+    ...(retrievalHint?.safeText
+      ? ["[retrieval_hint derived=true authority=none]", retrievalHint.safeText]
+      : []),
+    "[authoritative_evidence]",
+    safe.safeText,
+    "[supporting_authoritative_evidence]",
+    supportingEvidence.length > 0
+      ? supportingEvidence.map((support, index) =>
+          `${support.header}\n${supportTexts[index] ?? ""}`).join("\n")
+      : "none"
   ].join("\n");
+  if (supportingEvidence.length === 0) {
+    const document = render([]);
+    if (document.length > MAX_RERANK_DOCUMENT_CHARACTERS) {
+      throw new Error("memory_reranker_document_invalid");
+    }
+    return document;
+  }
+  const emptySupportDocument = render(supportingEvidence.map(() => ""));
+  let remaining = MAX_RERANK_DOCUMENT_CHARACTERS - emptySupportDocument.length;
+  if (remaining < supportingEvidence.length) {
+    throw new Error("memory_reranker_document_invalid");
+  }
+  const supportTexts = supportingEvidence.map((support, index) => {
+    const allocation = Math.floor(remaining / (supportingEvidence.length - index));
+    let text = support.text.slice(0, allocation);
+    const last = text.charCodeAt(text.length - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) text = text.slice(0, -1);
+    remaining -= text.length;
+    return text;
+  });
+  const document = render(supportTexts);
+  if (document.length > MAX_RERANK_DOCUMENT_CHARACTERS) {
+    throw new Error("memory_reranker_document_invalid");
+  }
+  return document;
 }
 
 function dedicatedEnvelopeBytes(
@@ -823,7 +966,8 @@ function decodeRerank(
     call?.name !== MEMORY_RERANK_TOOL_NAME ||
     !isRecord(call.arguments) ||
     !exactKeys(call.arguments, ["decisions"]) ||
-    !Array.isArray(call.arguments.decisions)
+    !Array.isArray(call.arguments.decisions) ||
+    call.arguments.decisions.length !== expectedHandles.length
   ) return null;
   const expected = new Set(expectedHandles);
   const reasonCodes = new Set([
@@ -842,7 +986,7 @@ function decodeRerank(
       typeof value.relevance_score !== "number" ||
       !Number.isFinite(value.relevance_score) || value.relevance_score < 0 ||
       value.relevance_score > 1 || typeof value.reason_code !== "string" ||
-      !reasonCodes.has(value.reason_code)) continue;
+      !reasonCodes.has(value.reason_code)) return null;
     seen.add(value.handle);
     decisions.push({
       applicable: value.applicable,
@@ -852,7 +996,43 @@ function decodeRerank(
       relevanceScore: value.relevance_score
     });
   }
-  return decisions.length > 0 ? decisions : null;
+  return seen.size === expectedHandles.length ? decisions : null;
+}
+
+function decodeDedicatedRerank(
+  result: RerankResult,
+  candidates: readonly RerankCandidate[]
+): readonly MemoryRunRerankDecision[] | null {
+  if (!Array.isArray(result.scores) || result.scores.length !== candidates.length) {
+    return null;
+  }
+  const seenIndices = new Set<number>();
+  const seenHandles = new Set<string>();
+  const decisions: MemoryRunRerankDecision[] = [];
+  for (const score of result.scores) {
+    if (!Number.isSafeInteger(score.index) || score.index < 0 ||
+      score.index >= candidates.length || seenIndices.has(score.index) ||
+      typeof score.handle !== "string" || seenHandles.has(score.handle) ||
+      candidates[score.index]?.handle !== score.handle ||
+      typeof score.relevanceScore !== "number" ||
+      !Number.isFinite(score.relevanceScore) ||
+      score.relevanceScore < 0 || score.relevanceScore > 1) {
+      return null;
+    }
+    seenIndices.add(score.index);
+    seenHandles.add(score.handle);
+    decisions.push({
+      applicable: null,
+      current: null,
+      handle: score.handle,
+      reasonCode: "SCORE_ONLY",
+      relevanceScore: score.relevanceScore
+    });
+  }
+  return seenIndices.size === candidates.length &&
+    seenHandles.size === candidates.length
+    ? Object.freeze(decisions)
+    : null;
 }
 
 function decodeAggregation(
@@ -1363,6 +1543,12 @@ async function runDedicatedRerankBatch(
       error instanceof RerankAdapterError &&
       error.code === "rerank_provider_http_error" &&
       isProviderRetryableHttpStatus(error.httpStatus);
+    const invalidOutput = error instanceof RerankAdapterError &&
+      error.code === "rerank_response_invalid";
+    const deploymentMismatch = error instanceof RerankAdapterError && (
+      error.code === "rerank_response_model_mismatch" ||
+      error.code === "rerank_response_provider_mismatch"
+    );
     const uncertain = input.signal.aborted || !(error instanceof RerankAdapterError) ||
       uncertainRerankErrors.has(error.code);
     await settleQuietly(deps, input.userId, started.bindingId, {
@@ -1381,19 +1567,39 @@ async function runDedicatedRerankBatch(
         ? "memory_reranker_outcome_unknown"
         : transientHttp
           ? "memory_reranker_transient_http_failure"
-          : "memory_reranker_failed", started.bindingId),
+          : invalidOutput
+            ? "memory_run_utility_output_invalid"
+            : deploymentMismatch
+              ? "memory_run_utility_binding_changed"
+              : "memory_reranker_failed", started.bindingId),
       externalCallCount: 1,
       ...(transientHttp ? { retryAfterMs: error.retryAfterMs } : {}),
       snapshotHash
     };
   }
-  const output = result.scores.map((score): MemoryRunRerankDecision => ({
-    applicable: null,
-    current: null,
-    handle: score.handle,
-    reasonCode: "SCORE_ONLY",
-    relevanceScore: score.relevanceScore
-  }));
+  const output = decodeDedicatedRerank(result, candidates);
+  if (!output) {
+    try {
+      await deps.execution.lifecycle.settle(input.userId, started.bindingId, {
+        acceptedOutputHash: null,
+        errorCode: "memory_run_utility_output_invalid",
+        providerResponseId: boundedResponseId(result.requestId),
+        state: "FAILED",
+        usage: rerankerUsage(result)
+      });
+    } catch {
+      return {
+        ...unavailable("memory_run_utility_settle_failed", started.bindingId),
+        externalCallCount: 1,
+        snapshotHash
+      };
+    }
+    return {
+      ...unavailable("memory_run_utility_output_invalid", started.bindingId),
+      externalCallCount: 1,
+      snapshotHash
+    };
+  }
   const outputHash = memoryExecutionSha256({ inputHash, output, version: 1 });
   try {
     await deps.execution.lifecycle.settle(input.userId, started.bindingId, {
@@ -1649,7 +1855,8 @@ export function createMemoryRunUtilityService(
           item.text.length < 1 ||
           item.text.length > 4_000 ||
           item.text.includes("\u0000") ||
-          !["EVENT", "FACT", "HISTORY"].includes(item.sourceKind) ||
+          !["EVENT", "FACT", "HISTORY", "TOOL_OBSERVATION"]
+            .includes(item.sourceKind) ||
           [item.occurredFrom, item.occurredTo].some((value) =>
             value !== null && (
               value.length < 1 || value.length > 64 ||
@@ -1906,10 +2113,7 @@ export function createMemoryRunUtilityService(
 
     async rerank(input) {
       const safeQuery = sanitizeMemoryUtilityText(input.query);
-      const safeCandidates = input.candidates.map((candidate) => {
-        const safe = sanitizeMemoryUtilityText(candidate.text);
-        return safe.eligible && safe.safeText ? { ...candidate, text: safe.safeText } : null;
-      });
+      const safeCandidates = input.candidates.map(safeRerankCandidate);
       if (!safeQuery.eligible || !safeQuery.safeText || safeCandidates.some((item) => !item)) {
         return unavailable("memory_utility_input_blocked");
       }
@@ -1945,8 +2149,9 @@ export function createMemoryRunUtilityService(
           candidate.text.length > 4_000 ||
           candidate.text.includes("\u0000") ||
           candidate.current === candidate.historical ||
-          !["EVENT", "FACT", "HISTORY"].includes(candidate.sourceKind) ||
-          !["assistant", "memory_record", "mixed_conversation", "user"]
+          !["EVENT", "FACT", "HISTORY", "TOOL_OBSERVATION"]
+            .includes(candidate.sourceKind) ||
+          !["assistant", "memory_record", "mixed_conversation", "tool", "user"]
             .includes(candidate.speakerScope) ||
           !["any", "as_of", "between", "current", "historical"]
             .includes(candidate.temporalReason) ||
@@ -1954,7 +2159,8 @@ export function createMemoryRunUtilityService(
             value !== null && (value.length < 1 || value.length > 64 ||
               !Number.isFinite(Date.parse(value))))
         ) || safeInput.profileRequested && safeInput.candidates.some((candidate) =>
-          !candidate.current || candidate.sourceKind === "HISTORY")
+          !candidate.current || candidate.sourceKind === "HISTORY" ||
+          candidate.sourceKind === "TOOL_OBSERVATION")
       ) return unavailable("memory_utility_input_blocked");
       let rerankPath: MemoryRerankPath;
       try {
@@ -1991,7 +2197,7 @@ export function createMemoryRunUtilityService(
               speakerScope: candidate.speakerScope,
               sourceKind: candidate.sourceKind,
               temporalReason: candidate.temporalReason,
-              textHash: memorySha256(candidate.text)
+              documentHash: memorySha256(memoryDedicatedRerankDocument(candidate))
             })),
             domain: "aiqsa.memory.relevance-input",
             profileRequested: safeInput.profileRequested,
@@ -1999,7 +2205,7 @@ export function createMemoryRunUtilityService(
             rerankPath,
             retrievalMode: safeInput.retrievalMode,
             temporalIntent: safeInput.temporalIntent,
-            version: 12
+            version: 14
           });
           const firstOrdinal = rerankBatchFirstOrdinal(batchIndex);
           if (rerankPath === "DEDICATED") {
@@ -2012,6 +2218,10 @@ export function createMemoryRunUtilityService(
               null
             );
             let externalCallCount = result.externalCallCount ?? 0;
+            let invalidResponseCount = result.status === "UNAVAILABLE" &&
+              result.reason === "memory_run_utility_output_invalid" ? 1 : 0;
+            let providerModelMismatchCount = result.status === "UNAVAILABLE" &&
+              result.reason === "memory_run_utility_binding_changed" ? 1 : 0;
             const expectedSnapshotHash = result.snapshotHash;
             for (let retryIndex = 1;
               retryIndex < MEMORY_RERANK_MAX_ATTEMPTS &&
@@ -2035,9 +2245,18 @@ export function createMemoryRunUtilityService(
                 expectedSnapshotHash
               );
               externalCallCount += retry.externalCallCount ?? 0;
+              invalidResponseCount += retry.status === "UNAVAILABLE" &&
+                retry.reason === "memory_run_utility_output_invalid" ? 1 : 0;
+              providerModelMismatchCount += retry.status === "UNAVAILABLE" &&
+                retry.reason === "memory_run_utility_binding_changed" ? 1 : 0;
               result = retry;
             }
-            return { ...result, externalCallCount };
+            return {
+              ...result,
+              externalCallCount,
+              invalidResponseCount,
+              providerModelMismatchCount
+            };
           }
           let result = await runTextUtility(
             deps,
@@ -2051,6 +2270,10 @@ export function createMemoryRunUtilityService(
             (calls) => decodeRerank(calls, batchHandles)
           );
           let externalCallCount = result.externalCallCount ?? 0;
+          let invalidResponseCount = result.status === "UNAVAILABLE" &&
+            result.reason === "memory_run_utility_output_invalid" ? 1 : 0;
+          let providerModelMismatchCount = result.status === "UNAVAILABLE" &&
+            result.reason === "memory_run_utility_binding_changed" ? 1 : 0;
           // The reranker is side-effect-free. One structurally invalid or
           // transport-uncertain result may therefore receive one fresh durable
           // binding against the exact same execution snapshot. Cancellation,
@@ -2073,33 +2296,97 @@ export function createMemoryRunUtilityService(
               (calls) => decodeRerank(calls, batchHandles)
             );
             externalCallCount += retry.externalCallCount ?? 0;
+            invalidResponseCount += retry.status === "UNAVAILABLE" &&
+              retry.reason === "memory_run_utility_output_invalid" ? 1 : 0;
+            providerModelMismatchCount += retry.status === "UNAVAILABLE" &&
+              retry.reason === "memory_run_utility_binding_changed" ? 1 : 0;
             result = retry;
           }
-          return { ...result, externalCallCount };
+          return {
+            ...result,
+            externalCallCount,
+            invalidResponseCount,
+            providerModelMismatchCount
+          };
         }
       );
       const externalCallCount = results.reduce((total, result) =>
         total + result.externalCallCount, 0);
       const ready = results.filter((result) => result.status === "READY");
+      const decisions = ready.flatMap((result) => result.output);
+      const decisionHandles = decisions.map(({ handle }) => handle);
+      const expectedHandles = new Set(handles);
+      const uniqueDecisionHandles = new Set(decisionHandles.filter((handle) =>
+        expectedHandles.has(handle)));
+      const duplicateDecisionCount = decisionHandles.length -
+        new Set(decisionHandles).size;
+      const allBatchesReady = ready.length === candidateBatches.length &&
+        results.length === candidateBatches.length;
+      const batchCoverageExact = results.every((result, index) => {
+        if (result.status !== "READY") return false;
+        const expectedBatchHandles = new Set(candidateBatches[index]!.map(({ handle }) =>
+          handle));
+        const actualBatchHandles = result.output.map(({ handle }) => handle);
+        return result.output.length === candidateBatches[index]!.length &&
+          new Set(actualBatchHandles).size === actualBatchHandles.length &&
+          actualBatchHandles.every((handle) => expectedBatchHandles.has(handle));
+      });
+      const globalCoverageExact = decisions.length === handles.length &&
+        duplicateDecisionCount === 0 &&
+        uniqueDecisionHandles.size === handles.length;
+      const snapshotHashes = new Set(ready.map(({ snapshotHash }) => snapshotHash));
+      const snapshotConsistent = ready.length > 0 && snapshotHashes.size === 1;
+      const atomicReady = allBatchesReady && batchCoverageExact &&
+        globalCoverageExact && snapshotConsistent;
+      const invalidResponseCount = results.reduce((count, result, index) =>
+        count + result.invalidResponseCount +
+        (result.status === "READY" &&
+          result.output.length !== candidateBatches[index]!.length ? 1 : 0), 0);
+      const diagnostics = Object.freeze({
+        batchCount: candidateBatches.length,
+        candidateCount: safeInput.candidates.length,
+        coverageRatio: safeInput.candidates.length === 0
+          ? 0
+          : uniqueDecisionHandles.size / safeInput.candidates.length,
+        decisionCount: decisions.length,
+        duplicateDecisionCount,
+        failedBatchCount: candidateBatches.length - ready.length,
+        fullFallbackUsed: !atomicReady,
+        invalidResponseCount: Math.max(
+          invalidResponseCount,
+          allBatchesReady && (!batchCoverageExact || !globalCoverageExact) ? 1 : 0
+        ),
+        missingDecisionCount: Math.max(
+          0,
+          safeInput.candidates.length - uniqueDecisionHandles.size
+        ),
+        providerModelMismatchCount: results.reduce((count, result) =>
+          count + result.providerModelMismatchCount, 0) +
+          (ready.length > 1 && !snapshotConsistent ? 1 : 0),
+        readyBatchCount: ready.length,
+        retryCount: Math.max(0, externalCallCount - candidateBatches.length)
+      } satisfies MemoryRerankDiagnostics);
       const bindingId = ready[0]?.bindingId;
-      if (bindingId && ready.length > 0) {
+      if (bindingId && atomicReady) {
         return {
           bindingId,
-          decisions: ready.flatMap((result) => result.output),
+          decisions,
+          diagnostics,
           ...(externalCallCount > 1 ? { externalCallCount } : {}),
           status: "READY"
         };
       }
       const failed = results.find((result) => result.status === "UNAVAILABLE");
-      return failed?.status === "UNAVAILABLE"
-        ? {
-            ...unavailable(failed.reason, failed.bindingId),
-            ...(externalCallCount > 1 ? { externalCallCount } : {})
-          }
-        : {
-            ...unavailable("memory_run_utility_unavailable"),
-            ...(externalCallCount > 1 ? { externalCallCount } : {})
-          };
+      const reason = failed?.status === "UNAVAILABLE"
+        ? failed.reason
+        : !snapshotConsistent
+          ? "memory_run_utility_binding_changed"
+          : "memory_run_utility_output_invalid";
+      return {
+        ...unavailable(reason, failed?.bindingId ?? bindingId),
+        diagnostics,
+        ...(externalCallCount > 1 ? { externalCallCount } : {})
+      };
     }
   });
 }

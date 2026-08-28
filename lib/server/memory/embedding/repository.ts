@@ -32,6 +32,9 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import {
   memoryItemEmbeddingGenerationMatchesPin,
   type MemoryItemEmbeddingPin,
@@ -50,9 +53,12 @@ type BaseTargetRow = Readonly<{
   factVersionId: string | null;
   generationId: string;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
-  itemType: "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND";
+  itemType: "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND" |
+    "RECALL_ROUND_SEGMENT" | "TOOL_EVENT";
   recallChunkId: string | null;
   recallRoundId: string | null;
+  recallRoundSegmentId: string | null;
+  toolEventId: string | null;
   referenceChatHistory: boolean;
   retrievalPipelineVersion: string;
   safeContentHash: string;
@@ -132,6 +138,8 @@ async function loadBaseTarget(
       entry."factVersionId",
       entry."recallChunkId",
       entry."recallRoundId",
+      entry."recallRoundSegmentId",
+      entry."toolEventId",
       entry."normalizedSearchText",
       entry."safeContentHash",
       entry."embeddingState"::text AS "embeddingState",
@@ -166,7 +174,9 @@ async function loadBaseTarget(
       AND entry."itemType" IN (
         'FACT_VERSION'::"MemorySearchItemType",
         'RECALL_CHUNK'::"MemorySearchItemType",
-        'RECALL_ROUND'::"MemorySearchItemType"
+        'RECALL_ROUND'::"MemorySearchItemType",
+        'RECALL_ROUND_SEGMENT'::"MemorySearchItemType",
+        'TOOL_EVENT'::"MemorySearchItemType"
       )
       AND (
         (
@@ -197,7 +207,8 @@ async function loadFactTarget(
   store: TargetQueryStore,
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
-  if (!row.factVersionId || row.recallChunkId || row.recallRoundId) return null;
+  if (!row.factVersionId || row.recallChunkId || row.recallRoundId ||
+    row.recallRoundSegmentId || row.toolEventId) return null;
   const rows = await store.$queryRaw<FactTargetRow[]>(Prisma.sql`
     SELECT
       fact."id" AS "factId",
@@ -275,7 +286,7 @@ async function loadRecallChunkTarget(
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
   if (!row.referenceChatHistory || !row.recallChunkId || row.factVersionId ||
-    row.recallRoundId) {
+    row.recallRoundId || row.recallRoundSegmentId || row.toolEventId) {
     return null;
   }
   const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
@@ -357,7 +368,7 @@ async function loadRecallRoundTarget(
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
   if (!row.referenceChatHistory || !row.recallRoundId || row.factVersionId ||
-    row.recallChunkId) return null;
+    row.recallChunkId || row.recallRoundSegmentId || row.toolEventId) return null;
   const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
     SELECT
       round."id" AS "itemId",
@@ -371,6 +382,7 @@ async function loadRecallRoundTarget(
         ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
       AND generation."contextualKeyPolicyVersion" =
         ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND generation."roundSegmentProjectionVersion" IS NULL
     INNER JOIN "MemoryRecallChunk" AS parent_chunk
       ON parent_chunk."userId" = round."userId"
       AND parent_chunk."id" = round."parentChunkId"
@@ -448,6 +460,205 @@ async function loadRecallRoundTarget(
   };
 }
 
+async function loadRecallRoundSegmentTarget(
+  store: TargetQueryStore,
+  row: BaseTargetRow
+): Promise<MemoryItemEmbeddingTarget | null> {
+  if (!row.referenceChatHistory || !row.recallRoundId ||
+    !row.recallRoundSegmentId || row.factVersionId || row.recallChunkId ||
+    row.toolEventId) return null;
+  const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
+    SELECT
+      segment."id" AS "itemId",
+      segment."contextualSearchText" AS "safeText",
+      segment."contextualSearchHash" AS "sourceContentHash"
+    FROM "MemoryRecallRoundSegment" AS segment
+    INNER JOIN "MemoryIndexGeneration" AS generation
+      ON generation."userId" = segment."userId"
+      AND generation."id" = ${row.generationId}
+      AND generation."roundProjectionVersion" =
+        ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+      AND generation."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND generation."roundSegmentProjectionVersion" =
+        ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+    INNER JOIN "MemoryRecallRound" AS round
+      ON round."userId" = segment."userId" AND round."id" = segment."roundId"
+    INNER JOIN "MemoryRecallChunk" AS parent_chunk
+      ON parent_chunk."userId" = round."userId"
+      AND parent_chunk."id" = round."parentChunkId"
+    INNER JOIN "Chat" AS chat
+      ON chat."userId" = round."userId"
+      AND chat."id" = round."chatId"
+      AND chat."projectId" IS NULL
+      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = round."userId"
+      AND checkpoint."chatId" = round."chatId"
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+    WHERE segment."userId" = ${row.userId}
+      AND segment."id" = ${row.recallRoundSegmentId}
+      AND segment."roundId" = ${row.recallRoundId}
+      AND segment."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND segment."projectionVersion" =
+        ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+      AND segment."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND segment."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND segment."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND segment."evidenceRootHash" = round."evidenceRootHash"
+      AND round."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND round."projectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+      AND round."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND round."sourceProjectionVersion" =
+        ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND round."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND round."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND parent_chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND parent_chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND parent_chunk."sourceProjectionVersion" =
+        ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND parent_chunk."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass",
+        'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND parent_chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND ${memoryHistoryRoundSourceAuthorityPredicate({
+        chat: "chat",
+        checkpoint: "checkpoint"
+      })}
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        LEFT JOIN "MemoryRecallRoundSegmentMessage" AS source_message
+          ON source_message."userId" = segment."userId"
+          AND source_message."segmentId" = segment."id"
+          AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+          AND suppression."sourceChatId" = source_message."chatId"
+          AND suppression."sourceMessageId" = source_message."messageId"
+        WHERE suppression."userId" = segment."userId"
+          AND (suppression."expiresAt" IS NULL OR
+            suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+            source_message."messageId" IS NOT NULL
+            AND (suppression."sourceBranchGeneration" IS NULL OR
+              suppression."sourceBranchGeneration" = round."branchGeneration")
+          ))
+      )
+    LIMIT 1
+  `);
+  const current = rows[0];
+  if (!current) return null;
+  const normalizedSearchText = normalizeMemorySearchText(current.safeText);
+  if (normalizedSearchText !== row.normalizedSearchText ||
+    current.sourceContentHash !== row.safeContentHash) return null;
+  return {
+    embeddingState: row.embeddingState,
+    entryId: row.entryId,
+    generation: generationFrom(row),
+    itemId: current.itemId,
+    itemType: "RECALL_ROUND_SEGMENT",
+    normalizedSearchText,
+    recallRoundId: row.recallRoundId,
+    recallRoundSegmentId: current.itemId,
+    safeContentHash: current.sourceContentHash,
+    selectedEmbeddingProviderModelId: row.selectedEmbeddingProviderModelId,
+    userId: row.userId
+  };
+}
+
+async function loadToolEventTarget(
+  store: TargetQueryStore,
+  row: BaseTargetRow
+): Promise<MemoryItemEmbeddingTarget | null> {
+  if (!row.referenceChatHistory || !row.toolEventId || row.factVersionId ||
+    row.recallChunkId || row.recallRoundId || row.recallRoundSegmentId) return null;
+  const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
+    SELECT tool_event."id" AS "itemId",
+      tool_event."safeProjectedText" AS "safeText",
+      tool_event."contentHash" AS "sourceContentHash"
+    FROM "MemoryToolEvent" AS tool_event
+    INNER JOIN "Chat" AS chat
+      ON chat."userId" = tool_event."userId" AND chat."id" = tool_event."chatId"
+      AND chat."projectId" IS NULL
+      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND chat."permanentDeletionAt" IS NULL
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = tool_event."userId"
+      AND checkpoint."chatId" = tool_event."chatId"
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND checkpoint."branchGeneration" = tool_event."branchGeneration"
+      AND checkpoint."sourceRevision" = tool_event."sourceRevisionAtCreation"
+    INNER JOIN "ChatMemoryCheckpointMessage" AS checkpoint_message
+      ON checkpoint_message."userId" = tool_event."userId"
+      AND checkpoint_message."chatId" = tool_event."chatId"
+      AND checkpoint_message."messageId" = tool_event."assistantMessageId"
+    INNER JOIN "Message" AS source_message
+      ON source_message."chatId" = tool_event."chatId"
+      AND source_message."id" = tool_event."assistantMessageId"
+      AND source_message."updatedAt" = checkpoint_message."sourceMessageUpdatedAt"
+    INNER JOIN "ModelRun" AS source_run
+      ON source_run."userId" = tool_event."userId"
+      AND source_run."id" = tool_event."modelRunId"
+      AND source_run."chatId" = tool_event."chatId"
+      AND source_run."assistantMessageId" = tool_event."assistantMessageId"
+      AND source_run."status" = 'complete'::"ModelRunStatus"
+    INNER JOIN "ModelRunToolCall" AS source_call
+      ON source_call."modelRunId" = tool_event."modelRunId"
+      AND source_call."id" = tool_event."modelRunToolCallId"
+      AND source_call."state" IN (
+        'complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState"
+      )
+      AND source_call."completedAt" = tool_event."occurredAt"
+      AND source_call."updatedAt" = tool_event."sourceCallUpdatedAtAtCreation"
+    WHERE tool_event."userId" = ${row.userId}
+      AND tool_event."id" = ${row.toolEventId}
+      AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND tool_event."projectionVersion" = ${MEMORY_TOOL_EVENT_PROJECTION_VERSION}
+      AND tool_event."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND tool_event."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        WHERE suppression."userId" = tool_event."userId"
+          AND (suppression."expiresAt" IS NULL
+            OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+            suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+            AND suppression."sourceChatId" = tool_event."chatId"
+            AND suppression."sourceMessageId" = tool_event."assistantMessageId"
+          ))
+      )
+    LIMIT 1
+  `);
+  const current = rows[0];
+  if (!current) return null;
+  const normalizedSearchText = normalizeMemorySearchText(current.safeText);
+  if (normalizedSearchText !== row.normalizedSearchText ||
+    current.sourceContentHash !== row.safeContentHash) return null;
+  return {
+    embeddingState: row.embeddingState,
+    entryId: row.entryId,
+    generation: generationFrom(row),
+    itemId: current.itemId,
+    itemType: "TOOL_EVENT",
+    normalizedSearchText,
+    safeContentHash: current.sourceContentHash,
+    selectedEmbeddingProviderModelId: row.selectedEmbeddingProviderModelId,
+    toolEventId: current.itemId,
+    userId: row.userId
+  };
+}
+
 async function loadCurrentTarget(
   store: TargetQueryStore,
   userId: string,
@@ -459,6 +670,8 @@ async function loadCurrentTarget(
     case "FACT_VERSION": return loadFactTarget(store, row);
     case "RECALL_CHUNK": return loadRecallChunkTarget(store, row);
     case "RECALL_ROUND": return loadRecallRoundTarget(store, row);
+    case "RECALL_ROUND_SEGMENT": return loadRecallRoundSegmentTarget(store, row);
+    case "TOOL_EVENT": return loadToolEventTarget(store, row);
   }
 }
 
@@ -513,6 +726,17 @@ function exactTargetPredicate(target: MemoryItemEmbeddingTarget): Prisma.Sql {
       return Prisma.sql`
         "itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
         AND "recallRoundId" = ${target.recallRoundId}
+      `;
+    case "RECALL_ROUND_SEGMENT":
+      return Prisma.sql`
+        "itemType" = 'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+        AND "recallRoundId" = ${target.recallRoundId}
+        AND "recallRoundSegmentId" = ${target.recallRoundSegmentId}
+      `;
+    case "TOOL_EVENT":
+      return Prisma.sql`
+        "itemType" = 'TOOL_EVENT'::"MemorySearchItemType"
+        AND "toolEventId" = ${target.toolEventId}
       `;
   }
 }

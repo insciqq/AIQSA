@@ -178,6 +178,29 @@ describe("Memory safe source snapshot", () => {
     ]);
   });
 
+  it("keeps a recall turn above 100k when each source message is independently bounded", () => {
+    const user = userMessage({
+      id: "user-long-turn",
+      parentMessageId: null,
+      text: `prefixcedar ${"user context. ".repeat(3_200)}`
+    });
+    const assistant = assistantMessage({
+      id: "assistant-long-turn",
+      parentMessageId: user.id,
+      text: `${"assistant context. ".repeat(3_200)} suffixmaple`
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+    const group = snapshot.recallChunkProjection.turnGroups[0];
+
+    expect(user.content).not.toBeNull();
+    expect(group?.messages[0]?.safeText.length).toBeLessThanOrEqual(100_000);
+    expect(group?.messages[1]?.safeText.length).toBeLessThanOrEqual(100_000);
+    expect(group?.messages.reduce((sum, message) => sum + message.safeText.length, 0))
+      .toBeGreaterThan(100_000);
+    expect(group).toMatchObject({ kind: "TURN" });
+  });
+
   it("does not classify a natural-language secret label without a format signal", () => {
     const secret = "Qwerty123456!";
     const user = userMessage({

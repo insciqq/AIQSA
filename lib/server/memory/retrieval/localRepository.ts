@@ -6,19 +6,30 @@ import {
 import {
   allocateMemoryRetrievalLaneLimits,
   executeMemoryRetrievalLaneTasks,
+  fuseMemoryRetrievalCandidates,
+  MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS,
   MEMORY_CORE_MAX_FACTS,
+  MEMORY_RETRIEVAL_BASELINE_FACT_EVIDENCE_ROOTS,
+  MEMORY_RETRIEVAL_BASELINE_HISTORY_EVIDENCE_ROOTS,
+  MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS,
+  MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT,
   MEMORY_RETRIEVAL_FUSION_VERSION,
+  MEMORY_RETRIEVAL_LANE_WEIGHTS,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_AGGREGATION_SOURCE_CHATS,
   MEMORY_LEXICAL_QUERY_MAX_TERMS,
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
+  MEMORY_RETRIEVAL_RRF_K,
   MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS,
+  MEMORY_RETRIEVAL_TARGETED_DIGEST_CHATS,
+  MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT,
   MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS,
   MEMORY_TEMPORAL_QUERY_MAX_MATCHED_EXPRESSIONS,
   MEMORY_TEMPORAL_QUERY_EXPRESSION_TYPES,
   MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
   MEMORY_TRIGRAM_QUERY_MAX_TERMS,
   analyzeMemoryLexicalQuery,
+  memoryRetrievalEvidenceRootKey,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
   type MemoryCoreCandidate,
@@ -43,6 +54,9 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import {
   memoryRedactionHasMeaningfulRemainder,
   redactMemorySecrets
@@ -59,7 +73,10 @@ import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryCanonicalFactRootIdSql } from "../persistence/canonicalFact";
-import { memoryPersonalFactEvidencePredicate } from "../persistence/eligibility";
+import {
+  memoryPersonalEvidenceRowPredicate,
+  memoryPersonalFactEvidencePredicate
+} from "../persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,
@@ -73,7 +90,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v18";
+  "memory-local-retrieval-repository-v23";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -94,6 +111,7 @@ export type MemoryLocalRetrievalSnapshot = Readonly<{
   referenceChatHistory: boolean;
   repositoryVersion: string;
   roundProjectionVersion?: string | null;
+  roundSegmentProjectionVersion?: string | null;
   settingsRevision: number;
   status: MemoryLocalRetrievalStatus;
   useMemoryFacts: boolean;
@@ -108,6 +126,8 @@ export type MemoryLocalVectorQuery = Readonly<{
 
 export type MemoryLocalRetrievalInput = Readonly<{
   assistantId: string | null;
+  /** Original-query ordinary-read floor. Null/omitted for typed bounded modes. */
+  baselinePlan?: MemoryRetrievalPlan;
   chatId: string;
   now: Date;
   plan: MemoryRetrievalPlan;
@@ -115,12 +135,31 @@ export type MemoryLocalRetrievalInput = Readonly<{
   vector?: MemoryLocalVectorQuery;
 }>;
 
+export type MemorySourceFamilyRetrievalEvidence = Readonly<{
+  baselineFactCandidateCount: number;
+  baselineHistoryCandidateCount: number;
+  baselineOnlyCandidateCount: number;
+  plannerExcludedFamilyRecoveredCount: number;
+  plannerOnlyCandidateCount: number;
+}>;
+
+export type MemoryDigestRetrievalEvidence = Readonly<{
+  digestOnlyChatCount: number;
+  navigationCandidateCount: number;
+  rawAnchorCount: number;
+  rawCandidateCount: number;
+  secondStageQueryCount: number;
+  selectedChatCount: number;
+}>;
+
 export type MemoryLocalRetrievalResult = Readonly<{
   core: readonly MemoryCoreCandidate[];
+  digestEvidence?: MemoryDigestRetrievalEvidence;
   laneResults: readonly MemoryLaneResult[];
   lexicalFailures: readonly MemoryRetrievalLane[];
   lexicalState: "DEGRADED" | "DISABLED" | "FAILED" | "READY";
   snapshot: MemoryLocalRetrievalSnapshot;
+  sourceFamilyEvidence?: MemorySourceFamilyRetrievalEvidence;
   vectorEvidence: readonly MemoryVectorLaneEvidence[];
   vectorState: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
 }>;
@@ -142,6 +181,7 @@ type SnapshotRow = Readonly<{
   generationNormalizationVersion: string | null;
   generationPipelineVersion: string | null;
   generationRoundProjectionVersion: string | null;
+  generationRoundSegmentProjectionVersion: string | null;
   generationState: string | null;
   memoryGeneration: number | null;
   memoryRevision: number | null;
@@ -180,6 +220,8 @@ type CandidateRow = Readonly<{
   lastConfirmedAt: Date | null;
   lastUsedAt: Date | null;
   lifecycleState: string | null;
+  matchedSegmentId: string | null;
+  matchedSegmentPosition: string | null;
   matchedEntityRole: string | null;
   modality: string | null;
   observedAt: Date | null;
@@ -218,9 +260,13 @@ type ExpandedRow = Readonly<{
   occurredFrom: Date | null;
   occurredTo: Date | null;
   projectionKind: "CHAT_DIGEST_SAFE_TEXT" | "FACT_DISPLAY_TEXT" |
-    "RECALL_CHUNK_SAFE_PROJECTED_TEXT" | "RECALL_ROUND_RAW_SAFE_TEXT";
+    "RECALL_CHUNK_SAFE_PROJECTED_TEXT" | "RECALL_ROUND_RAW_SAFE_TEXT" |
+    "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT";
+  retrievalHint: string | null;
   safeText: string;
   sourceChatId: string | null;
+  patternSupportingEvidence: Prisma.JsonValue;
+  supportingEvidence: Prisma.JsonValue;
   supportingItemId: string | null;
 }>;
 
@@ -242,9 +288,14 @@ const coreSaliences = new Set(["HIGH", "MEDIUM", "LOW", "NONE"]);
 const identityKinds = new Set(["SLOT", "PROPOSITION"]);
 const lifecycleStates = new Set(["ACTIVE", "SUPERSEDED"]);
 const entityRoles = new Set(["SUBJECT", "OBJECT", "MENTION"]);
+const roundSegmentPositions = new Set(["MIDDLE", "PREFIX", "SINGLE", "SUFFIX"]);
 const sourceAuthorities = new Set([
-  "EXPLICIT", "DIRECT_AUTOMATIC", "PAST_CHAT", "SYNTHESIS"
+  "EXPLICIT", "DIRECT_AUTOMATIC", "PAST_CHAT", "SYNTHESIS", "TOOL_OBSERVATION"
 ]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 const retrievalSourceKinds = new Set(["EVENT", "FACT", "HISTORY"]);
 const retrievalModes = new Set([
   "CURRENT_PROFILE", "TARGETED_CURRENT", "HISTORICAL_MEMORY",
@@ -305,7 +356,8 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
   if (
     !validToken(row.itemId) || !validToken(row.dedupeKey) ||
     (row.entryId !== null && !validToken(row.entryId)) ||
-    !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND"].includes(row.itemType) ||
+    !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND", "TOOL_EVENT"]
+      .includes(row.itemType) ||
     (row.evidenceRootHash !== null && !fingerprintPattern.test(row.evidenceRootHash)) ||
     (row.parentChunkId !== null && !validToken(row.parentChunkId)) ||
     !Number.isFinite(row.rawScore) ||
@@ -405,6 +457,14 @@ function decodeCandidate(row: CandidateRow, lane: MemoryRetrievalLane): MemoryLa
       .includes(row.deterministicMatch)) {
     throw new Error("memory_retrieval_result_invalid");
   }
+  const hasSegment = row.matchedSegmentId !== null ||
+    row.matchedSegmentPosition !== null;
+  if (hasSegment && (
+    row.itemType !== "RECALL_ROUND" ||
+    !validToken(row.matchedSegmentId) ||
+    row.matchedSegmentPosition === null ||
+    !roundSegmentPositions.has(row.matchedSegmentPosition)
+  )) throw new Error("memory_retrieval_result_invalid");
   return {
     deterministicMatch: row.deterministicMatch as MemoryDeterministicMatch | null,
     entryId: row.entryId,
@@ -412,6 +472,9 @@ function decodeCandidate(row: CandidateRow, lane: MemoryRetrievalLane): MemoryLa
     itemId: row.itemId,
     itemType: row.itemType as MemoryLaneCandidate["itemType"],
     lane,
+    matchedSegmentId: row.matchedSegmentId,
+    matchedSegmentPosition: row.matchedSegmentPosition as
+      MemoryLaneCandidate["matchedSegmentPosition"],
     metadata: decodeMetadata(row),
     rawScore: row.rawScore
   };
@@ -424,12 +487,101 @@ function safeMemoryProjectionText(value: string): string | null {
   return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 
+function decodedContextualEvidence(row: ExpandedRow): Readonly<{
+  retrievalHint: string | null;
+  supportingEvidence: NonNullable<MemoryExpandedCandidate["supportingEvidence"]>;
+}> {
+  if (row.retrievalHint === null) {
+    return { retrievalHint: null, supportingEvidence: Object.freeze([]) };
+  }
+  const retrievalHint = safeMemoryProjectionText(row.retrievalHint);
+  if (!retrievalHint || !Array.isArray(row.supportingEvidence) ||
+    row.supportingEvidence.length > 2) {
+    return { retrievalHint: null, supportingEvidence: Object.freeze([]) };
+  }
+  const decoded = row.supportingEvidence.flatMap((value) => {
+    if (!isRecord(value) ||
+      Object.keys(value).sort().join("\u0000") !==
+        "itemId\u0000occurredFrom\u0000occurredTo\u0000safeText\u0000sourceChatId" ||
+      !validToken(value.itemId) || !validToken(value.sourceChatId) ||
+      typeof value.safeText !== "string" || !value.safeText.trim() ||
+      typeof value.occurredFrom !== "string" ||
+      typeof value.occurredTo !== "string") return [];
+    const occurredFrom = new Date(value.occurredFrom);
+    const occurredTo = new Date(value.occurredTo);
+    const safeText = safeMemoryProjectionText(
+      boundedMemoryRecallRoundEvidenceText(value.safeText)
+    );
+    return safeText && !Number.isNaN(occurredFrom.getTime()) &&
+      !Number.isNaN(occurredTo.getTime()) && occurredTo >= occurredFrom
+      ? [{
+          itemId: value.itemId,
+          occurredFrom,
+          occurredTo,
+          safeText,
+          sourceChatId: value.sourceChatId
+        }]
+      : [];
+  });
+  if (decoded.length !== row.supportingEvidence.length ||
+    new Set(decoded.map(({ itemId }) => itemId)).size !== decoded.length ||
+    decoded.some(({ sourceChatId }) => sourceChatId !== row.sourceChatId)) {
+    return { retrievalHint: null, supportingEvidence: Object.freeze([]) };
+  }
+  return {
+    retrievalHint,
+    supportingEvidence: Object.freeze(decoded)
+  };
+}
+
+function decodedPatternSupportingEvidence(
+  row: ExpandedRow
+): NonNullable<MemoryExpandedCandidate["patternSupportingEvidence"]> {
+  if (!Array.isArray(row.patternSupportingEvidence) ||
+    row.patternSupportingEvidence.length > MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS) {
+    return Object.freeze([]);
+  }
+  const decoded = row.patternSupportingEvidence.flatMap((value) => {
+    if (!isRecord(value) ||
+      Object.keys(value).sort().join("\u0000") !==
+        "itemId\u0000observedAt\u0000safeText\u0000sourceAuthority\u0000sourceChatId\u0000sourceRootHash" ||
+      !validToken(value.itemId) || typeof value.safeText !== "string" ||
+      (value.sourceAuthority !== "DIRECT_AUTOMATIC" &&
+        value.sourceAuthority !== "EXPLICIT") ||
+      (value.sourceChatId !== null && !validToken(value.sourceChatId)) ||
+      typeof value.sourceRootHash !== "string" ||
+      !fingerprintPattern.test(value.sourceRootHash) ||
+      typeof value.observedAt !== "string") return [];
+    const observedAt = new Date(value.observedAt);
+    const safeText = safeMemoryProjectionText(value.safeText);
+    return safeText && !Number.isNaN(observedAt.getTime())
+      ? [{
+          itemId: value.itemId,
+          observedAt,
+          safeText,
+          sourceAuthority: value.sourceAuthority as
+            "DIRECT_AUTOMATIC" | "EXPLICIT",
+          sourceChatId: value.sourceChatId,
+          sourceRootHash: value.sourceRootHash
+        }]
+      : [];
+  });
+  if (decoded.length !== row.patternSupportingEvidence.length ||
+    new Set(decoded.map(({ itemId }) => itemId)).size !== decoded.length ||
+    new Set(decoded.map(({ sourceRootHash }) => sourceRootHash)).size !== decoded.length) {
+    return Object.freeze([]);
+  }
+  return Object.freeze(decoded);
+}
+
 function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   if (
     !validToken(row.itemId) ||
-    !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND"].includes(row.itemType) ||
+    !["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND", "TOOL_EVENT"]
+      .includes(row.itemType) ||
     !["CHAT_DIGEST_SAFE_TEXT", "FACT_DISPLAY_TEXT",
-      "RECALL_CHUNK_SAFE_PROJECTED_TEXT", "RECALL_ROUND_RAW_SAFE_TEXT"]
+      "RECALL_CHUNK_SAFE_PROJECTED_TEXT", "RECALL_ROUND_RAW_SAFE_TEXT",
+      "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT", "TOOL_EVENT_SAFE_TEXT"]
       .includes(row.projectionKind) ||
     typeof row.safeText !== "string" || !row.safeText.trim() || row.safeText.length > 4_000 ||
     row.safeText.includes("\u0000") ||
@@ -439,10 +591,16 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   ) throw new Error("memory_expansion_result_invalid");
   const safeText = safeMemoryProjectionText(row.safeText);
   if (!safeText) return null;
+  const contextual = decodedContextualEvidence(row);
+  const patternSupportingEvidence = decodedPatternSupportingEvidence(row);
+  const { patternSupportingEvidence: _rawPatternSupportingEvidence, ...projection } = row;
   return {
-    ...row,
+    ...projection,
     itemType: row.itemType as MemoryExpandedCandidate["itemType"],
-    safeText
+    ...(patternSupportingEvidence.length > 0 ? { patternSupportingEvidence } : {}),
+    retrievalHint: contextual.retrievalHint,
+    safeText,
+    supportingEvidence: contextual.supportingEvidence
   };
 }
 
@@ -548,7 +706,9 @@ async function loadSnapshot(
       generation."languageProfile" AS "generationLanguageProfile",
       generation."normalizationVersion" AS "generationNormalizationVersion",
       generation."retrievalPipelineVersion" AS "generationPipelineVersion",
-      generation."roundProjectionVersion" AS "generationRoundProjectionVersion"
+      generation."roundProjectionVersion" AS "generationRoundProjectionVersion",
+      generation."roundSegmentProjectionVersion" AS
+        "generationRoundSegmentProjectionVersion"
     FROM "User" AS owner
     LEFT JOIN "Chat" AS current_chat
       ON current_chat."userId" = owner."id" AND current_chat."id" = ${input.chatId}
@@ -607,6 +767,9 @@ async function loadSnapshot(
     repositoryVersion: MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION,
     roundProjectionVersion: generationReady
       ? row.generationRoundProjectionVersion
+      : null,
+    roundSegmentProjectionVersion: generationReady
+      ? row.generationRoundSegmentProjectionVersion
       : null,
     settingsRevision: Number.isSafeInteger(row.settingsRevision) ? Number(row.settingsRevision) : 0,
     useMemoryFacts,
@@ -777,6 +940,21 @@ function historyRoundPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
           : Prisma.sql`FALSE`;
 }
 
+function toolEventPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
+  if (!plan.filters.sourceKinds.includes("HISTORY")) return Prisma.sql`FALSE`;
+  return plan.filters.scopeType === null
+    ? Prisma.sql`TRUE`
+    : plan.filters.scopeType === "CHAT"
+      ? plan.filters.scopeTargetId
+        ? Prisma.sql`tool_event."chatId" = ${plan.filters.scopeTargetId}`
+        : Prisma.sql`TRUE`
+      : plan.filters.scopeType === "FOLDER" && plan.filters.scopeTargetId
+        ? Prisma.sql`tool_event."sourceFolderId" = ${plan.filters.scopeTargetId}`
+        : plan.filters.scopeType === "ASSISTANT" && plan.filters.scopeTargetId
+          ? Prisma.sql`tool_event."sourceAssistantId" = ${plan.filters.scopeTargetId}`
+          : Prisma.sql`FALSE`;
+}
+
 function historyDigestPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
   const digestMode = plan.mode === "HISTORY_OVERVIEW" ||
     plan.mode === "PAST_CHAT_SEARCH";
@@ -806,6 +984,7 @@ function factColumns(
     ${safeContentHash} AS "safeContentHash", version."displayText",
     version."structuredValue",
     NULL::text AS "evidenceRootHash", NULL::text AS "parentChunkId",
+    NULL::text AS "matchedSegmentId", NULL::text AS "matchedSegmentPosition",
     'FACT_VERSION'::"MemorySearchItemType" AS "itemType", root_fact."id" AS "factId",
     (CASE WHEN version."state" = 'SUPERSEDED'::"MemoryFactVersionState"
       THEN 'fact-history:' || encode(digest(convert_to(jsonb_build_object(
@@ -1192,6 +1371,7 @@ function historyDigestEligibleSelect(
       digest."contentHash" AS "safeContentHash", NULL::text AS "displayText",
       NULL::jsonb AS "structuredValue",
       NULL::text AS "evidenceRootHash", NULL::text AS "parentChunkId",
+      NULL::text AS "matchedSegmentId", NULL::text AS "matchedSegmentPosition",
       'RECALL_CHUNK'::"MemorySearchItemType" AS "itemType", NULL::text AS "factId",
       ('history-overview:' || digest."id")::text AS "dedupeKey",
       NULL::text AS "canonicalKey", NULL::text AS "category", digest."languageCode",
@@ -1365,6 +1545,7 @@ function historyChunkEligibleSelect(
       entry."safeContentHash", NULL::text AS "displayText",
       NULL::jsonb AS "structuredValue",
       chunk."evidenceRootHash", NULL::text AS "parentChunkId",
+      NULL::text AS "matchedSegmentId", NULL::text AS "matchedSegmentPosition",
       'RECALL_CHUNK'::"MemorySearchItemType" AS "itemType", NULL::text AS "factId",
       ('history:' || entry."safeContentHash")::text AS "dedupeKey",
       NULL::text AS "canonicalKey", NULL::text AS "category", chunk."languageCode",
@@ -1443,7 +1624,7 @@ function historyChunkEligibleSelect(
   `;
 }
 
-function historyRoundEligibleSelect(
+function historyLegacyRoundEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
@@ -1455,7 +1636,8 @@ function historyRoundEligibleSelect(
     SELECT entry."id" AS "entryId", round."id" AS "itemId",
       entry."safeContentHash", NULL::text AS "displayText",
       NULL::jsonb AS "structuredValue", round."evidenceRootHash",
-      round."parentChunkId",
+      round."parentChunkId", NULL::text AS "matchedSegmentId",
+      NULL::text AS "matchedSegmentPosition",
       'RECALL_ROUND'::"MemorySearchItemType" AS "itemType", NULL::text AS "factId",
       ('history:' || round."evidenceRootHash")::text AS "dedupeKey",
       NULL::text AS "canonicalKey", NULL::text AS "category", round."languageCode",
@@ -1507,6 +1689,7 @@ function historyRoundEligibleSelect(
         ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
       AND generation."contextualKeyPolicyVersion" =
         ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND generation."roundSegmentProjectionVersion" IS NULL
     INNER JOIN "MemoryRecallRound" AS round
       ON round."userId" = entry."userId" AND round."id" = entry."recallRoundId"
     INNER JOIN "MemoryRecallChunk" AS parent_chunk
@@ -1546,15 +1729,319 @@ function historyRoundEligibleSelect(
   `;
 }
 
-function historyEligibleSelect(
+function historySegmentRoundEligibleSelect(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
 ): Prisma.Sql {
-  if (plan.mode === "HISTORY_OVERVIEW") {
-    return historyDigestEligibleSelect(snapshot, plan);
+  if (!snapshot.activeGenerationId || !snapshot.historySuppressionIdentitySnapshot) {
+    throw new Error("memory_retrieval_snapshot_invalid");
   }
   return Prisma.sql`
+    SELECT entry."id" AS "entryId", round."id" AS "itemId",
+      entry."safeContentHash", NULL::text AS "displayText",
+      NULL::jsonb AS "structuredValue", segment."evidenceRootHash",
+      round."parentChunkId", segment."id" AS "matchedSegmentId",
+      segment."position" AS "matchedSegmentPosition",
+      'RECALL_ROUND'::"MemorySearchItemType" AS "itemType", NULL::text AS "factId",
+      ('history:' || segment."evidenceRootHash")::text AS "dedupeKey",
+      NULL::text AS "canonicalKey", NULL::text AS "category", segment."languageCode",
+      NULL::text AS "identityKind", NULL::text AS "subjectKey",
+      NULL::text AS "predicateKey", NULL::text AS "dimensionKey",
+      NULL::text AS "modality", NULL::text AS "sourceMode", NULL::text AS "directness",
+      'PAST_CHAT'::text AS "sourceAuthority",
+      NULL::text AS "sensitivityClass", segment."safetyClass"::text AS "historySafetyClass",
+      NULL::text AS "scopeType", round."sourceFolderId", round."sourceAssistantId",
+      round."chatId" AS "sourceChatId", FALSE AS "pinned",
+      NULL::text AS "temperatureClass", 0.0::double precision AS "temperatureScore",
+      NULL::timestamp AS "lastUsedAt", NULL::timestamp AS "lastConfirmedAt",
+      1.0::double precision AS "confidence", 0.5::double precision AS "importance",
+      FALSE AS "coreEligible", 'NONE'::text AS "coreSalience",
+      CASE WHEN round."chatId" = ${snapshot.chatId} THEN 1.0
+        WHEN round."sourceAssistantId" = ${snapshot.assistantId}
+          AND CAST(${snapshot.assistantId} AS text) IS NOT NULL THEN 0.9
+        WHEN round."sourceFolderId" = ${snapshot.folderId}
+          AND CAST(${snapshot.folderId} AS text) IS NOT NULL THEN 0.8 ELSE 0.5
+      END::double precision AS "scopeAffinity",
+      TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
+      NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
+      NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
+      0::integer AS "synthesisDepth",
+      NULL::timestamp AS "observedAt", NULL::timestamp AS "occurredAt",
+      NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
+      NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
+      NULL::timestamp AS "systemFrom", segment."occurredFrom", segment."occurredTo",
+      entry."normalizedSearchText", entry."searchVectorSimple",
+      entry."searchVectorEnglish", entry."searchVectorRussian",
+      entry."trigramSearchText"
+    FROM "MemorySearchEntry" AS entry
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = entry."userId"
+      AND settings."useMemoryFacts" = TRUE
+      AND settings."referenceChatHistory" = TRUE
+      AND settings."activeIndexGenerationId" = ${snapshot.activeGenerationId}
+    INNER JOIN "MemoryIndexGeneration" AS generation
+      ON generation."userId" = settings."userId"
+      AND generation."id" = settings."activeIndexGenerationId"
+      AND generation."id" = entry."indexGenerationId"
+      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+      AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
+      AND generation."retrievalPipelineVersion" =
+        ${expectedGenerationPipeline(snapshot.indexMode!)}
+      AND generation."roundProjectionVersion" =
+        ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+      AND generation."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND generation."roundSegmentProjectionVersion" =
+        ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+    INNER JOIN "MemoryRecallRoundSegment" AS segment
+      ON segment."userId" = entry."userId"
+      AND segment."id" = entry."recallRoundSegmentId"
+      AND segment."roundId" = entry."recallRoundId"
+    INNER JOIN "MemoryRecallRound" AS round
+      ON round."userId" = segment."userId" AND round."id" = segment."roundId"
+    INNER JOIN "MemoryRecallChunk" AS parent_chunk
+      ON parent_chunk."userId" = round."userId"
+      AND parent_chunk."id" = round."parentChunkId"
+    INNER JOIN "Chat" AS source_chat
+      ON source_chat."userId" = round."userId" AND source_chat."id" = round."chatId"
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = round."userId" AND checkpoint."chatId" = round."chatId"
+    WHERE entry."userId" = ${snapshot.userId}
+      AND entry."itemType" = 'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+      AND (${candidatePredicate})
+      AND entry."safeContentHash" = segment."contextualSearchHash"
+      AND segment."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND segment."projectionVersion" =
+        ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+      AND segment."contextualKeyPolicyVersion" =
+        ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND segment."evidenceRootHash" = round."evidenceRootHash"
+      AND segment."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND segment."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND round."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND round."projectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+      AND round."contextualKeyPolicyVersion" = ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+      AND round."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND round."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND round."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND parent_chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND parent_chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+      AND parent_chunk."sourceProjectionVersion" =
+        ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+      AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND source_chat."projectId" IS NULL
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND ${memoryHistoryRoundSourceAuthorityPredicate({
+        chat: "source_chat",
+        checkpoint: "checkpoint"
+      })}
+      AND ${memoryRoundConversationFeedbackPredicate(snapshot)}
+      AND ${memoryRoundSourceSafetyPredicate()}
+      AND ${historyRoundPlanPredicates(plan)}
+  `;
+}
+
+function historyRoundEligibleSelect(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+): Prisma.Sql {
+  return snapshot.roundSegmentProjectionVersion ===
+    MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
+    ? historySegmentRoundEligibleSelect(snapshot, plan, candidatePredicate)
+    : historyLegacyRoundEligibleSelect(snapshot, plan, candidatePredicate);
+}
+
+function toolEventEligibleSelect(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`
+): Prisma.Sql {
+  if (!snapshot.activeGenerationId || !snapshot.historySuppressionIdentitySnapshot) {
+    throw new Error("memory_retrieval_snapshot_invalid");
+  }
+  return Prisma.sql`
+    SELECT entry."id" AS "entryId", tool_event."id" AS "itemId",
+      entry."safeContentHash", NULL::text AS "displayText",
+      NULL::jsonb AS "structuredValue", tool_event."evidenceRootHash",
+      NULL::text AS "parentChunkId", NULL::text AS "matchedSegmentId",
+      NULL::text AS "matchedSegmentPosition",
+      'TOOL_EVENT'::"MemorySearchItemType" AS "itemType", NULL::text AS "factId",
+      ('tool-event:' || tool_event."evidenceRootHash")::text AS "dedupeKey",
+      NULL::text AS "canonicalKey", NULL::text AS "category",
+      tool_event."languageCode", NULL::text AS "identityKind",
+      NULL::text AS "subjectKey", NULL::text AS "predicateKey",
+      NULL::text AS "dimensionKey", 'EVENT'::text AS "modality",
+      NULL::text AS "sourceMode", NULL::text AS "directness",
+      'TOOL_OBSERVATION'::text AS "sourceAuthority",
+      NULL::text AS "sensitivityClass",
+      tool_event."safetyClass"::text AS "historySafetyClass",
+      NULL::text AS "scopeType", tool_event."sourceFolderId",
+      tool_event."sourceAssistantId", tool_event."chatId" AS "sourceChatId",
+      FALSE AS "pinned", NULL::text AS "temperatureClass",
+      0.0::double precision AS "temperatureScore",
+      NULL::timestamp AS "lastUsedAt", NULL::timestamp AS "lastConfirmedAt",
+      1.0::double precision AS "confidence", 0.45::double precision AS "importance",
+      FALSE AS "coreEligible", 'NONE'::text AS "coreSalience",
+      CASE WHEN tool_event."chatId" = ${snapshot.chatId} THEN 1.0
+        WHEN tool_event."sourceAssistantId" = ${snapshot.assistantId}
+          AND CAST(${snapshot.assistantId} AS text) IS NOT NULL THEN 0.9
+        WHEN tool_event."sourceFolderId" = ${snapshot.folderId}
+          AND CAST(${snapshot.folderId} AS text) IS NOT NULL THEN 0.8 ELSE 0.5
+      END::double precision AS "scopeAffinity",
+      TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
+      NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
+      NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
+      0::integer AS "synthesisDepth", tool_event."occurredAt" AS "observedAt",
+      tool_event."occurredAt", NULL::timestamp AS "expectedAt",
+      NULL::timestamp AS "expiresAt", NULL::timestamp AS "validFrom",
+      NULL::timestamp AS "validTo", NULL::timestamp AS "systemFrom",
+      tool_event."occurredAt" AS "occurredFrom",
+      tool_event."occurredAt" AS "occurredTo", entry."normalizedSearchText",
+      entry."searchVectorSimple", entry."searchVectorEnglish",
+      entry."searchVectorRussian", entry."trigramSearchText"
+    FROM "MemorySearchEntry" AS entry
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = entry."userId"
+      AND settings."useMemoryFacts" = TRUE
+      AND settings."referenceChatHistory" = TRUE
+      AND settings."activeIndexGenerationId" = ${snapshot.activeGenerationId}
+    INNER JOIN "MemoryIndexGeneration" AS generation
+      ON generation."userId" = settings."userId"
+      AND generation."id" = settings."activeIndexGenerationId"
+      AND generation."id" = entry."indexGenerationId"
+      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+      AND generation."chunkingVersion" = ${MEMORY_LEXICAL_CHUNKING_VERSION}
+      AND generation."languageProfile" = ${MEMORY_LEXICAL_LANGUAGE_PROFILE}
+      AND generation."normalizationVersion" = ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
+      AND generation."retrievalPipelineVersion" =
+        ${expectedGenerationPipeline(snapshot.indexMode!)}
+    INNER JOIN "MemoryToolEvent" AS tool_event
+      ON tool_event."userId" = entry."userId"
+      AND tool_event."id" = entry."toolEventId"
+    INNER JOIN "Chat" AS source_chat
+      ON source_chat."userId" = tool_event."userId"
+      AND source_chat."id" = tool_event."chatId"
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = tool_event."userId"
+      AND checkpoint."chatId" = tool_event."chatId"
+    INNER JOIN "ChatMemoryCheckpointMessage" AS checkpoint_message
+      ON checkpoint_message."userId" = tool_event."userId"
+      AND checkpoint_message."chatId" = tool_event."chatId"
+      AND checkpoint_message."messageId" = tool_event."assistantMessageId"
+    INNER JOIN "Message" AS source_message
+      ON source_message."chatId" = tool_event."chatId"
+      AND source_message."id" = tool_event."assistantMessageId"
+      AND source_message."updatedAt" = checkpoint_message."sourceMessageUpdatedAt"
+    INNER JOIN "ModelRun" AS source_run
+      ON source_run."userId" = tool_event."userId"
+      AND source_run."id" = tool_event."modelRunId"
+      AND source_run."chatId" = tool_event."chatId"
+      AND source_run."assistantMessageId" = tool_event."assistantMessageId"
+      AND source_run."status" = 'complete'::"ModelRunStatus"
+    INNER JOIN "ModelRunToolCall" AS source_call
+      ON source_call."modelRunId" = tool_event."modelRunId"
+      AND source_call."id" = tool_event."modelRunToolCallId"
+      AND source_call."state" IN (
+        'complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState"
+      )
+      AND source_call."completedAt" = tool_event."occurredAt"
+      AND source_call."updatedAt" = tool_event."sourceCallUpdatedAtAtCreation"
+    WHERE entry."userId" = ${snapshot.userId}
+      AND entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType"
+      AND (${candidatePredicate})
+      AND entry."safeContentHash" = tool_event."contentHash"
+      AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND tool_event."projectionVersion" = ${MEMORY_TOOL_EVENT_PROJECTION_VERSION}
+      AND tool_event."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND tool_event."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND source_chat."projectId" IS NULL
+      AND source_chat."permanentDeletionAt" IS NULL
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND checkpoint."branchGeneration" = tool_event."branchGeneration"
+      AND checkpoint."sourceRevision" = tool_event."sourceRevisionAtCreation"
+      AND checkpoint."lastIndexedMessageId" = checkpoint."activeLeafMessageId"
+      AND (
+        checkpoint."sourceRevision" = source_chat."memorySourceRevision"
+        AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
+        OR EXISTS (
+          SELECT 1 FROM "Message" AS paused_leaf
+          INNER JOIN "MemoryPauseInterval" AS pause_interval
+            ON pause_interval."userId" = source_chat."userId"
+            AND pause_interval."scope" IN (
+              'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+            )
+            AND paused_leaf."createdAt" >= pause_interval."pausedAt"
+            AND (pause_interval."resumedAt" IS NULL
+              OR paused_leaf."createdAt" <= pause_interval."resumedAt")
+          WHERE paused_leaf."chatId" = source_chat."id"
+            AND paused_leaf."id" = source_chat."activeLeafMessageId"
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        WHERE suppression."userId" = tool_event."userId"
+          AND (suppression."expiresAt" IS NULL
+            OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+            suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+            AND suppression."sourceChatId" = tool_event."chatId"
+            AND suppression."sourceMessageId" = tool_event."assistantMessageId"
+          ))
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySourceBarrier" AS barrier
+        WHERE barrier."userId" = tool_event."userId"
+          AND barrier."kind" IN (
+            'HISTORY_INDEX'::"MemorySourceBarrierKind",
+            'ALL_REUSABLE'::"MemorySourceBarrierKind"
+          )
+          AND barrier."explicitOverrideAllowed" = FALSE
+          AND source_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryPauseInterval" AS source_pause
+        WHERE source_pause."userId" = tool_event."userId"
+          AND source_pause."scope" IN (
+            'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+          )
+          AND source_message."createdAt" >= source_pause."pausedAt"
+          AND (source_pause."resumedAt" IS NULL
+            OR source_message."createdAt" <= source_pause."resumedAt")
+      )
+      AND ${toolEventPlanPredicates(plan)}
+  `;
+}
+
+function historyEligibleSelect(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  candidatePredicate: Prisma.Sql = Prisma.sql`TRUE`,
+  sourceChatIds?: readonly string[]
+): Prisma.Sql {
+  if (sourceChatIds && (
+    sourceChatIds.length < 1 ||
+    sourceChatIds.length > MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS ||
+    new Set(sourceChatIds).size !== sourceChatIds.length ||
+    sourceChatIds.some((sourceChatId) => !validToken(sourceChatId))
+  )) throw new Error("memory_retrieval_source_chat_filter_invalid");
+  if (plan.mode === "HISTORY_OVERVIEW") {
+    if (sourceChatIds) throw new Error("memory_retrieval_source_chat_filter_invalid");
+    return historyDigestEligibleSelect(snapshot, plan);
+  }
+  const projection = Prisma.sql`
     SELECT * FROM (${historyChunkEligibleSelect(
       snapshot,
       plan,
@@ -1563,8 +2050,18 @@ function historyEligibleSelect(
       snapshot,
       plan,
       candidatePredicate
+    )} UNION ALL ${toolEventEligibleSelect(
+      snapshot,
+      plan,
+      candidatePredicate
     )}) AS history_projection
   `;
+  return sourceChatIds
+    ? Prisma.sql`
+        SELECT * FROM (${projection}) AS source_filtered_history
+        WHERE source_filtered_history."sourceChatId" IN (${valuesSql(sourceChatIds)})
+      `
+    : projection;
 }
 
 type MemoryTemporalSqlConstraint = Readonly<{
@@ -1645,13 +2142,14 @@ function temporalSql(
   plan: MemoryRetrievalPlan,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
   limit: number,
-  unrestricted: boolean
+  unrestricted: boolean,
+  sourceChatIds?: readonly string[]
 ): Prisma.Sql {
   const constraints = temporalSqlConstraints(plan);
   if (constraints.length === 0) throw new Error("memory_retrieval_lane_invalid");
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(snapshot, plan, "DIRECT")
-    : historyEligibleSelect(snapshot, plan);
+    : historyEligibleSelect(snapshot, plan, Prisma.sql`TRUE`, sourceChatIds);
   const start = itemType === "FACT_VERSION"
     ? Prisma.sql`COALESCE(
         eligible."occurredAt", eligible."expectedAt", eligible."validFrom",
@@ -1699,6 +2197,7 @@ function candidateColumns(
     eligible."entryId", eligible."itemId", eligible."itemType", eligible."factId",
     eligible."safeContentHash", eligible."displayText", eligible."structuredValue",
     eligible."evidenceRootHash", eligible."parentChunkId",
+    eligible."matchedSegmentId", eligible."matchedSegmentPosition",
     eligible."dedupeKey", eligible."canonicalKey", eligible."category", eligible."languageCode",
     eligible."identityKind", eligible."subjectKey", eligible."predicateKey",
     eligible."dimensionKey", eligible."entityIds", ${matchedEntityRole} AS "matchedEntityRole",
@@ -1723,7 +2222,8 @@ function exactSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
-  limit: number
+  limit: number,
+  sourceChatIds?: readonly string[]
 ): Prisma.Sql {
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(
@@ -1732,7 +2232,7 @@ function exactSql(
         "DIRECT",
         Prisma.sql`version."normalizedSearchText" = ${plan.normalizedExactQuery}`
       )
-    : historyEligibleSelect(snapshot, plan);
+    : historyEligibleSelect(snapshot, plan, Prisma.sql`TRUE`, sourceChatIds);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
     SELECT ${candidateColumns(
@@ -2038,7 +2538,8 @@ function ftsSql(
   plan: MemoryRetrievalPlan,
   lane: MemoryRetrievalLane,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
-  limit: number
+  limit: number,
+  sourceChatIds?: readonly string[]
 ): Prisma.Sql {
   const settings = ftsLaneSettings(plan, lane);
   const terms = settings.termVariants.map(({ term }) => term);
@@ -2050,7 +2551,7 @@ function ftsSql(
   `), " OR ")})`;
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
-    : historyEligibleSelect(snapshot, plan, candidatePredicate);
+    : historyEligibleSelect(snapshot, plan, candidatePredicate, sourceChatIds);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible}),
     query_terms AS MATERIALIZED (
@@ -2108,7 +2609,8 @@ function trigramSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
-  limit: number
+  limit: number,
+  sourceChatIds?: readonly string[]
 ): Prisma.Sql {
   if (!plan.lexicalQuery) throw new Error("memory_retrieval_lane_invalid");
   const termVariants = memorySemanticLexicalTermVariants(plan, "TRIGRAM");
@@ -2122,7 +2624,7 @@ function trigramSql(
   const candidatePredicate = Prisma.sql`(${Prisma.join(indexedMatches, " OR ")})`;
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(snapshot, plan, "INDEXED", candidatePredicate)
-    : historyEligibleSelect(snapshot, plan, candidatePredicate);
+    : historyEligibleSelect(snapshot, plan, candidatePredicate, sourceChatIds);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible}),
     query_terms AS MATERIALIZED (
@@ -2194,8 +2696,7 @@ function targetedDigestFtsSql(
   const variantOrdinals = termVariants.map(({ variantOrdinal }) => variantOrdinal);
   if (terms.length === 0) throw new Error("memory_retrieval_lane_invalid");
   return Prisma.sql`
-    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)}),
-    all_digest_navigation AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)}),
+    WITH all_digest_navigation AS MATERIALIZED (${historyDigestEligibleSelect(snapshot, plan)}),
     query_terms AS MATERIALIZED (
       SELECT DISTINCT term, "variantOrdinal",
         char_length(term)::integer AS "termLength",
@@ -2238,57 +2739,12 @@ function targetedDigestFtsSql(
       FROM ranked_navigation AS navigation
       ORDER BY navigation."sourceChatId",
         navigation."rankWithinVariant", navigation."variantOrdinal"
-    ),
-    source_anchors AS MATERIALIZED (
-      SELECT DISTINCT ON (navigation."sourceChatId") eligible.*,
-        navigation."variantOrdinal" AS "navigationVariantOrdinal",
-        navigation."rankWithinVariant" AS "navigationRankWithinVariant",
-        navigation."maximumMatchedTermLength" AS
-          "navigationMaximumMatchedTermLength",
-        navigation."matchedTermCount" AS "navigationMatchedTermCount",
-        navigation."rankScore" AS "navigationRankScore",
-        raw_match."minimumVariantOrdinal" AS "rawMinimumVariantOrdinal",
-        raw_match."maximumMatchedTermLength" AS "rawMaximumMatchedTermLength",
-        raw_match."matchedTermCount" AS "rawMatchedTermCount",
-        raw_match."rankScore" AS "rawRankScore"
-      FROM eligible
-      INNER JOIN digest_navigation AS navigation
-        ON navigation."sourceChatId" = eligible."sourceChatId"
-      CROSS JOIN LATERAL (
-        SELECT COUNT(*)::integer AS "matchedTermCount",
-          COALESCE(MIN(query_terms."variantOrdinal"), 2147483647)::integer AS
-            "minimumVariantOrdinal",
-          COALESCE(MAX(query_terms."termLength"), 0)::integer AS
-            "maximumMatchedTermLength",
-        COALESCE(SUM(ts_rank_cd(
-            eligible."searchVectorSimple",
-            query_terms.query
-          )), 0.0)::double precision AS "rankScore"
-        FROM query_terms
-        WHERE eligible."searchVectorSimple" @@ query_terms.query
-      ) AS raw_match
-      ORDER BY navigation."sourceChatId",
-        (raw_match."matchedTermCount" > 0) DESC,
-        raw_match."maximumMatchedTermLength" DESC,
-        raw_match."matchedTermCount" DESC, raw_match."rankScore" DESC,
-        raw_match."minimumVariantOrdinal",
-        (eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType") DESC,
-        (eligible."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"
-          AND eligible."itemId" = navigation."itemId") DESC,
-        eligible."occurredTo" DESC NULLS LAST, eligible."itemId"
     )
-    SELECT ${candidateColumns(Prisma.sql`eligible."navigationRankScore"`)}
-    FROM source_anchors AS eligible
-    ORDER BY eligible."navigationRankWithinVariant",
-      eligible."navigationVariantOrdinal",
-      eligible."navigationMaximumMatchedTermLength" DESC,
-      eligible."navigationMatchedTermCount" DESC,
-      eligible."navigationRankScore" DESC,
-      (eligible."rawMatchedTermCount" > 0) DESC,
-      eligible."rawMaximumMatchedTermLength" DESC,
-      eligible."rawMatchedTermCount" DESC, eligible."rawRankScore" DESC,
-      eligible."rawMinimumVariantOrdinal",
-      (eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType") DESC,
+    SELECT ${candidateColumns(Prisma.sql`eligible."rankScore"`)}
+    FROM digest_navigation AS eligible
+    ORDER BY eligible."rankWithinVariant", eligible."variantOrdinal",
+      eligible."maximumMatchedTermLength" DESC,
+      eligible."matchedTermCount" DESC, eligible."rankScore" DESC,
       eligible."occurredTo" DESC NULLS LAST, eligible."itemId" LIMIT ${limit}
   `;
 }
@@ -2333,11 +2789,20 @@ async function queryLane(
     maximumRows > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
     rows.length > maximumRows) throw new Error("memory_retrieval_result_invalid");
   const decoded = rows.map((row) => decodeCandidate(row, lane));
-  if (new Set(decoded.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
-    decoded.length) throw new Error("memory_retrieval_result_invalid");
+  const exactKeys = decoded.map((candidate) =>
+    `${candidate.itemType}:${candidate.itemId}:${candidate.matchedSegmentId ?? "parent"}`);
+  if (new Set(exactKeys).size !== decoded.length) {
+    throw new Error("memory_retrieval_result_invalid");
+  }
+  const byPublicItem = new Map<string, MemoryLaneCandidate>();
+  for (const candidate of decoded) {
+    const key = `${candidate.itemType}:${candidate.itemId}`;
+    if (!byPublicItem.has(key)) byPublicItem.set(key, candidate);
+  }
+  const collapsed = [...byPublicItem.values()];
   const candidates = options.sourceDiversity
-    ? selectMemorySourceDiverseLaneCandidates(decoded, limit)
-    : decoded;
+    ? selectMemorySourceDiverseLaneCandidates(collapsed, limit)
+    : collapsed;
   if (candidates.length > limit) throw new Error("memory_retrieval_result_invalid");
   return { candidates, lane };
 }
@@ -2398,8 +2863,7 @@ function localLexicalLanes(
     }
   }
   if (indexed && !plan.profileRequested && snapshot.useMemoryFacts &&
-    snapshot.referenceChatHistory &&
-    plan.filters.sourceKinds.includes("HISTORY")) {
+    snapshot.referenceChatHistory && plan.filters.sourceKinds.includes("HISTORY")) {
     if (temporal) {
       lanes.push(
         "HISTORY_RECALL_TEMPORAL_FILTERED",
@@ -2443,26 +2907,31 @@ function laneSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   lane: MemoryRetrievalLane,
-  limit: number
+  limit: number,
+  sourceChatIds?: readonly string[]
 ): Prisma.Sql {
   if (lane === "HISTORY_DIGEST_FTS_SIMPLE") {
     return targetedDigestFtsSql(snapshot, plan, limit);
   }
   const itemType = lane.startsWith("FACT_") ? "FACT_VERSION" : "RECALL_CHUNK";
   if (lane.endsWith("_TEMPORAL_FILTERED")) {
-    return temporalSql(snapshot, plan, itemType, limit, false);
+    return temporalSql(snapshot, plan, itemType, limit, false, sourceChatIds);
   }
   if (lane.endsWith("_TEMPORAL_UNRESTRICTED")) {
-    return temporalSql(snapshot, plan, itemType, limit, true);
+    return temporalSql(snapshot, plan, itemType, limit, true, sourceChatIds);
   }
   if (lane === "FACT_PROFILE") return profileSql(snapshot, plan, limit);
   if (lane === "FACT_ENTITY") return entitySql(snapshot, plan, limit);
-  if (lane.endsWith("_EXACT")) return exactSql(snapshot, plan, itemType, limit);
+  if (lane.endsWith("_EXACT")) {
+    return exactSql(snapshot, plan, itemType, limit, sourceChatIds);
+  }
   if (lane.endsWith("_FTS_SIMPLE") || lane.endsWith("_FTS_ENGLISH") ||
     lane.endsWith("_FTS_RUSSIAN")) {
-    return ftsSql(snapshot, plan, lane, itemType, limit);
+    return ftsSql(snapshot, plan, lane, itemType, limit, sourceChatIds);
   }
-  if (lane.endsWith("_TRIGRAM")) return trigramSql(snapshot, plan, itemType, limit);
+  if (lane.endsWith("_TRIGRAM")) {
+    return trigramSql(snapshot, plan, itemType, limit, sourceChatIds);
+  }
   if (lane.endsWith("_RECENT")) return recentSql(snapshot, plan, itemType, limit);
   throw new Error("memory_retrieval_lane_contract_invalid");
 }
@@ -2472,7 +2941,8 @@ function pushLexicalTasks(
   client: PrismaClient,
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  allocation: MemoryRetrievalLaneLimitAllocation
+  allocation: MemoryRetrievalLaneLimitAllocation,
+  executionTier: "BASELINE" | "ENRICHED" = "ENRICHED"
 ): Readonly<{
   failures(): readonly MemoryRetrievalLane[];
   state(): MemoryLocalRetrievalResult["lexicalState"];
@@ -2488,6 +2958,7 @@ function pushLexicalTasks(
       : limit;
     const sql = laneSql(snapshot, plan, lane, queryLimit);
     tasks.push({
+      executionId: `${executionTier}:${lane}`,
       async execute() {
         try {
           if (lane === "FACT_ENTITY" &&
@@ -2524,7 +2995,8 @@ function vectorMetadataSql(
   plan: MemoryRetrievalPlan,
   itemType: "FACT_VERSION" | "RECALL_CHUNK",
   hits: readonly Readonly<{ entryId: string; score: number }>[],
-  limit: number
+  limit: number,
+  sourceChatIds?: readonly string[]
 ): Prisma.Sql {
   const eligible = itemType === "FACT_VERSION"
     ? factEligibleSelect(
@@ -2533,7 +3005,7 @@ function vectorMetadataSql(
         "INDEXED",
         Prisma.sql`entry."id" IN (${valuesSql(hits.map((hit) => hit.entryId))})`
       )
-    : historyEligibleSelect(snapshot, plan);
+    : historyEligibleSelect(snapshot, plan, Prisma.sql`TRUE`, sourceChatIds);
   const score = vectorScoreSql(hits);
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
@@ -2566,7 +3038,8 @@ function pushVectorTasks(
   snapshot: MemoryLocalRetrievalSnapshot,
   input: MemoryLocalRetrievalInput,
   evidence: MemoryVectorLaneEvidence[],
-  allocation: MemoryRetrievalLaneLimitAllocation
+  allocation: MemoryRetrievalLaneLimitAllocation,
+  executionTier: "BASELINE" | "ENRICHED" = "ENRICHED"
 ): Readonly<{ state(): MemoryLocalRetrievalResult["vectorState"] }> {
   if (!input.vector || snapshot.indexMode !== "HYBRID") {
     return { state: () => input.vector ? "DISABLED" : "NOT_CONFIGURED" };
@@ -2576,7 +3049,16 @@ function pushVectorTasks(
   const itemTypes = [...new Set(lanes.flatMap((lane) =>
     lane === "FACT_VECTOR"
       ? ["FACT_VERSION" as const]
-      : ["RECALL_CHUNK" as const, "RECALL_ROUND" as const]))];
+      : [
+          "RECALL_CHUNK" as const,
+          ...(input.plan.filters.sourceKinds.includes("HISTORY")
+            ? ["TOOL_EVENT" as const]
+            : []),
+          snapshot.roundSegmentProjectionVersion ===
+            MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
+            ? "RECALL_ROUND_SEGMENT" as const
+            : "RECALL_ROUND" as const
+        ]))];
   const limit = Math.max(...lanes.map((lane) =>
     allocatedLimit(allocation, lane, input.plan.aggregationRequested)));
   let state: MemoryLocalRetrievalResult["vectorState"] = "READY";
@@ -2623,12 +3105,14 @@ function pushVectorTasks(
       "RECALL_CHUNK" as const;
     const laneLimit = allocatedLimit(allocation, lane, input.plan.aggregationRequested);
     tasks.push({
+      executionId: `${executionTier}:${lane}`,
       async execute() {
         const searched = await result;
         if (searched.status !== "READY") return { candidates: [], lane };
         const hits = searched.hits.filter((hit) => lane === "FACT_VECTOR"
           ? hit.itemType === "FACT_VERSION"
-          : hit.itemType === "RECALL_CHUNK" || hit.itemType === "RECALL_ROUND");
+          : hit.itemType === "RECALL_CHUNK" || hit.itemType === "RECALL_ROUND" ||
+            hit.itemType === "RECALL_ROUND_SEGMENT" || hit.itemType === "TOOL_EVENT");
         return hits.length === 0 ? { candidates: [], lane }
           : queryLane(client, lane, laneLimit,
               vectorMetadataSql(snapshot, input.plan, itemType, hits, laneLimit), {
@@ -2640,6 +3124,378 @@ function pushVectorTasks(
     });
   }
   return { state: () => state };
+}
+
+type MemoryIntraChatRawSelection = Readonly<{
+  candidates: readonly MemoryLaneCandidate[];
+  rawCandidateCount: number;
+}>;
+
+function historyRepresentationPriority(candidate: Pick<
+  MemoryLaneCandidate,
+  "itemType" | "matchedSegmentId"
+>): number {
+  return candidate.itemType === "RECALL_ROUND"
+    ? candidate.matchedSegmentId ? 2 : 1
+    : 0;
+}
+
+/** Rank-only Stage B fusion. Raw scores remain lane-local diagnostics; the
+ * synthetic lane carries one contribution per evidence root into global RRF. */
+export function selectMemoryIntraChatRawCandidates(input: Readonly<{
+  excludedEvidenceRoots?: readonly string[];
+  laneResults: readonly MemoryLaneResult[];
+  perChatLimit: number;
+  selectedSourceChatIds: readonly string[];
+}>): MemoryIntraChatRawSelection {
+  if (
+    input.selectedSourceChatIds.length < 1 ||
+    input.selectedSourceChatIds.length > MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS ||
+    new Set(input.selectedSourceChatIds).size !== input.selectedSourceChatIds.length ||
+    input.selectedSourceChatIds.some((sourceChatId) => !validToken(sourceChatId)) ||
+    ![
+      MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT,
+      MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT
+    ].includes(input.perChatLimit)
+  ) throw new Error("memory_intra_chat_selection_invalid");
+  const selectedSources = new Set(input.selectedSourceChatIds);
+  const sourceOrder = new Map(input.selectedSourceChatIds.map((sourceChatId, index) =>
+    [sourceChatId, index]));
+  const excludedRoots = new Set(input.excludedEvidenceRoots ?? []);
+  type Aggregate = {
+    candidate: MemoryLaneCandidate;
+    deterministicMatch: MemoryDeterministicMatch | null;
+    score: number;
+  };
+  const byRoot = new Map<string, Aggregate>();
+  for (const result of input.laneResults) {
+    if (!result.lane.startsWith("HISTORY_RECALL_") ||
+      result.lane === "HISTORY_RECALL_RECENT") {
+      throw new Error("memory_intra_chat_selection_invalid");
+    }
+    const laneCandidates: MemoryLaneCandidate[] = [];
+    const indexesByRoot = new Map<string, number>();
+    for (const candidate of result.candidates) {
+      const sourceChatId = candidate.metadata.sourceChatId;
+      if (candidate.lane !== result.lane || candidate.itemType === "FACT_VERSION" ||
+        !sourceChatId || !selectedSources.has(sourceChatId)) {
+        throw new Error("memory_intra_chat_selection_invalid");
+      }
+      const root = memoryRetrievalEvidenceRootKey(candidate);
+      const previousIndex = indexesByRoot.get(root);
+      if (previousIndex === undefined) {
+        indexesByRoot.set(root, laneCandidates.length);
+        laneCandidates.push(candidate);
+      } else if (historyRepresentationPriority(candidate) >
+        historyRepresentationPriority(laneCandidates[previousIndex]!)) {
+        laneCandidates[previousIndex] = candidate;
+      }
+    }
+    laneCandidates.forEach((candidate, index) => {
+      const root = memoryRetrievalEvidenceRootKey(candidate);
+      const previous = byRoot.get(root);
+      const deterministicMatch = previous?.deterministicMatch ??
+        candidate.deterministicMatch ?? null;
+      const representative = previous &&
+        historyRepresentationPriority(previous.candidate) >=
+          historyRepresentationPriority(candidate)
+        ? previous.candidate
+        : candidate;
+      byRoot.set(root, {
+        candidate: representative,
+        deterministicMatch,
+        score: (previous?.score ?? 0) +
+          MEMORY_RETRIEVAL_LANE_WEIGHTS[result.lane] /
+            (MEMORY_RETRIEVAL_RRF_K + index + 1)
+      });
+    });
+  }
+  const selected: MemoryLaneCandidate[] = [];
+  const countsBySource = new Map<string, number>();
+  const maximum = input.selectedSourceChatIds.length * input.perChatLimit;
+  for (const [root, aggregate] of [...byRoot.entries()].sort((left, right) =>
+    right[1].score - left[1].score ||
+    (sourceOrder.get(left[1].candidate.metadata.sourceChatId!) ?? Number.MAX_SAFE_INTEGER) -
+      (sourceOrder.get(right[1].candidate.metadata.sourceChatId!) ?? Number.MAX_SAFE_INTEGER) ||
+    historyRepresentationPriority(right[1].candidate) -
+      historyRepresentationPriority(left[1].candidate) ||
+    left[1].candidate.itemId.localeCompare(right[1].candidate.itemId))) {
+    if (excludedRoots.has(root)) continue;
+    const sourceChatId = aggregate.candidate.metadata.sourceChatId!;
+    const sourceCount = countsBySource.get(sourceChatId) ?? 0;
+    if (sourceCount >= input.perChatLimit) continue;
+    countsBySource.set(sourceChatId, sourceCount + 1);
+    selected.push({
+      ...aggregate.candidate,
+      deterministicMatch: aggregate.deterministicMatch,
+      lane: "HISTORY_INTRA_CHAT_RAW",
+      rawScore: aggregate.score
+    });
+    if (selected.length >= maximum) break;
+  }
+  return Object.freeze({
+    candidates: Object.freeze(selected),
+    rawCandidateCount: byRoot.size
+  });
+}
+
+const emptyDigestEvidence = Object.freeze({
+  digestOnlyChatCount: 0,
+  navigationCandidateCount: 0,
+  rawAnchorCount: 0,
+  rawCandidateCount: 0,
+  secondStageQueryCount: 0,
+  selectedChatCount: 0
+}) satisfies MemoryDigestRetrievalEvidence;
+
+type MemoryDigestIntraChatStageResult = Readonly<{
+  digestEvidence: MemoryDigestRetrievalEvidence;
+  laneResults: readonly MemoryLaneResult[];
+  lexicalFailures: readonly MemoryRetrievalLane[];
+  lexicalState: MemoryLocalRetrievalResult["lexicalState"];
+  vectorState: MemoryLocalRetrievalResult["vectorState"];
+}>;
+
+async function executeDigestIntraChatStage(input: Readonly<{
+  client: PrismaClient;
+  retrievalInput: MemoryLocalRetrievalInput;
+  snapshot: MemoryLocalRetrievalSnapshot;
+  laneResults: readonly MemoryLaneResult[];
+  vectorEvidence: MemoryVectorLaneEvidence[];
+}>): Promise<MemoryDigestIntraChatStageResult> {
+  const digestResult = input.laneResults.find(({ lane }) =>
+    lane === "HISTORY_DIGEST_FTS_SIMPLE");
+  const navigationCandidates = digestResult?.candidates ?? [];
+  const chatLimit = input.retrievalInput.plan.aggregationRequested
+    ? MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS
+    : MEMORY_RETRIEVAL_TARGETED_DIGEST_CHATS;
+  const selectedDigests: MemoryLaneCandidate[] = [];
+  const selectedSourceChatIds: string[] = [];
+  const seenSources = new Set<string>();
+  for (const candidate of navigationCandidates) {
+    const sourceChatId = candidate.metadata.sourceChatId;
+    if (!sourceChatId || seenSources.has(sourceChatId)) continue;
+    seenSources.add(sourceChatId);
+    selectedSourceChatIds.push(sourceChatId);
+    selectedDigests.push(candidate);
+    if (selectedSourceChatIds.length >= chatLimit) break;
+  }
+  if (selectedSourceChatIds.length === 0) {
+    return {
+      digestEvidence: emptyDigestEvidence,
+      laneResults: input.laneResults,
+      lexicalFailures: [],
+      lexicalState: "DISABLED",
+      vectorState: "DISABLED"
+    };
+  }
+
+  const perChatLimit = input.retrievalInput.plan.aggregationRequested
+    ? MEMORY_RETRIEVAL_COMPLEX_RAW_ANCHORS_PER_CHAT
+    : MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT;
+  const rawLimit = selectedSourceChatIds.length * perChatLimit;
+  const queryLimit = Math.min(
+    MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES,
+    rawLimit * 2
+  );
+  const tasks: Array<Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number]> = [];
+  const lexicalFailures: MemoryRetrievalLane[] = [];
+  const lexicalLanes = localLexicalLanes(
+    input.snapshot,
+    input.retrievalInput.plan
+  ).filter((lane) => lane.startsWith("HISTORY_RECALL_") &&
+    lane !== "HISTORY_RECALL_RECENT");
+  for (const lane of lexicalLanes) {
+    tasks.push({
+      executionId: `INTRA_CHAT:${lane}`,
+      async execute() {
+        try {
+          return await queryLane(
+            input.client,
+            lane,
+            queryLimit,
+            laneSql(
+              input.snapshot,
+              input.retrievalInput.plan,
+              lane,
+              queryLimit,
+              selectedSourceChatIds
+            ),
+            { maximumRows: queryLimit, sourceDiversity: true }
+          );
+        } catch {
+          lexicalFailures.push(lane);
+          return { candidates: [], lane };
+        }
+      },
+      lane
+    });
+  }
+
+  let vectorState: MemoryLocalRetrievalResult["vectorState"] =
+    input.retrievalInput.vector ? "DISABLED" : "NOT_CONFIGURED";
+  if (input.retrievalInput.vector && input.snapshot.indexMode === "HYBRID") {
+    vectorState = "READY";
+    const vector = input.retrievalInput.vector;
+    const vectorResult = createPrismaMemoryVectorRepository(input.client).search({
+      eligibility: {
+        allowedFactSensitivity: ["NORMAL", "SENSITIVE"],
+        allowedHistorySafety: ["NORMAL", "SENSITIVE"],
+        assistantId: input.snapshot.assistantId,
+        chatId: input.snapshot.chatId,
+        factMode: "CURRENT",
+        includePatterns: false,
+        factTemporalAsOf: null,
+        folderId: input.snapshot.folderId,
+        occurredFrom: null,
+        occurredTo: null,
+        sourceAssistantId: input.retrievalInput.plan.filters.scopeType === "ASSISTANT"
+          ? input.retrievalInput.plan.filters.scopeTargetId
+          : null,
+        sourceChatIds: selectedSourceChatIds,
+        sourceFolderId: input.retrievalInput.plan.filters.scopeType === "FOLDER"
+          ? input.retrievalInput.plan.filters.scopeTargetId
+          : null
+      },
+      itemTypes: [
+        "RECALL_CHUNK",
+        input.snapshot.roundSegmentProjectionVersion ===
+          MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
+          ? "RECALL_ROUND_SEGMENT"
+          : "RECALL_ROUND"
+      ],
+      limit: rawLimit,
+      minimumScore: vector.minimumScore,
+      profile: vector.profile,
+      userId: input.snapshot.userId,
+      vector: vector.vector
+    }).then((result) => {
+      if (result.status === "READY") input.vectorEvidence.push(...result.lanes);
+      else vectorState = "DEGRADED";
+      return result;
+    }).catch(() => {
+      vectorState = "DEGRADED";
+      return { hits: [], lanes: [], reason: "memory_vector_unavailable" as const,
+        status: "DEGRADED" as const };
+    });
+    tasks.push({
+      executionId: "INTRA_CHAT:HISTORY_RECALL_VECTOR",
+      async execute() {
+        const searched = await vectorResult;
+        if (searched.status !== "READY") {
+          return { candidates: [], lane: "HISTORY_RECALL_VECTOR" };
+        }
+        const hits = searched.hits.filter((hit) =>
+          hit.itemType === "RECALL_CHUNK" || hit.itemType === "RECALL_ROUND" ||
+          hit.itemType === "RECALL_ROUND_SEGMENT");
+        if (hits.length === 0) {
+          return { candidates: [], lane: "HISTORY_RECALL_VECTOR" };
+        }
+        try {
+          return await queryLane(
+            input.client,
+            "HISTORY_RECALL_VECTOR",
+            rawLimit,
+            vectorMetadataSql(
+              input.snapshot,
+              input.retrievalInput.plan,
+              "RECALL_CHUNK",
+              hits,
+              rawLimit,
+              selectedSourceChatIds
+            ),
+            { maximumRows: rawLimit, sourceDiversity: true }
+          );
+        } catch {
+          vectorState = "DEGRADED";
+          return { candidates: [], lane: "HISTORY_RECALL_VECTOR" };
+        }
+      },
+      lane: "HISTORY_RECALL_VECTOR"
+    });
+  }
+
+  const stageResults = await executeMemoryRetrievalLaneTasks(tasks);
+  const selectedRaw = selectMemoryIntraChatRawCandidates({
+    laneResults: stageResults,
+    perChatLimit,
+    selectedSourceChatIds
+  });
+  const stageRawSourceChats = new Set(selectedRaw.candidates.flatMap((candidate) =>
+    candidate.metadata.sourceChatId ? [candidate.metadata.sourceChatId] : []));
+  // The focused result replaces matching global projections from the same
+  // selected chats. This preserves separate Stage B attribution without
+  // allowing a duplicate root to contribute a second global RRF vote.
+  const deduplicatedGlobalResults = input.laneResults.map((result) =>
+    result.lane === "HISTORY_DIGEST_FTS_SIMPLE"
+      ? result
+      : {
+          candidates: result.candidates.filter((candidate) =>
+            candidate.itemType === "FACT_VERSION" ||
+            !candidate.metadata.sourceChatId ||
+            !stageRawSourceChats.has(candidate.metadata.sourceChatId)),
+          lane: result.lane
+        });
+  const globalRawResults = deduplicatedGlobalResults.filter(({ lane }) =>
+    lane !== "HISTORY_DIGEST_FTS_SIMPLE");
+  const rawSourceChats = new Set([
+    ...globalRawResults.flatMap(({ candidates }) => candidates.flatMap((candidate) =>
+      candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
+        ? [candidate.metadata.sourceChatId]
+        : [])),
+    ...selectedRaw.candidates.flatMap((candidate) =>
+      candidate.metadata.sourceChatId ? [candidate.metadata.sourceChatId] : [])
+  ]);
+  const retainedDigests = selectedDigests.filter((candidate) =>
+    !rawSourceChats.has(candidate.metadata.sourceChatId!));
+  const laneResults: MemoryLaneResult[] = [];
+  for (const result of deduplicatedGlobalResults) {
+    if (result.lane !== "HISTORY_DIGEST_FTS_SIMPLE") {
+      laneResults.push(result);
+      continue;
+    }
+    laneResults.push({ candidates: retainedDigests, lane: result.lane });
+    if (selectedRaw.candidates.length > 0) laneResults.push({
+      candidates: selectedRaw.candidates,
+      lane: "HISTORY_INTRA_CHAT_RAW"
+    });
+  }
+  const lexicalState: MemoryLocalRetrievalResult["lexicalState"] =
+    lexicalFailures.length === 0 ? "READY"
+      : lexicalFailures.length === lexicalLanes.length ? "FAILED" : "DEGRADED";
+  return {
+    digestEvidence: Object.freeze({
+      digestOnlyChatCount: retainedDigests.length,
+      navigationCandidateCount: navigationCandidates.length,
+      rawAnchorCount: selectedRaw.candidates.length,
+      rawCandidateCount: selectedRaw.rawCandidateCount,
+      secondStageQueryCount: 1,
+      selectedChatCount: selectedSourceChatIds.length
+    }),
+    laneResults: Object.freeze(laneResults),
+    lexicalFailures: Object.freeze(lexicalFailures),
+    lexicalState,
+    vectorState
+  };
+}
+
+function suppressDigestCandidatesWithRawEvidence(
+  laneResults: readonly MemoryLaneResult[]
+): readonly MemoryLaneResult[] {
+  const rawSourceChats = new Set(laneResults.flatMap(({ lane, candidates }) =>
+    lane === "HISTORY_DIGEST_FTS_SIMPLE"
+      ? []
+      : candidates.flatMap((candidate) =>
+          candidate.itemType !== "FACT_VERSION" && candidate.metadata.sourceChatId
+            ? [candidate.metadata.sourceChatId]
+            : [])));
+  return laneResults.map((result) => result.lane === "HISTORY_DIGEST_FTS_SIMPLE"
+    ? {
+        candidates: result.candidates.filter((candidate) =>
+          !rawSourceChats.has(candidate.metadata.sourceChatId!)),
+        lane: result.lane
+      }
+    : result);
 }
 
 function currentFactExpansionSql(
@@ -2657,9 +3513,88 @@ function currentFactExpansionSql(
     SELECT eligible."itemId", eligible."itemType", version."displayText" AS "safeText",
       'FACT_DISPLAY_TEXT'::text AS "projectionKind", NULL::text AS "sourceChatId",
       NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
-      NULL::timestamp AS "occurredTo"
+      NULL::timestamp AS "occurredTo", NULL::text AS "retrievalHint",
+      COALESCE(pattern_supports."evidence", '[]'::jsonb) AS "patternSupportingEvidence",
+      '[]'::jsonb AS "supportingEvidence"
     FROM eligible INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = ${snapshot.userId} AND version."id" = eligible."itemId"
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(jsonb_agg(jsonb_build_object(
+        'itemId', bounded."itemId",
+        'observedAt', bounded."observedAt",
+        'safeText', bounded."safeText",
+        'sourceAuthority', bounded."sourceAuthority",
+        'sourceChatId', bounded."sourceChatId",
+        'sourceRootHash', bounded."sourceRootHash"
+      ) ORDER BY bounded."observedAt" DESC, bounded."itemId"), '[]'::jsonb) AS "evidence"
+      FROM (
+        SELECT ranked."itemId", ranked."observedAt", ranked."safeText",
+          ranked."sourceAuthority", ranked."sourceChatId", ranked."sourceRootHash"
+        FROM (
+          SELECT support_source.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY support_source."sourceRootHash"
+              ORDER BY support_source."observedAt" DESC, support_source."itemId"
+            ) AS "rootOrdinal"
+          FROM (
+            SELECT source_version."id" AS "itemId",
+              source_version."displayText" AS "safeText",
+              source_version."observedAt",
+              CASE WHEN source_version."sourceMode" =
+                  'EXPLICIT'::"MemoryFactSourceMode"
+                THEN 'EXPLICIT' ELSE 'DIRECT_AUTOMATIC' END::text
+                AS "sourceAuthority",
+              automatic_root."chatId" AS "sourceChatId",
+              encode(digest(convert_to(
+                CASE WHEN source_version."sourceMode" =
+                    'EXPLICIT'::"MemoryFactSourceMode"
+                  THEN 'explicit:' || source_version."id"
+                  ELSE 'message:' || automatic_root."messageId" END,
+                'UTF8'
+              ), 'sha256'), 'hex') AS "sourceRootHash"
+            FROM "MemoryFactVersionRelation" AS relation
+            INNER JOIN "MemoryFactVersion" AS source_version
+              ON source_version."userId" = relation."userId"
+              AND source_version."id" = relation."targetVersionId"
+            LEFT JOIN LATERAL (
+              SELECT support."chatId", support."messageId"
+              FROM "MemoryEvidence" AS support
+              INNER JOIN "Chat" AS evidence_chat
+                ON evidence_chat."userId" = support."userId"
+                AND evidence_chat."id" = support."chatId"
+                AND evidence_chat."projectId" IS NULL
+                AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+                AND evidence_chat."permanentDeletionAt" IS NULL
+              INNER JOIN "Message" AS evidence_message
+                ON evidence_message."chatId" = support."chatId"
+                AND evidence_message."id" = support."messageId"
+                AND evidence_message."role" = 'user'
+              WHERE source_version."sourceMode" =
+                  'AUTOMATIC'::"MemoryFactSourceMode"
+                AND ${memoryPersonalEvidenceRowPredicate(
+                  snapshot.userId,
+                  Prisma.sql`source_version."id"`,
+                  { exactVNext: true }
+                )}
+              ORDER BY support."observedAt" DESC, support."id"
+              LIMIT 1
+            ) AS automatic_root ON TRUE
+            WHERE relation."userId" = ${snapshot.userId}
+              AND relation."sourceVersionId" = eligible."itemId"
+              AND relation."kind" =
+                'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+              AND (
+                source_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+                OR automatic_root."messageId" IS NOT NULL
+              )
+          ) AS support_source
+        ) AS ranked
+        WHERE ranked."rootOrdinal" = 1
+        ORDER BY ranked."observedAt" DESC, ranked."itemId"
+        LIMIT ${MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS}
+      ) AS bounded
+    ) AS pattern_supports
+      ON version."modality" = 'PATTERN'::"MemoryFactModality"
     WHERE eligible."itemId" IN (${valuesSql(ids)}) ORDER BY eligible."itemId"
   `;
 }
@@ -2674,14 +3609,41 @@ function chunkExpansionSql(
     SELECT eligible."itemId", eligible."itemType", chunk."safeProjectedText" AS "safeText",
       'RECALL_CHUNK_SAFE_PROJECTED_TEXT'::text AS "projectionKind",
       chunk."chatId" AS "sourceChatId", NULL::text AS "supportingItemId",
-      chunk."occurredFrom", chunk."occurredTo"
+      chunk."occurredFrom", chunk."occurredTo", NULL::text AS "retrievalHint",
+      '[]'::jsonb AS "patternSupportingEvidence",
+      '[]'::jsonb AS "supportingEvidence"
     FROM eligible INNER JOIN "MemoryRecallChunk" AS chunk
       ON chunk."userId" = ${snapshot.userId} AND chunk."id" = eligible."itemId"
     WHERE eligible."itemId" IN (${valuesSql(ids)}) ORDER BY eligible."itemId"
   `;
 }
 
-function roundExpansionSql(
+function toolEventExpansionSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  ids: readonly string[]
+): Prisma.Sql {
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)})
+    SELECT eligible."itemId", eligible."itemType",
+      tool_event."safeProjectedText" AS "safeText",
+      'TOOL_EVENT_SAFE_TEXT'::text AS "projectionKind",
+      tool_event."chatId" AS "sourceChatId", NULL::text AS "supportingItemId",
+      tool_event."occurredAt" AS "occurredFrom",
+      tool_event."occurredAt" AS "occurredTo", NULL::text AS "retrievalHint",
+      '[]'::jsonb AS "patternSupportingEvidence",
+      '[]'::jsonb AS "supportingEvidence"
+    FROM eligible
+    INNER JOIN "MemoryToolEvent" AS tool_event
+      ON tool_event."userId" = ${snapshot.userId}
+      AND tool_event."id" = eligible."itemId"
+    WHERE eligible."itemType" = 'TOOL_EVENT'::"MemorySearchItemType"
+      AND eligible."itemId" IN (${valuesSql(ids)})
+    ORDER BY eligible."itemId"
+  `;
+}
+
+function legacyRoundExpansionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   ids: readonly string[]
@@ -2695,11 +3657,140 @@ function roundExpansionSql(
       END AS "safeText",
       'RECALL_ROUND_RAW_SAFE_TEXT'::text AS "projectionKind",
       round."chatId" AS "sourceChatId", round."parentChunkId" AS "supportingItemId",
-      round."occurredFrom", round."occurredTo"
+      round."occurredFrom", round."occurredTo", NULL::text AS "retrievalHint",
+      '[]'::jsonb AS "patternSupportingEvidence",
+      '[]'::jsonb AS "supportingEvidence"
     FROM eligible INNER JOIN "MemoryRecallRound" AS round
       ON round."userId" = ${snapshot.userId} AND round."id" = eligible."itemId"
     WHERE eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
+      AND eligible."matchedSegmentId" IS NULL
       AND eligible."itemId" IN (${valuesSql(ids)})
+    ORDER BY eligible."itemId"
+  `;
+}
+
+type RoundSegmentSelection = Readonly<{ itemId: string; segmentId: string }>;
+
+function segmentRoundExpansionSql(
+  snapshot: MemoryLocalRetrievalSnapshot,
+  plan: MemoryRetrievalPlan,
+  selections: readonly RoundSegmentSelection[]
+): Prisma.Sql {
+  return Prisma.sql`
+    WITH eligible AS MATERIALIZED (${historyEligibleSelect(snapshot, plan)}),
+    selected("itemId", "segmentId") AS (VALUES ${Prisma.join(
+      selections.map(({ itemId, segmentId }) => Prisma.sql`(${itemId}, ${segmentId})`)
+    )})
+    SELECT eligible."itemId", eligible."itemType",
+      segment."rawSafeText" AS "safeText",
+      'RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT'::text AS "projectionKind",
+      current_round."chatId" AS "sourceChatId",
+      current_round."parentChunkId" AS "supportingItemId",
+      segment."occurredFrom", segment."occurredTo",
+      CASE WHEN segment."contextualKeyState" = 'GENERATED'
+          AND dependencies."allValid"
+        THEN segment."contextualNarrativeText" ELSE NULL END AS "retrievalHint",
+      '[]'::jsonb AS "patternSupportingEvidence",
+      CASE WHEN segment."contextualKeyState" = 'GENERATED'
+          AND dependencies."allValid"
+        THEN dependencies."supportingEvidence" ELSE '[]'::jsonb
+      END AS "supportingEvidence"
+    FROM eligible
+    INNER JOIN selected
+      ON selected."itemId" = eligible."itemId"
+      AND selected."segmentId" = eligible."matchedSegmentId"
+    INNER JOIN "MemoryRecallRoundSegment" AS segment
+      ON segment."userId" = ${snapshot.userId}
+      AND segment."roundId" = eligible."itemId"
+      AND segment."id" = eligible."matchedSegmentId"
+    INNER JOIN "MemoryRecallRound" AS current_round
+      ON current_round."userId" = segment."userId"
+      AND current_round."id" = segment."roundId"
+      AND current_round."supportingRoundIds" = segment."supportingRoundIds"
+      AND (segment."contextualKeyState" <> 'GENERATED'
+        OR current_round."contextualKeyState" = 'GENERATED')
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) = cardinality(segment."supportingRoundIds")
+          AND COUNT(*) = COUNT(DISTINCT dependency_ref."roundId")
+          AND cardinality(segment."supportingRoundIds") <= 2 AS "allValid",
+        COALESCE(jsonb_agg(jsonb_build_object(
+          'itemId', round."id",
+          'occurredFrom', round."occurredFrom",
+          'occurredTo', round."occurredTo",
+          'safeText', CASE WHEN char_length(round."rawSafeText") <= 4000
+            THEN round."rawSafeText"
+            ELSE substring(round."rawSafeText" FROM 1 FOR 4000) END,
+          'sourceChatId', round."chatId"
+        ) ORDER BY dependency_ref."ordinal"), '[]'::jsonb) AS "supportingEvidence"
+      FROM unnest(segment."supportingRoundIds") WITH ORDINALITY
+        AS dependency_ref("roundId", "ordinal")
+      INNER JOIN "MemoryRecallRound" AS round
+        ON round."userId" = segment."userId"
+        AND round."id" = dependency_ref."roundId"
+        AND round."id" <> segment."roundId"
+        AND round."chatId" = current_round."chatId"
+        AND round."roundOrdinal" < current_round."roundOrdinal"
+      INNER JOIN "MemoryRecallChunk" AS parent_chunk
+        ON parent_chunk."userId" = round."userId"
+        AND parent_chunk."id" = round."parentChunkId"
+      INNER JOIN "Chat" AS dependency_source_chat
+        ON dependency_source_chat."userId" = round."userId"
+        AND dependency_source_chat."id" = round."chatId"
+      INNER JOIN "ChatMemoryCheckpoint" AS dependency_checkpoint
+        ON dependency_checkpoint."userId" = round."userId"
+        AND dependency_checkpoint."chatId" = round."chatId"
+      WHERE round."state" = 'ACTIVE'::"MemoryHistoryItemState"
+        AND round."projectionVersion" = ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+        AND round."contextualKeyPolicyVersion" = ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+        AND round."sourceProjectionVersion" = ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+        AND round."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+        AND round."safetyClass" IN (
+          'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+        )
+        AND parent_chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+        AND parent_chunk."chunkingVersion" = ${MEMORY_HISTORY_CHUNKING_VERSION}
+        AND parent_chunk."sourceProjectionVersion" =
+          ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
+        AND dependency_checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+        AND dependency_checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+        AND ${memoryHistoryRoundSourceAuthorityPredicate({
+          chat: "dependency_source_chat",
+          checkpoint: "dependency_checkpoint"
+        })}
+        AND ${memoryRoundConversationFeedbackPredicate(snapshot)}
+        AND ${memoryRoundSourceSafetyPredicate()}
+        AND EXISTS (
+          SELECT 1
+          FROM "MemorySearchEntry" AS dependency_entry
+          INNER JOIN "MemoryRecallRoundSegment" AS dependency_segment
+            ON dependency_segment."userId" = dependency_entry."userId"
+            AND dependency_segment."roundId" = dependency_entry."recallRoundId"
+            AND dependency_segment."id" = dependency_entry."recallRoundSegmentId"
+            AND dependency_segment."state" = 'ACTIVE'::"MemoryHistoryItemState"
+            AND dependency_segment."evidenceRootHash" = round."evidenceRootHash"
+            AND dependency_segment."sourceRevisionAtCreation" =
+              round."sourceRevisionAtCreation"
+            AND dependency_segment."contextualKeyPolicyVersion" =
+              ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+            AND dependency_segment."projectionVersion" =
+              ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+            AND dependency_segment."redactionState" <>
+              'EXCLUDED'::"MemoryRedactionState"
+            AND dependency_segment."safetyClass" IN (
+              'NORMAL'::"MemoryDerivedSafetyClass",
+              'SENSITIVE'::"MemoryDerivedSafetyClass"
+            )
+          WHERE dependency_entry."userId" = round."userId"
+            AND dependency_entry."indexGenerationId" = ${snapshot.activeGenerationId}
+            AND dependency_entry."recallRoundId" = round."id"
+            AND dependency_entry."itemType" =
+              'RECALL_ROUND_SEGMENT'::"MemorySearchItemType"
+            AND dependency_entry."safeContentHash" =
+              dependency_segment."contextualSearchHash"
+        )
+    ) AS dependencies ON TRUE
+    WHERE eligible."itemType" = 'RECALL_ROUND'::"MemorySearchItemType"
     ORDER BY eligible."itemId"
   `;
 }
@@ -2715,7 +3806,9 @@ function digestExpansionSql(
       digest."safeDigestText" AS "safeText",
       'CHAT_DIGEST_SAFE_TEXT'::text AS "projectionKind",
       digest."chatId" AS "sourceChatId", digest."id" AS "supportingItemId",
-      digest."occurredFrom", digest."occurredTo"
+      digest."occurredFrom", digest."occurredTo", NULL::text AS "retrievalHint",
+      '[]'::jsonb AS "patternSupportingEvidence",
+      '[]'::jsonb AS "supportingEvidence"
     FROM eligible
     INNER JOIN "ChatMemoryDigest" AS digest
       ON digest."userId" = ${snapshot.userId}
@@ -2912,6 +4005,136 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
     (plan.lexicalQuery === null || plan.lexicalQuery.length <= 2_000);
 }
 
+function validBaselinePlan(
+  baseline: MemoryRetrievalPlan,
+  enriched: MemoryRetrievalPlan,
+  snapshot: MemoryLocalRetrievalSnapshot
+): boolean {
+  const kinds = baseline.filters.sourceKinds;
+  const facts = kinds.includes("FACT") || kinds.includes("EVENT");
+  return validPlan(baseline) && !baseline.aggregationRequested &&
+    !baseline.applyResponsePreferences && !baseline.includePatterns &&
+    !baseline.profileRequested && !baseline.recencyRequested &&
+    baseline.mode === (facts ? "TARGETED_CURRENT" : "PAST_CHAT_SEARCH") &&
+    baseline.temporalIntent === "ANY" &&
+    baseline.originalSanitizedQuery === enriched.originalSanitizedQuery &&
+    baseline.semanticQueryVariants.length === 1 &&
+    baseline.semanticQueryVariants[0]?.kind === "ORIGINAL" &&
+    baseline.temporalQueryVariants.some((variant) =>
+      variant.kind === "UNRESTRICTED" &&
+      variant.text === baseline.originalSanitizedQuery) &&
+    baseline.filters.asOf === null && baseline.filters.from === null &&
+    baseline.filters.to === null && baseline.filters.scopeType === null &&
+    baseline.filters.scopeTargetId === null &&
+    (!snapshot.useMemoryFacts || kinds.includes("FACT") && kinds.includes("EVENT")) &&
+    (!snapshot.referenceChatHistory || kinds.includes("HISTORY"));
+}
+
+const emptySourceFamilyEvidence = Object.freeze({
+  baselineFactCandidateCount: 0,
+  baselineHistoryCandidateCount: 0,
+  baselineOnlyCandidateCount: 0,
+  plannerExcludedFamilyRecoveredCount: 0,
+  plannerOnlyCandidateCount: 0
+}) satisfies MemorySourceFamilyRetrievalEvidence;
+
+function sourceKindForCandidate(
+  candidate: Pick<MemoryRankedCandidate, "itemType" | "metadata">
+): "EVENT" | "FACT" | "HISTORY" {
+  if (candidate.itemType === "TOOL_EVENT") return "HISTORY";
+  if (candidate.itemType !== "FACT_VERSION") return "HISTORY";
+  return candidate.metadata.modality === "EVENT" ? "EVENT" : "FACT";
+}
+
+function baselineLaneCandidate(
+  candidate: MemoryRankedCandidate,
+  lane: "FACT_BASELINE_ORIGINAL" | "HISTORY_BASELINE_ORIGINAL"
+): MemoryLaneCandidate {
+  return {
+    deterministicMatch: candidate.featureSnapshot.deterministicMatches?.[0] ?? null,
+    entryId: candidate.entryId,
+    hardFilterPassed: true,
+    itemId: candidate.itemId,
+    itemType: candidate.itemType,
+    lane,
+    matchedSegmentId: candidate.matchedSegmentId ?? null,
+    matchedSegmentPosition: candidate.matchedSegmentPosition ?? null,
+    metadata: candidate.metadata,
+    rawScore: candidate.rrfScore
+  };
+}
+
+/** Fuses and caps the original-query plan before adding only evidence roots
+ * that planner-enriched retrieval did not already recover. Duplicate roots
+ * therefore contribute exactly once to the final rank-only RRF. */
+export function applyMemorySourceFamilyRecallFloor(input: Readonly<{
+  baselineLaneResults: readonly MemoryLaneResult[];
+  baselinePlan: MemoryRetrievalPlan;
+  enrichedLaneResults: readonly MemoryLaneResult[];
+  enrichedPlan: MemoryRetrievalPlan;
+  now: Date;
+}>): Readonly<{
+  evidence: MemorySourceFamilyRetrievalEvidence;
+  laneResults: readonly MemoryLaneResult[];
+}> {
+  const baselineRanked = fuseMemoryRetrievalCandidates(
+    input.baselinePlan,
+    input.baselineLaneResults,
+    input.now
+  );
+  const enrichedRanked = fuseMemoryRetrievalCandidates(
+    input.enrichedPlan,
+    input.enrichedLaneResults,
+    input.now
+  );
+  const selectedBaseline: MemoryRankedCandidate[] = [];
+  let factCount = 0;
+  let historyCount = 0;
+  for (const candidate of baselineRanked) {
+    if (candidate.itemType === "FACT_VERSION") {
+      if (factCount >= MEMORY_RETRIEVAL_BASELINE_FACT_EVIDENCE_ROOTS) continue;
+      factCount += 1;
+    } else {
+      if (historyCount >= MEMORY_RETRIEVAL_BASELINE_HISTORY_EVIDENCE_ROOTS) continue;
+      historyCount += 1;
+    }
+    selectedBaseline.push(candidate);
+  }
+  const enrichedRoots = new Set(enrichedRanked.map(memoryRetrievalEvidenceRootKey));
+  const baselineRoots = new Set(baselineRanked.map(memoryRetrievalEvidenceRootKey));
+  const baselineOnly = selectedBaseline.filter((candidate) =>
+    !enrichedRoots.has(memoryRetrievalEvidenceRootKey(candidate)));
+  const factCandidates = baselineOnly.filter((candidate) =>
+    candidate.itemType === "FACT_VERSION").map((candidate) =>
+      baselineLaneCandidate(candidate, "FACT_BASELINE_ORIGINAL"));
+  const historyCandidates = baselineOnly.filter((candidate) =>
+    candidate.itemType !== "FACT_VERSION").map((candidate) =>
+      baselineLaneCandidate(candidate, "HISTORY_BASELINE_ORIGINAL"));
+  const baselineOnlyResults: MemoryLaneResult[] = [];
+  if (factCandidates.length > 0) baselineOnlyResults.push({
+    candidates: factCandidates,
+    lane: "FACT_BASELINE_ORIGINAL"
+  });
+  if (historyCandidates.length > 0) baselineOnlyResults.push({
+    candidates: historyCandidates,
+    lane: "HISTORY_BASELINE_ORIGINAL"
+  });
+  return Object.freeze({
+    evidence: Object.freeze({
+      baselineFactCandidateCount: factCount,
+      baselineHistoryCandidateCount: historyCount,
+      baselineOnlyCandidateCount: baselineOnly.length,
+      plannerExcludedFamilyRecoveredCount: baselineOnly.filter((candidate) =>
+        !input.enrichedPlan.filters.sourceKinds.includes(
+          sourceKindForCandidate(candidate)
+        )).length,
+      plannerOnlyCandidateCount: enrichedRanked.filter((candidate) =>
+        !baselineRoots.has(memoryRetrievalEvidenceRootKey(candidate))).length
+    }),
+    laneResults: Object.freeze([...baselineOnlyResults, ...input.enrichedLaneResults])
+  });
+}
+
 function emptyResult(
   snapshot: MemoryLocalRetrievalSnapshot,
   core: readonly MemoryCoreCandidate[] = [],
@@ -2919,13 +4142,48 @@ function emptyResult(
 ): MemoryLocalRetrievalResult {
   return {
     core,
+    digestEvidence: emptyDigestEvidence,
     laneResults: [],
     lexicalFailures: [],
     lexicalState: "DISABLED",
     snapshot,
+    sourceFamilyEvidence: emptySourceFamilyEvidence,
     vectorEvidence: [],
     vectorState
   };
+}
+
+function validRankedSegmentIdentity(candidate: MemoryRankedCandidate): boolean {
+  const id = candidate.matchedSegmentId ?? null;
+  const position = candidate.matchedSegmentPosition ?? null;
+  if (id === null || position === null) return id === null && position === null;
+  return candidate.itemType === "RECALL_ROUND" && validToken(id) &&
+    roundSegmentPositions.has(position);
+}
+
+function partitionRoundExpansionCandidates(
+  candidates: readonly MemoryRankedCandidate[]
+): Readonly<{
+  legacyIds: readonly string[];
+  segments: readonly RoundSegmentSelection[];
+}> {
+  const rounds = candidates.filter((candidate) => candidate.itemType === "RECALL_ROUND");
+  return {
+    legacyIds: rounds.flatMap((candidate) =>
+      candidate.matchedSegmentId ? [] : [candidate.itemId]),
+    segments: rounds.flatMap((candidate) => candidate.matchedSegmentId
+      ? [{ itemId: candidate.itemId, segmentId: candidate.matchedSegmentId }]
+      : [])
+  };
+}
+
+function usesDigestOnlyProjection(candidate: MemoryRankedCandidate): boolean {
+  if (candidate.itemType !== "RECALL_CHUNK" ||
+    candidate.laneRanks.HISTORY_DIGEST_FTS_SIMPLE === undefined) return false;
+  return !Object.keys(candidate.laneRanks).some((lane) =>
+    lane === "HISTORY_INTRA_CHAT_RAW" ||
+    lane === "HISTORY_BASELINE_ORIGINAL" ||
+    lane.startsWith("HISTORY_RECALL_"));
 }
 
 export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient = prisma) {
@@ -2941,30 +4199,54 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
           ? MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES
           : MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES) ||
         new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
-          candidates.length || candidates.some((candidate) => !validToken(candidate.itemId))
+          candidates.length || candidates.some((candidate) =>
+          !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate))
       ) throw new Error("memory_expansion_contract_invalid");
       const factIds = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION")
         .map((candidate) => candidate.itemId);
-      const chunkIds = candidates.filter((candidate) => candidate.itemType === "RECALL_CHUNK")
+      const digestChunkIds = candidates.filter(usesDigestOnlyProjection)
         .map((candidate) => candidate.itemId);
-      const roundIds = candidates.filter((candidate) => candidate.itemType === "RECALL_ROUND")
+      const rawChunkIds = candidates.filter((candidate) =>
+        candidate.itemType === "RECALL_CHUNK" && !usesDigestOnlyProjection(candidate))
         .map((candidate) => candidate.itemId);
-      if ((chunkIds.length > 0 || roundIds.length > 0) &&
+      const toolEventIds = candidates.filter((candidate) =>
+        candidate.itemType === "TOOL_EVENT").map((candidate) => candidate.itemId);
+      const chunkIds = [...digestChunkIds, ...rawChunkIds];
+      const roundSelections = partitionRoundExpansionCandidates(candidates);
+      if ((chunkIds.length > 0 || toolEventIds.length > 0 ||
+        roundSelections.legacyIds.length > 0 ||
+        roundSelections.segments.length > 0) &&
         (!snapshot.activeGenerationId || !snapshot.indexMode)) {
         throw new Error("memory_expansion_contract_invalid");
       }
       const queries: Promise<ExpandedRow[]>[] = [];
       if (factIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
         currentFactExpansionSql(snapshot, plan, factIds)));
-      if (chunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+      if (digestChunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+        digestExpansionSql(snapshot, plan, digestChunkIds)));
+      if (rawChunkIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
         plan.mode === "HISTORY_OVERVIEW"
-          ? digestExpansionSql(snapshot, plan, chunkIds)
-          : chunkExpansionSql(snapshot, plan, chunkIds)));
-      if (roundIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
-        roundExpansionSql(snapshot, plan, roundIds)).then((rows) => rows.map((row) => ({
+          ? digestExpansionSql(snapshot, plan, rawChunkIds)
+          : chunkExpansionSql(snapshot, plan, rawChunkIds)));
+      if (toolEventIds.length > 0) queries.push(client.$queryRaw<ExpandedRow[]>(
+        toolEventExpansionSql(snapshot, plan, toolEventIds)));
+      if (roundSelections.legacyIds.length > 0) {
+        queries.push(client.$queryRaw<ExpandedRow[]>(legacyRoundExpansionSql(
+          snapshot,
+          plan,
+          roundSelections.legacyIds
+        )).then((rows) => rows.map((row) => ({
           ...row,
           safeText: boundedMemoryRecallRoundEvidenceText(row.safeText)
         }))));
+      }
+      if (roundSelections.segments.length > 0) {
+        queries.push(client.$queryRaw<ExpandedRow[]>(segmentRoundExpansionSql(
+          snapshot,
+          plan,
+          roundSelections.segments
+        )));
+      }
       return orderedExpandedCandidates(candidates, (await Promise.all(queries)).flat());
     },
 
@@ -2978,15 +4260,19 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         !plan.aggregationRequested || plan.mode !== "PAST_CHAT_SEARCH" ||
         candidates.length > MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES ||
         new Set(candidates.map((candidate) => `${candidate.itemType}:${candidate.itemId}`)).size !==
-          candidates.length || candidates.some((candidate) => !validToken(candidate.itemId))
+          candidates.length || candidates.some((candidate) =>
+          !validToken(candidate.itemId) || !validRankedSegmentIdentity(candidate))
       ) throw new Error("memory_aggregation_navigation_contract_invalid");
       const factIds = candidates.filter((candidate) => candidate.itemType === "FACT_VERSION")
         .map((candidate) => candidate.itemId);
       const chunkIds = candidates.filter((candidate) => candidate.itemType === "RECALL_CHUNK")
         .map((candidate) => candidate.itemId);
-      const roundIds = candidates.filter((candidate) => candidate.itemType === "RECALL_ROUND")
-        .map((candidate) => candidate.itemId);
-      if ((chunkIds.length > 0 || roundIds.length > 0) &&
+      const toolEventIds = candidates.filter((candidate) =>
+        candidate.itemType === "TOOL_EVENT").map((candidate) => candidate.itemId);
+      const roundSelections = partitionRoundExpansionCandidates(candidates);
+      if ((chunkIds.length > 0 || toolEventIds.length > 0 ||
+        roundSelections.legacyIds.length > 0 ||
+        roundSelections.segments.length > 0) &&
         (!snapshot.activeGenerationId || !snapshot.indexMode)) {
         throw new Error("memory_aggregation_navigation_contract_invalid");
       }
@@ -2995,11 +4281,25 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
         currentFactExpansionSql(snapshot, plan, factIds)));
       if (chunkIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
         digestExpansionSql(snapshot, plan, chunkIds)));
-      if (roundIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
-        roundExpansionSql(snapshot, plan, roundIds)).then((rows) => rows.map((row) => ({
+      if (toolEventIds.length > 0) initialQueries.push(client.$queryRaw<ExpandedRow[]>(
+        toolEventExpansionSql(snapshot, plan, toolEventIds)));
+      if (roundSelections.legacyIds.length > 0) {
+        initialQueries.push(client.$queryRaw<ExpandedRow[]>(legacyRoundExpansionSql(
+          snapshot,
+          plan,
+          roundSelections.legacyIds
+        )).then((rows) => rows.map((row) => ({
           ...row,
           safeText: boundedMemoryRecallRoundEvidenceText(row.safeText)
         }))));
+      }
+      if (roundSelections.segments.length > 0) {
+        initialQueries.push(client.$queryRaw<ExpandedRow[]>(segmentRoundExpansionSql(
+          snapshot,
+          plan,
+          roundSelections.segments
+        )));
+      }
       const initialRows = (await Promise.all(initialQueries)).flat();
       const digestChunkIds = new Set(initialRows.flatMap((row) =>
         row.itemType === "RECALL_CHUNK" && row.projectionKind === "CHAT_DIGEST_SAFE_TEXT"
@@ -3062,6 +4362,10 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
     async retrieve(input: MemoryLocalRetrievalInput): Promise<MemoryLocalRetrievalResult> {
       if (!validPlan(input.plan)) throw new Error("memory_retrieval_plan_invalid");
       const snapshot = await loadSnapshot(client, input);
+      if (input.baselinePlan &&
+        !validBaselinePlan(input.baselinePlan, input.plan, snapshot)) {
+        throw new Error("memory_retrieval_baseline_plan_invalid");
+      }
       if (snapshot.status !== "READY") return emptyResult(snapshot);
       const core = input.plan.applyResponsePreferences
         ? await loadCore(client, snapshot)
@@ -3069,28 +4373,158 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       if (!input.plan.queryPresent) {
         return emptyResult(snapshot, core, input.vector ? "DISABLED" : "NOT_CONFIGURED");
       }
-      const lexicalLanes = localLexicalLanes(snapshot, input.plan);
-      const vectorLanes = localVectorLanes(snapshot, input);
-      const enabled = [...lexicalLanes, ...vectorLanes];
-      if (enabled.length === 0) return emptyResult(snapshot, core,
-        input.vector ? "DISABLED" : "NOT_CONFIGURED");
-      const allocation = allocateMemoryRetrievalLaneLimits(
-        enabled,
-        input.plan.aggregationRequested
-      );
       const tasks: Array<Parameters<typeof executeMemoryRetrievalLaneTasks>[0][number]> = [];
-      const lexical = pushLexicalTasks(tasks, client, snapshot, input.plan, allocation);
       const vectorEvidence: MemoryVectorLaneEvidence[] = [];
-      const vector = pushVectorTasks(tasks, client, snapshot, input, vectorEvidence, allocation);
-      const laneResults = await executeMemoryRetrievalLaneTasks(tasks);
+      const lexicalExecutions: Array<ReturnType<typeof pushLexicalTasks>> = [];
+      const vectorExecutions: Array<ReturnType<typeof pushVectorTasks>> = [];
+      let baselineTaskCount = 0;
+      const separateBaseline = input.baselinePlan && input.baselinePlan !== input.plan
+        ? input.baselinePlan
+        : null;
+      if (separateBaseline) {
+        const baselineInput = { ...input, plan: separateBaseline };
+        const baselineLexicalLanes = localLexicalLanes(snapshot, separateBaseline);
+        const baselineVectorLanes = localVectorLanes(snapshot, baselineInput);
+        const baselineEnabled = [...baselineLexicalLanes, ...baselineVectorLanes];
+        if (baselineEnabled.length > 0) {
+          const baselineAllocation = allocateMemoryRetrievalLaneLimits(baselineEnabled);
+          lexicalExecutions.push(pushLexicalTasks(
+            tasks,
+            client,
+            snapshot,
+            separateBaseline,
+            baselineAllocation,
+            "BASELINE"
+          ));
+          vectorExecutions.push(pushVectorTasks(
+            tasks,
+            client,
+            snapshot,
+            baselineInput,
+            vectorEvidence,
+            baselineAllocation,
+            "BASELINE"
+          ));
+        }
+        baselineTaskCount = tasks.length;
+      }
+      const enrichedLexicalLanes = localLexicalLanes(snapshot, input.plan);
+      const enrichedVectorLanes = localVectorLanes(snapshot, input);
+      const enrichedEnabled = [...enrichedLexicalLanes, ...enrichedVectorLanes];
+      if (enrichedEnabled.length > 0) {
+        const enrichedAllocation = allocateMemoryRetrievalLaneLimits(
+          enrichedEnabled,
+          input.plan.aggregationRequested
+        );
+        lexicalExecutions.push(pushLexicalTasks(
+          tasks,
+          client,
+          snapshot,
+          input.plan,
+          enrichedAllocation,
+          "ENRICHED"
+        ));
+        vectorExecutions.push(pushVectorTasks(
+          tasks,
+          client,
+          snapshot,
+          input,
+          vectorEvidence,
+          enrichedAllocation,
+          "ENRICHED"
+        ));
+      }
+      if (tasks.length === 0) return emptyResult(snapshot, core,
+        input.vector ? "DISABLED" : "NOT_CONFIGURED");
+      const executed = await executeMemoryRetrievalLaneTasks(tasks);
+      let baselineLaneResults = separateBaseline
+        ? executed.slice(0, baselineTaskCount)
+        : input.baselinePlan ? executed : [];
+      let enrichedLaneResults = separateBaseline
+        ? executed.slice(baselineTaskCount)
+        : executed;
+      const stageLexicalStates: MemoryLocalRetrievalResult["lexicalState"][] = [];
+      const stageVectorStates: MemoryLocalRetrievalResult["vectorState"][] = [];
+      const stageLexicalFailures: MemoryRetrievalLane[] = [];
+      if (separateBaseline) {
+        const baselineStage = await executeDigestIntraChatStage({
+          client,
+          laneResults: baselineLaneResults,
+          retrievalInput: { ...input, plan: separateBaseline },
+          snapshot,
+          vectorEvidence
+        });
+        baselineLaneResults = baselineStage.laneResults;
+        if (baselineStage.digestEvidence.secondStageQueryCount > 0) {
+          stageLexicalStates.push(baselineStage.lexicalState);
+          stageVectorStates.push(baselineStage.vectorState);
+          stageLexicalFailures.push(...baselineStage.lexicalFailures);
+        }
+      }
+      const enrichedStage = await executeDigestIntraChatStage({
+        client,
+        laneResults: enrichedLaneResults,
+        retrievalInput: input,
+        snapshot,
+        vectorEvidence
+      });
+      enrichedLaneResults = enrichedStage.laneResults;
+      if (!separateBaseline && input.baselinePlan) {
+        baselineLaneResults = enrichedLaneResults;
+      }
+      if (enrichedStage.digestEvidence.secondStageQueryCount > 0) {
+        stageLexicalStates.push(enrichedStage.lexicalState);
+        stageVectorStates.push(enrichedStage.vectorState);
+        stageLexicalFailures.push(...enrichedStage.lexicalFailures);
+      }
+      const sourceFamily = input.baselinePlan
+        ? applyMemorySourceFamilyRecallFloor({
+            baselineLaneResults,
+            baselinePlan: input.baselinePlan,
+            enrichedLaneResults,
+            enrichedPlan: input.plan,
+            now: input.now
+          })
+        : { evidence: emptySourceFamilyEvidence, laneResults: enrichedLaneResults };
+      const lexicalExecutionStates = [
+        ...lexicalExecutions.map((execution) => execution.state()),
+        ...stageLexicalStates
+      ];
+      const activeLexicalStates = lexicalExecutionStates.filter((state) =>
+        state !== "DISABLED");
+      const lexicalState: MemoryLocalRetrievalResult["lexicalState"] =
+        activeLexicalStates.length === 0 ? "DISABLED"
+          : activeLexicalStates.every((state) => state === "FAILED") ? "FAILED"
+            : activeLexicalStates.some((state) => state !== "READY") ? "DEGRADED"
+              : "READY";
+      const vectorExecutionStates = [
+        ...vectorExecutions.map((execution) => execution.state()),
+        ...stageVectorStates
+      ];
+      const vectorState: MemoryLocalRetrievalResult["vectorState"] =
+        vectorExecutionStates.some((state) => state === "DEGRADED") ? "DEGRADED"
+          : vectorExecutionStates.some((state) => state === "READY") ? "READY"
+            : vectorExecutionStates.length > 0 && vectorExecutionStates.every((state) =>
+                state === "NOT_CONFIGURED") ? "NOT_CONFIGURED"
+              : "DISABLED";
+      const lexicalFailures = [...new Set([
+        ...lexicalExecutions.flatMap((execution) => execution.failures()),
+        ...stageLexicalFailures
+      ])].sort((left, right) => left.localeCompare(right));
+      const distinctVectorEvidence = [...new Map(vectorEvidence.map((entry) => [
+        JSON.stringify(entry),
+        entry
+      ])).values()].sort((left, right) => left.itemType.localeCompare(right.itemType));
       return {
         core,
-        laneResults,
-        lexicalFailures: lexical.failures(),
-        lexicalState: lexical.state(),
+        digestEvidence: enrichedStage.digestEvidence,
+        laneResults: suppressDigestCandidatesWithRawEvidence(sourceFamily.laneResults),
+        lexicalFailures,
+        lexicalState,
         snapshot,
-        vectorEvidence: vectorEvidence.sort((left, right) => left.itemType.localeCompare(right.itemType)),
-        vectorState: vector.state()
+        sourceFamilyEvidence: sourceFamily.evidence,
+        vectorEvidence: distinctVectorEvidence,
+        vectorState
       };
     }
   });

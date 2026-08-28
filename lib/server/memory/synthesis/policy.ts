@@ -274,6 +274,28 @@ function diversityScore(sources: readonly MemorySynthesisBoundSource[]): number 
   return Math.min(messages.size, 8) * 2 + Math.min(chats.size, 8);
 }
 
+/** A Dream source is independent only when it has its own direct evidence
+ * root. Automatic facts inherit Message roots; an explicit user-authored
+ * version is its own root. This deliberately prevents several facts extracted
+ * from one message from satisfying the three-source PATTERN threshold. */
+export function memorySynthesisSupportRootKeys(
+  source: Pick<MemorySynthesisSource,
+    "sourceMessageIds" | "sourceMode" | "versionId">
+): readonly string[] {
+  return source.sourceMode === "EXPLICIT"
+    ? Object.freeze([`explicit:${source.versionId}`])
+    : Object.freeze([...new Set(source.sourceMessageIds)]
+        .sort()
+        .map((messageId) => `message:${messageId}`));
+}
+
+export function memorySynthesisDistinctSupportRootCount(
+  sources: readonly Pick<MemorySynthesisSource,
+    "sourceMessageIds" | "sourceMode" | "versionId">[]
+): number {
+  return new Set(sources.flatMap(memorySynthesisSupportRootKeys)).size;
+}
+
 /** Deterministic, bounded clustering is deliberately conservative. The model
  * may propose wording only inside one supplied cluster and cannot join sources
  * that the server did not already group. */
@@ -341,7 +363,10 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
     window.sources.push(source);
   }
   const clusters = [...groups.values()].flat()
-    .filter(({ sources }) => sources.length >= MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES)
+    .filter(({ sources }) =>
+      sources.length >= MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES &&
+      memorySynthesisDistinctSupportRootCount(sources) >=
+        MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES)
     .map(({ key, sources }) => ({
       entityRefs: [...new Set(sources.flatMap(({ entityRefs }) => entityRefs))]
         .sort().slice(0, 8),

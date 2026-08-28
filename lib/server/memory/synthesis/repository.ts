@@ -12,6 +12,7 @@ import type {
   MemoryJobGateDecision
 } from "../coordinator/types";
 import { enqueueMemoryJob } from "../persistence/jobs";
+import { memoryPersonalEvidenceRowPredicate } from "../persistence/eligibility";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import {
@@ -32,9 +33,11 @@ import {
   buildMemorySynthesisPlan,
   buildMemoryTargetedSynthesisPlan,
   memorySynthesisJobFingerprint,
+  memorySynthesisDistinctSupportRootCount,
   memorySynthesisPatternFingerprint,
   memorySynthesisSourceEligibilityHash,
   MEMORY_SYNTHESIS_MAX_SOURCES,
+  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
   MEMORY_SYNTHESIS_POLICY_VERSION,
   type MemorySynthesisBoundSource,
@@ -191,23 +194,45 @@ async function loadSources(
         LIMIT 16
       )::text[] AS "entityIds",
       ARRAY(
-        SELECT DISTINCT evidence."chatId"
-        FROM "MemoryEvidence" AS evidence
-        WHERE evidence."userId" = source_version."userId"
-          AND evidence."factVersionId" = source_version."id"
-          AND evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-          AND evidence."chatId" IS NOT NULL
-        ORDER BY evidence."chatId"
+        SELECT DISTINCT support."chatId"
+        FROM "MemoryEvidence" AS support
+        INNER JOIN "Chat" AS evidence_chat
+          ON evidence_chat."userId" = support."userId"
+          AND evidence_chat."id" = support."chatId"
+          AND evidence_chat."projectId" IS NULL
+          AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND evidence_chat."permanentDeletionAt" IS NULL
+        INNER JOIN "Message" AS evidence_message
+          ON evidence_message."chatId" = support."chatId"
+          AND evidence_message."id" = support."messageId"
+          AND evidence_message."role" = 'user'
+        WHERE ${memoryPersonalEvidenceRowPredicate(
+          userId,
+          Prisma.sql`source_version."id"`,
+          { exactVNext: true }
+        )}
+        ORDER BY support."chatId"
         LIMIT 16
       )::text[] AS "sourceChatIds",
       ARRAY(
-        SELECT DISTINCT evidence."messageId"
-        FROM "MemoryEvidence" AS evidence
-        WHERE evidence."userId" = source_version."userId"
-          AND evidence."factVersionId" = source_version."id"
-          AND evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
-          AND evidence."messageId" IS NOT NULL
-        ORDER BY evidence."messageId"
+        SELECT DISTINCT support."messageId"
+        FROM "MemoryEvidence" AS support
+        INNER JOIN "Chat" AS evidence_chat
+          ON evidence_chat."userId" = support."userId"
+          AND evidence_chat."id" = support."chatId"
+          AND evidence_chat."projectId" IS NULL
+          AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND evidence_chat."permanentDeletionAt" IS NULL
+        INNER JOIN "Message" AS evidence_message
+          ON evidence_message."chatId" = support."chatId"
+          AND evidence_message."id" = support."messageId"
+          AND evidence_message."role" = 'user'
+        WHERE ${memoryPersonalEvidenceRowPredicate(
+          userId,
+          Prisma.sql`source_version."id"`,
+          { exactVNext: true }
+        )}
+        ORDER BY support."messageId"
         LIMIT 16
       )::text[] AS "sourceMessageIds"
     FROM "MemoryFactVersion" AS source_version
@@ -738,7 +763,10 @@ export function createPrismaMemorySynthesisRepository(
           (entry): entry is MemorySynthesisBoundSource => Boolean(entry)
         );
         if (!cluster || sources.length !== pattern.sourceRefs.length ||
-          new Set(sources.map(({ factId }) => factId)).size < 3) {
+          new Set(sources.map(({ factId }) => factId)).size <
+            MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES ||
+          memorySynthesisDistinctSupportRootCount(sources) <
+            MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES) {
           throw new Error("memory_synthesis_source_stale");
         }
         const entityIds = pattern.entityRefs.map((ref) => entityIdByRef.get(ref)).filter(

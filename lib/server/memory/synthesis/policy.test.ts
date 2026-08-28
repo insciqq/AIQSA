@@ -101,6 +101,26 @@ describe("Dream synthesis policy", () => {
       .toBe(MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES);
   });
 
+  it("does not treat several facts extracted from one message as independent support", () => {
+    expect(buildMemorySynthesisPlan({
+      boundary,
+      generation: 3,
+      sources: Array.from({ length: 3 }, (_, index) => source(index, {
+        sourceChatIds: ["chat-shared"],
+        sourceMessageIds: ["message-shared"]
+      }))
+    })).toBeNull();
+
+    expect(buildMemorySynthesisPlan({
+      boundary,
+      generation: 3,
+      sources: Array.from({ length: 3 }, (_, index) => source(index, {
+        sourceChatIds: ["chat-shared"],
+        sourceMessageIds: [`message-${index}`]
+      }))
+    })?.clusters).toHaveLength(1);
+  });
+
   it("schedules from meaningful activity while bounding frequency", () => {
     const now = new Date("2026-08-27T12:00:00.000Z");
     const quietChange = new Date(

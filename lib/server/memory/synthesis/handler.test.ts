@@ -143,6 +143,12 @@ describe("Dream synthesis handler", () => {
     expect(authorizeResult).toHaveBeenCalledOnce();
     expect(repo.apply).toHaveBeenCalledOnce();
     expect(execution.acceptedResultHash).toBe(providerResult.acceptedOutputHash);
+    expect(execution.operationalCounters).toEqual({
+      synthesisClusterCount: plan.clusters.length,
+      synthesisEligibleSourceCount: plan.sources.length,
+      synthesisEmptyOutputCount: 0,
+      synthesisProposalCount: 1
+    });
   });
 
   it("[E06] recovers staged synthesis with zero additional provider calls", async () => {

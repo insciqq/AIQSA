@@ -2,6 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   planMemoryRetrieval,
+  type MemoryCandidateMetadata,
+  type MemoryLaneCandidate,
   type MemoryRankedCandidate
 } from "../../../domain/memory/retrieval";
 import {
@@ -12,17 +14,98 @@ import {
 } from "../persistence/lexical";
 import {
   createPrismaLocalMemoryRetrievalRepository,
+  applyMemorySourceFamilyRecallFloor,
   memorySemanticLexicalTerms,
   projectMemoryAggregationDigestRepresentative,
   selectMemoryAggregationSessionRepresentatives,
+  selectMemoryIntraChatRawCandidates,
   selectMemorySourceDiverseLaneCandidates
 } from "./localRepository";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "./vector";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
 
 const now = new Date("2026-08-10T12:00:00.000Z");
+
+function floorMetadata(
+  id: string,
+  sourceKind: "EVENT" | "FACT" | "HISTORY"
+): MemoryCandidateMetadata {
+  const history = sourceKind === "HISTORY";
+  return {
+    canonicalKey: null,
+    category: history ? null : "memory",
+    confidence: 0.9,
+    conflict: false,
+    coreEligible: false,
+    coreSalience: "NONE",
+    current: true,
+    dedupeKey: id,
+    directness: history ? null : "DIRECT",
+    dimensionKey: null,
+    entityIds: [],
+    evidenceRootHash: null,
+    expectedAt: null,
+    expiresAt: null,
+    factId: history ? null : id,
+    historical: false,
+    historySafetyClass: history ? "NORMAL" : null,
+    identityKind: history ? null : "PROPOSITION",
+    importance: 0.5,
+    languageCode: "en",
+    lastConfirmedAt: null,
+    lastUsedAt: null,
+    lifecycleState: history ? null : "ACTIVE",
+    matchedEntityRole: null,
+    modality: history ? null : sourceKind === "EVENT" ? "EVENT" : "PREFERENCE",
+    observedAt: null,
+    occurredAt: null,
+    occurredFrom: history ? now : null,
+    occurredTo: history ? new Date(now.getTime() + 60_000) : null,
+    pinned: false,
+    predicateKey: null,
+    relationDepth: 0,
+    scopeAffinity: 0.5,
+    scopeType: history ? null : "GLOBAL_USER",
+    sensitivityClass: history ? null : "NORMAL",
+    sourceAssistantId: null,
+    sourceAuthority: history ? "PAST_CHAT" : "EXPLICIT",
+    sourceChatId: history ? `chat-${id}` : null,
+    sourceFolderId: null,
+    sourceMode: history ? null : "EXPLICIT",
+    subjectKey: null,
+    synthesisDepth: 0,
+    systemFrom: now,
+    temperatureClass: null,
+    temperatureScore: 0,
+    validFrom: null,
+    validTo: null
+  };
+}
+
+function floorCandidate(
+  id: string,
+  lane: MemoryLaneCandidate["lane"],
+  sourceKind: "EVENT" | "FACT" | "HISTORY",
+  rawScore: number
+): MemoryLaneCandidate {
+  return {
+    entryId: `entry-${id}`,
+    hardFilterPassed: true,
+    itemId: id,
+    itemType: sourceKind === "HISTORY" ? "RECALL_CHUNK" : "FACT_VERSION",
+    lane,
+    metadata: floorMetadata(id, sourceKind),
+    rawScore
+  };
+}
 
 function sessionCandidate(
   id: string,
@@ -60,9 +143,13 @@ function snapshotRow(overrides: Record<string, unknown> = {}) {
     generationId: "generation-1",
     generationIndexMode: "LEXICAL_ONLY",
     generationChunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+    generationContextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
     generationLanguageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
     generationNormalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
     generationPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+    generationRoundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+    generationRoundSegmentProjectionVersion:
+      MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
     generationState: "ACTIVE",
     memoryGeneration: 2,
     memoryRevision: 4,
@@ -103,6 +190,116 @@ function mockClient(
 }
 
 describe("local Memory retrieval repository", () => {
+  it("recovers planner-excluded families through bounded original-query lanes", () => {
+    const baselinePlan = planMemoryRetrieval({
+      currentUserText: "What is my codename and where did we discuss it?",
+      now,
+      temporalIntent: "ANY"
+    });
+    const enrichedPlan = planMemoryRetrieval({
+      currentUserText: baselinePlan.originalSanitizedQuery,
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      now,
+      semanticRewrite: "current codename",
+      temporalIntent: "CURRENT"
+    });
+    const sharedFact = floorCandidate("shared-fact", "FACT_EXACT", "FACT", 1);
+    const plannerFact = floorCandidate("planner-fact", "FACT_FTS_SIMPLE", "FACT", 0.8);
+    const historyGold = floorCandidate(
+      "history-gold",
+      "HISTORY_RECALL_EXACT",
+      "HISTORY",
+      1
+    );
+    const result = applyMemorySourceFamilyRecallFloor({
+      baselineLaneResults: [{
+        candidates: [sharedFact],
+        lane: "FACT_EXACT"
+      }, {
+        candidates: [historyGold],
+        lane: "HISTORY_RECALL_EXACT"
+      }],
+      baselinePlan,
+      enrichedLaneResults: [{
+        candidates: [sharedFact],
+        lane: "FACT_EXACT"
+      }, {
+        candidates: [plannerFact],
+        lane: "FACT_FTS_SIMPLE"
+      }],
+      enrichedPlan,
+      now
+    });
+
+    expect(result.evidence).toEqual({
+      baselineFactCandidateCount: 1,
+      baselineHistoryCandidateCount: 1,
+      baselineOnlyCandidateCount: 1,
+      plannerExcludedFamilyRecoveredCount: 1,
+      plannerOnlyCandidateCount: 1
+    });
+    expect(result.laneResults).toEqual(expect.arrayContaining([{
+      candidates: [expect.objectContaining({
+        itemId: "history-gold",
+        lane: "HISTORY_BASELINE_ORIGINAL"
+      })],
+      lane: "HISTORY_BASELINE_ORIGINAL"
+    }]));
+    expect(result.laneResults.flatMap(({ candidates }) => candidates)
+      .filter(({ itemId }) => itemId === "shared-fact")).toHaveLength(1);
+  });
+
+  it("caps baseline facts and history after rank-only fusion", () => {
+    const baselinePlan = planMemoryRetrieval({
+      currentUserText: "project details",
+      now,
+      temporalIntent: "ANY"
+    });
+    const enrichedPlan = planMemoryRetrieval({
+      currentUserText: "project details",
+      filters: { sourceKinds: ["FACT", "EVENT"] },
+      now,
+      temporalIntent: "CURRENT"
+    });
+    const facts = Array.from({ length: 15 }, (_, index) =>
+      floorCandidate(`fact-${index}`, index < 8 ? "FACT_EXACT" : "FACT_FTS_SIMPLE",
+        "FACT", 1 - index / 100));
+    const history = Array.from({ length: 25 }, (_, index) =>
+      floorCandidate(`history-${index}`, index < 12
+        ? "HISTORY_RECALL_EXACT"
+        : "HISTORY_RECALL_FTS_SIMPLE", "HISTORY", 1 - index / 100));
+    const result = applyMemorySourceFamilyRecallFloor({
+      baselineLaneResults: [{
+        candidates: facts.slice(0, 8),
+        lane: "FACT_EXACT"
+      }, {
+        candidates: facts.slice(8),
+        lane: "FACT_FTS_SIMPLE"
+      }, {
+        candidates: history.slice(0, 12),
+        lane: "HISTORY_RECALL_EXACT"
+      }, {
+        candidates: history.slice(12),
+        lane: "HISTORY_RECALL_FTS_SIMPLE"
+      }],
+      baselinePlan,
+      enrichedLaneResults: [],
+      enrichedPlan,
+      now
+    });
+
+    expect(result.evidence).toMatchObject({
+      baselineFactCandidateCount: 10,
+      baselineHistoryCandidateCount: 20,
+      baselineOnlyCandidateCount: 30,
+      plannerExcludedFamilyRecoveredCount: 20
+    });
+    expect(result.laneResults.find(({ lane }) => lane === "FACT_BASELINE_ORIGINAL")
+      ?.candidates).toHaveLength(10);
+    expect(result.laneResults.find(({ lane }) => lane === "HISTORY_BASELINE_ORIGINAL")
+      ?.candidates).toHaveLength(20);
+  });
+
   it("balances bounded lexical terms without letting a verbose rewrite evict the original", () => {
     const plan = planMemoryRetrieval({
       aggregationRequested: true,
@@ -217,6 +414,9 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('version."sourceMode" = \'EXPLICIT\'');
     expect(sql).toContain('"checkpoint"."branchGeneration" = "source_chat"."memoryBranchGeneration"');
     expect(sql).toContain('FROM "MemoryRecallChunkMessage" AS authority_source_map');
+    expect(sql).toContain('JOIN "MemoryRecallRoundSegment" AS segment');
+    expect(sql).toContain('entry."recallRoundSegmentId"');
+    expect(sql).toContain('segment."projectionVersion" =');
     expect(sql).toContain('authority_source_message."updatedAt" <>');
     expect(sql).toContain(
       '"ChatMemoryCheckpointMessage" AS authority_checkpoint_message'
@@ -269,32 +469,123 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain("all_digest_navigation");
     expect(sql).toContain("matched_navigation");
     expect(sql).toContain("FROM ranked_navigation AS navigation");
-    expect(sql).toContain("source_anchors AS MATERIALIZED");
     expect(sql).toContain('SELECT DISTINCT ON (navigation."sourceChatId")');
     expect(sql).toContain('navigation."searchVectorSimple"');
     expect(sql).toContain('PARTITION BY matched_navigation."variantOrdinal"');
-    expect(sql).toContain('navigation."rankWithinVariant"');
-    expect(sql).toContain('navigation."sourceChatId" = eligible."sourceChatId"');
-    expect(sql).toContain('eligible."itemId" = navigation."itemId"');
-    expect(sql).toContain('(raw_match."matchedTermCount" > 0) DESC');
+    expect(sql).toContain('FROM digest_navigation AS eligible');
+    expect(sql).toContain('eligible."rankWithinVariant"');
+    expect(sql).toContain('eligible."rankScore"::double precision AS "rawScore"');
+    expect(sql).not.toContain("source_anchors AS MATERIALIZED");
+    expect(sql).not.toContain('navigation."sourceChatId" = eligible."sourceChatId"');
+    expect(sql).not.toContain('(raw_match."matchedTermCount" > 0) DESC');
     expect(sql).not.toContain(
       'query_terms."variantOrdinal" = navigation."variantOrdinal"'
     );
-    expect(sql.indexOf('(raw_match."matchedTermCount" > 0) DESC')).toBeLessThan(
-      sql.indexOf('(eligible."itemType" = \'RECALL_CHUNK\'::"MemorySearchItemType"\n' +
-        '          AND eligible."itemId" = navigation."itemId") DESC')
-    );
-    expect(sql).toContain('FROM source_anchors AS eligible');
-    expect(sql).toContain("(eligible.\"itemType\" = 'RECALL_ROUND'");
-    expect(sql).toContain('eligible."searchVectorSimple"');
     expect(sql.indexOf("matched_navigation AS MATERIALIZED")).toBeLessThan(
       sql.indexOf("\n    digest_navigation AS MATERIALIZED")
     );
     expect(sql).not.toContain('digest."safeDigestText" AS "safeText"');
   });
 
+  it("routes tool observations through the episodic history family only", async () => {
+    const historyMock = mockClient();
+    const historyResult = await createPrismaLocalMemoryRetrievalRepository(
+      historyMock.client
+    ).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "Which file did the tool create?",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      }),
+      userId: "user-1"
+    });
+
+    expect(historyResult.laneResults.some(({ lane }) =>
+      lane.startsWith("HISTORY_"))).toBe(true);
+    const historySql = historyMock.laneSql.join("\n");
+    expect(historySql).toContain('"MemoryToolEvent" AS tool_event');
+    expect(historySql).not.toContain(
+      'entry."suppressionIdentitySnapshot" ='
+    );
+
+    const factEventMock = mockClient();
+    const factEventResult = await createPrismaLocalMemoryRetrievalRepository(
+      factEventMock.client
+    ).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "Which saved event happened?",
+        filters: { sourceKinds: ["EVENT"] },
+        mode: "TARGETED_CURRENT",
+        now,
+        temporalIntent: "CURRENT"
+      }),
+      userId: "user-1"
+    });
+
+    expect(factEventResult.laneResults.every(({ lane }) =>
+      lane.startsWith("FACT_"))).toBe(true);
+    expect(factEventMock.laneSql.join("\n"))
+      .not.toContain('"MemoryToolEvent" AS tool_event');
+  });
+
+  it("fuses intra-chat raw lanes once per evidence root and enforces chat quotas", () => {
+    const candidate = (
+      id: string,
+      lane: MemoryLaneCandidate["lane"],
+      sourceChatId: string
+    ): MemoryLaneCandidate => ({
+      ...floorCandidate(id, lane, "HISTORY", 1),
+      metadata: {
+        ...floorMetadata(id, "HISTORY"),
+        sourceChatId
+      }
+    });
+    const sharedFts = candidate("shared", "HISTORY_RECALL_FTS_SIMPLE", "chat-a");
+    const sharedExact = candidate("shared", "HISTORY_RECALL_EXACT", "chat-a");
+    const result = selectMemoryIntraChatRawCandidates({
+      excludedEvidenceRoots: ["history:chat-a:excluded"],
+      laneResults: [{
+        candidates: [
+          sharedExact,
+          candidate("a-2", "HISTORY_RECALL_EXACT", "chat-a"),
+          candidate("b-1", "HISTORY_RECALL_EXACT", "chat-b")
+        ],
+        lane: "HISTORY_RECALL_EXACT"
+      }, {
+        candidates: [
+          sharedFts,
+          candidate("excluded", "HISTORY_RECALL_FTS_SIMPLE", "chat-a"),
+          candidate("a-3", "HISTORY_RECALL_FTS_SIMPLE", "chat-a"),
+          candidate("a-4", "HISTORY_RECALL_FTS_SIMPLE", "chat-a"),
+          candidate("b-2", "HISTORY_RECALL_FTS_SIMPLE", "chat-b")
+        ],
+        lane: "HISTORY_RECALL_FTS_SIMPLE"
+      }],
+      perChatLimit: 3,
+      selectedSourceChatIds: ["chat-a", "chat-b"]
+    });
+
+    expect(result.rawCandidateCount).toBe(7);
+    expect(result.candidates.filter(({ metadata }) =>
+      metadata.sourceChatId === "chat-a")).toHaveLength(3);
+    expect(result.candidates.filter(({ itemId }) => itemId === "shared")).toHaveLength(1);
+    expect(result.candidates.map(({ itemId }) => itemId)).not.toContain("excluded");
+    expect(result.candidates.every(({ lane }) =>
+      lane === "HISTORY_INTRA_CHAT_RAW")).toBe(true);
+  });
+
   it("expands a contextual round hit only to bounded authoritative raw evidence", async () => {
-    const mocked = mockClient();
+    const mocked = mockClient(snapshotRow({
+      generationRoundSegmentProjectionVersion: null
+    }));
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     const plan = planMemoryRetrieval({
       currentUserText: "What did we select?",
@@ -322,8 +613,10 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
       occurredTo: new Date("2026-08-09T10:01:00.000Z"),
       projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      retrievalHint: null,
       safeText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
       sourceChatId: "source-chat-1",
+      supportingEvidence: [],
       supportingItemId: "parent-chunk-1"
     }] as never);
 
@@ -336,8 +629,10 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
       occurredTo: new Date("2026-08-09T10:01:00.000Z"),
       projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+      retrievalHint: null,
       safeText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
       sourceChatId: "source-chat-1",
+      supportingEvidence: [],
       supportingItemId: "parent-chunk-1"
     }]);
     const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
@@ -345,6 +640,125 @@ describe("local Memory retrieval repository", () => {
     expect(expansionSql).toContain('round."rawSafeText"');
     expect(expansionSql).toContain('round."parentChunkId" AS "supportingItemId"');
     expect(expansionSql).not.toContain('round."contextualNarrativeText" AS "safeText"');
+  });
+
+  it("expands a PATTERN with three distinct direct source projections", async () => {
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      currentUserText: "What recurring workflow do I follow?",
+      filters: { sourceKinds: ["FACT"] },
+      includePatterns: true,
+      now
+    });
+    const retrieved = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+    const base = sessionCandidate("pattern-1", "unused-chat", 0.8, { FACT_VECTOR: 1 });
+    const candidate: MemoryRankedCandidate = {
+      ...base,
+      itemType: "FACT_VERSION",
+      metadata: {
+        ...floorMetadata("pattern-1", "FACT"),
+        directness: "INFERRED",
+        modality: "PATTERN",
+        sourceAuthority: "SYNTHESIS",
+        sourceChatId: null,
+        sourceMode: "AUTOMATIC",
+        synthesisDepth: 1
+      }
+    };
+    const patternSupportingEvidence = Array.from({ length: 3 }, (_, index) => ({
+      itemId: `source-version-${index + 1}`,
+      observedAt: `2026-08-${10 + index}T10:00:00.000Z`,
+      safeText: `The user directly described workflow occurrence ${index + 1}.`,
+      sourceAuthority: "DIRECT_AUTOMATIC",
+      sourceChatId: `source-chat-${index + 1}`,
+      sourceRootHash: String(index + 1).repeat(64)
+    }));
+    mocked.$queryRaw.mockResolvedValueOnce([{
+      itemId: "pattern-1",
+      itemType: "FACT_VERSION",
+      occurredFrom: null,
+      occurredTo: null,
+      patternSupportingEvidence,
+      projectionKind: "FACT_DISPLAY_TEXT",
+      retrievalHint: null,
+      safeText: "The user tends to follow a recurring workflow.",
+      sourceChatId: null,
+      supportingEvidence: [],
+      supportingItemId: null
+    }] as never);
+
+    await expect(repository.expand(retrieved.snapshot, plan, [candidate]))
+      .resolves.toMatchObject([{
+        itemId: "pattern-1",
+        patternSupportingEvidence: patternSupportingEvidence.map((support) => ({
+          ...support,
+          observedAt: new Date(support.observedAt)
+        }))
+      }]);
+    const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
+      .strings?.join("?") ?? "";
+    expect(expansionSql).toContain('FROM "MemoryFactVersionRelation" AS relation');
+    expect(expansionSql).toContain('PARTITION BY support_source."sourceRootHash"');
+    expect(expansionSql).toContain('AS "patternSupportingEvidence"');
+    expect(expansionSql).toContain('support."messageId"');
+  });
+
+  it("expands a segment hit to the exact private child selected for its public round", async () => {
+    const mocked = mockClient();
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({
+      currentUserText: "What happened in the middle of the rehearsal?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const retrieved = await repository.retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan,
+      userId: "user-1"
+    });
+    const base = sessionCandidate(
+      "round-segment-1",
+      "source-chat-1",
+      0.8,
+      { HISTORY_RECALL_VECTOR: 1 }
+    );
+    const expansion = {
+      itemId: "round-segment-1",
+      itemType: "RECALL_ROUND",
+      occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
+      occurredTo: new Date("2026-08-09T10:01:00.000Z"),
+      projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+      retrievalHint: null,
+      safeText: "Assistant: The middle-only fact is cedar-47.",
+      sourceChatId: "source-chat-1",
+      supportingEvidence: [],
+      supportingItemId: "parent-chunk-1"
+    } as const;
+    mocked.$queryRaw.mockResolvedValueOnce([expansion] as never);
+
+    await expect(repository.expand(retrieved.snapshot, plan, [{
+      ...base,
+      itemType: "RECALL_ROUND",
+      matchedSegmentId: "private-segment-middle",
+      matchedSegmentPosition: "MIDDLE"
+    }])).resolves.toEqual([expansion]);
+    const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
+      .strings?.join("?") ?? "";
+    expect(expansionSql).toContain('segment."rawSafeText" AS "safeText"');
+    expect(expansionSql).toContain('selected."segmentId" = eligible."matchedSegmentId"');
+    expect(expansionSql).toContain('segment."id" = eligible."matchedSegmentId"');
+    expect(expansionSql).not.toContain('segment."contextualSearchText" AS "safeText"');
   });
 
   it("runs candidate lanes for generic and recognizable-secret direct input", async () => {

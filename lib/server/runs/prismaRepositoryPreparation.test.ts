@@ -176,14 +176,18 @@ describe("initial Memory admission deadline fallback", () => {
 });
 
 describe("Memory retrieval execution sequence", () => {
-  it("allows two bounded reranker retries after the primary attempt", () => {
+  it("allows only one fresh reranker retry after the primary attempt", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
+    ])).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
       { logicalRole: "MEMORY_RERANK", ordinal: 3 },
       { logicalRole: "MEMORY_RERANK", ordinal: 4 }
-    ])).toBe(true);
+    ])).toBe(false);
   });
 
   it("allows nine bounded reranker batches plus one global aggregation and retries", () => {
@@ -224,8 +228,7 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence(profileSequence)).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       ...profileSequence,
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ], true)).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
@@ -243,8 +246,7 @@ describe("Memory retrieval execution sequence", () => {
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 },
       { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 }
@@ -273,8 +275,12 @@ describe("Memory retrieval execution sequence", () => {
   it("keeps aggregation bindings separate from bounded targeted reranker ordinals", () => {
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
     ])).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
+      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
+    ])).toBe(false);
     expect(validMemoryRetrievalExecutionSequence([
       { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
       { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 }
@@ -361,45 +367,28 @@ describe("Memory retrieval execution sequence", () => {
       state: "FAILED"
     }, retry])).toBe(true);
     expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_reranker_transient_http_failure",
+      errorCode: "rerank_response_invalid",
       logicalRole: "MEMORY_RERANK",
       ordinal: 2,
       state: "FAILED"
-    }, {
-      errorCode: "memory_reranker_transient_http_failure",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 3,
-      state: "FAILED"
-    }, {
-      ...retry,
-      ordinal: 4
-    }])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_reranker_transient_http_failure",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, {
-      ...retry,
-      ordinal: 4
-    }])).toBe(false);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_reranker_transient_http_failure",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, retry, {
-      ...retry,
-      ordinal: 4
-    }])).toBe(false);
+    }, retry])).toBe(true);
     expect(validMemoryRerankRetrySettlement([{
       errorCode: "memory_run_utility_output_invalid",
       logicalRole: "MEMORY_RERANK",
-      ordinal: 5,
+      ordinal: 4,
       state: "FAILED"
     }, {
       ...retry,
-      ordinal: 6
+      ordinal: 5
+    }])).toBe(true);
+    expect(validMemoryRerankRetrySettlement([{
+      errorCode: "memory_run_utility_output_invalid",
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 6,
+      state: "FAILED"
+    }, {
+      ...retry,
+      ordinal: 7
     }])).toBe(true);
     expect(validMemoryRerankRetrySettlement([{
       errorCode: "memory_run_utility_output_invalid",
@@ -409,15 +398,6 @@ describe("Memory retrieval execution sequence", () => {
     }, {
       ...retry,
       ordinal: 9
-    }])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_run_utility_output_invalid",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 11,
-      state: "FAILED"
-    }, {
-      ...retry,
-      ordinal: 12
     }])).toBe(true);
   });
 

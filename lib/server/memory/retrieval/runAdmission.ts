@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { MemoryActionFeedback } from "../../../contracts/memoryClient";
 import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
+  MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS,
   MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS,
   MEMORY_CONTEXT_TARGET_TOKENS,
   MEMORY_DECAY_POLICY_VERSION,
@@ -25,7 +26,9 @@ import {
   type MemoryCoreCandidate,
   type MemoryExpandedCandidate,
   type MemoryRankedCandidate,
-  type MemoryRetrievalPlan
+  type MemoryRetrievalPlan,
+  type MemoryRetrievalPlanBundle,
+  type MemorySourceFamilyHardExclusionReason
 } from "../../../domain/memory/retrieval";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import { prisma } from "../../prisma";
@@ -75,6 +78,7 @@ import {
   MEMORY_RERANK_MAX_ATTEMPTS,
   type MemoryRunAggregationResult,
   type MemoryRunQueryEmbeddingResult,
+  type MemoryRunRerankDecision,
   type MemoryRunRerankResult,
   type MemoryRunUtilityService
 } from "./runUtilities";
@@ -94,7 +98,7 @@ import {
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
   "memory-run-retrieval-admission-v24";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v6";
+  "memory-retrieval-component-metrics-v7";
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -273,9 +277,62 @@ function deterministicBaseReadPlan(
   });
 }
 
-function plannerSemanticQuery(plan: MemoryRetrievalPlan): string {
-  return plan.semanticQueryVariants.find(({ kind }) => kind === "PLANNER_REWRITE")?.text ??
-    plan.originalSanitizedQuery;
+function candidateSourceKind(
+  candidate: Pick<MemoryRankedCandidate, "itemType" | "metadata">
+): "EVENT" | "FACT" | "HISTORY" {
+  if (candidate.itemType !== "FACT_VERSION") return "HISTORY";
+  return candidate.metadata.modality === "EVENT" ? "EVENT" : "FACT";
+}
+
+function requiresBaselineAuthority(
+  plan: MemoryRetrievalPlan,
+  candidate: Pick<MemoryRankedCandidate, "itemType" | "metadata">
+): boolean {
+  return !plan.filters.sourceKinds.includes(candidateSourceKind(candidate));
+}
+
+async function expandWithSourceFamilyPlans(input: Readonly<{
+  candidates: readonly MemoryRankedCandidate[];
+  navigation: boolean;
+  plans: MemoryRetrievalPlanBundle;
+  repository: PrismaLocalMemoryRetrievalRepository;
+  snapshot: MemoryLocalRetrievalSnapshot;
+}>): Promise<readonly MemoryExpandedCandidate[]> {
+  const baseline = input.plans.baseline;
+  const baselineCandidates = baseline
+    ? input.candidates.filter((candidate) =>
+        requiresBaselineAuthority(input.plans.enriched, candidate))
+    : [];
+  const baselineKeys = new Set(baselineCandidates.map((candidate) =>
+    `${candidate.itemType}:${candidate.itemId}`));
+  const enrichedCandidates = input.candidates.filter((candidate) =>
+    !baselineKeys.has(`${candidate.itemType}:${candidate.itemId}`));
+  const [baselineExpanded, enrichedExpanded] = await Promise.all([
+    baseline && baselineCandidates.length > 0
+      ? input.repository.expand(input.snapshot, baseline, baselineCandidates)
+      : Promise.resolve([]),
+    enrichedCandidates.length > 0
+      ? input.navigation
+        ? input.repository.expandAggregationNavigation(
+            input.snapshot,
+            input.plans.enriched,
+            enrichedCandidates
+          )
+        : input.repository.expand(
+            input.snapshot,
+            input.plans.enriched,
+            enrichedCandidates
+          )
+      : Promise.resolve([])
+  ]);
+  const expanded = new Map([...baselineExpanded, ...enrichedExpanded].map((candidate) => [
+    `${candidate.itemType}:${candidate.itemId}`,
+    candidate
+  ]));
+  return input.candidates.flatMap((candidate) => {
+    const value = expanded.get(`${candidate.itemType}:${candidate.itemId}`);
+    return value ? [value] : [];
+  });
 }
 
 function readOnlyControlRetryProof(
@@ -496,9 +553,8 @@ const optionalUtilityBudget = Object.freeze({
     remainingFraction: 0.35
   },
   RERANK: {
-    // A third dedicated-reranker attempt is admitted only after fast,
-    // retryable failures and shares the existing interactive role deadline.
-    // It never extends the normal Memory request's wall-clock ceiling.
+    // Reranking is side-effect-free but remains bounded to the initial call
+    // plus one fresh retry inside the existing interactive role deadline.
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     remainingFraction: 0.5
   }
@@ -620,9 +676,23 @@ function attemptItems(
         eventTimeStart: packed.eventTimeStart,
         evidenceHandle: packed.evidenceHandle,
         evidenceType: packed.evidenceType,
+        contextualRetrievalHintHash: packed.retrievalHint
+          ? memorySha256(packed.retrievalHint)
+          : null,
+        contextualSupportingEvidenceHashes: (packed.supportingEvidence ?? []).map((support) =>
+          memorySha256(support.rawSafeText)),
+        contextualSupportingRoundIds: (packed.supportingEvidence ?? []).map((support) =>
+          support.itemId),
         finalScore: candidate.finalScore,
         lastConfirmedAt: packed.lastConfirmedAt,
         observedAt: packed.observedAt,
+        patternSupportingEvidence: (packed.patternSupportingEvidence ?? []).map((support) => ({
+          factVersionId: support.itemId,
+          observedAt: support.documentTime,
+          sourceAuthority: support.sourceAuthority,
+          sourceRootHash: support.sourceRootHash,
+          textHash: memorySha256(support.rawSafeText)
+        })),
         projectionKind: packed.projectionKind,
         retrievalReason: packed.retrievalReason,
         rrfScore: candidate.rrfScore,
@@ -635,6 +705,8 @@ function attemptItems(
         historical: candidate.metadata.historical,
         includePatterns: plan.includePatterns,
         lifecycleState: candidate.metadata.lifecycleState,
+        matchedSegmentId: candidate.matchedSegmentId ?? null,
+        matchedSegmentPosition: candidate.matchedSegmentPosition ?? null,
         retrievalMode: plan.mode,
         temporalIntent: plan.temporalIntent,
         tier: packed.tier,
@@ -650,9 +722,17 @@ function attemptItems(
     if (packed.itemType === "FACT_VERSION") {
       return { ...base, factVersionId: packed.itemId, itemType: "FACT_VERSION" };
     }
+    if (packed.itemType === "TOOL_EVENT") {
+      return { ...base, itemType: "TOOL_EVENT", toolEventId: packed.itemId };
+    }
     return packed.itemType === "RECALL_CHUNK"
       ? { ...base, itemType: "RECALL_CHUNK", recallChunkId: packed.itemId }
-      : { ...base, itemType: "RECALL_ROUND", recallRoundId: packed.itemId };
+      : {
+          ...base,
+          itemType: "RECALL_ROUND",
+          recallRoundId: packed.itemId,
+          recallRoundSegmentId: candidate.matchedSegmentId ?? null
+        };
   });
 }
 
@@ -682,8 +762,10 @@ function memoryAggregationEvidence(
       handle: `i${index}`,
       occurredFrom: occurredFrom?.toISOString() ?? null,
       occurredTo: occurredTo?.toISOString() ?? null,
-      sourceKind: item.itemType !== "FACT_VERSION"
-        ? "HISTORY" as const
+      sourceKind: item.itemType === "TOOL_EVENT"
+        ? "TOOL_OBSERVATION" as const
+        : item.itemType !== "FACT_VERSION"
+          ? "HISTORY" as const
         : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const,
       text: item.exactSafeText
     };
@@ -791,7 +873,9 @@ function queryVariantCounts(plan: MemoryRetrievalPlan): Readonly<Record<string, 
 
 function memoryRetrievalComponentEvidence(input: Readonly<{
   control: MemoryControlResult;
+  digestEvidence: NonNullable<MemoryLocalRetrievalResult["digestEvidence"]>;
   dynamicFused: readonly MemoryRankedCandidate[];
+  enabledSourceKinds: readonly ("EVENT" | "FACT" | "HISTORY")[];
   laneResults: MemoryLocalRetrievalResult["laneResults"];
   navigationExpanded: readonly MemoryExpandedCandidate[];
   pack: MemoryContextPack;
@@ -807,14 +891,23 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   rejoinedRelevant: readonly MemoryRankedCandidate[];
   selectedCore: readonly MemoryCoreCandidate[];
   selectedDynamic: readonly MemoryRankedCandidate[];
+  sourceFamilyEvidence: NonNullable<MemoryLocalRetrievalResult["sourceFamilyEvidence"]>;
+  sourceFamilyHardExclusionReasons: readonly MemorySourceFamilyHardExclusionReason[];
   utilityExecutions: readonly UtilityEvidence[];
 }>): Readonly<Record<string, unknown>> {
   const candidateCountsByLane: Record<string, number> = {};
   const beforeFusionRoots = new Set<string>();
+  const segmentIdsByEvidenceRoot = new Map<string, Set<string>>();
   for (const result of input.laneResults) {
     candidateCountsByLane[result.lane] = result.candidates.length;
     for (const candidate of result.candidates) {
-      beforeFusionRoots.add(memoryRetrievalEvidenceRootKey(candidate));
+      const evidenceRoot = memoryRetrievalEvidenceRootKey(candidate);
+      beforeFusionRoots.add(evidenceRoot);
+      if (candidate.matchedSegmentId) {
+        const segmentIds = segmentIdsByEvidenceRoot.get(evidenceRoot) ?? new Set<string>();
+        segmentIds.add(candidate.matchedSegmentId);
+        segmentIdsByEvidenceRoot.set(evidenceRoot, segmentIds);
+      }
     }
   }
   const packedKeys = new Set(input.pack.items.map((item) =>
@@ -834,7 +927,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
       incrementCount(utilityFailureReasonCounts, utility.reason);
     }
   }
-  const digestHits = (candidateCountsByLane.HISTORY_DIGEST_FTS_SIMPLE ?? 0) +
+  const digestHits = input.digestEvidence.navigationCandidateCount +
     input.navigationExpanded.filter((candidate) =>
       candidate.projectionKind === "CHAT_DIGEST_SAFE_TEXT").length;
   const rawChunkExpansions = input.rawExpanded.filter((candidate) =>
@@ -849,30 +942,130 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   const temporalUnrestrictedCandidateCount = Object.entries(candidateCountsByLane)
     .filter(([lane]) => lane.endsWith("_TEMPORAL_UNRESTRICTED"))
     .reduce((count, [, laneCount]) => count + laneCount, 0);
+  const sourceCandidateCounts = { EVENT: 0, FACT: 0, HISTORY: 0 };
+  for (const candidate of input.dynamicFused) {
+    const sourceKind = candidate.itemType === "TOOL_EVENT"
+      ? "HISTORY"
+      : candidate.itemType === "FACT_VERSION"
+      ? candidate.metadata.modality === "EVENT" ? "EVENT" : "FACT"
+      : "HISTORY";
+    sourceCandidateCounts[sourceKind] += 1;
+  }
+  const plannerPreferredSourceKinds = [...input.plan.filters.sourceKinds];
+  const plannerExcludedSourceKinds = input.enabledSourceKinds.filter((kind) =>
+    !plannerPreferredSourceKinds.includes(kind));
+  const relevanceKeys = new Set(input.relevanceInput.map(({ candidate }) =>
+    `${candidate.itemType}:${candidate.itemId}`));
+  const expandableKeys = new Set(input.rawExpanded.map((candidate) =>
+    `${candidate.itemType}:${candidate.itemId}`));
+  const expandedSegmentCandidates = input.rejoinedRelevant.filter((candidate) =>
+    candidate.matchedSegmentId &&
+    expandableKeys.has(`${candidate.itemType}:${candidate.itemId}`));
+  const matchedSegmentHits = (position: "MIDDLE" | "PREFIX" | "SUFFIX"): number =>
+    expandedSegmentCandidates.filter((candidate) =>
+      candidate.matchedSegmentPosition === position).length;
+  const patternItems = input.pack.items.filter((item) => item.evidenceType === "pattern");
+  const patternDirectSupportCount = patternItems.reduce((count, item) =>
+    count + (item.patternSupportingEvidence?.length ?? 0), 0);
+  const baselineOnlySelectedCount = input.selectedDynamic.filter((candidate) =>
+    candidate.laneRanks.FACT_BASELINE_ORIGINAL !== undefined ||
+    candidate.laneRanks.HISTORY_BASELINE_ORIGINAL !== undefined).length;
+  const rerankDiagnostics = input.relevance?.diagnostics;
   return Object.freeze({
+    baselineFactCandidateCount: input.sourceFamilyEvidence.baselineFactCandidateCount,
+    baselineHistoryCandidateCount: input.sourceFamilyEvidence.baselineHistoryCandidateCount,
+    baselineOnlyCandidateCount: input.sourceFamilyEvidence.baselineOnlyCandidateCount,
+    baselineOnlySelectedCount,
+    baselineSourceKinds: [...input.enabledSourceKinds],
     candidateCountsByLane,
+    candidateCountsBySourceKind: sourceCandidateCounts,
     candidatesRetainedAfterReranker: input.relevant.length,
     candidatesRetainedAfterRejoin: input.rejoinedRelevant.length,
     candidatesSentToReranker: input.relevanceInput.length,
     digestHits,
+    digestChatHitWithoutRawAnchorCount: input.digestEvidence.digestOnlyChatCount,
+    digestNavigationCandidateCount: input.digestEvidence.navigationCandidateCount,
+    digestNavigationOnlyContextCount: input.pack.items.filter((item) =>
+      item.evidenceType === "derived_session_synopsis").length,
+    digestSelectedChatCount: input.digestEvidence.selectedChatCount,
     embeddingBatchSizeDistribution: utilityCallCounts.MEMORY_QUERY_EMBED
       ? { "1": utilityCallCounts.MEMORY_QUERY_EMBED }
       : {},
+    intraChatRawAnchorCount: input.digestEvidence.rawAnchorCount,
+    intraChatRawCandidateCount: input.digestEvidence.rawCandidateCount,
+    intraChatSecondStageQueryCount: input.digestEvidence.secondStageQueryCount,
+    matchedSegmentMiddleHits: matchedSegmentHits("MIDDLE"),
+    matchedSegmentPrefixHits: matchedSegmentHits("PREFIX"),
+    matchedSegmentSuffixHits: matchedSegmentHits("SUFFIX"),
     packedEvidenceItems: input.pack.items.length,
     packedEvidenceTokens: input.preparedTokens,
+    patternContextCount: patternItems.length,
+    patternDirectSupportCount,
+    patternMissingSupportContextCount: patternItems.filter((item) =>
+      (item.patternSupportingEvidence?.length ?? 0) <
+        MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS).length,
+    patternOnlyContextCount: patternItems.length > 0 &&
+      input.pack.items.every((item) => item.evidenceType === "pattern") &&
+      patternDirectSupportCount === 0
+      ? patternItems.length
+      : 0,
+    plannerExcludedSourceKinds,
+    plannerExcludedFamilyRecoveredCount:
+      input.sourceFamilyEvidence.plannerExcludedFamilyRecoveredCount,
     plannerFallbackUsed: input.plannerFallbackReason !== null,
+    plannerOnlyCandidateCount: input.sourceFamilyEvidence.plannerOnlyCandidateCount,
+    plannerPreferredSourceKinds,
     queryVariantCounts: queryVariantCounts(input.plan),
     rawChunkExpansions,
     rawRoundExpansions: input.rawExpanded.filter((candidate) =>
       candidate.itemType === "RECALL_ROUND" &&
       candidate.projectionKind === "RECALL_ROUND_RAW_SAFE_TEXT").length,
+    rawRoundSegmentExpansions: input.rawExpanded.filter((candidate) =>
+      candidate.itemType === "RECALL_ROUND" &&
+      candidate.projectionKind === "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT").length,
+    readerPackSegmentCount: input.pack.items.filter((item) =>
+      item.projectionKind === "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT").length,
+    rerankBatchCount: rerankDiagnostics?.batchCount ??
+      (input.relevanceInput.length > 0 ? 1 : 0),
+    rerankCandidateCount: rerankDiagnostics?.candidateCount ?? input.relevanceInput.length,
+    rerankCoverageRatio: rerankDiagnostics?.coverageRatio ??
+      (input.relevanceInput.length === 0
+        ? 0
+        : rerankerDecisionHandles.size / input.relevanceInput.length),
+    rerankDecisionCount: rerankDiagnostics?.decisionCount ?? rerankerDecisionHandles.size,
+    rerankDuplicateDecisionCount: rerankDiagnostics?.duplicateDecisionCount ?? 0,
+    rerankFailedBatchCount: rerankDiagnostics?.failedBatchCount ??
+      (input.relevanceInput.length > 0 && input.relevance?.status !== "READY" ? 1 : 0),
     rerankerFallbackUsed: input.relevanceInput.length > 0 &&
       (input.relevance?.status === "READY"
         ? input.relevanceInput.some(({ handle }) => !rerankerDecisionHandles.has(handle))
         : true),
+    rerankFullFallbackUsed: input.relevanceInput.length > 0 &&
+      (rerankDiagnostics?.fullFallbackUsed ?? input.relevance?.status !== "READY"),
+    rerankInvalidResponseCount: rerankDiagnostics?.invalidResponseCount ?? 0,
+    rerankMissingDecisionCount: rerankDiagnostics?.missingDecisionCount ?? Math.max(
+      0,
+      input.relevanceInput.length - rerankerDecisionHandles.size
+    ),
+    rerankProviderModelMismatchCount:
+      rerankDiagnostics?.providerModelMismatchCount ?? 0,
+    rerankReadyBatchCount: rerankDiagnostics?.readyBatchCount ??
+      (input.relevance?.status === "READY" ? 1 : 0),
+    rerankRetryCount: rerankDiagnostics?.retryCount ?? Math.max(
+      0,
+      (input.relevance?.externalCallCount ?? 0) - 1
+    ),
     safetyFindingCounts: input.querySafety.findingCounts,
     safetyMetricsState: "QUERY_REDACTION_ACTIVE",
     selectedSourceChats: selectedSourceChats.size,
+    searchHitCount: relevanceKeys.size,
+    searchHitExpandableCount: [...relevanceKeys].filter((key) =>
+      expandableKeys.has(key)).length,
+    searchHitWithoutExpandableEvidence: [...relevanceKeys].filter((key) =>
+      !expandableKeys.has(key)).length,
+    segmentsCollapsedByEvidenceRoot: [...segmentIdsByEvidenceRoot.values()]
+      .reduce((count, segmentIds) => count + Math.max(0, segmentIds.size - 1), 0),
+    sourceFamilyHardExclusionReasons: [...input.sourceFamilyHardExclusionReasons],
     temporalFilteredCandidateCount,
     temporalParserConfidence: input.plan.temporalQuery.confidence,
     temporalParserState: input.plan.temporalQuery.state,
@@ -1081,8 +1274,16 @@ export type MemoryRelevanceCandidate = Readonly<{
   occurredFrom: string | null;
   occurredTo: string | null;
   sensitivityClass: "NORMAL";
-  speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "user";
-  sourceKind: "EVENT" | "FACT" | "HISTORY";
+  speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "tool" | "user";
+  sourceKind: "EVENT" | "FACT" | "HISTORY" | "TOOL_OBSERVATION";
+  retrievalHint: string | null;
+  supportingEvidence: readonly Readonly<{
+    itemId: string;
+    occurredFrom: string;
+    occurredTo: string;
+    sourceChatId: string;
+    text: string;
+  }>[];
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   text: string;
 }>;
@@ -1091,6 +1292,7 @@ function relevanceSpeakerScope(
   sourceKind: MemoryRelevanceCandidate["sourceKind"],
   text: string
 ): MemoryRelevanceCandidate["speakerScope"] {
+  if (sourceKind === "TOOL_OBSERVATION") return "tool";
   if (sourceKind !== "HISTORY") return "memory_record";
   const user = /(?:^|\n)User:\s/u.test(text);
   const assistant = /(?:^|\n)Assistant:\s/u.test(text);
@@ -1108,7 +1310,8 @@ function sourceDiversityOrder(
     : orderMemoryCandidatesWithSoftSourceDiversity;
   return order(
     candidates,
-    (candidate) => candidate.sourceKind === "HISTORY"
+    (candidate) => candidate.sourceKind === "HISTORY" ||
+      candidate.sourceKind === "TOOL_OBSERVATION"
       ? candidate.candidate.metadata.sourceChatId ??
         `missing-source:${candidate.candidate.itemId}`
       : null
@@ -1197,12 +1400,16 @@ export function memoryRelevanceCandidates(
   const projected = ranked.flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
-    const sourceKind = candidate.itemType !== "FACT_VERSION"
-      ? "HISTORY" as const
+    const sourceKind = candidate.itemType === "TOOL_EVENT"
+      ? "TOOL_OBSERVATION" as const
+      : candidate.itemType !== "FACT_VERSION"
+        ? "HISTORY" as const
       : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const;
     return [{
-      authorityLevel: candidate.itemType !== "FACT_VERSION"
-        ? "PAST_CHAT" as const
+      authorityLevel: candidate.itemType === "TOOL_EVENT"
+        ? "SUPPORTING" as const
+        : candidate.itemType !== "FACT_VERSION"
+          ? "PAST_CHAT" as const
         : candidate.metadata.sourceMode === "EXPLICIT"
           ? "SAVED" as const
           : memoryCandidateIsSupportingObservation(candidate.metadata)
@@ -1220,6 +1427,14 @@ export function memoryRelevanceCandidates(
       sensitivityClass: "NORMAL" as const,
       speakerScope: relevanceSpeakerScope(sourceKind, projection.safeText),
       sourceKind,
+      retrievalHint: projection.retrievalHint ?? null,
+      supportingEvidence: Object.freeze((projection.supportingEvidence ?? []).map((support) => ({
+        itemId: support.itemId,
+        occurredFrom: support.occurredFrom.toISOString(),
+        occurredTo: support.occurredTo.toISOString(),
+        sourceChatId: support.sourceChatId,
+        text: support.safeText
+      }))),
       temporalReason: (options.temporalIntent ?? "CURRENT").toLocaleLowerCase("und") as
         MemoryRelevanceCandidate["temporalReason"],
       text: projection.safeText
@@ -1249,7 +1464,8 @@ export function applyMemoryRelevance(
   result: MemoryRunRerankResult | null,
   _plan?: MemoryRetrievalPlan
 ): readonly MemoryRankedCandidate[] {
-  if (!result || result.status !== "READY") {
+  const decisionByHandle = exactMemoryRerankDecisionMap(candidates, result);
+  if (!decisionByHandle) {
     return candidates.map((entry) => ({
       ...entry.candidate,
       selectionReason: boundedSelectionReason(
@@ -1258,22 +1474,13 @@ export function applyMemoryRelevance(
       )
     }));
   }
-  const byHandle = new Map(candidates.map((entry) => [entry.handle, entry]));
-  const decisionByHandle = new Map(result.decisions.flatMap((decision) =>
-    byHandle.has(decision.handle) ? [[decision.handle, decision] as const] : []));
   const originalOrder = new Map(candidates.map((entry, index) => [
     `${entry.candidate.itemType}:${entry.candidate.itemId}`,
     index
   ]));
   return candidates.map((entry) => {
     const candidate = entry.candidate;
-    const decision = decisionByHandle.get(entry.handle);
-    if (!decision) {
-      return {
-        ...candidate,
-        selectionReason: boundedSelectionReason(candidate.selectionReason, "rerank_partial_rrf")
-      };
-    }
+    const decision = decisionByHandle.get(entry.handle)!;
     const matches = candidate.featureSnapshot.deterministicMatches ?? [];
     const deterministicBonus = matches.includes("EXACT_TEXT")
       ? 0.05
@@ -1298,6 +1505,88 @@ export function applyMemoryRelevance(
     right.rrfScore - left.rrfScore ||
     (originalOrder.get(`${left.itemType}:${left.itemId}`) ?? Number.MAX_SAFE_INTEGER) -
       (originalOrder.get(`${right.itemType}:${right.itemId}`) ?? Number.MAX_SAFE_INTEGER));
+}
+
+const memoryRerankReasonCodes = new Set([
+  "DIRECT_RELEVANCE",
+  "SUPPORTING_CONTEXT",
+  "RESPONSE_PREFERENCE",
+  "OUTDATED",
+  "NOT_RELEVANT",
+  "SCORE_ONLY"
+]);
+
+function exactMemoryRerankDecisionMap(
+  candidates: readonly MemoryRelevanceCandidate[],
+  result: MemoryRunRerankResult | null
+): ReadonlyMap<string, MemoryRunRerankDecision> | null {
+  if (!result || result.status !== "READY" || !Array.isArray(result.decisions) ||
+    result.decisions.length !== candidates.length) return null;
+  const expectedHandles = new Set(candidates.map(({ handle }) => handle));
+  if (expectedHandles.size !== candidates.length) return null;
+  const decisions = new Map<string, MemoryRunRerankDecision>();
+  for (const decision of result.decisions) {
+    if (!decision || typeof decision !== "object") return null;
+    const compatibilityFieldsValid = decision.reasonCode === "SCORE_ONLY"
+      ? decision.applicable === null && decision.current === null
+      : typeof decision.applicable === "boolean" &&
+        typeof decision.current === "boolean";
+    if (typeof decision.handle !== "string" ||
+      !expectedHandles.has(decision.handle) || decisions.has(decision.handle) ||
+      !memoryRerankReasonCodes.has(decision.reasonCode) ||
+      typeof decision.relevanceScore !== "number" ||
+      !Number.isFinite(decision.relevanceScore) ||
+      decision.relevanceScore < 0 || decision.relevanceScore > 1 ||
+      !compatibilityFieldsValid) return null;
+    decisions.set(decision.handle, decision);
+  }
+  return decisions.size === candidates.length ? decisions : null;
+}
+
+function atomicMemoryRerankResult(
+  candidates: readonly MemoryRelevanceCandidate[],
+  result: MemoryRunRerankResult | null
+): MemoryRunRerankResult | null {
+  if (!result || result.status !== "READY" ||
+    exactMemoryRerankDecisionMap(candidates, result)) return result;
+  const expectedHandles = new Set(candidates.map(({ handle }) => handle));
+  const decisions = Array.isArray(result.decisions) ? result.decisions : [];
+  const decisionHandles = decisions.flatMap((decision) =>
+    decision && typeof decision === "object" && typeof decision.handle === "string"
+      ? [decision.handle]
+      : []);
+  const coveredHandles = new Set(decisionHandles.filter((handle) =>
+    expectedHandles.has(handle)));
+  const duplicateDecisionCount = decisionHandles.length -
+    new Set(decisionHandles).size;
+  const previous = result.diagnostics;
+  return Object.freeze({
+    bindingId: result.bindingId,
+    diagnostics: Object.freeze({
+      batchCount: previous?.batchCount ?? (candidates.length > 0 ? 1 : 0),
+      candidateCount: candidates.length,
+      coverageRatio: candidates.length === 0
+        ? 0
+        : coveredHandles.size / candidates.length,
+      decisionCount: decisions.length,
+      duplicateDecisionCount,
+      failedBatchCount: Math.max(1, previous?.failedBatchCount ?? 0),
+      fullFallbackUsed: true,
+      invalidResponseCount: Math.max(1, previous?.invalidResponseCount ?? 0),
+      missingDecisionCount: Math.max(0, candidates.length - coveredHandles.size),
+      providerModelMismatchCount: previous?.providerModelMismatchCount ?? 0,
+      readyBatchCount: 0,
+      retryCount: previous?.retryCount ?? Math.max(
+        0,
+        (result.externalCallCount ?? 1) - 1
+      )
+    }),
+    ...(result.externalCallCount !== undefined
+      ? { externalCallCount: result.externalCallCount }
+      : {}),
+    reason: "memory_run_utility_output_invalid",
+    status: "UNAVAILABLE"
+  });
 }
 
 function boundedSelectionReason(base: string, suffix: string): string {
@@ -1573,11 +1862,18 @@ export function createMemoryRunRetrievalService(
           plan: planEvidence(provisionalPlan),
           querySafetyVersion: querySafety.version,
           safetyFindingCounts: querySafety.findingCounts,
+          sourceFamilyHardExclusionReasons: [
+            "MUTATION_ONLY_READ_EXCLUDED"
+          ] satisfies readonly MemorySourceFamilyHardExclusionReason[],
           utilityExecutions: [utilityEvidence("MEMORY_CONTROL", controlEvidence)]
         });
       }
 
-      let plan = deterministicBaseReadPlan(input, provisionalPlan.originalSanitizedQuery);
+      const baselineReadPlan = deterministicBaseReadPlan(
+        input,
+        provisionalPlan.originalSanitizedQuery
+      );
+      let plan = baselineReadPlan;
       let plannerFallbackReason: string | null = null;
       let plannerDegradationCode: string | null = null;
       if (control.status !== "READY") {
@@ -1644,11 +1940,33 @@ export function createMemoryRunRetrievalService(
           plannerDegradationCode = "memory_plan_invalid";
         }
       }
+      const hardExclusionReasons: MemorySourceFamilyHardExclusionReason[] = [
+        ...(!input.expected.settings.useMemoryFacts
+          ? ["FACTS_SETTING_DISABLED" as const]
+          : []),
+        ...(!input.expected.settings.referenceChatHistory
+          ? ["HISTORY_SETTING_DISABLED" as const]
+          : []),
+        ...(plan.profileRequested
+          ? ["PROFILE_OPERATION_HISTORY_EXCLUDED" as const]
+          : []),
+        ...(plan.applyResponsePreferences && plan.filters.sourceKinds.length === 0
+          ? ["RESPONSE_PREFERENCE_ONLY_DYNAMIC_EXCLUDED" as const]
+          : [])
+      ];
+      const typedNarrowRead = plan.profileRequested ||
+        plan.applyResponsePreferences && plan.filters.sourceKinds.length === 0;
+      const plans: MemoryRetrievalPlanBundle = Object.freeze({
+        baseline: typedNarrowRead ? null : baselineReadPlan,
+        enriched: plan,
+        hardExclusionReasons: Object.freeze(hardExclusionReasons)
+      });
+      const admittedSourceKinds = plans.baseline?.filters.sourceKinds ??
+        plan.filters.sourceKinds;
       const factsRequested = input.expected.settings.useMemoryFacts &&
-        (plan.filters.sourceKinds.includes("FACT") ||
-          plan.filters.sourceKinds.includes("EVENT"));
+        (admittedSourceKinds.includes("FACT") || admittedSourceKinds.includes("EVENT"));
       const historyRequested = input.expected.settings.referenceChatHistory &&
-        plan.filters.sourceKinds.includes("HISTORY");
+        admittedSourceKinds.includes("HISTORY");
       const preferencesRequested = input.expected.settings.useMemoryFacts &&
         plan.applyResponsePreferences;
 
@@ -1671,7 +1989,8 @@ export function createMemoryRunRetrievalService(
               (utilitySignal) => options.utilities!.embedQuery({
                 attemptId: input.attemptId,
                 profile: profile.profile,
-                query: plannerSemanticQuery(plan),
+                query: plans.baseline?.originalSanitizedQuery ??
+                  plan.originalSanitizedQuery,
                 signal: utilitySignal,
                 userId: input.userId
               })
@@ -1695,6 +2014,7 @@ export function createMemoryRunRetrievalService(
       try {
         local = await abortableRead(repository.retrieve({
           assistantId: input.expected.assistantId,
+          ...(plans.baseline ? { baselinePlan: plans.baseline } : {}),
           chatId: input.chatId,
           now: input.now,
           plan,
@@ -1762,13 +2082,14 @@ export function createMemoryRunRetrievalService(
             : dynamicFused;
           if (dynamicCandidates.length > 0) {
             navigationExpanded = await abortableRead(
-              plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
-                ? repository.expandAggregationNavigation(
-                    local.snapshot,
-                    plan,
-                    dynamicCandidates
-                  )
-                : repository.expand(local.snapshot, plan, dynamicCandidates),
+              expandWithSourceFamilyPlans({
+                candidates: dynamicCandidates,
+                navigation: plan.aggregationRequested &&
+                  plan.mode === "PAST_CHAT_SEARCH",
+                plans,
+                repository,
+                snapshot: local.snapshot
+              }),
               signal
             );
           }
@@ -1835,6 +2156,7 @@ export function createMemoryRunRetrievalService(
           relevance = { reason: "memory_relevance_unavailable", status: "UNAVAILABLE" };
         }
       }
+      relevance = atomicMemoryRerankResult(relevanceInput, relevance);
       const relevant = applyMemoryRelevance(relevanceInput, relevance, plan);
       const rejoinCandidates = plan.aggregationRequested && plan.mode === "PAST_CHAT_SEARCH"
         ? selectMemoryAggregationRawCandidates(dynamicFused, relevant)
@@ -1846,7 +2168,13 @@ export function createMemoryRunRetrievalService(
           // bounded accepted set so decay and packing see only rows that still
           // satisfy every authoritative admission fence.
           rejoined = await abortableRead(
-            repository.expand(local.snapshot, plan, rejoinCandidates),
+            expandWithSourceFamilyPlans({
+              candidates: rejoinCandidates,
+              navigation: false,
+              plans,
+              repository,
+              snapshot: local.snapshot
+            }),
             signal
           );
         } catch {
@@ -2039,7 +2367,17 @@ export function createMemoryRunRetrievalService(
         candidateCount: pack.candidateCount,
         componentMetrics: memoryRetrievalComponentEvidence({
           control: controlEvidence,
+          digestEvidence: local.digestEvidence ?? {
+            digestOnlyChatCount: 0,
+            navigationCandidateCount: 0,
+            rawAnchorCount: 0,
+            rawCandidateCount: 0,
+            secondStageQueryCount: 0,
+            selectedChatCount: 0
+          },
           dynamicFused,
+          enabledSourceKinds: plans.baseline?.filters.sourceKinds ??
+            plan.filters.sourceKinds,
           laneResults: local.laneResults,
           navigationExpanded,
           pack,
@@ -2055,6 +2393,14 @@ export function createMemoryRunRetrievalService(
           rejoinedRelevant,
           selectedCore,
           selectedDynamic,
+          sourceFamilyEvidence: local.sourceFamilyEvidence ?? {
+            baselineFactCandidateCount: 0,
+            baselineHistoryCandidateCount: 0,
+            baselineOnlyCandidateCount: 0,
+            plannerExcludedFamilyRecoveredCount: 0,
+            plannerOnlyCandidateCount: 0
+          },
+          sourceFamilyHardExclusionReasons: plans.hardExclusionReasons,
           utilityExecutions
         }),
         coreCount: selectedCore.length,

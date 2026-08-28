@@ -16,7 +16,7 @@ function item(index: number): MemoryPackedItem {
     eventTimeEnd: null,
     eventTimeStart: null,
     evidenceHandle: `M${index + 1}`,
-    evidenceType: "digest",
+    evidenceType: "derived_session_synopsis",
     exactSafeText: `release-${index}`,
     finalScore: 0.9,
     itemId: `item-${index}`,

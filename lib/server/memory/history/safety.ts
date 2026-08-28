@@ -39,6 +39,7 @@ export type MemorySafeTextProjection = Readonly<
 >;
 
 const MAX_MEMORY_SOURCE_TEXT_CODE_UNITS = 100_000;
+const MAX_MEMORY_RECALL_GROUP_TEXT_CODE_UNITS = 200_000;
 
 function normalizedSourceText(value: string): string {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
@@ -61,11 +62,14 @@ function containsUnsafeControl(value: string): boolean {
   return false;
 }
 
-export function projectMemoryHistorySafeText(value: string): MemorySafeTextProjection {
+function projectMemoryHistoryText(
+  value: string,
+  maximumCodeUnits: number
+): MemorySafeTextProjection {
   const sourceText = normalizedSourceText(value);
   if (
     sourceText.length === 0 ||
-    sourceText.length > MAX_MEMORY_SOURCE_TEXT_CODE_UNITS ||
+    sourceText.length > maximumCodeUnits ||
     containsUnsafeControl(sourceText)
   ) {
     return {
@@ -74,7 +78,7 @@ export function projectMemoryHistorySafeText(value: string): MemorySafeTextProje
       redactionReasonCodes: [
         sourceText.length === 0
           ? "EMPTY_TEXT"
-          : sourceText.length > MAX_MEMORY_SOURCE_TEXT_CODE_UNITS
+          : sourceText.length > maximumCodeUnits
             ? "SOURCE_TEXT_LIMIT"
             : "UNSAFE_CONTROL"
       ],
@@ -113,4 +117,19 @@ export function projectMemoryHistorySafeText(value: string): MemorySafeTextProje
     safetyClass: "NORMAL",
     safeText: redaction.redactedText
   };
+}
+
+export function projectMemoryHistorySafeText(value: string): MemorySafeTextProjection {
+  return projectMemoryHistoryText(value, MAX_MEMORY_SOURCE_TEXT_CODE_UNITS);
+}
+
+/**
+ * A recall turn may contain two independently bounded source messages. The
+ * wider projection repeats secret/control screening across their joined text
+ * without weakening the 100k limit for any individual source message.
+ */
+export function projectMemoryHistorySafeRecallGroupText(
+  value: string
+): MemorySafeTextProjection {
+  return projectMemoryHistoryText(value, MAX_MEMORY_RECALL_GROUP_TEXT_CODE_UNITS);
 }

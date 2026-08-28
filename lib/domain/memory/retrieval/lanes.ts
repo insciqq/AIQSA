@@ -2,13 +2,15 @@ import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
   MEMORY_RETRIEVAL_MAX_PARALLEL_LANES,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
-  MEMORY_RETRIEVAL_LANE_ORDER,
+  MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER,
   memoryRetrievalLaneLimit,
   type MemoryRetrievalLane
 } from "./config";
 import type { MemoryLaneResult } from "./contracts";
 
 export type MemoryRetrievalLaneTask = Readonly<{
+  /** Distinguishes baseline and enriched executions of the same physical lane. */
+  executionId?: string;
   execute(): Promise<MemoryLaneResult>;
   lane: MemoryRetrievalLane;
 }>;
@@ -23,9 +25,11 @@ export function allocateMemoryRetrievalLaneLimits(
 ): MemoryRetrievalLaneLimitAllocation {
   const profileRequested = lanes.includes("FACT_PROFILE");
   if (
-    lanes.length === 0 || lanes.length > MEMORY_RETRIEVAL_LANE_ORDER.length ||
+    lanes.length === 0 || lanes.length > MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.length ||
     new Set(lanes).size !== lanes.length ||
-    lanes.some((lane) => !MEMORY_RETRIEVAL_LANE_ORDER.includes(lane)) ||
+    lanes.some((lane) => !MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.includes(
+      lane as (typeof MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER)[number]
+    )) ||
     (profileRequested && lanes.length !== 1) ||
     typeof aggregationRequested !== "boolean"
   ) throw new Error("memory_retrieval_lane_contract_invalid");
@@ -50,7 +54,9 @@ export function allocateMemoryRetrievalLaneLimits(
     (total, allocation) => total + allocation.limit,
     0
   );
-  const priority = new Map(MEMORY_RETRIEVAL_LANE_ORDER.map((lane, index) => [lane, index]));
+  const priority = new Map<MemoryRetrievalLane, number>(
+    MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.map((lane, index) => [lane, index])
+  );
   for (const allocation of [...allocations].sort((left, right) =>
     right.fraction - left.fraction ||
     (priority.get(left.lane) ?? Number.MAX_SAFE_INTEGER) -
@@ -72,8 +78,14 @@ export async function executeMemoryRetrievalLaneTasks(
   if (
     !Number.isSafeInteger(parallelism) ||
     parallelism < 1 || parallelism > MEMORY_RETRIEVAL_MAX_PARALLEL_LANES ||
-    tasks.length > MEMORY_RETRIEVAL_LANE_ORDER.length ||
-    new Set(tasks.map((task) => task.lane)).size !== tasks.length
+    tasks.length > MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.length * 2 ||
+    tasks.some((task) => !MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.includes(
+      task.lane as (typeof MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER)[number]
+    ) || task.executionId !== undefined && (
+      task.executionId.length < 1 || task.executionId.length > 128 ||
+      !/^[A-Z0-9_:-]+$/u.test(task.executionId)
+    )) ||
+    new Set(tasks.map((task) => task.executionId ?? task.lane)).size !== tasks.length
   ) throw new Error("memory_retrieval_lane_contract_invalid");
   const results = new Array<MemoryLaneResult>(tasks.length);
   let next = 0;

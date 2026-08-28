@@ -1533,8 +1533,10 @@ export function validMemoryRerankRetrySettlement(
     primary.errorCode === "memory_reranker_outcome_unknown" ||
     primary.errorCode === "rerank_provider_request_failed" ||
     primary.errorCode === "rerank_request_timed_out"
-  ) || primary?.state === "FAILED" &&
-    primary.errorCode === "memory_reranker_transient_http_failure";
+  ) || primary?.state === "FAILED" && (
+    primary.errorCode === "memory_reranker_transient_http_failure" ||
+    primary.errorCode === "rerank_response_invalid"
+  );
   const rerankValid = rerankBatchPrimaryOrdinals.every((primaryOrdinal) =>
     Array.from(
       { length: MEMORY_RERANK_MAX_ATTEMPTS - 1 },
@@ -1969,6 +1971,8 @@ export async function completePreparingRunAttemptWithClient(
           ordinal,
           recallChunkId: item.recallChunkId,
           recallRoundId: item.recallRoundId,
+          recallRoundSegmentId: item.recallRoundSegmentId,
+          toolEventId: item.toolEventId,
           selectionReason: item.selectionReason,
           sourceBranchGenerationSnapshot: item.sourceBranchGenerationSnapshot,
           sourceChatIdSnapshot: item.sourceChatIdSnapshot,
@@ -2218,6 +2222,8 @@ async function loadAndValidatePreparingAttemptItems(
       ordinal: true,
       recallChunkId: true,
       recallRoundId: true,
+      recallRoundSegmentId: true,
+      toolEventId: true,
       selectionReason: true,
       sourceBranchGenerationSnapshot: true,
       sourceChatIdSnapshot: true,
@@ -2269,6 +2275,8 @@ async function loadAndValidatePreparingAttemptItems(
       item.factVersionId !== null &&
       item.recallChunkId === null &&
       item.recallRoundId === null &&
+      item.recallRoundSegmentId === null &&
+      item.toolEventId === null &&
       item.exactItemId === item.factVersionId
     ) {
       candidate = { ...common, factVersionId: item.factVersionId, itemType: "FACT_VERSION" };
@@ -2276,6 +2284,8 @@ async function loadAndValidatePreparingAttemptItems(
       item.itemType === "RECALL_CHUNK" &&
       item.recallChunkId !== null &&
       item.recallRoundId === null &&
+      item.recallRoundSegmentId === null &&
+      item.toolEventId === null &&
       item.factVersionId === null &&
       item.exactItemId === item.recallChunkId
     ) {
@@ -2285,9 +2295,29 @@ async function loadAndValidatePreparingAttemptItems(
       item.recallRoundId !== null &&
       item.recallChunkId === null &&
       item.factVersionId === null &&
+      item.toolEventId === null &&
       item.exactItemId === item.recallRoundId
     ) {
-      candidate = { ...common, itemType: "RECALL_ROUND", recallRoundId: item.recallRoundId };
+      candidate = {
+        ...common,
+        itemType: "RECALL_ROUND",
+        recallRoundId: item.recallRoundId,
+        recallRoundSegmentId: item.recallRoundSegmentId
+      };
+    } else if (
+      item.itemType === "TOOL_EVENT" &&
+      item.toolEventId !== null &&
+      item.recallChunkId === null &&
+      item.recallRoundId === null &&
+      item.recallRoundSegmentId === null &&
+      item.factVersionId === null &&
+      item.exactItemId === item.toolEventId
+    ) {
+      candidate = {
+        ...common,
+        itemType: "TOOL_EVENT",
+        toolEventId: item.toolEventId
+      };
     } else {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
     }
@@ -2304,6 +2334,8 @@ async function loadAndValidatePreparingAttemptItems(
       item.factVersionId !== resolved.factVersionId ||
       item.recallChunkId !== resolved.recallChunkId ||
       item.recallRoundId !== resolved.recallRoundId ||
+      item.recallRoundSegmentId !== resolved.recallRoundSegmentId ||
+      item.toolEventId !== resolved.toolEventId ||
       item.sourceChatIdSnapshot !== resolved.sourceChatIdSnapshot ||
       item.sourceBranchGenerationSnapshot !== resolved.sourceBranchGenerationSnapshot ||
       item.sourceRevisionSnapshot !== resolved.sourceRevisionSnapshot ||
@@ -2950,6 +2982,8 @@ export async function finalizePreparingRunWithClient(
           ordinal: item.ordinal,
           recallChunkId: item.recallChunkId,
           recallRoundId: item.recallRoundId,
+          recallRoundSegmentId: item.recallRoundSegmentId,
+          toolEventId: item.toolEventId,
           selectionReason: item.selectionReason,
           sourceBranchGenerationSnapshot: item.sourceBranchGenerationSnapshot,
           sourceChatIdSnapshot: item.sourceChatIdSnapshot,

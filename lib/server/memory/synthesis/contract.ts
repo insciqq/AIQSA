@@ -4,7 +4,8 @@ import type { MemorySynthesisPlan } from "./policy";
 import {
   MEMORY_SYNTHESIS_MAX_PATTERNS,
   MEMORY_SYNTHESIS_MAX_SOURCES,
-  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES
+  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES,
+  memorySynthesisDistinctSupportRootCount
 } from "./policy";
 
 export const MEMORY_SYNTHESIS_OUTPUT_NAME = "submit_memory_synthesis_patterns_v2";
@@ -98,6 +99,9 @@ export function decodeMemorySynthesisOutput(
         entityRefs.some((ref) => !containing[0]!.entityRefs.includes(ref))) fail();
       const factIds = new Set(sourceRefs.map((ref) => supplied.get(ref)!.factId));
       if (factIds.size < MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES) fail();
+      const selectedSources = sourceRefs.map((ref) => supplied.get(ref)!);
+      if (memorySynthesisDistinctSupportRootCount(selectedSources) <
+        MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES) fail();
       const identity = `${containing[0]!.key}\u0000${reasonCode}`;
       // The durable pattern identity is cluster + reason. A strict provider
       // may still return several individually valid formulations for that
