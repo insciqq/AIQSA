@@ -7,7 +7,7 @@ import {
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v9" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v10" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -132,8 +132,8 @@ const memoryActionIntentWireSchema = z.strictObject({
   categoryHint: categoryText,
   confidenceBand: z.enum(MEMORY_ACTION_INTENT_CONFIDENCE_BANDS),
   entityMentions: z.array(entityMentionSchema).max(MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS),
-  includePatterns: z.boolean(),
   memoryUseful: z.boolean(),
+  patternExclusionRequested: z.boolean(),
   pastChatsUseful: z.boolean(),
   profileRequested: z.boolean(),
   queryDecompositions: z.array(strictText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH))
@@ -308,8 +308,11 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       maxItems: MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS,
       type: "array"
     },
-    includePatterns: { type: "boolean" },
     memoryUseful: { type: "boolean" },
+    patternExclusionRequested: {
+      description: "True only when the current user explicitly asks this answer to exclude inferred or recurring Memory. It is an opt-out signal and never grants retrieval authority.",
+      type: "boolean"
+    },
     pastChatsUseful: { type: "boolean" },
     profileRequested: {
       description: "True only for a broad answer summarizing everything Personal Memory knows about the user; it requires action NONE, memoryUseful true, and recencyRequested false.",
@@ -375,8 +378,8 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "categoryHint",
     "confidenceBand",
     "entityMentions",
-    "includePatterns",
     "memoryUseful",
+    "patternExclusionRequested",
     "pastChatsUseful",
     "profileRequested",
     "queryDecompositions",
@@ -550,9 +553,9 @@ function normalizeSafePlannerHints(value: MemoryActionIntentWire): MemoryActionI
       ? value.aggregationRequested
       : false,
     entityMentions: hintsAllowed ? value.entityMentions : [],
-    includePatterns: hintsAllowed && value.memoryUseful && !value.profileRequested &&
+    patternExclusionRequested: hintsAllowed && value.memoryUseful && !value.profileRequested &&
       value.retrievalMode === "TARGETED_CURRENT" && value.temporalIntent === "CURRENT"
-      ? value.includePatterns
+      ? value.patternExclusionRequested
       : false,
     queryDecompositions: hintsAllowed ? value.queryDecompositions : []
   };

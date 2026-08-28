@@ -1,11 +1,26 @@
 import { resolve, sep } from "node:path";
 
-export const AIQSA_MEMORY_LIVE_MICROBENCH_VERSION = 1 as const;
+export const AIQSA_MEMORY_LIVE_MICROBENCH_VERSION = 3 as const;
 export const AIQSA_MEMORY_LIVE_MICROBENCH_ACK =
   "DISPOSABLE_PAID_AIQSA_MEMORY_LIVE" as const;
-export const AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT = 10 as const;
-export const AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT = 10 as const;
+export const AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID = "gpt-5.6-sol" as const;
+export const AIQSA_MEMORY_LIVE_SYSTEM_MODEL_IDS = Object.freeze([
+  "gpt-5.6-sol",
+  "gpt-5.6-luna"
+] as const);
+export const AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT = 13 as const;
+export const AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT = 13 as const;
 export const AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT = 3 as const;
+
+export type LiveSystemModelId =
+  (typeof AIQSA_MEMORY_LIVE_SYSTEM_MODEL_IDS)[number];
+
+export function decodeLiveSystemModelId(value: string | undefined): LiveSystemModelId {
+  if (AIQSA_MEMORY_LIVE_SYSTEM_MODEL_IDS.some((candidate) => candidate === value)) {
+    return value as LiveSystemModelId;
+  }
+  throw new Error("aiqsa_memory_live_system_model_invalid");
+}
 
 export type LiveSourceChat = Readonly<{
   id: string;
@@ -27,7 +42,7 @@ export type LiveScenario = Readonly<{
 }>;
 
 export const liveScenario: LiveScenario = Object.freeze({
-  id: "market-routine-v1",
+  id: "market-routine-v2",
   recalls: Object.freeze([
     Object.freeze({
       id: "tablecloth",
@@ -123,6 +138,27 @@ export const liveScenario: LiveScenario = Object.freeze({
         "My favorite soccer team is the Red Devils."
       ]),
       title: "Favorite soccer team"
+    }),
+    Object.freeze({
+      id: "camera-body",
+      messages: Object.freeze([
+        "I own a Fujifilm X-T5 camera."
+      ]),
+      title: "Camera body"
+    }),
+    Object.freeze({
+      id: "calendar-view",
+      messages: Object.freeze([
+        "My stable calendar-view preference is a weekly view."
+      ]),
+      title: "Calendar preference"
+    }),
+    Object.freeze({
+      id: "recipe-units",
+      messages: Object.freeze([
+        "My stable unit preference for recipe measurements is metric."
+      ]),
+      title: "Recipe units"
     })
   ])
 });
@@ -154,7 +190,7 @@ export function validateLiveScenario(scenario: LiveScenario): LiveScenario {
     ...scenario.sourceChats.map(({ id }) => id),
     ...scenario.recalls.map(({ id }) => id)
   ];
-  if (scenario.id !== "market-routine-v1" ||
+  if (scenario.id !== "market-routine-v2" ||
     scenario.sourceChats.length !== AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT ||
     sourceSendCount !== AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT ||
     scenario.recalls.length !== AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT ||

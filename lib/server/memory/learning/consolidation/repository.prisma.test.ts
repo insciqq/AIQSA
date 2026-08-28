@@ -1203,7 +1203,7 @@ describe("Prisma Memory fact consolidation", () => {
         now: new Date(),
         stage: "consolidation_applied"
       })).rejects.toMatchObject({
-        code: "memory_job_commit_failed",
+        code: "memory_consolidation_crash_fixture",
         retryable: false
       });
       await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);

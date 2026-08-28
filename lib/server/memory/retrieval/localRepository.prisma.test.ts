@@ -2488,7 +2488,10 @@ describe("local Memory retrieval on PostgreSQL", () => {
     let crossTenantHits = 0;
     let recalled = 0;
     let maximumCandidateCount = 0;
-    for (let iteration = 0; iteration < 5; iteration += 1) {
+    // A nearest-rank p95 needs enough observations that one scheduler outlier
+    // does not silently turn the percentile gate into a maximum-latency gate.
+    const sampleIterations = 10;
+    for (let iteration = 0; iteration < sampleIterations; iteration += 1) {
       for (const testCase of cases) {
         const plan = planMemoryRetrieval({ currentUserText: testCase.query, now: fixtureNow });
         const started = performance.now();
@@ -2528,11 +2531,11 @@ describe("local Memory retrieval on PostgreSQL", () => {
         unrelatedCandidateQueries += 1;
       }
     }
-    const sampleCount = cases.length * 5;
+    const sampleCount = cases.length * sampleIterations;
     const evidence = Object.freeze({
       candidateHardCap: MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
       crossTenantHits,
-      evidenceVersion: "memory-language-agnostic-local-candidates-v4",
+      evidenceVersion: "memory-language-agnostic-local-candidates-v5",
       latencyP95Ms: Number(percentile95(latencies).toFixed(2)),
       maximumLatencyP95Ms: 150,
       maximumCandidateCount,
@@ -2548,7 +2551,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       recallAt5: 1,
       unrelatedCandidateRate: 0,
       sanitizedAggregatesOnly: true,
-      sampleCount: 15
+      sampleCount: 30
     });
     expect(evidence.latencyP95Ms).toBeLessThan(evidence.maximumLatencyP95Ms);
     expect(evidence.maximumCandidateCount).toBeLessThanOrEqual(evidence.candidateHardCap);

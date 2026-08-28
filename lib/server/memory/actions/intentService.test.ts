@@ -20,8 +20,8 @@ const output = {
   categoryHint: null,
   confidenceBand: "HIGH",
   entityMentions: [],
-  includePatterns: false,
   memoryUseful: false,
+  patternExclusionRequested: false,
   pastChatsUseful: false,
   profileRequested: false,
   queryDecompositions: [],
@@ -52,6 +52,7 @@ describe("MemoryActionIntent service", () => {
       required: expect.arrayContaining([
         "action",
         "aggregationRequested",
+        "patternExclusionRequested",
         "profileRequested",
         "queryDecompositions",
         "thisChatOnly"
@@ -168,6 +169,10 @@ describe("MemoryActionIntent service", () => {
     expect(request.systemPrompt).toContain(
       "any action independently requests answer retrieval"
     );
+    expect(request.systemPrompt).toContain(
+      "the user never needs to name this Memory tier"
+    );
+    expect(request.systemPrompt).toContain("This is an opt-out only");
     expect(request.systemPrompt).toContain(
       "profileRequested true only when the user asks for a broad inventory"
     );

@@ -23,6 +23,8 @@ import { memoryExecutionSha256 } from "../execution/canonical";
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import {
   createAcceptedMemoryLearningProvider,
+  type MemoryLearningProviderFailure,
+  type MemoryLearningProviderFailureClassification,
   type MemoryLearningProviderEvidence,
   type MemoryLearningProviderResult
 } from "../learning/providerRuntime";
@@ -34,16 +36,16 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v15";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v17";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v15",
-  promptVersion: "memory-control-prompt-v21",
+  policyVersion: "memory-control-policy-v17",
+  promptVersion: "memory-control-prompt-v23",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 13
+    version: 15
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
@@ -78,6 +80,25 @@ type ControlProvider = Readonly<{
     signal: AbortSignal
   ): Promise<MemoryLearningProviderResult>;
 }>;
+
+export class MemoryControlProviderCallError extends Error {
+  readonly classification: MemoryLearningProviderFailureClassification;
+  readonly usage: ModelRunUsage | null;
+
+  constructor(failure: MemoryLearningProviderFailure) {
+    super(
+      failure.classification === "UNKNOWN"
+        ? "memory_action_intent_outcome_unknown"
+        : failure.classification === "REPLAY_SAFE_TRANSIENT"
+          ? "memory_action_intent_transient"
+          : "memory_action_intent_unavailable",
+      { cause: failure.cause }
+    );
+    this.name = "MemoryControlProviderCallError";
+    this.classification = failure.classification;
+    this.usage = failure.usage;
+  }
+}
 
 const unavailableUsage: MemoryReportedUsage = Object.freeze({
   cachedInputTokens: null,
@@ -219,7 +240,7 @@ function sanitizeProviderIntent(intent: MemoryActionIntent): MemoryActionIntent 
 }
 
 export function memoryControlIntentHash(intent: MemoryActionIntent): string {
-  return memoryExecutionSha256({ intent, version: 6 });
+  return memoryExecutionSha256({ intent, version: 7 });
 }
 
 export function memoryControlInputHash(context: MemoryActionIntentContext): string {
@@ -242,7 +263,7 @@ export function memoryControlAcceptedOutputHash(
   return memoryExecutionSha256({ inputHash, intentHash, version: 3 });
 }
 
-export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 6 as const;
+export const MEMORY_READ_ONLY_CONTROL_REUSE_VERSION = 7 as const;
 
 export type MemoryReadOnlyControlReuseProof = Readonly<{
   acceptedOutputHash: string;
@@ -404,19 +425,30 @@ export function createMemoryControlService(input: Readonly<{
           async () => true
         );
         return { bindingId: binding.id, intent, status: "READY" };
-      } catch {
+      } catch (error) {
+        const providerFailure = error instanceof MemoryControlProviderCallError
+          ? error
+          : null;
+        const errorCode = providerFailure?.message ??
+          "memory_action_intent_unavailable";
         if (bindingId) {
           await input.execution.lifecycle.settle(requestInput.userId, bindingId, {
             acceptedOutputHash: null,
-            errorCode: "memory_action_intent_unavailable",
+            errorCode,
             providerResponseId: null,
-            state: requestInput.signal.aborted ? "CANCELLED" : "FAILED",
-            usage: unavailableUsage
+            state: requestInput.signal.aborted
+              ? "CANCELLED"
+              : providerFailure?.classification === "UNKNOWN"
+                ? "OUTCOME_UNKNOWN"
+                : "FAILED",
+            usage: providerFailure?.usage
+              ? reportedUsage(providerFailure.usage)
+              : unavailableUsage
           }).catch(() => undefined);
         }
         return {
           ...(bindingId ? { bindingId } : {}),
-          reason: "memory_action_intent_unavailable",
+          reason: errorCode,
           status: "UNAVAILABLE"
         };
       }
@@ -432,7 +464,11 @@ export function createAcceptedMemoryControlProvider(
     ReturnType<typeof buildMemoryActionIntentRequest>
   >(client, {
     buildRequest: providerRequest,
-    callError: (_usage, cause) => new Error("memory_control_provider_failed", { cause }),
+    callError: (usage, cause, classification) => new MemoryControlProviderCallError({
+      cause,
+      classification,
+      usage
+    }),
     invalidRuntimeError: "memory_control_runtime_invalid"
   });
   return Object.freeze({ run });

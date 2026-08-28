@@ -83,7 +83,7 @@ export type MemoryRetrievalPlan = Readonly<{
   /** Exact query occurrences; resolved refs remain non-authoritative owner-scoped hints. */
   entityMentions: readonly MemoryRetrievalEntityMention[];
   filters: MemoryRetrievalFilters;
-  /** Admits depth-one synthesis patterns for an explicitly authorized targeted query. */
+  /** Admits lower-authority depth-one patterns under server-owned targeted-read policy. */
   includePatterns: boolean;
   lexicalQuery: string | null;
   mode: MemoryRetrievalMode;

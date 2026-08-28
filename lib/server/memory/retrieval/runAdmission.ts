@@ -92,7 +92,7 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v23";
+  "memory-run-retrieval-admission-v24";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v6";
 
@@ -1605,6 +1605,11 @@ export function createMemoryRunRetrievalService(
           const projected = sanitizeMemoryUtilityText(value);
           return projected.eligible && projected.safeText ? [projected.safeText] : [];
         });
+        const includePatterns = factsRequested &&
+          control.intent.retrievalMode === "TARGETED_CURRENT" &&
+          control.intent.temporalIntent === "CURRENT" &&
+          !control.intent.profileRequested &&
+          !control.intent.patternExclusionRequested;
         try {
           plan = planMemoryRetrieval({
             aggregationRequested: control.intent.aggregationRequested,
@@ -1624,7 +1629,7 @@ export function createMemoryRunRetrievalService(
                 ? new Date(control.intent.temporalTo)
                 : null
             },
-            includePatterns: control.intent.includePatterns,
+            includePatterns,
             mode: control.intent.retrievalMode,
             now: input.now,
             profileRequested: control.intent.profileRequested,
