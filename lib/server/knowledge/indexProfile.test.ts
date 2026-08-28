@@ -38,8 +38,8 @@ function embeddingConfiguration(
 }
 
 describe("Knowledge vector-space profiles", () => {
-  it("activates the language-neutral model-token profile 7", () => {
-    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(7);
+  it("activates the repeated-table-header profile 8", () => {
+    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(8);
     expect(KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION).toBe(3);
   });
 

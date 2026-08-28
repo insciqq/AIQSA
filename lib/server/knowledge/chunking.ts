@@ -23,6 +23,7 @@ import {
   KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION,
+  KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION,
   KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import type {
@@ -397,6 +398,39 @@ function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean
   });
 }
 
+function repeatedPageTableHeaderRows(
+  blocks: readonly KnowledgeNormalizedBlock[]
+): ReadonlyMap<string, number> {
+  const candidates = blocks.flatMap((block) => {
+    if (!block.table || block.table.columnCount < 2 || block.table.rowCount < 2 ||
+      block.locator.pageStart !== block.locator.pageEnd) return [];
+    const grid = tableGrid(block);
+    const nonEmptyRows = Array.from({ length: grid.rowCount }, (_, rowIndex) => rowIndex)
+      .filter((rowIndex) => Boolean(tableRowSignature(grid, rowIndex)));
+    if (nonEmptyRows.length < 2) return [];
+    const rowIndex = nonEmptyRows[0]!;
+    if (cellsForRange(grid, rowIndex, 0, grid.columnCount - 1).length < 2) return [];
+    return [{
+      blockId: block.id,
+      key: `${grid.columnCount}\u0000${tableRowSignature(grid, rowIndex)}`,
+      page: block.locator.pageStart,
+      rowIndex
+    }];
+  });
+  const byKey = new Map<string, typeof candidates>();
+  for (const candidate of candidates) {
+    const group = byKey.get(candidate.key) ?? [];
+    group.push(candidate);
+    byKey.set(candidate.key, group);
+  }
+  const result = new Map<string, number>();
+  for (const group of byKey.values()) {
+    if (new Set(group.map((candidate) => candidate.page)).size < 2) continue;
+    for (const candidate of group) result.set(candidate.blockId, candidate.rowIndex);
+  }
+  return result;
+}
+
 function boundedChunkText(text: string, currentSizing = false): boolean {
   const maximumTokens = currentSizing
     ? KNOWLEDGE_CHUNK_MAX_TOKENS - KNOWLEDGE_CHUNK_CONTEXT_MAX_TOKENS - 4
@@ -646,7 +680,8 @@ function tableDocumentContext(
 
 function profile4TableSegments(
   block: KnowledgeNormalizedBlock,
-  currentSizing: boolean
+  currentSizing: boolean,
+  repeatedHeaderRow: number | null
 ): Segment[] {
   const grid = tableGrid(block);
   const nonEmptyRows = Array.from({ length: grid.rowCount }, (_, rowIndex) => rowIndex)
@@ -655,12 +690,14 @@ function profile4TableSegments(
   const firstRow = nonEmptyRows[0]!;
   const hasFollowingObservation = nonEmptyRows.slice(1)
     .some((rowIndex) => tableRowHasNumericOrDateObservation(grid, rowIndex));
-  const canonicalHeaderRow = hasFollowingObservation && (
-    !tableRowHasNumericOrDateObservation(grid, firstRow) ||
-    tableRowIsDatedSeriesHeader(grid, firstRow)
-  )
+  const canonicalHeaderRow = repeatedHeaderRow === firstRow
     ? firstRow
-    : null;
+    : hasFollowingObservation && (
+      !tableRowHasNumericOrDateObservation(grid, firstRow) ||
+      tableRowIsDatedSeriesHeader(grid, firstRow)
+    )
+      ? firstRow
+      : null;
   const headerSignature = canonicalHeaderRow === null ? null : tableRowSignature(grid, canonicalHeaderRow);
   const headerRows = new Set(canonicalHeaderRow === null ? [] : nonEmptyRows.filter((rowIndex) =>
     tableRowSignature(grid, rowIndex) === headerSignature));
@@ -1066,6 +1103,10 @@ function structuralSegments(
   const excluded = repeatedFurniture(document, profileVersion);
   const result: Segment[] = [];
   const currentSizing = profileVersion >= KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
+  const repeatedHeaderRows = profileVersion >=
+    KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION
+    ? repeatedPageTableHeaderRows(blocks)
+    : new Map<string, number>();
   const fieldGroupsByReadingOrder = new Map<number, KnowledgeNormalizedFieldGroup[]>();
   if (profileVersion >= KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION) {
     for (const group of document.fieldGroups) {
@@ -1083,7 +1124,9 @@ function structuralSegments(
     if (!block.text || excluded.has(block.id) || block.type === "image") continue;
     if (block.type === "table") {
       result.push(...(profileVersion >= KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION
-        ? block.table ? profile4TableSegments(block, currentSizing) : profile3TableSegments(block)
+        ? block.table
+          ? profile4TableSegments(block, currentSizing, repeatedHeaderRows.get(block.id) ?? null)
+          : profile3TableSegments(block)
         : profileVersion >= KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
           ? profile3TableSegments(block)
           : profile2TableSegments(block)));
@@ -1427,7 +1470,7 @@ export function chunkKnowledgeDocument(input: Readonly<{
   document: StoredKnowledgeNormalizedDocument;
   maxChunks: number;
   profileVersion: number;
-  /** Required for profile 7: the deployment-resolved model-profile counter. */
+  /** Required for profile 7+: the deployment-resolved model-profile counter. */
   tokenCounter?: KnowledgeTokenCounter;
 }>): KnowledgeChunkPlanEntry[] {
   const neutralFormat = input.profileVersion >=

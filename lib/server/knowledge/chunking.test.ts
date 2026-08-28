@@ -280,6 +280,101 @@ describe("Knowledge chunk profiles", () => {
       });
   });
 
+  it("carries an exact textual header across page-separated table fragments", () => {
+    const header = ["Category", "Lower band", "Upper band"];
+    const firstRows = [
+      header,
+      ["Alpha", "low", "high"],
+      ["Beta", "medium", "very high"]
+    ];
+    const secondRows = [
+      header,
+      ["Gamma", "minimal", "maximal"]
+    ];
+    const tableBlock = (index: number, page: number, rows: readonly (readonly string[])[]) => {
+      const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+        column,
+        columnSpan: 1,
+        row: rowIndex,
+        rowSpan: 1,
+        text
+      })));
+      return block(index, rows.map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        page,
+        pageEnd: page,
+        table: { cells, columnCount: 3, rowCount: rows.length },
+        type: "table"
+      });
+    };
+    const normalized = document([
+      tableBlock(0, 1, firstRows),
+      tableBlock(1, 2, secondRows)
+    ]);
+    const chunks = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      header.join("\t"),
+      `${header.join("\t")}\n${firstRows[1]!.join("\t")}`,
+      `${header.join("\t")}\n${firstRows[2]!.join("\t")}`,
+      header.join("\t"),
+      `${header.join("\t")}\n${secondRows[1]!.join("\t")}`
+    ]);
+    expect(chunks.filter((chunk) => chunk.documentContext?.locator.kind === "table_row" &&
+      chunk.documentContext.locator.rowKind === "data")
+      .every((chunk) => chunk.documentContext?.locator.kind === "table_row" &&
+        chunk.documentContext.locator.headerLineage.length === 3)).toBe(true);
+
+    const legacy = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: 7,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+    expect(legacy.map((chunk) => chunk.text)).toEqual([...firstRows, ...secondRows]
+      .map((row) => row.join("\t")));
+    expect(legacy.every((chunk) => chunk.documentContext?.locator.kind === "table_row" &&
+      chunk.documentContext.locator.headerLineage.length === 0)).toBe(true);
+  });
+
+  it("does not invent a textual header for unrelated page-separated tables", () => {
+    const rowsByPage = [
+      [["Alpha", "low"], ["Beta", "high"]],
+      [["Gamma", "minimal"], ["Delta", "maximal"]]
+    ];
+    const blocks = rowsByPage.map((rows, index) => {
+      const cells = rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+        column,
+        columnSpan: 1,
+        row: rowIndex,
+        rowSpan: 1,
+        text
+      })));
+      return block(index, rows.map((row) => row.join("\t")).join("\n"), {
+        isTable: true,
+        page: index + 1,
+        pageEnd: index + 1,
+        table: { cells, columnCount: 2, rowCount: rows.length },
+        type: "table"
+      });
+    });
+    const chunks = chunkKnowledgeDocument({
+      document: document(blocks),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+
+    expect(chunks.every((chunk) => !chunk.text.includes("\n") &&
+      chunk.documentContext?.locator.kind === "table_row" &&
+      chunk.documentContext.locator.headerLineage.length === 0)).toBe(true);
+  });
+
   it("recognizes a conservative dated-series header with year and quarter columns", () => {
     const rows = [
       ["Metric", "2024", "2025", "Q1 2026", "2025/Q1 2026"],

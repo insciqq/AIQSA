@@ -4,7 +4,13 @@ import type { ProviderModelConfiguration } from "../providers/providerConfigurat
 
 export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
 /**
- * Version 7: language-neutral embedding document format (source title, heading
+ * Version 8: language-neutral, page-fragment-aware table header lineage.
+ * When separate table blocks on different pages repeat the same complete
+ * first row, that row is treated as an authoritative repeated header and is
+ * carried into every atomic data-row chunk. Version 7 remains byte-identical
+ * for immutable revisions.
+ *
+ * Version 7 introduced the language-neutral embedding document format (source title, heading
  * path, atomic evidence text only — no English labels, no page prose) and
  * model-profile token counting (model-native Qwen2 BPE for the built-in Qwen3
  * embedding profile, generic Unicode estimator otherwise). Bumping this
@@ -23,7 +29,7 @@ export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
  * resolved identity label (name:version[:asset fingerprint]) is additionally
  * recorded in retrieval evidence next to the vector-space fingerprint.
  */
-export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 7;
+export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 8;
 export const KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION = 3;
 export const KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION = 4;
 export const KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION = 5;
@@ -32,6 +38,8 @@ export const KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION = 6;
 /** Profiles emitting the language-neutral embedding format with the
  * deployment-resolved model token counter. */
 export const KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION = 7;
+/** Profiles recognizing exact repeated headers across page-separated table fragments. */
+export const KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION = 8;
 
 export type KnowledgeIndexDimension = (typeof KNOWLEDGE_INDEX_DIMENSIONS)[number];
 
