@@ -2457,7 +2457,7 @@ function committedMutationOperation(
   budgetSnapshot: Prisma.JsonValue | null
 ): "EDIT" | "FORGET" | "SAVE" | null {
   const budget = isRecord(budgetSnapshot) ? budgetSnapshot : null;
-  if (budget?.reason !== "memory_not_useful") return null;
+  if (budget?.reason !== "memory_action_only") return null;
   const answerResult = decodeMemoryActionAnswerResult(
     budget.memoryActionAnswerResult
   );
