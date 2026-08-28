@@ -2706,7 +2706,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 10,
+      version: 11,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: qualificationMemoryJobParallelism,
@@ -2719,13 +2719,14 @@ async function main(): Promise<void> {
       degradedMemoryOutcomes: qualification.degradedMemoryOutcomes,
       failed: failures.length,
       outputDirectory: options.outputDirectory,
-      qualificationPassed: qualification.passed
+      qualificationPassed: qualification.passed,
+      unhealthyMemoryOutcomes: qualification.unhealthyMemoryOutcomes
     });
     if (summaries.length === 0 || failures.length > 0) {
       throw new Error("longmemeval_qualification_incomplete");
     }
     if (!qualification.passed) {
-      throw new Error("longmemeval_qualification_memory_degraded");
+      throw new Error("longmemeval_qualification_memory_unhealthy");
     }
   } finally {
     await prisma.$disconnect();
