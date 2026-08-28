@@ -732,7 +732,9 @@ function decodeProviderDispatchRecoveryRequest(
       "baseline", "developer", "knowledgeAnswerContract", "memoryActionAnswerResult", "system"
     ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
     value.prompt.knowledgeAnswerContract !== undefined &&
-      value.prompt.knowledgeAnswerContract !== 1 ||
+      value.prompt.knowledgeAnswerContract !== 1 &&
+      value.prompt.knowledgeAnswerContract !== 2 &&
+      value.prompt.knowledgeAnswerContract !== 3 ||
     value.prompt.memoryActionAnswerResult !== undefined &&
       decodeMemoryActionAnswerResult(value.prompt.memoryActionAnswerResult) === null ||
     !validSearchPlan(value.searchPlan) || !validMcpSnapshot(value.mcp) ||
@@ -761,7 +763,9 @@ function decodeProviderDispatchRecoveryRequest(
   )) return null;
   if (isRecord(value.knowledgeAnswering) &&
     value.knowledgeAnswering.route === "full_context_v1" && (
-      value.prompt.knowledgeAnswerContract !== 1 ||
+      value.prompt.knowledgeAnswerContract !== 1 &&
+      value.prompt.knowledgeAnswerContract !== 2 &&
+      value.prompt.knowledgeAnswerContract !== 3 ||
       !validFullContextEvidenceContext(
         value.context,
         Number(value.knowledgeAnswering.evidenceCount)

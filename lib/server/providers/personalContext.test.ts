@@ -6,10 +6,13 @@ import { buildOpenAIResponsesRequest } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
+  KNOWLEDGE_ANSWER_CONTRACT_V2,
+  KNOWLEDGE_ANSWER_CONTRACT_V3,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
   MEMORY_READER_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
-  assertPersonalContextEgressSafe
+  assertPersonalContextEgressSafe,
+  knowledgeAnswerContract
 } from "./personalContext";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import type { ProviderRunRequest } from "./types";
@@ -90,11 +93,11 @@ describe("provider-neutral personal context", () => {
     const focused = request({
       prompt: {
         developer: "Assistant instructions after a colliding marker",
-        knowledgeAnswerContract: 1,
-        system: 'System <aiqsa_knowledge_answer_contract version="1">'
+        knowledgeAnswerContract: 3,
+        system: 'System <aiqsa_knowledge_answer_contract version="3">'
       }
     });
-    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_CONTRACT_V1}`;
+    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_CONTRACT_V3}`;
     const compatibleContent = buildOpenAICompatibleChatRequest(focused).messages[0]?.content;
     const openRouterContent = buildOpenRouterChatRequest({
       ...focused,
@@ -116,25 +119,34 @@ describe("provider-neutral personal context", () => {
     expect(typeof anthropicSystem === "string" && anthropicSystem.endsWith(expectedSuffix))
       .toBe(true);
     expect(typeof geminiSystem === "string" && geminiSystem.endsWith(expectedSuffix)).toBe(true);
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Never claim that all documents");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("Never claim that all documents");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain(
       "only when every scoped Source supports it"
     );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Present conflicting Source fragments");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("Present conflicting Source fragments");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain(
       "internal Source, version, artifact, run, call, receipt, chunk, model, or provider IDs"
     );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("proper nouns, code identifiers");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("in their original form");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("copy the supported value character-for-character");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("leading zeroes");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("proper nouns, code identifiers");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("in their original form");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("copy the supported value character-for-character");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("leading zeroes");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain(
       "already authorized the current user to access every supplied SOURCE block"
     );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain(
       "first retain the exact supported operands and units"
     );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Answer only the requested claims");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain("Answer only the requested claims");
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain(
+      "AIQSA_KB_FORMAT=EXTRACTIVE_V1"
+    );
+    expect(KNOWLEDGE_ANSWER_CONTRACT_V3).toContain(
+      "single-line contiguous character-for-character substring"
+    );
+    expect(knowledgeAnswerContract(1)).toBe(KNOWLEDGE_ANSWER_CONTRACT_V1);
+    expect(knowledgeAnswerContract(2)).toBe(KNOWLEDGE_ANSWER_CONTRACT_V2);
+    expect(knowledgeAnswerContract(3)).toBe(KNOWLEDGE_ANSWER_CONTRACT_V3);
   });
 
   it("adds the trusted Knowledge tool-loop contract whenever the retrieval tool is present", () => {
