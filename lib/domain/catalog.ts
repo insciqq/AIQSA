@@ -1,5 +1,6 @@
 import {
   defaultAnthropicMessagesParams,
+  defaultDeepSeekResponsesParams,
   defaultFakeProviderParams,
   defaultGeminiInteractionsParams,
   defaultOpenRouterParams,
@@ -13,6 +14,7 @@ export type { ModelParameterControls } from "../contracts/catalog";
 
 export type CatalogAdapterKind =
   | "anthropic_messages"
+  | "deepseek_responses_native"
   | "fake"
   | "gemini_interactions_native"
   | "openai_chat_completions_compatible"
@@ -52,7 +54,7 @@ export type SearchStrategyRouteCatalogEntry = {
   config: Record<string, unknown>;
   credentialMode: "answer_provider" | "provider_model";
   executionModes: readonly SearchPlanMode[];
-  kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  kind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
   physicalStrategyId: string;
   protocol: SearchProtocol;
   providerModelId?: string;
@@ -123,6 +125,7 @@ function controls(input: Partial<ModelParameterControls> & Pick<ModelParameterCo
 
 const openAIResponsesParams = defaultOpenAIResponsesParams();
 const anthropicMessagesParams = defaultAnthropicMessagesParams();
+const deepSeekResponsesParams = defaultDeepSeekResponsesParams();
 const geminiInteractionsParams = defaultGeminiInteractionsParams();
 const openRouterParams = defaultOpenRouterParams();
 
@@ -295,6 +298,55 @@ function geminiModel(input: Readonly<{
   };
 }
 
+function deepSeekModel(input: Readonly<{
+  displayName: string;
+  modelId: string;
+  vision?: boolean;
+}>): ProviderModelTemplate {
+  return {
+    provider: "deepseek",
+    modelId: input.modelId,
+    displayName: input.displayName,
+    contextWindow: 1_048_576,
+    inputTokenPriceMicros: 0,
+    outputTokenPriceMicros: 0,
+    capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
+      nativePdfInput: false,
+      nativeSearch: true,
+      parallelToolCalls: true,
+      pdf: true,
+      reasoning: true,
+      streaming: true,
+      toolCalling: true,
+      vision: input.vision === true
+    },
+    defaultParams: deepSeekResponsesParams,
+    parameterControls: controls({
+      maxOutputTokens: {
+        defaultValue: 32_768,
+        maxValue: 384_000
+      },
+      reasoningEffort: {
+        defaultValue: "high",
+        options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        supported: true
+      },
+      stream: {
+        defaultValue: true,
+        supported: true
+      },
+      temperature: {
+        defaultValue: neutralTemperature,
+        maxValue: 2,
+        minValue: 0,
+        supported: true
+      }
+    })
+  };
+}
+
 const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   {
     provider: "fake",
@@ -451,6 +503,19 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     effort: "high",
     modelId: "gemini-3.1-pro-preview",
     pro: true
+  }),
+  deepSeekModel({
+    displayName: "DeepSeek V4 Pro",
+    modelId: "deepseek-v4-pro"
+  }),
+  deepSeekModel({
+    displayName: "DeepSeek V4 Flash",
+    modelId: "deepseek-v4-flash"
+  }),
+  deepSeekModel({
+    displayName: "DeepSeek V4 Flash Vision (Experimental)",
+    modelId: "deepseek-v4-flash-vision-exp",
+    vision: true
   }),
   {
     provider: "openrouter",
@@ -662,6 +727,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
 
 const providerDisplayNames: Record<ProviderId, string> = {
   anthropic: "Anthropic",
+  deepseek: "DeepSeek",
   fake: "Fake",
   gemini: "Gemini",
   openai: "OpenAI",
@@ -670,6 +736,7 @@ const providerDisplayNames: Record<ProviderId, string> = {
 
 const providerAdapterKinds: Record<ProviderId, CatalogAdapterKind> = {
   anthropic: "anthropic_messages",
+  deepseek: "deepseek_responses_native",
   fake: "fake",
   gemini: "gemini_interactions_native",
   openai: "openai_responses_native",
@@ -905,6 +972,24 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     }],
     sourceConnectionId: "openai",
     strategyId: "openai-native-web-search"
+  },
+  {
+    description: "Web search provided by DeepSeek. DeepSeek currently returns findings without source URLs.",
+    displayName: "DeepSeek Search",
+    kind: "web_search",
+    routes: [{
+      adapterKind: "answer_provider_hosted",
+      config: { sourceAttribution: "provider_unavailable", tool: "web_search" },
+      credentialMode: "answer_provider",
+      executionModes: ["model_choice"],
+      kind: "deepseek_native_web_search",
+      physicalStrategyId: "deepseek-native-web-search",
+      protocol: "deepseek_responses_web_search",
+      revisionId: "template:deepseek-native-web-search:v1",
+      searchStrategyRowId: "deepseek-native-web-search"
+    }],
+    sourceConnectionId: "deepseek",
+    strategyId: "deepseek-native-web-search"
   },
   {
     description: "Google Search grounding for eligible Gemini models.",

@@ -94,7 +94,8 @@ function generationRequest(
   streaming: boolean
 ): ProviderRunRequest {
   const responsesAdapter = input.model.adapterKind === "openai_responses_native" ||
-    input.model.adapterKind === "openai_responses_compatible";
+    input.model.adapterKind === "openai_responses_compatible" ||
+    input.model.adapterKind === "deepseek_responses_native";
   const maxOutputTokens = 1_000;
 
   return {

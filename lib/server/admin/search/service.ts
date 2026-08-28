@@ -13,6 +13,8 @@ import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
+  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
+  DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID,
   decodeSearchPlan,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
@@ -170,6 +172,7 @@ function draftKind(draft: AdminSearchDraft): AdminSearchKind {
 
 function clientSearchKind(adapterKind: string): AdminSearchProviderModelOption["searchKind"] | null {
   if (adapterKind === "anthropic_messages") return "anthropic_web_search";
+  if (adapterKind === "deepseek_responses_native") return "deepseek_web_search";
   if (adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible") {
     return "web_search";
   }
@@ -181,6 +184,7 @@ function draftClientSearchKind(
   draft: AdminSearchDraft
 ): AdminSearchProviderModelOption["searchKind"] {
   if (draft.protocol === "anthropic_web_search") return "anthropic_web_search";
+  if (draft.protocol === "deepseek_responses_web_search") return "deepseek_web_search";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
   return draft.protocol === "openrouter_perplexity_chat" ? "perplexity_search" : "web_search";
 }
@@ -203,6 +207,16 @@ function clientRouteIdentities(
       {
         id: ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
         strategyId: ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID
+      },
+      { id: fallbackId, strategyId: fallbackId }
+    ];
+  }
+  if (option.templateKey === "search:deepseek" && option.optionId === "deepseek-native-web-search") {
+    const fallbackId = `deepseek-search-client:${sourceConnectionId}`;
+    return [
+      {
+        id: DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
+        strategyId: DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID
       },
       { id: fallbackId, strategyId: fallbackId }
     ];
@@ -248,6 +262,12 @@ function hostedRouteIdentity(
   if (option.templateKey === "search:anthropic" && option.optionId === "anthropic-web-search") {
     return { id: option.optionId, strategyId: option.optionId };
   }
+  if (option.templateKey === "search:deepseek" && option.optionId === "deepseek-native-web-search") {
+    return {
+      id: `deepseek-search-hosted:${sourceConnectionId}`,
+      strategyId: option.optionId
+    };
+  }
   if (
     option.templateKey === null &&
     option.optionId === `custom-web-search:${sourceConnectionId}`
@@ -275,6 +295,7 @@ function hostedRouteIdentity(
 
 function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
   return draft.protocol === "anthropic_web_search" ||
+    draft.protocol === "deepseek_responses_web_search" ||
     draft.protocol === "openai_responses_web_search" ||
     draft.protocol === "gemini_google_search"
     ? {
@@ -708,6 +729,7 @@ export function createAdminSearchService(input: Readonly<{
         ) / 1_000,
         searchReasoningSupported:
           (configuration.adapterKind === "anthropic_messages" ||
+            configuration.adapterKind === "deepseek_responses_native" ||
             configuration.adapterKind === "openai_responses_native" ||
             configuration.adapterKind === "openai_responses_compatible" ||
             configuration.adapterKind === "gemini_interactions_native") &&

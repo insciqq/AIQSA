@@ -31,6 +31,7 @@ export type AdminProviderQuickSetupProps = Readonly<{
 }>;
 
 function familyLabel(family: string): string {
+  if (family === "deepseek") return "DeepSeek";
   if (family === "openai") return "OpenAI";
   if (family === "openai_compatible") return "OpenAI-compatible";
   if (family === "openrouter") return "OpenRouter";
@@ -441,17 +442,21 @@ function ReadyProvider({
         </div>
       ) : null}
 
-      {provider.provider === "openai" ? (
+      {provider.provider === "openai" || provider.provider === "deepseek" ? (
         <div className="mt-4 border-l-2 border-proof/45 pl-3 text-xs leading-5 text-ink-secondary">
           <p>
             {search?.status === "ready"
-              ? "OpenAI Search is ready for supported OpenAI, Anthropic, Gemini, and other answer models."
+              ? provider.provider === "deepseek"
+                ? "DeepSeek Search is ready for supported answer models. DeepSeek currently returns findings without source URLs."
+                : "OpenAI Search is ready for supported OpenAI, Anthropic, Gemini, and other answer models."
               : search?.status === "needs_attention"
-                ? "The provider is ready, but OpenAI Search still needs a successful source check before it can serve broader models."
-                : "OpenAI Search can be reviewed and managed from the Search section."}
+                ? provider.provider === "deepseek"
+                  ? "The provider is ready, but DeepSeek Search still needs attention before it can serve broader models."
+                  : "The provider is ready, but OpenAI Search still needs a successful source check before it can serve broader models."
+                : `${provider.providerDisplayName} Search can be reviewed and managed from the Search section.`}
           </p>
           <Link className={`${quietButton} mt-2`} href="/admin?section=search">
-            Manage OpenAI Search
+            Manage {provider.providerDisplayName} Search
           </Link>
         </div>
       ) : null}
@@ -639,7 +644,7 @@ export function AdminProviderQuickSetup({
           <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_20rem] xl:gap-10">
             <div className="min-w-0">
               <div
-                className="grid min-w-0 grid-cols-2 gap-px overflow-hidden rounded-panel border border-trace-subtle bg-trace-subtle sm:grid-cols-3 lg:grid-cols-5"
+                className="grid min-w-0 grid-cols-2 gap-px overflow-hidden rounded-panel border border-trace-subtle bg-trace-subtle sm:grid-cols-3 lg:grid-cols-6"
                 data-testid="provider-quick-choice-strip"
               >
                 {providers.map((provider) => {

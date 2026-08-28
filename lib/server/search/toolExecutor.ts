@@ -207,6 +207,18 @@ function queryOnlyRequest(
       reasoningPolicy: configured.reasoningPolicy,
       strategyId: "openai-responses-web-search"
     };
+  } else if (
+    option.protocol === "deepseek_responses_web_search" &&
+    option.provider === "deepseek"
+  ) {
+    searchPolicy = {
+      maxOutputTokens: configured.maxOutputTokens,
+      modelCapabilities: configured.capabilities,
+      modelId: option.modelId ?? "",
+      provider: "deepseek",
+      reasoningPolicy: configured.reasoningPolicy,
+      strategyId: "deepseek-responses-web-search"
+    };
   } else if (option.protocol === "gemini_google_search" && option.provider === "gemini") {
     searchPolicy = {
       maxOutputTokens: configured.maxOutputTokens,
@@ -244,13 +256,22 @@ async function consumeProviderSearch(
   timeoutMs?: number
 ): Promise<{
   findings: string;
+  sourceAttribution: "available" | "provider_unavailable";
   sources: SearchSource[];
   usage: ModelRunUsage;
 }> {
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
+  const sourceAttribution = result.sourceAttribution ?? "available";
   const sources = normalizeSearchSources(result.sources, configuration(option).maxResults);
-  if (sources.length === 0) {
+  const providerSourcesUnavailable =
+    sourceAttribution === "provider_unavailable" &&
+    option.provider === "deepseek" &&
+    option.protocol === "deepseek_responses_web_search";
+  if (
+    (sourceAttribution === "provider_unavailable" && !providerSourcesUnavailable) ||
+    (sources.length === 0 && !providerSourcesUnavailable)
+  ) {
     throw new ProviderSearchExecutionError({
       artifacts: result.artifacts,
       code: "search_sources_invalid",
@@ -269,6 +290,7 @@ async function consumeProviderSearch(
   }
   return {
     findings,
+    sourceAttribution,
     sources,
     usage: result.usage
   };
@@ -324,10 +346,17 @@ async function executeOne(input: Readonly<{
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
+      ...(result.sourceAttribution === "provider_unavailable"
+        ? { protocol: input.option.protocol }
+        : {}),
       revisionId: input.option.revisionId,
+      sourceAttribution: result.sourceAttribution,
       sources: result.sources,
       status: "complete",
-      usage: result.usage
+      usage: result.usage,
+      ...(result.sourceAttribution === "provider_unavailable"
+        ? { warning: "provider_sources_unavailable" }
+        : {})
     };
   } catch (error) {
     if (input.signal?.aborted) throw error;

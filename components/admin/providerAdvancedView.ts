@@ -18,7 +18,7 @@ export const PROVIDER_ADVANCED_TASKS = [
 
 export type ProviderAdvancedTask = (typeof PROVIDER_ADVANCED_TASKS)[number];
 
-export type ProviderAdvancedFamily = "anthropic" | "gemini" | "openai" | "openrouter";
+export type ProviderAdvancedFamily = "anthropic" | "deepseek" | "gemini" | "openai" | "openrouter";
 
 export const PROVIDER_ADVANCED_TASK_LABELS: Record<ProviderAdvancedTask, string> = {
   authentication: "Authentication",
@@ -31,6 +31,7 @@ export function providerFamilyLabel(
 ): string {
   const labels: Record<AdminProviderConnection["family"], string> = {
     anthropic: "Anthropic",
+    deepseek: "DeepSeek",
     fake: "Fake",
     gemini: "Gemini",
     openai: "OpenAI",
@@ -44,6 +45,7 @@ export function providerFamilyRoot(
   family: Exclude<AdminProviderConnection["family"], "fake">
 ): string {
   if (family === "anthropic") return "https://api.anthropic.com/v1";
+  if (family === "deepseek") return "https://api.deepseek.com";
   if (family === "gemini") {
     return "https://generativelanguage.googleapis.com/v1";
   }
@@ -226,6 +228,7 @@ export function preferredProviderConnectionId(
   if (!family) return null;
   const canonicalIds: Record<ProviderAdvancedFamily, string> = {
     anthropic: providerTemplateIds.anthropicConnection,
+    deepseek: providerTemplateIds.deepSeekConnection,
     gemini: providerTemplateIds.geminiConnection,
     openai: providerTemplateIds.openAiConnection,
     openrouter: providerTemplateIds.openRouterConnection

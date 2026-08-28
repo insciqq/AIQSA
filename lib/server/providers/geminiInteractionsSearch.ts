@@ -146,7 +146,8 @@ export function createGeminiInteractionsSearchAdapter(
             groundingExpected: true,
             modelId: body.model
           }),
-          requestPreview: adapter.buildRequestPreview(request)
+          requestPreview: adapter.buildRequestPreview(request),
+          sourceAttribution: "available" as const
         };
       } catch (error) {
         const providerStatus = safeProviderStatus(response);

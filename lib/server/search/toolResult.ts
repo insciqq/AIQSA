@@ -29,7 +29,9 @@ export type SearchExecutionEvidence = Readonly<{
   modelId: string | null;
   optionId: string;
   provider: string;
+  protocol?: string;
   revisionId: string;
+  sourceAttribution?: "available" | "provider_unavailable";
   sources: readonly SearchSource[];
   status: "complete" | "error";
   usage: ModelRunUsage;
@@ -151,7 +153,9 @@ export function searchExecutionsFromToolResult(
       "modelId",
       "optionId",
       "provider",
+      "protocol",
       "revisionId",
+      "sourceAttribution",
       "sources",
       "status",
       "usage",
@@ -169,7 +173,22 @@ export function searchExecutionsFromToolResult(
     const sourceValues = value.sources as unknown[];
     const sources = normalizeSearchSources(sourceValues, 20);
     if (sources.length !== sourceValues.length) return [];
-    if (value.status === "complete" && (!findings || sources.length === 0 || failure)) {
+    const sourceAttribution = value.sourceAttribution === undefined ||
+      value.sourceAttribution === "available"
+      ? value.sourceAttribution
+      : value.sourceAttribution === "provider_unavailable"
+        ? value.sourceAttribution
+        : null;
+    if (sourceAttribution === null) return [];
+    const providerSourcesUnavailable =
+      sourceAttribution === "provider_unavailable" &&
+      value.provider === "deepseek" &&
+      value.protocol === "deepseek_responses_web_search";
+    if (
+      sourceAttribution === "provider_unavailable" && !providerSourcesUnavailable ||
+      value.status === "complete" &&
+        (!findings || (sources.length === 0 && !providerSourcesUnavailable) || failure)
+    ) {
       return [];
     }
     if (value.status === "error" && !failure) return [];
@@ -181,7 +200,9 @@ export function searchExecutionsFromToolResult(
       modelId: value.modelId,
       optionId: value.optionId,
       provider: value.provider,
+      ...(typeof value.protocol === "string" ? { protocol: value.protocol } : {}),
       revisionId: value.revisionId,
+      ...(sourceAttribution ? { sourceAttribution } : {}),
       sources,
       status: value.status,
       usage,

@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 5;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 6;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -61,6 +61,23 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p2-a2",
       recommended: false,
       templateKey: "anthropic:claude-sonnet-5"
+    })
+  ]),
+  deepseek: Object.freeze([
+    Object.freeze({
+      candidateId: "p6-d1",
+      recommended: true,
+      templateKey: "deepseek:deepseek-v4-pro"
+    }),
+    Object.freeze({
+      candidateId: "p6-d2",
+      recommended: false,
+      templateKey: "deepseek:deepseek-v4-flash"
+    }),
+    Object.freeze({
+      candidateId: "p6-d3",
+      recommended: false,
+      templateKey: "deepseek:deepseek-v4-flash-vision-exp"
     })
   ]),
   gemini: Object.freeze([
@@ -208,6 +225,7 @@ function createPolicy(provider: AdminProviderQuickSetupProviderId): AdminProvide
 
 const policies = Object.freeze({
   anthropic: createPolicy("anthropic"),
+  deepseek: createPolicy("deepseek"),
   gemini: createPolicy("gemini"),
   openai: createPolicy("openai"),
   openrouter: createPolicy("openrouter")
