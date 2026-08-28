@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION } from "../parsing/ocrSupplement";
 import {
   loadEmbeddingProviderRole,
   loadProjectEmbeddingProviderRole,
@@ -19,7 +20,8 @@ import {
 export const KNOWLEDGE_INDEX_PROFILE_ID = "installation";
 export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v6";
 export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 4 as const;
-export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION = 7 as const;
+export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION =
+  PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION;
 
 export type KnowledgePdfProcessingMode =
   | "local"

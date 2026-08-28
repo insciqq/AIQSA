@@ -2,6 +2,7 @@ import { createDocumentParserBoundary } from "./boundary";
 import { finalizeParsedDocument } from "./assessment";
 import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
 import { DocumentParserError } from "./errors";
+import { PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION } from "./ocrSupplement";
 import type {
   DocumentParserEngine,
   DocumentParserEngineAdapter,
@@ -136,6 +137,7 @@ describe("document parser boundary", () => {
       expect(new Headers(init?.headers).get("content-disposition")).toBe(
         'attachment; filename="document.doc"'
       );
+      expect(new Headers(init?.headers).get("x-tika-ocrlanguage")).toBe("rus+eng");
       return new Response(JSON.stringify([{
         "Content-Type": "application/msword",
         "X-TIKA:content": "<html><body><p>binary document fixture</p></body></html>"
@@ -281,6 +283,71 @@ describe("document parser boundary", () => {
     });
     expect(nativePdfParser).toHaveBeenCalledOnce();
     expect(doclingParse).toHaveBeenCalledOnce();
+  });
+
+  it("supplements image-heavy Docling structure with materially novel Tika OCR", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "Category alpha 10 Category beta"));
+    const tikaParse = vi.fn(async () => parsed("tika", "Category alpha 10 Category beta 20"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf",
+      parserProfileVersion: PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+    })).resolves.toMatchObject({
+      attempts: [
+        { engine: "native_pdf", outcome: "quality_failure" },
+        { engine: "docling", outcome: "complete" },
+        { engine: "tika", outcome: "complete" }
+      ],
+      blocks: [
+        { index: 0, text: "Category alpha 10 Category beta" },
+        { index: 1, page: 1, text: "Category alpha 10 Category beta 20" }
+      ],
+      engine: "docling"
+    });
+    expect(doclingParse).toHaveBeenCalledOnce();
+    expect(tikaParse).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an older immutable parser profile on its original single-parser behavior", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "profile-seven output"));
+    const tikaParse = vi.fn(async () => parsed("tika", "newer OCR output"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf",
+      parserProfileVersion: PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION - 1
+    })).resolves.toMatchObject({ engine: "docling", text: "profile-seven output" });
+    expect(doclingParse).toHaveBeenCalledOnce();
+    expect(tikaParse).not.toHaveBeenCalled();
   });
 
   it("does not hide a native PDF output bound behind a sidecar", async () => {
