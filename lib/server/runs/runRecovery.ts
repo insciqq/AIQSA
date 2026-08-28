@@ -54,7 +54,10 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
-import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS,
+  type KnowledgeToolExecutor
+} from "../knowledge/toolExecutor";
 import type {
   KnowledgeProviderDispatchLifecycle,
   PreparedKnowledgeProviderDispatch
@@ -1283,7 +1286,12 @@ async function executePersistedToolCall(
       result = await context.deps.knowledgeExecutor!.execute(
         call,
         executionContext,
-        { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }
+        {
+          signal: AbortSignal.any([
+            signal,
+            AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
+          ])
+        }
       );
       recordRecoveredKnowledgeResult({ context, includeUsage: true, result });
     } else {
@@ -2910,7 +2918,10 @@ async function refreshProviderRunOnceRegistered(
           result = preflight && preflight.kind !== "admitted"
             ? preflight.result
             : await deps.knowledgeExecutor.execute(call, executionContext, {
-                signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+                signal: AbortSignal.any([
+                  signal,
+                  AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
+                ])
               }).catch((error) => toolExecutionErrorResult(call, error, "Knowledge"));
           const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
           if (!stored) {

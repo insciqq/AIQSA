@@ -177,11 +177,32 @@ function responseUsage(value: unknown): RerankUsage {
   return { inputTokens, searchUnits, totalTokens };
 }
 
-function responseModelMatches(actual: string, expected: string): boolean {
+function responseModelMatches(
+  actual: string,
+  expected: string,
+  provider: string | null
+): boolean {
   const normalizedActual = actual.toLocaleLowerCase("und");
   const normalizedExpected = expected.toLocaleLowerCase("und");
-  return normalizedActual === normalizedExpected ||
-    normalizedActual === normalizedExpected.split("/").at(-1);
+  const expectedSlug = normalizedExpected.split("/").at(-1);
+  if (normalizedActual === normalizedExpected || normalizedActual === expectedSlug) {
+    return true;
+  }
+
+  // OpenRouter's rerank response identifies a routed Fireworks model with
+  // Fireworks' canonical resource name (for example,
+  // accounts/fireworks/models/qwen3-reranker-8b), rather than the OpenRouter
+  // catalog id sent in the request (qwen/qwen3-reranker-8b). Accept that
+  // provider-scoped canonical form only when both the terminal model slug and
+  // the independently returned provider agree. Arbitrary namespaces remain a
+  // mismatch, preserving the wrong-model guard.
+  if (!provider || !expectedSlug) return false;
+  const segments = normalizedActual.split("/");
+  return segments.length === 4 &&
+    segments[0] === "accounts" &&
+    segments[2] === "models" &&
+    segments[3] === expectedSlug &&
+    segments[1] === provider.toLocaleLowerCase("und");
 }
 
 function responseBody(
@@ -194,12 +215,17 @@ function responseBody(
   const strict = validation === "strict";
   const body = isRecord(value) ? value : null;
   const responseModel = boundedIdentifier(body?.model);
+  const responseProvider = boundedIdentifier(body?.provider);
   if (!body || !responseModel ||
-    !responseModelMatches(responseModel, model.upstreamModelId) ||
+    !responseModelMatches(responseModel, model.upstreamModelId, responseProvider) ||
     !Array.isArray(body.results) ||
     body.results.length > (strict ? documents.length : MAX_RERANK_DOCUMENTS * 4)) {
     if (isRecord(value) && typeof value.model === "string" &&
-      !responseModelMatches(value.model, model.upstreamModelId)) {
+      !responseModelMatches(
+        value.model,
+        model.upstreamModelId,
+        boundedIdentifier(value.provider)
+      )) {
       throw new RerankAdapterError("rerank_response_model_mismatch");
     }
     throw new RerankAdapterError("rerank_response_invalid");
@@ -230,7 +256,7 @@ function responseBody(
   if (scores.length < 1) throw new RerankAdapterError("rerank_response_invalid");
   return {
     model: responseModel,
-    provider: boundedIdentifier(body.provider),
+    provider: responseProvider,
     requestId: boundedIdentifier(body.id) ?? headerRequestId,
     scores,
     usage: responseUsage(body.usage)

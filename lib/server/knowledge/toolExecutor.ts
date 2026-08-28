@@ -87,6 +87,14 @@ import {
 
 export { knowledgeRetrievalTool } from "./knowledgeTools";
 
+/**
+ * End-to-end envelope for one read-only Knowledge tool operation. Query
+ * embedding, hybrid retrieval, hosted reranking, and durable receipt writes
+ * are sequential stages; this must leave headroom beyond the reranker's own
+ * bounded fallback deadline instead of racing it at the same wall clock.
+ */
+export const KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS = 60_000 as const;
+
 export type KnowledgeAcceptedEmbeddingRuntime = Readonly<{
   adapter: EmbeddingAdapter;
   configuration: Readonly<{
