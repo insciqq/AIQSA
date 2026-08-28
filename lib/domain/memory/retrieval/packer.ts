@@ -157,6 +157,11 @@ function safeJsonLine(value: unknown): string {
     .replace(/\u2029/gu, "\\u2029");
 }
 
+function answerFocus(plan: MemoryRetrievalPlan): string | null {
+  if (plan.aggregationRequested) return null;
+  return plan.answerFocus;
+}
+
 function renderedEvidence(item: MemoryPackedItem): string {
   return safeJsonLine({
     derived: item.derived,
@@ -193,6 +198,7 @@ function render(
     '<aiqsa_memory_evidence version="2">',
     safeJsonLine({
       aggregation_requested: plan.aggregationRequested,
+      answer_focus: answerFocus(plan),
       budget_profile: budgetProfile.toLocaleLowerCase("und"),
       profile_inventory: plan.profileRequested,
       temporal_intent: plan.temporalIntent.toLocaleLowerCase("und")

@@ -75,7 +75,16 @@ describe("provider-neutral personal context", () => {
       .toBe(expected);
     expect(() => assertPersonalContextEgressSafe(request())).not.toThrow();
     expect(MEMORY_READER_CONTRACT_V1).toContain("raw_chunk or raw_round");
+    expect(MEMORY_READER_CONTRACT_V1).toContain(
+      "answer_focus is present"
+    );
+    expect(MEMORY_READER_CONTRACT_V1).toContain("never supplies an answer");
     expect(MEMORY_READER_CONTRACT_V1).toContain("what the Assistant said");
+    expect(MEMORY_READER_CONTRACT_V1).toContain(
+      "subject, predicate, and requested relation or attribute"
+    );
+    expect(MEMORY_READER_CONTRACT_V1).toContain("location, source or channel");
+    expect(MEMORY_READER_CONTRACT_V1).toContain("same source_session_handle");
     expect(MEMORY_READER_CONTRACT_V1).toContain("later dated current evidence");
     expect(MEMORY_READER_CONTRACT_V1).toContain("identify the distinct supported set members");
     expect(MEMORY_READER_CONTRACT_V1).toContain("relative time");

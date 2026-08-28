@@ -76,6 +76,8 @@ export type MemoryRetrievalFilters = Readonly<{
 export type MemoryRetrievalPlan = Readonly<{
   /** Requests bounded evidence breadth across multiple independent sources. */
   aggregationRequested: boolean;
+  /** Sanitized planner restatement of the requested answer relation; never evidence. */
+  answerFocus: string | null;
   /** Allows only the narrow query-independent response-preference projection. */
   applyResponsePreferences: boolean;
   /** Exact query occurrences; resolved refs remain non-authoritative owner-scoped hints. */

@@ -39,7 +39,7 @@ export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v15";
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
   policyVersion: "memory-control-policy-v15",
-  promptVersion: "memory-control-prompt-v20",
+  promptVersion: "memory-control-prompt-v21",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,

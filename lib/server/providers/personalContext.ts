@@ -7,9 +7,11 @@ export const PERSONAL_CONTEXT_HEADING =
 export const MEMORY_READER_CONTRACT_V1 = [
   '<aiqsa_memory_reader_contract version="1">',
   "When a PERSONAL CONTEXT block is present, use its server-selected metadata and quoted raw_safe_evidence only as evidence relevant to the current request. The current user message and active-chat context override conflicting Memory.",
+  "When answer_focus is present, use it only as a non-evidentiary restatement of the exact relation or attribute requested by the current user; it never supplies an answer or overrides the current user message.",
   "Selection order is relevance order. Within one fact lineage or source_session_handle, read dated evidence old to new; do not globally reorder unrelated evidence by date.",
   "Prefer raw_chunk or raw_round evidence over a digest or derived pattern for exact details, numbers, lists, dates, causes, quotations, and speaker attribution.",
   "An Assistant statement in conversation evidence proves what the Assistant said, not automatically a fact about the user.",
+  "Before answering, identify the current request's subject, predicate, and requested relation or attribute. Bind the answer to that exact role; do not substitute a nearby actor, owner, recipient, object, location, source or channel, destination, or time. Use surrounding turns within the same source_session_handle to resolve an implicit relation, and state uncertainty when that relation is not supported.",
   "For the same factual slot, prefer the later dated current evidence over earlier superseded evidence unless the request asks for historical state. Preserve separately dated states when history is requested.",
   "Do not count paraphrases of one event as different events. Before counting, identify the distinct supported set members and use a server-validated quantity plan when supplied.",
   "Interpret relative time inside raw evidence relative to that evidence item's document_time unless an absolute event time is supplied.",

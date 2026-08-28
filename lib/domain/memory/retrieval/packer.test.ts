@@ -122,6 +122,15 @@ function renderedEvidence(pack: MemoryContextPack): readonly Record<string, unkn
   });
 }
 
+function renderedHeader(pack: MemoryContextPack): Record<string, unknown> | null {
+  for (const line of (pack.text ?? "").split("\n")) {
+    if (!line.startsWith("{")) continue;
+    const value = JSON.parse(line) as Record<string, unknown>;
+    if (typeof value.aggregation_requested === "boolean") return value;
+  }
+  return null;
+}
+
 describe("Personal Memory context pack", () => {
   it("packs bounded response preferences before relevant facts/history", () => {
     const dynamic = [ranked("fact"), ranked("history", true)];
@@ -148,7 +157,44 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v16");
+    expect(pack.packerVersion).toBe("memory-context-packer-v17");
+  });
+
+  it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
+    const focusedPlan = planMemoryRetrieval({
+      currentUserText: "Which depot received the returned scanner?",
+      now,
+      semanticRewrite: "Which depot received the returned scanner?"
+    });
+    const pack = packMemoryPersonalContext({
+      expanded: [expansion("fact")],
+      plan: focusedPlan,
+      ranked: [ranked("fact")]
+    });
+
+    expect(renderedHeader(pack)).toMatchObject({
+      aggregation_requested: false,
+      answer_focus: "Which depot received the returned scanner?"
+    });
+    expect(focusedPlan.semanticQueryVariants).toEqual([{
+      kind: "ORIGINAL",
+      text: "Which depot received the returned scanner?"
+    }]);
+
+    const aggregate = packMemoryPersonalContext({
+      expanded: [expansion("history", true)],
+      plan: planMemoryRetrieval({
+        aggregationRequested: true,
+        currentUserText: "List every returned scanner",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        semanticRewrite: "returned scanners",
+        temporalIntent: "ANY"
+      }),
+      ranked: [ranked("history", true)]
+    });
+    expect(renderedHeader(aggregate)).toMatchObject({ answer_focus: null });
   });
 
   it("packs a recall-round hit only from its authoritative raw projection", () => {
