@@ -119,6 +119,13 @@ import {
   type LongMemEvalSystemModelId
 } from "./contract";
 import { redactLongMemEvalDebugArtifact } from "./debug";
+import {
+  assertLongMemEvalQualificationDataset,
+  decodeLongMemEvalQualificationManifestId,
+  loadLongMemEvalQualificationManifest,
+  type LongMemEvalQualificationManifest,
+  type LongMemEvalQualificationManifestId
+} from "./qualification";
 
 const execFile = promisify(execFileCallback);
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
@@ -128,9 +135,10 @@ const datasetPath = resolve(upstreamRoot, "data/longmemeval_s_cleaned.json");
 const oraclePath = resolve(upstreamRoot, "data/longmemeval_oracle.json");
 const evaluatorPath = resolve(upstreamRoot, "src/evaluation/evaluate_qa.py");
 const benchmarkEmailSuffix = "@longmemeval.benchmark.invalid";
-const defaultQualificationSystemModelId = "gpt-5.6-sol" satisfies
+const defaultQualificationSystemModelId = "gpt-5.6-luna" satisfies
   LongMemEvalSystemModelId;
 const qualificationSystemReasoningEffort = "medium";
+const qualificationEmbeddingModelId = "qwen/qwen3-embedding-8b";
 const qualificationRerankerModelId = "qwen/qwen3-reranker-8b";
 const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
 const qualificationMemoryJobParallelism = 8;
@@ -186,6 +194,7 @@ type CliOptions = Readonly<{
   indexTimeoutMs: number;
   outputDirectory: string;
   profile: LongMemEvalProfile;
+  qualificationManifestId: LongMemEvalQualificationManifestId | null;
   questionIds: readonly string[];
   runTimeoutMs: number;
   sampleSize: number;
@@ -321,6 +330,8 @@ function parseCli(argv: readonly string[]): CliOptions {
   let indexTimeoutMinutes = 45;
   let output = `results/${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
   let profile: LongMemEvalProfile = "official";
+  let qualificationManifestId: LongMemEvalQualificationManifestId | null = null;
+  let qualificationOverridePresent = false;
   const questionIds: string[] = [];
   let runTimeoutMinutes = 15;
   let sampleSize = 1;
@@ -332,6 +343,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     const next = argv[index + 1];
     switch (argument) {
       case "--case-concurrency":
+        qualificationOverridePresent = true;
         caseConcurrency = boundedConcurrency(
           next,
           LONGMEMEVAL_MAX_CASE_CONCURRENCY,
@@ -345,12 +357,15 @@ function parseCli(argv: readonly string[]): CliOptions {
         index += 1;
         break;
       case "--debug-memory":
+        qualificationOverridePresent = true;
         debugMemory = true;
         break;
       case "--force-dream-diagnostic":
+        qualificationOverridePresent = true;
         forceDreamDiagnostic = true;
         break;
       case "--index-timeout-minutes":
+        qualificationOverridePresent = true;
         indexTimeoutMinutes = positiveInteger(next, "longmemeval_index_timeout_invalid");
         index += 1;
         break;
@@ -360,28 +375,41 @@ function parseCli(argv: readonly string[]): CliOptions {
         index += 1;
         break;
       case "--profile":
+        qualificationOverridePresent = true;
         profile = decodeLongMemEvalProfile(next);
         index += 1;
         break;
+      case "--qualification-manifest":
+        if (qualificationManifestId !== null) {
+          throw new Error("longmemeval_qualification_manifest_duplicate");
+        }
+        qualificationManifestId = decodeLongMemEvalQualificationManifestId(next);
+        index += 1;
+        break;
       case "--question-id":
+        qualificationOverridePresent = true;
         if (!next?.trim()) throw new Error("longmemeval_question_id_invalid");
         questionIds.push(next.trim());
         index += 1;
         break;
       case "--run-timeout-minutes":
+        qualificationOverridePresent = true;
         runTimeoutMinutes = positiveInteger(next, "longmemeval_run_timeout_invalid");
         index += 1;
         break;
       case "--sample-size":
+        qualificationOverridePresent = true;
         sampleSize = positiveInteger(next, "longmemeval_sample_size_invalid");
         index += 1;
         break;
       case "--seed":
+        qualificationOverridePresent = true;
         if (!next?.trim()) throw new Error("longmemeval_seed_invalid");
         seed = next.trim();
         index += 1;
         break;
       case "--session-concurrency":
+        qualificationOverridePresent = true;
         sessionConcurrency = boundedConcurrency(
           next,
           LONGMEMEVAL_MAX_SESSION_CONCURRENCY,
@@ -390,6 +418,7 @@ function parseCli(argv: readonly string[]): CliOptions {
         index += 1;
         break;
       case "--system-model":
+        qualificationOverridePresent = true;
         systemModelId = decodeLongMemEvalSystemModelId(next);
         index += 1;
         break;
@@ -398,6 +427,9 @@ function parseCli(argv: readonly string[]): CliOptions {
     }
   }
   if (!confirmPaid) throw new Error("longmemeval_paid_confirmation_required");
+  if (qualificationManifestId && qualificationOverridePresent) {
+    throw new Error("longmemeval_qualification_manifest_override_forbidden");
+  }
   if (forceDreamDiagnostic && profile !== "product") {
     throw new Error("longmemeval_dream_diagnostic_requires_product_profile");
   }
@@ -409,12 +441,44 @@ function parseCli(argv: readonly string[]): CliOptions {
     indexTimeoutMs: indexTimeoutMinutes * 60_000,
     outputDirectory: resolveBenchmarkOutputDirectory(benchmarkRoot, output),
     profile,
+    qualificationManifestId,
     questionIds: Object.freeze(questionIds),
     runTimeoutMs: runTimeoutMinutes * 60_000,
     sampleSize,
     seed,
     sessionConcurrency,
     systemModelId
+  });
+}
+
+function applyQualificationManifest(
+  options: CliOptions,
+  manifest: LongMemEvalQualificationManifest
+): CliOptions {
+  if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
+    manifest.runtime.reranker.upstreamModelId !== qualificationRerankerModelId ||
+    manifest.runtime.systemModel.reasoningEffort !==
+      qualificationSystemReasoningEffort ||
+    manifest.runtime.workerConcurrency.global !== qualificationMemoryJobParallelism ||
+    manifest.runtime.workerConcurrency.perUser !==
+      qualificationMemoryJobPerUserParallelism) {
+    throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+  }
+  return Object.freeze({
+    ...options,
+    caseConcurrency: manifest.runtime.caseConcurrency,
+    debugMemory: manifest.runtime.debugMemory,
+    forceDreamDiagnostic: manifest.runtime.forceDreamDiagnostic,
+    indexTimeoutMs: manifest.runtime.indexTimeoutMinutes * 60_000,
+    profile: manifest.profile,
+    questionIds: Object.freeze(
+      manifest.selection.cases.map(({ questionId }) => questionId)
+    ),
+    runTimeoutMs: manifest.runtime.runTimeoutMinutes * 60_000,
+    sampleSize: manifest.selection.cases.length,
+    seed: manifest.selection.seed,
+    sessionConcurrency: manifest.runtime.sessionConcurrency,
+    systemModelId: manifest.runtime.systemModel.upstreamModelId
   });
 }
 
@@ -686,7 +750,7 @@ async function resolveProviderRoles(
     !systemCredential.activeVersionId || !qwen?.activeConfig ||
     qwen.activeVersion < 1 || !qwen.enabled || !qwen.connection.enabled ||
     qwen.connection.family !== "openrouter" || qwen.modelClass !== "embedding" ||
-    qwen.modelId !== "qwen/qwen3-embedding-8b" ||
+    qwen.modelId !== qualificationEmbeddingModelId ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
     systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort ||
     (systemPolicy.rerankerProviderModelId !== null && !reranker)) {
@@ -2575,7 +2639,7 @@ async function runCase(
 
 async function main(): Promise<void> {
   loadEnvConfig(repositoryRoot, true, { error() {}, info() {} }, true);
-  const options = parseCli(process.argv.slice(2));
+  let options = parseCli(process.argv.slice(2));
   const appPort = positiveInteger(
     process.env.AIQSA_MEMORY_BENCHMARK_APP_PORT ?? "3137",
     "longmemeval_app_port_invalid"
@@ -2596,6 +2660,17 @@ async function main(): Promise<void> {
   const databaseUrl = process.env.AIQSA_MEMORY_BENCHMARK_DATABASE_URL ?? "";
   assertBenchmarkDatabaseUrl(databaseUrl, postgresPort);
   await assertUpstream();
+  const qualificationManifest = options.qualificationManifestId
+    ? await loadLongMemEvalQualificationManifest(options.qualificationManifestId)
+    : null;
+  if (qualificationManifest) {
+    options = applyQualificationManifest(options, qualificationManifest);
+  }
+  const allCases = await loadDataset();
+  await assertReferenceMetadata(allCases);
+  if (qualificationManifest) {
+    assertLongMemEvalQualificationDataset(qualificationManifest, allCases);
+  }
   await mkdir(resolve(benchmarkRoot, "results"), { mode: 0o700, recursive: true });
   await mkdir(options.outputDirectory, { mode: 0o700, recursive: false });
   const answersPath = resolve(options.outputDirectory, "answers.jsonl");
@@ -2609,8 +2684,6 @@ async function main(): Promise<void> {
     await assertDatabaseIdentity(prisma);
     const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
     const roles = await resolveProviderRoles(prisma, options.systemModelId);
-    const allCases = await loadDataset();
-    await assertReferenceMetadata(allCases);
     const selection = selectLongMemEvalCases(allCases, {
       ...(options.questionIds.length > 0
         ? { questionIds: options.questionIds }
@@ -2715,7 +2788,7 @@ async function main(): Promise<void> {
       failures,
       memoryEmbeddingModel: {
         provider: "OpenRouter",
-        upstreamModelId: "qwen/qwen3-embedding-8b"
+        upstreamModelId: qualificationEmbeddingModelId
       },
       memoryRerankerModel: roles.reranker
         ? {
@@ -2729,6 +2802,14 @@ async function main(): Promise<void> {
             upstreamModelId: roles.system.upstreamModelId
           },
       profile: longMemEvalProfileManifest(options.profile),
+      qualificationManifest: qualificationManifest
+        ? {
+            appCommit: qualificationManifest.source.appCommit,
+            id: qualificationManifest.id,
+            questionIdDigest: qualificationManifest.selection.questionIdDigest,
+            version: qualificationManifest.version
+          }
+        : null,
       qualification,
       results: summaries,
       selection: {
