@@ -15,6 +15,10 @@ export const LONGMEMEVAL_MAX_CASE_CONCURRENCY = 32;
 export const LONGMEMEVAL_MAX_SESSION_CONCURRENCY = 16;
 export const LONGMEMEVAL_MAX_EVALUATOR_CONCURRENCY = 32;
 export const LONGMEMEVAL_PROFILES = ["official", "product"] as const;
+export const LONGMEMEVAL_SYSTEM_MODEL_IDS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-luna"
+] as const;
 export const LONGMEMEVAL_QUESTION_TYPES = [
   "knowledge-update",
   "multi-session",
@@ -25,6 +29,8 @@ export const LONGMEMEVAL_QUESTION_TYPES = [
 ] as const;
 
 export type LongMemEvalProfile = (typeof LONGMEMEVAL_PROFILES)[number];
+export type LongMemEvalSystemModelId =
+  (typeof LONGMEMEVAL_SYSTEM_MODEL_IDS)[number];
 
 export type LongMemEvalProfileManifest = Readonly<{
   automaticFactLearning: boolean;
@@ -41,6 +47,16 @@ export function decodeLongMemEvalProfile(value: unknown): LongMemEvalProfile {
     return value as LongMemEvalProfile;
   }
   throw new Error("longmemeval_profile_invalid");
+}
+
+export function decodeLongMemEvalSystemModelId(
+  value: unknown
+): LongMemEvalSystemModelId {
+  if (typeof value === "string" &&
+    (LONGMEMEVAL_SYSTEM_MODEL_IDS as readonly string[]).includes(value)) {
+    return value as LongMemEvalSystemModelId;
+  }
+  throw new Error("longmemeval_system_model_invalid");
 }
 
 export function longMemEvalProfileManifest(

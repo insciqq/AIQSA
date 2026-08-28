@@ -6,10 +6,12 @@ normal AIQSA chat-history Memory path. The upstream repository, dataset, and
 revision, and SHA-256 in `upstream.json`. Generated downloads and results are
 ignored by Git.
 
-The qualification profiles use `gpt-5.6-sol` through codex-lb for the answer
-and structured Memory roles, `qwen/qwen3-embedding-8b` through OpenRouter for
-document and query embeddings, and the installation's selected dedicated
-reranker when one is configured. The `official` profile intentionally disables
+The qualification profiles use an explicitly selected reviewed System Model
+through codex-lb for the answer and structured Memory roles: `gpt-5.6-sol` is
+the default, and `gpt-5.6-luna` is the only tracked alternate.
+`qwen/qwen3-embedding-8b` through OpenRouter handles document and query
+embeddings, and the installation's selected dedicated reranker is used when
+one is configured. The `official` profile intentionally disables
 automatic fact learning and pattern synthesis so the result measures recall
 from imported chat history and remains comparable with the upstream oracle.
 Each official timestamped session becomes one ordinary source chat;
@@ -93,6 +95,12 @@ Use repeated `--question-id ID` arguments for an explicit set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.
 Use `--case-concurrency N` and `--session-concurrency N` to lower either
 bounded concurrency limit; the defaults are `2` and `16` respectively.
+Use `--system-model gpt-5.6-luna` only after selecting that exact active
+codex-lb System Model in the disposable profile. Omitting the flag preserves
+the `gpt-5.6-sol` default. The flag does not mutate provider configuration:
+the runner fails closed unless its allowlisted model, the installation policy,
+the authenticated catalog, and the governed runtime binding all agree, and the
+actual selected model is recorded in the summary.
 Pass `--profile product` only for the full non-comparable automatic-learning
 and Dream replay described above. The default remains `official`.
 Add `--force-dream-diagnostic` to that product command only when the explicit
@@ -144,11 +152,12 @@ failure and letting an abstention judge mistake an empty response for a correct
 abstention. The resulting aggregate is written to `benchmark-score.json`.
 
 Oracle correctness is independent from runtime health. The runner records a
-content-free qualification gate and exits nonzero when any completed case has
-`memoryOutcome=DEGRADED`; the evaluator likewise reports
-`memoryDegradedCases` and `qualificationPassed=false` without changing the
-unchanged upstream label or accuracy. Such a result must be diagnosed and rerun
-cleanly rather than accepted because its answer happened to score correctly.
+content-free qualification gate and exits nonzero unless every completed case
+has `memoryOutcome=USED`; `DEGRADED`, `FAILED_SAFE`, `EMPTY`, and `DISABLED`
+all block qualification. The evaluator reports the gate independently without
+changing the unchanged upstream label or accuracy. Such a result must be
+diagnosed and rerun cleanly rather than accepted because its answer happened
+to score correctly.
 
 Install the official evaluator dependencies and grade the answer with the
 upstream `gpt-4o-2024-08-06` evaluator:
