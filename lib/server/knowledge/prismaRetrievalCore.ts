@@ -29,6 +29,7 @@ import {
   KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS,
   KNOWLEDGE_SCOPED_RERANK_INPUT_MAX,
   KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR,
+  KNOWLEDGE_SIGNAL_RANK_MAX,
   orderRerankedKnowledgeCandidates,
   rankKnowledgeCandidates,
   selectKnowledgePreRerankPool,
@@ -979,7 +980,7 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
       ORDER BY score."fusedScore" DESC, score."bindingOrdinal", score."chunkId"
       LIMIT ${input.candidateLimit}
     ),
-    neighbor_candidates AS (
+    ranked_neighbor_candidates AS (
       SELECT
         neighbor."baseName",
         neighbor."bindingOrdinal",
@@ -1047,6 +1048,11 @@ function knowledgeFocusedHybridSearchSql(input: Readonly<{
              ${KNOWLEDGE_LINEAR_CONTEXT_RADIUS}
        )
     ),
+    neighbor_candidates AS MATERIALIZED (
+      SELECT neighbor.*
+      FROM ranked_neighbor_candidates AS neighbor
+      WHERE neighbor."laneRank" <= ${KNOWLEDGE_SIGNAL_RANK_MAX}
+    ),
     all_candidates AS (
       SELECT * FROM primary_candidates
       UNION ALL
@@ -1112,6 +1118,7 @@ function decodeCandidateRow(value: unknown): CandidateRow | null {
     bindingOrdinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS ||
     chunkIndex === null || chunkIndex < 0 || documentVersionNumber === null ||
     documentVersionNumber < 1 || laneRank === null || laneRank < 1 ||
+    laneRank > KNOWLEDGE_SIGNAL_RANK_MAX ||
     page === null || page < 1 || rawScore === null ||
     typeof value.lane !== "string" || !lanes.has(value.lane as KnowledgeRetrievalLane) ||
     !Array.isArray(value.headingPath) || value.headingPath.some((entry) => typeof entry !== "string") ||

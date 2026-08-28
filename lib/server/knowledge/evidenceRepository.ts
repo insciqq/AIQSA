@@ -32,9 +32,10 @@ import {
 } from "./knowledgeBudget";
 import { decodeKnowledgeFocusedRequest } from "./focusedRequest";
 import { evidencePackageForLegacySummaryReceipt } from "./legacySummaryReceipt";
-import type {
-  KnowledgeCandidateSignal,
-  KnowledgeRetrievalLane
+import {
+  KNOWLEDGE_SIGNAL_RANK_MAX,
+  type KnowledgeCandidateSignal,
+  type KnowledgeRetrievalLane
 } from "./retrievalRanking";
 import {
   decodeStructuredAnalysisResult,
@@ -103,7 +104,7 @@ function finite(value: unknown, minimum: number, maximum: number): number | null
 function retrievalSignal(value: unknown): KnowledgeCandidateSignal | null {
   if (!record(value)) return null;
   const keys = ["exactKind", "lane", "rank", "rawScore", "vectorDistance", "vectorMode"];
-  const rank = integer(value.rank, 1, 100);
+  const rank = integer(value.rank, 1, KNOWLEDGE_SIGNAL_RANK_MAX);
   const rawScore = finite(value.rawScore, -1_000_000_000, 1_000_000_000);
   const vectorDistance = value.vectorDistance === null
     ? null
