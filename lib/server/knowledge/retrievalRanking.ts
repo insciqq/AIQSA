@@ -4,6 +4,14 @@ export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
 export const KNOWLEDGE_RANKING_CANDIDATE_MAX = 1_000;
 /**
+ * Maximum rank carried by one retrieval-lane provenance signal. Primary
+ * lanes are much smaller, but the global neighbor window can exceed a single
+ * lane's fetch size before deduplication. Keep SQL admission and every
+ * durable decoder on this one explicit boundary.
+ */
+export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
+
+/**
  * Versioned code-owned ranking profile. Version 2 widens the per-lane
  * candidate limit to 64 and introduces the hosted-rerank merged-pool caps.
  * These values are internal retrieval defaults, never user or Admin settings.

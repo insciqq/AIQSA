@@ -45,10 +45,11 @@ import {
 } from "./documentContext";
 import { decodeStructuredAnalysisResult } from "./structuredData";
 import { decodeKnowledgeVisualAnalysisResult } from "./visualEvidence";
-import type {
-  KnowledgeCandidateSignal,
-  KnowledgeRerankerBindingEvidence,
-  KnowledgeRetrievalLane
+import {
+  KNOWLEDGE_SIGNAL_RANK_MAX,
+  type KnowledgeCandidateSignal,
+  type KnowledgeRerankerBindingEvidence,
+  type KnowledgeRetrievalLane
 } from "./retrievalRanking";
 import {
   decodeKnowledgeRerankerBindingEvidenceV2,
@@ -260,7 +261,7 @@ function decodeSignal(value: unknown): KnowledgeCandidateSignal | null {
     : finiteNumber(value.vectorDistance);
   if (
     typeof value.lane !== "string" || !retrievalLanes.has(value.lane as KnowledgeRetrievalLane) ||
-    rank === null || rank < 1 || rank > 100 || rawScore === null ||
+    rank === null || rank < 1 || rank > KNOWLEDGE_SIGNAL_RANK_MAX || rawScore === null ||
     (value.exactKind !== null && typeof value.exactKind !== "string") ||
     (value.vectorMode !== null && value.vectorMode !== "ann" && value.vectorMode !== "exact") ||
     (value.vectorMode === null) !== (vectorDistance === null) ||

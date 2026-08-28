@@ -604,6 +604,38 @@ describe("Knowledge Evidence v2 repository projection", () => {
     );
   });
 
+  it("accepts a bounded neighbor rank beyond the legacy single-lane window", async () => {
+    const fixture = row();
+    const item = fixture.evidenceItems[0]!;
+    const operation = item.operationLinks[0]!;
+    const loaded = await loadKnowledgeEvidencePackage(client(row({
+      evidenceItems: [{
+        ...item,
+        operationLinks: [{
+          ...operation,
+          retrievalProvenance: {
+            ...operation.retrievalProvenance,
+            signals: [
+              ...operation.retrievalProvenance.signals,
+              {
+                exactKind: null,
+                lane: "neighbor",
+                rank: 242,
+                rawScore: 0.001,
+                vectorDistance: null,
+                vectorMode: null
+              }
+            ]
+          }
+        }]
+      }]
+    })), { runId: "run-1", userId: "user-1" });
+
+    expect(loaded?.items[0]?.provenance[0]?.signals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lane: "neighbor", rank: 242 })
+    ]));
+  });
+
   it("validates stored canonical Base provenance without projecting it to readers", async () => {
     const fixture = row();
     const item = fixture.evidenceItems[0]!;

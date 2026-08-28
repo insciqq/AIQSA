@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
-import type { KnowledgeRetrievalLane } from "./retrievalRanking";
+import {
+  KNOWLEDGE_SIGNAL_RANK_MAX,
+  type KnowledgeRetrievalLane
+} from "./retrievalRanking";
 
 type CoreClient = Parameters<typeof executeKnowledgeRetrievalCore>[0];
 type MockCoreClient = CoreClient & Readonly<{
@@ -401,6 +404,32 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(neighborSql).toContain(
       `neighbor."documentContext"->'locator'->>'fieldGroupId' =`
     );
+    expect(neighborSql).toContain('FROM ranked_neighbor_candidates AS neighbor');
+    expect(neighborSql).toContain('WHERE neighbor."laneRank" <=');
+    expect((client.$queryRaw.mock.calls[0]![0] as { values: readonly unknown[] }).values)
+      .toContain(KNOWLEDGE_SIGNAL_RANK_MAX);
+  });
+
+  it("accepts only neighbor provenance inside the shared bounded rank window", async () => {
+    const common = {
+      artifactId: "artifact-rank-bound",
+      baseName: "Policies",
+      bindingOrdinal: 0,
+      chunkId: "chunk-rank-bound",
+      knowledgeBaseId: "base-policies",
+      lane: "neighbor" as const,
+      sourceId: "source-policy",
+      sourceVersionId: "version-policy"
+    };
+
+    await expect(execute(mockClient([scope(0, "Policies", "base-policies")], [row({
+      ...common,
+      laneRank: KNOWLEDGE_SIGNAL_RANK_MAX
+    })]))).resolves.toMatchObject({ candidateCount: 0, passages: [] });
+    await expect(execute(mockClient([scope(0, "Policies", "base-policies")], [row({
+      ...common,
+      laneRank: KNOWLEDGE_SIGNAL_RANK_MAX + 1
+    })]))).rejects.toThrow("knowledge_retrieval_candidate_invalid");
   });
 
   it("attaches bounded same-Source neighbors as context without promoting them to primaries", async () => {
