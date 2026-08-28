@@ -44,7 +44,7 @@ function fixture(questionId = "question-1") {
 }
 
 describe("LongMemEval adapter contract", () => {
-  it("fails qualification on a degraded Memory outcome independently of oracle scoring", () => {
+  it("requires USED Memory outcomes independently of oracle scoring", () => {
     expect(longMemEvalQualificationGate({
       executionFailures: 0,
       memoryOutcomes: ["USED", "DEGRADED"]
@@ -52,8 +52,23 @@ describe("LongMemEval adapter contract", () => {
       degradedMemoryOutcomes: 1,
       executionFailures: 0,
       passed: false,
-      successfulCases: 2
+      successfulCases: 2,
+      unhealthyMemoryOutcomes: 1
     });
+    expect(longMemEvalQualificationGate({
+      executionFailures: 0,
+      memoryOutcomes: ["FAILED_SAFE"]
+    })).toEqual({
+      degradedMemoryOutcomes: 0,
+      executionFailures: 0,
+      passed: false,
+      successfulCases: 1,
+      unhealthyMemoryOutcomes: 1
+    });
+    expect(longMemEvalQualificationGate({
+      executionFailures: 0,
+      memoryOutcomes: ["EMPTY", "DISABLED"]
+    }).passed).toBe(false);
     expect(longMemEvalQualificationGate({
       executionFailures: 0,
       memoryOutcomes: ["USED", "USED"]

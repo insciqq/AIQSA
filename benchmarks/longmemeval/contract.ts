@@ -238,12 +238,14 @@ export type LongMemEvalQualificationGate = Readonly<{
   executionFailures: number;
   passed: boolean;
   successfulCases: number;
+  unhealthyMemoryOutcomes: number;
 }>;
 
 /** Oracle correctness and runtime health are independent qualification axes.
- * A correct answer never waives a degraded Memory execution: the degraded
- * reason must be diagnosed and the clean qualification rerun. Purpose-built
- * fallback tests do not use this paid qualification gate. */
+ * A correct answer never waives a non-USED Memory execution: DEGRADED,
+ * FAILED_SAFE, EMPTY, or DISABLED all mean that the paid recall case did not
+ * exercise a healthy Memory path. The reason must be diagnosed and the clean
+ * qualification rerun. Purpose-built fallback tests do not use this gate. */
 export function longMemEvalQualificationGate(input: Readonly<{
   executionFailures: number;
   memoryOutcomes: readonly string[];
@@ -256,12 +258,15 @@ export function longMemEvalQualificationGate(input: Readonly<{
   }
   const degradedMemoryOutcomes = input.memoryOutcomes.filter((outcome) =>
     outcome === "DEGRADED").length;
+  const unhealthyMemoryOutcomes = input.memoryOutcomes.filter((outcome) =>
+    outcome !== "USED").length;
   return Object.freeze({
     degradedMemoryOutcomes,
     executionFailures: input.executionFailures,
     passed: input.memoryOutcomes.length > 0 &&
-      input.executionFailures === 0 && degradedMemoryOutcomes === 0,
-    successfulCases: input.memoryOutcomes.length
+      input.executionFailures === 0 && unhealthyMemoryOutcomes === 0,
+    successfulCases: input.memoryOutcomes.length,
+    unhealthyMemoryOutcomes
   });
 }
 
