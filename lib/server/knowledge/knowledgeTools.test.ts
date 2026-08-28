@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION } from "./answerInstructions";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import {
   knowledgeRetrievalTool,
@@ -45,6 +46,13 @@ describe("Knowledge request parsing", () => {
     expect(knowledgeRetrievalTool.description).toContain("leading zeroes");
     expect(knowledgeRetrievalTool.description).toContain(
       "retain the exact supported operands and units"
+    );
+    expect(knowledgeRetrievalTool.description).toContain(
+      KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION
+    );
+    expect(knowledgeRetrievalTool.description).toContain("written operand order");
+    expect(knowledgeRetrievalTool.description).toContain(
+      "subtract the lower bound from the upper bound"
     );
     expect(knowledgeRetrievalTool.description).toContain("report ambiguity instead of guessing");
     expect(parseKnowledgeExecutionRequest({
