@@ -128,7 +128,7 @@ function structuralGroundingResult(
     outcome,
     receiptHash: "c".repeat(64),
     sessionId: "knowledge-session-1",
-    version: 5
+    version: 6
   };
 }
 
@@ -687,7 +687,7 @@ function fullContextKnowledgePreparedData(): MaterializedPreparedRunData {
       knowledgeEvidenceMessageFromDispatchDraft(plan.dispatchDraft)
     ).context,
     knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan),
-    prompt: { ...prepared.normalizedRequest.prompt, knowledgeAnswerContract: 1 }
+    prompt: { ...prepared.normalizedRequest.prompt, knowledgeAnswerContract: 3 }
   };
   return {
     ...prepared,
@@ -2460,7 +2460,7 @@ describe("run execution", () => {
     expect(providerRequests).toHaveLength(1);
     expect(providerRequests[0]?.tools).toBeUndefined();
     expect(providerRequests[0]?.toolChoice).toBe("none");
-    expect(providerRequests[0]?.prompt.knowledgeAnswerContract).toBe(1);
+    expect(providerRequests[0]?.prompt.knowledgeAnswerContract).toBe(3);
     expect(providerRequests[0]?.context?.messages.filter((message) =>
       message.purpose === "knowledge_evidence")).toHaveLength(1);
     expect(repository.groundingAnswers).toEqual([providerText]);
@@ -2468,7 +2468,7 @@ describe("run execution", () => {
     expect(repository.completeRuns[0]).toMatchObject({
       finalText,
       knowledgeGrounding: {
-        grounding: { finalText, outcome: "answered", version: 5 }
+        grounding: { finalText, outcome: "answered", version: 6 }
       }
     });
     expect(repository.completeRuns[0]?.knowledgeGrounding).not.toHaveProperty("semanticShadow");

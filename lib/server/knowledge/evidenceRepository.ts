@@ -773,10 +773,19 @@ export async function groundKnowledgeRunAnswer(
         answer: input.answer,
         evidence: authorization.evidence
       })
-    : groundKnowledgeAnswer({
-        answer: input.answer,
-        evidence: authorization.evidence
-      });
+    : await (async () => {
+        const run = await client.modelRun.findFirst({
+          select: { normalizedRequest: true },
+          where: { id: input.runId, userId: input.userId }
+        });
+        const normalizedRequest = record(run?.normalizedRequest) ? run.normalizedRequest : null;
+        const prompt = record(normalizedRequest?.prompt) ? normalizedRequest.prompt : null;
+        return groundKnowledgeAnswer({
+          answer: input.answer,
+          evidence: authorization.evidence,
+          requireBodyFormat: prompt?.knowledgeAnswerContract === 3
+        });
+      })();
   return Object.freeze({ grounding });
 }
 

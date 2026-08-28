@@ -12,9 +12,9 @@ import {
   truncateProviderAttachmentText
 } from "../providers/attachmentPayload";
 import {
-  KNOWLEDGE_ANSWER_CONTRACT_V1,
   KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
   MEMORY_READER_CONTRACT_V1,
+  knowledgeAnswerContract,
   knowledgeToolLoopContract
 } from "../providers/personalContext";
 import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
@@ -112,7 +112,7 @@ export function applyRunContextBudget(input: Readonly<{
         input.prompt.memoryActionAnswerResult
           ? memoryActionAnswerContract(input.prompt.memoryActionAnswerResult)
           : null,
-        input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null
+        knowledgeAnswerContract(input.prompt.knowledgeAnswerContract)
       ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
       system: input.prompt.system
     }
@@ -188,9 +188,7 @@ export function normalizedRequestPersonalContextTokenLimit(
           request.prompt.memoryActionAnswerResult
         ))
       : 0) +
-    (request.prompt.knowledgeAnswerContract === 1
-      ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
-      : 0) +
+    estimateApproxTokens(knowledgeAnswerContract(request.prompt.knowledgeAnswerContract) ?? "") +
     (request.knowledgePlan.mode !== "none"
       ? estimateApproxTokens(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1)
       : 0);
@@ -321,9 +319,9 @@ function fitProviderAttachmentText(input: Readonly<{
             input.request.prompt.memoryActionAnswerResult
           ))
         : 0) +
-      (input.request.prompt.knowledgeAnswerContract === 1
-        ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
-        : 0);
+      estimateApproxTokens(knowledgeAnswerContract(
+        input.request.prompt.knowledgeAnswerContract
+      ) ?? "");
     const internalContextTokens = (input.request.context?.messages ?? [])
       .filter((message) => message.purpose !== undefined)
       .reduce((total, message) => total + estimateApproxTokens(message.content), 0);

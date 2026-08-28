@@ -160,7 +160,7 @@ describe("run finalization", () => {
       outcome: "insufficient_evidence" as const,
       receiptHash: "c".repeat(64),
       sessionId: "evidence-session-1",
-      version: 5 as const
+      version: 6 as const
     };
     const groundKnowledgeAnswer = vi.fn(async () => ({ grounding }));
     const repository = {
