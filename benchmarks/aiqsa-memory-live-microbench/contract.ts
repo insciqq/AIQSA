@@ -3,7 +3,7 @@ import { resolve, sep } from "node:path";
 export const AIQSA_MEMORY_LIVE_MICROBENCH_VERSION = 1 as const;
 export const AIQSA_MEMORY_LIVE_MICROBENCH_ACK =
   "DISPOSABLE_PAID_AIQSA_MEMORY_LIVE" as const;
-export const AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT = 8 as const;
+export const AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT = 10 as const;
 export const AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT = 10 as const;
 export const AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT = 3 as const;
 
@@ -57,16 +57,14 @@ export const liveScenario: LiveScenario = Object.freeze({
     Object.freeze({
       id: "riverside",
       messages: Object.freeze([
-        "A stable routine of mine: whenever I prepare for the Riverside Saturday Market, I count inventory at 6:20 a.m., before 7. I follow that early schedule every Riverside market day.",
-        "Another stable detail: I use a teal tablecloth at my Riverside Market booth."
+        "A stable routine of mine: whenever I prepare for the Riverside Saturday Market, I count inventory at 6:20 a.m., before 7. I follow that early schedule every Riverside market day."
       ]),
       title: "Riverside market routine"
     }),
     Object.freeze({
       id: "harbor",
       messages: Object.freeze([
-        "A stable routine of mine: whenever I prepare for the Harbor Sunday Market, I print price labels at 6:30 a.m., before 7. I follow that early schedule every Harbor market day.",
-        "My small weekend-market business is called Cedar & Crumb."
+        "A stable routine of mine: whenever I prepare for the Harbor Sunday Market, I print price labels at 6:30 a.m., before 7. I follow that early schedule every Harbor market day."
       ]),
       title: "Harbor market routine"
     }),
@@ -76,6 +74,20 @@ export const liveScenario: LiveScenario = Object.freeze({
         "A stable routine of mine: whenever I prepare for the Spring Courtyard Market, I load the display crates at 6:40 a.m., before 7. I follow that early schedule every Spring market day."
       ]),
       title: "Spring market routine"
+    }),
+    Object.freeze({
+      id: "booth-style",
+      messages: Object.freeze([
+        "Another stable detail: I use a teal tablecloth at my Riverside Market booth."
+      ]),
+      title: "Market booth style"
+    }),
+    Object.freeze({
+      id: "business-name",
+      messages: Object.freeze([
+        "My small weekend-market business is called Cedar & Crumb."
+      ]),
+      title: "Weekend market business"
     }),
     Object.freeze({
       id: "signature-bake",

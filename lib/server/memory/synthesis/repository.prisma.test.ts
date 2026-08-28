@@ -4,6 +4,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createMemoryClientRefService } from "../actions/clientRef";
+import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryJobClaim } from "../coordinator/types";
 import {
   createPrismaMemoryFactRepository,
@@ -13,6 +14,7 @@ import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
+import { createMemoryRebuildHandler } from "../rebuild/handler";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
 import { ensureClassifiedSearchEntry } from "../reclassification/repository";
 import { planMemoryRetrieval } from "../../../domain/memory/retrieval";
@@ -260,6 +262,37 @@ function claimFromJob(job: Awaited<ReturnType<typeof prisma.memoryJob.update>>):
     targetFactVersionId: job.targetFactVersionId,
     userId: job.userId
   };
+}
+
+async function processLexicalRebuild(
+  jobId: string,
+  repository: ReturnType<typeof createPrismaMemoryRebuildRepository>
+): Promise<void> {
+  const now = new Date();
+  const row = await prisma.memoryJob.update({
+    data: {
+      attemptCount: { increment: 1 },
+      leaseExpiresAt: new Date(now.getTime() + 60_000),
+      leaseToken: `memory-synthesis-rebuild-${randomUUID()}`,
+      state: "CLAIMED"
+    },
+    where: { id: jobId }
+  });
+  const claim = claimFromJob(row);
+  const handler = createMemoryRebuildHandler(repository);
+  await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
+  const result = await handler.execute(claim, {
+    now: () => now,
+    setStage: async () => undefined,
+    signal: new AbortController().signal
+  });
+  await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+    acceptedResultHash: result.acceptedResultHash,
+    apply: result.apply,
+    claim,
+    now,
+    stage: result.stage ?? null
+  })).resolves.toBe(true);
 }
 
 async function patternAuthority(userId: string, versionId: string): Promise<number> {
@@ -608,12 +641,46 @@ describe("Prisma Memory Dream synthesis", () => {
           );
         }
       });
-      const incrementalEntries = await prisma.memorySearchEntry.findMany({
+      let incrementalEntries = await prisma.memorySearchEntry.findMany({
         where: { factVersionId: { in: [pattern.id, shortPattern.id] }, userId }
       });
       expect(incrementalEntries).toHaveLength(2);
 
-      const inventory = await createPrismaMemoryRebuildRepository(prisma).inventory(
+      const rebuildRepository = createPrismaMemoryRebuildRepository(prisma);
+      const beforeRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const admitted = await rebuildRepository.admit(userId, {
+        expectedMemoryRevision: beforeRebuild.memoryRevision,
+        expectedSettingsRevision: beforeRebuild.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: `synthesis-pattern-rebuild-${randomUUID()}` }
+      });
+      if (admitted.kind !== "ok") throw new Error(admitted.kind);
+      await processLexicalRebuild(admitted.jobId, rebuildRepository);
+
+      const afterRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      expect(afterRebuild).toMatchObject({
+        memoryGeneration: beforeRebuild.memoryGeneration,
+        memoryRevision: beforeRebuild.memoryRevision + 1
+      });
+      expect(afterRebuild.activeIndexGenerationId)
+        .not.toBe(beforeRebuild.activeIndexGenerationId);
+      expect(await patternAuthority(userId, pattern.id)).toBe(1);
+      expect(await patternAuthority(userId, shortPattern.id)).toBe(1);
+      incrementalEntries = await prisma.memorySearchEntry.findMany({
+        where: {
+          factVersionId: { in: [pattern.id, shortPattern.id] },
+          indexGenerationId: afterRebuild.activeIndexGenerationId!,
+          userId
+        }
+      });
+      expect(incrementalEntries.map(({ factVersionId }) => factVersionId).sort())
+        .toEqual([pattern.id, shortPattern.id].sort());
+
+      const inventory = await rebuildRepository.inventory(
         userId,
         indexedAt
       );

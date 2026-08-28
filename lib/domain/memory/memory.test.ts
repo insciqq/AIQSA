@@ -43,4 +43,12 @@ describe("Memory sensitivity and mutation-intent safety", () => {
       sourceRevision: false
     });
   });
+
+  it("treats index activation as a revision-only pointer swap", () => {
+    expect(memoryCounterEffectFor("INDEX_GENERATION_ACTIVATION")).toMatchObject({
+      memoryGeneration: false,
+      memoryRevision: true,
+      sourceRevision: false
+    });
+  });
 });

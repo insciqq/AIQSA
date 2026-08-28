@@ -539,8 +539,23 @@ describe("read-only control retry scope", () => {
   });
   const current = Object.freeze({ ...source, attemptOrdinal: 1, id: "attempt-2" });
 
-  it("accepts only the exact retry scope copied from attempt zero", () => {
+  it("accepts the exact retry scope across the bounded retry chain", () => {
     expect(sameMemoryReadOnlyControlRetryScope(source, current)).toBe(true);
+    expect(sameMemoryReadOnlyControlRetryScope(source, {
+      ...current,
+      attemptOrdinal: 2,
+      id: "attempt-3"
+    })).toBe(true);
+    expect(sameMemoryReadOnlyControlRetryScope(current, {
+      ...current,
+      attemptOrdinal: 2,
+      id: "attempt-3"
+    })).toBe(true);
+    expect(sameMemoryReadOnlyControlRetryScope(source, {
+      ...current,
+      attemptOrdinal: 3,
+      id: "attempt-4"
+    })).toBe(false);
   });
 
   it.each([
