@@ -862,6 +862,7 @@ async function createHistoryDerivative(input: Readonly<{
       chatId: chat.id,
       lastIndexedMessageId: assistantMessage.id,
       lastSucceededAt: assistantAt,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: sourceHash,
       sourceRevision: input.sourceRevision,
       status: "READY",
@@ -873,6 +874,7 @@ async function createHistoryDerivative(input: Readonly<{
       lastErrorCode: null,
       lastIndexedMessageId: assistantMessage.id,
       lastSucceededAt: assistantAt,
+      pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: sourceHash,
       sourceRevision: input.sourceRevision,
       status: "READY"

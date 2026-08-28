@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import {
+  Prisma,
+  type MemoryFeedbackTargetKind,
+  type PrismaClient
+} from "@prisma/client";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   decodeMemoryActionFeedback,
@@ -1025,6 +1029,14 @@ export function createMemorySourceActionService(input: Readonly<{
         };
       }
 
+      // Round segments are private retrieval artifacts. Browser/source actions
+      // always bind to the authoritative parent round identity.
+      if (ref.target.itemType === "RECALL_ROUND_SEGMENT" ||
+        ref.target.itemType === "TOOL_EVENT") {
+        throw new MemorySourceActionError("memory_not_found");
+      }
+      const feedbackTargetKind: MemoryFeedbackTargetKind = ref.target.itemType;
+
       if (actionInput.action === "NOT_RELEVANT") {
         if (!item) throw new MemorySourceActionError("memory_not_found");
         const idempotencyFingerprint = memorySha256({
@@ -1093,7 +1105,7 @@ export function createMemorySourceActionService(input: Readonly<{
               recallRoundId: ref.target.recallRoundId,
               requestId: actionInput.requestNonce,
               sourceChatIdSnapshot: ref.target.sourceChatId,
-              targetKind: ref.target.itemType,
+              targetKind: feedbackTargetKind,
               userId
             }
           });

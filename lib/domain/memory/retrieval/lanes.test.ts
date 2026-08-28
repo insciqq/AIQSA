@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES,
-  MEMORY_RETRIEVAL_LANE_ORDER,
+  MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER,
   MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES,
   type MemoryRetrievalLane
 } from "./config";
@@ -9,7 +9,7 @@ import { allocateMemoryRetrievalLaneLimits, executeMemoryRetrievalLaneTasks } fr
 
 describe("Memory retrieval lane scheduler", () => {
   it("executes the language-agnostic lane set in stable task order", async () => {
-    const lanes = [...MEMORY_RETRIEVAL_LANE_ORDER];
+    const lanes = [...MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER];
     const result = await executeMemoryRetrievalLaneTasks(lanes.map((lane) => ({
       async execute() {
         await Promise.resolve();
@@ -31,8 +31,29 @@ describe("Memory retrieval lane scheduler", () => {
       .toThrow("memory_retrieval_lane_contract_invalid");
   });
 
+  it("shares one concurrency cap across baseline and enriched executions", async () => {
+    const active = { current: 0, maximum: 0 };
+    const task = (executionId: string) => ({
+      executionId,
+      async execute() {
+        active.current += 1;
+        active.maximum = Math.max(active.maximum, active.current);
+        await Promise.resolve();
+        active.current -= 1;
+        return { candidates: [], lane: "FACT_EXACT" as const };
+      },
+      lane: "FACT_EXACT" as const
+    });
+
+    await expect(executeMemoryRetrievalLaneTasks([
+      task("BASELINE:FACT_EXACT"),
+      task("ENRICHED:FACT_EXACT")
+    ], 1)).resolves.toHaveLength(2);
+    expect(active.maximum).toBe(1);
+  });
+
   it("allocates all configured lanes under the shared candidate ceiling", () => {
-    const lanes: readonly MemoryRetrievalLane[] = MEMORY_RETRIEVAL_LANE_ORDER.filter(
+    const lanes: readonly MemoryRetrievalLane[] = MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.filter(
       (lane) => lane !== "FACT_PROFILE"
     );
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);

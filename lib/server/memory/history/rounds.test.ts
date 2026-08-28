@@ -8,7 +8,12 @@ import {
   partitionMemoryContextualKeyInputs
 } from "./contextualKeys";
 import {
+  memoryQualificationLanguageBucket,
+  normalizeMemoryLanguageCode
+} from "./language";
+import {
   applyMemoryRecallRoundContextualKeys,
+  applyMemoryRecallRoundContextualKeysWithDiagnostics,
   boundedMemoryRecallRoundEvidenceText,
   memoryContextualRoundInputs,
   projectMemoryRecallRounds
@@ -141,17 +146,30 @@ describe("recall round projection", () => {
     expect(inputs[0]?.prior).toEqual([]);
     expect(inputs[1]?.prior.map((round) => round.id)).toEqual([rounds[0]?.id]);
 
-    const projected = applyMemoryRecallRoundContextualKeys(rounds, [
+    const applied = applyMemoryRecallRoundContextualKeysWithDiagnostics(rounds, [
       {
+        languageCode: "ru",
         roundId: rounds[1]!.id,
-        statements: ["Мария выбрала стол у окна 12 августа 2026 года."]
+        statements: [{
+          sourceRoundIds: [rounds[0]!.id, rounds[1]!.id],
+          text: "Мария выбрала стол у окна 12 августа 2026 года."
+        }]
       },
       {
+        languageCode: "ru",
         roundId: rounds[0]!.id,
-        statements: ["Мария забронировала стол на 99 августа 2026 года."]
+        statements: [{
+          sourceRoundIds: [rounds[0]!.id],
+          text: "Мария забронировала стол на 14 августа 2026 года."
+        }]
       }
     ], "memory-contextual-test-v1");
+    const projected = applied.rounds;
 
+    expect(applied.fallbackDiagnostics).toEqual(expect.arrayContaining([
+      { reason: "UNSUPPORTED_DATE", roundId: rounds[0]!.id },
+      { reason: "UNSUPPORTED_NUMBER", roundId: rounds[0]!.id }
+    ]));
     expect(projected[0]?.contextualKeyState).toBe("RAW_FALLBACK");
     expect(projected[0]?.contextualSearchText).toContain("мария забронировала");
     expect(projected[1]).toMatchObject({
@@ -160,6 +178,102 @@ describe("recall round projection", () => {
     });
     expect(projected[1]?.contextualSearchText).toContain("мария выбрала стол у окна");
     expect(projected[1]?.contextualSearchText).toContain("она выбрала стол у окна");
+    expect(projected[1]?.supportingRoundIds).toEqual([rounds[0]!.id]);
+  });
+
+  it("grounds every contextual statement only in its cited raw rounds", () => {
+    const { chunks, snapshot } = fixture();
+    const rounds = projectMemoryRecallRounds(snapshot, chunks).map((round) => ({
+      ...round,
+      publicationState: "ACTIVE" as const
+    }));
+    const currentOnly = applyMemoryRecallRoundContextualKeysWithDiagnostics(rounds, [{
+      languageCode: "ru",
+      roundId: rounds[1]!.id,
+      statements: [{
+        sourceRoundIds: [rounds[1]!.id],
+        text: "Мария выбрала стол у окна"
+      }]
+    }], "memory-contextual-test-v2");
+    expect(currentOnly.rounds[1]?.contextualKeyState).toBe("RAW_FALLBACK");
+    expect(currentOnly.fallbackDiagnostics).toContainEqual({
+      reason: "UNSUPPORTED_TOKEN",
+      roundId: rounds[1]!.id
+    });
+    expect(currentOnly.fallbackDiagnostics.some(({ roundId }) =>
+      roundId === rounds[0]!.id)).toBe(false);
+
+    const missingCurrent = applyMemoryRecallRoundContextualKeysWithDiagnostics(rounds, [{
+      languageCode: "ru",
+      roundId: rounds[1]!.id,
+      statements: [{
+        sourceRoundIds: [rounds[0]!.id],
+        text: "Мария забронировала стол"
+      }]
+    }], "memory-contextual-test-v2");
+    expect(missingCurrent.rounds[1]?.contextualKeyState).toBe("RAW_FALLBACK");
+    expect(missingCurrent.fallbackDiagnostics).toContainEqual({
+      reason: "SOURCE_REF_INVALID",
+      roundId: rounds[1]!.id
+    });
+  });
+
+  it("classifies unsupported entities and duplicate statements without relaxing grounding", () => {
+    const { chunks, snapshot } = fixture();
+    const rounds = projectMemoryRecallRounds(snapshot, chunks).map((round) => ({
+      ...round,
+      publicationState: "ACTIVE" as const
+    }));
+    const unsupportedEntity = applyMemoryRecallRoundContextualKeysWithDiagnostics(
+      rounds,
+      [{
+        languageCode: "ru",
+        roundId: rounds[1]!.id,
+        statements: [{
+          sourceRoundIds: [rounds[1]!.id],
+          text: "Елена выбрала стол у окна"
+        }]
+      }],
+      "memory-contextual-test-v3"
+    );
+    expect(unsupportedEntity.fallbackDiagnostics).toEqual(expect.arrayContaining([
+      { reason: "UNSUPPORTED_ENTITY", roundId: rounds[1]!.id },
+      { reason: "UNSUPPORTED_TOKEN", roundId: rounds[1]!.id }
+    ]));
+
+    const duplicate = applyMemoryRecallRoundContextualKeysWithDiagnostics(
+      rounds,
+      [{
+        languageCode: "ru",
+        roundId: rounds[1]!.id,
+        statements: [
+          {
+            sourceRoundIds: [rounds[1]!.id],
+            text: "Она выбрала стол у окна"
+          },
+          {
+            sourceRoundIds: [rounds[1]!.id],
+            text: "  ОНА   ВЫБРАЛА СТОЛ У ОКНА  "
+          }
+        ]
+      }],
+      "memory-contextual-test-v3"
+    );
+    expect(duplicate.fallbackDiagnostics).toContainEqual({
+      reason: "DUPLICATE_STATEMENT",
+      roundId: rounds[1]!.id
+    });
+    expect(duplicate.rounds[1]?.contextualKeyState).toBe("RAW_FALLBACK");
+  });
+
+  it("preserves arbitrary BCP-47 languages and buckets only qualification metrics", () => {
+    expect(normalizeMemoryLanguageCode("es")).toBe("es");
+    expect(normalizeMemoryLanguageCode("sr-cyrl")).toBe("sr-Cyrl");
+    expect(normalizeMemoryLanguageCode("mul")).toBe("mixed");
+    expect(normalizeMemoryLanguageCode("not_a_language")).toBeNull();
+    expect(memoryQualificationLanguageBucket("es")).toBe("other");
+    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("other");
+    expect(memoryQualificationLanguageBucket("en-GB")).toBe("en");
   });
 
   it("batches opaque contextual requests and rejects reordered provider handles", () => {
@@ -187,11 +301,24 @@ describe("recall round projection", () => {
     const output = {
       rounds: built.handles.map((handle, ordinal) => ({
         handle,
-        statements: [`User contextual memory ${ordinal}`]
+        language_code: ordinal === 0 ? "sr-Cyrl" : "en",
+        statements: [{
+          source_refs: [`${handle}c`],
+          text: `User contextual memory ${ordinal}`
+        }]
       }))
     };
     expect(decodeMemoryContextualKeyOutputs(output, firstBatch, built.handles))
       .toHaveLength(8);
+    expect(decodeMemoryContextualKeyOutputs(output, firstBatch, built.handles)[0])
+      .toMatchObject({
+        languageCode: "sr-Cyrl",
+        roundId: firstBatch[0]!.roundId,
+        statements: [{
+          sourceRoundIds: [firstBatch[0]!.input.current.id],
+          text: "User contextual memory 0"
+        }]
+      });
     expect(() => decodeMemoryContextualKeyOutputs({
       rounds: [...output.rounds].reverse()
     }, firstBatch, built.handles)).toThrow("memory_contextual_key_output_invalid");
@@ -235,8 +362,12 @@ describe("recall round projection", () => {
     expect(partitioned.batches[0]?.[0]?.input.prior.map(({ id }) => id))
       .toEqual(["eligible-prior"]);
     const projected = applyMemoryRecallRoundContextualKeys(rounds, [{
+      languageCode: "ru",
       roundId: "eligible-current",
-      statements: ["Мария выбрала окно"]
+      statements: [{
+        sourceRoundIds: ["eligible-prior", "eligible-current"],
+        text: "Мария выбрала окно"
+      }]
     }], "memory-contextual-test-v1");
     expect(projected[3]?.contextualKeyState).toBe("GENERATED");
   });
@@ -307,11 +438,17 @@ describe("recall round projection", () => {
       contextualSearchHash: memorySha256(rawSafeText),
       contextualSearchText: rawSafeText,
       id: "round-utf16",
+      languageCode: "en",
       publicationState: "ACTIVE" as const,
       rawSafeText,
       redactionState: "NOT_NEEDED" as const,
-      safetyClass: "NORMAL" as const
-    }], [{ roundId: "round-utf16", statements: ["x"] }],
+      safetyClass: "NORMAL" as const,
+      supportingRoundIds: []
+    }], [{
+      languageCode: "en",
+      roundId: "round-utf16",
+      statements: [{ sourceRoundIds: ["round-utf16"], text: "x" }]
+    }],
     "memory-contextual-test-v1");
 
     expect(round?.contextualSearchText.length).toBeLessThanOrEqual(4_000);

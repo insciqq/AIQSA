@@ -38,6 +38,13 @@ import {
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
 import {
+  MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+  type MemoryRecallRoundSegmentSource
+} from "../history/segments";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
+import { persistMemoryRecallRoundSegmentProjection } from
+  "../history/segmentPersistence";
+import {
   memoryRedactionHasMeaningfulRemainder,
   redactMemorySecrets
 } from "../explicit/safety";
@@ -79,12 +86,17 @@ import { MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS } from "./wake";
 
 type CurrentSearchItemType = Extract<
   MemorySearchItemType,
-  "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND"
+  | "FACT_VERSION"
+  | "RECALL_CHUNK"
+  | "RECALL_ROUND"
+  | "RECALL_ROUND_SEGMENT"
+  | "TOOL_EVENT"
 >;
 
 type SearchIdentity = Readonly<{
   itemId: string;
   itemType: CurrentSearchItemType;
+  parentRoundId?: string | null;
   languageCode: string;
   safeContentHash: string;
   normalizedSearchText: string;
@@ -173,6 +185,23 @@ type RoundMessageJoinRow = Readonly<{
   sourceStartOffset: number;
 }>;
 
+type ToolEventRow = Readonly<{
+  assistantMessageId: string;
+  chatId: string;
+  contentHash: string;
+  evidenceRootHash: string;
+  id: string;
+  languageCode: string;
+  modelRunId: string;
+  modelRunToolCallId: string;
+  normalizedSafeSearchText: string;
+  projectionVersion: string;
+  redactionReasonCodes: string[];
+  redactionState: string;
+  safetyClass: string;
+  sourcePayloadHash: string;
+}>;
+
 type GenerationConfiguration = Readonly<{
   chunkingVersion: string;
   contextualKeyPolicyVersion: string | null;
@@ -187,6 +216,7 @@ type GenerationConfiguration = Readonly<{
   normalizationVersion: string;
   retrievalPipelineVersion: string;
   roundProjectionVersion: string | null;
+  roundSegmentProjectionVersion: string | null;
   state: string;
   targetMemoryRevision: number;
   vectorSpaceFingerprint: string | null;
@@ -275,17 +305,22 @@ function exactItemId(entry: Readonly<{
   itemType: CurrentSearchItemType;
   recallChunkId: string | null;
   recallRoundId: string | null;
+  recallRoundSegmentId: string | null;
+  toolEventId: string | null;
 }>): string | null {
   switch (entry.itemType) {
     case "FACT_VERSION": return entry.factVersionId;
     case "RECALL_CHUNK": return entry.recallChunkId;
     case "RECALL_ROUND": return entry.recallRoundId;
+    case "RECALL_ROUND_SEGMENT": return entry.recallRoundSegmentId;
+    case "TOOL_EVENT": return entry.toolEventId;
   }
 }
 
 function sameIdentity(left: ExistingEntry, right: SearchIdentity): boolean {
   return left.itemId === right.itemId &&
     left.itemType === right.itemType &&
+    (left.parentRoundId ?? null) === (right.parentRoundId ?? null) &&
     left.languageCode === right.languageCode &&
     left.safeContentHash === right.safeContentHash &&
     left.normalizedSearchText === right.normalizedSearchText &&
@@ -653,6 +688,109 @@ async function eligibleChunks(
   }).filter(({ normalizedSearchText }) => normalizedSearchText.length > 0);
 }
 
+async function ensureRoundSegmentProjection(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  now: Date
+): Promise<void> {
+  if (!settings.referenceChatHistory) return;
+  const rounds = await tx.memoryRecallRound.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      chatId: true,
+      contextualKeyPolicyVersion: true,
+      contextualKeyState: true,
+      contextualNarrativeText: true,
+      evidenceRootHash: true,
+      id: true,
+      occurredFrom: true,
+      occurredTo: true,
+      rawSafeText: true,
+      redactionReasonCodes: true,
+      redactionState: true,
+      roundOrdinal: true,
+      safetyClass: true,
+      sourceRevisionAtCreation: true,
+      state: true,
+      supportingRoundIds: true,
+      userId: true
+    },
+    where: {
+      contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+      projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
+      userId: settings.userId
+    }
+  });
+  if (rounds.length === 0) return;
+  const joins = await tx.memoryRecallRoundMessage.findMany({
+    orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
+    where: {
+      roundId: { in: rounds.map(({ id }) => id) },
+      userId: settings.userId
+    }
+  });
+  const joinsByRound = new Map<string, MemoryRecallRoundSegmentSource["messageJoins"]>();
+  for (const round of rounds) {
+    joinsByRound.set(round.id, joins
+      .filter((join) => join.roundId === round.id)
+      .map((join) => ({
+        messageId: join.messageId,
+        ordinal: join.ordinal,
+        role: join.role as
+          MemoryRecallRoundSegmentSource["messageJoins"][number]["role"],
+        roundEndOffset: join.roundEndOffset,
+        roundStartOffset: join.roundStartOffset,
+        safeTextHash: join.safeTextHash,
+        sourceEndOffset: join.sourceEndOffset,
+        sourceMessageContentHash: join.sourceMessageContentHash,
+        sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+        sourceStartOffset: join.sourceStartOffset
+      })));
+  }
+  for (const round of rounds) {
+    if (!(["GENERATED", "RAW_FALLBACK"] as const).includes(
+      round.contextualKeyState as "GENERATED" | "RAW_FALLBACK"
+    ) || !(["ACTIVE", "SUPPRESSED"] as const).includes(
+      round.state as "ACTIVE" | "SUPPRESSED"
+    )) throw new MemoryExecutionError("memory_execution_state_conflict");
+    const supportingRoundIds = round.supportingRoundIds;
+    const dependenciesValid = supportingRoundIds.length <= 2 &&
+      new Set(supportingRoundIds).size === supportingRoundIds.length &&
+      supportingRoundIds.every((supportingRoundId) => {
+        const support = rounds.find(({ id }) => id === supportingRoundId);
+        return Boolean(
+          support && support.id !== round.id && support.userId === round.userId &&
+          support.chatId === round.chatId &&
+          support.roundOrdinal < round.roundOrdinal && support.state === "ACTIVE" &&
+          support.redactionState !== "EXCLUDED" &&
+          (support.safetyClass === "NORMAL" || support.safetyClass === "SENSITIVE") &&
+          (joinsByRound.get(support.id)?.length ?? 0) > 0
+        );
+      });
+    const generated = round.contextualKeyState === "GENERATED" && dependenciesValid;
+    await persistMemoryRecallRoundSegmentProjection(tx, {
+      chatId: round.chatId,
+      contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
+      contextualKeyState: generated ? "GENERATED" : "RAW_FALLBACK",
+      contextualNarrativeText: generated ? round.contextualNarrativeText : round.rawSafeText,
+      evidenceRootHash: round.evidenceRootHash,
+      id: round.id,
+      messageJoins: joinsByRound.get(round.id) ?? [],
+      occurredFrom: round.occurredFrom.toISOString(),
+      occurredTo: round.occurredTo.toISOString(),
+      publicationState: round.state as "ACTIVE" | "SUPPRESSED",
+      rawSafeText: round.rawSafeText,
+      redactionReasonCodes: round.redactionReasonCodes,
+      redactionState: round.redactionState,
+      safetyClass: round.safetyClass,
+      sourceRevision: round.sourceRevisionAtCreation,
+      supportingRoundIds: generated ? supportingRoundIds : [],
+      userId: round.userId
+    }, now);
+  }
+}
+
 async function eligibleRounds(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -782,28 +920,279 @@ async function eligibleRounds(
   }).filter(({ normalizedSearchText }) => normalizedSearchText.length > 0);
 }
 
+async function eligibleRoundSegments(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  suppressionIdentitySnapshots: ReadonlyMap<string, string>
+): Promise<readonly SearchIdentity[]> {
+  const rounds = await eligibleRounds(tx, settings, suppressionIdentitySnapshots);
+  if (rounds.length === 0) return [];
+  const roundIds = rounds.map(({ itemId }) => itemId);
+  const [parents, segments] = await Promise.all([
+    tx.memoryRecallRound.findMany({
+      select: { evidenceRootHash: true, id: true },
+      where: { id: { in: roundIds }, userId: settings.userId }
+    }),
+    tx.memoryRecallRoundSegment.findMany({
+      orderBy: [{ roundId: "asc" }, { segmentOrdinal: "asc" }],
+      where: {
+        contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+        projectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+        roundId: { in: roundIds },
+        state: "ACTIVE",
+        userId: settings.userId
+      }
+    })
+  ]);
+  if (segments.length === 0) return [];
+  const joins = await tx.memoryRecallRoundSegmentMessage.findMany({
+    orderBy: [{ segmentId: "asc" }, { ordinal: "asc" }],
+    where: {
+      segmentId: { in: segments.map(({ id }) => id) },
+      userId: settings.userId
+    }
+  });
+  const roundById = new Map(rounds.map((round) => [round.itemId, round]));
+  const rootByRoundId = new Map(parents.map((round) => [round.id, round.evidenceRootHash]));
+  return segments.map((segment): SearchIdentity => {
+    const round = roundById.get(segment.roundId);
+    if (!round || rootByRoundId.get(segment.roundId) !== segment.evidenceRootHash) {
+      throw new MemoryExecutionError("memory_execution_state_conflict");
+    }
+    const messageJoins = joins
+      .filter(({ segmentId }) => segmentId === segment.id)
+      .map((join) => ({
+        messageId: join.messageId,
+        ordinal: join.ordinal,
+        role: join.role,
+        safeTextHash: join.safeTextHash,
+        segmentEndOffset: join.segmentEndOffset,
+        segmentStartOffset: join.segmentStartOffset,
+        sourceEndOffset: join.sourceEndOffset,
+        sourceMessageContentHash: join.sourceMessageContentHash,
+        sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+        sourceStartOffset: join.sourceStartOffset
+      }));
+    if (messageJoins.length === 0) {
+      throw new MemoryExecutionError("memory_execution_state_conflict");
+    }
+    return {
+      itemId: segment.id,
+      itemType: "RECALL_ROUND_SEGMENT",
+      languageCode: segment.languageCode,
+      normalizedSearchText: normalizeMemorySearchText(segment.contextualSearchText),
+      parentRoundId: segment.roundId,
+      safeContentHash: segment.contextualSearchHash,
+      safetyIdentitySnapshot: memorySha256({
+        classificationPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
+        contextualKeyPolicyVersion: segment.contextualKeyPolicyVersion,
+        projectionVersion: segment.projectionVersion,
+        redactionReasonCodes: segment.redactionReasonCodes,
+        redactionState: segment.redactionState,
+        safetyClass: segment.safetyClass
+      }),
+      sourceIdentitySnapshot: memorySha256({
+        evidenceRootHash: segment.evidenceRootHash,
+        messageJoins,
+        rawEndOffsetUtf16: segment.rawEndOffsetUtf16,
+        rawSafeTextHash: segment.rawSafeTextHash,
+        rawStartOffsetUtf16: segment.rawStartOffsetUtf16,
+        roundId: segment.roundId,
+        userId: settings.userId
+      }),
+      suppressionIdentitySnapshot: round.suppressionIdentitySnapshot
+    };
+  }).filter(({ normalizedSearchText }) => normalizedSearchText.length > 0);
+}
+
+async function eligibleToolEvents(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  suppressionIdentitySnapshots: ReadonlyMap<string, string>,
+  now: Date
+): Promise<readonly SearchIdentity[]> {
+  if (!settings.useMemoryFacts || !settings.referenceChatHistory) return [];
+  const rows = await tx.$queryRaw<ToolEventRow[]>(Prisma.sql`
+    SELECT tool_event."assistantMessageId", tool_event."chatId",
+      tool_event."contentHash", tool_event."evidenceRootHash", tool_event."id",
+      tool_event."languageCode", tool_event."modelRunId",
+      tool_event."modelRunToolCallId", tool_event."normalizedSafeSearchText",
+      tool_event."projectionVersion", tool_event."redactionReasonCodes",
+      tool_event."redactionState"::text AS "redactionState",
+      tool_event."safetyClass"::text AS "safetyClass",
+      tool_event."sourcePayloadHash"
+    FROM "MemoryToolEvent" AS tool_event
+    INNER JOIN "Chat" AS source_chat
+      ON source_chat."userId" = tool_event."userId"
+      AND source_chat."id" = tool_event."chatId"
+      AND source_chat."projectId" IS NULL
+      AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND source_chat."permanentDeletionAt" IS NULL
+      AND source_chat."memoryBranchGeneration" = tool_event."branchGeneration"
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = tool_event."userId"
+      AND checkpoint."chatId" = tool_event."chatId"
+      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
+      AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND checkpoint."branchGeneration" = tool_event."branchGeneration"
+      AND checkpoint."sourceRevision" = tool_event."sourceRevisionAtCreation"
+      AND checkpoint."lastIndexedMessageId" = checkpoint."activeLeafMessageId"
+    INNER JOIN "ChatMemoryCheckpointMessage" AS checkpoint_message
+      ON checkpoint_message."userId" = tool_event."userId"
+      AND checkpoint_message."chatId" = tool_event."chatId"
+      AND checkpoint_message."messageId" = tool_event."assistantMessageId"
+    INNER JOIN "Message" AS source_message
+      ON source_message."chatId" = tool_event."chatId"
+      AND source_message."id" = tool_event."assistantMessageId"
+      AND source_message."updatedAt" = checkpoint_message."sourceMessageUpdatedAt"
+      AND source_message."role" = 'assistant'
+      AND source_message."status" = 'complete'::"MessageStatus"
+    INNER JOIN "ModelRun" AS source_run
+      ON source_run."userId" = tool_event."userId"
+      AND source_run."id" = tool_event."modelRunId"
+      AND source_run."chatId" = tool_event."chatId"
+      AND source_run."assistantMessageId" = tool_event."assistantMessageId"
+      AND source_run."status" = 'complete'::"ModelRunStatus"
+    INNER JOIN "ModelRunToolCall" AS source_call
+      ON source_call."modelRunId" = tool_event."modelRunId"
+      AND source_call."id" = tool_event."modelRunToolCallId"
+      AND source_call."state" IN (
+        'complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState"
+      )
+      AND source_call."completedAt" = tool_event."occurredAt"
+      AND source_call."updatedAt" = tool_event."sourceCallUpdatedAtAtCreation"
+    WHERE tool_event."userId" = ${settings.userId}
+      AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND tool_event."projectionVersion" = ${MEMORY_TOOL_EVENT_PROJECTION_VERSION}
+      AND tool_event."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND tool_event."safetyClass" IN (
+        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
+      )
+      AND (
+        checkpoint."sourceRevision" = source_chat."memorySourceRevision"
+        AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
+        OR EXISTS (
+          SELECT 1 FROM "Message" AS paused_leaf
+          INNER JOIN "MemoryPauseInterval" AS pause_interval
+            ON pause_interval."userId" = source_chat."userId"
+            AND pause_interval."scope" IN (
+              'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+            )
+            AND paused_leaf."createdAt" >= pause_interval."pausedAt"
+            AND (pause_interval."resumedAt" IS NULL
+              OR paused_leaf."createdAt" <= pause_interval."resumedAt")
+          WHERE paused_leaf."chatId" = source_chat."id"
+            AND paused_leaf."id" = source_chat."activeLeafMessageId"
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        WHERE suppression."userId" = tool_event."userId"
+          AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > ${now})
+          AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
+            suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+            AND suppression."sourceChatId" = tool_event."chatId"
+            AND suppression."sourceMessageId" = tool_event."assistantMessageId"
+          ))
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySourceBarrier" AS barrier
+        WHERE barrier."userId" = tool_event."userId"
+          AND barrier."kind" IN (
+            'HISTORY_INDEX'::"MemorySourceBarrierKind",
+            'ALL_REUSABLE'::"MemorySourceBarrierKind"
+          )
+          AND barrier."explicitOverrideAllowed" = FALSE
+          AND source_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryPauseInterval" AS source_pause
+        WHERE source_pause."userId" = tool_event."userId"
+          AND source_pause."scope" IN (
+            'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+          )
+          AND source_message."createdAt" >= source_pause."pausedAt"
+          AND (source_pause."resumedAt" IS NULL
+            OR source_message."createdAt" <= source_pause."resumedAt")
+      )
+    ORDER BY tool_event."id"
+  `);
+  return rows.map((row): SearchIdentity => {
+    const suppressionIdentitySnapshot = suppressionIdentitySnapshots.get(row.chatId);
+    if (!suppressionIdentitySnapshot) {
+      throw new MemoryExecutionError("memory_execution_state_conflict");
+    }
+    return {
+      itemId: row.id,
+      itemType: "TOOL_EVENT",
+      languageCode: row.languageCode,
+      normalizedSearchText: row.normalizedSafeSearchText,
+      safeContentHash: row.contentHash,
+      safetyIdentitySnapshot: memorySha256({
+        projectionVersion: row.projectionVersion,
+        redactionReasonCodes: row.redactionReasonCodes,
+        redactionState: row.redactionState,
+        safetyClass: row.safetyClass
+      }),
+      sourceIdentitySnapshot: memorySha256({
+        assistantMessageId: row.assistantMessageId,
+        chatId: row.chatId,
+        evidenceRootHash: row.evidenceRootHash,
+        modelRunId: row.modelRunId,
+        modelRunToolCallId: row.modelRunToolCallId,
+        projectionVersion: row.projectionVersion,
+        sourcePayloadHash: row.sourcePayloadHash,
+        userId: settings.userId
+      }),
+      suppressionIdentitySnapshot
+    };
+  }).filter(({ normalizedSearchText }) => normalizedSearchText.length > 0);
+}
+
 function generationAcceptsRounds(generation: GenerationConfiguration): boolean {
   return generation.roundProjectionVersion === MEMORY_RECALL_ROUND_PROJECTION_VERSION &&
     generation.contextualKeyPolicyVersion === MEMORY_CONTEXTUAL_KEY_POLICY_VERSION;
+}
+
+function generationAcceptsRoundSegments(generation: GenerationConfiguration): boolean {
+  return generationAcceptsRounds(generation) &&
+    generation.roundSegmentProjectionVersion ===
+      MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION;
+}
+
+type RebuildRoundProjection = "LEGACY" | "NONE" | "SEGMENTS";
+
+function rebuildRoundProjection(
+  generation: GenerationConfiguration
+): RebuildRoundProjection {
+  if (generationAcceptsRoundSegments(generation)) return "SEGMENTS";
+  if (generationAcceptsRounds(generation) &&
+    generation.roundSegmentProjectionVersion === null) return "LEGACY";
+  return "NONE";
 }
 
 async function enumerateEligibleItems(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   now: Date,
-  includeRounds = true
+  roundProjection: RebuildRoundProjection = "SEGMENTS"
 ): Promise<readonly SearchIdentity[]> {
   const suppressionIdentities = await currentHistorySuppressionIdentities(
     tx,
     settings.userId,
     now
   );
-  const [facts, chunks, rounds] = await Promise.all([
+  const [facts, chunks, rounds, toolEvents] = await Promise.all([
     eligibleFacts(tx, settings),
     eligibleChunks(tx, settings, suppressionIdentities),
-    includeRounds ? eligibleRounds(tx, settings, suppressionIdentities) : Promise.resolve([])
+    roundProjection === "SEGMENTS"
+      ? eligibleRoundSegments(tx, settings, suppressionIdentities)
+      : roundProjection === "LEGACY"
+        ? eligibleRounds(tx, settings, suppressionIdentities)
+        : Promise.resolve([]),
+    eligibleToolEvents(tx, settings, suppressionIdentities, now)
   ]);
-  return [...facts, ...chunks, ...rounds].sort((left, right) =>
+  return [...facts, ...chunks, ...rounds, ...toolEvents].sort((left, right) =>
     left.itemType.localeCompare(right.itemType) || left.itemId.localeCompare(right.itemId));
 }
 
@@ -822,6 +1211,8 @@ async function existingGenerationEntries(
       languageCode: true,
       recallChunkId: true,
       recallRoundId: true,
+      recallRoundSegmentId: true,
+      toolEventId: true,
       safeContentHash: true,
       normalizedSearchText: true,
       safetyIdentitySnapshot: true,
@@ -830,7 +1221,15 @@ async function existingGenerationEntries(
     },
     where: {
       indexGenerationId: generationId,
-      itemType: { in: ["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND"] },
+      itemType: {
+        in: [
+          "FACT_VERSION",
+          "RECALL_CHUNK",
+          "RECALL_ROUND",
+          "RECALL_ROUND_SEGMENT",
+          "TOOL_EVENT"
+        ]
+      },
       userId
     }
   });
@@ -838,11 +1237,20 @@ async function existingGenerationEntries(
     if (
       row.itemType !== "FACT_VERSION" &&
       row.itemType !== "RECALL_CHUNK" &&
-      row.itemType !== "RECALL_ROUND"
+      row.itemType !== "RECALL_ROUND" &&
+      row.itemType !== "RECALL_ROUND_SEGMENT" &&
+      row.itemType !== "TOOL_EVENT"
     ) return [];
     const itemType: CurrentSearchItemType = row.itemType;
     const itemId = exactItemId({ ...row, itemType: row.itemType });
-    return itemId ? [{ ...row, itemId, itemType }] : [];
+    return itemId ? [{
+      ...row,
+      itemId,
+      itemType,
+      parentRoundId: row.itemType === "RECALL_ROUND_SEGMENT"
+        ? row.recallRoundId
+        : null
+    }] : [];
   });
 }
 
@@ -872,6 +1280,7 @@ function eligibleIdentityFingerprint(items: readonly SearchIdentity[]): string {
   return memorySha256(items.map((item) => ({
     itemId: item.itemId,
     itemType: item.itemType,
+    parentRoundId: item.parentRoundId ?? null,
     languageCode: item.languageCode,
     normalizedSearchText: item.normalizedSearchText,
     safeContentHash: item.safeContentHash,
@@ -962,7 +1371,7 @@ async function cutoverInventoryWith(
     active.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
     active.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
     active.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
-    generationAcceptsRounds(active) &&
+    generationAcceptsRoundSegments(active) &&
     active.retrievalPipelineVersion === (active.indexMode === "HYBRID"
       ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
       : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION) &&
@@ -974,7 +1383,12 @@ async function cutoverInventoryWith(
     compatibleAutomaticFactVersions: countFor("AUTOMATIC"),
     compatibleExplicitFactVersions: countFor("EXPLICIT"),
     compatibleHistoryChunks: items.filter((item) => item.itemType === "RECALL_CHUNK").length,
-    compatibleHistoryRounds: items.filter((item) => item.itemType === "RECALL_ROUND").length,
+    compatibleHistoryRounds: new Set(items.flatMap((item) =>
+      item.itemType === "RECALL_ROUND"
+        ? [item.itemId]
+        : item.itemType === "RECALL_ROUND_SEGMENT" && item.parentRoundId
+          ? [item.parentRoundId]
+          : [])).size,
     eligibleIdentityFingerprint: eligibleIdentityFingerprint(items),
     eligibleItems: items.length,
     incompatibleAutomaticFactVersions: Math.max(
@@ -994,6 +1408,11 @@ function targetData(item: SearchIdentity, userId: string, generationId: string) 
     ...(item.itemType === "FACT_VERSION" ? { factVersionId: item.itemId } : {}),
     ...(item.itemType === "RECALL_CHUNK" ? { recallChunkId: item.itemId } : {}),
     ...(item.itemType === "RECALL_ROUND" ? { recallRoundId: item.itemId } : {}),
+    ...(item.itemType === "RECALL_ROUND_SEGMENT" ? {
+      recallRoundId: item.parentRoundId,
+      recallRoundSegmentId: item.itemId
+    } : {}),
+    ...(item.itemType === "TOOL_EVENT" ? { toolEventId: item.itemId } : {}),
     indexGenerationId: generationId,
     itemType: item.itemType,
     languageCode: item.languageCode,
@@ -1059,6 +1478,7 @@ async function applyFullSetDiff(
   const fullSetHash = memorySha256(items.map((item) => ({
     itemId: item.itemId,
     itemType: item.itemType,
+    parentRoundId: item.parentRoundId ?? null,
     safeContentHash: item.safeContentHash,
     safetyIdentitySnapshot: item.safetyIdentitySnapshot,
     sourceIdentitySnapshot: item.sourceIdentitySnapshot,
@@ -1104,7 +1524,7 @@ function generationConfigurationMatches(
     target.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
     target.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
     target.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION &&
-    generationAcceptsRounds(target);
+    generationAcceptsRoundSegments(target);
   if (!common) return false;
   if (operation === "REEMBED") {
     return target.indexMode === "HYBRID" &&
@@ -1274,6 +1694,9 @@ async function applyShadowCatchUp(
     });
   }
   const revision = settings.memoryRevision;
+  if (generationAcceptsRoundSegments(target)) {
+    await ensureRoundSegmentProjection(tx, settings, now);
+  }
   const items = await enumerateEligibleItems(tx, settings, now);
   const diff = await applyFullSetDiff(tx, settings, target, items);
   const reread = await tx.userMemorySettings.findUnique({
@@ -1371,7 +1794,8 @@ function configurationData(
     contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
     languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
     normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
-    roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION
+    roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+    roundSegmentProjectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION
   } as const;
   if (operation === "REBUILD_SEARCH_INDEX") {
     return {
@@ -1546,9 +1970,10 @@ export function createPrismaMemoryRebuildRepository(
           ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
           : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION;
         const targetProjectionCompatible = target !== null && (
-          generationAcceptsRounds(target) || (
+          rebuildRoundProjection(target) !== "NONE" || (
             target.roundProjectionVersion === null &&
-            target.contextualKeyPolicyVersion === null
+            target.contextualKeyPolicyVersion === null &&
+            target.roundSegmentProjectionVersion === null
           )
         );
         if (
@@ -1569,7 +1994,7 @@ export function createPrismaMemoryRebuildRepository(
           tx,
           settings,
           input.now ?? new Date(),
-          generationAcceptsRounds(target)
+          rebuildRoundProjection(target)
         );
         const entries = await existingGenerationEntries(tx, userId, target.id);
         if (!generationEntriesMatch(target, entries, items)) {

@@ -111,6 +111,24 @@ function historyCandidate(id: string, rawScore: number): MemoryLaneCandidate {
   };
 }
 
+function toolEventCandidate(id: string, rawScore: number): MemoryLaneCandidate {
+  const base = historyCandidate(id, rawScore);
+  return {
+    ...base,
+    itemType: "TOOL_EVENT",
+    metadata: {
+      ...base.metadata,
+      confidence: 1,
+      modality: "EVENT",
+      observedAt: now,
+      occurredAt: now,
+      occurredFrom: now,
+      occurredTo: now,
+      sourceAuthority: "TOOL_OBSERVATION"
+    }
+  };
+}
+
 describe("relative-rank Memory fusion", () => {
   it("uses only lane position and RRF, never raw score scale", () => {
     const first = fuseMemoryRetrievalCandidates(plan, [
@@ -280,6 +298,20 @@ describe("relative-rank Memory fusion", () => {
     expect(ranked[1]!.featureSnapshot.authorityRank).toBe(1);
   });
 
+  it("keeps typed tool observations retrievable at supporting authority", () => {
+    const ranked = fuseMemoryRetrievalCandidates(plan, [{
+      lane: "HISTORY_RECALL_VECTOR",
+      candidates: [toolEventCandidate("tool-event", 0.9)]
+    }], now);
+
+    expect(ranked.map(({ itemId, itemType }) => ({ itemId, itemType }))).toEqual([{
+      itemId: "tool-event",
+      itemType: "TOOL_EVENT"
+    }]);
+    expect(ranked[0]!.finalScore).toBeCloseTo(ranked[0]!.rrfScore * 0.65);
+    expect(ranked[0]!.featureSnapshot.authorityRank).toBe(1);
+  });
+
   it("deduplicates a logical fact after fusion", () => {
     const duplicate = candidate("version-b", "FACT_VECTOR", 0.5);
     const ranked = fuseMemoryRetrievalCandidates(plan, [{
@@ -364,6 +396,83 @@ describe("relative-rank Memory fusion", () => {
       "other-root"
     ]);
     expect(ranked[0]?.laneRanks).toEqual({ HISTORY_RECALL_VECTOR: 1 });
+  });
+
+  it("prefers an exact round segment over legacy round and chunk representations", () => {
+    const evidenceRootHash = "c".repeat(64);
+    const sourceChatId = "chat-segment-root";
+    const chunk = historyCandidate("segment-parent-chunk", 1);
+    const legacy = historyCandidate("segment-parent-round", 0.9);
+    const segment = historyCandidate("segment-parent-round", 0.8);
+    const ranked = fuseMemoryRetrievalCandidates(pastChatPlan, [{
+      candidates: [{
+        ...chunk,
+        metadata: { ...chunk.metadata, evidenceRootHash, sourceChatId }
+      }, {
+        ...legacy,
+        itemType: "RECALL_ROUND" as const,
+        metadata: {
+          ...legacy.metadata,
+          evidenceRootHash,
+          parentChunkId: chunk.itemId,
+          sourceChatId
+        }
+      }, {
+        ...segment,
+        itemType: "RECALL_ROUND" as const,
+        matchedSegmentId: "segment-middle",
+        matchedSegmentPosition: "MIDDLE" as const,
+        metadata: {
+          ...segment.metadata,
+          evidenceRootHash,
+          parentChunkId: chunk.itemId,
+          sourceChatId
+        }
+      }],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]).toMatchObject({
+      itemId: "segment-parent-round",
+      itemType: "RECALL_ROUND",
+      matchedSegmentId: "segment-middle",
+      matchedSegmentPosition: "MIDDLE"
+    });
+  });
+
+  it("collapses overlapping segment hits by parent evidence root before packing", () => {
+    const evidenceRootHash = "d".repeat(64);
+    const sourceChatId = "chat-overlapping-segments";
+    const base = historyCandidate("overlap-round", 1);
+    const segment = (id: string, lane: MemoryRetrievalLane): MemoryLaneCandidate => ({
+      ...base,
+      itemType: "RECALL_ROUND",
+      lane,
+      matchedSegmentId: id,
+      matchedSegmentPosition: "MIDDLE",
+      metadata: {
+        ...base.metadata,
+        evidenceRootHash,
+        parentChunkId: "overlap-parent-chunk",
+        sourceChatId
+      }
+    });
+    const ranked = fuseMemoryRetrievalCandidates(pastChatPlan, [{
+      candidates: [segment("overlap-segment-a", "HISTORY_RECALL_FTS_SIMPLE")],
+      lane: "HISTORY_RECALL_FTS_SIMPLE"
+    }, {
+      candidates: [segment("overlap-segment-b", "HISTORY_RECALL_VECTOR")],
+      lane: "HISTORY_RECALL_VECTOR"
+    }], now);
+
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.matchedSegmentId).toMatch(/^overlap-segment-[ab]$/u);
+    expect(ranked[0]?.laneRanks).toEqual({
+      HISTORY_RECALL_FTS_SIMPLE: 1,
+      HISTORY_RECALL_VECTOR: 1
+    });
+    expect(ranked[0]?.featureSnapshot.laneCount).toBe(2);
   });
 
   it("runs for every non-empty query and only skips the empty query", () => {

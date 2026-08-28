@@ -15,8 +15,11 @@ import {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
+import type { MemoryOperationalCounters } from "../operational/counters";
 import { lockMemorySettings } from "../persistence/transaction";
 import { MEMORY_SYNTHESIS_PIPELINE_VERSION } from "./policy";
+import type { MemorySynthesisOutput } from "./contract";
+import type { MemorySynthesisPlan } from "./policy";
 import {
   createPrismaMemorySynthesisProvider,
   memorySynthesisAcceptedOutputHash,
@@ -91,6 +94,18 @@ function terminalResult(
   };
 }
 
+function synthesisOperationalCounters(
+  plan: MemorySynthesisPlan,
+  output: MemorySynthesisOutput
+): MemoryOperationalCounters {
+  return Object.freeze({
+    synthesisClusterCount: plan.clusters.length,
+    synthesisEligibleSourceCount: plan.sources.length,
+    synthesisEmptyOutputCount: output.patterns.length === 0 ? 1 : 0,
+    synthesisProposalCount: output.patterns.length
+  });
+}
+
 export function createMemorySynthesisHandler(
   deps: MemorySynthesisHandlerDependencies
 ): MemoryJobHandler {
@@ -130,6 +145,7 @@ export function createMemorySynthesisHandler(
             }
             await deps.repository.apply(tx, claim, plan, staged, applyAt);
           },
+          operationalCounters: synthesisOperationalCounters(plan, staged.output),
           stage: "authorized_apply"
         };
       }
@@ -176,6 +192,7 @@ export function createMemorySynthesisHandler(
           await deps.authorizeResult(tx, claim.userId, claim.id, result);
           await deps.repository.apply(tx, claim, plan, result, applyAt);
         },
+        operationalCounters: synthesisOperationalCounters(plan, result.output),
         stage: "authorized_apply"
       };
     }

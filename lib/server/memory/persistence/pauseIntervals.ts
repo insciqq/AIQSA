@@ -14,8 +14,8 @@ export type MemoryDestructiveSourceBarrierSnapshot = Readonly<{
 }>;
 
 type JoinedHistorySourceAliases = Readonly<{
-  chat: "chat" | "source_chat";
-  checkpoint: "checkpoint";
+  chat: "chat" | "dependency_source_chat" | "source_chat";
+  checkpoint: "checkpoint" | "dependency_checkpoint";
 }>;
 
 export function memorySourceIsInsidePause(

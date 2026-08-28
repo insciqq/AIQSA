@@ -64,6 +64,10 @@ describe("Memory operational PostgreSQL contracts", () => {
             digestIncremental: 1,
             digestNoop: 2,
             contextualProviderRequests: 1,
+            contextualFallbackEn: 2,
+            contextualFallbackUnsupportedNumber: 2,
+            contextualGeneratedOther: 4,
+            contextualGeneratedRu: 6,
             contextualRoundsFallback: 2,
             contextualRoundsGenerated: 6,
             embeddingBatchItems: 16,
@@ -75,9 +79,16 @@ describe("Memory operational PostgreSQL contracts", () => {
             historyChunksReplaced: 4,
             historyChunksReused: 5,
             historyMessagesProjected: 5,
+            historyRoundSegmentsBuilt: 12,
+            historyRoundSegmentsReplaced: 3,
+            historyRoundSegmentsReused: 7,
             historyRoundsBuilt: 6,
             historyRoundsReplaced: 7,
-            historyRoundsReused: 8
+            historyRoundsReused: 8,
+            synthesisClusterCount: 3,
+            synthesisEligibleSourceCount: 9,
+            synthesisEmptyOutputCount: 1,
+            synthesisProposalCount: 2
           },
           state: "SUCCEEDED"
         },
@@ -90,15 +101,41 @@ describe("Memory operational PostgreSQL contracts", () => {
         chunksReplaced: 4,
         chunksReused: 5,
         contextualProviderRequests: 1,
+        contextualFallbackReasons: [{
+          code: "contextualFallbackUnsupportedNumber",
+          count: 2
+        }],
+        contextualLanguageCounts: [{
+          code: "contextualFallbackEn",
+          count: 2
+        }, {
+          code: "contextualGeneratedOther",
+          count: 4
+        }, {
+          code: "contextualGeneratedRu",
+          count: 6
+        }],
         contextualRoundsFallback: 2,
         contextualRoundsGenerated: 6,
         digestFullRebuild: 0,
         digestIncremental: 1,
         digestNoop: 2,
         messagesProjected: 5,
+        recallRoundLongCount: 0,
+        recallRoundMaxSegmentCount: 0,
+        recallRoundSegmentCount: 0,
+        roundSegmentsBuilt: 12,
+        roundSegmentsReplaced: 3,
+        roundSegmentsReused: 7,
         roundsBuilt: 6,
         roundsReplaced: 7,
         roundsReused: 8
+      });
+      expect(snapshot.patterns).toMatchObject({
+        clusters: 3,
+        eligibleSources: 9,
+        emptyOutputs: 1,
+        proposals: 2
       });
       expect(snapshot.embeddings).toEqual({
         batchItems: 16,

@@ -3,7 +3,11 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
-import { detectMemoryTextLanguage, type MemoryTextLanguage } from "./language";
+import {
+  detectMemoryTextLanguage,
+  normalizeMemoryLanguageCode,
+  type MemoryTextLanguage
+} from "./language";
 import type {
   MemoryHistoryProjectedMessage,
   MemoryHistoryRecallTurnGroup,
@@ -16,10 +20,36 @@ import { memoryHistoryEvidenceRootHash } from "./evidenceRoot";
 export const MEMORY_RECALL_ROUND_PROJECTION_VERSION =
   "memory-recall-round-projection-v1";
 export const MEMORY_CONTEXTUAL_KEY_POLICY_VERSION =
-  "memory-contextual-narrative-key-v1";
+  "memory-contextual-narrative-key-v3";
 export const MEMORY_CONTEXTUAL_KEY_MAX_PRIOR_GROUPS = 2;
 export const MEMORY_RECALL_ROUND_MAX_RAW_CHARACTERS = 200_000;
 export const MEMORY_RECALL_ROUND_MAX_SEARCH_CHARACTERS = 4_000;
+
+export const MEMORY_CONTEXTUAL_FALLBACK_REASONS = Object.freeze([
+  "NOT_ELIGIBLE",
+  "PROVIDER_UNAVAILABLE",
+  "PROVIDER_OUTPUT_INVALID",
+  "HANDLE_MISMATCH",
+  "EMPTY_STATEMENTS",
+  "STATEMENT_COUNT_INVALID",
+  "STATEMENT_TOO_LONG",
+  "SAFETY_REDACTED_OR_REJECTED",
+  "SOURCE_REF_INVALID",
+  "UNSUPPORTED_TOKEN",
+  "UNSUPPORTED_NUMBER",
+  "UNSUPPORTED_DATE",
+  "UNSUPPORTED_ENTITY",
+  "DUPLICATE_STATEMENT",
+  "SEARCH_TEXT_BUDGET_EXCEEDED"
+] as const);
+
+export type MemoryContextualFallbackReason =
+  (typeof MEMORY_CONTEXTUAL_FALLBACK_REASONS)[number];
+
+export type MemoryContextualFallbackDiagnostic = Readonly<{
+  reason: MemoryContextualFallbackReason;
+  roundId: string;
+}>;
 
 /**
  * Frozen Memory evidence is bounded in UTF-16 code units because the runtime
@@ -79,6 +109,7 @@ export type MemoryRecallRoundProjection = Readonly<{
   sourceContentHash: string;
   sourceProjectionVersion: string;
   sourceRevision: number;
+  supportingRoundIds: readonly string[];
   userId: string;
 }>;
 
@@ -94,8 +125,12 @@ export type MemoryContextualRoundInput = Readonly<{
 }>;
 
 export type MemoryContextualRoundOutput = Readonly<{
+  languageCode: MemoryTextLanguage;
   roundId: string;
-  statements: readonly string[];
+  statements: readonly Readonly<{
+    sourceRoundIds: readonly string[];
+    text: string;
+  }>[];
 }>;
 
 type MemoryContextualKeyEligibleRound = Readonly<{
@@ -280,6 +315,7 @@ export function projectMemoryRecallRounds(
       sourceContentHash: snapshot.sourceContentHash,
       sourceProjectionVersion: snapshot.projectionVersion,
       sourceRevision: snapshot.sourceRevision,
+      supportingRoundIds: Object.freeze([]),
       userId: snapshot.userId
     };
   });
@@ -320,23 +356,75 @@ function words(value: string): readonly string[] {
     .match(/[\p{L}\p{N}_-]+/gu) ?? [];
 }
 
-function supportedStatement(statement: string, source: string): boolean {
-  if (!statement.trim() || statement.length > 512 || statement.includes("\u0000")) {
-    return false;
-  }
-  const safety = projectMemoryHistorySafeText(statement);
-  if (!safety.eligible || safety.safeText !== statement.trim()) return false;
-  const sourceWords = new Set(words(source));
-  if (words(statement).some((word) =>
-    word.length > 1 && !connectorWords.has(word) && !sourceWords.has(word))) {
-    return false;
-  }
-  const sourceNumbers = new Set(source.match(/\p{N}+(?:[.,:/-]\p{N}+)*/gu) ?? []);
-  return (statement.match(/\p{N}+(?:[.,:/-]\p{N}+)*/gu) ?? [])
-    .every((value) => sourceNumbers.has(value));
+const numberTokenPattern = /\p{N}+(?:[.,:/-]\p{N}+)*/gu;
+const numericDatePattern = /\p{N}{1,4}[./-]\p{N}{1,2}(?:[./-]\p{N}{1,4})?/gu;
+const entityTokenPattern = /\p{Lu}[\p{L}\p{M}'’.-]+/gu;
+
+function normalizedStatementIdentity(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("und")
+    .replace(/\s+/gu, " ").trim();
 }
 
-export function applyMemoryRecallRoundContextualKeys<
+function unsupportedEntityTokens(
+  statement: string,
+  sourceWords: ReadonlySet<string>
+): readonly string[] {
+  return (statement.match(entityTokenPattern) ?? []).filter((token) => {
+    const normalized = token.normalize("NFKC").toLocaleLowerCase("und");
+    return normalized.length > 1 && !connectorWords.has(normalized) &&
+      !sourceWords.has(normalized);
+  });
+}
+
+function hasUnsupportedDate(
+  statement: string,
+  source: string,
+  unsupportedNumbers: ReadonlySet<string>
+): boolean {
+  const sourceDates = new Set(source.match(numericDatePattern) ?? []);
+  if ((statement.match(numericDatePattern) ?? []).some((date) =>
+    !sourceDates.has(date))) return true;
+  const statementNumbers = statement.match(numberTokenPattern) ?? [];
+  const hasYear = statementNumbers.some((value) =>
+    /^\p{N}{4}$/u.test(value) && Number(value) >= 1_000 && Number(value) <= 2_999);
+  return hasYear && statementNumbers.some((value) =>
+    unsupportedNumbers.has(value) && (/^\p{N}{4}$/u.test(value) || Number(value) <= 31));
+}
+
+function unsupportedStatementReasons(
+  statement: string,
+  source: string
+): readonly MemoryContextualFallbackReason[] {
+  const reasons = new Set<MemoryContextualFallbackReason>();
+  if (!statement.trim()) reasons.add("EMPTY_STATEMENTS");
+  if (statement.length > 512) reasons.add("STATEMENT_TOO_LONG");
+  if (statement.includes("\u0000")) reasons.add("PROVIDER_OUTPUT_INVALID");
+  const safety = projectMemoryHistorySafeText(statement);
+  if (!safety.eligible || safety.safeText !== statement.trim()) {
+    reasons.add("SAFETY_REDACTED_OR_REJECTED");
+  }
+  const sourceWords = new Set(words(source));
+  const unsupportedWords = words(statement).filter((word) =>
+    word.length > 1 && !connectorWords.has(word) && !sourceWords.has(word));
+  if (unsupportedWords.length > 0) {
+    reasons.add("UNSUPPORTED_TOKEN");
+  }
+  if (unsupportedEntityTokens(statement, sourceWords).length > 0) {
+    reasons.add("UNSUPPORTED_ENTITY");
+  }
+  const sourceNumbers = new Set(source.match(numberTokenPattern) ?? []);
+  const unsupportedNumbers = new Set((statement.match(numberTokenPattern) ?? [])
+    .filter((value) => !sourceNumbers.has(value)));
+  if (unsupportedNumbers.size > 0) {
+    reasons.add("UNSUPPORTED_NUMBER");
+  }
+  if (hasUnsupportedDate(statement, source, unsupportedNumbers)) {
+    reasons.add("UNSUPPORTED_DATE");
+  }
+  return Object.freeze([...reasons]);
+}
+
+export function applyMemoryRecallRoundContextualKeysWithDiagnostics<
   T extends Readonly<{
     contextualKeyPolicyVersion: string;
     contextualKeyState: "GENERATED" | "RAW_FALLBACK";
@@ -344,16 +432,21 @@ export function applyMemoryRecallRoundContextualKeys<
     contextualSearchHash: string;
     contextualSearchText: string;
     id: string;
+    languageCode: MemoryTextLanguage;
     publicationState: "ACTIVE" | "SUPPRESSED";
     rawSafeText: string;
     redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
     safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
+    supportingRoundIds: readonly string[];
   }>
 >(
   rounds: readonly T[],
   outputs: readonly MemoryContextualRoundOutput[],
   policyVersion: string
-): readonly T[] {
+): Readonly<{
+  fallbackDiagnostics: readonly MemoryContextualFallbackDiagnostic[];
+  rounds: readonly T[];
+}> {
   if (!policyVersion || policyVersion.length > 64 || /[^A-Za-z0-9._:-]/u.test(policyVersion)) {
     throw new Error("memory_contextual_key_policy_invalid");
   }
@@ -365,17 +458,57 @@ export function applyMemoryRecallRoundContextualKeys<
     !rounds.some((round) => round.id === output.roundId))) {
     throw new Error("memory_contextual_key_output_invalid");
   }
-  return rounds.map((round) => {
+  const fallbackDiagnostics: MemoryContextualFallbackDiagnostic[] = [];
+  const projected = rounds.map((round) => {
     const output = outputById.get(round.id);
     const input = inputByRoundId.get(round.id);
     if (!input) return round;
-    const source = [...input.prior.map((prior) => prior.rawSafeText),
-      input.current.rawSafeText].join("\n\n");
-    const valid = output && output.statements.length >= 1 &&
-      output.statements.length <= 5 &&
-      output.statements.every((statement) => supportedStatement(statement, source));
-    if (!valid) return round;
-    const narrative = output.statements.map((statement) => statement.trim()).join("\n");
+    const sourceByRoundId = new Map([
+      ...input.prior.map((prior) => [prior.id, prior.rawSafeText] as const),
+      [input.current.id, input.current.rawSafeText] as const
+    ]);
+    const allowedRoundIds = new Set(sourceByRoundId.keys());
+    const reasons = new Set<MemoryContextualFallbackReason>();
+    // Missing output is a no-op here: the coordinator owns the explicit
+    // target set and assigns PROVIDER_OUTPUT_INVALID only to attempted rounds.
+    if (!output) return round;
+    const outputLanguageCode = normalizeMemoryLanguageCode(output.languageCode);
+    if (!outputLanguageCode) reasons.add("PROVIDER_OUTPUT_INVALID");
+    if (output.statements.length < 1 || output.statements.length > 5) {
+      reasons.add(output.statements.length === 0
+        ? "EMPTY_STATEMENTS"
+        : "STATEMENT_COUNT_INVALID");
+    }
+    const statementIdentities = output.statements.map((statement) =>
+      normalizedStatementIdentity(statement.text));
+    if (new Set(statementIdentities).size !== statementIdentities.length) {
+      reasons.add("DUPLICATE_STATEMENT");
+    }
+    let currentRoundCited = false;
+    for (const statement of output.statements) {
+      const citedIds = statement.sourceRoundIds;
+      if (citedIds.length < 1 || citedIds.length > 3 ||
+        new Set(citedIds).size !== citedIds.length ||
+        citedIds.some((id) => !allowedRoundIds.has(id))) {
+        reasons.add("SOURCE_REF_INVALID");
+        continue;
+      }
+      if (citedIds.includes(input.current.id)) currentRoundCited = true;
+      const citedSource = citedIds.map((id) => sourceByRoundId.get(id)!).join("\n\n");
+      for (const reason of unsupportedStatementReasons(statement.text, citedSource)) {
+        reasons.add(reason);
+      }
+    }
+    if (!currentRoundCited) reasons.add("SOURCE_REF_INVALID");
+    if (reasons.size > 0) {
+      for (const reason of reasons) fallbackDiagnostics.push({ reason, roundId: round.id });
+      return round;
+    }
+    const narrative = output.statements.map((statement) => statement.text.trim()).join("\n");
+    const citedPriorIds = new Set(output.statements.flatMap((statement) =>
+      statement.sourceRoundIds.filter((id) => id !== input.current.id)));
+    const supportingRoundIds = input.prior.flatMap((prior) =>
+      citedPriorIds.has(prior.id) ? [prior.id] : []);
     const contextualSearchText = boundedSearchText(
       `Contextual narrative:\n${narrative}\n\nRaw round:\n${round.rawSafeText}`
     );
@@ -385,7 +518,40 @@ export function applyMemoryRecallRoundContextualKeys<
       contextualKeyState: "GENERATED" as const,
       contextualNarrativeText: narrative,
       contextualSearchHash: memorySha256(contextualSearchText),
-      contextualSearchText
+      contextualSearchText,
+      languageCode: outputLanguageCode!,
+      supportingRoundIds: Object.freeze(supportingRoundIds)
     } as T;
   });
+  return Object.freeze({
+    fallbackDiagnostics: Object.freeze(fallbackDiagnostics),
+    rounds: Object.freeze(projected)
+  });
+}
+
+export function applyMemoryRecallRoundContextualKeys<
+  T extends Readonly<{
+    contextualKeyPolicyVersion: string;
+    contextualKeyState: "GENERATED" | "RAW_FALLBACK";
+    contextualNarrativeText: string;
+    contextualSearchHash: string;
+    contextualSearchText: string;
+    id: string;
+    languageCode: MemoryTextLanguage;
+    publicationState: "ACTIVE" | "SUPPRESSED";
+    rawSafeText: string;
+    redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
+    safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
+    supportingRoundIds: readonly string[];
+  }>
+>(
+  rounds: readonly T[],
+  outputs: readonly MemoryContextualRoundOutput[],
+  policyVersion: string
+): readonly T[] {
+  return applyMemoryRecallRoundContextualKeysWithDiagnostics(
+    rounds,
+    outputs,
+    policyVersion
+  ).rounds;
 }

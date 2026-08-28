@@ -3,11 +3,16 @@ import { canonicalMemoryTimeZone } from "../../../domain/memory/temporal/calenda
 import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
-import type { MemoryRecallRoundProjection } from "./rounds";
+import type {
+  MemoryContextualFallbackReason,
+  MemoryRecallRoundProjection
+} from "./rounds";
+import type { MemoryQualificationLanguageBucket } from "./language";
+import type { MemoryToolEventProjection } from "./toolEvents";
 
-export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v5";
+export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v7";
 export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
-  "memory-history-rebuild-required-v4";
+  "memory-history-rebuild-required-v5";
 export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
@@ -51,6 +56,10 @@ export type MemoryHistoryPreparedRound = Omit<
   safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
 }>;
 
+export type MemoryHistoryPreparedToolEvent = MemoryToolEventProjection & Readonly<{
+  publicationState: "ACTIVE";
+}>;
+
 export type MemoryHistoryCheckpointMessage = Readonly<{
   createdAt: string;
   messageId: string;
@@ -87,15 +96,26 @@ export type MemoryHistoryWorkCounters = Readonly<{
   contextualProviderRequests: number;
   contextualRoundsFallback: number;
   contextualRoundsGenerated: number;
+  contextualFallbackReasonCounts?: Readonly<
+    Partial<Record<MemoryContextualFallbackReason, number>>
+  >;
+  contextualLanguageCounts?: Readonly<{
+    fallback?: Readonly<Partial<Record<MemoryQualificationLanguageBucket, number>>>;
+    generated?: Readonly<Partial<Record<MemoryQualificationLanguageBucket, number>>>;
+  }>;
   digestSegmentsProcessed: number;
   digestSourceChunksProcessed: number;
   messageContentRowsLoaded: number;
   messagesProjected: number;
   modelRunRowsLoaded: number;
   pathMetadataRowsRead: number;
+  roundSegmentsBuilt: number;
+  roundSegmentsReplaced: number;
+  roundSegmentsReused: number;
   roundsBuilt: number;
   roundsReplaced: number;
   roundsReused: number;
+  toolEventsBuilt: number;
 }>;
 
 export const EMPTY_MEMORY_HISTORY_WORK_COUNTERS: MemoryHistoryWorkCounters =
@@ -112,9 +132,13 @@ export const EMPTY_MEMORY_HISTORY_WORK_COUNTERS: MemoryHistoryWorkCounters =
     messagesProjected: 0,
     modelRunRowsLoaded: 0,
     pathMetadataRowsRead: 0,
+    roundSegmentsBuilt: 0,
+    roundSegmentsReplaced: 0,
+    roundSegmentsReused: 0,
     roundsBuilt: 0,
     roundsReplaced: 0,
-    roundsReused: 0
+    roundsReused: 0,
+    toolEventsBuilt: 0
   });
 
 export type MemoryHistoryIndexPlan = Readonly<{
@@ -138,6 +162,7 @@ export type MemoryHistoryIndexPlan = Readonly<{
   source: MemoryHistoryIndexSourceIdentity;
   suppressionIdentitySnapshot: string;
   timeZone: string;
+  toolEvents: readonly MemoryHistoryPreparedToolEvent[];
   work: MemoryHistoryWorkCounters;
 }>;
 
@@ -251,6 +276,7 @@ export function memoryHistoryIndexResultHash(
     reusedChunkIds?: readonly string[];
     reusedRoundIds?: readonly string[];
     rounds?: readonly MemoryHistoryPreparedRound[];
+    toolEvents?: readonly MemoryHistoryPreparedToolEvent[];
     work?: MemoryHistoryWorkCounters;
   }> = {}
 ): string {
@@ -305,7 +331,32 @@ export function memoryHistoryIndexResultHash(
       sourceAssistantId: round.sourceAssistantId,
       sourceContentHash: round.sourceContentHash,
       sourceProjectionVersion: round.sourceProjectionVersion,
-      sourceRevision: round.sourceRevision
+      sourceRevision: round.sourceRevision,
+      supportingRoundIds: round.supportingRoundIds
+    })),
+    toolEvents: (options.toolEvents ?? []).map((event) => ({
+      assistantMessageId: event.assistantMessageId,
+      branchGeneration: event.branchGeneration,
+      chatId: event.chatId,
+      contentHash: event.contentHash,
+      evidenceRootHash: event.evidenceRootHash,
+      id: event.id,
+      modelRunId: event.modelRunId,
+      modelRunToolCallId: event.modelRunToolCallId,
+      occurredAt: event.occurredAt,
+      operation: event.operation,
+      outcome: event.outcome,
+      projectionVersion: event.projectionVersion,
+      publicationState: event.publicationState,
+      redactionReasonCodes: event.redactionReasonCodes,
+      redactionState: event.redactionState,
+      safeProjectedText: event.safeProjectedText,
+      safetyClass: event.safetyClass,
+      sourcePayloadHash: event.sourcePayloadHash,
+      sourceCallUpdatedAt: event.sourceCallUpdatedAt,
+      sourceRevision: event.sourceRevision,
+      structuredIdentifiers: event.structuredIdentifiers,
+      toolName: event.toolName
     })),
     reusedChunkIds: options.reusedChunkIds ?? [],
     reusedRoundIds: options.reusedRoundIds ?? [],

@@ -77,7 +77,8 @@ type MemoryItemEmbeddingTargetBase = Readonly<{
   entryId: string;
   generation: MemoryItemEmbeddingGeneration;
   itemId: string;
-  itemType: "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND";
+  itemType: "FACT_VERSION" | "RECALL_CHUNK" | "RECALL_ROUND" |
+    "RECALL_ROUND_SEGMENT" | "TOOL_EVENT";
   safeContentHash: string;
   normalizedSearchText: string;
   selectedEmbeddingProviderModelId: string | null;
@@ -100,10 +101,24 @@ export type MemoryRecallRoundEmbeddingTarget = MemoryItemEmbeddingTargetBase & R
   recallRoundId: string;
 }>;
 
+export type MemoryRecallRoundSegmentEmbeddingTarget =
+  MemoryItemEmbeddingTargetBase & Readonly<{
+    itemType: "RECALL_ROUND_SEGMENT";
+    recallRoundId: string;
+    recallRoundSegmentId: string;
+  }>;
+
+export type MemoryToolEventEmbeddingTarget = MemoryItemEmbeddingTargetBase & Readonly<{
+  itemType: "TOOL_EVENT";
+  toolEventId: string;
+}>;
+
 export type MemoryItemEmbeddingTarget =
   | MemoryFactEmbeddingTarget
   | MemoryRecallChunkEmbeddingTarget
-  | MemoryRecallRoundEmbeddingTarget;
+  | MemoryRecallRoundEmbeddingTarget
+  | MemoryRecallRoundSegmentEmbeddingTarget
+  | MemoryToolEventEmbeddingTarget;
 
 export type MemoryItemEmbeddingPin = Readonly<{
   configurationFingerprint: string;

@@ -202,7 +202,7 @@ describe("preparing Memory item finalization", () => {
     expect(factSql).not.toContain('INNER JOIN "MemorySearchEntry"');
   });
 
-  it("freezes an explicitly authorized PATTERN through source relations without message evidence", async () => {
+  it("freezes a PATTERN only with three independently revalidated direct supports", async () => {
     const patternRow = {
       ...automaticFactRow,
       coreEligible: false,
@@ -219,11 +219,30 @@ describe("preparing Memory item finalization", () => {
     const relations = Array.from({ length: 3 }, (_, index) => ({
       pipelineVersion: "memory-synthesis-v2",
       sourceEligibilityHash: String(index + 1).repeat(64),
+      targetDisplayText: `The user directly described workflow occurrence ${index + 1}.`,
+      targetObservedAt: new Date(`2026-08-${10 + index}T10:00:00.000Z`),
+      targetSourceMode: "AUTOMATIC",
       targetVersionId: `source-version-${index + 1}`
+    }));
+    const patternSupportingEvidence = relations.map((relation, index) => ({
+      factVersionId: relation.targetVersionId,
+      observedAt: relation.targetObservedAt.toISOString(),
+      sourceAuthority: "learned_from_user",
+      sourceRootHash: memorySha256(`message:source-message-${index + 1}`),
+      textHash: memorySha256(relation.targetDisplayText)
+    }));
+    const patternEvidence = relations.map((relation, index) => ({
+      ...automaticEvidenceRow({
+        evidenceId: `evidence-${index + 1}`,
+        messageId: `source-message-${index + 1}`
+      }),
+      evidenceObservedAt: relation.targetObservedAt,
+      targetVersionId: relation.targetVersionId
     }));
     const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
       .mockResolvedValueOnce([patternRow])
       .mockResolvedValueOnce(relations)
+      .mockResolvedValueOnce(patternEvidence)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
@@ -238,6 +257,7 @@ describe("preparing Memory item finalization", () => {
           directFactAuthority: false,
           historical: false,
           includePatterns: true,
+          patternSupportingEvidence,
           retrievalMode: "TARGETED_CURRENT",
           tier: "DYNAMIC"
         },
@@ -248,11 +268,62 @@ describe("preparing Memory item finalization", () => {
     expect(resolved).toMatchObject({
       sourceBranchGenerationSnapshot: null,
       sourceChatIdSnapshot: null,
-      sourceMessageIdsSnapshot: [],
-      sourceSnapshot: { synthesisRelations: relations },
+      sourceMessageIdsSnapshot: [
+        "source-message-1", "source-message-2", "source-message-3"
+      ],
+      sourceSnapshot: {
+        patternSupportingEvidence,
+        synthesisRelations: relations.map(({ pipelineVersion,
+          sourceEligibilityHash, targetVersionId }) => ({
+          pipelineVersion,
+          sourceEligibilityHash,
+          targetVersionId
+        }))
+      },
       versionSnapshot: { modality: "PATTERN" }
     });
-    expect($queryRaw).toHaveBeenCalledTimes(4);
+    expect($queryRaw).toHaveBeenCalledTimes(5);
+  });
+
+  it("rejects a PATTERN attempt that does not freeze three direct supports", async () => {
+    const patternRow = {
+      ...automaticFactRow,
+      coreEligible: false,
+      coreSalience: "NONE",
+      displayText: "The user tends to follow a recurring weekly review workflow.",
+      factCanonicalKey: `prop:v1:${"a".repeat(64)}`,
+      factCategory: "patterns",
+      modality: "PATTERN",
+      searchSafeContentHash: memorySha256({
+        displayText: "The user tends to follow a recurring weekly review workflow.",
+        structuredValue: automaticFactRow.structuredValue
+      })
+    };
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+      .mockResolvedValueOnce([patternRow]);
+
+    await expect(resolvePreparingMemoryItem(
+      { $queryRaw } as unknown as Prisma.TransactionClient,
+      { ...authority, indexGenerationId: "generation-1" },
+      "What recurring workflow pattern do I follow?",
+      {
+        ...item,
+        exactSafeText: patternRow.displayText,
+        featureSnapshot: {
+          directFactAuthority: false,
+          historical: false,
+          includePatterns: true,
+          patternSupportingEvidence: [],
+          retrievalMode: "TARGETED_CURRENT",
+          tier: "DYNAMIC"
+        },
+        selectionReason: "rrf+pattern_relevance"
+      }
+    )).rejects.toMatchObject({
+      code: "memory_attempt_item_invalid",
+      retryable: false
+    });
+    expect($queryRaw).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -435,7 +506,7 @@ describe("preparing Memory item finalization", () => {
     )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
   });
 
-  it("rejoins an authorized overview or aggregation digest through exact sources", async () => {
+  it("rejoins an authorized overview, aggregation, or derived targeted digest", async () => {
     const digestText = "Summary: Cedar was selected for the deployment.";
     const digestMessageIds = Array.from(
       { length: 4_000 },
@@ -468,12 +539,29 @@ describe("preparing Memory item finalization", () => {
       }
     } as unknown as Prisma.TransactionClient;
 
-    for (const featureSnapshot of [{
-      aggregationRequested: false,
-      retrievalMode: "HISTORY_OVERVIEW"
+    for (const contract of [{
+      featureSnapshot: {
+        aggregationRequested: false,
+        retrievalMode: "HISTORY_OVERVIEW"
+      },
+      laneRanks: undefined
     }, {
-      aggregationRequested: true,
-      retrievalMode: "PAST_CHAT_SEARCH"
+      featureSnapshot: {
+        aggregationRequested: true,
+        retrievalMode: "PAST_CHAT_SEARCH"
+      },
+      laneRanks: undefined
+    }, {
+      featureSnapshot: {
+        aggregationRequested: false,
+        derived: true,
+        evidenceType: "derived_session_synopsis",
+        retrievalMode: "PAST_CHAT_SEARCH",
+        retrievalReason: "fused",
+        sourceAuthority: "past_chat",
+        speakerScope: "derived"
+      },
+      laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
     }]) {
       const resolved = await resolvePreparingMemoryItem(
         tx,
@@ -482,9 +570,10 @@ describe("preparing Memory item finalization", () => {
         {
           exactItemId: "chunk-1",
           exactSafeText: `[2026-08-13] ${digestText}`,
-          featureSnapshot,
+          featureSnapshot: contract.featureSnapshot,
           finalScore: 0.9,
           itemType: "RECALL_CHUNK",
+          laneRanks: contract.laneRanks,
           projectionKind: "CHAT_DIGEST_SAFE_TEXT",
           recallChunkId: "chunk-1",
           selectionReason: "history_recall_recent",

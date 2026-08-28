@@ -1,0 +1,3 @@
+ALTER TYPE "MemorySearchItemType" ADD VALUE 'TOOL_EVENT';
+
+CREATE TYPE "MemoryToolEventOutcome" AS ENUM ('SUCCESS', 'FAILURE', 'PARTIAL');

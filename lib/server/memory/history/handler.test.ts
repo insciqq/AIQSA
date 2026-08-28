@@ -15,8 +15,10 @@ import {
 } from "./contract";
 import {
   applyMemoryHistoryClassifications,
+  attachMemoryContextualKeys,
   createMemoryHistoryIndexHandler
 } from "./handler";
+import { memoryQualificationLanguageBucket } from "./language";
 import {
   MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
   MemoryChatDigestError,
@@ -133,6 +135,7 @@ function round(
     sourceContentHash: source.sourceHash,
     sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
     sourceRevision: source.sourceRevision,
+    supportingRoundIds: [],
     userId: source.userId
   };
 }
@@ -163,6 +166,7 @@ function plan(
       rebuiltRoundIds,
       reusedRoundIds: [],
       rounds,
+      toolEvents: [],
       work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
     }
   );
@@ -183,6 +187,7 @@ function plan(
     source,
     suppressionIdentitySnapshot,
     timeZone: "UTC",
+    toolEvents: [],
     work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   };
 }
@@ -336,8 +341,12 @@ describe("Memory INDEX_HISTORY handler", () => {
         }],
         fallbackRoundIds: [],
         outputs: [{
+          languageCode: "en",
           roundId: projectedRound.id,
-          statements: ["User contextual history 0"]
+          statements: [{
+            sourceRoundIds: [projectedRound.id],
+            text: "User contextual history 0"
+          }]
         }],
         policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION as
           typeof MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
@@ -369,6 +378,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       "lexical_apply"
     ]);
     expect(result.operationalCounters).toMatchObject({
+      contextualGeneratedEn: 1,
       contextualProviderRequests: 1,
       contextualRoundsFallback: 0,
       contextualRoundsGenerated: 1,
@@ -399,6 +409,42 @@ describe("Memory INDEX_HISTORY handler", () => {
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );
+  });
+
+  it("records typed contextual fallback and content-free language counters", () => {
+    const parent = chunk("chunk-contextual-fallback", 0);
+    const projectedRound = round("round-contextual-fallback", parent.id, 0);
+    const attached = attachMemoryContextualKeys(
+      plan([parent], [projectedRound]),
+      {
+        executions: [],
+        fallbackDiagnostics: [{
+          reason: "UNSUPPORTED_NUMBER",
+          roundId: projectedRound.id
+        }],
+        fallbackRoundIds: [projectedRound.id],
+        outputs: [],
+        policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+        providerRequests: 1
+      },
+      [projectedRound.id]
+    );
+
+    expect(attached.work).toMatchObject({
+      contextualFallbackReasonCounts: { UNSUPPORTED_NUMBER: 1 },
+      contextualLanguageCounts: { fallback: { en: 1 }, generated: {} },
+      contextualRoundsFallback: 1,
+      contextualRoundsGenerated: 0
+    });
+    expect(memoryQualificationLanguageBucket("en-US")).toBe("en");
+    expect(memoryQualificationLanguageBucket("ru")).toBe("ru");
+    expect(memoryQualificationLanguageBucket("es")).toBe("other");
+    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("other");
+    expect(memoryQualificationLanguageBucket("mixed")).toBe("mixed");
+    expect(memoryQualificationLanguageBucket("mul")).toBe("mixed");
+    expect(memoryQualificationLanguageBucket("und")).toBe("und");
+    expect(memoryQualificationLanguageBucket("not_a_language")).toBe("und");
+    expect(JSON.stringify(attached.work)).not.toContain(projectedRound.rawSafeText);
   });
 
   it("classifies only the rebuilt tail and safety-checks the bounded digest", async () => {

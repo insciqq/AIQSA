@@ -6,7 +6,11 @@ import type {
   MemoryJobHandler
 } from "../coordinator/types";
 import { memorySha256 } from "../persistence/lexical";
-import type { MemoryOperationalCounters } from "../operational/counters";
+import {
+  MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS,
+  MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS,
+  type MemoryOperationalCounters
+} from "../operational/counters";
 import {
   authorizeMemoryExecutionResultsForCommit,
   type MemoryExecutionAuthorityDependencies,
@@ -40,8 +44,15 @@ import {
   type MemoryContextualKeyGenerator
 } from "./contextualKeys";
 import {
-  applyMemoryRecallRoundContextualKeys,
-  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION
+  memoryQualificationLanguageBucket,
+  type MemoryQualificationLanguageBucket
+} from "./language";
+import {
+  applyMemoryRecallRoundContextualKeysWithDiagnostics,
+  MEMORY_CONTEXTUAL_FALLBACK_REASONS,
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  type MemoryContextualFallbackDiagnostic,
+  type MemoryContextualFallbackReason
 } from "./rounds";
 import {
   createPrismaMemoryHistoryIndexRepository,
@@ -201,6 +212,7 @@ export function applyMemoryHistoryClassifications(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds,
+        toolEvents: plan.toolEvents,
         work: plan.work
       }
     )
@@ -214,27 +226,76 @@ export function attachMemoryContextualKeys(
 ): MemoryHistoryIndexPlan {
   const targets = new Set(targetRoundIds);
   const fallback = new Set(generated.fallbackRoundIds);
+  const validReasons = new Set<string>(MEMORY_CONTEXTUAL_FALLBACK_REASONS);
   if (
     generated.policyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
     targets.size !== targetRoundIds.length ||
     generated.providerRequests < 0 ||
     !Number.isSafeInteger(generated.providerRequests) ||
     generated.outputs.some((output) => !targets.has(output.roundId)) ||
-    generated.fallbackRoundIds.some((id) => !targets.has(id))
+    generated.fallbackRoundIds.some((id) => !targets.has(id)) ||
+    generated.fallbackDiagnostics?.some((diagnostic) =>
+      !targets.has(diagnostic.roundId) || !validReasons.has(diagnostic.reason))
   ) {
     throw new MemoryCoordinatorError("memory_contextual_key_invalid", true);
   }
-  const rounds = applyMemoryRecallRoundContextualKeys(
+  const applied = applyMemoryRecallRoundContextualKeysWithDiagnostics(
     plan.rounds,
     generated.outputs,
     generated.policyVersion
   );
+  const rounds = applied.rounds;
   const generatedIds = new Set(rounds.flatMap((round) =>
     targets.has(round.id) && round.contextualKeyState === "GENERATED"
       ? [round.id]
       : []));
+  const fallbackDiagnostics: MemoryContextualFallbackDiagnostic[] = [
+    ...(generated.fallbackDiagnostics ?? generated.fallbackRoundIds.map((roundId) => ({
+      reason: "PROVIDER_UNAVAILABLE" as const,
+      roundId
+    }))),
+    ...applied.fallbackDiagnostics.filter((diagnostic) =>
+      !fallback.has(diagnostic.roundId))
+  ];
+  for (const roundId of targetRoundIds) {
+    if (generatedIds.has(roundId) || fallbackDiagnostics.some((diagnostic) =>
+      diagnostic.roundId === roundId)) continue;
+    fallbackDiagnostics.push({ reason: "PROVIDER_OUTPUT_INVALID", roundId });
+  }
+  const uniqueDiagnostics = [...new Map(fallbackDiagnostics.map((diagnostic) => [
+    `${diagnostic.roundId}\u0000${diagnostic.reason}`,
+    diagnostic
+  ])).values()];
+  const contextualFallbackReasonCounts: Partial<
+    Record<MemoryContextualFallbackReason, number>
+  > = {};
+  for (const diagnostic of uniqueDiagnostics) {
+    contextualFallbackReasonCounts[diagnostic.reason] =
+      (contextualFallbackReasonCounts[diagnostic.reason] ?? 0) + 1;
+  }
+  const languageCounts: {
+    fallback: Partial<Record<MemoryQualificationLanguageBucket, number>>;
+    generated: Partial<Record<MemoryQualificationLanguageBucket, number>>;
+  } = { fallback: {}, generated: {} };
+  const roundById = new Map(rounds.map((round) => [round.id, round]));
+  const outputByRoundId = new Map(generated.outputs.map((output) =>
+    [output.roundId, output] as const));
+  for (const roundId of targetRoundIds) {
+    const round = roundById.get(roundId);
+    if (!round) continue;
+    const bucket = memoryQualificationLanguageBucket(
+      outputByRoundId.get(roundId)?.languageCode ?? round.languageCode
+    );
+    const state = generatedIds.has(roundId) ? "generated" : "fallback";
+    languageCounts[state][bucket] = (languageCounts[state][bucket] ?? 0) + 1;
+  }
   const work = {
     ...plan.work,
+    contextualFallbackReasonCounts: Object.freeze(contextualFallbackReasonCounts),
+    contextualLanguageCounts: Object.freeze({
+      fallback: Object.freeze(languageCounts.fallback),
+      generated: Object.freeze(languageCounts.generated)
+    }),
     contextualProviderRequests: generated.providerRequests,
     contextualRoundsFallback: targetRoundIds.filter((id) =>
       fallback.has(id) || !generatedIds.has(id)).length,
@@ -260,6 +321,7 @@ export function attachMemoryContextualKeys(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds,
+        toolEvents: plan.toolEvents,
         work
       }
     )
@@ -317,6 +379,7 @@ function attachMemoryChatDigest(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds: plan.rounds,
+        toolEvents: plan.toolEvents,
         work
       }
     )
@@ -342,6 +405,27 @@ function historyOperationalCounters(
   const digestNoop = plan.digest && plan.work.digestSegmentsProcessed === 0
     ? 1
     : 0;
+  const contextualCounters: Record<string, number> = {};
+  for (const [reason, count] of Object.entries(
+    plan.work.contextualFallbackReasonCounts ?? {}
+  )) {
+    if (count === undefined) continue;
+    const key = MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS[
+      reason as MemoryContextualFallbackReason
+    ];
+    if (key) contextualCounters[key] = count;
+  }
+  for (const state of ["fallback", "generated"] as const) {
+    for (const [language, count] of Object.entries(
+      plan.work.contextualLanguageCounts?.[state] ?? {}
+    )) {
+      if (count === undefined) continue;
+      const key = MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS[state][
+        language as MemoryQualificationLanguageBucket
+      ];
+      if (key) contextualCounters[key] = count;
+    }
+  }
   return Object.freeze({
     digestFullRebuild: plan.digest?.updateMode === "FULL_REBUILD" ? 1 : 0,
     digestIncremental: plan.digest?.updateMode === "INCREMENTAL" ? 1 : 0,
@@ -358,10 +442,14 @@ function historyOperationalCounters(
     historyMessagesProjected: plan.work.messagesProjected,
     historyModelRunRowsLoaded: plan.work.modelRunRowsLoaded,
     historyPathMetadataRowsRead: plan.work.pathMetadataRowsRead,
+    historyRoundSegmentsBuilt: plan.work.roundSegmentsBuilt,
+    historyRoundSegmentsReplaced: plan.work.roundSegmentsReplaced,
+    historyRoundSegmentsReused: plan.work.roundSegmentsReused,
     historyRoundsBuilt: plan.work.roundsBuilt,
     historyRoundsReplaced: plan.work.roundsReplaced,
-    historyRoundsReused: plan.work.roundsReused
-  });
+    historyRoundsReused: plan.work.roundsReused,
+    ...contextualCounters
+  }) as MemoryOperationalCounters;
 }
 
 export function createMemoryHistoryIndexHandler(
@@ -422,6 +510,10 @@ export function createMemoryHistoryIndexHandler(
             if (context.signal.aborted) throw context.signal.reason;
             generated = {
               executions: [],
+              fallbackDiagnostics: contextualTargets.map((roundId) => ({
+                reason: "PROVIDER_UNAVAILABLE" as const,
+                roundId
+              })),
               fallbackRoundIds: contextualTargets,
               outputs: [],
               policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,

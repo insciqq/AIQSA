@@ -512,6 +512,14 @@ enum MemorySearchItemType {
   FACT_VERSION
   RECALL_CHUNK
   RECALL_ROUND
+  RECALL_ROUND_SEGMENT
+  TOOL_EVENT
+}
+
+enum MemoryToolEventOutcome {
+  SUCCESS
+  FAILURE
+  PARTIAL
 }
 
 enum MemoryHistoryCheckpointStatus {
@@ -2484,6 +2492,7 @@ model Chat {
   folder                          Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
   defaultProviderModel            ProviderModel?       @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
   messages                        Message[]            @relation("ChatMessages")
+  memoryToolEvents                MemoryToolEvent[]
   modelRuns                       ModelRun[]
   project                         Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectFolder                   ProjectFolder?       @relation(fields: [projectId, projectFolderId], references: [projectId, id], onDelete: Restrict, onUpdate: Restrict)
@@ -2501,7 +2510,7 @@ model Chat {
 }
 
 model Message {
-  id                     String        @id @default(uuid())
+  id                     String            @id @default(uuid())
   chatId                 String
   role                   String
   parentMessageId        String?
@@ -2511,25 +2520,26 @@ model Message {
   groundingStrategy      String?
   provider               String?
   modelId                String?
-  status                 MessageStatus @default(complete)
-  inputTokens            Int           @default(0)
-  outputTokens           Int           @default(0)
-  reasoningTokens        Int           @default(0)
+  status                 MessageStatus     @default(complete)
+  inputTokens            Int               @default(0)
+  outputTokens           Int               @default(0)
+  reasoningTokens        Int               @default(0)
   errorMessage           String?
   authorUserId           String?
   authorDisplayName      String?
   authorProjectRole      ProjectRole?
   branchSourceModelRunId String?
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
-  assistantModelRuns     ModelRun[]    @relation("AssistantMessageRun")
-  author                 User?         @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  branchSourceModelRun   ModelRun?     @relation("BranchSourceModelRun", fields: [branchSourceModelRunId], references: [id], onDelete: SetNull, onUpdate: Restrict)
-  activeLeafForChats     Chat[]        @relation("ChatActiveLeaf")
-  chat                   Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
-  children               Message[]     @relation("MessageBranches")
-  parent                 Message?      @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
-  userModelRuns          ModelRun[]    @relation("UserMessageRun")
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
+  author                 User?             @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  branchSourceModelRun   ModelRun?         @relation("BranchSourceModelRun", fields: [branchSourceModelRunId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  activeLeafForChats     Chat[]            @relation("ChatActiveLeaf")
+  chat                   Chat              @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
+  children               Message[]         @relation("MessageBranches")
+  parent                 Message?          @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
+  memoryToolEvents       MemoryToolEvent[]
+  userModelRuns          ModelRun[]        @relation("UserMessageRun")
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
@@ -2580,6 +2590,7 @@ model ModelRun {
   knowledgeProviderAttempts   KnowledgeProviderAttempt[]
   knowledgeDispatchManifests  KnowledgeEvidenceDispatchManifest[]
   memoryHistoryRuns           MemoryHistoryRun[]
+  memoryToolEvents            MemoryToolEvent[]
   memoryToolEgressReceipts    MemoryToolEgressReceipt[]
   providerRunBindings         ProviderRunBinding[]
   projectRunBinding           ProjectRunBinding?
@@ -2831,6 +2842,7 @@ model ModelRunToolCall {
   knowledgeRun               KnowledgeRun?
   knowledgeBudgetReservation KnowledgeBudgetReservation?
   memoryHistoryRun           MemoryHistoryRun?
+  memoryToolEvents           MemoryToolEvent[]
   memoryToolEgressReceipts   MemoryToolEgressReceipt[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
@@ -2838,6 +2850,7 @@ model ModelRunToolCall {
   @@unique([modelRunId, id])
   @@index([mcpRunBindingId])
   @@index([modelRunId, state])
+  @@index([updatedAt, id])
 }
 
 model KnowledgeRun {
@@ -3752,7 +3765,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v5") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v7") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String
@@ -3858,6 +3871,7 @@ model MemoryRecallRound {
   contextualSearchHash       String                   @db.Char(64)
   contextualKeyState         String                   @db.VarChar(32)
   contextualKeyPolicyVersion String                   @db.VarChar(64)
+  supportingRoundIds         String[]                 @default([])
   languageCode               String                   @db.VarChar(35)
   occurredFrom               DateTime
   occurredTo                 DateTime
@@ -3898,6 +3912,115 @@ model MemoryRecallRoundMessage {
   @@id([roundId, messageId])
   @@unique([roundId, ordinal])
   @@index([userId, chatId, messageId])
+}
+
+model MemoryRecallRoundSegment {
+  id                         String                   @id
+  userId                     String
+  chatId                     String
+  roundId                    String
+  evidenceRootHash           String                   @db.Char(64)
+  segmentOrdinal             Int
+  position                   String                   @db.VarChar(16)
+  rawStartOffsetUtf16        Int
+  rawEndOffsetUtf16          Int
+  rawSafeText                String
+  rawSafeTextHash            String                   @db.Char(64)
+  contextualNarrativeText    String
+  contextualSearchText       String
+  contextualSearchHash       String                   @db.Char(64)
+  contextualKeyState         String                   @db.VarChar(32)
+  supportingRoundIds         String[]                 @default([])
+  occurredFrom               DateTime
+  occurredTo                 DateTime
+  languageCode               String                   @db.VarChar(35)
+  approxTokens               Int
+  projectionVersion          String                   @db.VarChar(64)
+  contextualKeyPolicyVersion String                   @db.VarChar(64)
+  sourceRevisionAtCreation   Int
+  state                      MemoryHistoryItemState   @default(ACTIVE)
+  safetyClass                MemoryDerivedSafetyClass
+  redactionState             MemoryRedactionState
+  redactionReasonCodes       String[]                 @default([])
+  createdAt                  DateTime                 @default(now())
+  invalidatedAt              DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, id, roundId])
+  @@unique([userId, chatId, roundId, id], map: "MemoryRecallRoundSegment_user_chat_round_id_key")
+  @@unique([userId, roundId, projectionVersion, segmentOrdinal], map: "MemoryRecallRoundSegment_source_ordinal_key")
+  @@index([userId, chatId, state, sourceRevisionAtCreation], map: "MemoryRecallRoundSegment_user_chat_state_revision_idx")
+  @@index([userId, roundId, state, segmentOrdinal], map: "MemoryRecallRoundSegment_user_round_state_ordinal_idx")
+  @@index([userId, evidenceRootHash, state], map: "MemoryRecallRoundSegment_user_evidence_root_state_idx")
+}
+
+model MemoryRecallRoundSegmentMessage {
+  userId                   String
+  segmentId                String
+  roundId                  String
+  chatId                   String
+  messageId                String
+  ordinal                  Int
+  role                     String   @db.VarChar(32)
+  safeTextHash             String   @db.VarChar(128)
+  sourceMessageContentHash String   @db.VarChar(128)
+  sourceMessageUpdatedAt   DateTime
+  sourceStartOffset        Int
+  sourceEndOffset          Int
+  segmentStartOffset       Int
+  segmentEndOffset         Int
+
+  @@id([segmentId, messageId])
+  @@unique([segmentId, ordinal], map: "MemoryRecallRoundSegmentMessage_segment_ordinal_key")
+  @@index([userId, chatId, messageId], map: "MemoryRecallRoundSegmentMessage_user_chat_message_idx")
+  @@index([userId, roundId, segmentId], map: "MemoryRecallRoundSegmentMessage_user_round_segment_idx")
+}
+
+/// Bounded server-owned episodic projection of one settled tool call. Raw
+/// arguments and results remain only on ModelRunToolCall and are never copied
+/// into this retrieval surface.
+model MemoryToolEvent {
+  id                            String                   @id
+  userId                        String
+  chatId                        String
+  modelRunId                    String
+  modelRunToolCallId            String
+  assistantMessageId            String
+  sourceFolderId                String?
+  sourceAssistantId             String?
+  branchGeneration              Int
+  sourceRevisionAtCreation      Int
+  sourceCallUpdatedAtAtCreation DateTime
+  toolName                      String                   @db.VarChar(128)
+  operation                     String                   @db.VarChar(256)
+  outcome                       MemoryToolEventOutcome
+  occurredAt                    DateTime
+  safeProjectedText             String
+  normalizedSafeSearchText      String
+  languageCode                  String                   @db.VarChar(35)
+  structuredIdentifiers         Json                     @default("{}")
+  sourcePayloadHash             String                   @db.Char(64)
+  contentHash                   String                   @db.Char(64)
+  evidenceRootHash              String                   @db.Char(64)
+  projectionVersion             String                   @db.VarChar(64)
+  safetyClass                   MemoryDerivedSafetyClass
+  redactionState                MemoryRedactionState
+  redactionReasonCodes          String[]                 @default([])
+  state                         MemoryHistoryItemState   @default(ACTIVE)
+  createdAt                     DateTime                 @default(now())
+  invalidatedAt                 DateTime?
+  chat                          Chat                     @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  assistantMessage              Message                  @relation(fields: [chatId, assistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  modelRun                      ModelRun                 @relation(fields: [userId, modelRunId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  modelRunToolCall              ModelRunToolCall         @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@index([userId, chatId, state, occurredAt])
+  @@index([userId, modelRunToolCallId, state])
+  @@index([userId, evidenceRootHash, state])
+  @@index([chatId, assistantMessageId])
+  @@index([modelRunId, modelRunToolCallId])
 }
 
 model ChatMemoryDigest {
@@ -4564,6 +4687,7 @@ model MemoryIndexGeneration {
   normalizationVersion              String                     @db.VarChar(64)
   chunkingVersion                   String                     @db.VarChar(64)
   roundProjectionVersion            String?                    @db.VarChar(64)
+  roundSegmentProjectionVersion     String?                    @db.VarChar(64)
   contextualKeyPolicyVersion        String?                    @db.VarChar(64)
   retrievalPipelineVersion          String                     @db.VarChar(64)
   createdAt                         DateTime                   @default(now())
@@ -4586,6 +4710,8 @@ model MemorySearchEntry {
   factVersionId               String?
   recallChunkId               String?
   recallRoundId               String?
+  recallRoundSegmentId        String?
+  toolEventId                 String?
   normalizedSearchText        String
   safeContentHash             String                   @db.VarChar(128)
   languageCode                String                   @db.VarChar(35)
@@ -4607,6 +4733,8 @@ model MemorySearchEntry {
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
   @@index([userId, recallRoundId])
+  @@index([userId, recallRoundSegmentId])
+  @@index([userId, toolEventId])
 }
 
 model MemoryEmbeddingBatchItem {
@@ -4770,6 +4898,8 @@ model MemoryRetrievalAttemptItem {
   factVersionId                  String?
   recallChunkId                  String?
   recallRoundId                  String?
+  recallRoundSegmentId           String?
+  toolEventId                    String?
   sourceChatIdSnapshot           String?
   sourceBranchGenerationSnapshot Int?
   sourceRevisionSnapshot         Int?
@@ -4789,6 +4919,8 @@ model MemoryRetrievalAttemptItem {
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
   @@index([userId, recallRoundId])
+  @@index([userId, recallRoundSegmentId], map: "MemoryRetrievalAttemptItem_user_segment_idx")
+  @@index([userId, toolEventId], map: "MemoryRetrievalAttemptItem_user_tool_event_idx")
 }
 
 model MemoryExecutionBinding {
@@ -4877,6 +5009,8 @@ model ModelRunMemoryItem {
   factVersionId                  String?
   recallChunkId                  String?
   recallRoundId                  String?
+  recallRoundSegmentId           String?
+  toolEventId                    String?
   sourceChatIdSnapshot           String?
   sourceBranchGenerationSnapshot Int?
   sourceRevisionSnapshot         Int?
@@ -4896,9 +5030,12 @@ model ModelRunMemoryItem {
   @@unique([userId, id])
   @@unique([userId, bindingId, ordinal])
   @@unique([userId, bindingId, factVersionId], map: "ModelRunMemoryItem_binding_fact_version_key")
+  @@unique([userId, bindingId, toolEventId], map: "ModelRunMemoryItem_binding_tool_event_key")
   @@index([userId, factVersionId])
   @@index([userId, recallChunkId])
   @@index([userId, recallRoundId])
+  @@index([userId, recallRoundSegmentId], map: "ModelRunMemoryItem_user_segment_idx")
+  @@index([userId, toolEventId], map: "ModelRunMemoryItem_user_tool_event_idx")
 }
 
 model MemoryHistoryRun {

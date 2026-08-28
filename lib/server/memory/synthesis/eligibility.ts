@@ -1,9 +1,11 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   memoryExactVNextDirectAuthorityPredicate,
+  memoryPersonalEvidenceRowPredicate,
   memoryPersonalFactEvidencePredicate
 } from "../persistence/eligibility";
 import {
+  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
   MEMORY_SYNTHESIS_POLICY_VERSION
 } from "./policy";
@@ -346,7 +348,45 @@ export function memorySynthesisPatternAuthorityPredicate(
       WHERE relation."userId" = ${userId}
         AND relation."sourceVersionId" = ${patternVersionId}
         AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-    ) >= 3
+    ) >= ${MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES}
+    AND (
+      SELECT COUNT(DISTINCT source_root."rootKey")
+      FROM "MemoryFactVersionRelation" AS root_relation
+      INNER JOIN "MemoryFactVersion" AS root_source_version
+        ON root_source_version."userId" = root_relation."userId"
+       AND root_source_version."id" = root_relation."targetVersionId"
+      INNER JOIN LATERAL (
+        SELECT ('explicit:' || root_source_version."id")::text AS "rootKey"
+        WHERE root_source_version."sourceMode" =
+          'EXPLICIT'::"MemoryFactSourceMode"
+
+        UNION ALL
+
+        SELECT ('message:' || support."messageId")::text AS "rootKey"
+        FROM "MemoryEvidence" AS support
+        INNER JOIN "Chat" AS evidence_chat
+          ON evidence_chat."userId" = support."userId"
+          AND evidence_chat."id" = support."chatId"
+          AND evidence_chat."projectId" IS NULL
+          AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND evidence_chat."permanentDeletionAt" IS NULL
+        INNER JOIN "Message" AS evidence_message
+          ON evidence_message."chatId" = support."chatId"
+          AND evidence_message."id" = support."messageId"
+          AND evidence_message."role" = 'user'
+        WHERE root_source_version."sourceMode" =
+            'AUTOMATIC'::"MemoryFactSourceMode"
+          AND ${memoryPersonalEvidenceRowPredicate(
+            userId,
+            Prisma.sql`root_source_version."id"`,
+            { exactVNext: true }
+          )}
+      ) AS source_root ON TRUE
+      WHERE root_relation."userId" = ${userId}
+        AND root_relation."sourceVersionId" = ${patternVersionId}
+        AND root_relation."kind" =
+          'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+    ) >= ${MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES}
     AND NOT EXISTS (
       SELECT 1
       FROM "MemoryFactVersionRelation" AS relation

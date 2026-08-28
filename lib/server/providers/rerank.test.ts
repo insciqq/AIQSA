@@ -117,28 +117,41 @@ describe("OpenRouter reranker adapter", () => {
     });
   });
 
-  it("preserves valid partial scores and ignores malformed or duplicate entries", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () => response({
-      results: [
-        { index: 2, relevance_score: 0.88 },
-        { index: 1, relevance_score: 4 },
-        { index: 2, relevance_score: 0.1 },
-        { index: 0, relevance_score: 0.35 }
-      ]
-    }));
-    const result = await adapter(fetchFn).rerank({
+  it.each([
+    ["missing index", [
+      { index: 2, relevance_score: 0.88 },
+      { index: 0, relevance_score: 0.35 }
+    ]],
+    ["duplicate index", [
+      { index: 2, relevance_score: 0.88 },
+      { index: 2, relevance_score: 0.1 },
+      { index: 0, relevance_score: 0.35 }
+    ]],
+    ["unknown index", [
+      { index: 2, relevance_score: 0.88 },
+      { index: 3, relevance_score: 0.1 },
+      { index: 0, relevance_score: 0.35 }
+    ]],
+    ["malformed entry", [
+      { index: 2, relevance_score: 0.88 },
+      { relevance_score: 0.1 },
+      { index: 0, relevance_score: 0.35 }
+    ]],
+    ["invalid score", [
+      { index: 2, relevance_score: 0.88 },
+      { index: 1, relevance_score: 4 },
+      { index: 0, relevance_score: 0.35 }
+    ]]
+  ] as const)("rejects the complete response for a %s", async (_label, results) => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({ results: [...results] }));
+    await expect(adapter(fetchFn).rerank({
       documents: [
         { handle: "c0", text: "first" },
         { handle: "c1", text: "second" },
         { handle: "c2", text: "third" }
       ],
       query: "query"
-    });
-
-    expect(result.scores).toEqual([
-      { handle: "c2", index: 2, relevanceScore: 0.88 },
-      { handle: "c0", index: 0, relevanceScore: 0.35 }
-    ]);
+    })).rejects.toMatchObject({ code: "rerank_response_invalid" });
   });
 
   it("fails when no valid score remains", async () => {
@@ -178,17 +191,28 @@ describe("OpenRouter reranker adapter", () => {
 
   it("accepts OpenRouter's provider-native canonical model path", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response({
-      model: "accounts/fireworks/models/qwen3-reranker-8b",
-      provider: "Fireworks",
+      model: "accounts/together/models/qwen3-reranker-8b",
+      provider: "Together",
       results: [{ index: 0, relevance_score: 0.8 }]
     }));
     await expect(adapter(fetchFn).rerank({
       documents: [{ handle: "c0", text: "first" }],
       query: "query"
     })).resolves.toMatchObject({
-      model: "accounts/fireworks/models/qwen3-reranker-8b",
-      provider: "Fireworks"
+      model: "accounts/together/models/qwen3-reranker-8b",
+      provider: "Together"
     });
+  });
+
+  it("rejects a response from a provider outside the governed routing roster", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({
+      provider: "Fireworks",
+      results: [{ index: 0, relevance_score: 0.8 }]
+    }));
+    await expect(adapter(fetchFn).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    })).rejects.toMatchObject({ code: "rerank_response_provider_mismatch" });
   });
 
   it("rejects a provider-native model path that contradicts the routed provider", async () => {

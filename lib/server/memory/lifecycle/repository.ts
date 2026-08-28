@@ -864,6 +864,14 @@ async function applyAllReusableDeletionFence(
   await tx.memorySearchEntry.deleteMany({
     where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
   });
+  await tx.memoryRecallRoundSegment.updateMany({
+    data: { invalidatedAt: now, state: "INVALIDATED" },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: { in: ["ACTIVE", "SUPPRESSED"] },
+      userId: settings.userId
+    }
+  });
   await tx.memoryRecallRound.updateMany({
     data: { invalidatedAt: now, state: "INVALIDATED" },
     where: {
@@ -877,6 +885,14 @@ async function applyAllReusableDeletionFence(
     where: {
       createdAt: { lte: barrier.createdAt },
       state: { in: ["ACTIVE", "SUPPRESSED"] },
+      userId: settings.userId
+    }
+  });
+  await tx.memoryToolEvent.updateMany({
+    data: { invalidatedAt: now, state: "INVALIDATED" },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: "ACTIVE",
       userId: settings.userId
     }
   });
@@ -1106,7 +1122,10 @@ export function createPrismaMemoryLifecycleRepository(
           ...input.authorization,
           requestId: input.requestId
         }, input.now);
-        const chunks = await tx.memoryRecallChunk.count({ where: { userId } });
+        const [chunks, toolEvents] = await Promise.all([
+          tx.memoryRecallChunk.count({ where: { userId } }),
+          tx.memoryToolEvent.count({ where: { userId } })
+        ]);
         await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
         const barrierId = randomUUID();
         await tx.memorySourceBarrier.create({
@@ -1123,10 +1142,15 @@ export function createPrismaMemoryLifecycleRepository(
           where: {
             OR: [
               { recallChunkId: { not: null } },
-              { recallRoundId: { not: null } }
+              { recallRoundId: { not: null } },
+              { toolEventId: { not: null } }
             ],
             userId
           }
+        });
+        await tx.memoryRecallRoundSegment.updateMany({
+          data: { invalidatedAt: input.now, state: "INVALIDATED" },
+          where: { state: { in: ["ACTIVE", "SUPPRESSED"] }, userId }
         });
         await tx.memoryRecallRound.updateMany({
           data: { invalidatedAt: input.now, state: "INVALIDATED" },
@@ -1135,6 +1159,10 @@ export function createPrismaMemoryLifecycleRepository(
         await tx.memoryRecallChunk.updateMany({
           data: { invalidatedAt: input.now, state: "INVALIDATED" },
           where: { state: { in: ["ACTIVE", "SUPPRESSED"] }, userId }
+        });
+        await tx.memoryToolEvent.updateMany({
+          data: { invalidatedAt: input.now, state: "INVALIDATED" },
+          where: { state: "ACTIVE", userId }
         });
         await tx.chatMemoryCheckpoint.updateMany({
           data: {
@@ -1174,7 +1202,7 @@ export function createPrismaMemoryLifecycleRepository(
           targetType: MEMORY_HISTORY_CLEAR_TARGET_TYPE
         });
         const result: MemoryDeleteExplicitMutationResult = {
-          affectedFacts: chunks,
+          affectedFacts: chunks + toolEvents,
           deletionId: deletion.id,
           memoryGeneration: settings.memoryGeneration,
           memoryRevision: settings.memoryRevision,

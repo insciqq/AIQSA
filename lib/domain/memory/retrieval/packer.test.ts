@@ -157,7 +157,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v17");
+    expect(pack.packerVersion).toBe("memory-context-packer-v20");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -246,6 +246,133 @@ describe("Personal Memory context pack", () => {
     expect(missingParent.omissionCounts.unsafe_expansion_shape).toBe(1);
   });
 
+  it("marks a digest-only targeted hit as a non-exact derived session synopsis", () => {
+    const candidate: MemoryRankedCandidate = {
+      ...ranked("digest-anchor", true),
+      laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 },
+      selectionReason: "history_digest_fts_simple"
+    };
+    const digestText = "Summary: Cedar was discussed during the rollout chat.";
+    const pack = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion("digest-anchor", true, digestText),
+        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+        supportingItemId: "digest-1"
+      }],
+      plan: pastChatPlan,
+      ranked: [candidate]
+    });
+
+    expect(pack.items).toMatchObject([{
+      derived: true,
+      evidenceType: "derived_session_synopsis",
+      projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+      speakerScope: "derived"
+    }]);
+    expect(renderedEvidence(pack)).toMatchObject([{
+      derived: true,
+      evidence_type: "derived_session_synopsis",
+      speaker_scope: "derived"
+    }]);
+    expect(pack.text).toContain(
+      "never exact evidence for numbers, names, dates, or quotes"
+    );
+  });
+
+  it("packs a contextual hint as non-authoritative beside exact cited raw evidence", () => {
+    const base = ranked("round-context", true);
+    const candidate: MemoryRankedCandidate = {
+      ...base,
+      itemType: "RECALL_ROUND",
+      metadata: {
+        ...base.metadata,
+        evidenceRootHash: "b".repeat(64),
+        parentChunkId: "parent-context"
+      }
+    };
+    const currentRaw = "User: Она выбрала стол у окна.";
+    const priorRaw = "User: Мария забронировала стол.";
+    const pack = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion("round-context", true, currentRaw),
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+        retrievalHint: "Мария выбрала стол у окна.",
+        supportingEvidence: [{
+          itemId: "round-prior",
+          occurredFrom: new Date("2026-08-12T10:00:00.000Z"),
+          occurredTo: new Date("2026-08-12T10:01:00.000Z"),
+          safeText: priorRaw,
+          sourceChatId: "chat-source"
+        }],
+        supportingItemId: "parent-context"
+      }],
+      plan: pastChatPlan,
+      ranked: [candidate]
+    });
+
+    expect(pack.items[0]).toMatchObject({
+      exactSafeText: currentRaw,
+      retrievalHint: "Мария выбрала стол у окна.",
+      supportingEvidence: [{ itemId: "round-prior", rawSafeText: priorRaw }]
+    });
+    expect(renderedEvidence(pack)).toMatchObject([{
+      raw_safe_evidence: currentRaw,
+      retrieval_hint: {
+        authority: "none",
+        derived: true,
+        text: "Мария выбрала стол у окна."
+      },
+      supporting_authoritative_evidence: [{ raw_safe_evidence: priorRaw }]
+    }]);
+    expect(pack.text).not.toContain("round-prior");
+    expect(pack.text).toContain("raw authoritative evidence wins");
+  });
+
+  it("renders a cited prior round only once across contextual items", () => {
+    const contextualCandidate = (id: string, evidenceRootHash: string) => {
+      const base = ranked(id, true);
+      return {
+        ...base,
+        itemType: "RECALL_ROUND" as const,
+        metadata: {
+          ...base.metadata,
+          evidenceRootHash,
+          parentChunkId: `parent-${id}`
+        }
+      };
+    };
+    const candidates = [
+      contextualCandidate("round-context-a", "c".repeat(64)),
+      contextualCandidate("round-context-b", "d".repeat(64))
+    ];
+    const priorRaw = "User: Мария забронировала стол.";
+    const expanded = candidates.map((candidate, index) => ({
+      ...expansion(candidate.itemId, true, `User: Current ${index}.`),
+      itemType: "RECALL_ROUND" as const,
+      projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" as const,
+      retrievalHint: `Context ${index}`,
+      supportingEvidence: [{
+        itemId: "round-prior",
+        occurredFrom: new Date("2026-08-12T10:00:00.000Z"),
+        occurredTo: new Date("2026-08-12T10:01:00.000Z"),
+        safeText: priorRaw,
+        sourceChatId: "chat-source"
+      }],
+      supportingItemId: candidate.metadata.parentChunkId
+    }));
+
+    const pack = packMemoryPersonalContext({
+      expanded,
+      plan: pastChatPlan,
+      ranked: candidates
+    });
+
+    expect(renderedEvidence(pack).flatMap((item) =>
+      item.supporting_authoritative_evidence as unknown[])).toHaveLength(1);
+    expect(pack.text?.split(priorRaw)).toHaveLength(2);
+  });
+
   it("labels depth-one synthesis in a separate inferred-pattern section", () => {
     const pattern = ranked("pattern");
     const patternPlan = planMemoryRetrieval({
@@ -254,7 +381,17 @@ describe("Personal Memory context pack", () => {
       now
     });
     const pack = packMemoryPersonalContext({
-      expanded: [expansion("pattern", false, "User tends to follow a repeatable workflow")],
+      expanded: [{
+        ...expansion("pattern", false, "User tends to follow a repeatable workflow"),
+        patternSupportingEvidence: Array.from({ length: 3 }, (_, index) => ({
+          itemId: `source-${index + 1}`,
+          observedAt: new Date(`2026-08-${10 + index}T10:00:00.000Z`),
+          safeText: `User directly described workflow occurrence ${index + 1}.`,
+          sourceAuthority: index === 0 ? "EXPLICIT" as const : "DIRECT_AUTOMATIC" as const,
+          sourceChatId: `support-chat-${index + 1}`,
+          sourceRootHash: String(index + 1).repeat(64)
+        }))
+      }],
       plan: patternPlan,
       ranked: [{
         ...pattern,
@@ -273,9 +410,47 @@ describe("Personal Memory context pack", () => {
       derived: true,
       evidenceType: "pattern",
       itemId: "pattern",
+      patternSupportingEvidence: [
+        { itemId: "source-1", sourceAuthority: "user_saved" },
+        { itemId: "source-2", sourceAuthority: "learned_from_user" },
+        { itemId: "source-3", sourceAuthority: "learned_from_user" }
+      ],
       section: "PATTERN"
     }]);
     expect(pack.text).toContain('"evidence_type":"pattern"');
+    expect(pack.text).toContain('"evidence_type":"direct_pattern_support"');
+    expect(pack.text).toContain("newer contradictory user_saved");
+  });
+
+  it("omits a derived pattern when three direct supports are not available", () => {
+    const pattern = ranked("unsupported-pattern");
+    const patternPlan = planMemoryRetrieval({
+      currentUserText: "what pattern do I follow",
+      includePatterns: true,
+      now
+    });
+    const pack = packMemoryPersonalContext({
+      expanded: [expansion(
+        "unsupported-pattern",
+        false,
+        "User tends to follow a repeatable workflow"
+      )],
+      plan: patternPlan,
+      ranked: [{
+        ...pattern,
+        metadata: {
+          ...pattern.metadata,
+          directness: "INFERRED",
+          modality: "PATTERN",
+          sourceAuthority: "SYNTHESIS",
+          sourceMode: "AUTOMATIC",
+          synthesisDepth: 1
+        }
+      }]
+    });
+
+    expect(pack.items).toEqual([]);
+    expect(pack.omissionCounts).toMatchObject({ pattern_support_missing: 1 });
   });
 
   it("labels MEDIUM facts as non-authoritative supporting observations", () => {
@@ -309,6 +484,46 @@ describe("Personal Memory context pack", () => {
     expect(pack.text).toContain(
       "supporting_observation is lower-authority context only"
     );
+  });
+
+  it("labels timestamped tool events as non-profile tool observations", () => {
+    const base = ranked("tool-event", true);
+    const pack = packMemoryPersonalContext({
+      expanded: [{
+        ...expansion(
+          "tool-event",
+          true,
+          "Tool file_create succeeded; filename=report.pdf."
+        ),
+        itemType: "TOOL_EVENT",
+        projectionKind: "TOOL_EVENT_SAFE_TEXT"
+      }],
+      plan,
+      ranked: [{
+        ...base,
+        itemType: "TOOL_EVENT",
+        metadata: {
+          ...base.metadata,
+          modality: "EVENT",
+          observedAt: now,
+          occurredAt: now,
+          occurredFrom: now,
+          occurredTo: now,
+          sourceAuthority: "TOOL_OBSERVATION"
+        }
+      }]
+    });
+
+    expect(pack.items).toMatchObject([{
+      evidenceType: "tool_observation",
+      eventTimeStart: now.toISOString(),
+      sourceAuthority: "tool_observation",
+      speakerScope: "tool"
+    }]);
+    expect(pack.text).toContain(
+      "tool_observation is timestamped tool-result evidence only"
+    );
+    expect(pack.text).toContain('"source_authority":"tool_observation"');
   });
 
   it("accepts a reranked response preference while preserving its Core contract", () => {

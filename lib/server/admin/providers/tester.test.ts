@@ -319,6 +319,7 @@ describe("admin provider draft tester", () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       id: "rerank-probe-1",
       model: "qwen/qwen3-reranker-8b",
+      provider: "Together",
       results: [
         { index: 1, relevance_score: 0.95 },
         { index: 0, relevance_score: 0.1 }

@@ -10,7 +10,10 @@ import {
   type MemoryHistoryRecallTurnGroup,
   type MemorySafeSourceSnapshot
 } from "./sourceProjection";
-import { projectMemoryHistorySafeText } from "./safety";
+import {
+  projectMemoryHistorySafeRecallGroupText,
+  projectMemoryHistorySafeText
+} from "./safety";
 
 // v4 retains v3 identity stability while binding chunks to the Safety Lite
 // span-redaction projection and source maps.
@@ -358,7 +361,7 @@ function groupIsSafe(group: MemoryHistoryRecallTurnGroup): boolean {
   if (memorySha256(combinedText) !== group.safeTextHash) {
     fail("memory_history_turn_group_invalid");
   }
-  const safety = projectMemoryHistorySafeText(combinedText);
+  const safety = projectMemoryHistorySafeRecallGroupText(combinedText);
   return safety.eligible && safety.safeText === combinedText &&
     safety.providerSafeText === combinedText;
 }

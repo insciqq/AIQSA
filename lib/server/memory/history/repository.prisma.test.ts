@@ -3,9 +3,17 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
+import {
+  fuseMemoryRetrievalCandidates,
+  packMemoryPersonalContext,
+  planMemoryRetrieval
+} from "../../../domain/memory/retrieval";
+import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryJobClaim } from "../coordinator/types";
+import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
+import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import { defaultMemorySourceMutationHooks } from "../sourceHooks";
 import {
   applyMemorySourceMutations,
@@ -20,6 +28,9 @@ import {
   type MemoryChatDigestGenerator
 } from "./digest";
 import {
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
@@ -46,6 +57,18 @@ import { createPrismaMemoryHistoryIndexRepository } from "./repository";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
+import { memoryRelevanceCandidates } from "../retrieval/runAdmission";
+import { memoryDedicatedRerankDocument } from "../retrieval/runUtilities";
+import { createPrismaLocalMemoryRetrievalRepository } from
+  "../retrieval/localRepository";
+import {
+  MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
+  createPrismaMemoryVectorRepository
+} from "../retrieval/vector";
+import { createMemoryRebuildHandler } from "../rebuild/handler";
+import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from "./segments";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
 
 async function mutateSource(
   userId: string,
@@ -238,6 +261,55 @@ async function processHistoryJob(
     stage: result.stage ?? null
   })).resolves.toBe(true);
   return { claim, result };
+}
+
+async function processRebuildJob(userId: string, jobId: string): Promise<void> {
+  const now = new Date();
+  const claimToken = randomUUID();
+  const leaseExpiresAt = new Date(now.getTime() + 60_000);
+  const claimed = await prisma.memoryJob.update({
+    data: {
+      attemptCount: { increment: 1 },
+      leaseExpiresAt,
+      leaseToken: claimToken,
+      state: "CLAIMED",
+      updatedAt: now
+    },
+    where: { id: jobId }
+  });
+  const claim: MemoryJobClaim = {
+    activeLeafMessageId: claimed.activeLeafMessageId,
+    attemptCount: claimed.attemptCount,
+    branchGeneration: claimed.branchGeneration,
+    chatId: claimed.chatId,
+    claimToken,
+    id: claimed.id,
+    idempotencyFingerprint: claimed.idempotencyFingerprint,
+    kind: claimed.kind,
+    leaseExpiresAt,
+    memoryGenerationSnapshot: claimed.memoryGenerationSnapshot,
+    memoryRevisionSnapshot: claimed.memoryRevisionSnapshot,
+    pipelineVersion: claimed.pipelineVersion,
+    recoveredLease: false,
+    sourceHash: claimed.sourceHash,
+    sourceMessageId: claimed.sourceMessageId,
+    sourceRevision: claimed.sourceRevision,
+    stage: claimed.stage,
+    targetFactVersionId: claimed.targetFactVersionId,
+    userId
+  };
+  const handler = createMemoryRebuildHandler(
+    createPrismaMemoryRebuildRepository(prisma)
+  );
+  await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
+  const result = await handler.execute(claim, executionContext(now));
+  await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+    acceptedResultHash: result.acceptedResultHash,
+    apply: result.apply,
+    claim,
+    now,
+    stage: result.stage ?? null
+  })).resolves.toBe(true);
 }
 
 const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
@@ -1028,7 +1100,7 @@ describe("Memory lexical history index persistence", () => {
         where: { userId }
       })).resolves.toEqual([
         { itemType: "RECALL_CHUNK" },
-        { itemType: "RECALL_ROUND" }
+        { itemType: "RECALL_ROUND_SEGMENT" }
       ]);
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
@@ -1581,9 +1653,13 @@ describe("Memory lexical history index persistence", () => {
         messagesProjected: 6,
         modelRunRowsLoaded: 3,
         pathMetadataRowsRead: 4_002,
+        roundSegmentsBuilt: 3,
+        roundSegmentsReplaced: 0,
+        roundSegmentsReused: 0,
         roundsBuilt: 3,
         roundsReplaced: 0,
-        roundsReused: 0
+        roundsReused: 0,
+        toolEventsBuilt: 0
       });
       expect(prepared.plan.chunks[0]?.id).toBe(initialChunkId);
       expect(prepared.plan.rebuiltChunkIds).toHaveLength(1);
@@ -1801,7 +1877,29 @@ describe("Memory lexical history index persistence", () => {
           recallRoundId: rounds[0]!.id,
           userId
         }
+      })).resolves.toBe(0);
+      const segments = await prisma.memoryRecallRoundSegment.findMany({
+        orderBy: { segmentOrdinal: "asc" },
+        where: { roundId: rounds[0]!.id, state: "ACTIVE", userId }
+      });
+      expect(segments).toHaveLength(1);
+      expect(segments[0]).toMatchObject({
+        position: "SINGLE",
+        rawEndOffsetUtf16: rounds[0]!.rawSafeText.length,
+        rawSafeText: rounds[0]!.rawSafeText,
+        rawStartOffsetUtf16: 0
+      });
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          itemType: "RECALL_ROUND_SEGMENT",
+          recallRoundId: rounds[0]!.id,
+          recallRoundSegmentId: segments[0]!.id,
+          userId
+        }
       })).resolves.toBe(1);
+      await expect(prisma.memoryRecallRoundSegmentMessage.count({
+        where: { segmentId: segments[0]!.id, userId }
+      })).resolves.toBe(2);
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
@@ -1821,8 +1919,9 @@ describe("Memory lexical history index persistence", () => {
           finalScore: 0.9,
           itemType: "RECALL_ROUND",
           laneRanks: { HISTORY_RECALL_FTS_SIMPLE: 1 },
-          projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+          projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
           recallRoundId: rounds[0]!.id,
+          recallRoundSegmentId: segments[0]!.id,
           selectionReason: "history_recall_exact",
           supportingItemId: chunks[0]!.id
         }
@@ -1831,11 +1930,47 @@ describe("Memory lexical history index persistence", () => {
         exactItemId: rounds[0]!.id,
         itemType: "RECALL_ROUND",
         recallRoundId: rounds[0]!.id,
+        recallRoundSegmentId: segments[0]!.id,
         sourceMessageIdsSnapshot: [
           turn.userMessage.id,
           turn.assistantMessage.id
         ]
       });
+      const corruptText = "x".repeat(segments[0]!.rawSafeText.length);
+      await prisma.memoryRecallRoundSegment.update({
+        data: {
+          rawSafeText: corruptText,
+          rawSafeTextHash: memorySha256(corruptText)
+        },
+        where: { id: segments[0]!.id }
+      });
+      await expect(prisma.$transaction((tx) => resolvePreparingMemoryItem(
+        tx,
+        {
+          assistantId: null,
+          chatId: chat.id,
+          folderId: null,
+          indexGenerationId: settings.activeIndexGenerationId,
+          userId
+        },
+        null,
+        {
+          exactItemId: rounds[0]!.id,
+          exactSafeText: corruptText,
+          finalScore: 0.9,
+          itemType: "RECALL_ROUND",
+          laneRanks: { HISTORY_RECALL_FTS_SIMPLE: 1 },
+          projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+          recallRoundId: rounds[0]!.id,
+          recallRoundSegmentId: segments[0]!.id,
+          selectionReason: "history_recall_exact",
+          supportingItemId: chunks[0]!.id
+        }
+      ))).rejects.toMatchObject({ code: "memory_attempt_item_stale" });
+      await expect(prisma.$transaction((tx) =>
+        tx.memoryRecallRoundSegmentMessage.deleteMany({
+          where: { segmentId: segments[0]!.id, userId }
+        }))).rejects.toThrow();
       await expect(prisma.$transaction((tx) =>
         tx.memoryRecallRoundMessage.deleteMany({
           where: { roundId: rounds[0]!.id, userId }
@@ -1854,6 +1989,552 @@ describe("Memory lexical history index persistence", () => {
       await cleanupOwner(userId);
     }
   });
+
+  it("carries cited contextual evidence and falls back to raw when a dependency drifts", async () => {
+    const userId = await createOwner("memory-history-contextual-dependencies");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Contextual dependency history", userId }
+      });
+      const priorTurn = await createTurn({
+        assistantText: "Recorded Maria's cedar table reservation.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Maria reserved the cedar table."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: priorTurn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: priorTurn.assistantMessage.id,
+          runId: priorTurn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      const currentTurn = await createTurn({
+        assistantText: "Recorded the window seat selection.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:02:00.000Z"),
+        parentMessageId: priorTurn.assistantMessage.id,
+        userId,
+        userText: "She chose the window seat."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: currentTurn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: currentTurn.assistantMessage.id,
+          runId: currentTurn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      const rounds = await prisma.memoryRecallRound.findMany({
+        orderBy: { roundOrdinal: "asc" },
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(rounds).toHaveLength(2);
+      const prior = rounds[0]!;
+      const current = rounds[1]!;
+      const currentSegment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
+        where: { roundId: current.id, state: "ACTIVE", userId }
+      });
+      const retrievalHint = "Maria chose the window seat.";
+      await prisma.$transaction([
+        prisma.memoryRecallRound.update({
+          data: {
+            contextualKeyState: "GENERATED",
+            contextualNarrativeText: retrievalHint,
+            supportingRoundIds: [prior.id]
+          },
+          where: { id: current.id }
+        }),
+        prisma.memoryRecallRoundSegment.update({
+          data: {
+            contextualKeyState: "GENERATED",
+            contextualNarrativeText: retrievalHint,
+            supportingRoundIds: [prior.id]
+          },
+          where: { id: currentSegment.id }
+        })
+      ]);
+
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const retrievalNow = new Date("2026-08-10T09:00:00.000Z");
+      const plan = planMemoryRetrieval({
+        currentUserText: "window seat",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: retrievalNow,
+        temporalIntent: "ANY"
+      });
+      const retrieved = await repository.retrieve({
+        assistantId: null,
+        chatId: chat.id,
+        now: retrievalNow,
+        plan,
+        userId
+      });
+      const ranked = fuseMemoryRetrievalCandidates(plan, retrieved.laneResults, retrievalNow);
+      const selected = ranked.find((candidate) => candidate.itemId === current.id);
+      expect(selected?.matchedSegmentId).toBe(currentSegment.id);
+      const [expanded] = await repository.expand(retrieved.snapshot, plan, [selected!]);
+      expect(expanded).toMatchObject({
+        itemId: current.id,
+        retrievalHint,
+        safeText: currentSegment.rawSafeText,
+        supportingEvidence: [{
+          itemId: prior.id,
+          safeText: prior.rawSafeText,
+          sourceChatId: chat.id
+        }]
+      });
+      const [rerankCandidate] = memoryRelevanceCandidates(
+        [selected!],
+        [expanded!],
+        { temporalIntent: plan.temporalIntent }
+      );
+      const rerankDocument = memoryDedicatedRerankDocument(rerankCandidate!);
+      expect(rerankDocument).toContain(
+        `[retrieval_hint derived=true authority=none]\n${retrievalHint}`
+      );
+      expect(rerankDocument).toContain(
+        `[authoritative_evidence]\n${currentSegment.rawSafeText}`
+      );
+      expect(rerankDocument).toContain(
+        `[supporting_authoritative_evidence]\n` +
+          `[support_1 raw_excerpt=true ` +
+          `date_from=${prior.occurredFrom.toISOString()} ` +
+          `date_to=${prior.occurredTo.toISOString()}]\n${prior.rawSafeText}`
+      );
+      const pack = packMemoryPersonalContext({
+        expanded: [expanded!],
+        plan,
+        ranked: [selected!]
+      });
+      expect(pack.text).toContain('"retrieval_hint":{"authority":"none","derived":true');
+      expect(pack.text).toContain('"supporting_authoritative_evidence"');
+      expect(pack.text).toContain("Maria reserved the cedar table.");
+
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const preparingInput = {
+        exactItemId: current.id,
+        exactSafeText: currentSegment.rawSafeText,
+        featureSnapshot: {
+          contextualRetrievalHintHash: memorySha256(retrievalHint),
+          contextualSupportingEvidenceHashes: [
+            memorySha256(expanded!.supportingEvidence![0]!.safeText)
+          ],
+          contextualSupportingRoundIds: [prior.id]
+        },
+        finalScore: selected!.finalScore,
+        itemType: "RECALL_ROUND" as const,
+        laneRanks: selected!.laneRanks,
+        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" as const,
+        recallRoundId: current.id,
+        recallRoundSegmentId: currentSegment.id,
+        selectionReason: selected!.selectionReason,
+        supportingItemId: current.parentChunkId
+      };
+      await expect(prisma.$transaction((tx) => resolvePreparingMemoryItem(
+        tx,
+        {
+          assistantId: null,
+          chatId: chat.id,
+          folderId: null,
+          indexGenerationId: settings.activeIndexGenerationId,
+          userId
+        },
+        null,
+        preparingInput
+      ))).resolves.toMatchObject({ recallRoundSegmentId: currentSegment.id });
+
+      const invalidatedAt = new Date("2026-08-10T09:01:00.000Z");
+      await prisma.$transaction([
+        prisma.memoryRecallRoundSegment.updateMany({
+          data: { invalidatedAt, state: "INVALIDATED" },
+          where: { roundId: prior.id, userId }
+        }),
+        prisma.memoryRecallRound.update({
+          data: { invalidatedAt, state: "INVALIDATED" },
+          where: { id: prior.id }
+        })
+      ]);
+      const [rawOnly] = await repository.expand(retrieved.snapshot, plan, [selected!]);
+      expect(rawOnly).toMatchObject({
+        itemId: current.id,
+        retrievalHint: null,
+        safeText: currentSegment.rawSafeText,
+        supportingEvidence: []
+      });
+      await expect(prisma.$transaction((tx) => resolvePreparingMemoryItem(
+        tx,
+        {
+          assistantId: null,
+          chatId: chat.id,
+          folderId: null,
+          indexGenerationId: settings.activeIndexGenerationId,
+          userId
+        },
+        null,
+        preparingInput
+      ))).rejects.toMatchObject({ code: "memory_attempt_item_stale" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("retrieves and expands prefix, middle, and suffix evidence from a 100k round", async () => {
+    const userId = await createOwner("memory-history-long-segments");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Long segmented history", userId }
+      });
+      const userText = [
+        "segmentprefixcedar was recorded.",
+        "Alpha rehearsal context. ".repeat(2_000)
+      ].join(" ");
+      const assistantText = [
+        "segmentmiddlebirch was recorded.",
+        "Beta rehearsal context. ".repeat(2_700),
+        "segmentsuffixmaple was recorded."
+      ].join(" ");
+      expect(userText.length).toBeLessThan(100_000);
+      expect(assistantText.length).toBeLessThan(100_000);
+      expect(userText.length + assistantText.length).toBeGreaterThan(100_000);
+      const turn = await createTurn({
+        assistantText,
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T09:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      const round = await prisma.memoryRecallRound.findFirstOrThrow({
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      const segments = await prisma.memoryRecallRoundSegment.findMany({
+        orderBy: { segmentOrdinal: "asc" },
+        where: { roundId: round.id, state: "ACTIVE", userId }
+      });
+      expect(segments.length).toBeGreaterThan(3);
+      expect(segments[0]?.position).toBe("PREFIX");
+      expect(segments.at(-1)?.position).toBe("SUFFIX");
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          itemType: "RECALL_ROUND_SEGMENT",
+          recallRoundId: round.id,
+          userId
+        }
+      })).resolves.toBe(segments.length);
+
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      for (const [query, expectedPosition] of [
+        ["segmentprefixcedar", "PREFIX"],
+        ["segmentmiddlebirch", "MIDDLE"],
+        ["segmentsuffixmaple", "SUFFIX"]
+      ] as const) {
+        const retrievalNow = new Date("2026-08-10T10:00:00.000Z");
+        const plan = planMemoryRetrieval({
+          currentUserText: query,
+          filters: { sourceKinds: ["HISTORY"] },
+          mode: "PAST_CHAT_SEARCH",
+          now: retrievalNow,
+          temporalIntent: "ANY"
+        });
+        const retrieved = await repository.retrieve({
+          assistantId: null,
+          chatId: chat.id,
+          now: retrievalNow,
+          plan,
+          userId
+        });
+        const ranked = fuseMemoryRetrievalCandidates(
+          plan,
+          retrieved.laneResults,
+          retrievalNow
+        );
+        const selected = ranked.find((candidate) =>
+          candidate.itemId === round.id && candidate.matchedSegmentId !== null);
+        expect(selected).toMatchObject({
+          itemId: round.id,
+          itemType: "RECALL_ROUND",
+          matchedSegmentPosition: expectedPosition
+        });
+        const [expanded] = await repository.expand(
+          retrieved.snapshot,
+          plan,
+          [selected!]
+        );
+        const stored = segments.find(({ id }) => id === selected!.matchedSegmentId);
+        expect(expanded).toMatchObject({
+          itemId: round.id,
+          itemType: "RECALL_ROUND",
+          projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+          safeText: stored?.rawSafeText
+        });
+        expect(expanded?.safeText).toContain(query);
+      }
+
+      const rebuild = createPrismaMemoryRebuildRepository(prisma);
+      const cutover = createPrismaMemoryRetrievalCutoverRepository(prisma);
+      const beforeRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await prisma.memoryRecallRoundSegment.deleteMany({
+        where: { roundId: round.id, userId }
+      });
+      await expect(prisma.memoryRecallRoundSegment.count({
+        where: { roundId: round.id, userId }
+      })).resolves.toBe(0);
+      const first = await rebuild.admit(userId, {
+        expectedMemoryRevision: beforeRebuild.memoryRevision,
+        expectedSettingsRevision: beforeRebuild.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: `segment-backfill-${randomUUID()}` }
+      });
+      if (first.kind !== "ok") throw new Error(`segment_backfill_${first.kind}`);
+      await processRebuildJob(userId, first.jobId);
+      const afterFirst = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const firstGenerationId = afterFirst.activeIndexGenerationId;
+      if (!firstGenerationId) throw new Error("segment_generation_missing");
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: firstGenerationId }
+      })).resolves.toMatchObject({
+        roundSegmentProjectionVersion:
+          MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+        state: "ACTIVE"
+      });
+      const rebuiltSegments = await prisma.memoryRecallRoundSegment.count({
+        where: { roundId: round.id, state: "ACTIVE", userId }
+      });
+      expect(rebuiltSegments).toBe(segments.length);
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          indexGenerationId: firstGenerationId,
+          itemType: "RECALL_ROUND_SEGMENT",
+          recallRoundId: round.id,
+          userId
+        }
+      })).resolves.toBe(rebuiltSegments);
+
+      const second = await rebuild.admit(userId, {
+        expectedMemoryRevision: afterFirst.memoryRevision,
+        expectedSettingsRevision: afterFirst.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: `segment-second-${randomUUID()}` }
+      });
+      if (second.kind !== "ok") throw new Error(`segment_second_${second.kind}`);
+      await processRebuildJob(userId, second.jobId);
+      const beforeRollback = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      expect(beforeRollback.activeIndexGenerationId).not.toBe(firstGenerationId);
+      await expect(cutover.rollback(userId, firstGenerationId, {
+        expectedMemoryRevision: beforeRollback.memoryRevision,
+        expectedSettingsRevision: beforeRollback.settingsRevision
+      })).resolves.toEqual({
+        activeGenerationId: firstGenerationId,
+        kind: "ok"
+      });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({ activeIndexGenerationId: firstGenerationId });
+
+      const activeSegmentGeneration = await prisma.memoryIndexGeneration
+        .findUniqueOrThrow({ where: { id: firstGenerationId } });
+      const embeddingModel = await prisma.providerModel.findUniqueOrThrow({
+        select: { connectionId: true },
+        where: { id: providerTemplateIds.fakeModel }
+      });
+      const nextGeneration = await prisma.memoryIndexGeneration.aggregate({
+        _max: { generation: true },
+        where: { userId }
+      });
+      const afterRollback = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const hybridGeneration = await prisma.memoryIndexGeneration.create({
+        data: {
+          chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+          contextualKeyPolicyVersion:
+            activeSegmentGeneration.contextualKeyPolicyVersion,
+          embeddingConfigurationFingerprint: "b".repeat(64),
+          embeddingConnectionId: embeddingModel.connectionId,
+          embeddingDimension: 1_024,
+          embeddingProviderModelId: providerTemplateIds.fakeModel,
+          generation: (nextGeneration._max.generation ?? -1) + 1,
+          indexMode: "HYBRID",
+          indexedThroughMemoryRevision: afterRollback.memoryRevision,
+          languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+          normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+          retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
+          roundProjectionVersion: activeSegmentGeneration.roundProjectionVersion,
+          roundSegmentProjectionVersion:
+            MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+          sourceIndexGenerationId: firstGenerationId,
+          state: "BUILDING",
+          targetMemoryRevision: afterRollback.memoryRevision,
+          userId,
+          vectorSpaceFingerprint: "c".repeat(64)
+        }
+      });
+      const candidateVectorSegments = await prisma.memoryRecallRoundSegment.findMany({
+        orderBy: { segmentOrdinal: "asc" },
+        where: {
+          position: { in: ["MIDDLE", "SUFFIX"] },
+          roundId: round.id,
+          state: "ACTIVE",
+          userId
+        }
+      });
+      const vectorSegments = [
+        candidateVectorSegments.find(({ position }) => position === "MIDDLE"),
+        candidateVectorSegments.find(({ position }) => position === "SUFFIX")
+      ].filter((segment): segment is (typeof candidateVectorSegments)[number] =>
+        segment !== undefined);
+      expect(vectorSegments.some(({ position }) => position === "MIDDLE")).toBe(true);
+      expect(vectorSegments.some(({ position }) => position === "SUFFIX")).toBe(true);
+      const vectorEntryIds = vectorSegments.map(() => randomUUID());
+      await prisma.memorySearchEntry.createMany({
+        data: vectorSegments.map((segment, index) => ({
+          embeddingState: "PENDING" as const,
+          id: vectorEntryIds[index]!,
+          indexGenerationId: hybridGeneration.id,
+          itemType: "RECALL_ROUND_SEGMENT" as const,
+          languageCode: segment.languageCode,
+          normalizedSearchText: normalizeMemorySearchText(
+            segment.contextualSearchText
+          ),
+          recallRoundId: round.id,
+          recallRoundSegmentId: segment.id,
+          safeContentHash: segment.contextualSearchHash,
+          safetyIdentitySnapshot: memorySha256({
+            segmentId: segment.id,
+            type: "safety"
+          }),
+          sourceIdentitySnapshot: memorySha256({
+            segmentId: segment.id,
+            type: "source"
+          }),
+          suppressionIdentitySnapshot: memorySha256({
+            segmentId: segment.id,
+            type: "suppression"
+          }),
+          userId
+        }))
+      });
+      await prisma.$transaction(async (tx) => {
+        const activatedAt = new Date();
+        await tx.memoryIndexGeneration.update({
+          data: { state: "SUPERSEDED", supersededAt: activatedAt },
+          where: { id: firstGenerationId }
+        });
+        await tx.memoryIndexGeneration.update({
+          data: {
+            activatedAt,
+            readyAt: activatedAt,
+            state: "ACTIVE"
+          },
+          where: { id: hybridGeneration.id }
+        });
+        await tx.userMemorySettings.update({
+          data: {
+            activeIndexGenerationId: hybridGeneration.id,
+            embeddingProviderModelId: providerTemplateIds.fakeModel
+          },
+          where: { userId }
+        });
+      });
+      const embedding = createPrismaMemoryItemEmbeddingRepository(prisma);
+      for (const [index, segment] of vectorSegments.entries()) {
+        await expect(embedding.loadTarget(userId, vectorEntryIds[index]!))
+          .resolves.toMatchObject({
+            itemId: segment.id,
+            itemType: "RECALL_ROUND_SEGMENT",
+            recallRoundId: round.id,
+            recallRoundSegmentId: segment.id
+          });
+      }
+      const vector = Array.from(
+        { length: 1_024 },
+        (_, index) => index === 0 ? 1 : 0
+      );
+      const serializedVector = JSON.stringify(vector);
+      await prisma.$executeRaw(Prisma.sql`
+        UPDATE "MemorySearchEntry"
+        SET
+          "embedding" = ${serializedVector}::vector,
+          "embeddingDimension" = 1024,
+          "embeddingState" = 'READY'::"MemoryEmbeddingState"
+        WHERE "userId" = ${userId}
+          AND "id" IN (${Prisma.join(vectorEntryIds)})
+      `);
+      const vectorRepository = createPrismaMemoryVectorRepository(prisma);
+      const resolvedProfile = await vectorRepository.resolveActiveProfile(userId);
+      expect(resolvedProfile.status).toBe("READY");
+      if (resolvedProfile.status !== "READY") {
+        throw new Error(resolvedProfile.reason);
+      }
+      const vectorResult = await vectorRepository.search({
+        eligibility: {
+          allowedFactSensitivity: ["NORMAL"],
+          allowedHistorySafety: ["NORMAL"],
+          assistantId: null,
+          chatId: chat.id,
+          factMode: "CURRENT",
+          factTemporalAsOf: null,
+          folderId: null,
+          includePatterns: false,
+          occurredFrom: null,
+          occurredTo: null,
+          sourceAssistantId: null,
+          sourceChatIds: null,
+          sourceFolderId: null
+        },
+        itemTypes: ["RECALL_ROUND_SEGMENT"],
+        limit: vectorEntryIds.length,
+        minimumScore: 0,
+        profile: resolvedProfile.profile,
+        userId,
+        vector
+      });
+      expect(vectorResult).toMatchObject({ status: "READY" });
+      expect(vectorResult.hits.map(({ entryId }) => entryId).sort())
+        .toEqual([...vectorEntryIds].sort());
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
 
   it("settles a raced source as STALE without applying partial rows", async () => {
     const userId = await createOwner("memory-history-stale");
@@ -2333,6 +3014,249 @@ describe("Memory lexical history index persistence", () => {
       await cleanupOwner(userId);
     }
   });
+
+  it("indexes, retrieves, rebuilds, corrects, and excludes safe typed tool observations", async () => {
+    const userId = await createOwner("memory-tool-observation");
+    const foreignUserId = await createOwner("memory-tool-observation-foreign");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Tool observation history", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "The requested file operation completed.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-28T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Create the release report."
+      });
+      const completedAt = new Date("2026-08-28T12:00:02.000Z");
+      const privateCanary = "RAW_TOOL_PRIVATE_CANARY";
+      const fileCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { api_key: "sk-args-abcdefghijklmnopqrstuvwxyz123456" },
+          completedAt,
+          modelRunId: turn.run.id,
+          ordinal: 0,
+          providerCallId: "file-create-call",
+          result: {
+            body: `<html>${privateCanary.repeat(20_000)}</html>`,
+            filename: "release-report.pdf",
+            status: "complete"
+          },
+          roundIndex: 0,
+          state: "complete",
+          toolName: "filesystem.write"
+        }
+      });
+      await prisma.modelRunToolCall.createMany({
+        data: [{
+          arguments: {},
+          completedAt: new Date("2026-08-28T12:00:03.000Z"),
+          modelRunId: turn.run.id,
+          ordinal: 1,
+          providerCallId: "secret-only-call",
+          result: { name: "sk-proj-abcdefghijklmnopqrstuvwxyz123456" },
+          roundIndex: 0,
+          state: "complete",
+          toolName: "vault.lookup"
+        }, {
+          arguments: {},
+          modelRunId: turn.run.id,
+          ordinal: 2,
+          providerCallId: "in-flight-call",
+          result: { filename: "must-not-appear.txt" },
+          roundIndex: 0,
+          state: "running",
+          toolName: "filesystem.write"
+        }]
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      const initialEvent = await prisma.memoryToolEvent.findFirstOrThrow({
+        where: { modelRunToolCallId: fileCall.id, state: "ACTIVE", userId }
+      });
+      expect(initialEvent).toMatchObject({
+        assistantMessageId: turn.assistantMessage.id,
+        outcome: "SUCCESS",
+        projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+        toolName: "filesystem.write"
+      });
+      expect(initialEvent.safeProjectedText).toContain("filename: release-report.pdf");
+      expect(initialEvent.normalizedSafeSearchText).toContain("release report pdf");
+      expect(JSON.stringify(initialEvent)).not.toContain(privateCanary);
+      await expect(prisma.memoryToolEvent.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memorySearchEntry.count({
+        where: { itemType: "TOOL_EVENT", toolEventId: initialEvent.id, userId }
+      })).resolves.toBe(1);
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memorySynthesisExecution.count({ where: { userId } }))
+        .resolves.toBe(0);
+
+      const retrievalNow = new Date("2026-08-28T13:00:00.000Z");
+      const retrievalPlan = planMemoryRetrieval({
+        currentUserText: "release-report.pdf",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: retrievalNow,
+        temporalIntent: "ANY"
+      });
+      const retrievalRepository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const retrieved = await retrievalRepository.retrieve({
+        assistantId: null,
+        chatId: chat.id,
+        now: retrievalNow,
+        plan: retrievalPlan,
+        userId
+      });
+      const ranked = fuseMemoryRetrievalCandidates(
+        retrievalPlan,
+        retrieved.laneResults,
+        retrievalNow
+      );
+      const selected = ranked.find((candidate) => candidate.itemId === initialEvent.id);
+      expect(selected).toMatchObject({
+        itemType: "TOOL_EVENT",
+        metadata: { sourceAuthority: "TOOL_OBSERVATION" }
+      });
+      const [expanded] = await retrievalRepository.expand(
+        retrieved.snapshot,
+        retrievalPlan,
+        [selected!]
+      );
+      expect(expanded).toMatchObject({
+        itemId: initialEvent.id,
+        itemType: "TOOL_EVENT",
+        projectionKind: "TOOL_EVENT_SAFE_TEXT",
+        safeText: initialEvent.safeProjectedText
+      });
+      const pack = packMemoryPersonalContext({
+        expanded: [expanded!],
+        plan: retrievalPlan,
+        ranked: [selected!]
+      });
+      expect(pack.text).toContain('"source_authority":"tool_observation"');
+      expect(pack.text).toContain('"speaker_scope":"tool"');
+
+      const foreignChat = await prisma.chat.create({
+        data: { title: "Foreign tool query", userId: foreignUserId }
+      });
+      const foreign = await retrievalRepository.retrieve({
+        assistantId: null,
+        chatId: foreignChat.id,
+        now: retrievalNow,
+        plan: retrievalPlan,
+        userId: foreignUserId
+      });
+      expect(fuseMemoryRetrievalCandidates(
+        retrievalPlan,
+        foreign.laneResults,
+        retrievalNow
+      ).some(({ itemType }) => itemType === "TOOL_EVENT")).toBe(false);
+
+      const beforeRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const rebuild = createPrismaMemoryRebuildRepository(prisma);
+      const admitted = await rebuild.admit(userId, {
+        expectedMemoryRevision: beforeRebuild.memoryRevision,
+        expectedSettingsRevision: beforeRebuild.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX",
+        requestIdentity: { nonce: `tool-event-rebuild-${randomUUID()}` }
+      });
+      if (admitted.kind !== "ok") throw new Error(`tool_event_rebuild_${admitted.kind}`);
+      await processRebuildJob(userId, admitted.jobId);
+      const afterRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await expect(prisma.memorySearchEntry.count({
+        where: {
+          indexGenerationId: afterRebuild.activeIndexGenerationId!,
+          itemType: "TOOL_EVENT",
+          toolEventId: initialEvent.id,
+          userId
+        }
+      })).resolves.toBe(1);
+
+      await prisma.modelRunToolCall.update({
+        data: {
+          result: { filename: "release-report-v2.pdf", status: "complete" }
+        },
+        where: { id: fileCall.id }
+      });
+      const staleAfterCorrection = await retrievalRepository.retrieve({
+        assistantId: null,
+        chatId: chat.id,
+        now: retrievalNow,
+        plan: retrievalPlan,
+        userId
+      });
+      expect(fuseMemoryRetrievalCandidates(
+        retrievalPlan,
+        staleAfterCorrection.laneResults,
+        retrievalNow
+      ).some(({ itemType }) => itemType === "TOOL_EVENT")).toBe(false);
+      const followUp = await createTurn({
+        assistantText: "The corrected file result is recorded.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-28T12:05:00.000Z"),
+        parentMessageId: turn.assistantMessage.id,
+        userId,
+        userText: "Record the correction."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: followUp.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: followUp.assistantMessage.id,
+          runId: followUp.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      await expect(prisma.memoryToolEvent.findUniqueOrThrow({
+        where: { id: initialEvent.id }
+      })).resolves.toMatchObject({ state: "INVALIDATED" });
+      const corrected = await prisma.memoryToolEvent.findFirstOrThrow({
+        where: { modelRunToolCallId: fileCall.id, state: "ACTIVE", userId }
+      });
+      expect(corrected.id).not.toBe(initialEvent.id);
+      expect(corrected.safeProjectedText).toContain("release-report-v2.pdf");
+
+      await mutateSource(userId, chat.id, {
+        mutations: ["SOURCE_EXCLUDE"],
+        patch: { memoryMode: "EXCLUDED" }
+      });
+      await expect(prisma.memoryToolEvent.findUniqueOrThrow({
+        where: { id: corrected.id }
+      })).resolves.toMatchObject({ state: "INVALIDATED" });
+      await expect(prisma.memorySearchEntry.count({
+        where: { toolEventId: corrected.id, userId }
+      })).resolves.toBe(0);
+      await prisma.modelRun.delete({ where: { id: turn.run.id } });
+      await expect(prisma.memoryToolEvent.count({
+        where: { modelRunId: turn.run.id, userId }
+      })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(foreignUserId);
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
 
   it("persists owner-scoped egress dispatch evidence without request plaintext", async () => {
     const userId = await createOwner("memory-egress-receipts");
