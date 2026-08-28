@@ -146,7 +146,7 @@ export type NormalizedRunRequest = {
     developer: string | null;
     /** Server-minted fixed contract serialized after every other instruction
      * and untrusted personal-context block for one-shot Knowledge answers. */
-    knowledgeAnswerContract?: 1 | 2 | 3;
+    knowledgeAnswerContract?: 1;
     /** Server-owned, content-free result of the bounded Memory control/action
      * stage. Provider adapters render the corresponding fixed answer contract. */
     memoryActionAnswerResult?: MemoryActionAnswerResult;

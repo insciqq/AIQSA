@@ -135,16 +135,7 @@ describe("adaptive Knowledge answering", () => {
     expect(plan.dispatchDraft.message).toContain("inspect every admitted Source systematically");
     expect(plan.dispatchDraft.header).toContain(KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION);
     expect(plan.dispatchDraft.header).toContain(KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION);
-    expect(plan.dispatchDraft.header).toContain("give the smallest direct answer");
-    expect(plan.dispatchDraft.header).toContain(
-      "exact entity, value, field, row, column, or relation"
-    );
-    expect(plan.dispatchDraft.header).toContain(
-      "Never put a supporting citation on its own line"
-    );
-    expect(plan.dispatchDraft.header).toContain("AIQSA_KB_FORMAT=EXTRACTIVE_V1");
-    expect(plan.dispatchDraft.header).toContain("compact JSON line");
-    expect(plan.dispatchDraft.promptFragmentVersion).toBe(13);
+    expect(plan.dispatchDraft.promptFragmentVersion).toBe(6);
   });
 
   it("falls back before provider dispatch when the corpus or exact passages do not fit", () => {

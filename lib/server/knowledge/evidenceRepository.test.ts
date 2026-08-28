@@ -749,32 +749,6 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(result?.grounding.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it("requires the persisted v3 answer format and renders exact cited spans", async () => {
-    const normalizedRequest = { prompt: { knowledgeAnswerContract: 3 } };
-    await expect(groundKnowledgeRunAnswer(client(row(), { normalizedRequest }), {
-      answer: "AIQSA_KB_STATUS=ANSWERED\nAtlas retains completed exports for 30 days [K1].",
-      runId: "run-1",
-      userId: "user-1"
-    })).rejects.toThrow("required body format");
-
-    const exactExcerpt = "Completed Atlas exports are retained for 30 days after completion.";
-    await expect(groundKnowledgeRunAnswer(client(row(), { normalizedRequest }), {
-      answer: [
-        "AIQSA_KB_STATUS=ANSWERED",
-        "AIQSA_KB_FORMAT=EXTRACTIVE_V1",
-        JSON.stringify({ claims: [{ handle: "K1", quote: exactExcerpt }], version: 1 })
-      ].join("\n"),
-      runId: "run-1",
-      userId: "user-1"
-    })).resolves.toMatchObject({
-      grounding: {
-        finalText: `- ${exactExcerpt} [K1]`,
-        outcome: "answered",
-        version: 6
-      }
-    });
-  });
-
   it("rejects focused Knowledge finalization when its evidence receipt is missing", async () => {
     await expect(groundKnowledgeRunAnswer(client(null, {
       normalizedRequest: {
