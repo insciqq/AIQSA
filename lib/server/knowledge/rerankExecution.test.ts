@@ -79,6 +79,48 @@ describe("Knowledge rerank execution stage", () => {
     expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
   });
 
+  it("records a monotonic integer duration across a backward wall-clock step", async () => {
+    const ticks = [50.5, 63.9];
+    const now = vi.fn(() => {
+      const tick = ticks.shift();
+      if (tick === undefined) throw new Error("unexpected_monotonic_clock_read");
+      return tick;
+    });
+    let wallNow = 2_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+    try {
+      const stage = createKnowledgeRerankStage({
+        adapter: fakeAdapter(async (request) => {
+          const wallStartedAt = Date.now();
+          wallNow = 1_000;
+          expect(Date.now()).toBeLessThan(wallStartedAt);
+          return {
+            model: "qwen3-reranker-8b",
+            provider: "DeepInfra",
+            requestId: "req-clock-step",
+            scores: request.documents.map((document, index) => ({
+              handle: document.handle,
+              index,
+              relevanceScore: 1 - index * 0.1
+            })),
+            usage: { inputTokens: 2, searchUnits: 1, totalTokens: 2 }
+          };
+        }),
+        now,
+        pin,
+        query: "q"
+      });
+
+      const result = await stage({
+        candidates: [candidate("chunk-a"), candidate("chunk-b")]
+      });
+      expect(result.evidence.durationMs).toBe(13);
+      expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   it("formats candidates without English labels and never sends chunk metadata prose", async () => {
     const rerank = vi.fn(async (request: Parameters<RerankAdapter["rerank"]>[0]) => ({
       model: "qwen3-reranker-8b",

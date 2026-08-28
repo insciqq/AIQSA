@@ -5,6 +5,7 @@ import type { ProviderRunRequest } from "../providers/types";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
+import { decodeKnowledgeRetrievalEvidence } from "./toolResult";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import {
   KNOWLEDGE_DISCOVER_SOURCES_TOOL_NAME,
@@ -376,6 +377,82 @@ describe("Knowledge executor surface", () => {
       ]
     }));
     expect(persistReceipt).toHaveBeenCalledOnce();
+  });
+
+  it("persists monotonic durations while the host wall clock moves backward", async () => {
+    const monotonicTicks = [100.25, 105.5, 112.9, 130.1];
+    const monotonicNow = vi.fn(() => {
+      const tick = monotonicTicks.shift();
+      if (tick === undefined) throw new Error("unexpected_monotonic_clock_read");
+      return tick;
+    });
+    let wallNow = 20_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+    try {
+      const embed = vi.fn(async () => {
+        const wallStartedAt = Date.now();
+        wallNow = 10_000;
+        await Promise.resolve();
+        expect(Date.now()).toBeLessThan(wallStartedAt);
+        return {
+          model: "embedding-upstream",
+          requestId: "embedding-request-clock-step",
+          usage: { inputTokens: 1, totalTokens: 1 },
+          vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+        };
+      });
+      const hybridSearch = vi.fn(async () => ({
+        ...lexicalSearchResult(),
+        vectorSearchEvidence: [{
+          bindingOrdinal: 0,
+          candidateCount: 0,
+          eligibleRows: 1,
+          mode: "exact" as const,
+          scan: {
+            efSearch: null,
+            iterativeScan: null,
+            maxScanTuples: null,
+            retrievalBucket: 0
+          },
+          targetDimension: 1_024 as const
+        }]
+      }));
+      const { persistReceipt, store } = automaticStore(hybridSearch);
+      const runtime = createKnowledgeToolExecutor({
+        embeddingRuntime: {
+          resolve: vi.fn(async () => ({
+            adapter: { embed },
+            configuration: embeddingConfiguration,
+            provider: "openai_compatible",
+            providerModelId: "embedding-model-1"
+          }))
+        },
+        monotonicNow,
+        store
+      });
+
+      const result = await runtime.execute({
+        arguments: { query: "Question", sourceAliases: [] },
+        id: "call-clock-step",
+        name: KNOWLEDGE_SEARCH_TOOL_NAME
+      }, {
+        persistedToolCallId: "tool-call-clock-step",
+        request: request(),
+        runId: "run-clock-step",
+        userId: "user-1"
+      });
+
+      expect(result.status).toBe("complete");
+      expect(monotonicNow).toHaveBeenCalledTimes(4);
+      const evidence = persistReceipt.mock.calls[0]![0].evidence;
+      expect(evidence.durationMs).toBe(29);
+      expect(evidence.embeddingExecutions).toEqual([
+        expect.objectContaining({ durationMs: 7, status: "complete" })
+      ]);
+      expect(decodeKnowledgeRetrievalEvidence(evidence)).not.toBeNull();
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("fuses the exact current question with the model query on the first search", async () => {
