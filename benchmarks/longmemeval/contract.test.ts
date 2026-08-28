@@ -8,6 +8,7 @@ import {
   decodeLongMemEvalDataset,
   decodeLongMemEvalProfile,
   decodeLongMemEvalProfileManifest,
+  decodeLongMemEvalSystemModelId,
   evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
   longMemEvalEmbeddingBatchSizeDistribution,
@@ -103,6 +104,15 @@ describe("LongMemEval adapter contract", () => {
       ...product,
       officialComparable: true
     })).toThrow("longmemeval_profile_manifest_invalid");
+  });
+
+  it("allows only the reviewed codex-lb qualification System Models", () => {
+    expect(decodeLongMemEvalSystemModelId("gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(decodeLongMemEvalSystemModelId("gpt-5.6-luna")).toBe("gpt-5.6-luna");
+    expect(() => decodeLongMemEvalSystemModelId("openai/gpt-5.6-luna"))
+      .toThrow("longmemeval_system_model_invalid");
+    expect(() => decodeLongMemEvalSystemModelId("gpt-5.6-sol-benchmark-tuned"))
+      .toThrow("longmemeval_system_model_invalid");
   });
 
   it("requires a real applied Dream call while accepting a valid empty result", () => {

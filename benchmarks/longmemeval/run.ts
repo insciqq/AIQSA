@@ -95,8 +95,9 @@ import {
   assertBenchmarkBaseUrl,
   assertBenchmarkDatabaseUrl,
   buildLongMemEvalBaselineManifest,
-  decodeLongMemEvalProfile,
   decodeLongMemEvalDataset,
+  decodeLongMemEvalProfile,
+  decodeLongMemEvalSystemModelId,
   evaluateLongMemEvalComponentMetrics,
   longMemEvalEmbeddingBatchSizeDistribution,
   longMemEvalExpectedUtilityModelId,
@@ -114,7 +115,8 @@ import {
   type LongMemEvalComponentMetrics,
   type LongMemEvalLearningEvidence,
   type LongMemEvalProfile,
-  type LongMemEvalRetrievalAudit
+  type LongMemEvalRetrievalAudit,
+  type LongMemEvalSystemModelId
 } from "./contract";
 import { redactLongMemEvalDebugArtifact } from "./debug";
 
@@ -126,7 +128,8 @@ const datasetPath = resolve(upstreamRoot, "data/longmemeval_s_cleaned.json");
 const oraclePath = resolve(upstreamRoot, "data/longmemeval_oracle.json");
 const evaluatorPath = resolve(upstreamRoot, "src/evaluation/evaluate_qa.py");
 const benchmarkEmailSuffix = "@longmemeval.benchmark.invalid";
-const qualificationSystemModelId = "gpt-5.6-sol";
+const defaultQualificationSystemModelId = "gpt-5.6-sol" satisfies
+  LongMemEvalSystemModelId;
 const qualificationSystemReasoningEffort = "medium";
 const qualificationRerankerModelId = "qwen/qwen3-reranker-8b";
 const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
@@ -188,11 +191,17 @@ type CliOptions = Readonly<{
   sampleSize: number;
   seed: string | undefined;
   sessionConcurrency: number;
+  systemModelId: LongMemEvalSystemModelId;
 }>;
 
 type ProviderRoles = Readonly<{
   reranker: Readonly<{ id: string; upstreamModelId: string }> | null;
-  system: Readonly<{ connectionId: string; credentialId: string; id: string }>;
+  system: Readonly<{
+    connectionId: string;
+    credentialId: string;
+    id: string;
+    upstreamModelId: LongMemEvalSystemModelId;
+  }>;
   qwen: Readonly<{ connectionId: string; id: string }>;
 }>;
 
@@ -317,6 +326,7 @@ function parseCli(argv: readonly string[]): CliOptions {
   let sampleSize = 1;
   let seed: string | undefined;
   let sessionConcurrency = 16;
+  let systemModelId: LongMemEvalSystemModelId = defaultQualificationSystemModelId;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const next = argv[index + 1];
@@ -379,6 +389,10 @@ function parseCli(argv: readonly string[]): CliOptions {
         );
         index += 1;
         break;
+      case "--system-model":
+        systemModelId = decodeLongMemEvalSystemModelId(next);
+        index += 1;
+        break;
       default:
         throw new Error(`longmemeval_argument_unknown:${argument ?? "missing"}`);
     }
@@ -399,7 +413,8 @@ function parseCli(argv: readonly string[]): CliOptions {
     runTimeoutMs: runTimeoutMinutes * 60_000,
     sampleSize,
     seed,
-    sessionConcurrency
+    sessionConcurrency,
+    systemModelId
   });
 }
 
@@ -595,7 +610,10 @@ async function assertDatabaseIdentity(prisma: PrismaClient): Promise<void> {
   }
 }
 
-async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles> {
+async function resolveProviderRoles(
+  prisma: PrismaClient,
+  systemModelId: LongMemEvalSystemModelId
+): Promise<ProviderRoles> {
   const [systemModels, rerankerModels, systemPolicy, memorySettings] =
     await Promise.all([
     prisma.providerModel.findMany({
@@ -608,7 +626,8 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
           }
         },
         connectionId: true,
-        id: true
+        id: true,
+        modelId: true
       },
       where: {
         activeConfig: { not: Prisma.DbNull },
@@ -616,7 +635,7 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
         connection: { enabled: true, family: "openai_compatible" },
         enabled: true,
         modelClass: "answer",
-        modelId: qualificationSystemModelId
+        modelId: systemModelId
       }
     }),
     prisma.providerModel.findMany({
@@ -691,7 +710,8 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
     system: Object.freeze({
       connectionId: system.connectionId,
       credentialId: systemCredential.id,
-      id: system.id
+      id: system.id,
+      upstreamModelId: decodeLongMemEvalSystemModelId(system.modelId)
     }),
     qwen: Object.freeze({ connectionId: qwen.connectionId, id: qwen.id })
   });
@@ -1521,7 +1541,8 @@ function requestHeaders(baseUrl: URL, cookie: string, json = false): HeadersInit
 async function catalogSystemModel(
   baseUrl: URL,
   cookie: string,
-  expectedModelId: string
+  expectedModelId: string,
+  expectedUpstreamModelId: LongMemEvalSystemModelId
 ): Promise<Readonly<{
   defaultParams: Readonly<Record<string, unknown>>;
   maxOutputTokens: number;
@@ -1547,7 +1568,7 @@ async function catalogSystemModel(
     typeof candidate === "object" && candidate !== null &&
     (candidate as { modelId?: unknown }).modelId === expectedModelId &&
     (candidate as { upstreamModelId?: unknown }).upstreamModelId ===
-      qualificationSystemModelId);
+      expectedUpstreamModelId);
   if (candidates.length !== 1) throw new Error("longmemeval_system_catalog_invalid");
   const model = candidates[0]!;
   const controls = typeof model.parameterControls === "object" &&
@@ -1611,7 +1632,12 @@ async function runQuestion(
   retrieval: LongMemEvalRetrievalAudit;
   summary: CaseSummary["answer"];
 }>> {
-  const model = await catalogSystemModel(baseUrl, identity.cookie, roles.system.id);
+  const model = await catalogSystemModel(
+    baseUrl,
+    identity.cookie,
+    roles.system.id,
+    roles.system.upstreamModelId
+  );
   const chat = await prisma.chat.create({
     data: {
       defaultProviderModelId: roles.system.id,
@@ -2344,7 +2370,12 @@ async function runCase(
     }
     await withFailureCode(
       "longmemeval_catalog_preflight_failed",
-      () => catalogSystemModel(baseUrl, identity.cookie, roles.system.id)
+      () => catalogSystemModel(
+        baseUrl,
+        identity.cookie,
+        roles.system.id,
+        roles.system.upstreamModelId
+      )
     );
     const indexStartedAt = Date.now();
     const imported = await withFailureCode(
@@ -2577,7 +2608,7 @@ async function main(): Promise<void> {
   try {
     await assertDatabaseIdentity(prisma);
     const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
-    const roles = await resolveProviderRoles(prisma);
+    const roles = await resolveProviderRoles(prisma, options.systemModelId);
     const allCases = await loadDataset();
     await assertReferenceMetadata(allCases);
     const selection = selectLongMemEvalCases(allCases, {
@@ -2594,6 +2625,7 @@ async function main(): Promise<void> {
       profile: options.profile,
       selectionMode: selection.mode,
       sessionConcurrency: options.sessionConcurrency,
+      systemModel: roles.system.upstreamModelId,
       staleUsersRemoved
     });
     const outcomes = await mapConcurrentOrdered(
@@ -2654,7 +2686,7 @@ async function main(): Promise<void> {
       answerModel: {
         provider: "codex-lb",
         reasoningEffort: qualificationSystemReasoningEffort,
-        upstreamModelId: qualificationSystemModelId
+        upstreamModelId: roles.system.upstreamModelId
       },
       baseline: buildLongMemEvalBaselineManifest(selection),
       completedAt: completedAt.toISOString(),
@@ -2694,7 +2726,7 @@ async function main(): Promise<void> {
         : {
             mode: "system_model_compatibility",
             provider: "codex-lb",
-            upstreamModelId: qualificationSystemModelId
+            upstreamModelId: roles.system.upstreamModelId
           },
       profile: longMemEvalProfileManifest(options.profile),
       qualification,
@@ -2706,7 +2738,7 @@ async function main(): Promise<void> {
       },
       startedAt: startedAt.toISOString(),
       upstreamCommit: LONGMEMEVAL_REPOSITORY_COMMIT,
-      version: 11,
+      version: 12,
       workerConcurrency: {
         case: options.caseConcurrency,
         memoryJobs: qualificationMemoryJobParallelism,
