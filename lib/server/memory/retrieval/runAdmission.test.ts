@@ -1867,8 +1867,12 @@ describe("Personal Memory v1 run admission", () => {
       },
       control
     }).retrieve(runInput("Remember that I prefer concise answers."));
-    expect(result.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 1 }
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 1 },
+        reason: "memory_action_only"
+      },
+      outcome: "EMPTY"
     });
   });
 

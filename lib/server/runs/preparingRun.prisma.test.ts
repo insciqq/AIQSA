@@ -1017,7 +1017,7 @@ describe("PREPARING run orchestration", () => {
           budgetSnapshot: {
             memoryActionAnswerResult: committedResult,
             memoryActionResult: actionResult,
-            reason: "memory_not_useful",
+            reason: "memory_action_only",
             utilityEgressMode: "LOCAL_ONLY" as const
           },
           items: [],
@@ -1658,7 +1658,7 @@ describe("PREPARING run orchestration", () => {
               statement: "Unproved memory statement.",
               status: "COMMITTED"
             },
-            reason: "memory_not_useful",
+            reason: "memory_action_only",
             utilityEgressMode: "LOCAL_ONLY"
           },
           items: [],
