@@ -7,7 +7,7 @@ import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
 export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v3";
-export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v3";
+export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v4";
 export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v2";
 export const MEMORY_SYNTHESIS_RETRIEVAL_CONFIG_FINGERPRINT =
   "memory-synthesis-retrieval-none-v1";

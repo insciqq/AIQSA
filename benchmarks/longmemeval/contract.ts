@@ -130,7 +130,7 @@ export function longMemEvalProductMemoryPipelineComplete(
     evidence.extractionJobs === evidence.expectedSettlements &&
     evidence.successfulFactExtractionJobs > 0 &&
     evidence.successfulFactExtractionJobs <= evidence.extractionJobs &&
-    evidence.successfulFactExtractionExecutions >=
+    evidence.successfulFactExtractionExecutions ===
       evidence.successfulFactExtractionJobs &&
     evidence.automaticFactVersions > 0 &&
     evidence.classifiedAutomaticFactVersions === evidence.automaticFactVersions &&

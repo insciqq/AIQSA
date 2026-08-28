@@ -39,6 +39,7 @@ import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } 
 const now = new Date("2026-08-13T10:00:00.000Z");
 const currentControlContract = Object.freeze({
   aggregationRequested: false,
+  queryDecompositions: [] as string[],
   retrievalMode: "TARGETED_CURRENT" as const,
   temporalAsOf: null,
   temporalFrom: null,
@@ -372,6 +373,7 @@ function retrievalOptions(
           memoryUseful: true,
           pastChatsUseful: true,
           profileRequested: false,
+          queryDecompositions: [],
           queryText: input.context.currentUserMessage,
           reasonCode: "none" as const,
           recencyRequested,
@@ -418,6 +420,7 @@ function intentOptions(overrides: Record<string, unknown>) {
           memoryUseful: false,
           pastChatsUseful: false,
           profileRequested: false,
+          queryDecompositions: [],
           queryText: input.context.currentUserMessage,
           reasonCode: "none" as const,
           recencyRequested: false,
@@ -647,9 +650,8 @@ describe("Personal Memory v1 run admission", () => {
           return result;
         });
 
-      await vi.advanceTimersByTimeAsync(
-        MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS - 1
-      );
+      const admittedRoleBudgetMs = Math.floor(120_000 * 0.35);
+      await vi.advanceTimersByTimeAsync(admittedRoleBudgetMs - 1);
       expect(settled).toBe(false);
       expect(embeddingSignals[0]?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
@@ -659,7 +661,8 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "DEGRADED"
       });
       expect(embeddingSignals[0]?.aborted).toBe(true);
-      expect(MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS).toBe(16_000);
+      expect(admittedRoleBudgetMs).toBe(42_000);
+      expect(MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS).toBe(60_000);
     } finally {
       vi.useRealTimers();
     }
@@ -1807,6 +1810,39 @@ describe("Personal Memory v1 run admission", () => {
       query: "What did I call it?"
     }));
     expect(result.querySnapshot).toBe("What did I call it?");
+  });
+
+  it("preserves distinct multi-part evidence boundaries in the local query bundle", async () => {
+    const local = repository({ candidates: [laneCandidate("multi-part-evidence")] });
+    const options = intentOptions({
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryDecompositions: [
+        "when I completed milestone Alpha",
+        "when I completed milestone Omega"
+      ],
+      queryText: "project milestone completion events",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+
+    await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("How much time passed between my two project milestones?"));
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({
+        semanticQueryVariants: [
+          {
+            kind: "ORIGINAL",
+            text: "How much time passed between my two project milestones?"
+          },
+          { kind: "PLANNER_REWRITE", text: "project milestone completion events" },
+          { kind: "DECOMPOSED", text: "when I completed milestone Alpha" },
+          { kind: "DECOMPOSED", text: "when I completed milestone Omega" }
+        ]
+      })
+    }));
   });
 
   it("keeps Temporary and disabled paths on the no-commit bridge without utility work", async () => {

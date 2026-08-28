@@ -123,6 +123,11 @@ describe("LongMemEval adapter contract", () => {
       ...evidence,
       successfulFactExtractionExecutions: 48,
       successfulFactExtractionJobs: 45
+    })).toBe(false);
+    expect(longMemEvalProductMemoryPipelineComplete({
+      ...evidence,
+      successfulFactExtractionExecutions: 45,
+      successfulFactExtractionJobs: 45
     })).toBe(true);
     expect(longMemEvalProductMemoryPipelineComplete({
       ...evidence,

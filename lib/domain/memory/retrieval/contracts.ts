@@ -114,6 +114,7 @@ export type MemoryRetrievalPlannerInput = Readonly<{
   now: Date;
   profileRequested?: boolean;
   recencyRequested?: boolean;
+  semanticDecompositions?: readonly string[];
   semanticRewrite?: string | null;
   temporalIntent?: MemoryTemporalIntent;
   /** Accepted request zone; UTC is the deterministic fallback. */

@@ -63,7 +63,9 @@ import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
 import {
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
-  MEMORY_AGGREGATION_MAX_MAP_BATCHES
+  MEMORY_AGGREGATION_MAX_MAP_BATCHES,
+  MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
+  MEMORY_RERANK_MAX_ATTEMPTS
 } from "../memory/retrieval/runUtilities";
 import {
   decodeMemoryActionFeedback,
@@ -1410,15 +1412,35 @@ const retrievalExecutionRoles = new Set([
   "MEMORY_AGGREGATE"
 ]);
 
+const rerankBatchPrimaryOrdinals = Array.from(
+  { length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES },
+  (_, index) => 2 + index * MEMORY_RERANK_MAX_ATTEMPTS
+);
+const rerankExecutionOrdinalCount =
+  MEMORY_RERANK_AGGREGATION_MAX_BATCHES * MEMORY_RERANK_MAX_ATTEMPTS;
+const aggregationExecutionOrdinalCount =
+  (MEMORY_AGGREGATION_MAX_MAP_BATCHES + 1) *
+    MEMORY_AGGREGATION_MAX_ATTEMPTS;
+const maximumTargetedRetrievalBindings = 2 + 4 + MEMORY_RERANK_MAX_ATTEMPTS;
+const maximumAggregationRetrievalBindings = 2 + 4 +
+  aggregationExecutionOrdinalCount + rerankExecutionOrdinalCount;
+const profileRetrievalExecutionPositions = new Set([
+  "MEMORY_CONTROL:0",
+  ...Array.from(
+    { length: MEMORY_RERANK_MAX_ATTEMPTS },
+    (_, index) => `MEMORY_RERANK:${2 + index}`
+  )
+]);
+
 const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ["MEMORY_CONTROL", new Set([0, 1])],
   ["MEMORY_QUERY_EMBED", new Set([1, 2, 3, 4])],
-  ["MEMORY_RERANK", new Set(Array.from({ length: 18 }, (_, index) => index + 2))],
+  ["MEMORY_RERANK", new Set(Array.from(
+    { length: rerankExecutionOrdinalCount },
+    (_, index) => index + 2
+  ))],
   ["MEMORY_AGGREGATE", new Set(Array.from(
-    {
-      length: (MEMORY_AGGREGATION_MAX_MAP_BATCHES + 1) *
-        MEMORY_AGGREGATION_MAX_ATTEMPTS
-    },
+    { length: aggregationExecutionOrdinalCount },
     (_, index) => index
   ))]
 ]);
@@ -1434,7 +1456,9 @@ export function validMemoryRetrievalExecutionSequence(
   aggregationRequested = false
 ): boolean {
   if (profileRequested && aggregationRequested) return false;
-  if (bindings.length > (aggregationRequested ? 32 : 12)) return false;
+  if (bindings.length > (aggregationRequested
+    ? maximumAggregationRetrievalBindings
+    : maximumTargetedRetrievalBindings)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
   if (new Set(positions).size !== positions.length || bindings.some((binding) =>
@@ -1444,11 +1468,10 @@ export function validMemoryRetrievalExecutionSequence(
   const present = new Set(positions);
   if (!aggregationRequested && bindings.some((binding) =>
     binding.logicalRole === "MEMORY_AGGREGATE" ||
-    binding.logicalRole === "MEMORY_RERANK" && binding.ordinal >= 10)) return false;
+    binding.logicalRole === "MEMORY_RERANK" &&
+      binding.ordinal >= 2 + MEMORY_RERANK_MAX_ATTEMPTS)) return false;
   if (profileRequested && positions.some((position) =>
-    position !== "MEMORY_CONTROL:0" &&
-    position !== "MEMORY_RERANK:2" &&
-    position !== "MEMORY_RERANK:3")) return false;
+    !profileRetrievalExecutionPositions.has(position))) return false;
   const aggregateOrdinals = bindings
     .filter(({ logicalRole }) => logicalRole === "MEMORY_AGGREGATE")
     .map(({ ordinal }) => ordinal);
@@ -1511,17 +1534,20 @@ export function validMemoryRerankRetrySettlement(
     primary.errorCode === "rerank_request_timed_out"
   ) || primary?.state === "FAILED" &&
     primary.errorCode === "memory_reranker_transient_http_failure";
-  const rerankValid = [2, 4, 6, 8, 10, 12, 14, 16, 18]
-    .every((primaryOrdinal) => {
-    const retry = bindings.find((binding) =>
-      binding.logicalRole === "MEMORY_RERANK" &&
-      binding.ordinal === primaryOrdinal + 1);
-    if (!retry) return true;
-    const primary = bindings.find((binding) =>
-      binding.logicalRole === "MEMORY_RERANK" &&
-      binding.ordinal === primaryOrdinal);
-    return validRerankPrimary(primary);
-  });
+  const rerankValid = rerankBatchPrimaryOrdinals.every((primaryOrdinal) =>
+    Array.from(
+      { length: MEMORY_RERANK_MAX_ATTEMPTS - 1 },
+      (_, index) => primaryOrdinal + index + 1
+    ).every((retryOrdinal) => {
+      const retry = bindings.find((binding) =>
+        binding.logicalRole === "MEMORY_RERANK" &&
+        binding.ordinal === retryOrdinal);
+      if (!retry) return true;
+      const previous = bindings.find((binding) =>
+        binding.logicalRole === "MEMORY_RERANK" &&
+        binding.ordinal === retryOrdinal - 1);
+      return validRerankPrimary(previous);
+    }));
   const aggregationValid = aggregationPrimaryOrdinals.every((primaryOrdinal) => {
     const retry = bindings.find((binding) =>
       binding.logicalRole === "MEMORY_AGGREGATE" &&
@@ -1543,6 +1569,7 @@ export function validMemoryRerankRetrySettlement(
     return primary?.state === "OUTCOME_UNKNOWN" && (
       primary.errorCode === "embedding_provider_request_failed" ||
       primary.errorCode === "embedding_request_timed_out" ||
+      primary.errorCode === "memory_query_embedding_attempt_timed_out" ||
       primary.errorCode === "memory_query_embedding_outcome_unknown"
     ) || primary?.state === "FAILED" &&
       primary.errorCode === "memory_query_embedding_transient_http_failure";

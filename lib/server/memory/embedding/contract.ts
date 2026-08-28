@@ -40,7 +40,7 @@ export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
 
 export const MEMORY_EMBEDDING_BATCH_VERSIONS = Object.freeze({
   pipelineVersion: MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
-  policyVersion: "memory-item-embed-policy-v2",
+  policyVersion: "memory-item-embed-policy-v3",
   promptVersion: MEMORY_EMBEDDING_PROFILE.documentProjectionVersion,
   retrievalConfigFingerprint:
     "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v3-batched-profile-v2",

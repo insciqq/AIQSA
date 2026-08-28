@@ -70,13 +70,19 @@ import {
 } from "./aggregation";
 
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
-  "memory-query-embedding-v4";
+  "memory-query-embedding-v6";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-multilingual-relevance-v22";
+  "memory-multilingual-relevance-v23";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
   "memory-evidence-aggregation-v5";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 2;
-export const MEMORY_RERANK_MAX_ATTEMPTS = 2;
+// Remote embedding engines commonly reserve a 30-second request window. The
+// enclosing optional-role signal remains authoritative and clamps this window
+// to the installation's remaining admission budget, so this cannot extend the
+// user-visible Memory deadline.
+export const MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS = 30_000;
+export const MEMORY_RERANK_MAX_ATTEMPTS = 3;
+const MEMORY_GENERATIVE_RERANK_MAX_ATTEMPTS = 2;
 export const MEMORY_RERANK_AGGREGATION_BATCH_SIZE = 20;
 export const MEMORY_RERANK_TARGETED_MAX_CANDIDATES =
   MEMORY_RETRIEVAL_MAX_TARGETED_RERANK_CANDIDATES;
@@ -102,7 +108,7 @@ export const MEMORY_AGGREGATION_PRIMARY_ORDINAL = 0;
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
-  policyVersion: "memory-query-embedding-policy-v4",
+  policyVersion: "memory-query-embedding-policy-v6",
   promptVersion: "memory-query-instruction-v2",
   retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   schemaVersion: "memory-query-embedding-result-v2"
@@ -110,7 +116,7 @@ export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.f
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-relevance-policy-v19",
+  policyVersion: "memory-relevance-policy-v20",
   promptVersion: "memory-relevance-input-v16",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
@@ -120,11 +126,13 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     maxAggregationCandidates: MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
     maxTargetedCandidates: MEMORY_RERANK_TARGETED_MAX_CANDIDATES,
     maxAttemptsPerBatch: MEMORY_RERANK_MAX_ATTEMPTS,
+    generativeCompatibilityMaxAttempts: MEMORY_GENERATIVE_RERANK_MAX_ATTEMPTS,
     maxAggregationTotalCharacters: MEMORY_RERANK_AGGREGATION_MAX_TOTAL_CHARACTERS,
     maxParallelAggregationBatches: MEMORY_RERANK_AGGREGATION_MAX_PARALLEL_BATCHES,
     maxOutputTokens: 4_096,
     maxTargetedTotalCharacters: MEMORY_RERANK_TARGETED_MAX_TOTAL_CHARACTERS,
     maxInteractiveRetryAfterMs: 2_000,
+    retryBackoff: "snapshot_hash_jittered_exponential_1000ms_cap_2000ms",
     partialPerCandidateDecisions: true,
     profileInventoryPostcondition: false,
     lifecycleTemporalModes: true,
@@ -135,11 +143,11 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     serverAuthorityOnly: true,
     sorterNotGate: true,
     transientReadOnlyRetry:
-      "one_fresh_binding_same_snapshot_after_transport_uncertainty_or_retryable_http",
+      "up_to_two_fresh_bindings_same_snapshot_after_transport_uncertainty_or_retryable_http",
     dedicatedRerankerAdapter: "openrouter-rerank-v1",
     dedicatedWireEnvelopeReserveBytes: MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES,
     generativeCompatibilityPath: "structured-output-v19",
-    version: 22
+    version: 23
   }),
   schemaVersion: "memory-relevance-result-v6"
 });
@@ -340,19 +348,49 @@ const retryableQueryEmbeddingReasons = new Set([
 ]);
 
 const MEMORY_UTILITY_MAX_RETRY_AFTER_MS = 2_000;
+const MEMORY_UTILITY_RETRY_BACKOFF_BASE_MS = 1_000;
+
+function memoryUtilitySnapshotBackoffMs(
+  snapshotHash: string,
+  retryIndex: number
+): number {
+  if (!/^[a-f0-9]{64}$/.test(snapshotHash) ||
+    !Number.isSafeInteger(retryIndex) || retryIndex < 1) {
+    throw new Error("memory_utility_retry_backoff_invalid");
+  }
+  const ceiling = Math.min(
+    MEMORY_UTILITY_MAX_RETRY_AFTER_MS,
+    MEMORY_UTILITY_RETRY_BACKOFF_BASE_MS * (2 ** (retryIndex - 1))
+  );
+  const floor = Math.max(1, Math.floor(ceiling / 2));
+  const sliceStart = ((retryIndex - 1) * 8) % 56;
+  const entropy = Number.parseInt(
+    snapshotHash.slice(sliceStart, sliceStart + 8),
+    16
+  );
+  return floor + entropy % (ceiling - floor + 1);
+}
 
 function waitForMemoryUtilityRetry(
   retryAfterMs: number | null | undefined,
-  signal: AbortSignal
+  signal: AbortSignal,
+  fallback: Readonly<{ retryIndex: number; snapshotHash: string }> | null = null
 ): Promise<boolean> {
   if (signal.aborted) return Promise.resolve(false);
+  let delayMs: number;
   if (retryAfterMs === null || typeof retryAfterMs === "undefined") {
-    return Promise.resolve(true);
+    if (!fallback) return Promise.resolve(true);
+    delayMs = memoryUtilitySnapshotBackoffMs(
+      fallback.snapshotHash,
+      fallback.retryIndex
+    );
+  } else {
+    if (
+      !Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0 ||
+      retryAfterMs > MEMORY_UTILITY_MAX_RETRY_AFTER_MS
+    ) return Promise.resolve(false);
+    delayMs = retryAfterMs;
   }
-  if (
-    !Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0 ||
-    retryAfterMs > MEMORY_UTILITY_MAX_RETRY_AFTER_MS
-  ) return Promise.resolve(false);
   return new Promise((resolve) => {
     const onAbort = () => {
       clearTimeout(timeout);
@@ -361,8 +399,40 @@ function waitForMemoryUtilityRetry(
     const timeout = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
       resolve(true);
-    }, retryAfterMs);
+    }, delayMs);
     signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function boundedProviderAttemptSignal(
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  timeoutCode: string
+): Readonly<{
+  dispose(): void;
+  expired(): boolean;
+  signal: AbortSignal;
+}> {
+  const controller = new AbortController();
+  let expired = false;
+  const forwardParentAbort = () => {
+    if (!controller.signal.aborted) controller.abort(parentSignal.reason);
+  };
+  if (parentSignal.aborted) forwardParentAbort();
+  else parentSignal.addEventListener("abort", forwardParentAbort, { once: true });
+  const timeout = !controller.signal.aborted
+    ? setTimeout(() => {
+        expired = true;
+        controller.abort({ code: timeoutCode });
+      }, timeoutMs)
+    : null;
+  return Object.freeze({
+    dispose() {
+      if (timeout) clearTimeout(timeout);
+      parentSignal.removeEventListener("abort", forwardParentAbort);
+    },
+    expired: () => expired,
+    signal: controller.signal
   });
 }
 
@@ -1429,25 +1499,33 @@ async function runQueryEmbeddingAttempt(
     };
   }
   let result: EmbeddingResult;
+  const attempt = boundedProviderAttemptSignal(
+    input.signal,
+    MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
+    "memory_query_embedding_attempt_timeout"
+  );
   try {
     result = await runtime.adapter.embed({
       // The Memory instruction is part of the versioned Memory profile.
       // Use document mode so a mutable provider-level query template
       // cannot prepend a second, domain-inappropriate instruction.
       mode: "document",
-      signal: input.signal,
+      signal: attempt.signal,
       texts: [renderedQuery]
     });
   } catch (error) {
-    const transientHttp = !input.signal.aborted &&
+    const attemptTimedOut = attempt.expired() && !input.signal.aborted;
+    const transientHttp = !attempt.signal.aborted &&
       error instanceof EmbeddingAdapterError &&
       error.code === "embedding_provider_http_error" &&
       isProviderRetryableHttpStatus(error.httpStatus);
     const uncertain = !(error instanceof EmbeddingAdapterError) ||
-      uncertainEmbeddingErrors.has(error.code) || input.signal.aborted;
+      uncertainEmbeddingErrors.has(error.code) || attempt.signal.aborted;
     await settleQuietly(deps, input.userId, started.bindingId, {
       acceptedOutputHash: null,
-      errorCode: transientHttp
+      errorCode: attemptTimedOut
+        ? "memory_query_embedding_attempt_timed_out"
+        : transientHttp
         ? "memory_query_embedding_transient_http_failure"
         : error instanceof EmbeddingAdapterError
           ? error.code
@@ -1466,6 +1544,8 @@ async function runQueryEmbeddingAttempt(
       ...(transientHttp ? { retryAfterMs: error.retryAfterMs } : {}),
       snapshotHash
     };
+  } finally {
+    attempt.dispose();
   }
   const vector = result.vectors[0];
   const squaredNorm = vector?.reduce((total, value) => total + value * value, 0) ?? 0;
@@ -1772,10 +1852,11 @@ export function createMemoryRunUtilityService(
         domain: "aiqsa.memory.query-embedding-input",
         embeddingProfileFingerprint: MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
         profile: input.profile,
+        attemptTimeoutMs: MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
         ...(purpose === "ACTION_TARGET" ? { purpose } : {}),
         queryHash: memorySha256(safeQuery.safeText),
         renderedQueryHash: memorySha256(renderedQuery),
-        version: purpose === "ACTION_TARGET" ? 4 : 3
+        version: purpose === "ACTION_TARGET" ? 6 : 5
       });
       let result = await runQueryEmbeddingAttempt(
         deps,
@@ -1927,20 +2008,27 @@ export function createMemoryRunUtilityService(
               null
             );
             let externalCallCount = result.externalCallCount ?? 0;
-            if (
+            const expectedSnapshotHash = result.snapshotHash;
+            for (let retryIndex = 1;
+              retryIndex < MEMORY_RERANK_MAX_ATTEMPTS &&
               result.status !== "READY" &&
               retryableDedicatedRerankReasons.has(result.reason) &&
-              result.snapshotHash !== undefined &&
+              expectedSnapshotHash !== undefined &&
               !safeInput.signal.aborted &&
-              await waitForMemoryUtilityRetry(result.retryAfterMs, safeInput.signal)
+              await waitForMemoryUtilityRetry(
+                result.retryAfterMs,
+                safeInput.signal,
+                { retryIndex, snapshotHash: expectedSnapshotHash }
+              );
+              retryIndex += 1
             ) {
               const retry = await runDedicatedRerankBatch(
                 deps,
                 safeInput,
                 candidates,
-                firstOrdinal + 1,
+                firstOrdinal + retryIndex,
                 inputHash,
-                result.snapshotHash
+                expectedSnapshotHash
               );
               externalCallCount += retry.externalCallCount ?? 0;
               result = retry;

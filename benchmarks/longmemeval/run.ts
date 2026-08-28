@@ -55,6 +55,8 @@ import { MEMORY_ITEM_EMBEDDING_VERSIONS } from
   "../../lib/server/memory/embedding/contract";
 import { probeCurrentMemoryEmbeddingPin } from
   "../../lib/server/memory/embedding/handler";
+import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION } from
+  "../../lib/server/memory/learning/extraction/contract";
 import { createPrismaMemorySettingsRepository } from
   "../../lib/server/memory/persistence/settings";
 import { createPrismaMemoryRebuildRepository } from
@@ -127,6 +129,7 @@ const benchmarkEmailSuffix = "@longmemeval.benchmark.invalid";
 const qualificationSystemModelId = "gpt-5.6-sol";
 const qualificationSystemReasoningEffort = "medium";
 const qualificationRerankerModelId = "qwen/qwen3-reranker-8b";
+const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
 const qualificationMemoryJobParallelism = 8;
 const qualificationMemoryJobPerUserParallelism = 4;
 const activeMemoryRetrievalConfigurationBase = Object.freeze({
@@ -593,7 +596,8 @@ async function assertDatabaseIdentity(prisma: PrismaClient): Promise<void> {
 }
 
 async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles> {
-  const [systemModels, qwenModels, rerankerModels, systemPolicy] = await Promise.all([
+  const [systemModels, rerankerModels, systemPolicy, memorySettings] =
+    await Promise.all([
     prisma.providerModel.findMany({
       select: {
         connection: {
@@ -616,17 +620,6 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
       }
     }),
     prisma.providerModel.findMany({
-      select: { connectionId: true, id: true },
-      where: {
-        activeConfig: { not: Prisma.DbNull },
-        activeVersion: { gt: 0 },
-        connection: { enabled: true, family: "openrouter" },
-        enabled: true,
-        modelClass: "embedding",
-        modelId: "qwen/qwen3-embedding-8b"
-      }
-    }),
-    prisma.providerModel.findMany({
       select: { id: true, modelId: true },
       where: {
         activeConfig: { not: Prisma.DbNull },
@@ -644,15 +637,37 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
         rerankerProviderModelId: true
       },
       where: { id: "installation" }
+    }),
+    prisma.userMemorySettings.findUnique({
+      select: { embeddingProviderModelId: true },
+      where: { userId: qualificationOperatorUserId }
     })
   ]);
+  const qwen = memorySettings?.embeddingProviderModelId
+    ? await prisma.providerModel.findUnique({
+        select: {
+          activeConfig: true,
+          activeVersion: true,
+          connection: { select: { enabled: true, family: true } },
+          connectionId: true,
+          enabled: true,
+          id: true,
+          modelClass: true,
+          modelId: true
+        },
+        where: { id: memorySettings.embeddingProviderModelId }
+      })
+    : null;
   const system = systemModels[0];
   const systemCredential = system?.connection.defaultCredential;
   const reranker = systemPolicy?.rerankerProviderModelId
     ? rerankerModels.find(({ id }) => id === systemPolicy.rerankerProviderModelId) ?? null
     : null;
   if (systemModels.length !== 1 || !system || !systemCredential?.enabled ||
-    !systemCredential.activeVersionId || qwenModels.length !== 1 ||
+    !systemCredential.activeVersionId || !qwen?.activeConfig ||
+    qwen.activeVersion < 1 || !qwen.enabled || !qwen.connection.enabled ||
+    qwen.connection.family !== "openrouter" || qwen.modelClass !== "embedding" ||
+    qwen.modelId !== "qwen/qwen3-embedding-8b" ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
     systemPolicy.reasoningEffort !== qualificationSystemReasoningEffort ||
     (systemPolicy.rerankerProviderModelId !== null && !reranker)) {
@@ -678,7 +693,7 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
       credentialId: systemCredential.id,
       id: system.id
     }),
-    qwen: Object.freeze(qwenModels[0]!)
+    qwen: Object.freeze({ connectionId: qwen.connectionId, id: qwen.id })
   });
 }
 
@@ -1096,6 +1111,8 @@ async function loadLearningEvidence(
       select: { id: true, memoryJobId: true },
       where: {
         logicalRole: "MEMORY_FACT_EXTRACT",
+        ownerType: "JOB",
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
         state: "SUCCEEDED",
         userId
       }

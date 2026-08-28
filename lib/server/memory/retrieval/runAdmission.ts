@@ -69,6 +69,7 @@ import {
 import {
   createPrismaMemoryRunUtilityService,
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
+  MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
   MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS,
   MEMORY_RERANK_MAX_ATTEMPTS,
   type MemoryRunAggregationResult,
@@ -90,7 +91,7 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v20";
+  "memory-run-retrieval-admission-v22";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v6";
 
@@ -461,11 +462,10 @@ export const MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS =
   MEMORY_AGGREGATION_MAX_ATTEMPTS *
   2;
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS =
-  MEMORY_OPTIONAL_PROVIDER_ATTEMPT_WINDOW_MS *
+  MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS *
   MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS =
-  MEMORY_OPTIONAL_PROVIDER_ATTEMPT_WINDOW_MS *
-  MEMORY_RERANK_MAX_ATTEMPTS;
+  MEMORY_OPTIONAL_PROVIDER_ATTEMPT_WINDOW_MS * 2;
 
 const optionalUtilityBudget = Object.freeze({
   // Aggregation has two sequential provider phases (bounded parallel maps,
@@ -478,10 +478,17 @@ const optionalUtilityBudget = Object.freeze({
   },
   CONTROL: { maximumMs: 15_000, remainingFraction: 0.5 },
   QUERY_EMBED: {
+    // The configured admission deadline remains the outer SLA. Installations
+    // with extra headroom may admit one ordinary 30-second remote attempt plus
+    // bounded retry headroom; the default deadline clamps this role to its
+    // remaining fraction.
     maximumMs: MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
     remainingFraction: 0.35
   },
   RERANK: {
+    // A third dedicated-reranker attempt is admitted only after fast,
+    // retryable failures and shares the existing interactive role deadline.
+    // It never extends the normal Memory request's wall-clock ceiling.
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     remainingFraction: 0.5
   }
@@ -1582,6 +1589,10 @@ export function createMemoryRunRetrievalService(
           ...(historyRequested ? ["HISTORY" as const] : [])
         ];
         const rewriteSafety = sanitizeMemoryUtilityText(control.intent.queryText);
+        const semanticDecompositions = control.intent.queryDecompositions.flatMap((value) => {
+          const projected = sanitizeMemoryUtilityText(value);
+          return projected.eligible && projected.safeText ? [projected.safeText] : [];
+        });
         try {
           plan = planMemoryRetrieval({
             aggregationRequested: control.intent.aggregationRequested,
@@ -1606,6 +1617,7 @@ export function createMemoryRunRetrievalService(
             now: input.now,
             profileRequested: control.intent.profileRequested,
             recencyRequested: control.intent.recencyRequested,
+            semanticDecompositions,
             semanticRewrite: rewriteSafety.safeText,
             temporalIntent: control.intent.temporalIntent,
             timeZone: acceptedMemoryTimeZone(input.normalizedRequest)

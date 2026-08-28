@@ -24,6 +24,7 @@ const profileIntent: MemoryActionIntent = {
   memoryUseful: true,
   pastChatsUseful: false,
   profileRequested: true,
+  queryDecompositions: [],
   queryText: "current Saved and learned facts about the user",
   reasonCode: "no_memory_request",
   recencyRequested: false,
@@ -44,12 +45,12 @@ const profileIntent: MemoryActionIntent = {
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v14");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v15");
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v14",
-      policyVersion: "memory-control-policy-v14",
-      promptVersion: "memory-control-prompt-v19",
-      schemaVersion: "memory-action-intent-v8"
+      pipelineVersion: "memory-control-v15",
+      policyVersion: "memory-control-policy-v15",
+      promptVersion: "memory-control-prompt-v20",
+      schemaVersion: "memory-action-intent-v9"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(6);
   });

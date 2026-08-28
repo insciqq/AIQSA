@@ -16,7 +16,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v27");
+      .toBe("memory-fact-extraction-prompt-v28");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -68,6 +68,15 @@ describe("Memory semantic-frame extraction prompt", () => {
       "value.place to the grounded PLACE canonical label",
       "qualifier_supports key canonical_place",
       "one PREFERENCE observation",
+      "One direct target message is sufficient",
+      "never require repetition or cross-chat corroboration",
+      "Preserve the most specific source-grounded object and scope",
+      "unscoped rhetorical, comparative, or evaluative self-description",
+      "no concrete object, domain, dimension, behavior, or preferred value",
+      "taste or selectiveness are not themselves a preference value",
+      "limited to a local choice or episode",
+      "MEDIUM PROPOSITION",
+      "never promote it to a HIGH SLOT or global profile fact",
       "use identity mode SLOT with subject PERSON_SELF",
       "predicate_key preference",
       "Positive preference SLOT anchor",
@@ -75,6 +84,7 @@ describe("Memory semantic-frame extraction prompt", () => {
       "value.value to the explicitly preferred value",
       "never infer or manufacture a missing preference dimension",
       "does not explicitly supply a stable category, format, interaction, or topic dimension",
+      "preserve the preference meaning and its exact scope",
       "never invent a SLOT dimension",
       "MEDIUM observation must use PROPOSITION identity",
       "cannot propose a SLOT, current-state change, or override",
