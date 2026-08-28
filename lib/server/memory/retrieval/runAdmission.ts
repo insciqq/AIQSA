@@ -693,6 +693,8 @@ function memoryAggregationEvidence(
 function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknown>> {
   return {
     aggregationRequested: plan.aggregationRequested,
+    answerFocusHash: plan.answerFocus === null ? null : memorySha256(plan.answerFocus),
+    answerFocusPresent: plan.answerFocus !== null,
     applyResponsePreferences: plan.applyResponsePreferences,
     entityMentionCount: plan.entityMentions.length,
     filterAsOf: plan.filters.asOf?.toISOString() ?? null,

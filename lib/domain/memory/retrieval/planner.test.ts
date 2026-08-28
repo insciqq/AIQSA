@@ -57,6 +57,7 @@ describe("language-agnostic Memory retrieval planning", () => {
     });
 
     expect(plan.originalSanitizedQuery).toBe("What did I call the Helsinki project?");
+    expect(plan.answerFocus).toBe("the Aurora codename for the Helsinki project");
     expect(plan.semanticQueryVariants).toEqual([
       { kind: "ORIGINAL", text: "What did I call the Helsinki project?" },
       { kind: "PLANNER_REWRITE", text: "the Aurora codename for the Helsinki project" },
@@ -75,6 +76,7 @@ describe("language-agnostic Memory retrieval planning", () => {
     expect(plan.semanticQueryVariants).toEqual([
       { kind: "ORIGINAL", text: "My preferred editor" }
     ]);
+    expect(plan.answerFocus).toBe("my preferred editor");
   });
 
   it("keeps bounded multi-part subqueries as independent semantic variants", () => {

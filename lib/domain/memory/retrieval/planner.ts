@@ -16,7 +16,7 @@ import {
 } from "./temporal";
 import { normalizeMemoryLexicalProjection } from "./lexical";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v16";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v17";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
@@ -315,6 +315,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   );
   return {
     aggregationRequested,
+    answerFocus: normalizedRewrite || null,
     applyResponsePreferences,
     entityMentions,
     filters,

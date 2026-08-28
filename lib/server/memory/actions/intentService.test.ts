@@ -95,6 +95,16 @@ describe("MemoryActionIntent service", () => {
       "one subquery for each event"
     );
     expect(request.systemPrompt).toContain(
+      "phrase queryText as a concise answer-focus query"
+    );
+    expect(request.systemPrompt).toContain(
+      "exact subject, predicate, and requested relation or attribute"
+    );
+    expect(request.systemPrompt).toContain(
+      "location, source or channel, destination"
+    );
+    expect(request.systemPrompt).toContain("Never insert or guess a candidate answer");
+    expect(request.systemPrompt).toContain(
       "carry, use, or keep a personal fact or preference in future conversations"
     );
     expect(request.systemPrompt).toContain(
