@@ -46,6 +46,8 @@ import type { KnowledgeRerankExecutor } from "./rerankExecution";
 import {
   assembleKnowledgeParentExpansions,
   KNOWLEDGE_PARENT_CONTEXT_WINDOW_RADIUS,
+  KNOWLEDGE_TABLE_CONTEXT_MAX,
+  KNOWLEDGE_TABLE_CONTEXT_ROW_RADIUS,
   KnowledgeParentContextError,
   knowledgeParentContextTokenCounter,
   renderKnowledgeParentExpansionUnits,
@@ -65,9 +67,7 @@ const KNOWLEDGE_VECTOR_ANN_EF_SEARCH = 400;
 const KNOWLEDGE_VECTOR_ANN_MAX_SCAN_TUPLES = 100_000;
 const KNOWLEDGE_VECTOR_BUCKET_COUNT = 16;
 const KNOWLEDGE_LINEAR_CONTEXT_RADIUS = 1;
-const KNOWLEDGE_TABLE_CONTEXT_ROW_RADIUS = 4;
 const KNOWLEDGE_LINEAR_CONTEXT_MAX = 2;
-const KNOWLEDGE_TABLE_CONTEXT_MAX = 8;
 
 type RetrievalCoreClient = Pick<PrismaClient, "$queryRaw">;
 

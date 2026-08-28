@@ -116,6 +116,88 @@ function fieldDocument(value: string) {
 }
 
 describe("Knowledge chunk profiles", () => {
+  it("activates only bounded singleton or sparse inline form pairs in profile 11", () => {
+    const cells = [{
+      column: 0,
+      columnSpan: 1,
+      row: 0,
+      rowSpan: 1,
+      text: "Reviewer"
+    }, {
+      column: 9,
+      columnSpan: 1,
+      row: 0,
+      rowSpan: 1,
+      text: "Alex Rivera"
+    }];
+    const normalized = document([block(0, "Reviewer\t\t\t\t\t\t\t\t\tAlex Rivera", {
+      isTable: true,
+      table: { cells, columnCount: 10, rowCount: 1 },
+      type: "table"
+    })]);
+    const current = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+    const previous = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION - 1,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+
+    expect(current).toHaveLength(1);
+    expect(current[0]?.documentContext).toMatchObject({
+      ambiguityReasons: [],
+      observations: [{
+        ambiguityReasons: [],
+        metric: "Reviewer",
+        rawValue: "Alex Rivera"
+      }]
+    });
+    expect(previous[0]?.documentContext?.ambiguityReasons).toContain("missing_header");
+
+    const singletonCells = cells.map((cell, index) => ({ ...cell, column: index }));
+    const singleton = chunkKnowledgeDocument({
+      document: document([block(0, "Reviewer\tAlex Rivera", {
+        isTable: true,
+        table: { cells: singletonCells, columnCount: 2, rowCount: 1 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+    const multiRowCells = [
+      singletonCells,
+      singletonCells.map((cell, index) => ({
+        ...cell,
+        row: 1,
+        text: index === 0 ? "Approver" : "Sam Lee"
+      }))
+    ].flat();
+    const multiRow = chunkKnowledgeDocument({
+      document: document([block(0, "Reviewer\tAlex Rivera\nApprover\tSam Lee", {
+        isTable: true,
+        table: { cells: multiRowCells, columnCount: 2, rowCount: 2 },
+        type: "table"
+      })]),
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+
+    expect(singleton[0]?.documentContext).toMatchObject({
+      ambiguityReasons: [],
+      observations: [{ metric: "Reviewer", rawValue: "Alex Rivera" }]
+    });
+    expect(multiRow).toHaveLength(2);
+    expect(multiRow.every((chunk) =>
+      chunk.documentContext?.ambiguityReasons.includes("missing_header"))).toBe(true);
+  });
+
   it("keeps a short logical section together across a page boundary with deterministic context", () => {
     const normalized = document([
       block(0, "Guide", { type: "title" }),
@@ -1336,7 +1418,7 @@ describe("Knowledge chunk profiles", () => {
     expect(chunks.every((chunk) => !chunk.text.includes("\n"))).toBe(true);
   });
 
-  it("filters only repeated page furniture supported by stable edge geometry", () => {
+  it("deduplicates repeated page furniture supported by stable edge geometry", () => {
     const box = (page: number, top: number, bottom: number) => ({
       bottom,
       coordinateOrigin: "top_left" as const,
@@ -1375,9 +1457,60 @@ describe("Knowledge chunk profiles", () => {
       tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
     }).map((chunk) => chunk.text).join("\n");
 
-    expect(text).not.toContain("Company handbook");
-    expect(text).not.toContain("10 / 2026");
+    expect(text.split("Company handbook")).toHaveLength(2);
+    expect(text.split("10 / 2026")).toHaveLength(2);
     expect(text).toContain("Body page 10");
+  });
+
+  it("keeps one canonical copy of semantic values repeated in a report header", () => {
+    const box = (page: number, top: number, bottom: number) => ({
+      bottom,
+      coordinateOrigin: "top_left" as const,
+      left: 20,
+      page,
+      right: 500,
+      top
+    });
+    const normalized = document(Array.from({ length: 3 }, (_, pageIndex) => {
+      const page = pageIndex + 1;
+      return [
+        block(pageIndex * 3, "Материал получен: 14.11.2024", {
+          boundingBoxes: [box(page, 10, 25)],
+          page,
+          pageEnd: page,
+          readingOrder: pageIndex * 3
+        }),
+        block(pageIndex * 3 + 1, "Результат выдан: 29.11.2024", {
+          boundingBoxes: [box(page, 30, 45)],
+          page,
+          pageEnd: page,
+          readingOrder: pageIndex * 3 + 1
+        }),
+        block(pageIndex * 3 + 2, `Содержимое страницы ${page}`, {
+          boundingBoxes: [box(page, 390, 430)],
+          page,
+          pageEnd: page,
+          readingOrder: pageIndex * 3 + 2
+        })
+      ];
+    }).flat());
+    const currentText = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    }).map((chunk) => chunk.text).join("\n");
+    const profile9Text = chunkKnowledgeDocument({
+      document: normalized,
+      maxChunks: 20,
+      profileVersion: 9,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    }).map((chunk) => chunk.text).join("\n");
+
+    expect(currentText.split("Материал получен: 14.11.2024")).toHaveLength(2);
+    expect(currentText.split("Результат выдан: 29.11.2024")).toHaveLength(2);
+    expect(profile9Text).not.toContain("14.11.2024");
+    expect(profile9Text).not.toContain("29.11.2024");
   });
 
   it("keeps repeated body, table, and geometry-free content", () => {

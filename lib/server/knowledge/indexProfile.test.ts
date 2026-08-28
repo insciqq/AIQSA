@@ -38,8 +38,8 @@ function embeddingConfiguration(
 }
 
 describe("Knowledge vector-space profiles", () => {
-  it("activates the repeated-table-header profile 8", () => {
-    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(8);
+  it("activates the inline-pair profile 11", () => {
+    expect(KNOWLEDGE_CHUNKING_PROFILE_VERSION).toBe(11);
     expect(KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION).toBe(3);
   });
 

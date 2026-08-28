@@ -450,6 +450,59 @@ describe("durable Knowledge upload batches", () => {
     });
   });
 
+  it("settles an eight-item same-Base burst without surfacing serialization conflicts", async () => {
+    const batchId = randomUUID();
+    const items = Array.from({ length: 8 }, (_, index) => admission({
+      batchId,
+      clientFileId: `burst-${index}`,
+      itemId: randomUUID()
+    }));
+    await expect(repository.createBatch({
+      batchId,
+      clientBatchId: `batch-burst-${batchId}`,
+      items,
+      knowledgeBaseId: fixture.baseId,
+      userId: fixture.ownerUserId
+    })).resolves.toMatchObject({ kind: "created" });
+    await Promise.all(items.map((item) => repository.markStored({
+      attemptNumber: 1,
+      batchId,
+      itemId: item.id,
+      knowledgeBaseId: fixture.baseId,
+      storageKey: item.storageKey,
+      userId: fixture.ownerUserId
+    })));
+    const baseBefore = await prisma.knowledgeBase.findUniqueOrThrow({
+      select: { version: true },
+      where: { id: fixture.baseId }
+    });
+    const settlements = items.map((item, index) => {
+      const ids = newKnowledgeUploadSettlementIds();
+      return repository.settle({
+        ...ids,
+        attemptNumber: 1,
+        batchId,
+        byteSize: 12,
+        checksum: index.toString(16).padStart(64, "0"),
+        fileName: `burst-${index}.md`,
+        itemId: item.id,
+        knowledgeBaseId: fixture.baseId,
+        mimeType: "text/markdown",
+        normalizedTextStorageKey: `knowledge/${ids.sourceVersionId}/normalized-v2.json`,
+        now: new Date(),
+        userId: fixture.ownerUserId
+      });
+    });
+
+    await expect(Promise.all(settlements)).resolves.toEqual(
+      Array.from({ length: 8 }, () => expect.objectContaining({ kind: "created" }))
+    );
+    await expect(prisma.knowledgeBase.findUniqueOrThrow({
+      select: { version: true },
+      where: { id: fixture.baseId }
+    })).resolves.toEqual({ version: baseBefore.version + 8 });
+  });
+
   it("projects the upload-created artifact instead of a newer artifact from another profile", async () => {
     const batchId = randomUUID();
     const itemId = randomUUID();

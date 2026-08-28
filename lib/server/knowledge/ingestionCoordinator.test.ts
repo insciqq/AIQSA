@@ -309,9 +309,9 @@ describe("Knowledge ingestion parallelism clamp", () => {
     expect(clampKnowledgeIngestionParallelism(2.5)).toBe(8);
     expect(clampKnowledgeIngestionParallelism(0)).toBe(1);
     expect(clampKnowledgeIngestionParallelism(-3)).toBe(1);
-    expect(clampKnowledgeIngestionParallelism(99)).toBe(16);
+    expect(clampKnowledgeIngestionParallelism(99)).toBe(64);
     expect(clampKnowledgeIngestionParallelism(1)).toBe(1);
     expect(clampKnowledgeIngestionParallelism(8)).toBe(8);
-    expect(clampKnowledgeIngestionParallelism(16)).toBe(16);
+    expect(clampKnowledgeIngestionParallelism(64)).toBe(64);
   });
 });

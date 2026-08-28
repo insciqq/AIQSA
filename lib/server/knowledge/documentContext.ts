@@ -205,6 +205,30 @@ const ambiguityReasons = new Set<KnowledgeDocumentAmbiguityReason>([
   "missing_pair",
   "unspecified_role"
 ]);
+
+const associationAmbiguityReasons = new Set<KnowledgeDocumentAmbiguityReason>([
+  "ambiguous_role",
+  "competing_pair",
+  "conflicting_edge",
+  "missing_header",
+  "missing_pair",
+  "unspecified_role"
+]);
+
+/**
+ * Reports only uncertainty about which label/header/row belongs to which
+ * value. Lexical normalization uncertainty (for example an alphanumeric
+ * identifier that is not safely normalizable as a number) does not invalidate
+ * the exact raw cell or its otherwise explicit row/column association.
+ */
+export function knowledgeDocumentContextHasAssociationAmbiguity(
+  context: KnowledgeDocumentContextV1 | null | undefined
+): boolean {
+  return Boolean(context && (
+    context.locator.kind === "field_ambiguous" ||
+    context.ambiguityReasons.some((reason) => associationAmbiguityReasons.has(reason))
+  ));
+}
 const observationRoles = new Set<KnowledgeObservationRole>([
   "header",
   "metadata",
@@ -535,13 +559,76 @@ function resolvedObservationUnit(
     : Object.freeze({ ambiguous: false, value: unique.values().next().value ?? null });
 }
 
+type ColumnObservationCell = Readonly<{
+  confidence: number | null;
+  header: string | null;
+  origin: KnowledgeDocumentObservationOriginV1;
+  text: string;
+}>;
+
+type InlinePairEvidence = "singleton_table" | "sparse_row";
+
+/**
+ * Recovers the explicit key/value relation of a form-like row that a parser
+ * represented as a table. Adjacent cells require proof that this is the only
+ * logical row; otherwise a structural gap is required and ordinary tabular
+ * data stays fail-closed.
+ */
+function observationForInlinePair(
+  cells: readonly ColumnObservationCell[],
+  evidence: InlinePairEvidence
+): KnowledgeDocumentObservationV1 | null {
+  if (cells.length !== 2 || cells.some((cell) => cell.header !== null ||
+    cell.origin.kind !== "table_cell")) return null;
+  const [labelCell, valueCell] = [...cells].sort((left, right) => {
+    if (left.origin.kind !== "table_cell" || right.origin.kind !== "table_cell") return 0;
+    return left.origin.columnStart - right.origin.columnStart ||
+      left.origin.columnEnd - right.origin.columnEnd;
+  });
+  if (!labelCell || !valueCell || labelCell.origin.kind !== "table_cell" ||
+    valueCell.origin.kind !== "table_cell" ||
+    valueCell.origin.columnStart <= labelCell.origin.columnEnd ||
+    evidence === "sparse_row" &&
+      valueCell.origin.columnStart <= labelCell.origin.columnEnd + 1) return null;
+  const label = canonicalText(labelCell.text, 256);
+  if (!label || label.length > 160 || label.split(/\s+/u).length > 12 ||
+    !/[\p{L}\p{M}]/u.test(label)) return null;
+  const normalizedLabel = normalizeKnowledgeObservationValue(label);
+  if (normalizedLabel.kind !== "text" || normalizedLabel.ambiguityReasons.length > 0) return null;
+
+  const details = descriptor(label);
+  const value = normalizeKnowledgeObservationValue(valueCell.text);
+  const unit = details.kind === "unit"
+    ? Object.freeze({ ambiguous: false, value: canonicalText(valueCell.text, 128) || null })
+    : resolvedObservationUnit([value.unit, details.unit]);
+  const reasons = sortedReasons([
+    ...details.ambiguityReasons,
+    ...value.ambiguityReasons,
+    ...(unit.ambiguous ? ["ambiguous_role" as const] : [])
+  ]);
+  return Object.freeze({
+    ambiguityReasons: reasons,
+    confidence: minimumConfidence([labelCell.confidence, valueCell.confidence]),
+    date: details.kind === "date" ? value.date : null,
+    effectiveFrom: details.kind === "effective_from" ? value.date : null,
+    effectiveTo: details.kind === "effective_to" ? value.date : null,
+    metric: details.kind === "metric"
+      ? canonicalText(valueCell.text, 1_024) || null
+      : details.metric,
+    normalizedValue: value.normalizedValue,
+    origin: valueCell.origin,
+    rawValue: value.rawValue,
+    role: details.kind === "value" ? details.role : "metadata",
+    subject: details.kind === "subject"
+      ? canonicalText(valueCell.text, 1_024) || null
+      : null,
+    unit: unit.value,
+    valueKind: value.kind
+  });
+}
+
 function observationsForColumns(input: Readonly<{
-  cells: readonly Readonly<{
-    confidence: number | null;
-    header: string | null;
-    origin: KnowledgeDocumentObservationOriginV1;
-    text: string;
-  }>[];
+  cells: readonly ColumnObservationCell[];
 }>): readonly KnowledgeDocumentObservationV1[] {
   const described = input.cells.map((cell) => ({
     cell,
@@ -626,6 +713,7 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
   columnEnd?: number;
   columnStart?: number;
   headerLineage: readonly KnowledgeTableHeaderLineageV1[];
+  inlinePairEvidence?: InlinePairEvidence;
   projectionCount?: number;
   projectionIndex?: number;
   rowIndex: number;
@@ -634,6 +722,8 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
   const projection = input.columnStart !== undefined || input.columnEnd !== undefined ||
     input.projectionIndex !== undefined || input.projectionCount !== undefined;
   if (!boundedString(input.blockId, 512) || !index(input.rowIndex, 2_000) ||
+    input.inlinePairEvidence !== undefined &&
+      input.inlinePairEvidence !== "singleton_table" && input.inlinePairEvidence !== "sparse_row" ||
     input.cells.length < 1 || input.cells.length > 200 ||
     input.headerLineage.length > 256 || input.cells.some((cell) =>
       !index(cell.columnStart, 199) || !index(cell.columnEnd, 199) ||
@@ -653,6 +743,20 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
     }
   }
   const rowKind = input.rowKind ?? "data";
+  const columnCells = input.cells.map((cell) => ({
+    confidence: null,
+    header: headers.get(cell.columnStart) ?? null,
+    origin: Object.freeze({
+      columnEnd: cell.columnEnd,
+      columnStart: cell.columnStart,
+      kind: "table_cell" as const
+    }),
+    text: cell.text
+  }));
+  const inlinePair = rowKind === "data" && input.inlinePairEvidence !== undefined &&
+    input.headerLineage.length === 0
+    ? observationForInlinePair(columnCells, input.inlinePairEvidence)
+    : null;
   const observations = rowKind === "header"
     ? Object.freeze(input.cells.filter((cell) => canonicalText(cell.text, 4_096)).map((cell) => {
         const value = normalizeKnowledgeObservationValue(cell.text);
@@ -676,18 +780,9 @@ export function createKnowledgeTableDocumentContext(input: Readonly<{
           valueKind: value.kind
         });
       }))
-    : observationsForColumns({
-        cells: input.cells.map((cell) => ({
-          confidence: null,
-          header: headers.get(cell.columnStart) ?? null,
-          origin: Object.freeze({
-            columnEnd: cell.columnEnd,
-            columnStart: cell.columnStart,
-            kind: "table_cell" as const
-          }),
-          text: cell.text
-        }))
-      });
+    : inlinePair
+      ? Object.freeze([inlinePair])
+      : observationsForColumns({ cells: columnCells });
   const reasons = sortedReasons(observations.flatMap((observation) => observation.ambiguityReasons));
   const common = {
     blockId: input.blockId,

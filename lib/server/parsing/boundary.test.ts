@@ -2,7 +2,10 @@ import { createDocumentParserBoundary } from "./boundary";
 import { finalizeParsedDocument } from "./assessment";
 import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
 import { DocumentParserError } from "./errors";
-import { PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION } from "./ocrSupplement";
+import {
+  PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
+  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+} from "./ocrSupplement";
 import type {
   DocumentParserEngine,
   DocumentParserEngineAdapter,
@@ -260,6 +263,7 @@ describe("document parser boundary", () => {
     const doclingParse = vi.fn(async () => parsed("docling", "ocr output"));
     const boundary = createDocumentParserBoundary({
       adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) },
+      config: {},
       nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
       nativePdfParser
     });
@@ -348,6 +352,40 @@ describe("document parser boundary", () => {
     })).resolves.toMatchObject({ engine: "docling", text: "profile-seven output" });
     expect(doclingParse).toHaveBeenCalledOnce();
     expect(tikaParse).not.toHaveBeenCalled();
+  });
+
+  it("segments fallback OCR only in parser profile 9", async () => {
+    const nativePdfParser = vi.fn(async () => ({
+      classification: "image_only" as const,
+      document: null,
+      reasonCode: "native_pdf_image_heavy_low_text" as const
+    }));
+    const doclingParse = vi.fn(async () => parsed("docling", "Revenue 10 percent"));
+    const tikaParse = vi.fn(async () => parsed(
+      "tika",
+      "Revenue — 10 percent\n\nCategory gamma 20"
+    ));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      nativePdfLimits: { maxBlocks: 100, maxCharacters: 1_000, maxPages: 10 },
+      nativePdfParser
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf",
+      parserProfileVersion: PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+    })).resolves.toMatchObject({
+      blocks: [
+        { text: "Revenue 10 percent" },
+        { text: "Category gamma 20" }
+      ],
+      engine: "docling"
+    });
   });
 
   it("does not hide a native PDF output bound behind a sidecar", async () => {

@@ -4,6 +4,7 @@ import {
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
+import { textMessageContent } from "../../domain/content";
 import {
   normalizeTokenUsage,
   subtractTokenUsage,
@@ -37,6 +38,10 @@ import type {
   ProviderSearchAdapter
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import {
+  parseProviderStructuredOutputObject,
+  type ProviderStructuredOutputRequest
+} from "../providers/structuredOutput";
 import { DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS } from "../providers/providerConfiguration";
 import {
   isProviderStreamSafetyCode,
@@ -63,6 +68,21 @@ import type {
   PreparedKnowledgeProviderDispatch
 } from "../knowledge/providerDispatchLifecycle";
 import {
+  executeKnowledgeAnswerGroundingV5,
+  KnowledgeAnswerOperationDeferredError,
+  type KnowledgeAnswerOperationExecutionOptionsV5,
+  type KnowledgeAnswerOperationExecutionV5
+} from "../knowledge/answerGroundingExecutionV5";
+import {
+  decodeKnowledgeAnswerDraftPromptV5,
+  decodeKnowledgeAnswerOperationRequestSnapshotV1,
+  KNOWLEDGE_ANSWER_DRAFT_OPERATION,
+  KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
+  KNOWLEDGE_INSUFFICIENT_MESSAGE,
+  KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
+} from "../knowledge/answerGroundingV5";
+import {
   type KnowledgeRunAdmissionAuthorizationSnapshot,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
@@ -75,10 +95,21 @@ import {
   focusedKnowledgeEvidenceDispatchDraft,
   isFocusedKnowledgeCall,
   knowledgeEvidenceMessageFromDispatchDraft,
+  toolLoopKnowledgeEvidenceDispatchDraft,
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
+import type {
+  KnowledgeEvidenceDispatchBinding
+} from "../knowledge/evidenceDispatchRepository";
+import type {
+  KnowledgeEvidenceDispatchManifestDraft
+} from "../knowledge/evidenceDispatchManifest";
+import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
-import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
+import {
+  KNOWLEDGE_FOCUSED_OPERATION_NAME,
+  KNOWLEDGE_SEARCH_TOOL_NAME
+} from "../knowledge/retrievalTypes";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -187,9 +218,11 @@ export type RunRecoveryRepository = Pick<
   RunRepository,
   | "getRunControlForRecovery"
   | "groundKnowledgeAnswer"
+  | "groundKnowledgeAnswerV5"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
+  | "loadKnowledgeFullContextDispatchRecovery"
   | "loadFocusedKnowledgeRecoveryScope"
   | "claimAutomaticKnowledgeCall"
   | "loadEntitlements"
@@ -634,6 +667,7 @@ type RecoveryToolContext = {
   activeMcpDiscovery: McpDiscoveryState | undefined;
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
   deps: RunRecoveryDeps;
+  knowledgeResults: Map<string, ToolExecutionResult>;
   mcpDiscoveryBatches: Map<string, Readonly<{
     execute(signal: AbortSignal): Promise<ReadonlyMap<string, ToolExecutionResult>>;
   }>>;
@@ -955,6 +989,7 @@ async function recordRecoveredSearchResult(input: Readonly<{
 }
 
 function recordRecoveredKnowledgeResult(input: Readonly<{
+  callId: string;
   context: RecoveryToolContext;
   includeUsage: boolean;
   result: ToolExecutionResult;
@@ -966,6 +1001,7 @@ function recordRecoveredKnowledgeResult(input: Readonly<{
       "Persisted Knowledge result evidence is invalid and cannot be replayed safely."
     );
   }
+  input.context.knowledgeResults.set(input.callId, input.result);
   if (!input.includeUsage) return;
   input.context.usageAttributions.push(
     ...knowledgeUsageAttributionsFromToolResult(input.result)
@@ -1148,6 +1184,7 @@ async function executePersistedToolCall(
     }
     if (isRecoveredKnowledgeCall(context, call.name)) {
       recordRecoveredKnowledgeResult({
+        callId: call.id,
         context,
         includeUsage: settledSearchUsageNeedsRecovery(
           claim.call,
@@ -1293,7 +1330,7 @@ async function executePersistedToolCall(
           ])
         }
       );
-      recordRecoveredKnowledgeResult({ context, includeUsage: true, result });
+      recordRecoveredKnowledgeResult({ callId: call.id, context, includeUsage: true, result });
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -1654,6 +1691,7 @@ async function recoverCheckpointedToolLoop(
       activeMcpDiscovery,
       activeMcpSnapshot: run.normalizedRequest.mcp,
       deps,
+      knowledgeResults: new Map(),
       mcpDiscoveryBatches: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
       persistedUsageRecordedAt,
@@ -1844,6 +1882,7 @@ async function recoverCheckpointedToolLoop(
     async function appendEvent(event: ModelRunSseEvent): Promise<void> {
       const effectiveEvent = withPinnedHostedSearchIdentity(event, run.normalizedRequest);
       if (effectiveEvent.type === "token") {
+        if (recoveredKnowledgeEnabled) return;
         await tokenBuffer!.push(effectiveEvent.data.delta);
         return;
       }
@@ -1923,6 +1962,99 @@ async function recoverCheckpointedToolLoop(
     const persistedCalls = new Map<string, PersistedToolLoopCall>(
       run.calls.map((call) => [call.providerCallId, call])
     );
+
+    function recoveredKnowledgeDispatchDraft(): KnowledgeEvidenceDispatchManifestDraft | null {
+      const calls = [...persistedCalls.values()]
+        .filter((call) => call.toolName === KNOWLEDGE_SEARCH_TOOL_NAME)
+        .sort((left, right) => left.roundIndex - right.roundIndex ||
+          left.ordinal - right.ordinal ||
+          left.providerCallId.localeCompare(right.providerCallId));
+      if (calls.length < 1) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_retrieval_required",
+          "The recovered Knowledge run ended without a retrieval call."
+        );
+      }
+      const results = calls.map((call) => {
+        const result = context.knowledgeResults.get(call.providerCallId);
+        if (!result) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_retrieval_failed",
+            "A recovered Knowledge result is not settled."
+          );
+        }
+        return result;
+      });
+      try {
+        return toolLoopKnowledgeEvidenceDispatchDraft({ request: providerRequest, results });
+      } catch (error) {
+        throw new ToolLoopRecoveryError(
+          error instanceof Error && error.message === "no_retrieval_candidates"
+            ? "no_retrieval_candidates"
+            : "knowledge_retrieval_failed",
+          "The recovered Knowledge evidence manifest is invalid."
+        );
+      }
+    }
+
+    async function finalizeRecoveredKnowledgeToolLoop(): Promise<void> {
+      await tokenBuffer!.flush();
+      await persistCumulativeUsage();
+      const dispatchDraft = recoveredKnowledgeDispatchDraft();
+      const latest = await loadRecoveryRunControl(deps, run.id, run.userId);
+      if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) {
+        throw new ToolLoopRecoveryStopped();
+      }
+      if (!dispatchDraft) {
+        const attributions = groupedUsageAttributions(allUsageAttributions());
+        const completion = await finalizeRunCompletion({
+          knowledgeZeroEvidence: true,
+          repository: deps.repository,
+          result: {
+            finalText: KNOWLEDGE_INSUFFICIENT_MESSAGE,
+            ...(currentProviderResponseId
+              ? { providerResponseId: currentProviderResponseId }
+              : {}),
+            usage: sumTokenUsage(attributions.map((entry) => entry.usage)),
+            usageAttributions: attributions
+          },
+          run: {
+            assistantMessageId: latest.assistantMessageId,
+            chatId: latest.chatId,
+            modelId: latest.modelId,
+            provider: latest.provider,
+            runId: run.id,
+            userId: run.userId
+          }
+        });
+        if (completion.status === "not_completed") throw new ToolLoopRecoveryStopped();
+        return;
+      }
+      const requestText = textFromContentBlocks(run.normalizedRequest.content).trim();
+      if (!requestText) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The accepted Knowledge request is empty."
+        );
+      }
+      await recoverKnowledgeAnswerGroundingV5(deps, {
+        control: latest,
+        runId: run.id,
+        seed: {
+          draft: dispatchDraft,
+          reasoningEffort: typeof run.normalizedRequest.params.reasoningEffort === "string"
+            ? run.normalizedRequest.params.reasoningEffort
+            : null,
+          request: requestText,
+          routeInstruction: KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
+          transport: providerRuntime?.structuredOutputAdapter
+            ? "native_strict"
+            : "provider_neutral_json"
+        },
+        signal,
+        userId: run.userId
+      });
+    }
 
     async function persistToolBatch(
       calls: readonly Readonly<{ arguments: unknown; id: string; name: string }>[],
@@ -2081,6 +2213,10 @@ async function recoverCheckpointedToolLoop(
         run.checkpoint.roundIndex
       );
       if ((refreshed.result.toolCalls?.length ?? 0) === 0) {
+        if (recoveredKnowledgeEnabled) {
+          await finalizeRecoveredKnowledgeToolLoop();
+          return;
+        }
         const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
         const completion = await finalizeRunCompletion({
           outputEvents: runOutputArtifactEvents(refreshed.events),
@@ -2252,6 +2388,7 @@ async function recoverCheckpointedToolLoop(
       },
       onSignal: async (signal) => {
         if (signal.type === "text_delta") {
+          if (recoveredKnowledgeEnabled) return;
           await tokenBuffer!.push(signal.delta);
           return;
         }
@@ -2320,6 +2457,10 @@ async function recoverCheckpointedToolLoop(
       );
     }
     await tokenBuffer.flush();
+    if (recoveredKnowledgeEnabled) {
+      await finalizeRecoveredKnowledgeToolLoop();
+      return;
+    }
     const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
     const usage = sumTokenUsage(groupedAttributions.map((attribution) => attribution.usage));
     const completion = await finalizeRunCompletion({
@@ -2739,6 +2880,319 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
   }
 }
 
+type LoadedRecoveryControl = NonNullable<Awaited<ReturnType<typeof loadRecoveryRunControl>>>;
+
+type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
+  draft: KnowledgeEvidenceDispatchManifestDraft;
+  evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
+  forbiddenIdentityFragments?: readonly string[];
+  reasoningEffort?: string | null;
+  request: string;
+  routeInstruction: string;
+  transport: "native_strict" | "provider_neutral_json";
+}>;
+
+async function recoverKnowledgeAnswerGroundingV5(
+  deps: RunRecoveryDeps,
+  input: Readonly<{
+    control: LoadedRecoveryControl;
+    runId: string;
+    signal: AbortSignal;
+    userId: string;
+  }> & (
+    | Readonly<{
+        draftDispatch: NonNullable<Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>>>;
+        seed?: never;
+      }>
+    | Readonly<{
+        draftDispatch?: never;
+        seed: KnowledgeAnswerGroundingRecoverySeed;
+      }>
+  )
+): Promise<void> {
+  if (!deps.knowledgeProviderDispatch || !deps.repository.groundKnowledgeAnswerV5) {
+    throw new ToolLoopRecoveryError(
+      "knowledge_answer_v5_unavailable",
+      "The saved Knowledge answer operation cannot be recovered."
+    );
+  }
+  let seed: KnowledgeAnswerGroundingRecoverySeed;
+  if (input.draftDispatch) {
+    if (input.draftDispatch.attempt.purpose !== KNOWLEDGE_ANSWER_DRAFT_OPERATION ||
+      input.draftDispatch.attempt.ordinal !== 1 ||
+      input.draftDispatch.attempt.providerBindingKey !== "answer") {
+      throw new ToolLoopRecoveryError(
+        "knowledge_answer_v5_unavailable",
+        "The saved Knowledge answer operation cannot be recovered."
+      );
+    }
+    const draftRequest = decodeKnowledgeAnswerOperationRequestSnapshotV1(
+      input.draftDispatch.attempt.acceptedRequest
+    );
+    const prompt = draftRequest
+      ? decodeKnowledgeAnswerDraftPromptV5(draftRequest, input.draftDispatch.draft)
+      : null;
+    if (!draftRequest || !prompt) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_answer_contract_failed",
+        "The saved Knowledge draft contract snapshot is invalid."
+      );
+    }
+    seed = Object.freeze({
+      draft: input.draftDispatch.draft,
+      evidenceBindings: [
+        ...input.draftDispatch.items,
+        ...input.draftDispatch.exclusions
+      ].flatMap((item) => item.evidenceItemId
+        ? [{
+            dispatchEvidenceId: item.dispatchEvidenceId,
+            evidenceItemId: item.evidenceItemId
+          }]
+        : []),
+      forbiddenIdentityFragments: input.draftDispatch.draft.items.map(
+        (item) => item.evidenceId
+      ),
+      reasoningEffort: draftRequest.reasoningEffort,
+      request: prompt.request,
+      routeInstruction: prompt.routeInstruction,
+      transport: draftRequest.transport
+    });
+  } else {
+    seed = input.seed;
+  }
+  const runtime = await resolveAnswerRuntime(deps, input.runId, input.control.provider);
+  if (!runtime?.adapter) {
+    throw new ToolLoopRecoveryError(
+      "provider_not_available",
+      "The saved answer provider is unavailable."
+    );
+  }
+  let providerNeutralBase: ProviderRunRequest | null = null;
+  const providerNeutralRequest = async (
+    operation: ProviderStructuredOutputRequest
+  ): Promise<ProviderRunRequest> => {
+    if (!providerNeutralBase) {
+      const loadRequest = deps.repository.loadProviderDispatchRecoveryRequest;
+      const normalized = loadRequest
+        ? await loadRequest({ runId: input.runId, userId: input.userId })
+        : null;
+      if (!normalized || normalized.chatId !== input.control.chatId ||
+        normalized.modelId !== input.control.modelId ||
+        normalized.provider !== input.control.provider) {
+        throw new ToolLoopRecoveryError(
+          "provider_dispatch_request_invalid",
+          "The accepted provider request does not match the saved run."
+        );
+      }
+      providerNeutralBase = {
+        ...normalized,
+        attachmentIds: [],
+        attachments: [],
+        content: textMessageContent(operation.userPrompt),
+        context: undefined,
+        knowledgeAnswering: undefined,
+        knowledgeFocusedRequest: undefined,
+        mcp: undefined,
+        mcpDiscovery: undefined,
+        params: { ...normalized.params, maxOutputTokens: operation.maxOutputTokens },
+        personalContext: undefined,
+        prompt: { developer: null, system: operation.systemPrompt },
+        searchPlan: { mode: "all_selected", options: [] },
+        toolChoice: "none",
+        toolMode: "none",
+        tools: undefined
+      };
+    }
+    return {
+      ...providerNeutralBase,
+      content: textMessageContent(operation.userPrompt),
+      params: {
+        ...providerNeutralBase.params,
+        maxOutputTokens: operation.maxOutputTokens
+      },
+      prompt: { developer: null, system: operation.systemPrompt }
+    };
+  };
+  const publishProviderResponseId = async (providerResponseId: string): Promise<void> => {
+    const publication = await deps.repository.updateRunProviderResponseId(
+      input.runId,
+      providerResponseId
+    );
+    if (publication === "cancelled" || publication === "terminal") {
+      throw new ToolLoopRecoveryStopped();
+    }
+  };
+  const authorize = async (): Promise<void> => {
+    if (input.signal.aborted) throw new ToolLoopRecoveryStopped();
+    const knowledge = await currentFocusedKnowledgeRecoveryAuthorization(deps, {
+      ...(input.control.project ? { project: input.control.project } : {}),
+      runId: input.runId,
+      userId: input.userId
+    });
+    if (!knowledge.authorized) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_answer_failed",
+        "The accepted Knowledge authority is no longer current."
+      );
+    }
+    if (!(await currentDirectAnswerDispatchAllowed(
+      deps,
+      input.control,
+      input.userId
+    ))) {
+      throw new ToolLoopRecoveryError(
+        input.control.project ? "provider_admission_changed" : "model_not_available",
+        "The accepted answer-model authority is no longer current."
+      );
+    }
+  };
+  const execute = async (
+    operation: ProviderStructuredOutputRequest,
+    options: KnowledgeAnswerOperationExecutionOptionsV5
+  ): Promise<KnowledgeAnswerOperationExecutionV5> => {
+    const operationSignal = AbortSignal.any([
+      input.signal,
+      AbortSignal.timeout(120_000)
+    ]);
+    if (options.providerResponseId) {
+      if (!runtime.adapter.refresh) {
+        throw new Error("structured_output_recovery_unavailable");
+      }
+      const refreshed = await runtime.adapter.refresh(options.providerResponseId);
+      if (!refreshed.terminal) throw new KnowledgeAnswerOperationDeferredError();
+      if (!refreshed.result || (refreshed.result.toolCalls?.length ?? 0) > 0) {
+        throw new Error("structured_output_recovery_invalid");
+      }
+      const providerResponseId = refreshed.result.providerResponseId ??
+        refreshed.providerResponseId ?? options.providerResponseId;
+      await publishProviderResponseId(providerResponseId);
+      return Object.freeze({
+        output: parseProviderStructuredOutputObject(refreshed.result.finalText),
+        providerResponseId,
+        usage: normalizeTokenUsage(refreshed.result.usage)
+      });
+    }
+    if (seed.transport === "native_strict") {
+      if (!runtime.structuredOutputAdapter) {
+        throw new Error("structured_output_not_supported");
+      }
+      let providerResponseId: string | null = null;
+      let operationUsage: ModelRunUsage = {
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0
+      };
+      const output = await runtime.structuredOutputAdapter.execute(operation, {
+        onProviderResponseId(value) {
+          providerResponseId = value;
+        },
+        onUsage(value) {
+          operationUsage = value;
+        },
+        signal: operationSignal,
+        timeoutMs: 120_000
+      });
+      if (providerResponseId) await publishProviderResponseId(providerResponseId);
+      return Object.freeze({
+        output,
+        providerResponseId,
+        usage: normalizeTokenUsage(operationUsage)
+      });
+    }
+    const request = await providerNeutralRequest(operation);
+    const stream = runtime.adapter.stream(request, { signal: operationSignal });
+    let providerResponseId: string | null = null;
+    let next = await stream.next();
+    while (!next.done) {
+      const eventResponseId = providerResponseIdFromEvent(next.value);
+      if (eventResponseId) providerResponseId = eventResponseId;
+      next = await stream.next();
+    }
+    if ((next.value.toolCalls?.length ?? 0) > 0) {
+      throw new Error("structured_output_tools_forbidden");
+    }
+    providerResponseId = next.value.providerResponseId ?? providerResponseId;
+    if (providerResponseId) await publishProviderResponseId(providerResponseId);
+    return Object.freeze({
+      output: parseProviderStructuredOutputObject(next.value.finalText),
+      providerResponseId,
+      usage: normalizeTokenUsage(next.value.usage)
+    });
+  };
+  const operationResult = await executeKnowledgeAnswerGroundingV5({
+    authorize,
+    draft: seed.draft,
+    ...(seed.evidenceBindings?.length
+      ? { evidenceBindings: seed.evidenceBindings }
+      : {}),
+    execute,
+    forbiddenIdentityFragments: [
+      input.runId,
+      ...(seed.forbiddenIdentityFragments ?? seed.draft.items.map((item) => item.evidenceId))
+    ],
+    lifecycle: deps.knowledgeProviderDispatch,
+    modelRunId: input.runId,
+    reasoningEffort: seed.reasoningEffort,
+    recoveryProviderResponseIds: input.control.providerResponseId
+      ? {
+          knowledge_answer_draft_v5: input.control.providerResponseId,
+          knowledge_grounded_selector_v3: input.control.providerResponseId
+        }
+      : undefined,
+    request: seed.request,
+    routeInstruction: seed.routeInstruction,
+    shouldAbort: () => input.signal.aborted,
+    transport: seed.transport
+  });
+  const latest = await loadRecoveryRunControl(
+    deps,
+    input.runId,
+    input.userId
+  );
+  if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
+  if (!(await projectRecoveryAuthorityAllowsProceed(
+    deps,
+    latest,
+    input.runId,
+    input.userId
+  ))) return;
+  const persistedUsage = await deps.repository.loadRunUsageAttributions({
+    runId: input.runId,
+    userId: input.userId
+  });
+  const usageAttributions = groupedUsageAttributions([
+    ...persistedUsage.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
+    ...operationResult.operations.map((operation) => ({
+    modelId: latest.modelId,
+    provider: latest.provider,
+    usage: operation.usage
+    }))
+  ]);
+  await finalizeRunCompletion({
+    knowledgeAnswerContracts: operationResult.contracts,
+    repository: deps.repository,
+    result: {
+      finalText: "",
+      ...(operationResult.operations.at(-1)?.providerResponseId
+        ? { providerResponseId: operationResult.operations.at(-1)!.providerResponseId! }
+        : {}),
+      usage: sumTokenUsage(usageAttributions.map((entry) => entry.usage)),
+      usageAttributions
+    },
+    run: {
+      assistantMessageId: latest.assistantMessageId,
+      chatId: latest.chatId,
+      modelId: latest.modelId,
+      provider: latest.provider,
+      runId: input.runId,
+      userId: input.userId
+    }
+  });
+}
+
 async function refreshProviderRunOnceRegistered(
   deps: RunRecoveryDeps,
   runId: string,
@@ -2751,6 +3205,41 @@ async function refreshProviderRunOnceRegistered(
     return;
   }
   if (!(await projectRecoveryAuthorityAllowsProceed(deps, control, runId, userId))) return;
+
+  if (deps.knowledgeProviderDispatch) {
+    let draftDispatch: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>> = null;
+    try {
+      draftDispatch = await deps.knowledgeProviderDispatch.inspect({
+        modelRunId: runId,
+        ordinal: 1
+      });
+      if (draftDispatch?.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION) {
+        await recoverKnowledgeAnswerGroundingV5(deps, {
+          control,
+          draftDispatch,
+          runId,
+          signal,
+          userId
+        });
+        return;
+      }
+    } catch (error) {
+      if (signal.aborted || error instanceof ToolLoopRecoveryStopped ||
+        error instanceof KnowledgeAnswerOperationDeferredError ||
+        error instanceof Error && error.message === "knowledge_answer_operation_busy") {
+        return;
+      }
+      const latest = await loadRecoveryRunControl(deps, runId, userId);
+      if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
+      await deps.repository.failRun(
+        runId,
+        latest.assistantMessageId,
+        focusedAnswerFailure(error),
+        { recoveryTerminal: true }
+      );
+      return;
+    }
+  }
 
   const acceptedRequest = deps.repository.loadProviderDispatchRecoveryRequest
     ? await deps.repository.loadProviderDispatchRecoveryRequest({ runId, userId })
@@ -2779,6 +3268,102 @@ async function refreshProviderRunOnceRegistered(
         runId,
         control.assistantMessageId,
         focusedKnowledgeFailure("knowledge_retrieval_failed"),
+        { recoveryTerminal: true }
+      );
+    }
+    return;
+  }
+  const fullContextRequest = acceptedRequest?.knowledgeAnswering?.route ===
+    KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT
+    ? acceptedRequest.knowledgeAnswering
+    : null;
+  if (fullContextRequest) {
+    try {
+      if (!acceptedRequest || !deps.knowledgeProviderDispatch ||
+        !deps.repository.loadKnowledgeFullContextDispatchRecovery) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_v5_unavailable",
+          "Full-context Knowledge recovery is unavailable."
+        );
+      }
+      const existingAttempt = await deps.knowledgeProviderDispatch.inspect({
+        modelRunId: runId,
+        ordinal: 1
+      });
+      if (existingAttempt) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The saved Knowledge operation is not a recoverable Draft V5 attempt."
+        );
+      }
+      const contextWindow = acceptedRequest.modelCapabilities.contextWindow;
+      const maximumTokens = Number.isSafeInteger(contextWindow) && Number(contextWindow) > 0
+        ? Math.floor(
+            Number(contextWindow) *
+            fullContextRequest.answerPolicy.fullContextThresholdBasisPoints / 10_000
+          )
+        : 0;
+      if (maximumTokens < 1) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The saved full-context provider budget is invalid."
+        );
+      }
+      const recovered = await deps.repository.loadKnowledgeFullContextDispatchRecovery({
+        maximumTokens,
+        modelId: acceptedRequest.modelId,
+        provider: acceptedRequest.provider,
+        runId,
+        userId
+      });
+      if (!recovered || recovered.draft.items.length !== fullContextRequest.evidenceCount) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_evidence_receipt_invalid",
+          "The accepted full-context Knowledge evidence cannot be recovered."
+        );
+      }
+      const runtime = await resolveAnswerRuntime(deps, runId, control.provider);
+      if (!runtime?.adapter) {
+        throw new ToolLoopRecoveryError(
+          "provider_not_available",
+          "The saved answer provider is unavailable."
+        );
+      }
+      const requestText = textFromContentBlocks(acceptedRequest.content).trim();
+      if (!requestText) {
+        throw new ToolLoopRecoveryError(
+          "knowledge_answer_contract_failed",
+          "The accepted Knowledge request is empty."
+        );
+      }
+      await recoverKnowledgeAnswerGroundingV5(deps, {
+        control,
+        runId,
+        seed: {
+          draft: recovered.draft,
+          evidenceBindings: recovered.evidenceBindings,
+          reasoningEffort: typeof acceptedRequest.params.reasoningEffort === "string"
+            ? acceptedRequest.params.reasoningEffort
+            : null,
+          request: requestText,
+          routeInstruction: KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
+          transport: runtime.structuredOutputAdapter
+            ? "native_strict"
+            : "provider_neutral_json"
+        },
+        signal,
+        userId
+      });
+    } catch (error) {
+      if (signal.aborted || error instanceof ToolLoopRecoveryStopped ||
+        error instanceof KnowledgeAnswerOperationDeferredError ||
+        error instanceof Error && error.message === "knowledge_answer_operation_busy") return;
+      const latest = await loadRecoveryRunControl(deps, runId, userId);
+      if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
+      await deps.repository.failRun(
+        runId,
+        latest.assistantMessageId,
+        focusedAnswerFailure(error),
         { recoveryTerminal: true }
       );
     }
@@ -2821,6 +3406,7 @@ async function refreshProviderRunOnceRegistered(
       return;
     }
     if (!existingAttempt) {
+      let answerRecoveryStarted = false;
       try {
         const loadCall = deps.repository.loadFocusedKnowledgeCall;
         const loadExclusions = deps.repository.loadFocusedKnowledgeScopeExclusions;
@@ -2998,21 +3584,46 @@ async function refreshProviderRunOnceRegistered(
             "The exact Knowledge evidence manifest does not fit the answer context."
           );
         }
-        await deps.knowledgeProviderDispatch.prepare({
-          draft,
-          modelRunId: runId,
-          ordinal: 1,
-          purpose: "answer",
-          requestPreview: runtime.adapter.buildRequestPreview(budgeted.request),
-          roundIndex: 0
+        const requestText = textFromContentBlocks(acceptedRequest.content).trim();
+        if (!requestText) {
+          throw new ToolLoopRecoveryError(
+            "knowledge_answer_contract_failed",
+            "The accepted Knowledge request is empty."
+          );
+        }
+        answerRecoveryStarted = true;
+        await recoverKnowledgeAnswerGroundingV5(deps, {
+          control,
+          runId,
+          seed: {
+            draft,
+            forbiddenIdentityFragments: authorization.scope?.sources.flatMap((source) => [
+              source.sourceId,
+              source.sourceVersionId,
+              source.sourceArtifactId
+            ]),
+            reasoningEffort: typeof acceptedRequest.params.reasoningEffort === "string"
+              ? acceptedRequest.params.reasoningEffort
+              : null,
+            request: requestText,
+            routeInstruction: KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
+            transport: runtime.structuredOutputAdapter
+              ? "native_strict"
+              : "provider_neutral_json"
+          },
+          signal,
+          userId
         });
+        return;
       } catch (error) {
         if (signal.aborted) return;
         if (control.assistantMessageId) {
           await deps.repository.failRun(
             runId,
             control.assistantMessageId,
-            focusedRetrievalFailure(error),
+            answerRecoveryStarted
+              ? focusedAnswerFailure(error)
+              : focusedRetrievalFailure(error),
             { recoveryTerminal: true }
           );
         }

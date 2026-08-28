@@ -13,11 +13,12 @@ import {
 } from "../providers/attachmentPayload";
 import {
   KNOWLEDGE_ANSWER_CONTRACT_V1,
-  KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
+  KNOWLEDGE_TOOL_LOOP_CONTRACT_V2,
   MEMORY_READER_CONTRACT_V1,
   knowledgeToolLoopContract
 } from "../providers/personalContext";
 import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
+import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5 } from "../knowledge/answerGroundingV5";
 import type {
   NormalizedRunRequest,
   ProviderConversationMessage,
@@ -112,7 +113,10 @@ export function applyRunContextBudget(input: Readonly<{
         input.prompt.memoryActionAnswerResult
           ? memoryActionAnswerContract(input.prompt.memoryActionAnswerResult)
           : null,
-        input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null
+        input.prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null,
+        input.prompt.knowledgeAnswerDraftContract === 5
+          ? KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5
+          : null
       ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
       system: input.prompt.system
     }
@@ -191,8 +195,11 @@ export function normalizedRequestPersonalContextTokenLimit(
     (request.prompt.knowledgeAnswerContract === 1
       ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
       : 0) +
+    (request.prompt.knowledgeAnswerDraftContract === 5
+      ? estimateApproxTokens(KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5)
+      : 0) +
     (request.knowledgePlan.mode !== "none"
-      ? estimateApproxTokens(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1)
+      ? estimateApproxTokens(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2)
       : 0);
   const contextMessages = request.context?.messages ?? [];
   const internalTokens = contextMessages
@@ -323,6 +330,9 @@ function fitProviderAttachmentText(input: Readonly<{
         : 0) +
       (input.request.prompt.knowledgeAnswerContract === 1
         ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
+        : 0) +
+      (input.request.prompt.knowledgeAnswerDraftContract === 5
+        ? estimateApproxTokens(KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V5)
         : 0);
     const internalContextTokens = (input.request.context?.messages ?? [])
       .filter((message) => message.purpose !== undefined)

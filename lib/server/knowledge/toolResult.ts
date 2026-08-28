@@ -41,6 +41,7 @@ import {
 import {
   decodeKnowledgeDocumentContext,
   isCompleteKnowledgeTableRowProjectionSequence,
+  knowledgeDocumentContextHasAssociationAmbiguity,
   type KnowledgeTableRowProjectionLocatorV1
 } from "./documentContext";
 import { decodeStructuredAnalysisResult } from "./structuredData";
@@ -504,7 +505,7 @@ function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): str
             : "document root";
           const layoutWarning = result.layoutKind === "table_ambiguous" ||
             result.layoutKind === "field_ambiguous" ||
-            (result.documentContext?.ambiguityReasons.length ?? 0) > 0
+            knowledgeDocumentContextHasAssociationAmbiguity(result.documentContext)
             ? "\nLayout warning: table cell associations are ambiguous; do not pair labels and values from this passage."
             : "";
           return [
@@ -599,7 +600,7 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
   for (const result of evidence.results) {
     const context = result.documentContext;
     const locator = context?.locator;
-    if (result.textTruncated || context?.ambiguityReasons.length !== 0 ||
+    if (result.textTruncated || knowledgeDocumentContextHasAssociationAmbiguity(context) ||
       locator?.kind !== "table_row_projection") continue;
     const key = [
       result.sourceAlias,
@@ -651,7 +652,7 @@ function sourceBoundKnowledgeToolResultText(evidence: KnowledgeProviderEvidence)
       : "document root";
     const ambiguity = result.layoutKind === "table_ambiguous" ||
       result.layoutKind === "field_ambiguous" ||
-      (result.documentContext?.ambiguityReasons.length ?? 0) > 0
+      knowledgeDocumentContextHasAssociationAmbiguity(result.documentContext)
       ? "table cell associations are ambiguous; do not pair labels and values"
       : "none";
     const documentLocator = result.documentContext?.locator;

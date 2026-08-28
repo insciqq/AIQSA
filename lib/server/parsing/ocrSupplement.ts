@@ -8,6 +8,10 @@ import type {
 /** The first immutable local-PDF parser profile that may combine Docling's
  * structural output with a bounded Tika full-page OCR pass. */
 export const PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION = 8 as const;
+/** Profile 9 keeps the profile-8 heterogeneous OCR route but admits fallback
+ * text at paragraph granularity instead of copying a whole OCR page as one
+ * peer passage. */
+export const PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION = 9 as const;
 
 export type PdfImageOcrSupplementResult = Readonly<{
   document: ParsedDocument;
@@ -98,7 +102,11 @@ function materiallyNovel(
     novelAssociations.length >= 2;
 }
 
-function supplementalBlock(block: ParsedDocumentBlock, index: number): ParsedDocumentBlock {
+function supplementalBlock(
+  block: ParsedDocumentBlock,
+  text: string,
+  index: number
+): ParsedDocumentBlock {
   return Object.freeze({
     assetIds: Object.freeze([]),
     boundingBoxes: Object.freeze([]),
@@ -110,9 +118,21 @@ function supplementalBlock(block: ParsedDocumentBlock, index: number): ParsedDoc
     pageEnd: block.pageEnd,
     readingOrder: index,
     table: null,
-    text: block.text,
+    text,
     type: "paragraph"
   });
+}
+
+function supplementCandidates(
+  fallback: ParsedDocument,
+  segmentFallbackBlocks: boolean
+): readonly Readonly<{ block: ParsedDocumentBlock; text: string }>[] {
+  return Object.freeze(fallback.blocks.flatMap((block) => {
+    const values = segmentFallbackBlocks
+      ? block.text.split(/\n{2,}/u).map((value) => value.trim()).filter(Boolean)
+      : [block.text];
+    return values.map((text) => Object.freeze({ block, text }));
+  }));
 }
 
 function hasSafePageAttribution(block: ParsedDocumentBlock, pageCount: number): boolean {
@@ -126,7 +146,8 @@ function hasSafePageAttribution(block: ParsedDocumentBlock, pageCount: number): 
 export function supplementImageHeavyPdfOcr(
   primary: ParsedDocument,
   fallback: ParsedDocument,
-  limits: SupplementLimits
+  limits: SupplementLimits,
+  options: Readonly<{ segmentFallbackBlocks?: boolean }> = {}
 ): PdfImageOcrSupplementResult {
   if (
     primary.mediaType !== "application/pdf" || fallback.mediaType !== primary.mediaType ||
@@ -140,12 +161,14 @@ export function supplementImageHeavyPdfOcr(
   }
 
   const evidence = pageEvidence(primary.blocks, primary.fieldGroups);
-  const additions = fallback.blocks.filter((block) =>
-    block.text.trim().length > 0 && materiallyNovel(block, evidence));
+  const additions = supplementCandidates(
+    fallback,
+    options.segmentFallbackBlocks === true
+  ).filter(({ block, text }) => text.length > 0 && materiallyNovel({ ...block, text }, evidence));
   if (additions.length === 0) {
     return Object.freeze({ document: primary, outcome: "unchanged" });
   }
-  const addedCharacters = additions.reduce((total, block) => total + block.text.length, 0);
+  const addedCharacters = additions.reduce((total, addition) => total + addition.text.length, 0);
   if (
     !Number.isSafeInteger(limits.maxBlocks) || limits.maxBlocks < 1 ||
     !Number.isSafeInteger(limits.maxCharacters) || limits.maxCharacters < 1 ||
@@ -157,7 +180,11 @@ export function supplementImageHeavyPdfOcr(
 
   const blocks = [
     ...primary.blocks,
-    ...additions.map((block, offset) => supplementalBlock(block, primary.blocks.length + offset))
+    ...additions.map(({ block, text }, offset) => supplementalBlock(
+      block,
+      text,
+      primary.blocks.length + offset
+    ))
   ];
   return Object.freeze({
     document: finalizeParsedDocument({

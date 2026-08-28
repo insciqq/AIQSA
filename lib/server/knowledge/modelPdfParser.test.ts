@@ -4,6 +4,7 @@ import {
   modelPdfPageEndMarker,
   modelPdfPageStartMarker
 } from "../parsing/modelPdfOutput";
+import type { NativePdfGeometry } from "../parsing/nativePdf";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { KnowledgeModelPdfAttemptError } from "./modelPdfAttemptRepository";
 import { createKnowledgeModelPdfParser } from "./modelPdfParser";
@@ -53,6 +54,54 @@ function output(): string {
     "Batch\t84",
     modelPdfPageEndMarker(2)
   ].join("\n");
+}
+
+function collaborationGeometry(): NativePdfGeometry {
+  const rows = [
+    { bottom: 700, text: "Visible heading", top: 718 },
+    { bottom: 660, text: "Signed on 12.05.2024", top: 678 },
+    { bottom: 620, text: "Recorded result 42", top: 638 }
+  ];
+  const blocks = rows.map((row, index) => ({
+    assetIds: [],
+    boundingBoxes: [{
+      bottom: row.bottom,
+      coordinateOrigin: "bottom_left" as const,
+      left: 24,
+      page: 1,
+      right: 420,
+      top: row.top
+    }],
+    headingPath: [],
+    index,
+    isTable: false,
+    languageHints: ["und-Latn"],
+    page: 1,
+    pageEnd: 1,
+    readingOrder: index,
+    table: null,
+    text: row.text,
+    type: "paragraph" as const
+  }));
+  return {
+    blocks,
+    classification: "native_text",
+    pageCount: 1,
+    quality: {
+      pages: [{
+        characterCount: rows.reduce((total, row) => total + row.text.length, 0),
+        imageCount: 0,
+        invalidCharacterCount: 0,
+        invisibleText: false,
+        maxVisualGroupCount: 1,
+        multiGroupRowCount: 0,
+        page: 1,
+        rowCount: rows.length,
+        shortRowCount: 0
+      }],
+      visualGroupOverflow: false
+    }
+  };
 }
 
 describe("Knowledge System Model PDF parser", () => {
@@ -238,6 +287,95 @@ describe("Knowledge System Model PDF parser", () => {
         "original-detail page image"
       );
     }
+  });
+
+  it("keeps gap filling in profile 10 and adds bounded native corrections in profile 11", async () => {
+    const parseAtProfile = async (parserProfileVersion: number) => {
+      const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+        attemptRepository: {
+          markAmbiguous: vi.fn(async () => undefined),
+          markDispatched: vi.fn(async () => true),
+          reserve: vi.fn(async () => ({ attemptId: "attempt-1", kind: "dispatch" as const })),
+          settle: vi.fn(async (input: Record<string, unknown>) => ({
+            artifactId: input.artifactId as string,
+            attemptId: input.attemptId as string,
+            batchIndex: input.batchIndex as number,
+            mode: input.mode as "system_model_vision",
+            pageEnd: input.pageEnd as number,
+            pageStart: input.pageStart as number,
+            requestDigest: input.requestDigest as string,
+            resultText: input.resultText as string,
+            sourceVersionId: input.sourceVersionId as string,
+            usage: input.usage as never
+          }))
+        } as never,
+        execute: vi.fn(async () => ({
+          finalProviderResponsePreview: {},
+          finalText: [
+            modelPdfPageStartMarker(1),
+            "Visible heading",
+            "Recorded result 41",
+            modelPdfPageEndMarker(1)
+          ].join("\n"),
+          usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 0, totalTokens: 120 }
+        })) as never,
+        extractGeometry: vi.fn(async () => collaborationGeometry()),
+        inspect: vi.fn(async () => ({ pageCount: 1 })),
+        prepare: vi.fn(async () => ({
+          images: [{
+            bytes: Buffer.from("image-page"),
+            height: 3_200,
+            mimeType: "image/png" as const,
+            page: 1,
+            sourceHeight: 800,
+            sourceWidth: 600,
+            width: 2_400
+          }],
+          kind: "images" as const,
+          pageEnd: 1,
+          pageStart: 1
+        }))
+      });
+      return parser.parse({
+        artifactId: `artifact-${parserProfileVersion}`,
+        bytes: Buffer.from("%PDF-source"),
+        maxBlocks: 100,
+        maxCharacters: 10_000,
+        maxPages: 10,
+        mode: "system_model_vision",
+        ownerUserId: "owner-1",
+        parserProfileVersion,
+        profileRevisionId: `profile-${parserProfileVersion}`,
+        sourceVersionId: `source-version-${parserProfileVersion}`,
+        systemModelPolicyVersion: 3,
+        systemModelSnapshot: snapshot()
+      });
+    };
+
+    const legacy = await parseAtProfile(9);
+    const gapFillOnly = await parseAtProfile(10);
+    const current = await parseAtProfile(KNOWLEDGE_PDF_PARSER_PROFILE_VERSION);
+
+    expect(legacy.blocks.map(({ text }) => text)).toEqual([
+      "Visible heading",
+      "Recorded result 41"
+    ]);
+    expect(legacy.attempts).not.toContainEqual(expect.objectContaining({ engine: "native_pdf" }));
+    expect(gapFillOnly.blocks.map(({ text }) => text)).toEqual([
+      "Visible heading",
+      "Signed on 12.05.2024",
+      "Recorded result 41"
+    ]);
+    expect(current.blocks.map(({ text }) => text)).toEqual([
+      "Visible heading",
+      "Signed on 12.05.2024",
+      "Recorded result 42"
+    ]);
+    expect(current.attempts).toContainEqual({
+      engine: "native_pdf",
+      errorCode: null,
+      outcome: "complete"
+    });
   });
 
   it("preserves the non-adaptive renderer for recoverable profile-v3 attempts", async () => {

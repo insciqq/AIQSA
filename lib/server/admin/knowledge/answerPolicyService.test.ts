@@ -33,7 +33,7 @@ describe("administrator Knowledge answer-policy service", () => {
     await expect(createAdminKnowledgeAnswerPolicyService(prisma).list()).resolves.toMatchObject({
       ingestionParallelism: 5,
       maximumKnowledgeSearches: 12,
-      parallelismMaximum: 16,
+      parallelismMaximum: 64,
       parallelismMinimum: 1,
       version: 3
     });
@@ -42,7 +42,7 @@ describe("administrator Knowledge answer-policy service", () => {
   it("rejects an out-of-bounds parallelism before any transaction", async () => {
     const { prisma, transaction } = transactionalPrisma({ version: 1 });
     const service = createAdminKnowledgeAnswerPolicyService(prisma);
-    for (const ingestionParallelism of [0, 17, 2.5, Number.NaN]) {
+    for (const ingestionParallelism of [0, 65, 2.5, Number.NaN]) {
       await expect(service.updateIngestionParallelism({
         expectedVersion: 1,
         ingestionParallelism,
@@ -56,12 +56,12 @@ describe("administrator Knowledge answer-policy service", () => {
     const { prisma, update } = transactionalPrisma({ version: 4 });
     await createAdminKnowledgeAnswerPolicyService(prisma).updateIngestionParallelism({
       expectedVersion: 4,
-      ingestionParallelism: 12,
+      ingestionParallelism: 64,
       userId: "admin-1"
     });
     expect(update).toHaveBeenCalledWith({
       data: {
-        ingestionParallelism: 12,
+        ingestionParallelism: 64,
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },

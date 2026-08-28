@@ -18,14 +18,18 @@ import {
   type KnowledgeTableHeaderLineageV1
 } from "./documentContext";
 import {
+  KNOWLEDGE_CANONICAL_FURNITURE_PROFILE_MIN_VERSION,
   KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION,
   KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION,
+  KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION,
+  KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION,
   KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION,
   KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION,
   KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
+import { isInlineReferenceMarkerText } from "./layoutInlineReferences";
 import type {
   KnowledgeNormalizedBlock,
   KnowledgeNormalizedFieldGroup,
@@ -681,7 +685,8 @@ function tableDocumentContext(
 function profile4TableSegments(
   block: KnowledgeNormalizedBlock,
   currentSizing: boolean,
-  repeatedHeaderRow: number | null
+  repeatedHeaderRow: number | null,
+  inlinePairs: boolean
 ): Segment[] {
   const grid = tableGrid(block);
   const nonEmptyRows = Array.from({ length: grid.rowCount }, (_, rowIndex) => rowIndex)
@@ -734,6 +739,11 @@ function profile4TableSegments(
                 0,
                 grid.columnCount - 1
               ),
+          ...(inlinePairs && activeHeaderRow === null
+            ? { inlinePairEvidence: nonEmptyRows.length === 1
+                ? "singleton_table" as const
+                : "sparse_row" as const }
+            : {}),
           rowIndex,
           rowKind
         }),
@@ -911,7 +921,8 @@ function furniturePosition(
 }
 
 function conservativeRepeatedFurniture(
-  document: StoredKnowledgeNormalizedDocument
+  document: StoredKnowledgeNormalizedDocument,
+  preserveCanonical: boolean
 ): Set<string> {
   const extents = verticalExtents(document.blocks);
   const candidatesByKey = new Map<string, Array<Readonly<{
@@ -943,7 +954,12 @@ function conservativeRepeatedFurniture(
     if (pages.size < requiredPageCount || edges.size !== 1 ||
       Math.max(...positions) - Math.min(...positions) >
         KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT) continue;
-    for (const { block } of candidates) excluded.add(block.id);
+    const duplicates = preserveCanonical
+      ? [...candidates]
+          .sort((left, right) => left.block.order - right.block.order)
+          .slice(1)
+      : candidates;
+    for (const { block } of duplicates) excluded.add(block.id);
   }
   return excluded;
 }
@@ -953,7 +969,10 @@ function repeatedFurniture(
   profileVersion: number
 ): Set<string> {
   return profileVersion >= KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION
-    ? conservativeRepeatedFurniture(document)
+    ? conservativeRepeatedFurniture(
+        document,
+        profileVersion >= KNOWLEDGE_CANONICAL_FURNITURE_PROFILE_MIN_VERSION
+      )
     : legacyRepeatedFurniture(document.blocks);
 }
 
@@ -1121,11 +1140,18 @@ function structuralSegments(
     }
     const block = blocks[readingOrder];
     if (!block) continue;
-    if (!block.text || excluded.has(block.id) || block.type === "image") continue;
+    if (!block.text || excluded.has(block.id) || block.type === "image" ||
+      profileVersion >= KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION &&
+        block.type === "footnote" && isInlineReferenceMarkerText(block.text)) continue;
     if (block.type === "table") {
       result.push(...(profileVersion >= KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION
         ? block.table
-          ? profile4TableSegments(block, currentSizing, repeatedHeaderRows.get(block.id) ?? null)
+          ? profile4TableSegments(
+              block,
+              currentSizing,
+              repeatedHeaderRows.get(block.id) ?? null,
+              profileVersion >= KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION
+            )
           : profile3TableSegments(block)
         : profileVersion >= KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
           ? profile3TableSegments(block)
@@ -1151,10 +1177,19 @@ function structuralSegments(
   return result;
 }
 
-function mergeStructuralSegments(segments: readonly Segment[]): Segment[] {
+function mergeStructuralSegments(
+  segments: readonly Segment[],
+  profileVersion: number
+): Segment[] {
   const result: Segment[] = [];
   let current: Segment | null = null;
-  const cannotMerge = new Set<KnowledgeNormalizedBlock["type"]>(["code", "table"]);
+  const cannotMerge = new Set<KnowledgeNormalizedBlock["type"]>([
+    "code",
+    "table",
+    ...(profileVersion >= KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION
+      ? ["footnote" as const]
+      : [])
+  ]);
 
   for (const segment of segments) {
     if (!current) {
@@ -1486,7 +1521,10 @@ export function chunkKnowledgeDocument(input: Readonly<{
   try {
     const structural = input.profileVersion === 1
       ? legacyCharacterSegments(input.document)
-      : mergeStructuralSegments(structuralSegments(input.document, input.profileVersion));
+      : mergeStructuralSegments(
+          structuralSegments(input.document, input.profileVersion),
+          input.profileVersion
+        );
     const currentSizing = input.profileVersion >=
       KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
     const withLayoutEvidence = input.profileVersion >=

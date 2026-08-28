@@ -19,6 +19,7 @@ import {
 } from "./nativePdf";
 import {
   PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
+  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
   supplementImageHeavyPdfOcr
 } from "./ocrSupplement";
 import { resolveDocumentParserRoute } from "./routing";
@@ -249,7 +250,12 @@ export class DocumentParserBoundary {
           const supplemented = supplementImageHeavyPdfOcr(
             imageOcrPrimary,
             parsed,
-            this.#nativePdfLimits!
+            this.#nativePdfLimits!,
+            {
+              segmentFallbackBlocks: input.parserProfileVersion === undefined ||
+                input.parserProfileVersion >=
+                  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
+            }
           );
           attempts.push(supplemented.outcome === "rejected"
             ? Object.freeze({ ...attempt, outcome: "quality_failure" })

@@ -141,26 +141,40 @@ describe("model PDF transcription contract", () => {
     ].join("\n"));
   });
 
-  it("rejects a continuation marker without an immediately preceding anchor", () => {
+  it("degrades orphan continuation markers without losing valid vertical spans", () => {
     const pages = decodeModelPdfBatchOutput({
       mode: "system_model_direct_pdf",
       pageEnd: 1,
       pageStart: 1,
       text: [
         modelPdfPageStartMarker(1),
-        `${MODEL_PDF_ROW_CONTINUATION_CELL}\tValue`,
+        `\tTable heading\t${MODEL_PDF_ROW_CONTINUATION_CELL}`,
+        "Field A\tField B\tField C",
+        `${MODEL_PDF_ROW_CONTINUATION_CELL}\tSubfield\t${MODEL_PDF_ROW_CONTINUATION_CELL}`,
         modelPdfPageEndMarker(1)
       ].join("\n")
     });
 
-    expect(() => modelPdfPagesToDocument({
+    const document = modelPdfPagesToDocument({
       maxBlocks: 100,
       maxCharacters: 10_000,
       mode: "system_model_direct_pdf",
       pageCount: 1,
       pages,
       tableContinuationMarkers: true
-    })).toThrowError(expect.objectContaining({ code: "parser_invalid_output" }));
+    });
+    const table = document.blocks[0]?.table;
+
+    expect(table?.cells.find(({ column, row }) => column === 0 && row === 1))
+      .toMatchObject({ rowSpan: 2, text: "Field A" });
+    expect(table?.cells.find(({ column, row }) => column === 2 && row === 1))
+      .toMatchObject({ rowSpan: 2, text: "Field C" });
+    expect(table?.cells.some(({ text }) => text === MODEL_PDF_ROW_CONTINUATION_CELL)).toBe(false);
+    expect(document.blocks[0]?.text).toBe([
+      "Table heading",
+      "Field A\tField B\tField C",
+      "Field A\tSubfield\tField C"
+    ].join("\n"));
   });
 
   it("recovers a repeated regular multi-row record pattern without label vocabulary", () => {

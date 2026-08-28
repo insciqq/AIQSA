@@ -729,10 +729,15 @@ function decodeProviderDispatchRecoveryRequest(
     !validCapabilities(value.modelCapabilities) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
-      "baseline", "developer", "knowledgeAnswerContract", "memoryActionAnswerResult", "system"
+      "baseline", "developer", "knowledgeAnswerContract", "knowledgeAnswerDraftContract",
+      "knowledgeGroundedSelectorContract", "memoryActionAnswerResult", "system"
     ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
     value.prompt.knowledgeAnswerContract !== undefined &&
       value.prompt.knowledgeAnswerContract !== 1 ||
+    value.prompt.knowledgeAnswerDraftContract !== undefined &&
+      value.prompt.knowledgeAnswerDraftContract !== 5 ||
+    value.prompt.knowledgeGroundedSelectorContract !== undefined &&
+      value.prompt.knowledgeGroundedSelectorContract !== 3 ||
     value.prompt.memoryActionAnswerResult !== undefined &&
       decodeMemoryActionAnswerResult(value.prompt.memoryActionAnswerResult) === null ||
     !validSearchPlan(value.searchPlan) || !validMcpSnapshot(value.mcp) ||
@@ -743,13 +748,25 @@ function decodeProviderDispatchRecoveryRequest(
     typeof value.prompt.baseline.timeZone !== "string" ||
     (value.prompt.baseline.timeZoneSource !== "client" &&
       value.prompt.baseline.timeZoneSource !== "utc_fallback"))) return null;
+  const legacyKnowledgeAnswerContract = value.prompt.knowledgeAnswerContract === 1;
+  const currentKnowledgeAnswerContract =
+    value.prompt.knowledgeAnswerDraftContract === 5 &&
+    value.prompt.knowledgeGroundedSelectorContract === 3;
+  const partialCurrentKnowledgeAnswerContract =
+    value.prompt.knowledgeAnswerDraftContract !== undefined ||
+    value.prompt.knowledgeGroundedSelectorContract !== undefined;
+  const automaticKnowledgeAnswer = value.knowledgeFocusedRequest !== undefined ||
+    isRecord(value.knowledgeAnswering) &&
+      value.knowledgeAnswering.route === "full_context_v1";
+  if (legacyKnowledgeAnswerContract && partialCurrentKnowledgeAnswerContract ||
+    partialCurrentKnowledgeAnswerContract && !currentKnowledgeAnswerContract ||
+    automaticKnowledgeAnswer &&
+      !legacyKnowledgeAnswerContract && !currentKnowledgeAnswerContract ||
+    !automaticKnowledgeAnswer &&
+      (legacyKnowledgeAnswerContract || currentKnowledgeAnswerContract)) return null;
   if (!decodeKnowledgePlan(value.knowledgePlan).ok ||
     value.knowledgeFocusedRequest !== undefined &&
       decodeKnowledgeFocusedRequest(value.knowledgeFocusedRequest) === null ||
-    value.prompt.knowledgeAnswerContract !== undefined &&
-      value.knowledgeFocusedRequest === undefined &&
-      (!isRecord(value.knowledgeAnswering) ||
-        value.knowledgeAnswering.route !== "full_context_v1") ||
     value.mcpDiscovery !== undefined && !decodeMcpDiscoveryState(value.mcpDiscovery, 100)) return null;
   if (value.knowledgeFocusedRequest !== undefined && (
     value.knowledgeAnswering !== undefined ||
@@ -761,7 +778,6 @@ function decodeProviderDispatchRecoveryRequest(
   )) return null;
   if (isRecord(value.knowledgeAnswering) &&
     value.knowledgeAnswering.route === "full_context_v1" && (
-      value.prompt.knowledgeAnswerContract !== 1 ||
       !validFullContextEvidenceContext(
         value.context,
         Number(value.knowledgeAnswering.evidenceCount)

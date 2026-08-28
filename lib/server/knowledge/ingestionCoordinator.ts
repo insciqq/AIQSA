@@ -35,7 +35,7 @@ const RETRY_DELAYS_MS = [2_000, 10_000, 30_000, 120_000, 300_000] as const;
 
 export const KNOWLEDGE_INGESTION_PARALLELISM_DEFAULT = 8 as const;
 export const KNOWLEDGE_INGESTION_PARALLELISM_MINIMUM = 1 as const;
-export const KNOWLEDGE_INGESTION_PARALLELISM_MAXIMUM = 16 as const;
+export const KNOWLEDGE_INGESTION_PARALLELISM_MAXIMUM = 64 as const;
 
 export type KnowledgeIngestionParallelismSource =
   | number

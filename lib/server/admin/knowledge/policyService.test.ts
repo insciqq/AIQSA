@@ -38,7 +38,7 @@ describe("administrator Knowledge settings service", () => {
         fullContextThresholdPercent: 70,
         ingestionParallelism: 8,
         maximumKnowledgeSearches: 12,
-        parallelismMaximum: 16,
+        parallelismMaximum: 64,
         parallelismMinimum: 1
       },
       ingestionLimits: {

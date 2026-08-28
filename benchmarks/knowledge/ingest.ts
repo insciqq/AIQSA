@@ -24,6 +24,7 @@ import {
   type KnowledgeSuiteId,
   type KnowledgeSuiteManifest
 } from "./contract";
+import { knowledgeBenchmarkUploadRecoveryDisposition } from "./ingestResume";
 
 /** Drives public-corpus ingestion exclusively through the product HTTP
  * boundary of the isolated benchmark stack: knowledge base creation, upload
@@ -42,6 +43,8 @@ const INGEST_STATE_SCHEMA_VERSION = 1;
 
 type CliOptions = Readonly<{
   batchSize: number | undefined;
+  recoverBatchId: string | undefined;
+  reprocessSourceId: string | undefined;
   settleTimeoutMs: number;
   suiteId: KnowledgeSuiteId;
   uploadConcurrency: number;
@@ -83,6 +86,8 @@ function parseCli(argv: readonly string[]): CliOptions {
   let confirmPaid = false;
   let suiteId: KnowledgeSuiteId | undefined;
   let batchSize: number | undefined;
+  let recoverBatchId: string | undefined;
+  let reprocessSourceId: string | undefined;
   let settleTimeoutMinutes = 240;
   let uploadConcurrency = 4;
   for (let index = 0; index < argv.length; index += 1) {
@@ -112,6 +117,22 @@ function parseCli(argv: readonly string[]): CliOptions {
         index += 1;
         break;
       }
+      case "--reprocess-source":
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+          .test(next ?? "")) {
+          throw new Error("knowledge_benchmark_source_id_invalid");
+        }
+        reprocessSourceId = next;
+        index += 1;
+        break;
+      case "--recover-batch":
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+          .test(next ?? "")) {
+          throw new Error("knowledge_benchmark_batch_id_invalid");
+        }
+        recoverBatchId = next;
+        index += 1;
+        break;
       case "--settle-timeout-minutes": {
         const parsed = Number(next);
         if (!Number.isSafeInteger(parsed) || parsed < 1) {
@@ -142,6 +163,8 @@ function parseCli(argv: readonly string[]): CliOptions {
   if (!suiteId) throw new Error("knowledge_benchmark_suite_required");
   return Object.freeze({
     batchSize,
+    recoverBatchId,
+    reprocessSourceId,
     settleTimeoutMs: settleTimeoutMinutes * 60_000,
     suiteId,
     uploadConcurrency
@@ -527,26 +550,45 @@ async function ingestBatch(
     created.items,
     uploadConcurrency,
     async (item) => {
-      if (terminalSuccessStates.has(item.state) || item.state === "processing") {
+      let current = item;
+      if (current.state === "needs_attention" &&
+        knowledgeBenchmarkUploadRecoveryDisposition({
+          sourceId: current.sourceId
+        }) === "retry") {
+        const retried = decodeBatch(await apiRequest(
+          baseUrl,
+          cookie,
+          "POST",
+          `${itemPath(current.id)}/retry`,
+          { attemptNumber: current.attemptNumber }
+        ));
+        const replacement = retried.items.find(({ id }) => id === current.id);
+        if (!replacement) {
+          throw new Error("knowledge_benchmark_retry_projection_invalid");
+        }
+        current = replacement;
+      }
+      if (terminalSuccessStates.has(current.state) || current.state === "processing" ||
+        terminalFailureStates.has(current.state)) {
         return;
       }
-      if (item.state === "queued") {
-        if (item.transport?.kind !== "proxy" || !item.transport.uploadUrl) {
+      if (current.state === "queued") {
+        if (current.transport?.kind !== "proxy" || !current.transport.uploadUrl) {
           throw new Error("knowledge_benchmark_upload_transport_unexpected");
         }
         await uploadItemBytes(
           baseUrl,
           cookie,
-          item.transport.uploadUrl,
-          bytesByFileName.get(item.clientFileId)!
+          current.transport.uploadUrl,
+          bytesByFileName.get(current.clientFileId)!
         );
       }
       await apiRequest(
         baseUrl,
         cookie,
         "POST",
-        `${itemPath(item.id)}/settle`,
-        { attemptNumber: item.attemptNumber }
+        `${itemPath(current.id)}/settle`,
+        { attemptNumber: current.attemptNumber }
       );
     }
   );
@@ -562,21 +604,65 @@ async function ingestBatch(
     ));
     const failed = batch.items.filter(({ state }) =>
       terminalFailureStates.has(state));
-    if (failed.length > 0) {
-      const codes = [...new Set(failed.map(({ failureCode }) =>
-        failureCode ?? "unknown"))].sort();
+    const failedReadiness = await mapConcurrentOrdered(
+      failed,
+      Math.min(uploadConcurrency, 4),
+      async (item) => {
+        if (!item.sourceId) {
+          return Object.freeze({
+            disposition: knowledgeBenchmarkUploadRecoveryDisposition({
+              sourceId: null
+            }),
+            item
+          });
+        }
+        const body = await apiRequest(
+          baseUrl,
+          cookie,
+          "GET",
+          `/api/me/knowledge-sources/${encodeURIComponent(item.sourceId)}`
+        ) as { source?: { readiness?: { state?: unknown } } };
+        const sourceState = body.source?.readiness?.state;
+        if (sourceState !== "needs_attention" && sourceState !== "processing" &&
+          sourceState !== "ready") {
+          throw new Error("knowledge_benchmark_source_projection_invalid");
+        }
+        return Object.freeze({
+          disposition: knowledgeBenchmarkUploadRecoveryDisposition({
+            sourceId: item.sourceId,
+            sourceState
+          }),
+          item
+        });
+      }
+    );
+    const unrecoverable = failedReadiness.filter(({ disposition }) =>
+      disposition === "fail" || disposition === "retry");
+    if (unrecoverable.length > 0) {
+      const codes = [...new Set(unrecoverable.map(({ item }) =>
+        item.failureCode ?? "unknown"))].sort();
       throw new Error(`knowledge_benchmark_item_failed:${codes.join(",")}`);
     }
+    // Upload items deliberately retain their exact original artifact. After a
+    // profile migration or explicit Reprocess, that historical item can stay
+    // needs_attention forever even though the same Source has a current ready
+    // artifact. Current Source readiness is the product-owned recovery proof;
+    // a missing or currently failed Source remains a hard failure above.
+    const recovered = failedReadiness
+      .filter(({ disposition }) => disposition === "recover")
+      .map(({ item }) => item);
     const settled = batch.items.filter(({ sourceId, state }) =>
       terminalSuccessStates.has(state) && sourceId !== null);
-    if (settled.length === batch.items.length) {
-      return new Map(settled.map((item) => [
+    const usable = [...settled, ...recovered];
+    if (usable.length === batch.items.length) {
+      const recoveredIds = new Set(recovered.map(({ id }) => id));
+      return new Map(usable.map((item) => [
         item.clientFileId,
         Object.freeze({
           officialId: documents.find(({ fileName }) =>
             fileName === item.clientFileId)!.officialId,
           sourceId: item.sourceId!,
-          state: item.state
+          state: recoveredIds.has(item.id) ? "reused" : item.state
         })
       ]));
     }
@@ -729,6 +815,49 @@ async function main(): Promise<void> {
     await assertDatabaseIdentity(prisma);
     const userId = await ensureBenchmarkIdentity(prisma, state, statePath);
     const cookie = await createSessionCookie(prisma, userId);
+    if (options.recoverBatchId) {
+      if (!state.knowledgeBaseId) {
+        throw new Error("knowledge_benchmark_base_missing");
+      }
+      const batch = decodeBatch(await apiRequest(
+        baseUrl,
+        cookie,
+        "GET",
+        `/api/me/knowledge-bases/${encodeURIComponent(state.knowledgeBaseId)}` +
+          `/upload-batches/${encodeURIComponent(options.recoverBatchId)}`
+      ));
+      const sourceIds = [...new Set(batch.items
+        .filter(({ sourceId, state: itemState }) =>
+          sourceId !== null && terminalFailureStates.has(itemState))
+        .map(({ sourceId }) => sourceId!))];
+      await mapConcurrentOrdered(
+        sourceIds,
+        options.uploadConcurrency,
+        async (sourceId) => apiRequest(
+          baseUrl,
+          cookie,
+          "POST",
+          `/api/me/knowledge-sources/${encodeURIComponent(sourceId)}/reprocess`
+        )
+      );
+      emit("batch_reprocess_accepted", {
+        batchId: options.recoverBatchId,
+        sources: sourceIds.length
+      });
+      return;
+    }
+    if (options.reprocessSourceId) {
+      await apiRequest(
+        baseUrl,
+        cookie,
+        "POST",
+        `/api/me/knowledge-sources/${encodeURIComponent(
+          options.reprocessSourceId
+        )}/reprocess`
+      );
+      emit("source_reprocess_accepted", { sourceId: options.reprocessSourceId });
+      return;
+    }
     if (!state.knowledgeBaseId) {
       const created = await apiRequest(
         baseUrl,

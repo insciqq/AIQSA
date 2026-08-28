@@ -4,10 +4,18 @@ import {
   knowledgeEvidenceReceiptHash,
   type KnowledgeEvidencePackage
 } from "./evidencePackage";
+import {
+  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION,
+  KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION,
+  type KnowledgeAnswerFallbackReason,
+  type KnowledgeAnswerSettlementV5
+} from "./answerGroundingV5";
+import type { KnowledgeProviderAttemptUsage } from "./evidenceDispatchRepository";
 
 export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
+export const KNOWLEDGE_GROUNDING_EVIDENCE_VERSION = 7 as const;
 
-export type KnowledgeGroundingResult = Readonly<{
+export type LegacyKnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
   finalText: string;
   originalAnswerHash: string;
@@ -16,6 +24,47 @@ export type KnowledgeGroundingResult = Readonly<{
   sessionId: string;
   version: typeof KNOWLEDGE_GROUNDING_VERSION;
 }>;
+
+export type KnowledgeGroundingEvidenceV7 = Readonly<{
+  contradictedClaimCount: number;
+  draftClaimCount: number;
+  draftContractVersion: typeof KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION;
+  draftHash: string;
+  draftOperationId: string;
+  durations: Readonly<{
+    draftMs: number;
+    selectorMs: number;
+  }>;
+  evidenceReceiptHash: string;
+  fallbackReason: KnowledgeAnswerFallbackReason | null;
+  finalAnswerHash: string;
+  finalText: string;
+  finalizationMode: KnowledgeAnswerSettlementV5["finalizationMode"];
+  groundingStatus: KnowledgeAnswerSettlementV5["groundingStatus"];
+  originalAnswerHash: string;
+  outcome: KnowledgeAnswerSettlementV5["outcome"];
+  providerRequestIds: Readonly<{
+    draft: string | null;
+    selector: string | null;
+  }>;
+  receiptHash: string;
+  requestCoverage: KnowledgeAnswerSettlementV5["requestCoverage"];
+  selectorContractVersion: typeof KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION;
+  selectorHash: string;
+  selectorOperationId: string;
+  sessionId: string;
+  supportedClaimCount: number;
+  unsupportedClaimCount: number;
+  usage: Readonly<{
+    draft: KnowledgeProviderAttemptUsage;
+    selector: KnowledgeProviderAttemptUsage;
+  }>;
+  version: typeof KNOWLEDGE_GROUNDING_EVIDENCE_VERSION;
+}>;
+
+export type KnowledgeGroundingResult =
+  | LegacyKnowledgeGroundingResult
+  | KnowledgeGroundingEvidenceV7;
 
 export class KnowledgeAnswerContractError extends Error {
   readonly code:
@@ -48,6 +97,86 @@ const providerWrappedFullWidthHandle = /^【\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\s*
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function validOperationId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u.test(value);
+}
+
+function validDuration(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 24 * 60 * 60 * 1_000;
+}
+
+/** Content-free V7 evidence for the server-settled Draft V5 / Selector V3 path. */
+export function groundSettledKnowledgeAnswerV5(input: Readonly<{
+  draft: Readonly<{
+    claimCount: number;
+    durationMs: number;
+    hash: string;
+    operationId: string;
+    providerRequestId: string | null;
+    usage: KnowledgeProviderAttemptUsage;
+  }>;
+  evidence: KnowledgeEvidencePackage;
+  evidenceReceiptHash: string;
+  selector: Readonly<{
+    durationMs: number;
+    hash: string;
+    operationId: string;
+    providerRequestId: string | null;
+    usage: KnowledgeProviderAttemptUsage;
+  }>;
+  settlement: KnowledgeAnswerSettlementV5;
+}>): KnowledgeGroundingEvidenceV7 {
+  const receiptHash = knowledgeEvidenceReceiptHash(input.evidence);
+  if (!validOperationId(input.draft.operationId) ||
+    !validOperationId(input.selector.operationId) ||
+    !/^[0-9a-f]{64}$/u.test(input.draft.hash) ||
+    !/^[0-9a-f]{64}$/u.test(input.selector.hash) ||
+    !validDuration(input.draft.durationMs) || !validDuration(input.selector.durationMs) ||
+    !Number.isSafeInteger(input.draft.claimCount) || input.draft.claimCount < 0 ||
+    input.draft.claimCount > 24 || !/^[0-9a-f]{64}$/u.test(input.evidenceReceiptHash)) {
+    throw new KnowledgeAnswerContractError(
+      "knowledge_answer_contract_failed",
+      "The accepted Knowledge grounding operation evidence is invalid"
+    );
+  }
+  return Object.freeze({
+    contradictedClaimCount: input.settlement.contradictedClaimCount,
+    draftClaimCount: input.draft.claimCount,
+    draftContractVersion: KNOWLEDGE_ANSWER_DRAFT_CONTRACT_VERSION,
+    draftHash: input.draft.hash,
+    draftOperationId: input.draft.operationId,
+    durations: Object.freeze({
+      draftMs: input.draft.durationMs,
+      selectorMs: input.selector.durationMs
+    }),
+    evidenceReceiptHash: input.evidenceReceiptHash,
+    fallbackReason: input.settlement.fallbackReason,
+    finalAnswerHash: hash(input.settlement.finalText),
+    finalText: input.settlement.finalText,
+    finalizationMode: input.settlement.finalizationMode,
+    groundingStatus: input.settlement.groundingStatus,
+    originalAnswerHash: input.draft.hash,
+    outcome: input.settlement.outcome,
+    providerRequestIds: Object.freeze({
+      draft: input.draft.providerRequestId,
+      selector: input.selector.providerRequestId
+    }),
+    receiptHash,
+    requestCoverage: input.settlement.requestCoverage,
+    selectorContractVersion: KNOWLEDGE_GROUNDED_SELECTOR_CONTRACT_VERSION,
+    selectorHash: input.selector.hash,
+    selectorOperationId: input.selector.operationId,
+    sessionId: input.evidence.sessionId,
+    supportedClaimCount: input.settlement.supportedClaimCount,
+    unsupportedClaimCount: input.settlement.unsupportedClaimCount,
+    usage: Object.freeze({
+      draft: input.draft.usage,
+      selector: input.selector.usage
+    }),
+    version: KNOWLEDGE_GROUNDING_EVIDENCE_VERSION
+  });
 }
 
 function normalizeToolLoopCitationSyntax(

@@ -16,7 +16,12 @@ import {
 } from "../parsing/pdfPreparation";
 import type { ParsedDocument } from "../parsing/types";
 import { extractNativePdfGeometry } from "../parsing/nativePdf";
-import { enrichModelPdfGeometry } from "../parsing/pdfGeometry";
+import {
+  enrichModelPdfGeometry,
+  mergeModelPdfWithNativeText,
+  MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION,
+  MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION
+} from "../parsing/pdfGeometry";
 import { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import {
   normalizeProviderExecutionSnapshot,
@@ -210,8 +215,8 @@ function providerRequest(input: Readonly<{
 function validSnapshot(
   input: Parameters<KnowledgeModelPdfParser["parse"]>[0]
 ): ProviderExecutionSnapshot {
-  if (![1, 2, 3, 4, 5, 6, 7, KNOWLEDGE_PDF_PARSER_PROFILE_VERSION]
-    .includes(input.parserProfileVersion) ||
+  if (!Number.isSafeInteger(input.parserProfileVersion) || input.parserProfileVersion < 1 ||
+    input.parserProfileVersion > KNOWLEDGE_PDF_PARSER_PROFILE_VERSION ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
     throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
@@ -409,6 +414,15 @@ export function createKnowledgeModelPdfParser(
             maxCharacters: input.maxCharacters,
             maxPages: input.maxPages
           });
+          if (input.mode === "system_model_vision" &&
+            input.parserProfileVersion >= MODEL_PDF_NATIVE_TEXT_COLLABORATION_PROFILE_VERSION) {
+            return mergeModelPdfWithNativeText(document, geometry, {
+              allowTextCorrections: input.parserProfileVersion >=
+                MODEL_PDF_NATIVE_TEXT_CORRECTION_PROFILE_VERSION,
+              maxBlocks: input.maxBlocks,
+              maxCharacters: input.maxCharacters
+            }).document;
+          }
           return enrichModelPdfGeometry(document, geometry);
         } catch {
           if (input.signal?.aborted) throw abortReason(input.signal);

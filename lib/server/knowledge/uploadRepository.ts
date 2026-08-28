@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 
@@ -82,12 +82,30 @@ type LockedUploadBase = Readonly<{
   trashedAt: Date | null;
 }>;
 
-const SERIALIZABLE_ATTEMPTS = 5;
+// A browser may settle a whole upload batch concurrently, while every item
+// deliberately updates the same Base revision under Serializable isolation.
+// Retry the complete rollback-safe transaction with jitter so a burst drains
+// instead of making all waiters collide again immediately.
+const SERIALIZABLE_ATTEMPTS = 24;
+const SERIALIZABLE_RETRY_BASE_DELAY_MS = 25;
+const SERIALIZABLE_RETRY_MAX_DELAY_MS = 500;
+
+type SerializationRetryDelay = (retryOrdinal: number) => Promise<void>;
+
+async function waitForSerializationRetry(retryOrdinal: number): Promise<void> {
+  const ceiling = Math.min(
+    SERIALIZABLE_RETRY_MAX_DELAY_MS,
+    SERIALIZABLE_RETRY_BASE_DELAY_MS * (2 ** Math.max(0, retryOrdinal - 1))
+  );
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, randomInt(1, ceiling + 1)));
+}
 
 function serializationConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && (
     error.code === "P2034" ||
-    error.code === "P2010" && error.meta?.code === "40001"
+    error.code === "P2010" &&
+      (error.meta?.code === "40001" || error.meta?.code === "40P01")
   );
 }
 
@@ -95,12 +113,18 @@ function uniqueConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-async function serializable<T>(operation: () => Promise<T>): Promise<T> {
+async function serializable<T>(
+  operation: () => Promise<T>,
+  retryDelay: SerializationRetryDelay
+): Promise<T> {
   for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
-      if (attempt < SERIALIZABLE_ATTEMPTS - 1 && serializationConflict(error)) continue;
+      if (attempt < SERIALIZABLE_ATTEMPTS - 1 && serializationConflict(error)) {
+        await retryDelay(attempt + 1);
+        continue;
+      }
       throw error;
     }
   }
@@ -232,7 +256,12 @@ async function lockItem(
   return rows[0] ?? null;
 }
 
-export function createPrismaKnowledgeUploadRepository(client: PrismaClient = prisma) {
+export function createPrismaKnowledgeUploadRepository(
+  client: PrismaClient = prisma,
+  options: Readonly<{ serializationRetryDelay?: SerializationRetryDelay }> = {}
+) {
+  const serializationRetryDelay = options.serializationRetryDelay ??
+    waitForSerializationRetry;
   async function readBatch(where: Prisma.KnowledgeUploadBatchWhereInput): Promise<KnowledgeUploadBatchRecord | null> {
     const row = await client.knowledgeUploadBatch.findFirst({ include: batchInclude, where });
     return row ? (await withSourceState(client, [row]))[0]! : null;
@@ -311,7 +340,8 @@ export function createPrismaKnowledgeUploadRepository(client: PrismaClient = pri
           where: { id: item.id }
         });
         return { cleanup, kind: "ok" } as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      serializationRetryDelay);
     },
 
     async checkpointPart(input: Readonly<{
@@ -370,7 +400,8 @@ export function createPrismaKnowledgeUploadRepository(client: PrismaClient = pri
           where: { id: item.id }
         });
         return "ok" as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      serializationRetryDelay);
     },
 
     async createBatch(input: Readonly<{
@@ -423,7 +454,8 @@ export function createPrismaKnowledgeUploadRepository(client: PrismaClient = pri
             },
             include: batchInclude
           });
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+        serializationRetryDelay);
         if (!created) return { kind: "not_found" };
         return {
           batch: (await withSourceState(client, [created]))[0]!,
@@ -596,7 +628,8 @@ export function createPrismaKnowledgeUploadRepository(client: PrismaClient = pri
           where: { id: item.id }
         });
         return { cleanup, kind: "ok" } as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      serializationRetryDelay);
     },
 
     async settle(input: Readonly<{
@@ -802,7 +835,8 @@ export function createPrismaKnowledgeUploadRepository(client: PrismaClient = pri
           kind: "created",
           sourceId: input.sourceId
         } as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      serializationRetryDelay);
     },
 
     async start(input: Readonly<{

@@ -2991,31 +2991,37 @@ model KnowledgeBudgetReservation {
 }
 
 model KnowledgeProviderAttempt {
-  id                 String                             @id @default(uuid())
-  modelRunId         String
-  providerBindingKey String                             @default("answer")
-  ordinal            Int
-  roundIndex         Int
-  purpose            String                             @default("answer") @db.VarChar(32)
-  idempotencyKey     String                             @db.VarChar(128)
-  checkpointHash     String                             @db.Char(64)
-  requestHash        String                             @db.Char(64)
-  state              KnowledgeProviderAttemptState      @default(reserved)
-  estimatedUsage     Json
-  actualUsage        Json?
-  providerResponseId String?
-  leaseToken         String?                            @db.VarChar(128)
-  leaseExpiresAt     DateTime?
-  failureCode        String?                            @db.VarChar(128)
-  dispatchedAt       DateTime?
-  settledAt          DateTime?
-  releasedAt         DateTime?
-  ambiguousAt        DateTime?
-  createdAt          DateTime                           @default(now())
-  updatedAt          DateTime                           @updatedAt
-  modelRun           ModelRun                           @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  providerBinding    ProviderRunBinding                 @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeProviderAttempt_providerBinding_fkey")
-  manifest           KnowledgeEvidenceDispatchManifest?
+  id                  String                             @id @default(uuid())
+  modelRunId          String
+  providerBindingKey  String                             @default("answer")
+  ordinal             Int
+  roundIndex          Int
+  purpose             String                             @default("answer") @db.VarChar(32)
+  idempotencyKey      String                             @db.VarChar(128)
+  checkpointHash      String                             @db.Char(64)
+  requestHash         String                             @db.Char(64)
+  contractVersion     Int?
+  evidenceReceiptHash String?                            @db.Char(64)
+  acceptedRequest     Json?
+  acceptedResult      Json?
+  resultHash          String?                            @db.Char(64)
+  resultAcceptedAt    DateTime?
+  state               KnowledgeProviderAttemptState      @default(reserved)
+  estimatedUsage      Json
+  actualUsage         Json?
+  providerResponseId  String?
+  leaseToken          String?                            @db.VarChar(128)
+  leaseExpiresAt      DateTime?
+  failureCode         String?                            @db.VarChar(128)
+  dispatchedAt        DateTime?
+  settledAt           DateTime?
+  releasedAt          DateTime?
+  ambiguousAt         DateTime?
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
+  modelRun            ModelRun                           @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  providerBinding     ProviderRunBinding                 @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeProviderAttempt_providerBinding_fkey")
+  manifest            KnowledgeEvidenceDispatchManifest?
 
   @@unique([modelRunId, id])
   @@unique([modelRunId, ordinal])
@@ -3191,9 +3197,11 @@ model KnowledgeRunEvidence {
 
 model KnowledgeGroundingResult {
   retrievalSessionId String                    @id
+  version            Int                       @default(5)
   outcome            String                    @db.VarChar(32)
   originalAnswerHash String                    @db.Char(64)
   finalAnswerHash    String                    @db.Char(64)
+  evidence           Json?
   createdAt          DateTime                  @default(now())
   retrievalSession   KnowledgeRetrievalSession @relation(fields: [retrievalSessionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 }

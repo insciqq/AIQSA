@@ -54,6 +54,11 @@ import type {
 /** Passage-ordinal radius loaded around one hit; the token cap is the real
  * bound, this only bounds the repository read. */
 export const KNOWLEDGE_PARENT_CONTEXT_WINDOW_RADIUS = 8;
+/** Existing table-neighbor policy shared by focused retrieval and the
+ * full-context structural presentation. The radius counts logical table rows;
+ * the maximum counts neighboring passages and excludes the atomic primary. */
+export const KNOWLEDGE_TABLE_CONTEXT_ROW_RADIUS = 4;
+export const KNOWLEDGE_TABLE_CONTEXT_MAX = 8;
 /** Adjacent explanatory body passages allowed per side for table/form hits. */
 export const KNOWLEDGE_PARENT_CONTEXT_STRUCTURED_ADJACENT_PER_SIDE = 1;
 

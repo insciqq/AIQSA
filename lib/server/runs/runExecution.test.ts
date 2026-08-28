@@ -687,7 +687,11 @@ function fullContextKnowledgePreparedData(): MaterializedPreparedRunData {
       knowledgeEvidenceMessageFromDispatchDraft(plan.dispatchDraft)
     ).context,
     knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan),
-    prompt: { ...prepared.normalizedRequest.prompt, knowledgeAnswerContract: 1 }
+    prompt: {
+      ...prepared.normalizedRequest.prompt,
+      knowledgeAnswerDraftContract: 5,
+      knowledgeGroundedSelectorContract: 3
+    }
   };
   return {
     ...prepared,
@@ -916,6 +920,13 @@ function createRepository(options: RepositoryOptions = {}) {
         ? knowledgeFinalizationEnvelope(options.groundingResult)
         : null;
     },
+    async groundKnowledgeAnswerV5() {
+      if (options.groundingError) throw options.groundingError;
+      if (!options.groundingResult) {
+        throw new Error("knowledge_grounding_fixture_missing");
+      }
+      return knowledgeFinalizationEnvelope(options.groundingResult);
+    },
     async isProjectRunAccessCurrent(input) {
       projectAccessChecks.push(input);
       return typeof options.projectAccessCurrent === "function"
@@ -1063,6 +1074,7 @@ function executionInput(input: Readonly<{
   runId?: string;
   searchAdapter?: ProviderSearchAdapter;
   searchRuntimes?: RunExecutionInput["searchRuntimes"];
+  structuredOutputAdapter?: RunExecutionInput["structuredOutputAdapter"];
 }>): RunExecutionInput {
   const prepared = input.prepared ?? preparedData();
   const searchRuntimes = input.searchRuntimes ?? (input.searchAdapter
@@ -1094,6 +1106,9 @@ function executionInput(input: Readonly<{
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
     ...(input.providerAdmission ? { providerAdmission: input.providerAdmission } : {}),
     ...(searchRuntimes ? { searchRuntimes } : {}),
+    ...(input.structuredOutputAdapter
+      ? { structuredOutputAdapter: input.structuredOutputAdapter }
+      : {}),
     userId: "user-1"
   };
 }
@@ -2424,9 +2439,8 @@ describe("run execution", () => {
     })]);
   });
 
-  it("runs one focused Knowledge retrieval, exposes no tools, and strips the exact status line", async () => {
+  it("runs one focused retrieval followed by exactly one hidden draft and one hidden selector", async () => {
     const finalText = "Supported answer [K1]";
-    const providerText = `AIQSA_KB_STATUS=ANSWERED\n${finalText}`;
     const repository = createRepository({
       groundingResult: structuralGroundingResult(finalText)
     });
@@ -2437,6 +2451,18 @@ describe("run execution", () => {
     const adapter = createAdapter(async function* (request) {
       providerCallCount += 1;
       providerRequests.push(request);
+      const providerText = JSON.stringify(providerCallCount === 1
+        ? {
+            blocks: [{ claimIds: ["C1"], type: "paragraph" }],
+            claims: [{ citationHints: ["K1"], id: "C1", text: "Supported answer" }],
+            version: 1
+          }
+        : {
+            claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+            decision: "select_claims",
+            requestCoverage: "complete",
+            version: 1
+          });
       yield { data: { delta: providerText }, type: "token" };
       return providerResult({ finalText: providerText });
     });
@@ -2456,14 +2482,17 @@ describe("run execution", () => {
       name: KNOWLEDGE_FOCUSED_OPERATION_NAME
     });
     expect(repository.failedRuns).toEqual([]);
-    expect(providerCallCount).toBe(1);
-    expect(providerRequests).toHaveLength(1);
-    expect(providerRequests[0]?.tools).toBeUndefined();
-    expect(providerRequests[0]?.toolChoice).toBe("none");
-    expect(providerRequests[0]?.prompt.knowledgeAnswerContract).toBe(1);
-    expect(providerRequests[0]?.context?.messages.filter((message) =>
-      message.purpose === "knowledge_evidence")).toHaveLength(1);
-    expect(repository.groundingAnswers).toEqual([providerText]);
+    expect(providerCallCount).toBe(2);
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests.every((request) => request.tools === undefined &&
+      request.toolChoice === "none" && request.context === undefined)).toBe(true);
+    expect(providerRequests[0]?.prompt.system).toContain(
+      '<aiqsa_knowledge_answer_draft_contract version="5">'
+    );
+    expect(providerRequests[1]?.prompt.system).toContain(
+      '<aiqsa_knowledge_grounded_selector_contract version="3">'
+    );
+    expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.completeRuns[0]).toMatchObject({
       finalText,
@@ -2476,13 +2505,19 @@ describe("run execution", () => {
       data: { delta: finalText },
       type: "token"
     }]);
-    expect(body).not.toContain("AIQSA_KB_STATUS=");
-    expect(dispatch.order).toEqual(["prepare", "dispatch", "settle"]);
+    expect(body).not.toContain("\"decision\":\"select_claims\"");
+    expect(dispatch.prepare.mock.calls.map(([call]) => call.purpose)).toEqual([
+      "knowledge_answer_draft_v5",
+      "knowledge_grounded_selector_v3"
+    ]);
+    expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
+      "prepare", "dispatch", "settle"
+    ]);
   });
 
   it("answers from a complete small corpus with zero Knowledge searches", async () => {
     const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
-    const providerText = `AIQSA_KB_STATUS=ANSWERED\n${finalText}`;
     const repository = createRepository({
       groundingResult: structuralGroundingResult(finalText)
     });
@@ -2490,8 +2525,23 @@ describe("run execution", () => {
     const requests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
       requests.push(request);
-      yield { data: { delta: "AIQSA_KB_STATUS=" }, type: "token" };
-      yield { data: { delta: "ANSWERED\nTotal cholesterol is 5.3 mmol/L citeK1." }, type: "token" };
+      const providerText = JSON.stringify(requests.length === 1
+        ? {
+            blocks: [{ claimIds: ["C1"], type: "paragraph" }],
+            claims: [{
+              citationHints: ["K1"],
+              id: "C1",
+              text: "Total cholesterol is 5.3 mmol/L"
+            }],
+            version: 1
+          }
+        : {
+            claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+            decision: "select_claims",
+            requestCoverage: "complete",
+            version: 1
+          });
+      yield { data: { delta: providerText }, type: "token" };
       return providerResult({ finalText: providerText });
     });
 
@@ -2503,11 +2553,9 @@ describe("run execution", () => {
     })).text();
     const events = parseSse(body);
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.tools).toBeUndefined();
-    expect(requests[0]?.toolChoice).toBe("none");
-    expect(requests[0]?.context?.messages.filter((message) =>
-      message.purpose === "knowledge_evidence")).toHaveLength(1);
+    expect(requests).toHaveLength(2);
+    expect(requests.every((request) => request.tools === undefined &&
+      request.toolChoice === "none" && request.context === undefined)).toBe(true);
     expect(dispatch.prepare).toHaveBeenCalledWith(expect.objectContaining({
       evidenceBindings: [expect.objectContaining({
         dispatchEvidenceId: expect.stringContaining("full-context-"),
@@ -2515,14 +2563,16 @@ describe("run execution", () => {
       })]
     }));
     expect(repository.toolCalls.size).toBe(0);
-    expect(repository.groundingAnswers).toEqual([providerText]);
+    expect(repository.groundingAnswers).toEqual([]);
     expect(events.filter((event) => event.type === "token")).toEqual([{
       data: { delta: finalText },
       type: "token"
     }]);
-    expect(body).not.toContain("AIQSA_KB_STATUS=");
-    expect(body).not.toContain("cite");
-    expect(dispatch.order).toEqual(["prepare", "dispatch", "settle"]);
+    expect(body).not.toContain("\"decision\":\"select_claims\"");
+    expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
+      "prepare", "dispatch", "settle"
+    ]);
   });
 
   it.each([
@@ -2650,7 +2700,7 @@ describe("run execution", () => {
     expect(dispatch.prepare).not.toHaveBeenCalled();
   });
 
-  it("maps a one-shot focused provider failure without retrying", async () => {
+  it("settles draft and selector provider failures without retrying either stage", async () => {
     const repository = createRepository();
     const { execute, executor } = focusedKnowledgeExecutor();
     const dispatch = createKnowledgeProviderDispatchRecorder();
@@ -2669,7 +2719,7 @@ describe("run execution", () => {
     })).text();
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(providerCallCount).toBe(1);
+    expect(providerCallCount).toBe(2);
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
@@ -2681,7 +2731,10 @@ describe("run execution", () => {
       })
     ]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain("private_provider_failure");
-    expect(dispatch.order).toEqual(["prepare", "dispatch", "ambiguous"]);
+    expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
+      "prepare", "dispatch", "settle"
+    ]);
   });
 
   it("settles a focused retrieval deadline as a technical retrieval failure", async () => {
@@ -2726,7 +2779,7 @@ describe("run execution", () => {
     ]);
   });
 
-  it("settles a focused answer deadline as a provider failure", async () => {
+  it("settles focused draft and selector deadlines as bounded failure markers", async () => {
     const repository = createRepository();
     const { executor } = focusedKnowledgeExecutor();
     const dispatch = createKnowledgeProviderDispatchRecorder();
@@ -2746,7 +2799,7 @@ describe("run execution", () => {
       repository: repository.repository
     })).text();
 
-    expect(providerCallCount).toBe(1);
+    expect(providerCallCount).toBe(2);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
       expect.objectContaining({
@@ -2756,7 +2809,10 @@ describe("run execution", () => {
         }
       })
     ]);
-    expect(dispatch.order).toEqual(["prepare", "dispatch", "ambiguous"]);
+    expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
+      "prepare", "dispatch", "settle"
+    ]);
   });
 
   it.each([
@@ -2768,7 +2824,7 @@ describe("run execution", () => {
       code: "knowledge_citation_contract_failed" as const,
       providerText: "AIQSA_KB_STATUS=ANSWERED\nUnknown citation [K99]"
     }
-  ])("fails a one-shot focused answer with $code and does not repair or retry", async ({
+  ])("fails deterministic V5 finalization with $code and does not repair or retry", async ({
     code,
     providerText
   }) => {
@@ -2792,15 +2848,18 @@ describe("run execution", () => {
     })).text();
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(providerCallCount).toBe(1);
-    expect(repository.groundingAnswers).toEqual([providerText]);
+    expect(providerCallCount).toBe(2);
+    expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toEqual([
       expect.objectContaining({
         error: expect.objectContaining({ code })
       })
     ]);
-    expect(dispatch.order).toEqual(["prepare", "dispatch", "settle"]);
+    expect(dispatch.order).toEqual([
+      "prepare", "dispatch", "settle",
+      "prepare", "dispatch", "settle"
+    ]);
   });
 
   it("settles parallel Knowledge and Search calls before one continuation", async () => {
@@ -2810,6 +2869,7 @@ describe("run execution", () => {
     });
     const { execute, executor } = toolLoopKnowledgeExecutor();
     const egress = createMemoryEgressRecorder();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
     const adapter = createAdapter(async function* (request) {
       providerRequests.push(request);
       if (providerRequests.length === 1) {
@@ -2829,7 +2889,27 @@ describe("run execution", () => {
           ]
         });
       }
-      return providerResult({ finalText: "Combined answer [K1]." });
+      if (providerRequests.length === 2) {
+        return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      }
+      return providerResult({
+        finalText: JSON.stringify(providerRequests.length === 3
+          ? {
+              blocks: [{ claimIds: ["C1"], type: "paragraph" }],
+              claims: [{
+                citationHints: ["K1"],
+                id: "C1",
+                text: "Combined answer"
+              }],
+              version: 1
+            }
+          : {
+              claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+              decision: "select_claims",
+              requestCoverage: "complete",
+              version: 1
+            })
+      });
     });
     const searchAdapter: ProviderSearchAdapter = {
       buildRequestPreview: () => ({}),
@@ -2855,6 +2935,7 @@ describe("run execution", () => {
     await createRunExecutionResponse(executionInput({
       adapter,
       knowledgeExecutor: executor,
+      knowledgeProviderDispatch: dispatch.lifecycle,
       memoryEgress: egress.service,
       prepared,
       repository: repository.repository,
@@ -2863,7 +2944,7 @@ describe("run execution", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(repository.searchRuns).toHaveLength(1);
-    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests).toHaveLength(4);
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(4);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain(
       "Bounded private passage"
@@ -2880,6 +2961,7 @@ describe("run execution", () => {
       groundingResult: structuralGroundingResult("Sequential answer [K1].")
     });
     const { executor } = toolLoopKnowledgeExecutor();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
     const adapter = createAdapter(async function* (request) {
       providerRequests.push(request);
       if (providerRequests.length === 1) {
@@ -2902,7 +2984,27 @@ describe("run execution", () => {
           }]
         });
       }
-      return providerResult({ finalText: "Sequential answer [K1]." });
+      if (providerRequests.length === 3) {
+        return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      }
+      return providerResult({
+        finalText: JSON.stringify(providerRequests.length === 4
+          ? {
+              blocks: [{ claimIds: ["C1"], type: "paragraph" }],
+              claims: [{
+                citationHints: ["K1"],
+                id: "C1",
+                text: "Sequential answer"
+              }],
+              version: 1
+            }
+          : {
+              claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
+              decision: "select_claims",
+              requestCoverage: "complete",
+              version: 1
+            })
+      });
     });
     const searchAdapter: ProviderSearchAdapter = {
       buildRequestPreview: () => ({}),
@@ -2922,6 +3024,7 @@ describe("run execution", () => {
     await createRunExecutionResponse(executionInput({
       adapter,
       knowledgeExecutor: executor,
+      knowledgeProviderDispatch: dispatch.lifecycle,
       prepared: preparedData({
         knowledgeBaseIds: ["base-1"],
         modelId: "openai-answer-model",
@@ -2932,7 +3035,7 @@ describe("run execution", () => {
       searchAdapter
     })).text();
 
-    expect(providerRequests).toHaveLength(3);
+    expect(providerRequests).toHaveLength(5);
     expect(repository.searchRuns).toHaveLength(1);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toEqual([]);

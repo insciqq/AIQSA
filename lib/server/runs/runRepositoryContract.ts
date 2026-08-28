@@ -21,7 +21,10 @@ import type {
   KnowledgeRunAdmissionExclusion,
   KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
+import type {
+  KnowledgeFullContextDispatchRecovery,
+  KnowledgeRunFinalizationEnvelope
+} from "../knowledge/evidenceRepository";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   SearchAdapterKind,
@@ -490,6 +493,12 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }>): Promise<KnowledgeRunFinalizationEnvelope | null>;
+  groundKnowledgeAnswerV5?(input: Readonly<{
+    draftContractVersion: 5;
+    runId: string;
+    selectorContractVersion: 3;
+    userId: string;
+  }>): Promise<KnowledgeRunFinalizationEnvelope>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -586,6 +595,15 @@ export type RunRepository = {
   loadKnowledgeFullContextPassages?(
     sources: readonly KnowledgeRunAdmissionSource[]
   ): Promise<readonly KnowledgeFullContextPassage[] | null>;
+  /** Purpose-bound recovery loader for a full-context manifest accepted into
+   * the evidence session before any Draft V5 provider operation exists. */
+  loadKnowledgeFullContextDispatchRecovery?(input: {
+    maximumTokens: number;
+    modelId: string;
+    provider: string;
+    runId: string;
+    userId: string;
+  }): Promise<KnowledgeFullContextDispatchRecovery | null>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   loadModelPricing(provider: string, modelId: string): Promise<ModelTokenPricing | null>;
   loadRunUsageAttributions(input: {

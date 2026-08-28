@@ -185,4 +185,68 @@ describe("run finalization", () => {
       knowledgeGrounding: expect.objectContaining({ grounding })
     }));
   });
+
+  it("finalizes V5 from the immutable contract snapshot without invoking the legacy answer path", async () => {
+    const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
+    const grounding = {
+      contradictedClaimCount: 0,
+      draftClaimCount: 1,
+      draftContractVersion: 5 as const,
+      draftHash: "a".repeat(64),
+      draftOperationId: "draft-operation-1",
+      durations: { draftMs: 10, selectorMs: 8 },
+      evidenceReceiptHash: "b".repeat(64),
+      fallbackReason: null,
+      finalAnswerHash: "c".repeat(64),
+      finalText: "Supported claim. [K1]",
+      finalizationMode: "selected_claims" as const,
+      groundingStatus: "verified" as const,
+      originalAnswerHash: "d".repeat(64),
+      outcome: "answered" as const,
+      providerRequestIds: { draft: "provider-draft-1", selector: "provider-selector-1" },
+      receiptHash: "b".repeat(64),
+      requestCoverage: "complete" as const,
+      selectorContractVersion: 3 as const,
+      selectorHash: "e".repeat(64),
+      selectorOperationId: "selector-operation-1",
+      sessionId: "evidence-session-1",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0,
+      usage: {
+        draft: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 },
+        selector: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 8, outputTokens: 4, reasoningTokens: 0, totalTokens: 12 }
+      },
+      version: 7 as const
+    };
+    const groundKnowledgeAnswer = vi.fn(async () => null);
+    const groundKnowledgeAnswerV5 = vi.fn(async () => ({ grounding }));
+    const repository = {
+      completeRun,
+      groundKnowledgeAnswer,
+      groundKnowledgeAnswerV5,
+      loadModelPricing: async () => null
+    };
+
+    const result = await finalizeRunCompletion({
+      ...completionInput(repository),
+      knowledgeAnswerContracts: {
+        draftContractVersion: 5,
+        selectorContractVersion: 3
+      },
+      result: { ...completionInput(repository).result, finalText: "hidden structured result" }
+    });
+
+    expect(result).toMatchObject({ finalText: grounding.finalText, status: "completed" });
+    expect(groundKnowledgeAnswer).not.toHaveBeenCalled();
+    expect(groundKnowledgeAnswerV5).toHaveBeenCalledWith({
+      draftContractVersion: 5,
+      runId: "run-1",
+      selectorContractVersion: 3,
+      userId: "user-1"
+    });
+    expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({
+      finalText: grounding.finalText,
+      knowledgeGrounding: { grounding }
+    }));
+  });
 });
