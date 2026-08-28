@@ -26,6 +26,7 @@ import {
   createMemoryRunRetrievalService,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
   MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS,
+  MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
   MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
   memoryRelevanceCandidates,
@@ -906,6 +907,47 @@ describe("Personal Memory v1 run admission", () => {
         },
         outcome: "EMPTY"
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses extended admission headroom for the single control decision", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({});
+      const base = retrievalOptions([]);
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        clock: Date.now,
+        control: {
+          decide: vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) =>
+            resolveWhenAborted(input.signal, {
+              reason: "memory_action_intent_unavailable",
+              status: "UNAVAILABLE" as const
+            }))
+        }
+      }).retrieve({
+        ...runInput("What do I prefer?"),
+        controlCache: { admissionDeadlineAtMs: now.getTime() + 120_000 }
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({
+        budgetSnapshot: {
+          degradationCode: "memory_action_intent_unavailable",
+          plannerFallbackReason: "memory_action_intent_unavailable"
+        },
+        outcome: "EMPTY"
+      });
+      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(60_000);
     } finally {
       vi.useRealTimers();
     }

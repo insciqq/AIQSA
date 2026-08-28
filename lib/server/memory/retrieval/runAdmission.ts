@@ -43,7 +43,8 @@ import { MemoryPreparingRunConflictError } from "../../runs/preparingRun";
 import { normalizedRequestPersonalContextTokenLimit } from "../../runs/runContextBudget";
 import {
   boundedMemoryAdmissionDeadlineMs,
-  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
+  MEMORY_ADMISSION_MAX_TIMEOUT_MS
 } from "../admissionDeadline";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
@@ -91,7 +92,7 @@ import {
 } from "./querySafety";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v22";
+  "memory-run-retrieval-admission-v23";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v6";
 
@@ -466,6 +467,8 @@ export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS =
   MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS =
   MEMORY_OPTIONAL_PROVIDER_ATTEMPT_WINDOW_MS * 2;
+export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS =
+  MEMORY_ADMISSION_MAX_TIMEOUT_MS / 2;
 
 const optionalUtilityBudget = Object.freeze({
   // Aggregation has two sequential provider phases (bounded parallel maps,
@@ -476,7 +479,14 @@ const optionalUtilityBudget = Object.freeze({
     maximumMs: MEMORY_AGGREGATION_OPTIONAL_MAXIMUM_MS,
     remainingFraction: 0.5
   },
-  CONTROL: { maximumMs: 15_000, remainingFraction: 0.5 },
+  // The default 30-second admission still grants at most 15 seconds. An
+  // administrator-selected extended deadline lets this single strict
+  // decision consume the same bounded half-share instead of imposing an
+  // unrelated shorter ceiling on the configured end-to-end SLA.
+  CONTROL: {
+    maximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+    remainingFraction: 0.5
+  },
   QUERY_EMBED: {
     // The configured admission deadline remains the outer SLA. Installations
     // with extra headroom may admit one ordinary 30-second remote attempt plus

@@ -145,6 +145,7 @@ const MEMORY_PREPARING_ADMISSION_RESERVE_MS = 1_500;
 const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 1_500;
 const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 1_200;
 const MEMORY_PREPARING_FINALIZATION_RESERVE_MS = 1_000;
+const MEMORY_PREPARING_MAX_ATTEMPTS = 3;
 
 function attachmentLinkReadinessWhere(
   input: PreparingRunAdmissionInput
@@ -1614,8 +1615,9 @@ export function sameMemoryReadOnlyControlRetryScope(
   const sourceLifecycle = decodeMemoryActionLifecycleSnapshot(source.budgetSnapshot);
   const currentLifecycle = decodeMemoryActionLifecycleSnapshot(current.budgetSnapshot);
   return source.id !== current.id &&
-    source.attemptOrdinal === 0 &&
-    current.attemptOrdinal === 1 &&
+    source.attemptOrdinal >= 0 &&
+    current.attemptOrdinal > source.attemptOrdinal &&
+    current.attemptOrdinal < MEMORY_PREPARING_MAX_ATTEMPTS &&
     source.userId === current.userId &&
     source.modelRunId === current.modelRunId &&
     source.chatId === current.chatId &&
@@ -1642,7 +1644,11 @@ async function loadReadOnlyControlReuseBinding(
   attempt: ReadOnlyControlRetryScope,
   proof: MemoryReadOnlyControlReuseProof
 ): Promise<MemoryExecutionBindingRecord> {
-  if (attempt.attemptOrdinal !== 1 || proof.sourceAttemptId === attempt.id) {
+  if (
+    attempt.attemptOrdinal < 1 ||
+    attempt.attemptOrdinal >= MEMORY_PREPARING_MAX_ATTEMPTS ||
+    proof.sourceAttemptId === attempt.id
+  ) {
     throw new Error("control_reuse_attempt_invalid");
   }
   const [sourceAttempt, sourceBinding] = await Promise.all([
@@ -3007,7 +3013,8 @@ export async function retryPreparingRunAttemptWithClient(
       !run ||
       run.status !== "preparing" ||
       !attempt ||
-      attempt.attemptOrdinal !== 0 ||
+      attempt.attemptOrdinal < 0 ||
+      attempt.attemptOrdinal >= MEMORY_PREPARING_MAX_ATTEMPTS - 1 ||
       !["PENDING", "EXECUTING", "READY"].includes(attempt.state)
     ) {
       return null;
@@ -3079,7 +3086,7 @@ export async function retryPreparingRunAttemptWithClient(
       admissionKind: attempt.admissionKind,
       assistantIdSnapshot: attempt.assistantIdSnapshot,
       assistantMessageId: attempt.admittedAssistantLeafMessageId,
-      attemptOrdinal: 1,
+      attemptOrdinal: attempt.attemptOrdinal + 1,
       baseSnapshot,
       chatId: attempt.chatId,
       chatMemoryMode: attempt.chatMemoryModeSnapshot,
@@ -3516,7 +3523,11 @@ export async function createDormantPreparingRun(
     };
   };
   try {
-    for (let attemptOrdinal = 0; attemptOrdinal < 2; attemptOrdinal += 1) {
+    for (
+      let attemptOrdinal = 0;
+      attemptOrdinal < MEMORY_PREPARING_MAX_ATTEMPTS;
+      attemptOrdinal += 1
+    ) {
       try {
         const began = await beginPreparingRunAttemptWithClient(prismaClient, {
           attemptId: currentAttemptId,
@@ -3658,17 +3669,19 @@ export async function createDormantPreparingRun(
           error instanceof MemoryPreparingRunConflictError &&
           error.code === "memory_admission_settings_changed" &&
           error.retryable &&
-          attemptOrdinal === 1
+          attemptOrdinal === MEMORY_PREPARING_MAX_ATTEMPTS - 1
         ) {
           return await finalizeSettingsDriftFallback(
             currentStageFallbackBudget()
           );
         }
-        if (
-          !(error instanceof MemoryPreparingRunConflictError) ||
-          !error.retryable ||
-          attemptOrdinal !== 0
-        ) {
+        const mayRetry = error instanceof MemoryPreparingRunConflictError &&
+          error.retryable && (
+            attemptOrdinal === 0 ||
+            error.code === "memory_admission_settings_changed" &&
+              attemptOrdinal < MEMORY_PREPARING_MAX_ATTEMPTS - 1
+          );
+        if (!mayRetry) {
           throw error;
         }
         let retry;

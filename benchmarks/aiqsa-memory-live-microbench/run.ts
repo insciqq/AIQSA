@@ -37,6 +37,7 @@ import {
   loadMemorySynthesisSnapshot
 } from "../../lib/server/memory/synthesis/repository";
 import {
+  MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER,
   MEMORY_SYNTHESIS_QUIET_PERIOD_MS
 } from "../../lib/server/memory/synthesis/policy";
 import {
@@ -117,6 +118,7 @@ type SendOutcome = Readonly<{
   memoryOutcome: string;
   modelRunId: string;
   patternItemUsed: boolean;
+  retrievalAudit: unknown | null;
   retrievalAttemptId: string;
   totalTokens: number;
 }>;
@@ -174,6 +176,39 @@ function safeCode(error: unknown): string {
   return /^[A-Za-z0-9_:-]{1,180}$/u.test(message)
     ? message
     : "aiqsa_memory_live_microbench_failed";
+}
+
+function diagnosticCode(value: string | null): string | null {
+  if (value === null) return null;
+  return /^[A-Za-z0-9_:-]{1,180}$/u.test(value) ? value : "redacted_code";
+}
+
+function expectedSupersededHistoryJob(job: Readonly<{
+  errorCode: string | null;
+  kind: MemoryJobKind;
+  state: MemoryJobState;
+}>): boolean {
+  return job.kind === "INDEX_HISTORY" && job.state === "STALE" &&
+    job.errorCode === "memory_source_stale";
+}
+
+function unsuccessfulJob(job: Readonly<{
+  errorCode: string | null;
+  kind: MemoryJobKind;
+  state: MemoryJobState;
+}>): boolean {
+  return unsuccessfulJobStates.has(job.state) && !expectedSupersededHistoryJob(job);
+}
+
+async function withFailureCode<T>(
+  code: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  try {
+    return await operation();
+  } catch {
+    throw new Error(code);
+  }
 }
 
 function positiveInteger(value: string | undefined, code: string): number {
@@ -635,15 +670,53 @@ async function sendMessage(
     throw new Error("aiqsa_memory_live_run_binding_invalid");
   }
   const items = await prisma.modelRunMemoryItem.findMany({
-    select: { factVersionId: true },
+    orderBy: { ordinal: "asc" },
+    select: {
+      factVersionId: true,
+      featureSnapshot: true,
+      finalScore: true,
+      itemType: true,
+      selectionReason: true
+    },
     where: { bindingId: memoryBinding.id, userId: identity.userId }
   });
   const patternItemUsed = items.some(({ factVersionId }) =>
     factVersionId !== null && input.patternVersionIds.has(factVersionId));
-  if (memoryBinding.outcome === "DEGRADED") {
-    throw new Error(
-      `aiqsa_memory_live_degraded:${safeCode(memoryBinding.degradationCode)}`
-    );
+  let retrievalAudit: unknown | null = null;
+  if (input.patternVersionIds.size > 0) {
+    const factVersionIds = items.flatMap(({ factVersionId }) =>
+      factVersionId ? [factVersionId] : []);
+    const [attempt, versions] = await Promise.all([
+      prisma.memoryRetrievalAttempt.findUnique({
+        select: { attemptOrdinal: true, budgetSnapshot: true },
+        where: { id: memoryBinding.retrievalAttemptId }
+      }),
+      prisma.memoryFactVersion.findMany({
+        select: { id: true, modality: true, sourceMode: true, synthesisDepth: true },
+        where: { id: { in: factVersionIds }, userId: identity.userId }
+      })
+    ]);
+    const versionById = new Map(versions.map((version) => [version.id, version]));
+    retrievalAudit = Object.freeze({
+      attemptOrdinal: attempt?.attemptOrdinal ?? null,
+      budgetSnapshot: attempt?.budgetSnapshot ?? null,
+      selectedItems: items.map((item) => {
+        const version = item.factVersionId
+          ? versionById.get(item.factVersionId) ?? null
+          : null;
+        return {
+          featureSnapshot: item.featureSnapshot,
+          finalScore: item.finalScore,
+          itemType: item.itemType,
+          modality: version?.modality ?? null,
+          pattern: item.factVersionId !== null &&
+            input.patternVersionIds.has(item.factVersionId),
+          selectionReason: item.selectionReason,
+          sourceMode: version?.sourceMode ?? null,
+          synthesisDepth: version?.synthesisDepth ?? null
+        };
+      })
+    });
   }
   return Object.freeze({
     answer,
@@ -654,6 +727,7 @@ async function sendMessage(
     memoryOutcome: memoryBinding.outcome,
     modelRunId: modelRun.id,
     patternItemUsed,
+    retrievalAudit,
     retrievalAttemptId: memoryBinding.retrievalAttemptId,
     totalTokens: modelRun.totalTokens ?? 0
   });
@@ -669,19 +743,31 @@ async function waitForSourcePipeline(
   while (Date.now() < deadline) {
     const jobs = await prisma.memoryJob.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: { attemptCount: true, kind: true, state: true },
+      select: { attemptCount: true, errorCode: true, kind: true, state: true },
       where: { userId }
     });
     const history = jobs.filter(({ kind }) => kind === "INDEX_HISTORY");
     const extraction = jobs.filter(({ kind }) => kind === "EXTRACT_FACTS");
     const active = jobs.filter(({ state }) => activeJobStates.has(state));
-    const failed = jobs.filter(({ state }) => unsuccessfulJobStates.has(state));
+    const failed = jobs.filter(unsuccessfulJob);
     if (failed.length > 0) {
+      emit("source_pipeline_failure", {
+        jobs: failed.map(({ attemptCount, errorCode, kind, state }) => ({
+          attemptCount,
+          errorCode: diagnosticCode(errorCode),
+          kind,
+          state
+        }))
+      });
       throw new Error("aiqsa_memory_live_source_job_failed");
     }
+    const settledHistory = history.filter((job) =>
+      job.state === "SUCCEEDED" || expectedSupersededHistoryJob(job));
     if (history.length === AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT &&
       extraction.length === AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT &&
-      history.every(({ state }) => state === "SUCCEEDED") &&
+      settledHistory.length === history.length &&
+      history.filter(({ state }) => state === "SUCCEEDED").length >=
+        AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT &&
       extraction.every(({ state }) => state === "SUCCEEDED") &&
       active.length === 0) {
       return aggregateJobs(jobs);
@@ -720,12 +806,30 @@ async function admitDream(
     loadMemorySynthesisSnapshot(prisma, userId)
   ]);
   const clusterSizes = snapshot?.plan?.clusters.map(({ sources }) => sources.length) ?? [];
+  emit("dream_schedule_checked", {
+    changedFacts: status.activity?.changedFactCount ?? 0,
+    clusterSizes,
+    decisionDue: status.decision.due,
+    eligibleSourceCount: status.activity?.eligibleSourceCount ?? 0,
+    newEvidenceChats: status.activity?.newEvidenceChatCount ?? 0,
+    reason: status.decision.reason
+  });
   if (!status.decision.due || status.decision.reason !== "CHAT_ACTIVITY" ||
-    (status.activity?.newEvidenceChatCount ?? 0) < AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT ||
+    (status.activity?.newEvidenceChatCount ?? 0) < MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER ||
     (status.activity?.eligibleSourceCount ?? 0) < 3 ||
     clusterSizes.every((size) => size < 3)) {
+    const rejection = !status.decision.due
+      ? status.decision.reason
+      : status.decision.reason !== "CHAT_ACTIVITY"
+        ? "unexpected_schedule_reason"
+        : (status.activity?.newEvidenceChatCount ?? 0) <
+            MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER
+          ? "insufficient_evidence_chats"
+          : (status.activity?.eligibleSourceCount ?? 0) < 3
+            ? "insufficient_eligible_sources"
+            : "missing_three_source_cluster";
     throw new Error(
-      `aiqsa_memory_live_dream_not_due:${safeCode(status.decision.reason)}`
+      `aiqsa_memory_live_dream_not_due:${rejection}`
     );
   }
   const reconciliation = await reconcileMemorySynthesisWork(
@@ -770,7 +874,7 @@ async function waitForDream(
   while (Date.now() < deadline) {
     const [jobs, executions] = await Promise.all([
       prisma.memoryJob.findMany({
-        select: { kind: true, state: true },
+        select: { errorCode: true, kind: true, state: true },
         where: { userId }
       }),
       prisma.memorySynthesisExecution.findMany({
@@ -780,7 +884,7 @@ async function waitForDream(
     ]);
     const synthesis = jobs.filter(({ kind }) => kind === "SYNTHESIZE_MEMORIES");
     const active = jobs.filter(({ state }) => activeJobStates.has(state));
-    if (jobs.some(({ state }) => unsuccessfulJobStates.has(state))) {
+    if (jobs.some(unsuccessfulJob)) {
       throw new Error("aiqsa_memory_live_dream_job_failed");
     }
     if (synthesis.length === 1 && synthesis[0]?.state === "SUCCEEDED" &&
@@ -848,7 +952,7 @@ async function waitForHybridIndex(
           where: { id: rebuildJobId }
         }),
         prisma.memoryJob.findMany({
-          select: { state: true },
+          select: { errorCode: true, kind: true, state: true },
           where: { userId }
         }),
         prisma.memoryRecallChunk.count({ where: { state: "ACTIVE", userId } }),
@@ -856,9 +960,9 @@ async function waitForHybridIndex(
           select: { providerModelId: true, state: true },
           where: { logicalRole: "MEMORY_DOCUMENT_EMBED", userId }
         })
-      ]);
+    ]);
     if (!rebuildJob || unsuccessfulJobStates.has(rebuildJob.state) ||
-      jobs.some(({ state }) => unsuccessfulJobStates.has(state))) {
+      jobs.some(unsuccessfulJob)) {
       throw new Error("aiqsa_memory_live_hybrid_rebuild_failed");
     }
     const generation = settings?.activeIndexGenerationId
@@ -1058,17 +1162,21 @@ async function waitForAllRunsSettled(
   while (Date.now() < deadline) {
     const jobs = await prisma.memoryJob.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: { attemptCount: true, kind: true, state: true },
+      select: { attemptCount: true, errorCode: true, kind: true, state: true },
       where: { userId }
     });
     const history = jobs.filter(({ kind }) => kind === "INDEX_HISTORY");
     const extraction = jobs.filter(({ kind }) => kind === "EXTRACT_FACTS");
     const active = jobs.filter(({ state }) => activeJobStates.has(state));
-    if (jobs.some(({ state }) => unsuccessfulJobStates.has(state))) {
+    if (jobs.some(unsuccessfulJob)) {
       throw new Error("aiqsa_memory_live_final_job_failed");
     }
+    const settledHistory = history.filter((job) =>
+      job.state === "SUCCEEDED" || expectedSupersededHistoryJob(job));
     if (history.length === expectedSends && extraction.length === expectedSends &&
-      history.every(({ state }) => state === "SUCCEEDED") &&
+      settledHistory.length === history.length &&
+      history.filter(({ state }) => state === "SUCCEEDED").length >=
+        AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT + AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT &&
       extraction.every(({ state }) => state === "SUCCEEDED") &&
       active.length === 0) {
       return aggregateJobs(jobs);
@@ -1156,6 +1264,30 @@ async function runLiveScenario(
   }
 
   const sourceJobs = await waitForSourcePipeline(prisma, identity.userId, 2_700_000);
+  const degradedSource = sourceOutcomes.find(({ memoryOutcome }) =>
+    memoryOutcome === "DEGRADED");
+  if (degradedSource) {
+    throw new Error(
+      `aiqsa_memory_live_source_degraded:${diagnosticCode(
+        degradedSource.degradationCode
+      ) ?? "missing_degradation_code"}`
+    );
+  }
+  const learningAudit = await loadPatternAudit(
+    prisma,
+    identity.userId,
+    sourceChatKeyById
+  );
+  await writeJsonAtomic(
+    resolve(outputDirectory, "learning-audit.json"),
+    redactedArtifact({
+      benchmark: "aiqsa-memory-live-microbench",
+      directFacts: learningAudit.directFacts,
+      scenario: scenario.id,
+      version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
+      warning: "Contains secret-screened synthetic Memory facts. Keep this ignored 0600 artifact local."
+    })
+  );
   const schedule = await admitDream(prisma, identity.userId);
   await waitForDream(prisma, identity.userId, 900_000);
   const patternAudit = await loadPatternAudit(
@@ -1177,6 +1309,18 @@ async function runLiveScenario(
     patterns: patternAudit.patterns.length,
     qualifiedPatterns: patternAudit.patternIds.length
   });
+  await writeJsonAtomic(
+    resolve(outputDirectory, "dream-audit.json"),
+    redactedArtifact({
+      benchmark: "aiqsa-memory-live-microbench",
+      directFacts: patternAudit.directFacts,
+      patterns: patternAudit.patterns,
+      scenario: scenario.id,
+      synthesisExecutions: patternAudit.synthesisExecutions,
+      version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
+      warning: "Contains secret-screened synthetic Memory facts. Keep this ignored 0600 artifact local."
+    })
+  );
 
   const rebuildJobId = await startHybridRebuild(
     prisma,
@@ -1190,6 +1334,26 @@ async function runLiveScenario(
     roles.qwen.id,
     2_700_000
   );
+  const activeIndex = await prisma.userMemorySettings.findUniqueOrThrow({
+    select: { activeIndexGenerationId: true },
+    where: { userId: identity.userId }
+  });
+  const indexedPatternEntries = activeIndex.activeIndexGenerationId
+    ? await prisma.memorySearchEntry.findMany({
+        select: { embeddingState: true, factVersionId: true },
+        where: {
+          factVersionId: { in: [...patternAudit.patternIds] },
+          indexGenerationId: activeIndex.activeIndexGenerationId,
+          userId: identity.userId
+        }
+      })
+    : [];
+  const indexedPatternIds = new Set(indexedPatternEntries.flatMap(({ factVersionId }) =>
+    factVersionId ? [factVersionId] : []));
+  if (patternAudit.patternIds.some((id) => !indexedPatternIds.has(id)) ||
+    indexedPatternEntries.some(({ embeddingState }) => embeddingState !== "READY")) {
+    throw new Error("aiqsa_memory_live_pattern_index_incomplete");
+  }
   const directFactIdsBeforeRecall = await activeDirectFactVersionIds(
     prisma,
     identity.userId
@@ -1203,6 +1367,7 @@ async function runLiveScenario(
     memoryItems: number;
     memoryOutcome: string;
     patternItemUsed: boolean;
+    retrievalAudit: unknown;
     totalTokens: number;
   }>> = [];
   for (const recall of scenario.recalls) {
@@ -1224,6 +1389,33 @@ async function runLiveScenario(
     if (!evaluation.passed || outcome.memoryOutcome !== "USED" ||
       outcome.memoryItems < 1 ||
       (recall.requiresPatternItem && !outcome.patternItemUsed)) {
+      await writeJsonAtomic(
+        resolve(outputDirectory, `recall-failure-${recall.id}.json`),
+        redactedArtifact({
+          answer: outcome.answer,
+          benchmark: "aiqsa-memory-live-microbench",
+          degradationCode: diagnosticCode(outcome.degradationCode),
+          evaluation,
+          memoryItems: outcome.memoryItems,
+          memoryOutcome: outcome.memoryOutcome,
+          patternItemUsed: outcome.patternItemUsed,
+          recall: recall.id,
+          retrievalAudit: outcome.retrievalAudit,
+          requiresPatternItem: recall.requiresPatternItem,
+          scenario: scenario.id,
+          version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
+          warning: "Contains a secret-screened synthetic answer. Keep this ignored 0600 artifact local."
+        })
+      );
+      emit("recall_send_failed", {
+        degradationCode: diagnosticCode(outcome.degradationCode),
+        matchedGroups: evaluation.matchedGroups,
+        memoryItems: outcome.memoryItems,
+        memoryOutcome: outcome.memoryOutcome,
+        patternItemUsed: outcome.patternItemUsed,
+        recall: recall.id,
+        requiredGroups: evaluation.requiredGroups
+      });
       throw new Error(`aiqsa_memory_live_recall_failed:${recall.id}`);
     }
     recallResults.push(Object.freeze({
@@ -1234,6 +1426,7 @@ async function runLiveScenario(
       memoryItems: outcome.memoryItems,
       memoryOutcome: outcome.memoryOutcome,
       patternItemUsed: outcome.patternItemUsed,
+      retrievalAudit: outcome.retrievalAudit,
       totalTokens: outcome.totalTokens
     }));
     emit("recall_send_complete", {
@@ -1301,7 +1494,10 @@ async function runLiveScenario(
       sourceSends: AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT,
       totalSends: expectedTotalSends
     },
-    hybrid,
+    hybrid: {
+      ...hybrid,
+      indexedPatterns: indexedPatternEntries.length
+    },
     jobs: finalJobs,
     models: {
       answer: { provider: "codex-lb", upstreamModelId: qualificationSystemModelId },
@@ -1333,7 +1529,11 @@ async function runLiveScenario(
     benchmark: "aiqsa-memory-live-microbench",
     directFacts: patternAudit.directFacts,
     patterns: patternAudit.patterns,
-    recalls: recallResults.map((result) => ({ answer: result.answer, id: result.id })),
+    recalls: recallResults.map((result) => ({
+      answer: result.answer,
+      id: result.id,
+      retrievalAudit: result.retrievalAudit
+    })),
     scenario: scenario.id,
     synthesisExecutions: patternAudit.synthesisExecutions,
     version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
@@ -1349,6 +1549,70 @@ async function runLiveScenario(
     qualificationPassed: true,
     recallChecksPassed: recallResults.length
   });
+}
+
+async function writeFailureDiagnostic(
+  prisma: PrismaClient,
+  userId: string,
+  outputDirectory: string,
+  error: unknown
+): Promise<void> {
+  const [jobs, executions, retrievalAttempts, runBindings] = await Promise.all([
+    prisma.memoryJob.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { attemptCount: true, errorCode: true, kind: true, state: true },
+      where: { userId }
+    }),
+    prisma.memoryExecutionBinding.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { errorCode: true, logicalRole: true, ordinal: true, state: true },
+      where: { userId }
+    }),
+    prisma.memoryRetrievalAttempt.findMany({
+      orderBy: { createdAt: "asc" },
+      select: {
+        degradationCode: true,
+        errorCode: true,
+        externalRolesUsed: true,
+        outcome: true,
+        state: true
+      },
+      where: { userId }
+    }),
+    prisma.modelRunMemoryBinding.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { degradationCode: true, outcome: true },
+      where: { userId }
+    })
+  ]);
+  await writeJsonAtomic(resolve(outputDirectory, "failure-diagnostic.json"), {
+    errorCode: safeCode(error),
+    executions: executions.map((execution) => ({
+      errorCode: diagnosticCode(execution.errorCode),
+      ordinal: execution.ordinal,
+      role: execution.logicalRole,
+      state: execution.state
+    })),
+    jobs: jobs.map((job) => ({
+      attemptCount: job.attemptCount,
+      errorCode: diagnosticCode(job.errorCode),
+      kind: job.kind,
+      state: job.state
+    })),
+    retrievalAttempts: retrievalAttempts.map((attempt) => ({
+      degradationCode: diagnosticCode(attempt.degradationCode),
+      errorCode: diagnosticCode(attempt.errorCode),
+      externalRolesUsed: attempt.externalRolesUsed,
+      outcome: attempt.outcome,
+      state: attempt.state
+    })),
+    runBindings: runBindings.map((binding) => ({
+      degradationCode: diagnosticCode(binding.degradationCode),
+      outcome: binding.outcome
+    })),
+    version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION
+  });
+  emit("failure_diagnostic_written", { artifact: "failure-diagnostic.json" });
 }
 
 async function main(): Promise<void> {
@@ -1375,14 +1639,27 @@ async function main(): Promise<void> {
   const databaseUrl = process.env.AIQSA_MEMORY_BENCHMARK_DATABASE_URL ?? "";
   assertLiveDatabaseUrl(databaseUrl, postgresPort);
   validateLiveScenario(liveScenario);
+  await mkdir(resolve(benchmarkRoot, "results"), { mode: 0o700, recursive: true });
   await mkdir(options.outputDirectory, { mode: 0o700, recursive: false });
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
   let identity: BenchmarkIdentity | null = null;
   try {
-    await assertDatabaseIdentity(prisma);
-    const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
-    const roles = await resolveProviderRoles(prisma);
-    identity = await createBenchmarkIdentity(prisma, roles);
+    await withFailureCode(
+      "aiqsa_memory_live_database_preflight_failed",
+      () => assertDatabaseIdentity(prisma)
+    );
+    const staleUsersRemoved = await withFailureCode(
+      "aiqsa_memory_live_stale_cleanup_failed",
+      () => deleteBenchmarkUsers(prisma)
+    );
+    const roles = await withFailureCode(
+      "aiqsa_memory_live_provider_preflight_failed",
+      () => resolveProviderRoles(prisma)
+    );
+    identity = await withFailureCode(
+      "aiqsa_memory_live_identity_setup_failed",
+      () => createBenchmarkIdentity(prisma, roles)
+    );
     emit("benchmark_start", {
       recallSends: AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT,
       scenario: liveScenario.id,
@@ -1390,13 +1667,23 @@ async function main(): Promise<void> {
       sourceSends: AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT,
       staleUsersRemoved
     });
-    await runLiveScenario(
-      prisma,
-      baseUrl,
-      identity,
-      roles,
-      options.outputDirectory
-    );
+    try {
+      await runLiveScenario(
+        prisma,
+        baseUrl,
+        identity,
+        roles,
+        options.outputDirectory
+      );
+    } catch (error) {
+      await writeFailureDiagnostic(
+        prisma,
+        identity.userId,
+        options.outputDirectory,
+        error
+      ).catch(() => undefined);
+      throw error;
+    }
   } finally {
     if (identity) await prisma.user.delete({ where: { id: identity.userId } });
     await prisma.$disconnect();

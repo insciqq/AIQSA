@@ -1397,7 +1397,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       ]);
       expect(after).toMatchObject({
         activeIndexGenerationId: identity.generationId,
-        memoryGeneration: beforeActivation.memoryGeneration + 1,
+        memoryGeneration: beforeActivation.memoryGeneration,
         memoryRevision: beforeActivation.memoryRevision + 1
       });
       expect(target).toMatchObject({
@@ -1505,7 +1505,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         where: { userId }
       })).resolves.toMatchObject({
         activeIndexGenerationId: identity.generationId,
-        memoryGeneration: before.memoryGeneration + 1,
+        memoryGeneration: before.memoryGeneration,
         memoryRevision: before.memoryRevision + 1
       });
       await expect(prisma.memoryJob.findUniqueOrThrow({
@@ -1608,7 +1608,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         where: { userId }
       })).resolves.toMatchObject({
         activeIndexGenerationId: identity.generationId,
-        memoryGeneration: before.memoryGeneration + 1,
+        memoryGeneration: before.memoryGeneration,
         memoryRevision: before.memoryRevision + 1
       });
     } finally {
@@ -1718,7 +1718,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       expect(afterRollback).toMatchObject({
         activeIndexGenerationId: firstCurrentGenerationId,
-        memoryGeneration: beforeRollback.memoryGeneration + 1,
+        memoryGeneration: beforeRollback.memoryGeneration,
         memoryRevision: beforeRollback.memoryRevision + 1
       });
       await expect(cutover.inventory(userId)).resolves.toMatchObject({
@@ -2039,7 +2039,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       ]);
       expect(after).toMatchObject({
         activeIndexGenerationId: identity.generationId,
-        memoryGeneration: caughtUp.memoryGeneration + 1,
+        memoryGeneration: caughtUp.memoryGeneration,
         memoryRevision: caughtUp.memoryRevision + 1
       });
       expect(target).toMatchObject({ indexMode: "HYBRID", state: "ACTIVE" });

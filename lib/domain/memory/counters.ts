@@ -158,7 +158,12 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
     INDEX_GENERATION_ACTIVATION: Object.freeze({
       branchGeneration: false,
       check: "INDEX_CONFIG_BARRIERS",
-      memoryGeneration: true,
+      // A search-index pointer swap is not a destructive Memory-content
+      // generation. The active generation id plus memoryRevision fence every
+      // reader, while source jobs are drained before cutover. Advancing the
+      // destructive generation here would invalidate otherwise current
+      // synthesized patterns whose immutable source proofs bind to it.
+      memoryGeneration: false,
       memoryRevision: true,
       sourceRevision: false
     }),

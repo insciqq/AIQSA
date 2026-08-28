@@ -5,6 +5,7 @@ import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memory";
+import type { MemoryActionIntent } from "../../contracts/memoryActionIntent";
 import {
   calculateContextBudgetLimits,
   estimateApproxTokens
@@ -35,7 +36,11 @@ import {
 import { createPrismaExplicitMemoryRepository } from "../memory/explicit/repository";
 import { createExplicitMemoryService } from "../memory/explicit/service";
 import { createMemoryClientRefService } from "../memory/actions/clientRef";
-import { MEMORY_CONTROL_VERSIONS } from "../memory/actions/controlRuntime";
+import {
+  MEMORY_CONTROL_VERSIONS,
+  createMemoryReadOnlyControlReuseProof,
+  type MemoryReadOnlyControlReuseProof
+} from "../memory/actions/controlRuntime";
 import { createPrismaMemoryLifecycleRepository } from "../memory/lifecycle/repository";
 import { createMemoryLifecycleService } from "../memory/lifecycle/service";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../memory/history/chunking";
@@ -106,6 +111,37 @@ const currentDynamicRetrievalFeature = Object.freeze({
   includePatterns: false,
   retrievalMode: "TARGETED_CURRENT" as const,
   tier: "DYNAMIC" as const
+});
+
+const readOnlyRetryIntent: MemoryActionIntent = Object.freeze({
+  action: "NONE",
+  aggregationRequested: false,
+  applyResponsePreferences: false,
+  category: null,
+  categoryHint: null,
+  confidenceBand: "HIGH",
+  entityMentions: [],
+  includePatterns: false,
+  memoryUseful: true,
+  pastChatsUseful: false,
+  profileRequested: false,
+  queryDecompositions: [],
+  queryText: "What do you know about me?",
+  reasonCode: "search_request",
+  recencyRequested: false,
+  referencedMemoryRef: null,
+  replacementStatement: null,
+  responsePreference: false,
+  retrievalMode: "TARGETED_CURRENT",
+  sensitiveDomainHint: null,
+  sensitivity: "NORMAL",
+  statement: null,
+  targetQuery: null,
+  temporalAsOf: null,
+  temporalFrom: null,
+  temporalIntent: "CURRENT",
+  temporalTo: null,
+  thisChatOnly: false
 });
 
 const preparingEmbeddingConfiguration = Object.freeze({
@@ -1059,7 +1095,7 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("fails a second Memory settings drift safe without failing the ordinary run", async () => {
+  it("retries two consecutive revision drifts with one read-only control receipt", async () => {
     await withPreparingUser(async ({ userId }) => {
       const fixture = await createPreparingEmbeddingAuthority(userId);
       try {
@@ -1080,6 +1116,7 @@ describe("PREPARING run orchestration", () => {
         };
         let callCount = 0;
         let executionBindingId: string | null = null;
+        let reuseProof: MemoryReadOnlyControlReuseProof | null = null;
         const retrieve = vi.fn(async (input: Readonly<{
           attemptId: string;
           controlCache?: {
@@ -1090,6 +1127,47 @@ describe("PREPARING run orchestration", () => {
         }>) => {
           callCount += 1;
           if (callCount === 1) {
+            const execution = createPrismaMemoryExecutionService(
+              fixture.authority,
+              prisma
+            );
+            const control = await execution.admission.bind(input.userId, {
+              inputHash: "7".repeat(64),
+              ordinal: 0,
+              owner: {
+                retrievalAttemptId: input.attemptId,
+                type: "RETRIEVAL_ATTEMPT"
+              },
+              role: "MEMORY_CONTROL",
+              versions: MEMORY_CONTROL_VERSIONS
+            });
+            executionBindingId = control.id;
+            reuseProof = createMemoryReadOnlyControlReuseProof({
+              inputHash: "7".repeat(64),
+              result: {
+                bindingId: control.id,
+                intent: readOnlyRetryIntent,
+                status: "READY"
+              },
+              sourceAttemptId: input.attemptId
+            });
+            if (!reuseProof) throw new Error("control_reuse_proof_fixture_invalid");
+            await execution.admission.start(input.userId, control.id);
+            await execution.lifecycle.settle(input.userId, control.id, {
+              acceptedOutputHash: reuseProof.acceptedOutputHash,
+              errorCode: null,
+              providerResponseId: "repeated-drift-control-response",
+              state: "SUCCEEDED",
+              usage: {
+                cachedInputTokens: 0,
+                completeness: "COMPLETE",
+                estimatedCostMicros: null,
+                inputTokens: 9,
+                outputTokens: 4,
+                reasoningTokens: 0,
+                totalTokens: 13
+              }
+            });
             await prisma.userMemorySettings.update({
               data: { memoryRevision: { increment: 1 } },
               where: { userId: input.userId }
@@ -1108,50 +1186,19 @@ describe("PREPARING run orchestration", () => {
               true
             );
           }
-
-          const execution = createPrismaMemoryExecutionService(
-            fixture.authority,
-            prisma
-          );
-          const control = await execution.admission.bind(input.userId, {
-            inputHash: "7".repeat(64),
-            ordinal: 0,
-            owner: {
-              retrievalAttemptId: input.attemptId,
-              type: "RETRIEVAL_ATTEMPT"
-            },
-            role: "MEMORY_CONTROL",
-            versions: MEMORY_CONTROL_VERSIONS
-          });
-          executionBindingId = control.id;
-          await execution.admission.start(input.userId, control.id);
-          await execution.lifecycle.settle(input.userId, control.id, {
-            acceptedOutputHash: "8".repeat(64),
-            errorCode: null,
-            providerResponseId: "repeated-drift-control-response",
-            state: "SUCCEEDED",
-            usage: {
-              cachedInputTokens: 0,
-              completeness: "COMPLETE",
-              estimatedCostMicros: null,
-              inputTokens: 9,
-              outputTokens: 4,
-              reasoningTokens: 0,
-              totalTokens: 13
-            }
-          });
-          await prisma.userMemorySettings.update({
-            data: {
-              memoryRevision: { increment: 1 },
-              referenceChatHistory: true
-            },
-            where: { userId: input.userId }
-          });
+          if (!reuseProof) throw new Error("control_reuse_proof_fixture_missing");
+          if (callCount === 2) {
+            await prisma.userMemorySettings.update({
+              data: { memoryRevision: { increment: 1 } },
+              where: { userId: input.userId }
+            });
+          }
           return {
             budgetSnapshot: {
               itemCount: 0,
               memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
               reason: "no_relevant_memory",
+              readOnlyControlReuse: reuseProof,
               schemaVersion: 2,
               utilityEgressMode: "CONSENTED_EXTERNAL",
               utilityExecutions: [{
@@ -1218,39 +1265,48 @@ describe("PREPARING run orchestration", () => {
           where: { bindingId: binding.id }
         });
 
-        expect(retrieve).toHaveBeenCalledTimes(2);
+        expect(retrieve).toHaveBeenCalledTimes(3);
         expect(run).toMatchObject({ normalizedRequest: request, status: "streaming" });
-        expect(attempts).toHaveLength(2);
+        expect(attempts).toHaveLength(3);
         expect(attempts[0]).toMatchObject({
           attemptOrdinal: 0,
           errorCode: "memory_admission_settings_changed",
           state: "STALE"
         });
         expect(attempts[1]).toMatchObject({
-          acceptedUtilityEgressFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
           attemptOrdinal: 1,
-          degradationCode: "memory_admission_settings_changed",
+          errorCode: "memory_admission_settings_changed",
+          state: "STALE"
+        });
+        expect(attempts[2]).toMatchObject({
+          acceptedUtilityEgressFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          attemptOrdinal: 2,
+          degradationCode: null,
           externalRolesUsed: ["MEMORY_CONTROL"],
-          outcome: "FAILED_SAFE",
+          outcome: "EMPTY",
           state: "CONSUMED",
           utilityEgressMode: "CONSENTED_EXTERNAL"
         });
-        expect(attempts[1]?.budgetSnapshot).toMatchObject({
+        expect(attempts[2]?.budgetSnapshot).toMatchObject({
           itemCount: 0,
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
-          reason: "memory_admission_settings_changed"
+          readOnlyControlReuse: {
+            sourceAttemptId: attempts[0]?.id,
+            sourceBindingId: executionBindingId
+          },
+          reason: "no_relevant_memory"
         });
-        expect(attempts[1]?.budgetSnapshot).not.toHaveProperty("memoryActionResult");
+        expect(attempts[2]?.budgetSnapshot).not.toHaveProperty("memoryActionResult");
         expect(binding).toMatchObject({
           contextTokenCount: 0,
-          degradationCode: "memory_admission_settings_changed",
-          outcome: "FAILED_SAFE",
-          retrievalAttemptId: attempts[1]?.id
+          degradationCode: null,
+          outcome: "EMPTY",
+          retrievalAttemptId: attempts[2]?.id
         });
         expect(runItems).toEqual([]);
         expect(executionBinding).toMatchObject({
           logicalRole: "MEMORY_CONTROL",
-          retrievalAttemptId: attempts[1]?.id,
+          retrievalAttemptId: attempts[0]?.id,
           state: "SUCCEEDED"
         });
         expect(usageCount).toBe(1);
@@ -1529,7 +1585,7 @@ describe("PREPARING run orchestration", () => {
           where: { modelRunId: runId! }
         })
       ]);
-      expect(retrieve).toHaveBeenCalledTimes(2);
+      expect(retrieve).toHaveBeenCalledTimes(3);
       expect(run).toMatchObject({
         errorPayload: {
           code: "memory_attempt_execution_invalid",
@@ -1537,12 +1593,16 @@ describe("PREPARING run orchestration", () => {
         },
         status: "error"
       });
-      expect(attempts).toHaveLength(2);
+      expect(attempts).toHaveLength(3);
       expect(attempts[0]).toMatchObject({
         errorCode: "memory_admission_settings_changed",
         state: "STALE"
       });
       expect(attempts[1]).toMatchObject({
+        errorCode: "memory_admission_settings_changed",
+        state: "STALE"
+      });
+      expect(attempts[2]).toMatchObject({
         errorCode: "memory_attempt_execution_invalid",
         state: "FAILED"
       });
