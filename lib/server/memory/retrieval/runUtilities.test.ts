@@ -954,6 +954,9 @@ describe("Memory run utility execution", () => {
             role: "MEMORY_AGGREGATE"
           });
           expect(input.evidence.map(({ handle }) => handle)).toEqual(["g0", "g1"]);
+          expect(input.evidence.every(({ text }) =>
+            text.includes("mapped_status=APPLICABLE") &&
+            !text.includes("mapped_resolution="))).toBe(true);
           return {
             providerResponseId: "response-reduced-aggregation",
             toolCalls: [{

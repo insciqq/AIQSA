@@ -370,8 +370,8 @@ function retrievalOptions(
           categoryHint: null,
           confidenceBand: "HIGH" as const,
           entityMentions: [],
-          includePatterns: false,
           memoryUseful: true,
+          patternExclusionRequested: false,
           pastChatsUseful: true,
           profileRequested: false,
           queryDecompositions: [],
@@ -417,8 +417,8 @@ function intentOptions(overrides: Record<string, unknown>) {
           categoryHint: null,
           confidenceBand: "HIGH" as const,
           entityMentions: [],
-          includePatterns: false,
           memoryUseful: false,
+          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryDecompositions: [],
@@ -1424,8 +1424,8 @@ describe("Personal Memory v1 run admission", () => {
           categoryHint: null,
           confidenceBand: "HIGH" as const,
           entityMentions: [],
-          includePatterns: false,
           memoryUseful: false,
+          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -1545,8 +1545,8 @@ describe("Personal Memory v1 run admission", () => {
           categoryHint: null,
           confidenceBand: "HIGH" as const,
           entityMentions: [],
-          includePatterns: false,
           memoryUseful: false,
+          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -1600,8 +1600,8 @@ describe("Personal Memory v1 run admission", () => {
           categoryHint: null,
           confidenceBand: "HIGH" as const,
           entityMentions: [],
-          includePatterns: false,
           memoryUseful: false,
+          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -1648,8 +1648,8 @@ describe("Personal Memory v1 run admission", () => {
           categoryHint: null,
           confidenceBand: "HIGH" as const,
           entityMentions: [],
-          includePatterns: false,
           memoryUseful: false,
+          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -1989,7 +1989,7 @@ describe("Personal Memory v1 run admission", () => {
           intent: { action: "NONE", queryText: "What is my name?" },
           sourceAttemptId: "attempt-1",
           sourceBindingId: "binding-control",
-          version: 6
+          version: 7
         },
         utilityEgressMode: "CONSENTED_EXTERNAL"
       },
@@ -2966,14 +2966,14 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("freezes validated pattern and entity hints without granting item authority", async () => {
+  it("admits patterns server-side for an ordinary targeted fact read", async () => {
     const opaqueRef = `mr1.${"a".repeat(500)}`;
     const local = repository({ candidates: [factLaneCandidate("hinted-fact", 0.8)] });
     const options = {
       ...intentOptions({
         entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
-        includePatterns: true,
         memoryUseful: true,
+        patternExclusionRequested: false,
         pastChatsUseful: false,
         queryText: "Acme workflow"
       }),
@@ -2981,7 +2981,7 @@ describe("Personal Memory v1 run admission", () => {
     };
 
     const result = await createMemoryRunRetrievalService(local.value, options)
-      .retrieve(runInput("Use the relevant context."));
+      .retrieve(runInput("When does my usual Acme preparation begin?"));
 
     expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
       plan: expect.objectContaining({
@@ -2998,6 +2998,28 @@ describe("Personal Memory v1 run admission", () => {
         }
       },
       items: [{ featureSnapshot: { includePatterns: true } }],
+      outcome: "USED"
+    });
+  });
+
+  it("honors a typed pattern opt-out without parsing user wording", async () => {
+    const local = repository({ candidates: [factLaneCandidate("direct-fact", 0.8)] });
+    const options = intentOptions({
+      memoryUseful: true,
+      patternExclusionRequested: true,
+      pastChatsUseful: false,
+      queryText: "current routine"
+    });
+
+    const result = await createMemoryRunRetrievalService(local.value, options)
+      .retrieve(runInput("Use only what I directly stated."));
+
+    expect(local.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({ includePatterns: false })
+    }));
+    expect(result).toMatchObject({
+      budgetSnapshot: { plan: { includePatterns: false } },
+      items: [{ featureSnapshot: { includePatterns: false } }],
       outcome: "USED"
     });
   });

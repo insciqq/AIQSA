@@ -556,9 +556,23 @@ describe("Prisma Memory Dream synthesis", () => {
       const repository = createPrismaMemorySynthesisRepository(prisma);
       await repository.stage(claim, plan, result);
       const applyAt = new Date();
-      await expect(prisma.$transaction((tx) =>
-        repository.apply(tx, claim, plan, result, applyAt)
-      )).resolves.toBe(2);
+      let appliedPatternCount: number | null = null;
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+        acceptedResultHash: result.acceptedOutputHash,
+        apply: async (tx, exactClaim) => {
+          appliedPatternCount = await repository.apply(
+            tx,
+            exactClaim,
+            plan,
+            result,
+            applyAt
+          );
+        },
+        claim,
+        now: applyAt,
+        stage: "authorized_apply"
+      })).resolves.toBe(true);
+      expect(appliedPatternCount).toBe(2);
 
       const patterns = await prisma.memoryFactVersion.findMany({
         orderBy: { displayText: "asc" },

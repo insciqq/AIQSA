@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT,
+  AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID,
   AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT,
   AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT,
   assertLiveBaseUrl,
   assertLiveDatabaseUrl,
+  decodeLiveSystemModelId,
   evaluateLiveRecall,
   liveScenario,
   resolveLiveOutputDirectory,
@@ -12,14 +14,22 @@ import {
 } from "../../../../benchmarks/aiqsa-memory-live-microbench/contract";
 
 describe("AIQSA Memory live microbench contract", () => {
+  it("allows only the reviewed codex-lb qualification models", () => {
+    expect(AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID).toBe("gpt-5.6-sol");
+    expect(decodeLiveSystemModelId("gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(decodeLiveSystemModelId("gpt-5.6-luna")).toBe("gpt-5.6-luna");
+    expect(() => decodeLiveSystemModelId("openai/gpt-5.6-luna"))
+      .toThrow("aiqsa_memory_live_system_model_invalid");
+  });
+
   it("keeps one bounded real-user scenario", () => {
     const scenario = validateLiveScenario(liveScenario);
     expect(scenario.sourceChats).toHaveLength(AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT);
     expect(scenario.sourceChats.flatMap(({ messages }) => messages))
       .toHaveLength(AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT);
     expect(scenario.recalls).toHaveLength(AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT);
-    expect(scenario.sourceChats.filter(({ messages }) => messages.length === 2))
-      .toHaveLength(2);
+    expect(scenario.sourceChats.every(({ messages }) => messages.length === 1))
+      .toBe(true);
   });
 
   it("scores paraphrases by required semantic anchors without exact prose", () => {

@@ -18,8 +18,8 @@ function intent(overrides: Record<string, unknown> = {}) {
     categoryHint: null,
     confidenceBand: "HIGH",
     entityMentions: [],
-    includePatterns: false,
     memoryUseful: false,
+    patternExclusionRequested: false,
     pastChatsUseful: false,
     profileRequested: false,
     queryDecompositions: [],
@@ -80,6 +80,11 @@ describe("MemoryActionIntent strict contract", () => {
     const missingProfileDecision = intent() as Record<string, unknown>;
     delete missingProfileDecision.profileRequested;
     expect(decodeMemoryActionIntent(missingProfileDecision)).toMatchObject({ ok: false });
+    const missingPatternExclusion = intent() as Record<string, unknown>;
+    delete missingPatternExclusion.patternExclusionRequested;
+    expect(decodeMemoryActionIntent(missingPatternExclusion)).toMatchObject({ ok: false });
+    expect(decodeMemoryActionIntent({ ...intent(), includePatterns: true }))
+      .toMatchObject({ ok: false });
     expect(decodeMemoryActionIntent(intent({
       action: "SAVE",
       statement: "remembered preference",
@@ -382,49 +387,49 @@ describe("MemoryActionIntent strict contract", () => {
     }))).toMatchObject({ ok: false });
   });
 
-  it("keeps planner hints only on an admitted read and gates patterns to targeted current", () => {
+  it("keeps planner hints and pattern exclusion only on an admitted targeted read", () => {
     const mention = { occurrenceIndex: 0, resolvedRef: "opaque-ref", text: "Acme" };
     expect(decodeMemoryActionIntent(intent({
       action: "NONE",
       entityMentions: [mention],
-      includePatterns: true,
       memoryUseful: true,
+      patternExclusionRequested: true,
       queryText: "Acme workflow"
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [mention], includePatterns: true }
+      value: { entityMentions: [mention], patternExclusionRequested: true }
     });
     expect(decodeMemoryActionIntent(intent({
       action: "NONE",
       entityMentions: [mention],
-      includePatterns: true,
       memoryUseful: true,
+      patternExclusionRequested: true,
       profileRequested: true,
       queryText: "current profile",
       retrievalMode: "CURRENT_PROFILE"
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [mention], includePatterns: false }
+      value: { entityMentions: [mention], patternExclusionRequested: false }
     });
     expect(decodeMemoryActionIntent(intent({
       action: "SAVE",
       entityMentions: [mention],
-      includePatterns: true,
+      patternExclusionRequested: true,
       statement: "I use Acme."
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [], includePatterns: false }
+      value: { entityMentions: [], patternExclusionRequested: false }
     });
     expect(decodeMemoryActionIntent(intent({
       action: "SAVE",
       entityMentions: [mention],
-      includePatterns: true,
       memoryUseful: true,
+      patternExclusionRequested: true,
       queryText: "Acme workflow",
       statement: "I use Acme."
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [mention], includePatterns: true }
+      value: { entityMentions: [mention], patternExclusionRequested: true }
     });
   });
 

@@ -74,7 +74,7 @@ export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v23";
 export const MEMORY_AGGREGATION_PIPELINE_VERSION =
-  "memory-evidence-aggregation-v5";
+  "memory-evidence-aggregation-v6";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 2;
 // Remote embedding engines commonly reserve a 30-second request window. The
 // enclosing optional-role signal remains authoritative and clamps this window
@@ -154,8 +154,8 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
 
 export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_AGGREGATION_PIPELINE_VERSION,
-  policyVersion: "memory-evidence-aggregation-policy-v5",
-  promptVersion: "memory-evidence-aggregation-prompt-v4",
+  policyVersion: "memory-evidence-aggregation-policy-v6",
+  promptVersion: "memory-evidence-aggregation-prompt-v5",
   retrievalConfigFingerprint: memoryExecutionSha256({
     completeEvidenceView: "bounded_map_reduce_all_reader_items",
     exactOccurrenceGrounding: true,
@@ -168,13 +168,14 @@ export const MEMORY_AGGREGATION_VERSIONS: MemoryExecutionVersions = Object.freez
     maxReductionGroups: MEMORY_AGGREGATION_MAX_REDUCTION_GROUPS,
     maxOutputTokens: 4_096,
     multiBatchReduction: "provider_consolidated_server_regrounded",
+    reductionShardStatus: "applicable_or_conflict_not_coverage_resolution",
     operationSet: MEMORY_AGGREGATION_OPERATIONS,
     resolutionSet: MEMORY_AGGREGATION_RESOLUTIONS,
     roleSet: MEMORY_AGGREGATION_ROLES,
     serverComputedMemberCount: "sum_grounded_quantities",
     transientReadOnlyRetry:
       "one_fresh_binding_same_snapshot_after_transport_uncertainty",
-    version: 5
+    version: 6
   }),
   schemaVersion: "memory-evidence-aggregation-result-v2"
 });
@@ -971,9 +972,12 @@ type MappedAggregationGroup = Readonly<{
 }>;
 
 function mappedAggregationGroupText(mapped: MappedAggregationGroup): string {
+  const mappedStatus = mapped.mapResolution === "AMBIGUOUS"
+    ? "CONFLICT"
+    : "APPLICABLE";
   return [
     `[mapped_operation=${mapped.mapOperation} ` +
-      `mapped_resolution=${mapped.mapResolution} role=${mapped.group.role} ` +
+      `mapped_status=${mappedStatus} role=${mapped.group.role} ` +
       `quantity=${mapped.group.quantity}]`,
     `occurrence: ${mapped.group.occurrence}`,
     mapped.group.quantityEvidence === null

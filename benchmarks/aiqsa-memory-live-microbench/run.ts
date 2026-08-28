@@ -49,24 +49,26 @@ import {
 } from "../../lib/server/memory/synthesis/reconcile";
 import {
   AIQSA_MEMORY_LIVE_MICROBENCH_ACK,
+  AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID,
   AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
   AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT,
   AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT,
   AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT,
   assertLiveBaseUrl,
   assertLiveDatabaseUrl,
+  decodeLiveSystemModelId,
   evaluateLiveRecall,
   liveScenario,
   resolveLiveOutputDirectory,
   validateLiveScenario,
-  type LiveRecall
+  type LiveRecall,
+  type LiveSystemModelId
 } from "./contract";
 
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(benchmarkRoot, "../..");
 const benchmarkEmailSuffix = "@aiqsa-memory-live.benchmark.invalid";
 const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
-const qualificationSystemModelId = "gpt-5.6-sol";
 const qualificationSystemReasoningEffort = "medium";
 const qualificationEmbeddingModelId = "qwen/qwen3-embedding-8b";
 const qualificationRerankerModelId = "qwen/qwen3-reranker-8b";
@@ -86,6 +88,7 @@ const unsuccessfulJobStates = new Set<MemoryJobState>([
 type CliOptions = Readonly<{
   confirmPaid: boolean;
   outputDirectory: string;
+  systemModelId: LiveSystemModelId;
 }>;
 
 type ProviderRoles = Readonly<{
@@ -95,6 +98,7 @@ type ProviderRoles = Readonly<{
     connectionId: string;
     credentialId: string;
     id: string;
+    upstreamModelId: LiveSystemModelId;
   }>;
 }>;
 
@@ -220,6 +224,7 @@ function positiveInteger(value: string | undefined, code: string): number {
 function parseCli(argv: readonly string[]): CliOptions {
   let confirmPaid = false;
   let output = `results/${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
+  let systemModelId: LiveSystemModelId = AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const next = argv[index + 1];
@@ -237,12 +242,18 @@ function parseCli(argv: readonly string[]): CliOptions {
       index += 1;
       continue;
     }
+    if (argument === "--system-model") {
+      systemModelId = decodeLiveSystemModelId(next);
+      index += 1;
+      continue;
+    }
     throw new Error(`aiqsa_memory_live_argument_unknown:${argument ?? "missing"}`);
   }
   if (!confirmPaid) throw new Error("aiqsa_memory_live_paid_confirmation_required");
   return Object.freeze({
     confirmPaid,
-    outputDirectory: resolveLiveOutputDirectory(benchmarkRoot, output)
+    outputDirectory: resolveLiveOutputDirectory(benchmarkRoot, output),
+    systemModelId
   });
 }
 
@@ -298,7 +309,10 @@ async function assertDatabaseIdentity(prisma: PrismaClient): Promise<void> {
   }
 }
 
-async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles> {
+async function resolveProviderRoles(
+  prisma: PrismaClient,
+  systemModelId: LiveSystemModelId
+): Promise<ProviderRoles> {
   const [systemModels, rerankerModels, systemPolicy, memorySettings] =
     await Promise.all([
       prisma.providerModel.findMany({
@@ -319,7 +333,7 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
           connection: { enabled: true, family: "openai_compatible" },
           enabled: true,
           modelClass: "answer",
-          modelId: qualificationSystemModelId
+          modelId: systemModelId
         }
       }),
       prisma.providerModel.findMany({
@@ -392,7 +406,8 @@ async function resolveProviderRoles(prisma: PrismaClient): Promise<ProviderRoles
     system: Object.freeze({
       connectionId: system.connectionId,
       credentialId: systemCredential.id,
-      id: system.id
+      id: system.id,
+      upstreamModelId: systemModelId
     })
   });
 }
@@ -486,7 +501,8 @@ function requestHeaders(baseUrl: URL, cookie: string, json = false): HeadersInit
 async function catalogSystemModel(
   baseUrl: URL,
   cookie: string,
-  expectedModelId: string
+  expectedModelId: string,
+  expectedUpstreamModelId: LiveSystemModelId
 ): Promise<CatalogModel> {
   const response = await fetch(new URL("/api/me/catalog", baseUrl), {
     cache: "no-store",
@@ -506,7 +522,7 @@ async function catalogSystemModel(
     if (typeof candidate !== "object" || candidate === null) return false;
     const record = candidate as Record<string, unknown>;
     return record.modelId === expectedModelId &&
-      record.upstreamModelId === qualificationSystemModelId;
+      record.upstreamModelId === expectedUpstreamModelId;
   });
   if (candidates.length !== 1) {
     throw new Error("aiqsa_memory_live_system_catalog_invalid");
@@ -1223,7 +1239,12 @@ async function runLiveScenario(
   outputDirectory: string
 ): Promise<void> {
   const scenario = validateLiveScenario(liveScenario);
-  const model = await catalogSystemModel(baseUrl, identity.cookie, roles.system.id);
+  const model = await catalogSystemModel(
+    baseUrl,
+    identity.cookie,
+    roles.system.id,
+    roles.system.upstreamModelId
+  );
   const sourceChatKeyById = new Map<string, string>();
   const sourceOutcomes: SendOutcome[] = [];
   let sourceSendOrdinal = 0;
@@ -1500,7 +1521,7 @@ async function runLiveScenario(
     },
     jobs: finalJobs,
     models: {
-      answer: { provider: "codex-lb", upstreamModelId: qualificationSystemModelId },
+      answer: { provider: "codex-lb", upstreamModelId: roles.system.upstreamModelId },
       embedding: { provider: "OpenRouter", upstreamModelId: qualificationEmbeddingModelId },
       reranker: { provider: "OpenRouter", upstreamModelId: roles.reranker.upstreamModelId }
     },
@@ -1557,34 +1578,40 @@ async function writeFailureDiagnostic(
   outputDirectory: string,
   error: unknown
 ): Promise<void> {
-  const [jobs, executions, retrievalAttempts, runBindings] = await Promise.all([
-    prisma.memoryJob.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: { attemptCount: true, errorCode: true, kind: true, state: true },
-      where: { userId }
-    }),
-    prisma.memoryExecutionBinding.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: { errorCode: true, logicalRole: true, ordinal: true, state: true },
-      where: { userId }
-    }),
-    prisma.memoryRetrievalAttempt.findMany({
-      orderBy: { createdAt: "asc" },
-      select: {
-        degradationCode: true,
-        errorCode: true,
-        externalRolesUsed: true,
-        outcome: true,
-        state: true
-      },
-      where: { userId }
-    }),
-    prisma.modelRunMemoryBinding.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { degradationCode: true, outcome: true },
-      where: { userId }
-    })
-  ]);
+  const schedulerNow = new Date(
+    Date.now() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1_000
+  );
+  const [jobs, executions, retrievalAttempts, runBindings, synthesisSchedule] =
+    await Promise.all([
+      prisma.memoryJob.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { attemptCount: true, errorCode: true, kind: true, state: true },
+        where: { userId }
+      }),
+      prisma.memoryExecutionBinding.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { errorCode: true, logicalRole: true, ordinal: true, state: true },
+        where: { userId }
+      }),
+      prisma.memoryRetrievalAttempt.findMany({
+        orderBy: { createdAt: "asc" },
+        select: {
+          degradationCode: true,
+          errorCode: true,
+          externalRolesUsed: true,
+          outcome: true,
+          state: true
+        },
+        where: { userId }
+      }),
+      prisma.modelRunMemoryBinding.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { degradationCode: true, outcome: true },
+        where: { userId }
+      }),
+      loadMemorySynthesisScheduleStatus(prisma, userId, schedulerNow)
+        .catch(() => null)
+    ]);
   await writeJsonAtomic(resolve(outputDirectory, "failure-diagnostic.json"), {
     errorCode: safeCode(error),
     executions: executions.map((execution) => ({
@@ -1610,6 +1637,17 @@ async function writeFailureDiagnostic(
       degradationCode: diagnosticCode(binding.degradationCode),
       outcome: binding.outcome
     })),
+    synthesisSchedule: synthesisSchedule === null
+      ? null
+      : {
+          changedFactCount: synthesisSchedule.activity?.changedFactCount ?? 0,
+          decisionDue: synthesisSchedule.decision.due,
+          eligibleSourceCount:
+            synthesisSchedule.activity?.eligibleSourceCount ?? 0,
+          newEvidenceChatCount:
+            synthesisSchedule.activity?.newEvidenceChatCount ?? 0,
+          reason: synthesisSchedule.decision.reason
+        },
     version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION
   });
   emit("failure_diagnostic_written", { artifact: "failure-diagnostic.json" });
@@ -1654,7 +1692,7 @@ async function main(): Promise<void> {
     );
     const roles = await withFailureCode(
       "aiqsa_memory_live_provider_preflight_failed",
-      () => resolveProviderRoles(prisma)
+      () => resolveProviderRoles(prisma, options.systemModelId)
     );
     identity = await withFailureCode(
       "aiqsa_memory_live_identity_setup_failed",
@@ -1665,7 +1703,8 @@ async function main(): Promise<void> {
       scenario: liveScenario.id,
       sourceChats: AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT,
       sourceSends: AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT,
-      staleUsersRemoved
+      staleUsersRemoved,
+      systemModel: roles.system.upstreamModelId
     });
     try {
       await runLiveScenario(

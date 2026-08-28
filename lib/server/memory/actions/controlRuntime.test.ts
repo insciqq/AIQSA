@@ -7,6 +7,7 @@ import {
   MEMORY_CONTROL_PIPELINE_VERSION,
   MEMORY_CONTROL_VERSIONS,
   MEMORY_READ_ONLY_CONTROL_REUSE_VERSION,
+  MemoryControlProviderCallError,
   createMemoryControlService,
   createMemoryReadOnlyControlReuseProof,
   decodeMemoryReadOnlyControlReuseProof
@@ -20,8 +21,8 @@ const profileIntent: MemoryActionIntent = {
   categoryHint: null,
   confidenceBand: "HIGH",
   entityMentions: [],
-  includePatterns: false,
   memoryUseful: true,
+  patternExclusionRequested: false,
   pastChatsUseful: false,
   profileRequested: true,
   queryDecompositions: [],
@@ -45,14 +46,14 @@ const profileIntent: MemoryActionIntent = {
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v15");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v17");
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v15",
-      policyVersion: "memory-control-policy-v15",
-      promptVersion: "memory-control-prompt-v21",
-      schemaVersion: "memory-action-intent-v9"
+      pipelineVersion: "memory-control-v17",
+      policyVersion: "memory-control-policy-v17",
+      promptVersion: "memory-control-prompt-v23",
+      schemaVersion: "memory-action-intent-v10"
     });
-    expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(6);
+    expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(7);
   });
 
   it("round-trips the exact broad-profile decision and rejects a legacy proof version", () => {
@@ -69,7 +70,7 @@ describe("Memory control runtime contract", () => {
     expect(proof).not.toBeNull();
     expect(decodeMemoryReadOnlyControlReuseProof(proof)).toMatchObject({
       intent: { profileRequested: true },
-      version: 6
+      version: 7
     });
     expect(decodeMemoryReadOnlyControlReuseProof({ ...proof, version: 1 })).toBeNull();
   });
@@ -137,6 +138,69 @@ describe("Memory control runtime contract", () => {
       expect.objectContaining({ state: "FAILED" })
     );
   });
+
+  it.each([
+    ["REPLAY_SAFE_TRANSIENT", "memory_action_intent_transient", "FAILED"],
+    ["UNKNOWN", "memory_action_intent_outcome_unknown", "OUTCOME_UNKNOWN"],
+    ["PERMANENT", "memory_action_intent_unavailable", "FAILED"]
+  ] as const)(
+    "preserves %s provider failure classification",
+    async (classification, reason, state) => {
+      const settle = vi.fn(async () => undefined);
+      const service = createMemoryControlService({
+        execution: {
+          admission: {
+            bind: vi.fn(async () => ({ id: "control-binding" })),
+            start: vi.fn(async () => ({
+              bindingId: "control-binding",
+              snapshot: {
+                logicalRole: "MEMORY_CONTROL",
+                providerExecutionSnapshot: {
+                  connectionId: "connection-1",
+                  credentialId: "credential-1",
+                  credentialVersionId: "credential-version-1",
+                  providerModelId: "model-1"
+                },
+                requiresStrictStructuredOutput: true
+              }
+            }))
+          },
+          lifecycle: {
+            settle,
+            withAuthorizedResultCommit: vi.fn()
+          }
+        } as never,
+        provider: {
+          run: vi.fn(async () => {
+            throw new MemoryControlProviderCallError({
+              cause: new Error("provider failure"),
+              classification,
+              usage: null
+            });
+          })
+        }
+      });
+
+      await expect(service.decide({
+        attemptId: "attempt-1",
+        context: {
+          capabilities: {
+            automaticLearning: true,
+            historyRecall: true,
+            memoryEnabled: true
+          },
+          currentUserMessage: "What are my current preferences?"
+        },
+        signal: new AbortController().signal,
+        userId: "user-1"
+      })).resolves.toMatchObject({ reason, status: "UNAVAILABLE" });
+      expect(settle).toHaveBeenCalledWith(
+        "user-1",
+        "control-binding",
+        expect.objectContaining({ errorCode: reason, state })
+      );
+    }
+  );
 
   it("redacts recognized secrets in provider output before binding the intent", async () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
