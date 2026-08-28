@@ -461,6 +461,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
             bytes: body,
             fileName: claim.fileName,
             mimeType: claim.mimeType,
+            parserProfileVersion: claim.artifact.pdfParserProfileVersion,
             ...(signal ? { signal } : {})
           });
         }

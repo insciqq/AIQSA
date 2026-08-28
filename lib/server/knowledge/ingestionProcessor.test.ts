@@ -446,7 +446,8 @@ describe("Knowledge ingestion processor", () => {
     expect(parser.parse).toHaveBeenCalledWith(expect.objectContaining({
       bytes: original,
       fileName: "scan.pdf",
-      mimeType: "application/pdf"
+      mimeType: "application/pdf",
+      parserProfileVersion: 1
     }));
     expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({
       blocks: [{

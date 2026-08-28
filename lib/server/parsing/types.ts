@@ -17,6 +17,9 @@ export type DocumentParseInput = Readonly<{
   bytes: Buffer;
   fileName: string;
   mimeType: string;
+  /** Immutable local-PDF parser profile. Omitted non-Knowledge callers use
+   * the current parser behavior. */
+  parserProfileVersion?: number;
   signal?: AbortSignal;
 }>;
 

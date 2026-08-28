@@ -167,7 +167,9 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=1g
 
   tika:
-    image: apache/tika:3.3.0.0-full@sha256:ecdd37e204308266b1f8e28569f8516ebd5b96d7a4518a71d3904710b20c03b3
+    build:
+      context: ./ops/tika
+    image: aiqsa-tika:3.3.0.0-full-rus-eng-1
     cap_drop:
       - ALL
     cpus: ${AIQSA_TIKA_CPU_LIMIT:-1.0}

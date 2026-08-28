@@ -155,6 +155,7 @@ function parseRequest(input: SidecarParseInput, engine: SidecarParserEngine, sig
       "content-disposition": `attachment; filename="${sidecarFileName(input.fileName)}"`,
       "content-type": input.mediaType,
       maxEmbeddedResources: "0",
+      "x-tika-ocrlanguage": "rus+eng",
       "x-tika-skip-embedded": "true"
     },
     method: "PUT",
