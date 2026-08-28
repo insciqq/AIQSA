@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { memorySha256 } from "../memory/persistence/lexical";
 import {
   createPrismaKnowledgeEvidenceDispatchRepository,
   decodeKnowledgeProviderAttemptUsage,
@@ -213,11 +214,15 @@ function createFakePrisma(input: Readonly<{
       version: manifestData.version
     };
     const attempt = {
+      acceptedRequest: data.acceptedRequest ?? null,
+      acceptedResult: null,
       actualUsage: null,
       ambiguousAt: null,
       checkpointHash: data.checkpointHash,
+      contractVersion: data.contractVersion ?? null,
       createdAt: NOW,
       dispatchedAt: null,
+      evidenceReceiptHash: data.evidenceReceiptHash ?? null,
       estimatedUsage: data.estimatedUsage,
       failureCode: null,
       id: attemptId,
@@ -232,6 +237,8 @@ function createFakePrisma(input: Readonly<{
       purpose: data.purpose,
       releasedAt: null,
       requestHash: data.requestHash,
+      resultAcceptedAt: null,
+      resultHash: null,
       roundIndex: data.roundIndex,
       settledAt: null,
       state: "reserved",
@@ -489,6 +496,56 @@ describe("Knowledge evidence dispatch repository", () => {
       expect(fake.state.manifests).toEqual([]);
     }
   );
+
+  it("atomically persists a V5 accepted request and decoded terminal result", async () => {
+    const fake = createFakePrisma();
+    const repository = createPrismaKnowledgeEvidenceDispatchRepository(fake.client);
+    const manifest = draft();
+    const acceptedRequest = {
+      contractVersion: 5,
+      evidenceReceiptHash: manifest.manifestHash,
+      operation: "knowledge_answer_draft_v5",
+      version: 1
+    } as const;
+    const input: ReserveKnowledgeEvidenceDispatchInput = {
+      ...reserveInput(manifest),
+      acceptedRequest,
+      contractVersion: 5,
+      evidenceReceiptHash: manifest.manifestHash,
+      purpose: "knowledge_answer_draft_v5",
+      requestHash: memorySha256(acceptedRequest)
+    };
+    const created = await repository.reserve(input);
+    await repository.dispatch({
+      ...identity(input, created.dispatch.attempt.id),
+      dispatchedAt: DISPATCHED,
+      leaseExpiresAt: DISPATCH_LEASE,
+      leaseToken: input.leaseToken
+    });
+    const acceptedResult = { kind: "draft_malformed" } as const;
+    await repository.settle({
+      ...identity(input, created.dispatch.attempt.id),
+      acceptedResult,
+      actualUsage: usage(),
+      leaseToken: input.leaseToken,
+      providerResponseId: "provider-response-1",
+      resultAcceptedAt: SETTLED,
+      resultHash: memorySha256(acceptedResult),
+      settledAt: SETTLED
+    });
+
+    await expect(repository.loadForRecovery({ modelRunId: "run-1", ordinal: 1 }))
+      .resolves.toMatchObject({
+        attempt: {
+          acceptedRequest,
+          acceptedResult,
+          contractVersion: 5,
+          evidenceReceiptHash: manifest.manifestHash,
+          purpose: "knowledge_answer_draft_v5",
+          state: "settled"
+        }
+      });
+  });
 
   it("persists the full canonical K1..K2048 handle range and rejects K2049", async () => {
     const fake = createFakePrisma({

@@ -14,7 +14,7 @@ export function adminKnowledgeAnswerPolicyFixture(
     maximum: 32,
     maximumKnowledgeSearches: 12,
     minimum: 1,
-    parallelismMaximum: 16,
+    parallelismMaximum: 64,
     parallelismMinimum: 1,
     updatedAt: "2026-08-18T00:00:00.000Z",
     updatedBy: null,

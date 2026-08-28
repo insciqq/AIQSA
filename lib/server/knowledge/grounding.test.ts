@@ -5,9 +5,11 @@ import {
 } from "./evidencePackage";
 import {
   groundKnowledgeAnswer,
+  groundSettledKnowledgeAnswerV5,
   groundKnowledgeToolLoopAnswer,
   KnowledgeAnswerContractError
 } from "./grounding";
+import type { KnowledgeAnswerSettlementV5 } from "./answerGroundingV5";
 
 const privateSourceId = "2e3aa829-79cd-41df-b5c7-1a53f4b5cf19";
 
@@ -73,6 +75,61 @@ function toolLoopEvidence(): KnowledgeEvidencePackage {
 }
 
 describe("Knowledge answer citation contract", () => {
+  it("records content-free Grounding Evidence V7 for deterministic settlement", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      estimatedCostMicros: null,
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 12
+    };
+    const settlement: KnowledgeAnswerSettlementV5 = {
+      contradictedClaimCount: 0,
+      fallbackReason: null,
+      finalText: "Supported fact. [K1]",
+      finalizationMode: "selected_claims",
+      groundingStatus: "verified",
+      outcome: "answered",
+      requestCoverage: "complete",
+      supportedClaimCount: 1,
+      unsupportedClaimCount: 0
+    };
+    const result = groundSettledKnowledgeAnswerV5({
+      draft: {
+        claimCount: 1,
+        durationMs: 120,
+        hash: "a".repeat(64),
+        operationId: "draft-operation-0001",
+        providerRequestId: "draft-response-1",
+        usage
+      },
+      evidence: evidence(),
+      evidenceReceiptHash: "c".repeat(64),
+      selector: {
+        durationMs: 80,
+        hash: "b".repeat(64),
+        operationId: "selector-operation-0001",
+        providerRequestId: "selector-response-1",
+        usage
+      },
+      settlement
+    });
+
+    expect(result).toMatchObject({
+      draftClaimCount: 1,
+      draftContractVersion: 5,
+      finalizationMode: "selected_claims",
+      requestCoverage: "complete",
+      selectorContractVersion: 3,
+      version: 7
+    });
+    expect(result.evidenceReceiptHash).toBe("c".repeat(64));
+    expect(JSON.stringify(result)).not.toContain("Evidence");
+    expect(result.finalAnswerHash).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
   it("accepts ANSWERED only with a dispatched citation", () => {
     const result = groundKnowledgeAnswer({
       answer: "AIQSA_KB_STATUS=ANSWERED\nОтвет подтвержден [K1].",

@@ -37,10 +37,14 @@ function store() {
   const reserve = vi.fn<KnowledgeEvidenceDispatchStore["reserve"]>(async (input) => ({
     dispatch: {
       attempt: {
+        acceptedRequest: input.acceptedRequest ?? null,
+        acceptedResult: null,
         actualUsage: null,
         ambiguousAt: null,
         checkpointHash: input.checkpointHash,
+        contractVersion: input.contractVersion ?? null,
         dispatchedAt: null,
+        evidenceReceiptHash: input.evidenceReceiptHash ?? null,
         estimatedUsage: input.estimatedUsage,
         failureCode: null,
         id: "attempt-1",
@@ -54,6 +58,8 @@ function store() {
         purpose: input.purpose,
         releasedAt: null,
         requestHash: input.requestHash,
+        resultAcceptedAt: null,
+        resultHash: null,
         roundIndex: input.roundIndex,
         settledAt: null,
         state: "reserved"
@@ -146,6 +152,51 @@ describe("Knowledge provider dispatch lifecycle", () => {
         totalTokens: 16
       },
       providerResponseId: "response-1"
+    }));
+  });
+
+  it("pins and settles a V5 operation snapshot on the answer-model binding", async () => {
+    const persistence = store();
+    const lifecycle = createKnowledgeProviderDispatchLifecycle(persistence, {
+      now: () => new Date("2026-08-19T20:00:00.000Z"),
+      uuid: () => "lease-token-00000001"
+    });
+    const manifest = draft();
+    const acceptedRequest = {
+      contractVersion: 5,
+      evidenceReceiptHash: manifest.manifestHash,
+      operation: "knowledge_answer_draft_v5",
+      version: 1
+    } as const;
+    const prepared = await lifecycle.prepare({
+      acceptedRequest,
+      contractVersion: 5,
+      draft: manifest,
+      evidenceReceiptHash: manifest.manifestHash,
+      modelRunId: "run-1",
+      ordinal: 1,
+      purpose: "knowledge_answer_draft_v5",
+      requestPreview: acceptedRequest,
+      roundIndex: 0
+    });
+    await lifecycle.dispatch(prepared);
+    await lifecycle.settle(prepared, {
+      acceptedResult: { kind: "draft_malformed" },
+      providerResponseId: "response-1",
+      usage: { inputTokens: 4, outputTokens: 1, reasoningTokens: 0, totalTokens: 5 }
+    });
+
+    expect(persistence.reserve).toHaveBeenCalledWith(expect.objectContaining({
+      acceptedRequest,
+      contractVersion: 5,
+      evidenceReceiptHash: manifest.manifestHash,
+      providerBindingKey: "answer",
+      purpose: "knowledge_answer_draft_v5"
+    }));
+    expect(persistence.settle).toHaveBeenCalledWith(expect.objectContaining({
+      acceptedResult: { kind: "draft_malformed" },
+      resultAcceptedAt: new Date("2026-08-19T20:00:00.000Z"),
+      resultHash: expect.stringMatching(/^[0-9a-f]{64}$/u)
     }));
   });
 

@@ -10,7 +10,13 @@ import {
 } from "./openRouterChatResponse";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
+import {
+  STRUCTURED_OUTPUT_LIMITS,
+  structuredOutputPromptFits
+} from "./structuredOutputLimits";
 import { openRouterChatToolBridge } from "../tools/bridges";
+
+export { STRUCTURED_OUTPUT_LIMITS } from "./structuredOutputLimits";
 
 export const STRUCTURED_OUTPUT_SUPPORTED_ADAPTERS = [
   "openai_responses_native",
@@ -43,15 +49,6 @@ export type ProviderStructuredOutputAdapter = Readonly<{
     options?: ProviderStructuredOutputOptions
   ): Promise<Record<string, unknown>>;
 }>;
-
-export const STRUCTURED_OUTPUT_LIMITS = Object.freeze({
-  maxNameCharacters: 64,
-  maxOutputCharacters: 32_768,
-  maxOutputTokens: 4_096,
-  maxPromptCharacters: 64_000,
-  maxSchemaBytes: 32 * 1024,
-  minOutputTokens: 16
-});
 
 // Responses max_output_tokens and OpenRouter max_tokens include hidden
 // reasoning tokens. A tiny schema payload can therefore be truncated before
@@ -88,17 +85,69 @@ const SCHEMA_CHILD_KEYS = new Set([
   "propertyNames",
   "then"
 ]);
-const SCHEMA_CHILD_ARRAY_KEYS = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+const SCHEMA_CHILD_ARRAY_KEYS = new Set(["allOf", "anyOf", "prefixItems"]);
 
-/** OpenAI's strict-schema wire subset rejects `uniqueItems`. Keep uniqueness
- * in the provider-neutral contract and authoritative server decoder, while
- * removing only that unsupported annotation from schema nodes sent upstream. */
-function schemaForProvider(value: Readonly<Record<string, unknown>>): Record<string, unknown> {
+const PROVIDER_ROOT_WRAPPER_KEY = "__aiqsa_payload";
+
+type ProviderSchemaProjection = Readonly<{
+  rootWrapped: boolean;
+  schema: Record<string, unknown>;
+}>;
+
+function scalarConstKey(value: unknown): string | null {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") {
+    return `${typeof value}:${JSON.stringify(value)}`;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `number:${JSON.stringify(value)}`;
+  }
+  return null;
+}
+
+/** `oneOf` and `anyOf` are equivalent only when at most one branch can match.
+ * Prove that property here from a shared required scalar discriminator before
+ * projecting into the provider subset; otherwise fail closed. */
+function hasExclusiveConstDiscriminator(branches: readonly unknown[]): boolean {
+  if (branches.length < 2 || !branches.every(isRecord)) return false;
+  const records = branches as readonly Record<string, unknown>[];
+  const firstProperties = records[0]?.properties;
+  if (!isRecord(firstProperties)) return false;
+  return Object.keys(firstProperties).some((propertyName) => {
+    const values = records.map((branch) => {
+      if (!Array.isArray(branch.required) ||
+        !branch.required.includes(propertyName) ||
+        !isRecord(branch.properties)) return null;
+      const property = branch.properties[propertyName];
+      if (!isRecord(property) || !Object.hasOwn(property, "const")) return null;
+      return scalarConstKey(property.const);
+    });
+    return values.every((value): value is string => value !== null) &&
+      new Set(values).size === records.length;
+  });
+}
+
+/** Project the provider-neutral schema into the portable strict-schema wire
+ * subset used by Responses-compatible and OpenRouter transports. The
+ * canonical schema and authoritative server decoder retain `oneOf`
+ * exclusivity and `uniqueItems`; the provider wire subset supports `anyOf`
+ * but requires an object root. */
+function schemaForProvider(
+  value: Readonly<Record<string, unknown>>
+): ProviderSchemaProjection {
   const visit = (node: unknown): unknown => {
     if (!isRecord(node)) return node;
     const mapped: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(node)) {
       if (key === "uniqueItems") continue;
+      if (key === "oneOf") {
+        if (!Array.isArray(child) || Object.hasOwn(node, "anyOf") ||
+          !hasExclusiveConstDiscriminator(child)) {
+          throw new Error("structured_output_schema_unsupported");
+        }
+        mapped.anyOf = child.map(visit);
+        continue;
+      }
       if (key === "properties" && isRecord(child)) {
         mapped[key] = Object.fromEntries(
           Object.entries(child).map(([propertyName, propertySchema]) => [
@@ -116,7 +165,35 @@ function schemaForProvider(value: Readonly<Record<string, unknown>>): Record<str
     }
     return mapped;
   };
-  return visit(value) as Record<string, unknown>;
+  const projected = visit(value) as Record<string, unknown>;
+  const rootWrapped = Array.isArray(value.oneOf) || Array.isArray(value.anyOf);
+  const schema = rootWrapped
+    ? {
+        additionalProperties: false,
+        properties: {
+          [PROVIDER_ROOT_WRAPPER_KEY]: projected
+        },
+        required: [PROVIDER_ROOT_WRAPPER_KEY],
+        type: "object"
+      }
+    : projected;
+  if (jsonBytes(schema) > STRUCTURED_OUTPUT_LIMITS.maxSchemaBytes) {
+    throw new Error("structured_output_request_invalid");
+  }
+  return { rootWrapped, schema };
+}
+
+function decodeProviderStructuredOutput(
+  request: ProviderStructuredOutputRequest,
+  output: Record<string, unknown>
+): Record<string, unknown> {
+  if (!schemaForProvider(request.schema).rootWrapped) return output;
+  if (Object.keys(output).length !== 1 ||
+    !Object.hasOwn(output, PROVIDER_ROOT_WRAPPER_KEY) ||
+    !isRecord(output[PROVIDER_ROOT_WRAPPER_KEY])) {
+    throw new Error("structured_output_invalid");
+  }
+  return output[PROVIDER_ROOT_WRAPPER_KEY];
 }
 
 function normalizeRequest(
@@ -133,8 +210,7 @@ function normalizeRequest(
     typeof request.userPrompt !== "string" ||
     !request.systemPrompt.trim() ||
     !request.userPrompt.trim() ||
-    request.systemPrompt.length + request.userPrompt.length >
-      STRUCTURED_OUTPUT_LIMITS.maxPromptCharacters ||
+    !structuredOutputPromptFits(request) ||
     !Number.isSafeInteger(maxOutputTokens) ||
     maxOutputTokens < STRUCTURED_OUTPUT_LIMITS.minOutputTokens ||
     maxOutputTokens > STRUCTURED_OUTPUT_LIMITS.maxOutputTokens ||
@@ -156,7 +232,7 @@ function normalizeRequest(
   };
 }
 
-function parseObject(text: string): Record<string, unknown> {
+export function parseProviderStructuredOutputObject(text: string): Record<string, unknown> {
   if (
     !text.trim() ||
     text.length > STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters ||
@@ -230,7 +306,7 @@ export function buildOpenAIResponsesStructuredOutputRequest(
     text: {
       format: {
         name: normalized.name,
-        schema: schemaForProvider(normalized.schema),
+        schema: schemaForProvider(normalized.schema).schema,
         strict: true,
         type: "json_schema"
       }
@@ -319,7 +395,7 @@ export function buildOpenRouterStructuredOutputRequest(
       function: {
         description: "Return the structured result required by the system instruction.",
         name: normalized.name,
-        parameters: schemaForProvider(normalized.schema),
+        parameters: schemaForProvider(normalized.schema).schema,
         strict: true
       },
       type: "function"
@@ -344,7 +420,10 @@ export function createOpenAIResponsesStructuredOutputAdapter(input: Readonly<{
       if (isRecord(response.usage)) {
         options?.onUsage?.(extractOpenAIUsage(response));
       }
-      return parseObject(responseText);
+      return decodeProviderStructuredOutput(
+        request,
+        parseProviderStructuredOutputObject(responseText)
+      );
     }
   };
 }
@@ -376,7 +455,7 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
         jsonBytes(calls[0].arguments) > STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters * 4) {
         throw new Error("structured_output_invalid");
       }
-      return calls[0].arguments;
+      return decodeProviderStructuredOutput(request, calls[0].arguments);
     }
   };
 }

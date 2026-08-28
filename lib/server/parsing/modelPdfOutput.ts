@@ -327,15 +327,19 @@ function tableFor(
   const verticalAnchors = Array<MutableParsedTableCell | null>(columnCount).fill(null);
   rows.forEach((row, rowIndex) => {
     for (let column = 0; column < columnCount; column += 1) {
-      const text = row[column] ?? "";
-      if (input.continuationMarkers && text === MODEL_PDF_ROW_CONTINUATION_CELL) {
+      const rawText = row[column] ?? "";
+      if (input.continuationMarkers && rawText === MODEL_PDF_ROW_CONTINUATION_CELL) {
         const anchor = verticalAnchors[column];
-        if (!anchor || !anchor.text || anchor.row + anchor.rowSpan !== rowIndex) {
-          throw parserError(input.mode);
+        if (anchor?.text && anchor.row + anchor.rowSpan === rowIndex) {
+          anchor.rowSpan += 1;
+          continue;
         }
-        anchor.rowSpan += 1;
-        continue;
       }
+      // The marker is synthetic parser control, not source evidence. A vision
+      // model can occasionally use it for a horizontal span or at a page-local
+      // table boundary where no vertical anchor exists. Preserve the rest of
+      // the table and degrade only that unresolvable control cell to empty.
+      const text = rawText === MODEL_PDF_ROW_CONTINUATION_CELL ? "" : rawText;
       const cell: MutableParsedTableCell = {
         column,
         columnSpan: 1,

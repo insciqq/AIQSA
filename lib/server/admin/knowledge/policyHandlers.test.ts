@@ -81,7 +81,7 @@ describe("administrator Knowledge settings handlers", () => {
   it("updates the ingestion parallelism with optimistic versioning", async () => {
     const service = {
       activateProfile: vi.fn(),
-      list: vi.fn().mockResolvedValue({ answerPolicy: { ingestionParallelism: 6 } }),
+      list: vi.fn().mockResolvedValue({ answerPolicy: { ingestionParallelism: 64 } }),
       rollbackProfile: vi.fn(),
       updateIngestionParallelism: vi.fn()
     };
@@ -93,7 +93,7 @@ describe("administrator Knowledge settings handlers", () => {
       body: JSON.stringify({
         action: "update_ingestion_parallelism",
         expectedVersion: 3,
-        ingestionParallelism: 6
+        ingestionParallelism: 64
       }),
       headers: { "content-type": "application/json" },
       method: "PATCH"
@@ -102,11 +102,11 @@ describe("administrator Knowledge settings handlers", () => {
     expect(response.status).toBe(200);
     expect(service.updateIngestionParallelism).toHaveBeenCalledWith({
       expectedVersion: 3,
-      ingestionParallelism: 6,
+      ingestionParallelism: 64,
       userId: "user-1"
     });
     await expect(response.json()).resolves.toEqual({
-      knowledge: { answerPolicy: { ingestionParallelism: 6 } }
+      knowledge: { answerPolicy: { ingestionParallelism: 64 } }
     });
   });
 
@@ -123,7 +123,7 @@ describe("administrator Knowledge settings handlers", () => {
     });
     for (const body of [
       { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 0 },
-      { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 17 },
+      { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 65 },
       { action: "update_ingestion_parallelism", expectedVersion: 1, ingestionParallelism: 2.5 },
       { action: "update_ingestion_parallelism", expectedVersion: 0, ingestionParallelism: 4 },
       {

@@ -40,6 +40,7 @@ import {
 import { isSpreadsheetDateValue } from "../parsing/spreadsheetDate";
 import { utils as spreadsheetUtils } from "xlsx";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
+import { withLayoutAwareInlineReferences } from "./layoutInlineReferences";
 import { withLayoutAwareTables } from "./layoutTables";
 
 export type KnowledgeNormalizedLocator = Readonly<{
@@ -879,14 +880,18 @@ export function encodeKnowledgeNormalizedDocument(
   parsed: ParsedDocument,
   config: KnowledgeExtractionConfig,
   metadata: Readonly<{
+    layoutAwareInlineReferences?: boolean;
     layoutAwareTables?: boolean;
     sourceDisplayName?: string | null;
     sourceMediaType?: string;
   }> = {}
 ): EncodedKnowledgeNormalizedDocument {
-  const preparedDocument = metadata.layoutAwareTables
-    ? withLayoutAwareTablesAndFieldGroups(parsed)
+  const withReferences = metadata.layoutAwareInlineReferences
+    ? withLayoutAwareInlineReferences(parsed)
     : parsed;
+  const preparedDocument = metadata.layoutAwareTables
+    ? withLayoutAwareTablesAndFieldGroups(withReferences)
+    : withReferences;
   const document = buildStoredDocument(
     preparedDocument,
     metadata

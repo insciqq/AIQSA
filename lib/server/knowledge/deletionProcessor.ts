@@ -689,7 +689,14 @@ async function purgeProviderAttempts(
   if (modelRunIds.length === 0) return;
   const attempts = await tx.knowledgeProviderAttempt.findMany({
     orderBy: [{ modelRunId: "asc" }, { ordinal: "asc" }],
-    select: { createdAt: true, dispatchedAt: true, id: true, modelRunId: true, state: true },
+    select: {
+      createdAt: true,
+      dispatchedAt: true,
+      id: true,
+      modelRunId: true,
+      purpose: true,
+      state: true
+    },
     where: { modelRunId: { in: [...modelRunIds] } }
   });
   for (const attempt of attempts) {
@@ -712,9 +719,24 @@ async function purgeProviderAttempts(
             state: "ambiguous" as const
           }
         : {};
+    const structuredAnswer = attempt.purpose === "knowledge_answer_draft_v5" ||
+      attempt.purpose === "knowledge_grounded_selector_v2" ||
+      attempt.purpose === "knowledge_grounded_selector_v3";
+    const settledStructuredAnswer = structuredAnswer && attempt.state === "settled";
     const updated = await tx.knowledgeProviderAttempt.updateMany({
       data: {
         ...terminalTransition,
+        ...(structuredAnswer
+          ? {
+              acceptedRequest: json({ purged: true, version: 1 }),
+              acceptedResult: settledStructuredAnswer
+                ? json({ purged: true, version: 1 })
+                : Prisma.DbNull,
+              evidenceReceiptHash: "0".repeat(64),
+              resultAcceptedAt: settledStructuredAnswer ? undefined : null,
+              resultHash: settledStructuredAnswer ? "0".repeat(64) : null
+            }
+          : {}),
         checkpointHash: "0".repeat(64),
         idempotencyKey,
         leaseExpiresAt: null,

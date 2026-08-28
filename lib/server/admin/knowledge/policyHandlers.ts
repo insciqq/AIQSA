@@ -1,5 +1,9 @@
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
+import {
+  KNOWLEDGE_INGESTION_PARALLELISM_MAXIMUM,
+  KNOWLEDGE_INGESTION_PARALLELISM_MINIMUM
+} from "../../knowledge/ingestionCoordinator";
 import type { createAdminKnowledgePolicyService } from "./policyService";
 import { AdminKnowledgeProfileServiceError } from "./profileService";
 import { AdminKnowledgeAnswerPolicyServiceError } from "./answerPolicyService";
@@ -129,8 +133,8 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
         ]) || !Number.isSafeInteger(value.expectedVersion) ||
           Number(value.expectedVersion) < 1 ||
           !Number.isSafeInteger(value.ingestionParallelism) ||
-          Number(value.ingestionParallelism) < 1 ||
-          Number(value.ingestionParallelism) > 16) {
+          Number(value.ingestionParallelism) < KNOWLEDGE_INGESTION_PARALLELISM_MINIMUM ||
+          Number(value.ingestionParallelism) > KNOWLEDGE_INGESTION_PARALLELISM_MAXIMUM) {
           return Response.json({ error: "knowledge_ingestion_parallelism_invalid" }, { status: 400 });
         }
         try {

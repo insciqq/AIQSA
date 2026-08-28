@@ -140,7 +140,7 @@ describe("administrator Knowledge section", () => {
     const row = screen.getByTestId("knowledge-ingestion-parallelism-row");
     const save = within(row).getByRole("button", { name: "Save" });
 
-    fireEvent.change(parallelism, { target: { value: "17" } });
+    fireEvent.change(parallelism, { target: { value: "65" } });
     expect(save).toBeDisabled();
     fireEvent.change(parallelism, { target: { value: "" } });
     expect(save).toBeDisabled();

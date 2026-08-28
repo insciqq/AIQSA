@@ -4,7 +4,12 @@ import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 
 type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
-  Pick<RunRepository, "groundKnowledgeAnswer">;
+  Pick<RunRepository, "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5">;
+
+export type KnowledgeAnswerFinalizationContracts = Readonly<{
+  draftContractVersion: 5;
+  selectorContractVersion: 3;
+}>;
 
 export type RunCompletionFinalizationResult =
   | Readonly<{
@@ -59,6 +64,8 @@ export async function usageAttributionsWithEstimatedCost(
 }
 
 export async function finalizeRunCompletion(input: Readonly<{
+  knowledgeAnswerContracts?: KnowledgeAnswerFinalizationContracts;
+  knowledgeZeroEvidence?: true;
   outputEvents?: readonly RunOutputArtifactEvent[];
   repository: RunCompletionRepository;
   result: Readonly<{
@@ -76,13 +83,28 @@ export async function finalizeRunCompletion(input: Readonly<{
     userId: string;
   }>;
 }>): Promise<RunCompletionFinalizationResult> {
-  const knowledgeFinalization = input.repository.groundKnowledgeAnswer
-    ? await input.repository.groundKnowledgeAnswer({
-        answer: input.result.finalText,
-        runId: input.run.runId,
-        userId: input.run.userId
-      })
-    : null;
+  if (input.knowledgeAnswerContracts && input.knowledgeZeroEvidence) {
+    throw new Error("knowledge_answer_finalization_snapshot_invalid");
+  }
+  let knowledgeFinalization = null;
+  if (input.knowledgeZeroEvidence) {
+    knowledgeFinalization = null;
+  } else if (input.knowledgeAnswerContracts) {
+    if (!input.repository.groundKnowledgeAnswerV5) {
+      throw new Error("knowledge_answer_v5_finalizer_unavailable");
+    }
+    knowledgeFinalization = await input.repository.groundKnowledgeAnswerV5({
+      ...input.knowledgeAnswerContracts,
+      runId: input.run.runId,
+      userId: input.run.userId
+    });
+  } else if (input.repository.groundKnowledgeAnswer) {
+    knowledgeFinalization = await input.repository.groundKnowledgeAnswer({
+      answer: input.result.finalText,
+      runId: input.run.runId,
+      userId: input.run.userId
+    });
+  }
   const usageAttributions = await usageAttributionsWithEstimatedCost(
     input.repository,
     input.result.usageAttributions?.length

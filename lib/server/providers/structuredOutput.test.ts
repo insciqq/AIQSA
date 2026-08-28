@@ -23,6 +23,28 @@ const request = {
   userPrompt: "Set ok to true."
 };
 
+const rootUnionSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: { kind: { const: "ok", type: "string" } },
+      required: ["kind"],
+      type: "object"
+    },
+    {
+      additionalProperties: false,
+      properties: { kind: { const: "insufficient", type: "string" } },
+      required: ["kind"],
+      type: "object"
+    }
+  ]
+};
+
+const rootUnionRequest = {
+  ...request,
+  schema: rootUnionSchema
+};
+
 function responsesModel(
   adapterKind: "openai_responses_compatible" | "openai_responses_native"
 ): ProviderModelConfiguration {
@@ -134,6 +156,119 @@ describe("provider structured output", () => {
     });
     expect(JSON.stringify(responses)).not.toContain("uniqueItems");
     expect(JSON.stringify(openRouter)).not.toContain("uniqueItems");
+  });
+
+  it("maps canonical oneOf branches to the portable nested anyOf subset", () => {
+    const requestWithNestedUnion = {
+      ...request,
+      schema: {
+        additionalProperties: false,
+        properties: {
+          result: rootUnionSchema
+        },
+        required: ["result"],
+        type: "object"
+      }
+    };
+    const canonicalBefore = JSON.stringify(requestWithNestedUnion.schema);
+    const responses = buildOpenAIResponsesStructuredOutputRequest(
+      responsesModel("openai_responses_compatible"),
+      requestWithNestedUnion
+    );
+    const openRouter = buildOpenRouterStructuredOutputRequest(
+      openRouterModel,
+      requestWithNestedUnion
+    );
+
+    expect(responses).toMatchObject({
+      text: {
+        format: {
+          schema: {
+            properties: {
+              result: { anyOf: rootUnionSchema.oneOf }
+            },
+            type: "object"
+          }
+        }
+      }
+    });
+    expect(openRouter).toMatchObject({
+      tools: [{
+        function: {
+          parameters: {
+            properties: {
+              result: { anyOf: rootUnionSchema.oneOf }
+            },
+            type: "object"
+          }
+        },
+        type: "function"
+      }]
+    });
+    expect(JSON.stringify(responses)).not.toContain("oneOf");
+    expect(JSON.stringify(openRouter)).not.toContain("oneOf");
+    expect(JSON.stringify(requestWithNestedUnion.schema)).toBe(canonicalBefore);
+  });
+
+  it("wraps a canonical root union in a strict transport-only object", () => {
+    const canonicalBefore = JSON.stringify(rootUnionRequest.schema);
+    const expectedWireSchema = {
+      additionalProperties: false,
+      properties: {
+        __aiqsa_payload: { anyOf: rootUnionSchema.oneOf }
+      },
+      required: ["__aiqsa_payload"],
+      type: "object"
+    };
+
+    expect(buildOpenAIResponsesStructuredOutputRequest(
+      responsesModel("openai_responses_compatible"),
+      rootUnionRequest
+    )).toMatchObject({
+      text: { format: { schema: expectedWireSchema } }
+    });
+    expect(buildOpenRouterStructuredOutputRequest(
+      openRouterModel,
+      rootUnionRequest
+    )).toMatchObject({
+      tools: [{
+        function: { parameters: expectedWireSchema },
+        type: "function"
+      }]
+    });
+    expect(JSON.stringify(rootUnionRequest.schema)).toBe(canonicalBefore);
+  });
+
+  it("fails closed instead of weakening a non-discriminated oneOf", () => {
+    const overlappingBranch = {
+      additionalProperties: false,
+      properties: { value: { type: "string" } },
+      required: ["value"],
+      type: "object"
+    };
+    const unsupportedRequest = {
+      ...request,
+      schema: { oneOf: [overlappingBranch, { ...overlappingBranch }] }
+    };
+
+    expect(() => buildOpenAIResponsesStructuredOutputRequest(
+      responsesModel("openai_responses_compatible"),
+      unsupportedRequest
+    )).toThrow("structured_output_schema_unsupported");
+    expect(() => buildOpenRouterStructuredOutputRequest(
+      openRouterModel,
+      unsupportedRequest
+    )).toThrow("structured_output_schema_unsupported");
+  });
+
+  it("bounds structured prompts by UTF-8 bytes as well as JavaScript characters", () => {
+    expect(() => buildOpenAIResponsesStructuredOutputRequest(
+      responsesModel("openai_responses_native"),
+      {
+        ...request,
+        userPrompt: "😀".repeat(64_001)
+      }
+    )).toThrow("structured_output_request_invalid");
   });
 
   it.each([
@@ -307,6 +442,31 @@ describe("provider structured output", () => {
     expect(JSON.stringify(await adapter.execute(request))).not.toContain("private-provider-id");
   });
 
+  it("unwraps only the exact transport wrapper from Responses root unions", async () => {
+    const create = vi.fn(async () => ({
+      id: "root-union-response",
+      output_text: JSON.stringify({ __aiqsa_payload: { kind: "ok" } }),
+      status: "completed"
+    }));
+    const adapter = createOpenAIResponsesStructuredOutputAdapter({
+      client: {
+        async cancel() { return {}; },
+        create,
+        async retrieve() { return {}; }
+      },
+      model: responsesModel("openai_responses_compatible")
+    });
+
+    await expect(adapter.execute(rootUnionRequest)).resolves.toEqual({ kind: "ok" });
+    create.mockResolvedValueOnce({
+      id: "missing-root-union-wrapper",
+      output_text: JSON.stringify({ kind: "ok" }),
+      status: "completed"
+    });
+    await expect(adapter.execute(rootUnionRequest))
+      .rejects.toThrow("structured_output_invalid");
+  });
+
   it("parses one OpenRouter schema tool call and rejects free-form output", async () => {
     const createChatCompletion = vi.fn(async () => ({
       choices: [{
@@ -347,6 +507,41 @@ describe("provider structured output", () => {
       usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 }
     });
     await expect(adapter.execute(request)).rejects.toThrow("structured_output_invalid");
+  });
+
+  it("unwraps only the exact transport wrapper from OpenRouter root unions", async () => {
+    const response = (argumentsValue: Record<string, unknown>) => ({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null as string | null,
+          tool_calls: [{
+            function: {
+              arguments: JSON.stringify(argumentsValue),
+              name: "strict_result"
+            },
+            id: "call-root-union",
+            type: "function"
+          }]
+        }
+      }],
+      id: "openrouter-root-union"
+    });
+    const createChatCompletion = vi.fn(async () => response({
+      __aiqsa_payload: { kind: "ok" }
+    }));
+    const adapter = createOpenRouterStructuredOutputAdapter({
+      client: { createChatCompletion },
+      model: openRouterModel
+    });
+
+    await expect(adapter.execute(rootUnionRequest)).resolves.toEqual({ kind: "ok" });
+    createChatCompletion.mockResolvedValueOnce(response({
+      __aiqsa_payload: { kind: "ok" },
+      extra: true
+    }));
+    await expect(adapter.execute(rootUnionRequest))
+      .rejects.toThrow("structured_output_invalid");
   });
 
   it("reports absent usage honestly instead of manufacturing zero tokens", async () => {

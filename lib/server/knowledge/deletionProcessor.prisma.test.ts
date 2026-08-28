@@ -406,6 +406,54 @@ async function createActiveProviderAttemptPrivacyAudit(input: Readonly<{
   return { dispatchedId: dispatched.id, reservedId: reserved.id };
 }
 
+async function createStructuredAnswerPrivacyAudit(input: Readonly<{
+  modelRunId: string;
+  suffix: string;
+}>): Promise<string> {
+  const now = new Date();
+  const usage = {
+    cachedInputTokens: null,
+    cacheWriteInputTokens: null,
+    estimatedCostMicros: 0,
+    inputTokens: 1,
+    outputTokens: 1,
+    reasoningTokens: null,
+    totalTokens: 2
+  };
+  const attempt = await prisma.knowledgeProviderAttempt.create({
+    data: {
+      acceptedRequest: {
+        privateEvidence: `private structured request ${input.suffix}`,
+        version: 1
+      },
+      acceptedResult: {
+        privateClaim: `private structured result ${input.suffix}`,
+        version: 1
+      },
+      actualUsage: usage,
+      checkpointHash: "a".repeat(64),
+      contractVersion: 5,
+      dispatchedAt: now,
+      estimatedUsage: usage,
+      evidenceReceiptHash: "b".repeat(64),
+      idempotencyKey: `structured-draft:${input.suffix}`,
+      modelRunId: input.modelRunId,
+      ordinal: 4,
+      providerBindingKey: "answer",
+      providerResponseId: `private-structured-response:${input.suffix}`,
+      purpose: "knowledge_answer_draft_v5",
+      requestHash: "c".repeat(64),
+      resultAcceptedAt: now,
+      resultHash: "d".repeat(64),
+      roundIndex: 0,
+      settledAt: now,
+      state: "settled"
+    },
+    select: { id: true }
+  });
+  return attempt.id;
+}
+
 async function createRetiredAnalysisPrivacyFixture(input: Readonly<{
   baseEvidence: Prisma.InputJsonValue;
   invocationOrdinal: number;
@@ -1008,6 +1056,10 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       modelRunId: run.id,
       suffix
     });
+    const structuredAttemptId = await createStructuredAnswerPrivacyAudit({
+      modelRunId: run.id,
+      suffix
+    });
     await prisma.modelRun.update({
       data: { status: "in_progress" },
       where: { id: run.id }
@@ -1307,6 +1359,24 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         idempotencyKey: purgedProviderAttemptKey(h2Audit.attemptId),
         providerResponseId: null,
         requestHash: "0".repeat(64),
+        state: "settled"
+      });
+      await expect(prisma.knowledgeProviderAttempt.findUnique({
+        select: {
+          acceptedRequest: true,
+          acceptedResult: true,
+          evidenceReceiptHash: true,
+          providerResponseId: true,
+          resultHash: true,
+          state: true
+        },
+        where: { id: structuredAttemptId }
+      })).resolves.toEqual({
+        acceptedRequest: { purged: true, version: 1 },
+        acceptedResult: { purged: true, version: 1 },
+        evidenceReceiptHash: "0".repeat(64),
+        providerResponseId: null,
+        resultHash: "0".repeat(64),
         state: "settled"
       });
       await expect(prisma.knowledgeProviderAttempt.findMany({

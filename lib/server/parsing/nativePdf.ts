@@ -322,7 +322,7 @@ function workerSource(): string {
             const invisibleText = operators.fnArray.some((operation, index) =>
               operation === pdfjs.OPS.setTextRenderingMode &&
               Array.isArray(operators.argsArray[index]) &&
-              operators.argsArray[index][0] === 3
+              [3, 7].includes(operators.argsArray[index][0])
             );
             pages.push({
               characterCount: pageRowsValue.characterCount,
@@ -686,9 +686,9 @@ export async function parseNativeTextPdf(
     : Object.freeze({ classification: geometry.classification, document, reasonCode: null });
 }
 
-/** Bounded geometry-only extraction. Callers may use its boxes to locate
- * model-authored text, but must never replace or correct that text with this
- * projection. */
+/** Bounded native-text and geometry extraction. Model-PDF profiles before the
+ * collaboration profile use only its boxes. Newer profiles may admit clean,
+ * visible unmatched rows through the separately bounded merge policy. */
 export async function extractNativePdfGeometry(
   input: DocumentParseInput,
   options: NativePdfParserOptions

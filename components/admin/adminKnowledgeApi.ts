@@ -89,7 +89,7 @@ export function adminKnowledgeErrorMessage(code: string): string {
     knowledge_admin_action_failed: "Knowledge settings could not be updated.",
     knowledge_answer_policy_invalid: "Choose between 1 and 32 Knowledge searches.",
     knowledge_answer_policy_stale: "Answer retrieval settings changed elsewhere. Refresh and try again.",
-    knowledge_ingestion_parallelism_invalid: "Choose between 1 and 16 parallel documents.",
+    knowledge_ingestion_parallelism_invalid: "Choose between 1 and 64 parallel documents.",
     knowledge_ingestion_parallelism_stale: "Document processing settings changed elsewhere. Refresh and try again.",
     knowledge_pdf_processing_mode_unavailable: "That PDF processing route is not ready on the current System Model.",
     knowledge_response_invalid: "The Knowledge settings response was invalid.",

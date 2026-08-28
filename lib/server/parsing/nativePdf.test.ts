@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { imageOnlyPdfInputProbeFixture } from "../providers/pdfInputProbe";
-import { parseNativeTextPdf } from "./nativePdf";
+import { extractNativePdfGeometry, parseNativeTextPdf } from "./nativePdf";
 
 function generatedPdf(
   pageStreams: readonly string[],
@@ -154,6 +154,21 @@ describe("native PDF classification and geometry", () => {
 
     expect(parsed.document).toBeNull();
     expect(parsed.reasonCode).toBe("native_pdf_image_heavy_low_text");
+  });
+
+  it.each([3, 7])("marks PDF rendering mode %s as non-visible native text", async (mode) => {
+    const stream = [
+      `BT /F1 12 Tf ${mode} Tr`,
+      "1 0 0 1 40 720 Tm (Hidden native text) Tj",
+      "ET"
+    ].join("\n");
+    const extracted = await extractNativePdfGeometry({
+      bytes: generatedPdf([stream]),
+      fileName: "hidden-text.pdf",
+      mimeType: "application/pdf"
+    }, limits);
+
+    expect(extracted.quality.pages[0]?.invisibleText).toBe(true);
   });
 
   it("turns visual-group overflow into explicit fallback instead of truncating text", async () => {

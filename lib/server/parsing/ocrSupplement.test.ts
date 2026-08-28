@@ -86,6 +86,31 @@ describe("image-heavy PDF OCR supplementation", () => {
     expect(result).toEqual({ document: primary, outcome: "unchanged" });
   });
 
+  it("admits only novel paragraphs in the segmented supplement profile", () => {
+    const primary = document("docling", [block(0, "Revenue 10 percent")]);
+    const fallback = document("tika", [block(
+      0,
+      "Revenue — 10 percent\n\nCategory gamma 20"
+    )]);
+
+    const legacy = supplementImageHeavyPdfOcr(primary, fallback, {
+      maxBlocks: 10,
+      maxCharacters: 1_000
+    });
+    const segmented = supplementImageHeavyPdfOcr(primary, fallback, {
+      maxBlocks: 10,
+      maxCharacters: 1_000
+    }, { segmentFallbackBlocks: true });
+
+    expect(legacy.document.blocks.at(-1)?.text).toBe(
+      "Revenue — 10 percent\n\nCategory gamma 20"
+    );
+    expect(segmented.document.blocks.map((item) => item.text)).toEqual([
+      "Revenue 10 percent",
+      "Category gamma 20"
+    ]);
+  });
+
   it("preserves novel value associations even when the token set is unchanged", () => {
     const primary = document("docling", [block(0, "Alpha 10 Beta 20")]);
     const fallback = document("tika", [block(0, "Alpha 20 Beta 10")]);
