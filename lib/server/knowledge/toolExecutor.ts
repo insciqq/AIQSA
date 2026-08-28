@@ -3,6 +3,7 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embeddings";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
 import type {
   ModelToolCall,
   RunTool,
@@ -919,6 +920,8 @@ function validBindings(bindings: readonly KnowledgeAcceptedBinding[]): boolean {
 export function createKnowledgeToolExecutor(input: Readonly<{
   budgetReservations?: KnowledgeBudgetReservationRepository;
   embeddingRuntime: KnowledgeEmbeddingRuntimeResolver;
+  /** Test seam for the monotonic elapsed-time source; never a wall clock. */
+  monotonicNow?: () => number;
   /**
    * Installation reranker role for hosted reranking. When omitted, retrieval
    * stays fully deterministic and no reranker evidence is recorded.
@@ -926,6 +929,9 @@ export function createKnowledgeToolExecutor(input: Readonly<{
   rerankerRuntime?: KnowledgeRerankerRuntimeResolver;
   store: KnowledgeRetrievalStore;
 }>): KnowledgeToolExecutor {
+  const monotonicNow = input.monotonicNow ?? monotonicNowMilliseconds;
+  const elapsedSince = (startedAt: number) =>
+    elapsedMilliseconds(startedAt, monotonicNow());
   const staticPolicy = Object.freeze({
     candidateLimit: KNOWLEDGE_LANE_CANDIDATE_LIMIT,
     resultLimit: KNOWLEDGE_RESULT_LIMIT
@@ -1137,7 +1143,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       const candidateLimit = staticPolicy.candidateLimit;
       const resultLimit = automaticSearchResultLimit(request);
       const anchorQuery = currentUserAnchorQuery(context, request);
-      const startedAt = Date.now();
+      const startedAt = monotonicNow();
       const bindings = await input.store.loadBindings({ runId, userId: context.userId });
       if (!validBindings(bindings)) return errorResult(call, "knowledge_run_binding_unavailable");
       const aliases = input.store.loadScopeAliases
@@ -1241,7 +1247,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         return completedResult(call, persistedEvidence);
       };
       const persistExplicitUnavailable = async (failureCode: string) => {
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings),
           candidateCount: 0,
@@ -1307,7 +1313,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
           aliases
         );
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(
             scopedBindings,
@@ -1392,7 +1398,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
           aliases
         );
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings, search.candidateCounts, [], true),
           candidateCount: search.candidateCount,
@@ -1456,7 +1462,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
               source.sourceVersionNumber < 1 || source.matchedFields.length < 1 ||
               source.matchedFields.some((field) => !requestedFields.has(field));
           })) throw new Error("knowledge_discovery_result_invalid");
-        const durationMs = Date.now() - startedAt;
+        const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings, discovery.candidateCounts, [], true),
           candidateCount: discovery.candidateCount,
@@ -1504,7 +1510,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         vector: readonly number[];
       }> = [];
       for (const group of groups) {
-        const embeddingStartedAt = Date.now();
+        const embeddingStartedAt = monotonicNow();
         let runtime: KnowledgeAcceptedEmbeddingRuntime | null = null;
         try {
           runtime = await input.embeddingRuntime.resolve(group.bindings[0]!);
@@ -1521,7 +1527,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           }
           embeddingExecutions.push({
             bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
-            durationMs: Date.now() - embeddingStartedAt,
+            durationMs: elapsedSince(embeddingStartedAt),
             inputTokens: result.usage.inputTokens ?? 0,
             modelId: runtime.configuration.upstreamModelId,
             provider: runtime.provider,
@@ -1547,7 +1553,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             semanticUnavailable = true;
             embeddingExecutions.push({
               bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
-              durationMs: Date.now() - embeddingStartedAt,
+              durationMs: elapsedSince(embeddingStartedAt),
               inputTokens: 0,
               modelId: runtime?.configuration.upstreamModelId ??
                 group.snapshot.model.upstreamModelId,
@@ -1574,6 +1580,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         rerankResolution?.kind === "ready"
           ? createKnowledgeRerankStage({
               adapter: rerankResolution.adapter,
+              now: monotonicNow,
               pin: rerankResolution.pin,
               query: request.query
             })
@@ -1645,7 +1652,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
               binding.indexedContentRevision < binding.baseContentRevision)
             ? "base_indexing"
             : "no_relevant_evidence";
-      const durationMs = Date.now() - startedAt;
+      const durationMs = elapsedSince(startedAt);
       return persist(finalizedEvidence({
         bases: baseEvidence(
           scopedBindings,

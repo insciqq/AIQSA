@@ -6,6 +6,7 @@ import {
   type RerankResult
 } from "../providers/rerank";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
+import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
 import {
   formatKnowledgeRerankCandidate,
   KNOWLEDGE_RERANK_CANDIDATE_FORMATTER_VERSION
@@ -192,7 +193,7 @@ export function createKnowledgeRerankStage(input: Readonly<{
   query: string;
   timeoutMs?: number;
 }>): KnowledgeRerankExecutor {
-  const now = input.now ?? Date.now;
+  const now = input.now ?? monotonicNowMilliseconds;
   const timeoutMs = input.timeoutMs ?? KNOWLEDGE_RERANK_TIMEOUT_MS;
   const query = boundedRerankQuery(input.query);
   return async ({ candidates, signal }) => {
@@ -276,7 +277,7 @@ export function createKnowledgeRerankStage(input: Readonly<{
         ...(cancellation ? [cancellation] : [])
       ]);
     } catch (error) {
-      const durationMs = Math.max(0, now() - startedAt);
+      const durationMs = elapsedMilliseconds(startedAt, now());
       if (signal?.aborted) throw rerankCancellationError(signal);
       const timedOut = deadlineFired ||
         error instanceof RerankAdapterError && error.code === "rerank_request_timed_out";
@@ -308,7 +309,7 @@ export function createKnowledgeRerankStage(input: Readonly<{
       clearTimeout(timer!);
       if (forwardAbort) signal?.removeEventListener("abort", forwardAbort);
     }
-    const durationMs = Math.max(0, now() - startedAt);
+    const durationMs = elapsedMilliseconds(startedAt, now());
     const scores = new Map<string, number>();
     for (const score of result.scores) {
       scores.set(score.handle, score.relevanceScore);
