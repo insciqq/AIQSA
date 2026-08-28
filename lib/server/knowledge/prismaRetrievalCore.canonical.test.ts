@@ -489,7 +489,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(result.passages[0]?.expandedContext).not.toContain("Must not leak");
   });
 
-  it("attaches a bounded local-first window including independently selected rows from the same table", async () => {
+  it("keeps independently selected table rows out of another primary's context", async () => {
     const common = {
       artifactId: "artifact-table",
       baseName: "Metrics",
@@ -545,11 +545,12 @@ describe("Prisma retrieval core canonical Source identity", () => {
       "Previous complete row in the same table:\nComplete row 2.",
       "Previous complete row in the same table:\nComplete row 3.",
       "Next complete row in the same table:\nComplete row 5.",
-      "Next complete row in the same table:\nComplete row 6.",
       "Next complete row in the same table:\nComplete row 7.",
       "Next complete row in the same table:\nComplete row 8."
     ].join("\n\n"));
-    expect(primary?.expandedContext).toContain("Complete row 6");
+    expect(primary?.expandedContext).not.toContain("Complete row 6");
+    expect(result.passages.find((passage) => passage.chunkId === "row-6")?.text)
+      .toBe("Complete row 6.");
     expect(primary?.expandedContext).not.toContain("Complete row 9");
     expect(primary?.expandedContext).not.toContain("Other table must not leak");
   });

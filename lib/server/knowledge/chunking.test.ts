@@ -625,6 +625,50 @@ describe("Knowledge chunk profiles", () => {
     expect(trailingPayloads).toEqual([trailingValue]);
   });
 
+  it("carries a row-spanning identity into every atomic table row", () => {
+    const headers = ["Group", "Field", "Value"];
+    const cells = [
+      ...headers.map((text, column) => ({
+        column,
+        columnSpan: 1,
+        row: 0,
+        rowSpan: 1,
+        text
+      })),
+      { column: 0, columnSpan: 1, row: 1, rowSpan: 3, text: "Alpha" },
+      { column: 1, columnSpan: 1, row: 1, rowSpan: 1, text: "Identifier" },
+      { column: 2, columnSpan: 1, row: 1, rowSpan: 1, text: "A-1" },
+      { column: 1, columnSpan: 1, row: 2, rowSpan: 1, text: "Serial" },
+      { column: 2, columnSpan: 1, row: 2, rowSpan: 1, text: "S-2" },
+      { column: 1, columnSpan: 1, row: 3, rowSpan: 1, text: "Expiry" },
+      { column: 2, columnSpan: 1, row: 3, rowSpan: 1, text: "2040-01-15" }
+    ];
+    const chunks = chunkKnowledgeDocument({
+      document: document([block(0, [
+        headers.join("\t"),
+        "Alpha\tIdentifier\tA-1",
+        "\tSerial\tS-2",
+        "\tExpiry\t2040-01-15"
+      ].join("\n"), {
+        isTable: true,
+        table: { cells, columnCount: 3, rowCount: 4 },
+        type: "table"
+      })]),
+      maxChunks: 10,
+      profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+      tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
+    });
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      "Group\tField\tValue",
+      "Group\tField\tValue\nAlpha\tIdentifier\tA-1",
+      "Group\tField\tValue\nAlpha\tSerial\tS-2",
+      "Group\tField\tValue\nAlpha\tExpiry\t2040-01-15"
+    ]);
+    expect(chunks[3]?.documentContext?.observations.map(({ rawValue }) => rawValue))
+      .toEqual(["Alpha", "Expiry", "2040-01-15"]);
+  });
+
   it("degrades instead of duplicating a merged header across incompatible cell boundaries", () => {
     const header = "Merged header";
     const value = ["42", ...Array.from({ length: 449 }, (_, index) => `value${index}`)]

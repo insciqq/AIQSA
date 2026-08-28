@@ -143,6 +143,10 @@ describe("Knowledge System Model PDF parser", () => {
       usage: input.usage as never
     }));
     const execute = vi.fn(async (_snapshot, request) => {
+      expect(request.content.blocks[0]).toMatchObject({
+        text: expect.stringContaining("[[AIQSA_ROW_CONTINUATION]]"),
+        type: "text"
+      });
       const metadata = request.attachments[0]!.metadata as {
         image: { sourcePage: number };
       };

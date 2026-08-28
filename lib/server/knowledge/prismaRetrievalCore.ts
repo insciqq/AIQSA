@@ -1356,9 +1356,8 @@ function selectKnowledgeContext(input: Readonly<{
     sameKnowledgeSource(input.source, candidate) &&
     !input.excludedContentHashes.has(candidate.contentHash) &&
     !input.assignedContentHashes.has(candidate.contentHash));
-  const sourceIsTableRow = input.source.documentContext?.locator.kind === "table_row";
   const local = available.filter((candidate) =>
-    (sourceIsTableRow || !input.selectedContentHashes.has(candidate.contentHash)) &&
+    !input.selectedContentHashes.has(candidate.contentHash) &&
     relatedKnowledgeContext(input.source, candidate))
     .sort((left, right) =>
       Math.abs(left.chunkIndex - input.source.chunkIndex) -

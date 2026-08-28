@@ -210,7 +210,7 @@ function providerRequest(input: Readonly<{
 function validSnapshot(
   input: Parameters<KnowledgeModelPdfParser["parse"]>[0]
 ): ProviderExecutionSnapshot {
-  if (![1, 2, 3, 4, KNOWLEDGE_PDF_PARSER_PROFILE_VERSION]
+  if (![1, 2, 3, 4, 5, 6, KNOWLEDGE_PDF_PARSER_PROFILE_VERSION]
     .includes(input.parserProfileVersion) ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
@@ -310,8 +310,10 @@ export function createKnowledgeModelPdfParser(
           mode: input.mode,
           pageEnd,
           pageStart,
-          promptVersion: input.parserProfileVersion >= 5
-            ? 3
+          promptVersion: input.parserProfileVersion >= 7
+            ? 5
+            : input.parserProfileVersion >= 6 ? 4
+            : input.parserProfileVersion >= 5 ? 3
             : input.parserProfileVersion >= 3 ? 2 : 1
         });
         const identity: KnowledgeModelPdfAttemptIdentity = {
@@ -393,7 +395,8 @@ export function createKnowledgeModelPdfParser(
           maxCharacters: input.maxCharacters,
           mode: input.mode,
           pageCount,
-          pages
+          pages,
+          tableContinuationMarkers: input.parserProfileVersion >= 7
         });
         try {
           const geometry = await extractGeometry({

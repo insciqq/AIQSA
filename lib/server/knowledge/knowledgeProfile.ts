@@ -19,7 +19,7 @@ import {
 export const KNOWLEDGE_INDEX_PROFILE_ID = "installation";
 export const KNOWLEDGE_PROFILE_EGRESS_POLICY_VERSION = "knowledge-profile-egress-v6";
 export const KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION = 4 as const;
-export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION = 5 as const;
+export const KNOWLEDGE_PDF_PARSER_PROFILE_VERSION = 7 as const;
 
 export type KnowledgePdfProcessingMode =
   | "local"
