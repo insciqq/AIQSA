@@ -2721,6 +2721,9 @@ describe("run execution", () => {
         }
       })
     ]);
+    expect([...repository.toolCalls.values()]).toEqual([
+      expect.objectContaining({ result: expect.anything(), state: "error" })
+    ]);
   });
 
   it("settles a focused answer deadline as a provider failure", async () => {
@@ -2931,6 +2934,55 @@ describe("run execution", () => {
 
     expect(providerRequests).toHaveLength(3);
     expect(repository.searchRuns).toHaveLength(1);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
+  });
+
+  it("durably settles a local Knowledge deadline before continuing the tool loop", async () => {
+    const finalText = "Knowledge retrieval was unavailable.";
+    const repository = createRepository({
+      groundingResult: structuralGroundingResult(finalText)
+    });
+    const deadline = new Error("knowledge_retrieval_aborted");
+    deadline.name = "AbortError";
+    const { executor: baseExecutor } = toolLoopKnowledgeExecutor();
+    const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async () => {
+      throw deadline;
+    });
+    const executor: KnowledgeToolExecutor = { ...baseExecutor, execute };
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      return providerRequests.length === 1
+        ? providerResult({
+            finalText: "",
+            toolCalls: [{
+              arguments: { query: "bounded private lookup" },
+              id: "knowledge-deadline-call-1",
+              name: KNOWLEDGE_SEARCH_TOOL_NAME
+            }]
+          })
+        : providerResult({ finalText });
+    });
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: executor,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(providerRequests).toHaveLength(2);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
+      .toContain("knowledge_retrieval_failed");
+    expect([...repository.toolCalls.values()]).toEqual([
+      expect.objectContaining({ result: expect.anything(), state: "error" })
+    ]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toEqual([]);
   });

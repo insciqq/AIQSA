@@ -58,7 +58,10 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
-import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS,
+  type KnowledgeToolExecutor
+} from "../knowledge/toolExecutor";
 import {
   knowledgeRunAdmissionHasReadySources,
   type KnowledgeRunAdmissionAuthorizationSnapshot,
@@ -1158,7 +1161,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             try {
               const retrievalSignal = AbortSignal.any([
                 signal,
-                AbortSignal.timeout(30_000)
+                AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
               ]);
               result = await input.knowledgeExecutor.execute(
                 call,
@@ -1177,12 +1180,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (signal.aborted || error instanceof RunPipelineError) {
                 throw error;
-              }
-              if (isAbortError(error)) {
-                throw new RunPipelineError(
-                  "knowledge_retrieval_failed",
-                  "Focused Knowledge retrieval exceeded its deadline"
-                );
               }
               result = toolExecutionErrorResult(call, error, "Knowledge");
             }
@@ -1821,7 +1818,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     {
                       signal: AbortSignal.any([
                         context.signal,
-                        AbortSignal.timeout(30_000)
+                        AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
                       ])
                     }
                   );
@@ -1857,7 +1854,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       : "external_tool_dispatch_failed"
                   ).catch(() => undefined);
                 }
-                if (signal.aborted || isAbortError(error)) throw error;
+                // A local deadline on read-only Knowledge retrieval is a known
+                // technical result and must be durably settled. Only the
+                // parent run cancellation, or an abort from a potentially
+                // side-effecting non-Knowledge tool, remains crash-ambiguous.
+                if (signal.aborted ||
+                  isAbortError(error) && !isKnowledgeCall(call.name)) throw error;
                 if (error instanceof McpAutoDiscoveryUnavailableError) {
                   fatalToolError = {
                     code: error.code,
