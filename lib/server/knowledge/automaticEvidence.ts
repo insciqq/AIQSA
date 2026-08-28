@@ -22,6 +22,7 @@ import {
 } from "./focusedRequest";
 import { KNOWLEDGE_EVIDENCE_MESSAGE_ID } from "./evidenceContext";
 import type { KnowledgeRunAdmissionExclusion } from "./runAdmission";
+import { KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION } from "./answerInstructions";
 
 export { KNOWLEDGE_EVIDENCE_MESSAGE_ID } from "./evidenceContext";
 
@@ -135,6 +136,7 @@ function focusedKnowledgeEvidenceHeader(): string {
     "Do not invent values, dates, filenames, pages, coverage, or handles. Never claim that all documents or every selected Source was checked.",
     "Present conflicting Source fragments separately with their own citations.",
     "Do not reveal internal IDs, scores, profile configuration, retrieval internals, or storage identities.",
+    KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION,
     "Your first output line must be exactly AIQSA_KB_STATUS=ANSWERED or AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE.",
     "Use ANSWERED only when the following non-empty Markdown answer contains at least one exact supplied [K…] handle. Otherwise use INSUFFICIENT_EVIDENCE and explain the limitation in non-empty Markdown.",
     "Answer in the language of the current user request unless the user explicitly requested another language; preserve Source names, quotations, filenames, numbers, and citations in their original form.",
@@ -166,7 +168,7 @@ function packFocusedManifest(input: Readonly<{
     maximumTokens: Math.max(1, Math.floor(maximumBytes / 4)),
     runtimeVersion: 1,
     profileId: `${input.request.provider}:${input.request.modelId}`,
-    promptFragmentVersion: 3
+    promptFragmentVersion: 4
   });
 }
 

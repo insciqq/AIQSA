@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION } from "./answerInstructions";
 import { summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ToolExecutionResult } from "../tools/types";
@@ -247,6 +248,8 @@ describe("focused Knowledge evidence", () => {
     expect(draft.header).toContain("conflicting Source fragments separately");
     expect(draft.header).toContain("Do not reveal internal IDs, scores");
     expect(draft.header).toContain("Do not request tools or a second retrieval pass");
+    expect(draft.header).toContain(KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION);
+    expect(draft.promptFragmentVersion).toBe(4);
     expect("runtimeVersion" in draft && draft.runtimeVersion).toBe(1);
   });
 
