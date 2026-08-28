@@ -1106,6 +1106,126 @@ describe("Prisma explicit Memory vector enrichment", () => {
     }
   }, 60_000);
 
+  it("retries an outcome-unknown batch with a fresh durable binding", async () => {
+    const fixture = await createFixture();
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    let clock = new Date(INITIAL_NOW);
+    let providerCalls = 0;
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        throw new EmbeddingAdapterError("embedding_request_timed_out");
+      }
+      const vector = Array.from(
+        { length: DIMENSION },
+        (_, index) => index === 0 ? 1 : 0
+      );
+      return {
+        model: embeddingConfiguration.upstreamModelId,
+        requestId: `embedding-uncertain-request-${randomUUID()}`,
+        usage: {
+          inputTokens: request.texts.length * 7,
+          totalTokens: request.texts.length * 7
+        },
+        vectors: request.texts.map(() => vector)
+      };
+    });
+    const authority = {
+      egressConsentMode: "PER_USER" as const,
+      now: () => new Date(clock)
+    };
+    const runtime = {
+      resolve: vi.fn(async () => ({ adapter: { embed } }))
+    } as never;
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob(createPrismaMemoryEmbeddingHandler(
+      authority,
+      prisma,
+      { batch: { runtime }, legacy: { runtime } }
+    ));
+    const coordinator = new MemoryCoordinator({
+      now: () => new Date(clock),
+      policy: {
+        heartbeatMs: 1_000,
+        jobRetryDelaysMs: [1],
+        leaseMs: 5_000,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: createPrismaMemoryCoordinatorRepository(prisma)
+    });
+    try {
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: clock,
+          acceptedUtilityEgressFingerprint: fixture.policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      const first = await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer bounded retries for pure embedding batches.",
+        "embedding-outcome-unknown-alpha"
+      );
+      await saveExplicit(
+        explicit,
+        fixture.userId,
+        "I prefer immutable inputs during provider recovery.",
+        "embedding-outcome-unknown-beta"
+      );
+      const entry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: { factVersionId: first.memory.currentVersionId! }
+      });
+      const parent = await embeddingJobForEntry(fixture.userId, entry.id);
+
+      await coordinator.reconcileNow();
+
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: parent.id }
+      })).resolves.toMatchObject({ state: "RETRYABLE_FAILED" });
+      await expect(prisma.memoryEmbeddingBatchItem.count({
+        where: { memoryJobId: parent.id, state: "PENDING" }
+      })).resolves.toBe(2);
+      const firstBinding = await prisma.memoryExecutionBinding.findFirstOrThrow({
+        where: { memoryJobId: parent.id }
+      });
+      expect(firstBinding).toMatchObject({ ordinal: 0, state: "OUTCOME_UNKNOWN" });
+
+      clock = new Date(clock.getTime() + 10);
+      await coordinator.reconcileNow();
+
+      const [settledJob, bindings, settledChildren] = await Promise.all([
+        prisma.memoryJob.findUniqueOrThrow({ where: { id: parent.id } }),
+        prisma.memoryExecutionBinding.findMany({
+          orderBy: { ordinal: "asc" },
+          where: { memoryJobId: parent.id }
+        }),
+        prisma.memoryEmbeddingBatchItem.count({
+          where: { memoryJobId: parent.id, state: "SETTLED" }
+        })
+      ]);
+      expect(embed).toHaveBeenCalledTimes(2);
+      expect(settledChildren).toBe(2);
+      expect(settledJob).toMatchObject({
+        operationalCounters: expect.objectContaining({
+          embeddingProviderRequests: 2,
+          embeddingSettledItems: 2
+        }),
+        state: "SUCCEEDED"
+      });
+      expect(bindings.map(({ ordinal, state }) => ({ ordinal, state }))).toEqual([
+        { ordinal: 0, state: "OUTCOME_UNKNOWN" },
+        { ordinal: 1, state: "SUCCEEDED" }
+      ]);
+      expect(new Set(bindings.map(({ inputHash }) => inputHash)).size).toBe(1);
+    } finally {
+      coordinator.stop();
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
   it("resumes partial child settlement without repeating the provider request", async () => {
     const fixture = await createFixture();
     const { explicit } = memoryServices(fixture.classifierAuthority);

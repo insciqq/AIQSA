@@ -24,6 +24,7 @@ const output = {
   memoryUseful: false,
   pastChatsUseful: false,
   profileRequested: false,
+  queryDecompositions: [],
   queryText: null,
   reasonCode: "save_request",
   recencyRequested: false,
@@ -52,6 +53,7 @@ describe("MemoryActionIntent service", () => {
         "action",
         "aggregationRequested",
         "profileRequested",
+        "queryDecompositions",
         "thisChatOnly"
       ])
     });
@@ -85,6 +87,12 @@ describe("MemoryActionIntent service", () => {
     );
     expect(request.systemPrompt).toContain(
       "queryText should retrieve the X events, not Y"
+    );
+    expect(request.systemPrompt).toContain(
+      "Use queryDecompositions only for a genuinely multi-part answer"
+    );
+    expect(request.systemPrompt).toContain(
+      "one subquery for each event"
     );
     expect(request.systemPrompt).toContain(
       "carry, use, or keep a personal fact or preference in future conversations"

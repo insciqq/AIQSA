@@ -77,6 +77,40 @@ describe("language-agnostic Memory retrieval planning", () => {
     ]);
   });
 
+  it("keeps bounded multi-part subqueries as independent semantic variants", () => {
+    const plan = planMemoryRetrieval({
+      currentUserText: "How much time passed between milestone Alpha and milestone Omega?",
+      entityMentions: [
+        { occurrenceIndex: 0, resolvedRef: null, text: "Alpha" }
+      ],
+      now,
+      semanticDecompositions: [
+        "when I completed milestone Alpha",
+        "when I completed milestone Omega"
+      ],
+      semanticRewrite: "dates of the two project milestones"
+    });
+
+    expect(plan.semanticQueryVariants).toEqual([
+      {
+        kind: "ORIGINAL",
+        text: "How much time passed between milestone Alpha and milestone Omega?"
+      },
+      { kind: "PLANNER_REWRITE", text: "dates of the two project milestones" },
+      { kind: "DECOMPOSED", text: "when I completed milestone Alpha" },
+      { kind: "DECOMPOSED", text: "when I completed milestone Omega" }
+    ]);
+    expect(plan.semanticQueryVariants).toHaveLength(4);
+  });
+
+  it("rejects more than two decomposition hints", () => {
+    expect(() => planMemoryRetrieval({
+      currentUserText: "multi-part query",
+      now,
+      semanticDecompositions: ["one facet", "second facet", "third facet"]
+    })).toThrow("memory_retrieval_plan_invalid");
+  });
+
   it("does not require lexical tokens to admit raw Unicode", () => {
     expect(planMemoryRetrieval({ currentUserText: "🧠✨", now })).toMatchObject({
       lexicalQuery: null,

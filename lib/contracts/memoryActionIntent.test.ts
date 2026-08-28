@@ -22,6 +22,7 @@ function intent(overrides: Record<string, unknown> = {}) {
     memoryUseful: false,
     pastChatsUseful: false,
     profileRequested: false,
+    queryDecompositions: [],
     queryText: null,
     reasonCode: "none",
     recencyRequested: false,
@@ -184,6 +185,39 @@ describe("MemoryActionIntent strict contract", () => {
       expect(decodeMemoryActionIntent(intent({ action: "NONE", ...retrieval })))
         .toMatchObject({ ok: false });
     }
+  });
+
+  it("bounds multi-part retrieval decompositions and strips them from inert plans", () => {
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      queryDecompositions: ["when the first event happened", "when the second event happened"],
+      queryText: "events relevant to the comparison",
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    }))).toMatchObject({
+      ok: true,
+      value: {
+        queryDecompositions: [
+          "when the first event happened",
+          "when the second event happened"
+        ]
+      }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      queryDecompositions: ["unused decomposition"]
+    }))).toMatchObject({
+      ok: true,
+      value: { queryDecompositions: [] }
+    });
+    expect(decodeMemoryActionIntent(intent({
+      action: "NONE",
+      memoryUseful: true,
+      queryDecompositions: ["one", "two", "three"],
+      queryText: "multi-part query"
+    }))).toMatchObject({ ok: false });
   });
 
   it("keeps prior-chat lookup time semantics aligned with retrieval planning", () => {

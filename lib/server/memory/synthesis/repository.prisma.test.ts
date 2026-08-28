@@ -37,6 +37,7 @@ import {
   memorySynthesisSourceEligibilityHash,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
   MEMORY_SYNTHESIS_POLICY_VERSION,
+  MEMORY_SYNTHESIS_PROMPT_VERSION,
   MEMORY_SYNTHESIS_QUIET_PERIOD_MS
 } from "./policy";
 import {
@@ -506,7 +507,7 @@ describe("Prisma Memory Dream synthesis", () => {
         logicalRole: "MEMORY_SYNTHESIZE",
         pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
         policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
-        promptVersion: "memory-synthesis-prompt-v3",
+        promptVersion: MEMORY_SYNTHESIS_PROMPT_VERSION,
         schemaVersion: "memory-synthesis-schema-v2",
         userId
       });
@@ -1029,7 +1030,7 @@ describe("Prisma Memory Dream synthesis", () => {
         logicalRole: "MEMORY_SYNTHESIZE",
         pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
         policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
-        promptVersion: "memory-synthesis-prompt-v3",
+        promptVersion: MEMORY_SYNTHESIS_PROMPT_VERSION,
         schemaVersion: "memory-synthesis-schema-v2",
         userId
       });

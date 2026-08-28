@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { EmbeddingAdapterError } from "../../providers/embeddings";
 import type { MemoryJobClaim } from "../coordinator/types";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import {
   MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
   MEMORY_EMBEDDING_BATCH_VERSIONS,
+  memoryEmbeddingBatchInputHash,
   memoryEmbeddingBatchJobFingerprint,
   memoryEmbeddingBatchTriggerHash,
   renderMemoryDocumentEmbeddingText,
@@ -254,19 +256,21 @@ function fixture() {
     retryableFailure: vi.fn(async () => rows.length)
   };
   const bind = vi.fn(async (_userId, input) => {
+    const id = `binding-${bindings.length + 1}`;
     bindings.push({
       acceptedOutputHash: null,
-      id: "binding-1",
+      id,
       inputHash: input.inputHash,
       ordinal: input.ordinal,
       secretFreeExecutionSnapshot: snapshot(),
       state: "PENDING"
     });
-    return { id: "binding-1" };
+    return { id };
   });
-  const start = vi.fn(async () => {
-    bindings[0]!.state = "RUNNING";
-    return { bindingId: "binding-1", snapshot: snapshot() };
+  const start = vi.fn(async (_userId, bindingId) => {
+    const binding = bindings.find(({ id }) => id === bindingId)!;
+    binding.state = "RUNNING";
+    return { bindingId, snapshot: snapshot() };
   });
   const settle = vi.fn(async (_userId, bindingId, input) => {
     const binding = bindings.find(({ id }) => id === bindingId)!;
@@ -333,6 +337,18 @@ function context() {
   };
 }
 
+function inputHash(f: ReturnType<typeof fixture>): string {
+  return memoryEmbeddingBatchInputHash({
+    dimension: pin.dimension,
+    generationId: "generation-1",
+    items: f.rows.map((row) => ({
+      ordinal: row.ordinal,
+      target: row.target!,
+      triggerIdentityHash: row.triggerIdentityHash
+    }))
+  });
+}
+
 describe("Memory durable embedding batch handler", () => {
   it("uses one provider request and durably settles ordered children", async () => {
     const f = fixture();
@@ -385,29 +401,96 @@ describe("Memory durable embedding batch handler", () => {
     expect(result.operationalCounters?.embeddingProviderRequests).toBe(1);
   });
 
-  it("never replays a crash-ambiguous running request", async () => {
+  it("replays a crash-ambiguous pure batch under a fresh binding", async () => {
     const f = fixture();
     f.bindings.push({
       acceptedOutputHash: null,
       id: "ambiguous-binding",
-      inputHash: "a".repeat(64),
+      inputHash: inputHash(f),
       ordinal: 0,
       secretFreeExecutionSnapshot: snapshot(),
       state: "RUNNING"
     });
 
-    await expect(createMemoryEmbeddingBatchHandler(f.dependencies)
-      .execute(f.job, context())).rejects.toMatchObject({
-        code: "memory_embedding_batch_outcome_unknown",
-        retryable: false
-      } satisfies Partial<MemoryCoordinatorError>);
-    expect(f.embed).not.toHaveBeenCalled();
+    const result = await createMemoryEmbeddingBatchHandler(f.dependencies)
+      .execute(f.job, context());
+
     expect(f.settle).toHaveBeenCalledWith(
       "user-1",
       "ambiguous-binding",
       expect.objectContaining({ state: "OUTCOME_UNKNOWN" })
     );
-    expect(f.rows.every(({ state }) => state === "OUTCOME_UNKNOWN")).toBe(true);
+    expect(f.bind).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ inputHash: inputHash(f), ordinal: 1 })
+    );
+    expect(f.embed).toHaveBeenCalledOnce();
+    expect(f.rows.every(({ state }) => state === "SETTLED")).toBe(true);
+    expect(result.operationalCounters?.embeddingProviderRequests).toBe(2);
+  });
+
+  it("retries an uncertain transport outcome with the identical batch", async () => {
+    const f = fixture();
+    const handler = createMemoryEmbeddingBatchHandler(f.dependencies);
+    f.embed.mockRejectedValueOnce(
+      new EmbeddingAdapterError("embedding_request_timed_out")
+    );
+
+    await expect(handler.execute(f.job, context())).rejects.toMatchObject({
+      code: "memory_embedding_batch_outcome_unknown",
+      retryable: true
+    } satisfies Partial<MemoryCoordinatorError>);
+    expect(f.rows.every(({ state }) => state === "PENDING")).toBe(true);
+    expect(f.applyFailed).not.toHaveBeenCalled();
+
+    const result = await handler.execute(
+      { ...f.job, attemptCount: 2 },
+      context()
+    );
+    expect(f.embed).toHaveBeenCalledTimes(2);
+    expect(f.bind.mock.calls.map(([, request]) => request.ordinal)).toEqual([0, 1]);
+    expect(new Set(f.bindings.map(({ inputHash: hash }) => hash)).size).toBe(1);
+    expect(f.bindings.map(({ state }) => state)).toEqual([
+      "OUTCOME_UNKNOWN",
+      "SUCCEEDED"
+    ]);
+    expect(result.operationalCounters?.embeddingProviderRequests).toBe(2);
+  });
+
+  it("rejects retry when the durable batch input hash changed", async () => {
+    const f = fixture();
+    f.bindings.push({
+      acceptedOutputHash: null,
+      id: "stale-binding",
+      inputHash: "a".repeat(64),
+      ordinal: 0,
+      secretFreeExecutionSnapshot: snapshot(),
+      state: "OUTCOME_UNKNOWN"
+    });
+
+    await expect(createMemoryEmbeddingBatchHandler(f.dependencies)
+      .execute(f.job, context())).rejects.toMatchObject({
+        code: "memory_embedding_batch_binding_stale",
+        retryable: false
+      } satisfies Partial<MemoryCoordinatorError>);
+    expect(f.embed).not.toHaveBeenCalled();
+    expect(f.rows.every(({ state }) => state === "FAILED")).toBe(true);
+    expect(f.applyFailed).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry deterministic provider input failures", async () => {
+    const f = fixture();
+    f.embed.mockRejectedValueOnce(
+      new EmbeddingAdapterError("embedding_input_invalid")
+    );
+
+    await expect(createMemoryEmbeddingBatchHandler(f.dependencies)
+      .execute(f.job, context())).rejects.toMatchObject({
+        code: "embedding_input_invalid",
+        retryable: false
+      } satisfies Partial<MemoryCoordinatorError>);
+    expect(f.rows.every(({ state }) => state === "FAILED")).toBe(true);
+    expect(f.applyFailed).toHaveBeenCalledTimes(2);
   });
 
   it("accepts no child when result count is not exact", async () => {

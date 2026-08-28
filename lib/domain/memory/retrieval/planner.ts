@@ -16,11 +16,12 @@ import {
 } from "./temporal";
 import { normalizeMemoryLexicalProjection } from "./lexical";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v15";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v16";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
 export const MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS = 4;
+export const MEMORY_RETRIEVAL_MAX_DECOMPOSED_QUERY_VARIANTS = 2;
 export const MEMORY_RETRIEVAL_MAX_TEMPORAL_QUERY_VARIANTS = 2;
 
 const sourceKinds = new Set<MemoryRetrievalSourceKind>(["EVENT", "FACT", "HISTORY"]);
@@ -110,6 +111,7 @@ function entityMentionsFor(
 function semanticVariants(
   originalSanitizedQuery: string,
   semanticRewrite: string,
+  semanticDecompositions: readonly string[],
   entityMentions: readonly MemoryRetrievalEntityMention[]
 ): readonly MemorySemanticQueryVariant[] {
   const values: MemorySemanticQueryVariant[] = [];
@@ -123,6 +125,7 @@ function semanticVariants(
   };
   add("ORIGINAL", originalSanitizedQuery);
   add("PLANNER_REWRITE", semanticRewrite);
+  for (const decomposition of semanticDecompositions) add("DECOMPOSED", decomposition);
   add("ENTITY_EXPANSION", boundedUnicode(
     [...new Set(entityMentions.map(({ text }) => text))].join(" ")
   ));
@@ -260,6 +263,13 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     typeof input.semanticRewrite !== "string") {
     throw new Error("memory_retrieval_plan_invalid");
   }
+  if (input.semanticDecompositions !== undefined && (
+    !Array.isArray(input.semanticDecompositions) ||
+    input.semanticDecompositions.length > MEMORY_RETRIEVAL_MAX_DECOMPOSED_QUERY_VARIANTS ||
+    input.semanticDecompositions.some((value) => typeof value !== "string")
+  )) {
+    throw new Error("memory_retrieval_plan_invalid");
+  }
   const applyResponsePreferences = input.applyResponsePreferences === true;
   const profileRequested = input.profileRequested === true;
   if (profileRequested && input.recencyRequested === true) {
@@ -272,6 +282,9 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     timeZone: input.timeZone ?? "UTC"
   });
   const normalizedRewrite = boundedUnicode(input.semanticRewrite ?? "");
+  const normalizedDecompositions = (input.semanticDecompositions ?? [])
+    .map(boundedUnicode)
+    .filter(Boolean);
   const entityMentions = entityMentionsFor(input, [
     input.currentUserText,
     input.semanticRewrite ?? ""
@@ -297,6 +310,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   const semanticQueryVariants = semanticVariants(
     normalizedQuery,
     normalizedRewrite,
+    normalizedDecompositions,
     entityMentions
   );
   return {

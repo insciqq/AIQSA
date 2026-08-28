@@ -5,6 +5,7 @@ import {
   createMemoryRunUtilityService,
   MEMORY_AGGREGATION_MAX_ATTEMPTS,
   MEMORY_AGGREGATION_MAX_EVIDENCE_ITEMS,
+  MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS,
   MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES,
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
   MEMORY_RERANK_AGGREGATION_BATCH_SIZE,
@@ -444,6 +445,149 @@ describe("Memory run utility execution", () => {
       "user-1",
       "embedding-binding-2",
       expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
+    );
+  });
+
+  it("bounds a query-embedding attempt without consuming the role retry signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
+        id: `embedding-binding-${input.ordinal}`
+      }));
+      const settle = vi.fn(async () => ({}));
+      const executionService = {
+        admission: {
+          bind,
+          start: vi.fn(async (_userId: string, bindingId: string) => ({
+            bindingId,
+            snapshot: snapshot("MEMORY_QUERY_EMBED")
+          }))
+        },
+        lifecycle: {
+          settle,
+          withAuthorizedResultCommit: vi.fn(async (
+            _userId: string,
+            _input: unknown,
+            apply: () => Promise<unknown>
+          ) => apply())
+        }
+      } as unknown as PrismaMemoryExecutionService;
+      const roleController = new AbortController();
+      const attemptSignals: AbortSignal[] = [];
+      const vector = Array.from(
+        { length: 1_024 },
+        (_, index) => index === 0 ? 1 : 0
+      );
+      const embed = vi.fn(async (request: { signal?: AbortSignal }) => {
+        const signal = request.signal!;
+        attemptSignals.push(signal);
+        if (attemptSignals.length === 1) {
+          return new Promise<never>((_resolve, reject) => {
+            const rejectFromSignal = () => reject(signal.reason);
+            if (signal.aborted) rejectFromSignal();
+            else signal.addEventListener("abort", rejectFromSignal, { once: true });
+          });
+        }
+        return {
+          model: "embedding-upstream-1",
+          requestId: "embedding-timeout-retry-success",
+          usage: { inputTokens: 7, totalTokens: 7 },
+          vectors: [vector]
+        };
+      });
+      const service = createMemoryRunUtilityService({
+        embeddingRuntime: {
+          resolve: vi.fn(async () => ({ adapter: { embed } }))
+        } as never,
+        execution: executionService,
+        provider: { run: vi.fn() } as unknown as MemoryRunUtilityProvider
+      });
+
+      const pending = service.embedQuery({
+        ...baseInput(),
+        profile,
+        query: "What did I say about release readiness?",
+        signal: roleController.signal
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(embed).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(MEMORY_QUERY_EMBEDDING_ATTEMPT_TIMEOUT_MS);
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        bindingId: "embedding-binding-2",
+        externalCallCount: 2,
+        status: "READY"
+      });
+      expect(roleController.signal.aborted).toBe(false);
+      expect(attemptSignals).toHaveLength(2);
+      expect(attemptSignals[0]?.aborted).toBe(true);
+      expect(attemptSignals[1]?.aborted).toBe(false);
+      expect(bind.mock.calls.map((call) => call[1].ordinal)).toEqual([1, 2]);
+      expect(settle).toHaveBeenNthCalledWith(
+        1,
+        "user-1",
+        "embedding-binding-1",
+        expect.objectContaining({
+          errorCode: "memory_query_embedding_attempt_timed_out",
+          state: "OUTCOME_UNKNOWN"
+        })
+      );
+      expect(settle).toHaveBeenNthCalledWith(
+        2,
+        "user-1",
+        "embedding-binding-2",
+        expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry query embedding after the parent role is cancelled", async () => {
+    const bound = execution([]);
+    const roleController = new AbortController();
+    let notifyStarted!: (signal: AbortSignal) => void;
+    const started = new Promise<AbortSignal>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const embed = vi.fn(async (request: { signal?: AbortSignal }) => {
+      const signal = request.signal!;
+      notifyStarted(signal);
+      return new Promise<never>((_resolve, reject) => {
+        const rejectFromSignal = () => reject(signal.reason);
+        if (signal.aborted) rejectFromSignal();
+        else signal.addEventListener("abort", rejectFromSignal, { once: true });
+      });
+    });
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: {
+        resolve: vi.fn(async () => ({ adapter: { embed } }))
+      } as never,
+      execution: bound.value,
+      provider: { run: vi.fn() } as unknown as MemoryRunUtilityProvider
+    });
+
+    const pending = service.embedQuery({
+      ...baseInput(),
+      profile,
+      query: "What did I say about release readiness?",
+      signal: roleController.signal
+    });
+    const attemptSignal = await started;
+    roleController.abort({ code: "memory_query_role_cancelled" });
+
+    await expect(pending).resolves.toMatchObject({
+      reason: "memory_query_embedding_outcome_unknown",
+      status: "UNAVAILABLE"
+    });
+    expect(attemptSignal.aborted).toBe(true);
+    expect(embed).toHaveBeenCalledOnce();
+    expect(bound.admission.bind).toHaveBeenCalledOnce();
+    expect(bound.lifecycle.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-MEMORY_QUERY_EMBED",
+      expect.objectContaining({ state: "OUTCOME_UNKNOWN" })
     );
   });
 
@@ -1174,7 +1318,10 @@ describe("Memory run utility execution", () => {
       ));
     expect(bind).toHaveBeenCalledTimes(MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
     expect(bind.mock.calls.map((call) => call[1].ordinal))
-      .toEqual([2, 4, 6, 8, 10, 12, 14, 16, 18]);
+      .toEqual(Array.from(
+        { length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES },
+        (_, index) => 2 + index * MEMORY_RERANK_MAX_ATTEMPTS
+      ));
     expect(peak).toBe(3);
   });
 
@@ -1243,7 +1390,10 @@ describe("Memory run utility execution", () => {
     expect(providerRun.mock.calls.map((call) => rerankInput(call[1]).candidates.length))
       .toEqual([20, 20, 20, 20]);
     expect(bound.admission.bind.mock.calls.map((call) => call[1].ordinal))
-      .toEqual([2, 4, 6, 8]);
+      .toEqual(Array.from(
+        { length: 4 },
+        (_, index) => 2 + index * MEMORY_RERANK_MAX_ATTEMPTS
+      ));
   });
 
   it("partitions aggregation reranking by the complete structured prompt limit", async () => {
@@ -1795,7 +1945,7 @@ describe("Memory run utility execution", () => {
       reason: "memory_run_utility_output_invalid",
       status: "UNAVAILABLE"
     });
-    expect(MEMORY_RERANK_MAX_ATTEMPTS).toBe(2);
+    expect(MEMORY_RERANK_MAX_ATTEMPTS).toBe(3);
     expect(provider.run).toHaveBeenCalledTimes(2);
     expect(executionService.admission.bind).toHaveBeenCalledTimes(2);
     expect(settled).toHaveLength(2);
@@ -2314,102 +2464,132 @@ describe("Memory run utility execution", () => {
   });
 
   it("retries one transport-uncertain dedicated rerank against the same snapshot", async () => {
-    let attempt = 0;
-    const harness = dedicatedHarness(async (request) => {
-      attempt += 1;
-      if (attempt === 1) {
-        throw new RerankAdapterError("rerank_provider_request_failed");
-      }
-      return {
-        model: "qwen/qwen3-reranker-8b",
-        provider: "Together",
-        requestId: "rerank-retry-success",
-        scores: request.documents.map((document, index) => ({
-          handle: document.handle,
-          index,
-          relevanceScore: 0.9 - index / 100
-        })),
-        usage: { inputTokens: 20, searchUnits: 1, totalTokens: 20 }
-      };
-    });
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const harness = dedicatedHarness(async (request) => {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new RerankAdapterError("rerank_provider_request_failed");
+        }
+        return {
+          model: "qwen/qwen3-reranker-8b",
+          provider: "Together",
+          requestId: "rerank-retry-success",
+          scores: request.documents.map((document, index) => ({
+            handle: document.handle,
+            index,
+            relevanceScore: 0.9 - index / 100
+          })),
+          usage: { inputTokens: 20, searchUnits: 1, totalTokens: 20 }
+        };
+      });
 
-    const result = await harness.service.rerank({
-      ...baseInput(),
-      candidates: dedicatedCandidates(3),
-      profileRequested: false,
-      query: "Which release milestones did I discuss?"
-    });
+      const pending = harness.service.rerank({
+        ...baseInput(),
+        candidates: dedicatedCandidates(3),
+        profileRequested: false,
+        query: "Which release milestones did I discuss?"
+      });
+      await vi.runAllTimersAsync();
+      const result = await pending;
 
-    expect(result).toMatchObject({
-      bindingId: "binding-3",
-      externalCallCount: 2,
-      status: "READY"
-    });
-    expect(result.status === "READY" ? result.decisions : []).toHaveLength(3);
-    expect(harness.rerank).toHaveBeenCalledTimes(2);
-    expect(harness.bind.mock.calls.map((call) => call[1].ordinal)).toEqual([2, 3]);
-    expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
-      1,
-      "user-1",
-      "binding-2",
-      expect.objectContaining({
-        errorCode: "rerank_provider_request_failed",
-        state: "OUTCOME_UNKNOWN"
-      })
-    );
-    expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
-      2,
-      "user-1",
-      "binding-3",
-      expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
-    );
+      expect(result).toMatchObject({
+        bindingId: "binding-3",
+        externalCallCount: 2,
+        status: "READY"
+      });
+      expect(result.status === "READY" ? result.decisions : []).toHaveLength(3);
+      expect(harness.rerank).toHaveBeenCalledTimes(2);
+      expect(harness.bind.mock.calls.map((call) => call[1].ordinal)).toEqual([2, 3]);
+      expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
+        1,
+        "user-1",
+        "binding-2",
+        expect.objectContaining({
+          errorCode: "rerank_provider_request_failed",
+          state: "OUTCOME_UNKNOWN"
+        })
+      );
+      expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
+        2,
+        "user-1",
+        "binding-3",
+        expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("retries one replay-safe transient dedicated rerank HTTP response", async () => {
-    let attempt = 0;
-    const harness = dedicatedHarness(async (request) => {
-      if (++attempt === 1) {
-        throw new RerankAdapterError("rerank_provider_http_error", {
-          httpStatus: 503
-        });
-      }
-      return {
-        model: "qwen/qwen3-reranker-8b",
-        provider: "Together",
-        requestId: "rerank-http-retry-success",
-        scores: request.documents.map((document, index) => ({
-          handle: document.handle,
-          index,
-          relevanceScore: 0.9 - index / 100
-        })),
-        usage: { inputTokens: 20, searchUnits: 1, totalTokens: 20 }
-      };
-    });
+  it("backs off through two replay-safe transient rerank responses", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const harness = dedicatedHarness(async (request) => {
+        if (++attempt <= 2) {
+          throw new RerankAdapterError("rerank_provider_http_error", {
+            httpStatus: 503
+          });
+        }
+        return {
+          model: "qwen/qwen3-reranker-8b",
+          provider: "Together",
+          requestId: "rerank-http-retry-success",
+          scores: request.documents.map((document, index) => ({
+            handle: document.handle,
+            index,
+            relevanceScore: 0.9 - index / 100
+          })),
+          usage: { inputTokens: 20, searchUnits: 1, totalTokens: 20 }
+        };
+      });
 
-    const result = await harness.service.rerank({
-      ...baseInput(),
-      candidates: dedicatedCandidates(3),
-      profileRequested: false,
-      query: "query"
-    });
+      const pending = harness.service.rerank({
+        ...baseInput(),
+        candidates: dedicatedCandidates(3),
+        profileRequested: false,
+        query: "query"
+      });
+      await vi.runAllTimersAsync();
+      const result = await pending;
 
-    expect(result).toMatchObject({
-      bindingId: "binding-3",
-      externalCallCount: 2,
-      status: "READY"
-    });
-    expect(harness.rerank).toHaveBeenCalledTimes(2);
-    expect(harness.bind.mock.calls.map((call) => call[1].ordinal)).toEqual([2, 3]);
-    expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
-      1,
-      "user-1",
-      "binding-2",
-      expect.objectContaining({
-        errorCode: "memory_reranker_transient_http_failure",
-        state: "FAILED"
-      })
-    );
-    expect(harness.provider.run).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        bindingId: "binding-4",
+        externalCallCount: 3,
+        status: "READY"
+      });
+      expect(harness.rerank).toHaveBeenCalledTimes(3);
+      expect(harness.bind.mock.calls.map((call) => call[1].ordinal))
+        .toEqual([2, 3, 4]);
+      expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
+        1,
+        "user-1",
+        "binding-2",
+        expect.objectContaining({
+          errorCode: "memory_reranker_transient_http_failure",
+          state: "FAILED"
+        })
+      );
+      expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
+        2,
+        "user-1",
+        "binding-3",
+        expect.objectContaining({
+          errorCode: "memory_reranker_transient_http_failure",
+          state: "FAILED"
+        })
+      );
+      expect(harness.executionService.lifecycle.settle).toHaveBeenNthCalledWith(
+        3,
+        "user-1",
+        "binding-4",
+        expect.objectContaining({ errorCode: null, state: "SUCCEEDED" })
+      );
+      expect(harness.provider.run).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry a permanent dedicated rerank HTTP response", async () => {
@@ -2470,7 +2650,7 @@ describe("Memory run utility execution", () => {
       .toEqual([96, 84]);
     expect(harness.bind).toHaveBeenCalledTimes(2);
     expect(harness.bind.mock.calls.map((call) =>
-      call[1].ordinal)).toEqual([2, 4]);
+      call[1].ordinal)).toEqual([2, 2 + MEMORY_RERANK_MAX_ATTEMPTS]);
   });
 
   it("rejects a dedicated path bound to an answer snapshot before either provider runs", async () => {

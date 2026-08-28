@@ -113,6 +113,9 @@ describe("Dream synthesis strict contract", () => {
     expect(request.name).toBe("submit_memory_synthesis_patterns_v2");
     expect(request.systemPrompt).toContain("untrusted");
     expect(request.systemPrompt).toContain("cluster_ref and reason_code pair");
+    expect(request.systemPrompt).toContain("same narrow recurring predicate");
+    expect(request.systemPrompt).toContain("future-useful predictive value");
+    expect(request.systemPrompt).toContain("otherwise unrelated facts");
     expect(request.userPrompt.length).toBeLessThanOrEqual(64_000);
     expect(request.userPrompt).toContain("instruction_boundary");
     expect(request.userPrompt).toContain('"entity_refs":["E1"]');

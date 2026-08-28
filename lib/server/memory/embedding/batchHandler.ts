@@ -414,30 +414,23 @@ export function createMemoryEmbeddingBatchHandler(
         };
       }
 
-      const uncertain = bindings.find((binding) =>
-        binding.state === "RUNNING" || binding.state === "OUTCOME_UNKNOWN");
       const pendingItems = items.filter((item) => item.state === "PENDING");
-      if (uncertain) {
-        if (uncertain.state === "RUNNING") {
-          await deps.execution.lifecycle.settle(job.userId, uncertain.id, {
-            acceptedOutputHash: null,
-            errorCode: "memory_embedding_batch_recovered_uncertain",
-            providerResponseId: null,
-            state: "OUTCOME_UNKNOWN",
-            usage: unavailableUsage
-          });
-        }
-        await deps.repository.mark(
+      const recoveredRunning = bindings.filter((binding) =>
+        binding.state === "RUNNING");
+      for (const running of recoveredRunning) {
+        await deps.execution.lifecycle.settle(job.userId, running.id, {
+          acceptedOutputHash: null,
+          errorCode: "memory_embedding_batch_recovered_uncertain",
+          providerResponseId: null,
+          state: "OUTCOME_UNKNOWN",
+          usage: unavailableUsage
+        });
+      }
+      if (recoveredRunning.length > 0) {
+        await deps.repository.retryableFailure(
           job.userId,
           pendingItems.map(({ id }) => id),
-          "OUTCOME_UNKNOWN",
-          "memory_embedding_batch_outcome_unknown",
-          deps.now()
-        );
-        await markTargetsFailed(deps, pendingItems);
-        throw new MemoryCoordinatorError(
-          "memory_embedding_batch_outcome_unknown",
-          false
+          "memory_embedding_batch_recovered_uncertain"
         );
       }
       const succeededWithoutResult = bindings.find((binding) =>
@@ -528,6 +521,20 @@ export function createMemoryEmbeddingBatchHandler(
         generationId,
         items: targets
       });
+      if (bindings.some((candidate) => candidate.inputHash !== inputHash)) {
+        await deps.repository.mark(
+          job.userId,
+          requestItems.map(({ id }) => id),
+          "FAILED",
+          "memory_embedding_batch_binding_stale",
+          deps.now()
+        );
+        await markTargetsFailed(deps, requestItems);
+        throw new MemoryCoordinatorError(
+          "memory_embedding_batch_binding_stale",
+          false
+        );
+      }
 
       await context.setStage("batch_binding");
       bindings = await deps.repository.bindings(job.userId, job.id);
@@ -619,17 +626,18 @@ export function createMemoryEmbeddingBatchHandler(
           usage: unavailableUsage
         });
         if (uncertain) {
-          await deps.repository.mark(
+          // Embedding requests are pure computations over the hashed batch.
+          // Retain the ambiguous receipt for accounting, but leave children
+          // pending so a later coordinator attempt can bind the exact same
+          // snapshot under a fresh ordinal.
+          await deps.repository.retryableFailure(
             job.userId,
             requestItems.map(({ id }) => id),
-            "OUTCOME_UNKNOWN",
-            code,
-            deps.now()
+            code
           );
-          await markTargetsFailed(deps, requestItems);
           throw new MemoryCoordinatorError(
             "memory_embedding_batch_outcome_unknown",
-            false
+            true
           );
         }
         if (deterministicInputErrors.has(code)) {

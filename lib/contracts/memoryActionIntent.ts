@@ -7,7 +7,7 @@ import {
 /** Versioned, provider-neutral output contract for the single Memory control
  * decision made by the installation System Model. Every property is required
  * on the strict JSON-Schema wire and uses null when it is not applicable. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v8" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v9" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -15,6 +15,7 @@ export const MEMORY_ACTION_INTENT_MAX_TARGET_CALLS =
   MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS;
 export const MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH = 2_000 as const;
 export const MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH = 500 as const;
+export const MEMORY_ACTION_INTENT_MAX_QUERY_DECOMPOSITIONS = 2 as const;
 export const MEMORY_ACTION_INTENT_MAX_REF_LENGTH = 2_048 as const;
 export const MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS = 8 as const;
 export const MEMORY_ACTION_INTENT_MAX_ENTITY_MENTION_LENGTH = 256 as const;
@@ -135,6 +136,8 @@ const memoryActionIntentWireSchema = z.strictObject({
   memoryUseful: z.boolean(),
   pastChatsUseful: z.boolean(),
   profileRequested: z.boolean(),
+  queryDecompositions: z.array(strictText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH))
+    .max(MEMORY_ACTION_INTENT_MAX_QUERY_DECOMPOSITIONS),
   queryText: nullableText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH),
   reasonCode: z.enum(MEMORY_ACTION_INTENT_REASON_CODES),
   recencyRequested: z.boolean(),
@@ -166,7 +169,8 @@ const memoryActionIntentSchema = memoryActionIntentWireSchema.superRefine((value
   const dynamicRetrievalRequested = value.memoryUseful || value.pastChatsUseful ||
     value.applyResponsePreferences || value.profileRequested;
   if ((value.action === "LIST" || value.action === "SEARCH") && (
-    dynamicRetrievalRequested || value.aggregationRequested || value.queryText !== null
+    dynamicRetrievalRequested || value.aggregationRequested || value.queryText !== null ||
+    value.queryDecompositions.length > 0
   )) {
     context.addIssue({
       code: "custom",
@@ -311,6 +315,16 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       description: "True only for a broad answer summarizing everything Personal Memory knows about the user; it requires action NONE, memoryUseful true, and recencyRequested false.",
       type: "boolean"
     },
+    queryDecompositions: {
+      description: "Zero to two standalone retrieval subqueries for distinct evidence facets in a genuinely multi-part answer request. They supplement, never replace, queryText and the original user query.",
+      items: {
+        maxLength: MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH,
+        minLength: 1,
+        type: "string"
+      },
+      maxItems: MEMORY_ACTION_INTENT_MAX_QUERY_DECOMPOSITIONS,
+      type: "array"
+    },
     queryText: {
       description: "A concise non-null semantic query whenever a NONE answer enables any retrieval control, including profileRequested.",
       maxLength: MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH,
@@ -365,6 +379,7 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "memoryUseful",
     "pastChatsUseful",
     "profileRequested",
+    "queryDecompositions",
     "queryText",
     "reasonCode",
     "recencyRequested",
@@ -538,7 +553,8 @@ function normalizeSafePlannerHints(value: MemoryActionIntentWire): MemoryActionI
     includePatterns: hintsAllowed && value.memoryUseful && !value.profileRequested &&
       value.retrievalMode === "TARGETED_CURRENT" && value.temporalIntent === "CURRENT"
       ? value.includePatterns
-      : false
+      : false,
+    queryDecompositions: hintsAllowed ? value.queryDecompositions : []
   };
 }
 

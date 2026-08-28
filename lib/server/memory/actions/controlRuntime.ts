@@ -34,16 +34,16 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v14";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v15";
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v14",
-  promptVersion: "memory-control-prompt-v19",
+  policyVersion: "memory-control-policy-v15",
+  promptVersion: "memory-control-prompt-v20",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    version: 12
+    version: 13
   }),
   schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
 });
@@ -199,6 +199,10 @@ function sanitizeProviderIntent(intent: MemoryActionIntent): MemoryActionIntent 
         ? [{ ...mention, resolvedRef, text: text.safeText }]
         : [];
     }),
+    queryDecompositions: intent.queryDecompositions.flatMap((value) => {
+      const projected = sanitizeMemoryUtilityText(value);
+      return projected.eligible && projected.safeText ? [projected.safeText] : [];
+    }),
     queryText: safeNullableControlText(intent.queryText),
     referencedMemoryRef: intent.referencedMemoryRef === null
       ? null
@@ -215,7 +219,7 @@ function sanitizeProviderIntent(intent: MemoryActionIntent): MemoryActionIntent 
 }
 
 export function memoryControlIntentHash(intent: MemoryActionIntent): string {
-  return memoryExecutionSha256({ intent, version: 5 });
+  return memoryExecutionSha256({ intent, version: 6 });
 }
 
 export function memoryControlInputHash(context: MemoryActionIntentContext): string {
