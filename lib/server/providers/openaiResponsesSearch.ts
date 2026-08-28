@@ -389,6 +389,7 @@ export function createOpenAIResponsesSearchAdapter(
         findings,
         ...(providerResponseId ? { providerResponseId } : {}),
         requestPreview: adapter.buildRequestPreview(request),
+        sourceAttribution: "available",
         sources,
         usage: completed.result.usage
       };

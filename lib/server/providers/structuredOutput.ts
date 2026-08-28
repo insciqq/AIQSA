@@ -3,6 +3,7 @@ import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeOpenRouterParams } from "../../domain/providerParams";
 import { applyProviderReasoningRequestMapping } from "./reasoningRequestMapping";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
+import type { DeepSeekResponsesClient } from "./deepSeekResponsesTransport";
 import { extractOpenAIUsage } from "./openaiResponsesResponse";
 import {
   assertValidOpenRouterTerminalResponse,
@@ -13,6 +14,7 @@ import type { ProviderModelConfiguration } from "./providerConfiguration";
 import { openRouterChatToolBridge } from "../tools/bridges";
 
 export const STRUCTURED_OUTPUT_SUPPORTED_ADAPTERS = [
+  "deepseek_responses_native",
   "openai_responses_native",
   "openai_responses_compatible",
   "openrouter_chat_completions"
@@ -249,6 +251,41 @@ export function buildOpenAIResponsesStructuredOutputRequest(
   return body;
 }
 
+export function buildDeepSeekResponsesStructuredOutputRequest(
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "upstreamModelId">,
+  request: ProviderStructuredOutputRequest
+): Record<string, unknown> {
+  if (model.adapterKind !== "deepseek_responses_native") {
+    throw new Error("structured_output_adapter_unsupported");
+  }
+  const normalized = normalizeRequest(request);
+  const maxOutputTokens = normalized.reasoningEffort &&
+    normalized.reasoningEffort !== "none"
+    ? Math.max(normalized.maxOutputTokens, REASONING_STRUCTURED_OUTPUT_MIN_TOKENS)
+    : normalized.maxOutputTokens;
+  return {
+    input: [{
+      content: [{ text: normalized.userPrompt, type: "input_text" }],
+      role: "user"
+    }],
+    instructions: normalized.systemPrompt,
+    max_output_tokens: maxOutputTokens,
+    model: model.upstreamModelId,
+    ...(normalized.reasoningEffort
+      ? { reasoning: { effort: normalized.reasoningEffort } }
+      : {}),
+    stream: false,
+    text: {
+      format: {
+        name: normalized.name,
+        schema: schemaForProvider(normalized.schema),
+        strict: true,
+        type: "json_schema"
+      }
+    }
+  };
+}
+
 function openRouterProviderRouting(
   model: Pick<ProviderModelConfiguration, "defaultParams" | "openRouterRouting">
 ): Record<string, unknown> {
@@ -337,6 +374,26 @@ export function createOpenAIResponsesStructuredOutputAdapter(input: Readonly<{
     async execute(request, options) {
       const response = await input.client.create(
         buildOpenAIResponsesStructuredOutputRequest(input.model, request),
+        options
+      );
+      const responseText = openAIResponseText(response);
+      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
+      if (isRecord(response.usage)) {
+        options?.onUsage?.(extractOpenAIUsage(response));
+      }
+      return parseObject(responseText);
+    }
+  };
+}
+
+export function createDeepSeekResponsesStructuredOutputAdapter(input: Readonly<{
+  client: DeepSeekResponsesClient;
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "upstreamModelId">;
+}>): ProviderStructuredOutputAdapter {
+  return {
+    async execute(request, options) {
+      const response = await input.client.create(
+        buildDeepSeekResponsesStructuredOutputRequest(input.model, request),
         options
       );
       const responseText = openAIResponseText(response);

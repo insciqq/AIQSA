@@ -439,6 +439,7 @@ function routeBelongsToOption(
 ): boolean {
   if (optionKind === "web_search") {
     return route.protocol === "anthropic_web_search" ||
+      route.protocol === "deepseek_responses_web_search" ||
       route.protocol === "openai_responses_web_search";
   }
   if (optionKind === "gemini_google_search") {

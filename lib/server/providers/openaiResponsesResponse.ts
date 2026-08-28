@@ -235,7 +235,7 @@ function assertBoundedOpenAIRetainedOutput(
   for (const item of output) {
     if (!isRecord(item)) continue;
     if (item.type === "reasoning") {
-      for (const value of [item.summary, item.encrypted_content]) {
+      for (const value of [item.summary, item.content, item.encrypted_content]) {
         reasoningCharacters = assertBoundedStructuredTextLength({
           currentChars: reasoningCharacters,
           maxChars: maxOutputChars,
@@ -256,7 +256,10 @@ function assertBoundedOpenAIRetainedOutput(
   }
 }
 
-function extractArtifacts(response: OpenAIResponseRecord): ModelRunSseEvent[] {
+function extractArtifacts(
+  response: OpenAIResponseRecord,
+  provider = "openai"
+): ModelRunSseEvent[] {
   const output = Array.isArray(response.output) ? response.output : [];
   const artifacts: ModelRunSseEvent[] = [];
 
@@ -272,6 +275,9 @@ function extractArtifacts(response: OpenAIResponseRecord): ModelRunSseEvent[] {
           payload: {
             ...(item.action !== undefined ? { action: item.action } : {}),
             id: item.id,
+            ...(provider === "deepseek"
+              ? { provider, sourceAttribution: "provider_unavailable" }
+              : {}),
             status: item.status,
             type: item.type
           }
@@ -391,7 +397,7 @@ function normalizeOpenAIResponseResult(
   const toolCalls = openAIResponsesToolBridge.parseToolCalls(response);
 
   return {
-    artifacts: extractArtifacts(response),
+    artifacts: extractArtifacts(response, provider),
     result: {
       finalProviderResponsePreview: buildResponsePreview(
         response,
@@ -484,6 +490,7 @@ function streamErrorCode(eventType: string, payload: Record<string, unknown>): s
 function webSearchLifecycleArtifact(input: Readonly<{
   eventType: string;
   payload: Record<string, unknown>;
+  provider?: string;
   providerResponseId?: string;
 }>): ModelRunSseEvent | null {
   const item = recordValue(input.payload.item);
@@ -506,6 +513,9 @@ function webSearchLifecycleArtifact(input: Readonly<{
         eventType: input.eventType,
         id: stringValue(item?.id) ?? stringValue(input.payload.item_id) ?? stringValue(input.payload.id),
         outputIndex: input.payload.output_index,
+        ...(input.provider === "deepseek"
+          ? { provider: input.provider, sourceAttribution: "provider_unavailable" }
+          : {}),
         responseId: input.providerResponseId,
         status,
         type: "web_search_call"
@@ -603,6 +613,7 @@ export async function* parseOpenAIResponsesSse(
       : webSearchLifecycleArtifact({
           eventType,
           payload: parsed,
+          provider: input.provider,
           providerResponseId
         });
     if (searchArtifact) {

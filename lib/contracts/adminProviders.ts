@@ -2,6 +2,7 @@ import type { ProviderReasoningRequestMapping } from "./providerReasoningRequest
 
 export type AdminProviderFamily =
   | "anthropic"
+  | "deepseek"
   | "gemini"
   | "openai"
   | "openai_compatible"
@@ -9,6 +10,7 @@ export type AdminProviderFamily =
 
 export type AdminProviderAdapterKind =
   | "anthropic_messages"
+  | "deepseek_responses_native"
   | "gemini_interactions_native"
   | "openai_chat_completions_compatible"
   | "openai_embeddings_compatible"
@@ -116,6 +118,7 @@ export type AdminProviderTestEvidence = {
   };
   structuredOutput?: {
     adapterKind:
+      | "deepseek_responses_native"
       | "openai_responses_compatible"
       | "openai_responses_native"
       | "openrouter_chat_completions";

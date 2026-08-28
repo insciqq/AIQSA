@@ -8,6 +8,7 @@ import {
 const providerCredentialNames = [
   "ANTHROPIC_API_KEY",
   "CUSTOM_OPENAI_API_KEY",
+  "DEEPSEEK_API_KEY",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "OPENAI_API_KEY",

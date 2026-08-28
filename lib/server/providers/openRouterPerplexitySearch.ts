@@ -106,6 +106,7 @@ export function createOpenRouterPerplexitySearchAdapter(
         findings,
         providerResponseId: openRouterProviderResponseId(response),
         requestPreview: adapter.buildRequestPreview(request),
+        sourceAttribution: "available",
         sources,
         usage
       };

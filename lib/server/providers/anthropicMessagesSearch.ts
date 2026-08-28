@@ -866,6 +866,7 @@ export function createAnthropicMessagesSearchAdapter(
         findings: normalizedFindings,
         ...(latestId ? { providerResponseId: latestId } : {}),
         requestPreview: adapter.buildRequestPreview(request),
+        sourceAttribution: "available",
         sources: normalizedSources,
         usage: totalUsage
       };

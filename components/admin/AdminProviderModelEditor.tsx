@@ -71,6 +71,7 @@ type ModelForm = {
 
 function adapterFor(family: AdminProviderConnection["family"]): AdminProviderAdapterKind {
   if (family === "anthropic") return "anthropic_messages";
+  if (family === "deepseek") return "deepseek_responses_native";
   if (family === "gemini") return "gemini_interactions_native";
   if (family === "openrouter") return "openrouter_chat_completions";
   if (family === "openai") return "openai_responses_native";
@@ -80,6 +81,7 @@ function adapterFor(family: AdminProviderConnection["family"]): AdminProviderAda
 export function adminProviderAdapterLabel(kind: AdminProviderAdapterKind): string {
   const labels: Record<AdminProviderAdapterKind, string> = {
     anthropic_messages: "Anthropic Messages",
+    deepseek_responses_native: "DeepSeek Responses",
     gemini_interactions_native: "Gemini Interactions",
     openai_chat_completions_compatible: "Chat Completions",
     openai_embeddings_compatible: "Embeddings (OpenAI-compatible)",
@@ -98,10 +100,10 @@ function initialCapabilities(
     backgroundStreaming: family === "openai",
     nativeBackground: family === "openai",
     nativePdfInput: family === "openai",
-    nativeSearch: family === "openai" || family === "gemini",
+    nativeSearch: family === "openai" || family === "deepseek" || family === "gemini",
     parallelToolCalls: family !== "gemini",
     pdf: true,
-    reasoning: family === "gemini",
+    reasoning: family === "deepseek" || family === "gemini",
     streaming: true,
     toolCalling: true,
     vision: family === "gemini"

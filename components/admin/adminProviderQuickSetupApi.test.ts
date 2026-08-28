@@ -33,6 +33,13 @@ function snapshot() {
         stateToken: "state-anthropic"
       },
       {
+        provider: "deepseek",
+        providerDisplayName: "DeepSeek",
+        quickSetupAssigned: false,
+        state: "not_configured",
+        stateToken: "state-deepseek"
+      },
+      {
         provider: "gemini",
         providerDisplayName: "Gemini",
         quickSetupAssigned: false,
@@ -56,7 +63,7 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("admin provider Quick setup API", () => {
-  it("decodes the exact four-provider snapshot and sends same-origin GET", async () => {
+  it("decodes the exact provider snapshot and sends same-origin GET", async () => {
     const fetcher = vi.fn(async () => response(snapshot()));
     await expect(getAdminProviderQuickSetup(fetcher)).resolves.toEqual({
       data: snapshot(),
