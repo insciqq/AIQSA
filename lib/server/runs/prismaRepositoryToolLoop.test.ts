@@ -498,7 +498,7 @@ describe("provider dispatch recovery request loading", () => {
 
   it("round-trips only the server-minted focused Knowledge contract version", async () => {
     const focusedRequest = createKnowledgeFocusedRequest({ currentUserMessage: "Question" })!;
-    for (const [contract, accepted] of [[1, true], [2, true], [3, true], [4, false]] as const) {
+    for (const [contract, accepted] of [[1, true], [2, false]] as const) {
       const request = {
         ...normalizedRequest,
         knowledgeFocusedRequest: focusedRequest,

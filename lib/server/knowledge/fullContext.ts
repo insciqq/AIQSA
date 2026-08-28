@@ -122,9 +122,7 @@ function fullContextHeader(): string {
     "For trend or comparison questions, inspect every admitted Source systematically and compare every repeated relevant measure; distinguish a genuinely absent value from one merely overlooked.",
     KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION,
     "Your first output line must be exactly AIQSA_KB_STATUS=ANSWERED or AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE.",
-    "Your second output line must be exactly AIQSA_KB_FORMAT=EXTRACTIVE_V1 or AIQSA_KB_FORMAT=MARKDOWN.",
-    "For a request that only reports or identifies Source facts, use EXTRACTIVE_V1 followed by exactly one compact JSON line of provider-selected literal exactExcerpt spans as defined by the trusted Knowledge answer contract. Use MARKDOWN only for requested explanation, summarization, comparison, calculation, or interpretation.",
-    "Use ANSWERED only with non-empty exact claims or cited Markdown. Otherwise use INSUFFICIENT_EVIDENCE with MARKDOWN and explain the limitation.",
+    "Use ANSWERED only when the following non-empty Markdown answer contains at least one exact supplied [K…] handle. Otherwise use INSUFFICIENT_EVIDENCE and explain the limitation in non-empty Markdown.",
     "Answer in the language of the current user request unless explicitly asked otherwise. Preserve Source names, quotations, filenames, numbers, and citations in their original form."
   ].join("\n");
 }
@@ -233,7 +231,7 @@ export function planKnowledgeAnswering(input: Readonly<{
       maximumBytes: maximumTokens * 4,
       maximumTokens,
       profileId: `${input.request.provider}:${input.request.modelId}`,
-      promptFragmentVersion: 13,
+      promptFragmentVersion: 6,
       runtimeVersion: 2
     });
   } catch {

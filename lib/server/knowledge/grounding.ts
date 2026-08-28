@@ -5,7 +5,7 @@ import {
   type KnowledgeEvidencePackage
 } from "./evidencePackage";
 
-export const KNOWLEDGE_GROUNDING_VERSION = 6 as const;
+export const KNOWLEDGE_GROUNDING_VERSION = 5 as const;
 
 export type KnowledgeGroundingResult = Readonly<{
   finalAnswerHash: string;
@@ -34,8 +34,6 @@ export class KnowledgeAnswerContractError extends Error {
 
 const statusAnswered = "AIQSA_KB_STATUS=ANSWERED";
 const statusInsufficient = "AIQSA_KB_STATUS=INSUFFICIENT_EVIDENCE";
-const formatExtractive = "AIQSA_KB_FORMAT=EXTRACTIVE_V1";
-const formatMarkdown = "AIQSA_KB_FORMAT=MARKDOWN";
 const groupedCitation = /[\[(【]\s*((?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?)(?:\s*(?:[,;&/+]|and|и)\s*(?:K[1-9]\d{0,3}(?:\.[1-9]\d?)?))*)\s*[\])】]/giu;
 const citationToken = /K[1-9]\d{0,3}(?:\.[1-9]\d?)?/giu;
 const bracketedKnowledgeCandidate = /[\[【]\s*([Kk][0-9][^\]】]{0,63})\s*[\]】]/gu;
@@ -50,102 +48,6 @@ const providerWrappedFullWidthHandle = /^【\s*(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\s*
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  return actual.length === expected.length &&
-    expected.every((key, index) => actual[index] === key);
-}
-
-/**
- * Decodes the provider-selected extractive envelope without assessing meaning.
- * Every rendered claim is copied from one immutable cited excerpt; the server
- * neither paraphrases it nor decides whether it answers the user's question.
- */
-function decodeKnowledgeAnswerBody(input: Readonly<{
-  body: string;
-  evidence: KnowledgeEvidencePackage;
-  requireBodyFormat: boolean;
-  status: typeof statusAnswered | typeof statusInsufficient;
-}>): string {
-  const newline = input.body.indexOf("\n");
-  const format = newline < 0 ? input.body : input.body.slice(0, newline);
-  if (format !== formatExtractive && format !== formatMarkdown) {
-    if (input.requireBodyFormat || format.startsWith("AIQSA_KB_FORMAT=")) {
-      throw new KnowledgeAnswerContractError(
-        "knowledge_answer_contract_failed",
-        input.requireBodyFormat
-          ? "The Knowledge answer omitted the required body format"
-          : "The Knowledge answer returned an unknown body format"
-      );
-    }
-    return input.body;
-  }
-  const payload = newline < 0 ? "" : input.body.slice(newline + 1);
-  if (!payload.trim()) {
-    throw new KnowledgeAnswerContractError(
-      "knowledge_answer_contract_failed",
-      "The Knowledge answer body format payload is empty"
-    );
-  }
-  if (format === formatMarkdown) return payload;
-  if (input.status !== statusAnswered || payload.includes("\n") || payload.trim() !== payload) {
-    throw new KnowledgeAnswerContractError(
-      "knowledge_answer_contract_failed",
-      "The extractive Knowledge answer envelope is invalid"
-    );
-  }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(payload);
-  } catch {
-    throw new KnowledgeAnswerContractError(
-      "knowledge_answer_contract_failed",
-      "The extractive Knowledge answer envelope is invalid"
-    );
-  }
-  if (!record(decoded) || !exactKeys(decoded, ["claims", "version"]) ||
-    decoded.version !== 1 || !Array.isArray(decoded.claims) ||
-    decoded.claims.length < 1 || decoded.claims.length > 64) {
-    throw new KnowledgeAnswerContractError(
-      "knowledge_answer_contract_failed",
-      "The extractive Knowledge answer envelope is invalid"
-    );
-  }
-  const items = new Map(input.evidence.items.flatMap((item) =>
-    item.state === "available" && item.excerpt !== null ? [[item.handle, item] as const] : []));
-  const seen = new Set<string>();
-  const rendered: string[] = [];
-  for (const value of decoded.claims) {
-    if (!record(value) || !exactKeys(value, ["handle", "quote"]) ||
-      typeof value.handle !== "string" ||
-      !/^K[1-9]\d{0,3}(?:\.[1-9]\d?)?$/u.test(value.handle) ||
-      typeof value.quote !== "string" || value.quote.length < 1 || value.quote.length > 4_096 ||
-      value.quote.trim() !== value.quote || /[\r\n]/u.test(value.quote) ||
-      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value.quote) ||
-      /(?:\[[Kk][1-9]\d{0,3}|【[Kk][1-9]\d{0,3}|cite||)/u.test(value.quote)) {
-      throw new KnowledgeAnswerContractError(
-        "knowledge_answer_contract_failed",
-        "The extractive Knowledge answer claim is invalid"
-      );
-    }
-    const item = items.get(value.handle);
-    const identity = `${value.handle}\u0000${value.quote}`;
-    if (!item?.excerpt?.includes(value.quote) || seen.has(identity)) {
-      throw new KnowledgeAnswerContractError(
-        "knowledge_answer_contract_failed",
-        "The extractive Knowledge answer claim is not an exact cited excerpt span"
-      );
-    }
-    seen.add(identity);
-    rendered.push(`- ${value.quote} [${value.handle}]`);
-  }
-  return rendered.join("\n");
 }
 
 function normalizeToolLoopCitationSyntax(
@@ -274,15 +176,12 @@ function assertNoMalformedOrUnknownHandles(
 
 /**
  * Structural-only answer settlement. It validates the exact status line and
- * final-manifest handles. For an extractive envelope it also verifies that
- * each provider-selected claim is a literal span of its cited immutable
- * excerpt and renders only those spans. It never scores prose, guesses semantic
- * support, calls a model, retries, or paraphrases answer content.
+ * final-manifest handles; it never scores prose, guesses support, calls a
+ * model, retries, or rewrites answer content.
  */
 export function groundKnowledgeAnswer(input: Readonly<{
   answer: string;
   evidence: KnowledgeEvidencePackage;
-  requireBodyFormat?: boolean;
 }>): KnowledgeGroundingResult {
   const original = input.answer.replace(/\r\n?/gu, "\n");
   const newline = original.indexOf("\n");
@@ -309,13 +208,7 @@ export function groundKnowledgeAnswer(input: Readonly<{
       .filter((item) => item.state === "available" && item.excerpt !== null)
       .map((item) => item.handle)
   );
-  const decodedBody = decodeKnowledgeAnswerBody({
-    body,
-    evidence: input.evidence,
-    requireBodyFormat: input.requireBodyFormat === true,
-    status
-  });
-  const normalizedBody = normalizeCitationSyntax(decodedBody, availableHandles);
+  const normalizedBody = normalizeCitationSyntax(body, availableHandles);
   const handles = assertNoMalformedOrUnknownHandles(normalizedBody, availableHandles);
   if (status === statusAnswered && handles.length < 1) {
     throw new KnowledgeAnswerContractError(

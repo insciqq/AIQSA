@@ -56,13 +56,6 @@ describe("Knowledge request parsing", () => {
     expect(knowledgeRetrievalTool.description).toContain(
       KNOWLEDGE_GROUNDED_ANSWER_INSTRUCTION
     );
-    expect(knowledgeRetrievalTool.description).toContain("give the smallest direct answer");
-    expect(knowledgeRetrievalTool.description).toContain(
-      "exact entity, value, field, row, column, or relation"
-    );
-    expect(knowledgeRetrievalTool.description).toContain(
-      "Never put a supporting citation on its own line"
-    );
     expect(knowledgeRetrievalTool.description).toContain("written operand order");
     expect(knowledgeRetrievalTool.description).toContain(
       "subtract the lower bound from the upper bound"

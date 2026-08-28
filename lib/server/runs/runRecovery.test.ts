@@ -1588,7 +1588,7 @@ describe("run recovery", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ toolChoice: "none" });
     expect(requests[0]?.tools).toBeUndefined();
-    expect(requests[0]?.prompt.knowledgeAnswerContract).toBe(3);
+    expect(requests[0]?.prompt.knowledgeAnswerContract).toBe(1);
   });
 
   it("terminalizes zero focused retrieval candidates without answer-provider I/O or retry", async () => {
