@@ -160,7 +160,18 @@ export function knowledgeRerankerUnavailableEvidence(input: Readonly<{
 function classifiedFallbackCode(error: unknown): string | null {
   if (error instanceof RerankAdapterError) {
     switch (error.code) {
-      case "rerank_provider_http_error":
+      case "rerank_provider_http_error": {
+        const status = error.httpStatus;
+        if (status === 429) return "rerank_provider_rate_limited";
+        if (status === 408) return "rerank_provider_request_timeout";
+        if (status !== null && status >= 500) {
+          return "rerank_provider_server_error";
+        }
+        if (status !== null && status >= 400) {
+          return "rerank_provider_request_rejected";
+        }
+        return error.code;
+      }
       case "rerank_provider_request_failed":
       case "rerank_request_timed_out":
       case "rerank_response_invalid":

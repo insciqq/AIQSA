@@ -12,6 +12,7 @@ import {
   assertKnowledgeBenchmarkDatabaseUrl,
   assertSingleGlobalRankingProfile,
   compareKnowledgeRuns,
+  createKnowledgeBenchmarkRequestPacer,
   decodeConvFinQaCorpus,
   decodeConvFinQaQueries,
   decodeKnowledgeBenchmarkManifest,
@@ -21,8 +22,10 @@ import {
   decodeRusScifactQueries,
   exactRelevantDocumentHit,
   expandRankedDocuments,
+  knowledgeBenchmarkUploadClientId,
   knowledgeCorpusContentSha256,
   knowledgeDatasetFingerprint,
+  knowledgeQuerySetContentSha256,
   knowledgeRunManifestFingerprint,
   macroKnowledgeAggregate,
   mapConcurrentOrdered,
@@ -35,6 +38,8 @@ import {
   queryEmbeddingCacheKey,
   recallAtK,
   resolveKnowledgeBenchmarkOutputDirectory,
+  selectKnowledgeBenchmarkQueries,
+  type KnowledgeBenchmarkQuery,
   type KnowledgeFrozenRunManifest,
   type KnowledgeQueryOutcome,
   type KnowledgeRunSummary,
@@ -53,6 +58,7 @@ function manifestFixture(): Record<string, unknown> {
       "rusbeir-rus-scifact": {
         dataset: "rus-SciFact",
         expectedCorpusDocumentCount: 2,
+        expectedExcludedQueryCount: 0,
         expectedQueryCount: 1,
         family: "RusBEIR",
         licenseNote: "synthetic",
@@ -66,7 +72,8 @@ function manifestFixture(): Record<string, unknown> {
       },
       "t2ragbench-convfinqa": {
         dataset: "ConvFinQA",
-        expectedCorpusDocumentCount: null,
+        expectedCorpusDocumentCount: 2,
+        expectedExcludedQueryCount: 1,
         expectedQueryCount: 2,
         family: "T2-RAGBench",
         licenseNote: "synthetic",
@@ -95,8 +102,11 @@ function frozenManifestFixture(
     embeddingDimension: 1024,
     embeddingFormatterVersion: "fmt-v1",
     embeddingModelId: "embed-model",
+    excludedQueryCount: 0,
     indexProfile: "index-v1",
+    queryCount: 1,
     queryInstructionVersion: "qi-v1",
+    querySetContentSha256: hex64,
     querySplit: "test",
     rankingProfile: "weighted_rrf_v2:v=2:k=60",
     rerankerModelId: null,
@@ -153,7 +163,9 @@ describe("dataset manifest", () => {
     const manifest = decodeKnowledgeBenchmarkManifest(manifestFixture());
     expect(manifest.suites["rusbeir-rus-scifact"].querySplit).toBe("test");
     expect(manifest.suites["t2ragbench-convfinqa"].expectedCorpusDocumentCount)
-      .toBeNull();
+      .toBe(2);
+    expect(manifest.suites["t2ragbench-convfinqa"].expectedExcludedQueryCount)
+      .toBe(1);
   });
 
   it("refuses PIN_ME checksum placeholders", () => {
@@ -218,7 +230,7 @@ describe("rus-SciFact normalization", () => {
 
   it("selects exactly the official test queries through qrels", () => {
     const qrels = parseQrelsTsv(
-      "query-id\tcorpus-id\tscore\n1\t4\t1\n1\t20\t1\n"
+      "query-id\tcorpus-id\tscore\r\n1\t4\t1\r\n1\t20\t1\r\n"
     );
     const queries = decodeRusScifactQueries([
       { _id: "1", text: "Тестовый запрос." },
@@ -240,35 +252,55 @@ describe("rus-SciFact normalization", () => {
 });
 
 describe("ConvFinQA normalization", () => {
+  const row = (overrides: Record<string, unknown>) => ({
+    company_cik: 123456,
+    company_date_added: "2000-01-01",
+    company_founded: "1980",
+    company_headquarters: "London, UK",
+    company_industry: "Insurance Brokers",
+    company_name: "Synthetic Corp",
+    company_sector: "Financials",
+    company_symbol: "SYN",
+    file_name: "pdf/SYN/2020/page_1.pdf",
+    page_number: "1",
+    report_year: "2020",
+    ...overrides
+  });
   const rows = [
-    {
+    row({
       context: "Intro text.\n| a | b |\n| --- | --- |\n| 1 | 2 |\nAfter text.",
       context_id: "ctx_2",
       id: "q_1",
       question: "What is the value of a?"
-    },
-    {
+    }),
+    row({
       context: "Intro text.\n| a | b |\n| --- | --- |\n| 1 | 2 |\nAfter text.",
       context_id: "ctx_2",
       id: "q_2",
       question: "What is the value of b?"
-    },
-    {
+    }),
+    row({
       context: "Second synthetic context.",
       context_id: "ctx_1",
+      file_name: "pdf/SYN/2020/page_2.pdf",
       id: "q_3",
+      page_number: "2",
       question: "Which context is second?"
-    }
+    })
   ];
 
   it("dedupes the corpus by official context_id only", () => {
     const corpus = decodeConvFinQaCorpus(rows);
     expect(corpus.map(({ officialId }) => officialId)).toEqual(["ctx_1", "ctx_2"]);
     expect(corpus[1]).toMatchObject({
-      fileName: "convfinqa-ctx_2.md",
-      markdown:
-        "Intro text.\n| a | b |\n| --- | --- |\n| 1 | 2 |\nAfter text.\n"
+      fileName: "convfinqa-Synthetic-Corp-SYN-2020-pdf-SYN-2020-page_1.md"
     });
+    expect(corpus[1]?.markdown).toMatch(
+      /^Intro text\.\n\| a \| b \|[\s\S]*\n\n- company_cik: 123456\n/u
+    );
+    expect(corpus[1]?.markdown).toContain("- company_name: Synthetic Corp\n");
+    expect(corpus[1]?.markdown).toContain("- file_name: pdf/SYN/2020/page_1.pdf\n");
+    expect(corpus[1]?.markdown).not.toContain("ctx_2");
   });
 
   it("is deterministic across input order", () => {
@@ -276,11 +308,30 @@ describe("ConvFinQA normalization", () => {
       .toEqual(decodeConvFinQaCorpus(rows));
   });
 
+  it("keeps Unicode semantic filenames separate from ASCII upload client ids", () => {
+    const [document] = decodeConvFinQaCorpus([row({
+      company_name: "Münchener Rück",
+      context: "Unicode company context.",
+      context_id: "ctx_unicode",
+      id: "q_unicode",
+      question: "Which company?"
+    })]);
+    expect(document?.fileName).toContain("Münchener-Rück");
+    expect(knowledgeBenchmarkUploadClientId(document!)).toBe("ctx_unicode");
+  });
+
   it("refuses conflicting context text under one context_id", () => {
     expect(() => decodeConvFinQaCorpus([
       rows[0]!,
       { ...rows[1]!, context: "Different text." }
     ])).toThrow("knowledge_benchmark_convfinqa_context_conflict");
+  });
+
+  it("refuses conflicting stable metadata under one context_id", () => {
+    expect(() => decodeConvFinQaCorpus([
+      rows[0]!,
+      { ...rows[1]!, company_name: "Different Corp" }
+    ])).toThrow("knowledge_benchmark_convfinqa_metadata_conflict");
   });
 
   it("maps every query to its official context document", () => {
@@ -295,6 +346,35 @@ describe("ConvFinQA normalization", () => {
       .toThrow("knowledge_benchmark_convfinqa_query_duplicate_id");
   });
 
+  it("keeps contexts but excludes only non-queryable blank official rows", () => {
+    const malformed = row({
+      context: "Still a complete official context.",
+      context_id: "ctx_blank",
+      file_name: "pdf/SYN/2020/page_3.pdf",
+      id: "q_blank",
+      page_number: "3",
+      question: ""
+    });
+    expect(decodeConvFinQaCorpus([...rows, malformed]).at(0)).toMatchObject({
+      officialId: "ctx_1"
+    });
+    expect(decodeConvFinQaCorpus([...rows, malformed]))
+      .toHaveLength(3);
+    expect(decodeConvFinQaQueries([...rows, malformed]))
+      .toHaveLength(3);
+  });
+
+  it("fingerprints query text and relevance independently of input order", () => {
+    const queries = decodeConvFinQaQueries(rows);
+    expect(knowledgeQuerySetContentSha256([...queries].reverse()))
+      .toBe(knowledgeQuerySetContentSha256(queries));
+    expect(knowledgeQuerySetContentSha256(queries))
+      .not.toBe(knowledgeQuerySetContentSha256([
+        { ...queries[0]!, text: "Changed query." },
+        ...queries.slice(1)
+      ]));
+  });
+
   it("parses JSON lines and rejects broken lines", () => {
     expect(parseJsonLines('{"a":1}\n{"b":2}\n', "code")).toEqual([
       { a: 1 },
@@ -305,16 +385,44 @@ describe("ConvFinQA normalization", () => {
 });
 
 describe("corpus content hash", () => {
+  const row = (overrides: Record<string, unknown>) => ({
+    company_cik: 123456,
+    company_date_added: "2000-01-01",
+    company_founded: "1980",
+    company_headquarters: "London, UK",
+    company_industry: "Insurance Brokers",
+    company_name: "Synthetic Corp",
+    company_sector: "Financials",
+    company_symbol: "SYN",
+    file_name: "pdf/SYN/2020/page_1.pdf",
+    page_number: "1",
+    report_year: "2020",
+    ...overrides
+  });
   it("is order independent and content sensitive", () => {
     const corpus = decodeConvFinQaCorpus([
-      { context: "One.", context_id: "c_1", id: "q_1", question: "?" },
-      { context: "Two.", context_id: "c_2", id: "q_2", question: "?" }
+      row({ context: "One.", context_id: "c_1", id: "q_1", question: "?" }),
+      row({
+        context: "Two.",
+        context_id: "c_2",
+        file_name: "pdf/SYN/2020/page_2.pdf",
+        id: "q_2",
+        page_number: "2",
+        question: "?"
+      })
     ]);
     expect(knowledgeCorpusContentSha256([...corpus].reverse()))
       .toBe(knowledgeCorpusContentSha256(corpus));
     const changed = decodeConvFinQaCorpus([
-      { context: "One!", context_id: "c_1", id: "q_1", question: "?" },
-      { context: "Two.", context_id: "c_2", id: "q_2", question: "?" }
+      row({ context: "One!", context_id: "c_1", id: "q_1", question: "?" }),
+      row({
+        context: "Two.",
+        context_id: "c_2",
+        file_name: "pdf/SYN/2020/page_2.pdf",
+        id: "q_2",
+        page_number: "2",
+        question: "?"
+      })
     ]);
     expect(knowledgeCorpusContentSha256(changed))
       .not.toBe(knowledgeCorpusContentSha256(corpus));
@@ -498,6 +606,15 @@ describe("frozen manifest and comparison guard", () => {
       baseline,
       frozenManifestFixture({ rankingProfile: "other" })
     )).toThrow("knowledge_benchmark_config_label_ambiguous");
+    expect(() => assertComparableKnowledgeRuns(
+      baseline,
+      frozenManifestFixture({
+        configLabel: "C",
+        excludedQueryCount: 1,
+        queryCount: 2,
+        querySetContentSha256: "d".repeat(64)
+      })
+    )).toThrow("knowledge_benchmark_runs_not_comparable");
   });
 
   it("requires one global ranking profile across the two suites", () => {
@@ -635,6 +752,30 @@ describe("caching keys", () => {
 });
 
 describe("runner utilities", () => {
+  it("selects exact diagnostic query batches without duplicate weighting", () => {
+    const queries: readonly KnowledgeBenchmarkQuery[] = [
+      { officialId: "q1", relevant: { d1: 1 }, text: "one" },
+      { officialId: "q2", relevant: { d2: 1 }, text: "two" },
+      { officialId: "q3", relevant: { d3: 1 }, text: "three" }
+    ];
+    expect(selectKnowledgeBenchmarkQueries(queries, ["q3", "q1"], undefined)
+      .map(({ officialId }) => officialId)).toEqual(["q3", "q1"]);
+    expect(selectKnowledgeBenchmarkQueries(queries, [], 2)
+      .map(({ officialId }) => officialId)).toEqual(["q1", "q2"]);
+    expect(() => selectKnowledgeBenchmarkQueries(
+      queries,
+      ["q1", "q1"],
+      undefined
+    )).toThrow("knowledge_benchmark_query_id_duplicate");
+    expect(() => selectKnowledgeBenchmarkQueries(
+      queries,
+      ["missing"],
+      undefined
+    )).toThrow("knowledge_benchmark_query_id_not_found");
+    expect(() => selectKnowledgeBenchmarkQueries(queries, ["q1"], 1))
+      .toThrow("knowledge_benchmark_query_selection_ambiguous");
+  });
+
   it("preserves order under bounded concurrency and fails closed", async () => {
     const seen: number[] = [];
     const result = await mapConcurrentOrdered([3, 1, 2], 2, async (item) => {
@@ -649,6 +790,33 @@ describe("runner utilities", () => {
       if (item === 2) throw new Error("boom");
       return item;
     })).rejects.toThrow("boom");
+  });
+
+  it("paces query starts and extends admission after a rate-limit signal", async () => {
+    let nowMs = 1_000;
+    const sleeps: number[] = [];
+    const pacer = createKnowledgeBenchmarkRequestPacer({
+      intervalMs: 30_000,
+      now: () => nowMs,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        nowMs += milliseconds;
+      }
+    });
+    await pacer.admit();
+    await pacer.admit();
+    pacer.defer(120_000);
+    await Promise.all([pacer.admit(), pacer.admit()]);
+    expect(sleeps).toEqual([30_000, 120_000, 30_000]);
+    expect(nowMs).toBe(181_000);
+  });
+
+  it("rejects unsafe benchmark pacing bounds", () => {
+    expect(() => createKnowledgeBenchmarkRequestPacer({ intervalMs: -1 }))
+      .toThrow("knowledge_benchmark_request_interval_invalid");
+    const pacer = createKnowledgeBenchmarkRequestPacer({ intervalMs: 0 });
+    expect(() => pacer.defer(3_600_001))
+      .toThrow("knowledge_benchmark_rate_limit_cooldown_invalid");
   });
 
   it("requires the explicit paid acknowledgement", () => {

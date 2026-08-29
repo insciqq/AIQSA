@@ -96,6 +96,97 @@ describe("document parser boundary", () => {
     expect(doclingParse).not.toHaveBeenCalled();
   });
 
+  it("preserves GFM tables as atomic inline Markdown blocks", async () => {
+    const doclingParse = vi.fn<DocumentParserEngineAdapter["parse"]>();
+    const boundary = createDocumentParserBoundary({
+      adapters: { docling: fakeAdapter({ engine: "docling", parse: doclingParse }) }
+    });
+
+    const document = await boundary.parse({
+      bytes: Buffer.from([
+        "# Quarterly report",
+        "",
+        "Opening context.",
+        "| period | value |",
+        "| --- | ---: |",
+        "| 2027 | 41 |",
+        "| 2026 | 37 |",
+        "Closing context."
+      ].join("\n")),
+      fileName: "quarterly-report.md",
+      mimeType: "text/markdown"
+    });
+
+    expect(document.blocks.map(({ text, type }) => [type, text])).toEqual([
+      ["title", "Quarterly report"],
+      ["paragraph", "Opening context."],
+      ["table", "period\tvalue\n2027\t41\n2026\t37"],
+      ["paragraph", "Closing context."]
+    ]);
+    expect(document.blocks[2]).toMatchObject({
+      headingPath: ["Quarterly report"],
+      isTable: true,
+      table: { columnCount: 2, rowCount: 3 }
+    });
+    expect(doclingParse).not.toHaveBeenCalled();
+  });
+
+  it("recognizes borderless and ragged GFM tables without losing escaped pipes", async () => {
+    const boundary = createDocumentParserBoundary();
+
+    const document = await boundary.parse({
+      bytes: Buffer.from([
+        "## Metrics",
+        "label | value | note",
+        ": --- | ---: | :--- :",
+        String.raw`gross \| net | 42`,
+        "operating | 37 | audited | retained"
+      ].join("\r\n")),
+      fileName: "metrics.markdown",
+      mimeType: "text/markdown"
+    });
+
+    expect(document.blocks.map(({ headingPath, text, type }) => ({
+      headingPath,
+      text,
+      type
+    }))).toEqual([
+      { headingPath: [], text: "Metrics", type: "heading" },
+      {
+        headingPath: ["Metrics"],
+        text: "label\tvalue\tnote\ngross | net\t42\noperating\t37\taudited\tretained",
+        type: "table"
+      }
+    ]);
+    expect(document.blocks[1]?.table).toMatchObject({
+      columnCount: 4,
+      rowCount: 3
+    });
+  });
+
+  it("keeps Markdown table examples inside fenced code as one code block", async () => {
+    const boundary = createDocumentParserBoundary();
+
+    const document = await boundary.parse({
+      bytes: Buffer.from([
+        "````md | example",
+        "left | right",
+        "--- | ---",
+        "one | two",
+        "```",
+        "still fenced",
+        "````"
+      ].join("\n")),
+      fileName: "syntax.md",
+      mimeType: "text/markdown"
+    });
+
+    expect(document.blocks.map(({ text, type }) => [type, text])).toEqual([[
+      "code",
+      "left | right\n--- | ---\none | two\n```\nstill fenced"
+    ]]);
+  });
+
   it("replaces a hostile private basename in the Docling multipart filename", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
       expect(String(url)).toBe("http://docling:5001/v1/convert/file");

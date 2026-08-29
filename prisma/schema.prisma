@@ -3110,6 +3110,7 @@ model KnowledgeRunScope {
   selection           Json
   resolvedBaseCount   Int
   resolvedSourceCount Int
+  sourceBindingStrategy String   @default("eager_v1") @db.VarChar(24)
   exclusions          Json     @default("[]")
   budgetPolicy        Json
   answerPolicy        Json     @default("{\"version\":1,\"revision\":1,\"maximumKnowledgeSearches\":12,\"fullContextThresholdBasisPoints\":7000}")

@@ -413,6 +413,30 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
     expect(scores?.irrelevant).toBe(0);
   });
 
+  it("tokenizes punctuation-delimited source metadata for every passage", async () => {
+    const fixture = await createFixture();
+    try {
+      const result = await executeKnowledgeRetrievalCore(prisma, {
+        candidateLimit: 64,
+        excludedContentHashes: [],
+        query: "reference",
+        resultLimit: 16,
+        runId: fixture.runId,
+        userId: fixture.userId,
+        vectors: []
+      });
+
+      expect(result.passages.map((passage) => passage.chunkId).sort())
+        .toEqual([...fixture.passageIds].sort());
+      expect(result.passages.every((passage) => passage.signals.some((signal) =>
+        signal.lane === "passage_lexical"))).toBe(true);
+      expect(result.passages.every((passage) => passage.text.includes("reference") === false))
+        .toBe(true);
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
   it("maps document, section, and passage exact entries without duplicate passage rows", async () => {
     const fixture = await createFixture();
     try {

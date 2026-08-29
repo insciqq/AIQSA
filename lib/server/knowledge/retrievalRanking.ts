@@ -1,4 +1,5 @@
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
+import { formatKnowledgeRerankCandidate } from "./rerankCandidateFormatter";
 
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
@@ -14,9 +15,12 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
 /**
  * Versioned code-owned ranking profile. Version 2 widens the per-lane
  * candidate limit to 64 and introduces the hosted-rerank merged-pool caps.
+ * Version 3 retains a bounded language-neutral token-coverage signal after
+ * hosted reranking instead of allowing an uncalibrated provider score to
+ * erase every first-stage lexical signal.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 2 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 3 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
@@ -24,6 +28,12 @@ export const KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR = 0.1;
 export const KNOWLEDGE_METADATA_RELEVANCE_FLOOR = 0.45;
 export const KNOWLEDGE_SEMANTIC_RELEVANCE_FLOOR = 0.65;
 export const KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND = 0.08;
+export const KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT = 0.7;
+export const KNOWLEDGE_RERANK_TOKEN_COVERAGE_RANK_WEIGHT = 0.3;
+
+const KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX = 128;
+const KNOWLEDGE_TOKEN_COVERAGE_CANDIDATE_MAX = 4_096;
+const GENERIC_WORD = /[\p{L}\p{M}\p{N}]+/gu;
 
 export type KnowledgeRetrievalLane =
   | "document_lexical"
@@ -317,6 +327,103 @@ export type KnowledgeRerankedCandidate = KnowledgeRankedCandidate & Readonly<{
   rerankScore: number | null;
 }>;
 
+function genericWordTokens(value: string, maximum: number): string[] {
+  const tokens: string[] = [];
+  const normalized = value.normalize("NFKC").toLocaleLowerCase("und");
+  for (const match of normalized.matchAll(GENERIC_WORD)) {
+    const token = match[0];
+    if (!token || [...token].length > 128) continue;
+    tokens.push(token);
+    if (tokens.length >= maximum) break;
+  }
+  return tokens;
+}
+
+function rankedByScore(
+  entries: readonly Readonly<{ chunkId: string; score: number }>[]
+): ReadonlyMap<string, number> {
+  const ordered = [...entries].sort((left, right) =>
+    right.score - left.score || left.chunkId.localeCompare(right.chunkId));
+  const ranks = new Map<string, number>();
+  let previousScore: number | undefined;
+  let rank = 0;
+  for (const [index, entry] of ordered.entries()) {
+    if (previousScore === undefined || entry.score !== previousScore) rank = index + 1;
+    ranks.set(entry.chunkId, rank);
+    previousScore = entry.score;
+  }
+  return ranks;
+}
+
+/**
+ * Computes a bounded, language-neutral approximation of the weighted query
+ * coverage used alongside learned rerankers by mature RAG engines. Query
+ * terms that occur in most of the current authority-scoped pool contribute
+ * little; rare terms contribute more. This needs no language classifier,
+ * stop-word dictionary, corpus mutation, or additional provider call.
+ */
+function tokenCoverageScores(
+  candidates: readonly KnowledgeRerankedCandidate[],
+  query: string
+): ReadonlyMap<string, number> {
+  const queryTokens = [...new Set(genericWordTokens(
+    query,
+    KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX
+  ))];
+  if (queryTokens.length === 0 || candidates.length === 0) return new Map();
+  const candidateTokens = new Map<string, ReadonlySet<string>>();
+  for (const candidate of candidates) {
+    const formatted = formatKnowledgeRerankCandidate({
+      headingPath: candidate.headingPath,
+      sourceName: candidate.sourceName,
+      text: candidate.text
+    });
+    candidateTokens.set(candidate.chunkId, new Set(genericWordTokens(
+      formatted,
+      KNOWLEDGE_TOKEN_COVERAGE_CANDIDATE_MAX
+    )));
+  }
+  const weights = new Map<string, number>();
+  for (const token of queryTokens) {
+    let documentFrequency = 0;
+    for (const tokens of candidateTokens.values()) {
+      if (tokens.has(token)) documentFrequency += 1;
+    }
+    weights.set(
+      token,
+      Math.log((candidates.length + 1) / (documentFrequency + 0.5)) + 1
+    );
+  }
+  const totalWeight = [...weights.values()].reduce((sum, weight) => sum + weight, 0);
+  return new Map(candidates.map((candidate) => {
+    const tokens = candidateTokens.get(candidate.chunkId)!;
+    const matchedWeight = queryTokens.reduce((sum, token) =>
+      sum + (tokens.has(token) ? weights.get(token)! : 0), 0);
+    return [candidate.chunkId, totalWeight > 0 ? matchedWeight / totalWeight : 0];
+  }));
+}
+
+function hostedRerankFusionScores(
+  candidates: readonly KnowledgeRerankedCandidate[],
+  query: string
+): ReadonlyMap<string, number> {
+  const scored = candidates.filter((candidate) => candidate.rerankScore !== null);
+  const rerankRanks = rankedByScore(scored.map((candidate) => ({
+    chunkId: candidate.chunkId,
+    score: candidate.rerankScore!
+  })));
+  const coverage = tokenCoverageScores(scored, query);
+  const rankDenominator = Math.max(1, scored.length - 1);
+  return new Map(scored.map((candidate) => [
+    candidate.chunkId,
+    KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT * (scored.length === 1
+      ? 1
+      : 1 - (rerankRanks.get(candidate.chunkId)! - 1) / rankDenominator) +
+    KNOWLEDGE_RERANK_TOKEN_COVERAGE_RANK_WEIGHT *
+      (coverage.get(candidate.chunkId) ?? 0)
+  ]));
+}
+
 /**
  * Final ranking after hosted reranking: descending rerank score, exact signal
  * as tie-breaker, fused RRF score next, deterministic chunk id last. Scored
@@ -325,6 +432,7 @@ export type KnowledgeRerankedCandidate = KnowledgeRankedCandidate & Readonly<{
  */
 export function orderRerankedKnowledgeCandidates(input: Readonly<{
   pool: readonly KnowledgeRankedCandidate[];
+  query: string;
   rerankScores: ReadonlyMap<string, number>;
 }>): KnowledgeRerankedCandidate[] {
   const withScores = input.pool.map((candidate): KnowledgeRerankedCandidate =>
@@ -332,13 +440,18 @@ export function orderRerankedKnowledgeCandidates(input: Readonly<{
       ...candidate,
       rerankScore: input.rerankScores.get(candidate.chunkId) ?? null
     }));
+  const fusionScores = hostedRerankFusionScores(withScores, input.query);
   return withScores.sort((left, right) => {
     if ((left.rerankScore === null) !== (right.rerankScore === null)) {
       return left.rerankScore === null ? 1 : -1;
     }
-    if (left.rerankScore !== null && right.rerankScore !== null &&
-      left.rerankScore !== right.rerankScore) {
-      return right.rerankScore - left.rerankScore;
+    if (left.rerankScore !== null && right.rerankScore !== null) {
+      const fusionDifference = fusionScores.get(right.chunkId)! -
+        fusionScores.get(left.chunkId)!;
+      if (fusionDifference !== 0) return fusionDifference;
+      if (left.rerankScore !== right.rerankScore) {
+        return right.rerankScore - left.rerankScore;
+      }
     }
     const leftExact = knowledgeCandidateHasExactSignal(left) ? 1 : 0;
     const rightExact = knowledgeCandidateHasExactSignal(right) ? 1 : 0;

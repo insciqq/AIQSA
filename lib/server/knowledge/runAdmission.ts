@@ -18,7 +18,10 @@ import {
 } from "./knowledgeBudget";
 import {
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
-  KNOWLEDGE_SCOPE_MAX_SOURCES
+  KNOWLEDGE_SCOPE_MAX_SOURCES,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED,
+  KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER,
+  type KnowledgeSourceBindingStrategy
 } from "./retrievalTypes";
 import { KNOWLEDGE_INDEX_PROFILE_ID } from "./knowledgeProfile";
 import {
@@ -109,6 +112,8 @@ export type KnowledgeRunAdmissionAuthorizationSnapshot = Readonly<{
     "selectedSourceIds" | "vectorSpaceFingerprint">[];
   knowledgePlan: KnowledgePlan;
   profiles: readonly KnowledgeRunAdmissionProfile[];
+  resolvedSourceCount?: number;
+  sourceBindingStrategy?: KnowledgeSourceBindingStrategy;
   sources: readonly KnowledgeRunAdmissionSourceAuthorization[];
 }>;
 
@@ -1194,9 +1199,21 @@ function validKnowledgeAuthorizationSnapshot(
   snapshot: KnowledgeRunAdmissionAuthorizationSnapshot,
   projectId: string | undefined
 ): boolean {
+  const sourceBindingStrategy = snapshot.sourceBindingStrategy ??
+    KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER;
+  const resolvedSourceCount = snapshot.resolvedSourceCount ?? snapshot.sources.length;
+  const sourceCardinalityValid = Number.isSafeInteger(resolvedSourceCount) &&
+    resolvedSourceCount >= 1 && resolvedSourceCount <= 2_147_483_647 &&
+    (sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+      ? resolvedSourceCount <= KNOWLEDGE_SCOPE_MAX_SOURCES &&
+        snapshot.sources.length === resolvedSourceCount
+      : sourceBindingStrategy === KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED &&
+        resolvedSourceCount > KNOWLEDGE_SCOPE_MAX_SOURCES &&
+        snapshot.sources.length <= KNOWLEDGE_SCOPE_MAX_SOURCES &&
+        snapshot.sources.length <= resolvedSourceCount);
   const decodedPlan = decodeKnowledgePlan(snapshot.knowledgePlan);
   if (!decodedPlan.ok || decodedPlan.plan.mode === "none" || snapshot.profiles.length < 1 ||
-    snapshot.sources.length === 0 || snapshot.profiles.some((profile, ordinal) =>
+    !sourceCardinalityValid || snapshot.profiles.some((profile, ordinal) =>
       profile.ordinal !== ordinal)) return false;
   const profilesByRevision = new Map(snapshot.profiles.map((profile) => [
     profile.profileRevisionId,

@@ -204,6 +204,9 @@ function retrievalBindingsSql(input: Readonly<{
         'Pinned Knowledge Profile'::text AS "baseName",
         'profile'::text AS "scopeKind"
       FROM "ModelRun" AS run
+      INNER JOIN "KnowledgeRunScope" AS run_scope
+        ON run_scope."modelRunId" = run."id"
+       AND run_scope."sourceBindingStrategy" = 'eager_v1'
       INNER JOIN "KnowledgeRunProfileBinding" AS profile
         ON profile."modelRunId" = run."id"
       INNER JOIN "KnowledgeRunSourceBinding" AS source_binding
@@ -838,7 +841,9 @@ function knowledgeMultiLaneLexicalSearchSql(input: Readonly<{
       FROM lane_rows
       WHERE lane = 'exact'
         OR lane = 'metadata' AND "rawScore" >= ${KNOWLEDGE_METADATA_RELEVANCE_FLOOR}
-        OR lane IN ('document_lexical', 'passage_lexical', 'section_lexical')
+        OR lane IN (
+          'document_lexical', 'passage_lexical', 'section_lexical'
+        )
           ${input.relaxRelevanceFloors
             ? Prisma.empty
             : Prisma.sql`AND "rawScore" >= ${KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR}`}
@@ -1656,6 +1661,7 @@ export async function executeKnowledgeRetrievalCore(
     } else {
       const ordered = Object.freeze(orderRerankedKnowledgeCandidates({
         pool,
+        query: input.query,
         rerankScores: stage.scores
       }));
       candidates = ordered;
@@ -1679,10 +1685,12 @@ export async function executeKnowledgeRetrievalCore(
   if (provenanceByChunk.size !== candidates.length) {
     throw new Error("knowledge_canonical_source_provenance_invalid");
   }
-  const retainedSourceKeys = new Set(retainedCandidateProvenance.map((entry) =>
-    JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
+  const selectedChunkIds = new Set(selected.map((candidate) => candidate.chunkId));
+  const selectedSourceKeys = new Set(retainedCandidateProvenance
+    .filter((entry) => selectedChunkIds.has(entry.chunkId))
+    .map((entry) => JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
   const canonicalSourceProvenance = canonical.sourceProvenance.filter((entry) =>
-    retainedSourceKeys.has(JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
+    selectedSourceKeys.has(JSON.stringify([entry.sourceId, entry.sourceVersionId, entry.artifactId])));
 
   const candidateCounts: Record<number, number> = Object.fromEntries(
     acceptedScopes.map((scope) => [

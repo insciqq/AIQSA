@@ -17,11 +17,16 @@ of an accepted `search_knowledge` call — with no answer generation:
   `kaengreg/rus-scifact-qrels` `5e0c312c9fb7304a2dc91ec7fd648b3ace5c329f`.
 - `T2-RAGBench / ConvFinQA / turn_0` — the full official ConvFinQA subset,
   pinned to `G4KMU/t2-ragbench` `adf7fe1541ac37351ce1142544d8e3b43010ed92`.
-  The corpus deduplicates rows only by the official `context_id` (each unique
-  context becomes one Markdown document whose body is the official `context`
-  field, which already carries the Markdown table); the queries are all 3,458
-  official `turn_0` rows, and the relevant document of a query is exactly its
-  `context_id`. The published artifact has no train/dev/test split for
+  The corpus deduplicates all 3,458 rows only by the official `context_id`
+  (all 1,806 unique contexts become Markdown documents whose body is the
+  official `context` field, which already carries the Markdown table). The
+  pinned artifact contains five rows with an empty `question`; they remain in
+  corpus construction but cannot be retrieval queries without fabricating
+  text. The scoreable set is therefore the deterministic 3,453 rows with a
+  non-blank official question, and every run freezes both the five-row
+  exclusion count and a hash of the exact admitted query/relevance set. The
+  relevant document of a query is exactly its `context_id`. The published
+  artifact has no train/dev/test split for
   ConvFinQA — `turn_0` is the only official query split, so results are
   labeled `turn_0` and never called a "test split" score. Neither suite result
   may be presented as a score of the whole RusBEIR or T2-RAGBench benchmark.
@@ -31,10 +36,12 @@ exists here.
 
 Anti-gaming rules are structural: both suites run one global ranking profile
 (the product's), there are no dataset-name conditionals or language-specific
-parameters, corpora and queries are used in full without sampling or negative
-removal, and every run freezes a manifest (dataset id + revision + split,
-corpus content hash, embedding/formatter/tokenizer/chunking/index/ranking
-identity, candidate limits, reranker model or none, and an explicit run label).
+parameters, corpora and scoreable queries are used in full without sampling or
+negative removal; the only exclusion is a manifest-pinned, content-independent
+blank-query predicate. Every run freezes a manifest (dataset id + revision +
+split, corpus and query-set content hashes, admitted/excluded query counts,
+embedding/formatter/tokenizer/chunking/index/ranking identity, candidate
+limits, reranker model or none, and an explicit run label).
 `evaluate.ts` refuses to compare runs whose frozen dataset identities differ
 or whose configuration labels collide. Ingestion is text/markdown only; the
 runner asserts a zero OCR count (empty PDF-processing ledger and no
@@ -96,10 +103,50 @@ docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f 
 
 Each full run writes sanitized aggregates only —
 `results/<run-id>/summary.json` (metrics plus the frozen manifest) and
-`results/<run-id>/rankings.json` (official public dataset ids only). No query
-text, document text, or private content reaches result files, file names, or
-the console. `--query-limit N` exists solely as a plumbing smoke and refuses
-to write a scoreable summary.
+`results/<run-id>/rankings.json` (official public dataset ids plus content-free
+reranker status, timeout, and normalized fallback code). No query text,
+document text, or private content reaches result files, file names, or the
+console. `--query-limit N` exists solely as a plumbing smoke and refuses to
+write a scoreable summary. `--query-id <official-public-id>` selects one exact
+public query for a low-load diagnostic retry; it is also non-scoreable and
+cannot be combined with `--query-limit`. Retrieval concurrency defaults to
+`1`; raise `--concurrency` only after a small provider- and host-load canary.
+Query starts default to a provider-safe 30-second interval, and a normalized
+429 defers future independent queries for 120 seconds. Override these with
+`--query-start-interval-ms` and `--rate-limit-cooldown-ms` only after a canary;
+neither mechanism retries or changes the settled result of a failed query.
+
+For a long scoreable run, use a stable isolated output directory. Every
+completed query is atomically checkpointed there with public ids, metrics, and
+content-free diagnostics only. After an interruption, repeat the exact command
+with `--resume`; the runner verifies the complete manifest and scheduling
+identity, preserves the original run id, and admits only missing queries:
+
+```bash
+# Initial full run
+npx tsx benchmarks/knowledge/retrieve.ts --confirm-paid DISPOSABLE \
+  --suite t2ragbench-convfinqa --config C \
+  --output results/t2ragbench-convfinqa-C-live
+
+# Same frozen run after an interruption
+npx tsx benchmarks/knowledge/retrieve.ts --confirm-paid DISPOSABLE \
+  --suite t2ragbench-convfinqa --config C \
+  --output results/t2ragbench-convfinqa-C-live --resume
+```
+
+`--resume` is accepted only for a full scoreable suite with explicit output.
+It refuses changed manifests, concurrency/pacing, corrupted outcomes, and a run
+that already has `summary.json`.
+
+For iterative failure diagnosis, repeat `--query-id` to run only those exact
+public query ids together in one non-scoreable batch. Duplicate ids and mixing
+an explicit id list with `--query-limit` are rejected. The non-scoreable-only
+`--diagnostic-disable-reranker` switch replays that bounded subset through the
+same hybrid candidate path without the hosted rerank stage, making a stable
+candidate-recall failure distinguishable from a reranker ordering failure.
+`--diagnostic-candidate-audit` instead keeps the configured reranker and emits
+only the public relevant-document rank within its complete pre-settlement
+candidate order; it never prints query text, passage text, or internal ids.
 
 5. Optional: compare two deliberately captured frozen configurations. The
 current task does not require or claim a baseline comparison; a standalone

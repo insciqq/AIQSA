@@ -34,6 +34,7 @@ function candidate(input: Readonly<{
   contentHash?: string;
   signals?: readonly KnowledgeCandidateSignal[];
   source?: string;
+  text?: string;
 }>): KnowledgeRetrievalCandidate {
   const source = input.source ?? input.chunkId;
   return {
@@ -54,13 +55,13 @@ function candidate(input: Readonly<{
     signals: input.signals ?? [signal("passage_lexical", 1)],
     sourceArtifactId: `artifact-${source}`,
     sourceName: source,
-    text: `Evidence ${input.chunkId}`
+    text: input.text ?? `Evidence ${input.chunkId}`
   };
 }
 
-describe("Knowledge ranking profile v2", () => {
+describe("Knowledge ranking profile v3", () => {
   it("versions the widened candidate and rerank pool constants", () => {
-    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(2);
+    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(3);
     expect(KNOWLEDGE_LANE_CANDIDATE_LIMIT).toBe(64);
     expect(KNOWLEDGE_BROAD_RERANK_INPUT_MAX).toBe(96);
     expect(KNOWLEDGE_SCOPED_RERANK_INPUT_MAX).toBe(48);
@@ -186,6 +187,7 @@ describe("Post-rerank final ranking", () => {
     ]);
     const ordered = orderRerankedKnowledgeCandidates({
       pool,
+      query: "unmatched",
       rerankScores: new Map([
         ["chunk-a", 0.4],
         ["chunk-b", 0.7],
@@ -207,6 +209,7 @@ describe("Post-rerank final ranking", () => {
     ]);
     const ordered = orderRerankedKnowledgeCandidates({
       pool,
+      query: "unmatched",
       rerankScores: new Map([["chunk-c", 0.1]])
     });
     expect(ordered.map((entry) => entry.chunkId)).toEqual(["chunk-c", "chunk-a", "chunk-b"]);
@@ -221,9 +224,13 @@ describe("Post-rerank final ranking", () => {
     })));
     const ordered = orderRerankedKnowledgeCandidates({
       pool,
+      query: "unmatched",
       rerankScores: new Map(pool.map((entry, index) => [entry.chunkId, 1 - index * 0.01]))
     });
-    const selected = selectRerankedKnowledgeCandidates({ candidates: ordered, resultLimit: 16 });
+    const selected = selectRerankedKnowledgeCandidates({
+      candidates: ordered,
+      resultLimit: 16
+    });
     expect(selected).toHaveLength(16);
     expect(selected.filter((entry) => entry.contentHash.startsWith("dup"))).toHaveLength(1);
   });
@@ -242,6 +249,7 @@ describe("Post-rerank final ranking", () => {
     const withinBand = selectRerankedKnowledgeCandidates({
       candidates: orderRerankedKnowledgeCandidates({
         pool,
+        query: "unmatched",
         rerankScores: new Map([
           ["chunk-a", 0.9],
           ["chunk-b", 0.89],
@@ -258,6 +266,7 @@ describe("Post-rerank final ranking", () => {
     const outsideBand = selectRerankedKnowledgeCandidates({
       candidates: orderRerankedKnowledgeCandidates({
         pool,
+        query: "unmatched",
         rerankScores: new Map([
           ["chunk-a", 0.9],
           ["chunk-b", 0.88],
@@ -281,10 +290,41 @@ describe("Post-rerank final ranking", () => {
     const selected = selectRerankedKnowledgeCandidates({
       candidates: orderRerankedKnowledgeCandidates({
         pool,
+        query: "unmatched",
         rerankScores: new Map([["chunk-a", 0.9], ["chunk-b", 0.89]])
       }),
       resultLimit: 2
     });
     expect(selected.map((entry) => entry.chunkId)).toEqual(["chunk-a", "chunk-b"]);
+  });
+
+  it("retains rare language-neutral query coverage after learned reranking", () => {
+    const distractors = Array.from({ length: 20 }, (_, index) => candidate({
+      chunkId: `generic-${String(index).padStart(2, "0")}`,
+      source: `generic-${index}`,
+      text: "rollout overview"
+    }));
+    const relevant = candidate({
+      chunkId: "orion-evidence",
+      source: "Orion",
+      text: "rollout phase 2027 2026"
+    });
+    const pool = fuseKnowledgeCandidates([...distractors, relevant]);
+    const rerankScores = new Map(pool.map((entry, index) => [
+      entry.chunkId,
+      entry.chunkId === relevant.chunkId ? 0.01 : 1 - index * 0.01
+    ]));
+    const ordered = orderRerankedKnowledgeCandidates({
+      pool,
+      query: "Orion rollout phase 2027 2026",
+      rerankScores
+    });
+    const selected = selectRerankedKnowledgeCandidates({
+      candidates: ordered,
+      resultLimit: 16
+    });
+    expect(selected.map((entry) => entry.chunkId)).toContain("orion-evidence");
+    expect(selected.find((entry) => entry.chunkId === "orion-evidence")?.rerankScore)
+      .toBe(0.01);
   });
 });

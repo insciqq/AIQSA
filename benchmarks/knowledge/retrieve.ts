@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,12 +42,14 @@ import {
   aggregateKnowledgeSuiteMetrics,
   assertKnowledgeBenchmarkAck,
   assertKnowledgeBenchmarkDatabaseUrl,
+  createKnowledgeBenchmarkRequestPacer,
   decodeConvFinQaQueries,
   decodeKnowledgeBenchmarkManifest,
   decodeKnowledgeFrozenRunManifest,
   decodeRusScifactQueries,
   expandRankedDocuments,
   knowledgeDatasetFingerprint,
+  knowledgeQuerySetContentSha256,
   knowledgeRunManifestFingerprint,
   mapConcurrentOrdered,
   parseJsonLines,
@@ -55,17 +57,24 @@ import {
   projectDocumentRanking,
   queryEmbeddingCacheKey,
   resolveKnowledgeBenchmarkOutputDirectory,
+  selectKnowledgeBenchmarkQueries,
   type KnowledgeBenchmarkQuery,
   type KnowledgeConfigLabel,
   type KnowledgeFrozenRunManifest,
-  type KnowledgeQueryOutcome,
   type KnowledgeSuiteId,
   type KnowledgeSuiteManifest
 } from "./contract";
+import {
+  decodeKnowledgeRetrievalCheckpointFile,
+  decodeKnowledgeRetrievalCheckpointHeader,
+  KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION,
+  type KnowledgeBenchmarkSchedule,
+  type KnowledgeRetrievalCheckpointOutcome
+} from "./retrievalCheckpoint";
 
 /** Retrieval-only evaluation driver. It is executed inside the isolated
  * benchmark app container (compose exec + npx tsx) and performs, for every
- * official query, exactly the query-embedding plus the single hybrid
+ * scoreable official query, exactly the query-embedding plus the single hybrid
  * retrieval repository operation an accepted `search_knowledge` call
  * performs: the accepted run-binding embedding runtime with `mode: "query"`,
  * the current installation reranker role frozen for the run, then one
@@ -84,14 +93,23 @@ const datasetsRoot = resolve(benchmarkRoot, ".data/datasets");
 const stateRoot = resolve(benchmarkRoot, ".data/state");
 const cacheRoot = resolve(benchmarkRoot, ".data/cache/query-embeddings");
 const INGEST_STATE_SCHEMA_VERSION = 1;
-const RANKINGS_SCHEMA_VERSION = 1;
+const RANKINGS_SCHEMA_VERSION = 3;
+const RETRIEVAL_CHECKPOINT_FILE = "retrieval-checkpoint.json";
+const RETRIEVAL_CHECKPOINT_OUTCOMES_DIRECTORY = "retrieval-checkpoint-outcomes";
+let failureStage = "startup";
 
 type CliOptions = Readonly<{
   concurrency: number;
   configLabel: KnowledgeConfigLabel;
+  diagnosticCandidateAudit: boolean;
+  diagnosticDisableReranker: boolean;
   embedTimeoutMs: number;
   outputDirectory: string | undefined;
+  queryIds: readonly string[];
   queryLimit: number | undefined;
+  queryStartIntervalMs: number;
+  rateLimitCooldownMs: number;
+  resume: boolean;
   suiteId: KnowledgeSuiteId;
 }>;
 
@@ -121,10 +139,18 @@ function parseCli(argv: readonly string[]): CliOptions {
   let confirmPaid = false;
   let suiteId: KnowledgeSuiteId | undefined;
   let configLabel: KnowledgeConfigLabel | undefined;
-  let concurrency = 4;
+  let diagnosticCandidateAudit = false;
+  let diagnosticDisableReranker = false;
+  // Public rerank capacity is provider-dependent and a full suite is long.
+  // Default to the safest load; operators may raise it only after a canary.
+  let concurrency = 1;
   let embedTimeoutMinutes = 2;
   let outputDirectory: string | undefined;
+  const queryIds: string[] = [];
   let queryLimit: number | undefined;
+  let queryStartIntervalMs = 30_000;
+  let rateLimitCooldownMs = 120_000;
+  let resume = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const next = argv[index + 1];
@@ -149,6 +175,12 @@ function parseCli(argv: readonly string[]): CliOptions {
         }
         configLabel = next;
         index += 1;
+        break;
+      case "--diagnostic-disable-reranker":
+        diagnosticDisableReranker = true;
+        break;
+      case "--diagnostic-candidate-audit":
+        diagnosticCandidateAudit = true;
         break;
       case "--concurrency": {
         const parsed = Number(next);
@@ -184,6 +216,34 @@ function parseCli(argv: readonly string[]): CliOptions {
         index += 1;
         break;
       }
+      case "--query-id":
+        if (!next || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(next)) {
+          throw new Error("knowledge_benchmark_query_id_invalid");
+        }
+        queryIds.push(next);
+        index += 1;
+        break;
+      case "--query-start-interval-ms": {
+        const parsed = Number(next);
+        if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 600_000) {
+          throw new Error("knowledge_benchmark_request_interval_invalid");
+        }
+        queryStartIntervalMs = parsed;
+        index += 1;
+        break;
+      }
+      case "--rate-limit-cooldown-ms": {
+        const parsed = Number(next);
+        if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 3_600_000) {
+          throw new Error("knowledge_benchmark_rate_limit_cooldown_invalid");
+        }
+        rateLimitCooldownMs = parsed;
+        index += 1;
+        break;
+      }
+      case "--resume":
+        resume = true;
+        break;
       default:
         throw new Error(
           `knowledge_benchmark_argument_unknown:${argument ?? "missing"}`
@@ -195,12 +255,35 @@ function parseCli(argv: readonly string[]): CliOptions {
   }
   if (!suiteId) throw new Error("knowledge_benchmark_suite_required");
   if (!configLabel) throw new Error("knowledge_benchmark_config_label_required");
+  if (queryIds.length > 0 && queryLimit !== undefined) {
+    throw new Error("knowledge_benchmark_query_selection_ambiguous");
+  }
+  if (new Set(queryIds).size !== queryIds.length) {
+    throw new Error("knowledge_benchmark_query_id_duplicate");
+  }
+  if ((diagnosticCandidateAudit || diagnosticDisableReranker) &&
+    queryIds.length === 0 && queryLimit === undefined) {
+    throw new Error("knowledge_benchmark_diagnostic_reranker_scope_invalid");
+  }
+  if (diagnosticCandidateAudit && diagnosticDisableReranker) {
+    throw new Error("knowledge_benchmark_diagnostic_mode_ambiguous");
+  }
+  if (resume && (outputDirectory === undefined || queryIds.length > 0 ||
+    queryLimit !== undefined)) {
+    throw new Error("knowledge_benchmark_resume_selection_invalid");
+  }
   return Object.freeze({
     concurrency,
     configLabel,
+    diagnosticCandidateAudit,
+    diagnosticDisableReranker,
     embedTimeoutMs: embedTimeoutMinutes * 60_000,
     outputDirectory,
+    queryIds: Object.freeze([...queryIds]),
     queryLimit,
+    queryStartIntervalMs,
+    rateLimitCooldownMs,
+    resume,
     suiteId
   });
 }
@@ -218,6 +301,124 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
     mode: 0o600
   });
   await rename(temporaryPath, path);
+}
+
+function isMissingFile(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && error.code === "ENOENT";
+}
+
+async function readOptionalJson(path: string, invalidCode: string): Promise<unknown | null> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return null;
+    throw new Error(invalidCode);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(invalidCode);
+  }
+}
+
+function sameSchedule(
+  left: KnowledgeBenchmarkSchedule,
+  right: KnowledgeBenchmarkSchedule
+): boolean {
+  return left.concurrency === right.concurrency &&
+    left.queryStartIntervalMs === right.queryStartIntervalMs &&
+    left.rateLimitCooldownMs === right.rateLimitCooldownMs;
+}
+
+type RetrievalCheckpointRuntime = Readonly<{
+  outcomeDirectory: string;
+  resumedOutcomes: ReadonlyMap<number, KnowledgeRetrievalCheckpointOutcome>;
+  runId: string;
+}>;
+
+function checkpointOutcomePath(directory: string, index: number): string {
+  return resolve(directory, `${String(index).padStart(6, "0")}.json`);
+}
+
+async function prepareRetrievalCheckpoint(input: Readonly<{
+  manifestFingerprint: string;
+  outputDirectory: string;
+  queries: readonly KnowledgeBenchmarkQuery[];
+  resume: boolean;
+  runId: string;
+  schedule: KnowledgeBenchmarkSchedule;
+}>): Promise<RetrievalCheckpointRuntime> {
+  const headerPath = resolve(input.outputDirectory, RETRIEVAL_CHECKPOINT_FILE);
+  const outcomeDirectory = resolve(
+    input.outputDirectory,
+    RETRIEVAL_CHECKPOINT_OUTCOMES_DIRECTORY
+  );
+  if (!input.resume) {
+    let entries: readonly string[] = [];
+    try {
+      entries = await readdir(input.outputDirectory);
+    } catch (error) {
+      if (!isMissingFile(error)) {
+        throw new Error("knowledge_benchmark_retrieval_checkpoint_initialize_failed");
+      }
+    }
+    if (entries.length !== 0) {
+      throw new Error("knowledge_benchmark_retrieval_checkpoint_output_not_empty");
+    }
+    await mkdir(outcomeDirectory, { recursive: true });
+    await writeJsonAtomic(headerPath, {
+      manifestFingerprint: input.manifestFingerprint,
+      queryCount: input.queries.length,
+      runId: input.runId,
+      schedule: input.schedule,
+      schemaVersion: KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION
+    });
+    return Object.freeze({
+      outcomeDirectory,
+      resumedOutcomes: new Map(),
+      runId: input.runId
+    });
+  }
+  if (await readOptionalJson(
+    resolve(input.outputDirectory, "summary.json"),
+    "knowledge_benchmark_retrieval_checkpoint_summary_invalid"
+  ) !== null) {
+    throw new Error("knowledge_benchmark_retrieval_checkpoint_already_complete");
+  }
+  const rawHeader = await readOptionalJson(
+    headerPath,
+    "knowledge_benchmark_retrieval_checkpoint_header_invalid"
+  );
+  if (rawHeader === null) {
+    throw new Error("knowledge_benchmark_retrieval_checkpoint_missing");
+  }
+  const header = decodeKnowledgeRetrievalCheckpointHeader(rawHeader);
+  if (header.manifestFingerprint !== input.manifestFingerprint ||
+    header.queryCount !== input.queries.length ||
+    !sameSchedule(header.schedule, input.schedule)) {
+    throw new Error("knowledge_benchmark_retrieval_checkpoint_mismatch");
+  }
+  await mkdir(outcomeDirectory, { recursive: true });
+  const resumedOutcomes = new Map<number, KnowledgeRetrievalCheckpointOutcome>();
+  for (let index = 0; index < input.queries.length; index += 1) {
+    const raw = await readOptionalJson(
+      checkpointOutcomePath(outcomeDirectory, index),
+      "knowledge_benchmark_retrieval_checkpoint_file_invalid"
+    );
+    if (raw === null) continue;
+    resumedOutcomes.set(index, decodeKnowledgeRetrievalCheckpointFile(
+      raw,
+      input.manifestFingerprint,
+      input.queries[index]!
+    ));
+  }
+  return Object.freeze({
+    outcomeDirectory,
+    resumedOutcomes,
+    runId: header.runId
+  });
 }
 
 function suiteFilePath(suiteId: KnowledgeSuiteId, manifestPath: string): string {
@@ -259,15 +460,20 @@ async function loadQueries(
     );
     queries = decodeRusScifactQueries(rows, qrels);
   } else {
-    queries = decodeConvFinQaQueries(parseJsonLines(
+    const rows = parseJsonLines(
       await readFile(
         suiteFilePath(suite.suiteId, "data/ConvFinQA/turn_0.jsonl"),
         "utf8"
       ),
       "knowledge_benchmark_queries_jsonl_invalid"
-    ));
+    );
+    if (rows.length !== suite.expectedQueryCount) {
+      throw new Error("knowledge_benchmark_query_count_mismatch");
+    }
+    queries = decodeConvFinQaQueries(rows);
   }
-  if (queries.length !== suite.expectedQueryCount) {
+  if (queries.length !==
+    suite.expectedQueryCount - suite.expectedExcludedQueryCount) {
     throw new Error("knowledge_benchmark_query_count_mismatch");
   }
   if (queries.some(({ text }) => text.length > KNOWLEDGE_QUERY_MAX_CHARACTERS)) {
@@ -311,6 +517,7 @@ async function createBenchmarkRun(
   knowledgeBaseId: string,
   suiteId: KnowledgeSuiteId
 ): Promise<string> {
+  failureStage = "run_admission_plan";
   const plan = await loadKnowledgeRunAdmissionPlan(prisma, {
     knowledgePlan: {
       baseIds: [knowledgeBaseId],
@@ -323,7 +530,9 @@ async function createBenchmarkRun(
   const runId = randomUUID();
   const chatId = randomUUID();
   const userMessageId = randomUUID();
+  failureStage = "run_admission_persist";
   await prisma.$transaction(async (tx) => {
+    failureStage = "run_admission_chat";
     await tx.chat.create({
       data: {
         id: chatId,
@@ -332,6 +541,7 @@ async function createBenchmarkRun(
         userId
       }
     });
+    failureStage = "run_admission_message";
     await tx.message.create({
       data: {
         chatId,
@@ -343,17 +553,20 @@ async function createBenchmarkRun(
         status: "complete"
       }
     });
+    failureStage = "run_admission_model_run";
     await tx.modelRun.create({
       data: {
         chatId,
         id: runId,
         modelId: "knowledge-benchmark",
+        normalizedRequest: {},
         provider: "knowledge-benchmark",
         status: "complete",
         userId,
         userMessageId
       }
     });
+    failureStage = "run_admission_bindings";
     await insertAcceptedKnowledgeRunBindings(tx, { plan, runId, userId });
   }, { timeout: 120_000 });
   return runId;
@@ -386,6 +599,7 @@ function rerankerManifestIdentity(
 function buildFrozenManifest(
   state: IngestStateFile,
   suite: KnowledgeSuiteManifest,
+  queries: readonly KnowledgeBenchmarkQuery[],
   configLabel: KnowledgeConfigLabel,
   binding: KnowledgeAcceptedBinding,
   runtime: Readonly<{
@@ -417,10 +631,13 @@ function buildFrozenManifest(
       `chunking-profile-v${KNOWLEDGE_CHUNKING_PROFILE_VERSION}`,
     embeddingModelId:
       `${runtime.provider}:${runtime.configuration.upstreamModelId}`,
+    excludedQueryCount: suite.expectedExcludedQueryCount,
     indexProfile: `vector-space:${binding.vectorSpaceFingerprint}`,
+    queryCount: queries.length,
     queryInstructionVersion: instructionTemplate === null
       ? "none"
       : `qi-${shortHash(instructionTemplate)}`,
+    querySetContentSha256: knowledgeQuerySetContentSha256(queries),
     querySplit: suite.querySplit,
     rankingProfile:
       `${KNOWLEDGE_RETRIEVAL_FUSION}:v=${KNOWLEDGE_RANKING_PROFILE_VERSION}:k=${KNOWLEDGE_RRF_K}`,
@@ -453,6 +670,7 @@ async function readCachedEmbedding(path: string): Promise<CachedEmbedding | null
 }
 
 async function main(): Promise<void> {
+  failureStage = "configuration";
   const options = parseCli(process.argv.slice(2));
   assertKnowledgeBenchmarkAck(process.env);
   loadEnvConfig(repositoryRoot, true, { error() {}, info() {} }, true);
@@ -469,16 +687,23 @@ async function main(): Promise<void> {
     await readFile(resolve(benchmarkRoot, "upstream.json"), "utf8")
   ) as unknown);
   const suite = manifest.suites[options.suiteId];
+  failureStage = "dataset";
   await verifySuiteDownloads(suite);
   const allQueries = await loadQueries(suite);
-  const queries = options.queryLimit === undefined
-    ? allQueries
-    : allQueries.slice(0, options.queryLimit);
+  const queries = selectKnowledgeBenchmarkQueries(
+    allQueries,
+    options.queryIds,
+    options.queryLimit
+  );
+  const scoreable = options.queryLimit === undefined && options.queryIds.length === 0;
+  failureStage = "ingest_state";
   const state = await loadIngestState(options.suiteId);
   const officialIdsBySourceId: Record<string, string[]> = {};
+  const sourceIdsByOfficialId: Record<string, string[]> = {};
   const knownOfficialIds = new Set<string>();
   for (const document of Object.values(state.documents)) {
     (officialIdsBySourceId[document.sourceId] ??= []).push(document.officialId);
+    (sourceIdsByOfficialId[document.officialId] ??= []).push(document.sourceId);
     knownOfficialIds.add(document.officialId);
   }
   for (const query of queries) {
@@ -489,14 +714,16 @@ async function main(): Promise<void> {
     }
   }
   const runStamp = new Date().toISOString().replaceAll(/[:.]/gu, "-");
-  const runId = `${options.suiteId}-${options.configLabel}-${runStamp}`;
+  const generatedRunId = `${options.suiteId}-${options.configLabel}-${runStamp}`;
   const outputDirectory = resolveKnowledgeBenchmarkOutputDirectory(
     benchmarkRoot,
-    options.outputDirectory ?? `results/${runId}`
+    options.outputDirectory ?? `results/${generatedRunId}`
   );
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
   try {
+    failureStage = "database_identity";
     await assertDatabaseIdentity(prisma);
+    failureStage = "run_admission";
     const benchmarkRunId = await createBenchmarkRun(
       prisma,
       state.userId!,
@@ -504,6 +731,7 @@ async function main(): Promise<void> {
       options.suiteId
     );
     const store = createPrismaKnowledgeRetrievalStore(prisma);
+    failureStage = "bindings";
     const bindings = await store.loadBindings({
       runId: benchmarkRunId,
       userId: state.userId!
@@ -517,41 +745,107 @@ async function main(): Promise<void> {
     if (vectorSpaces.size !== 1) {
       throw new Error("knowledge_benchmark_vector_space_ambiguous");
     }
+    failureStage = "embedding_runtime";
     const runtime = await createPrismaKnowledgeEmbeddingRuntime(prisma)
       .resolve(bindings[0]!);
     // Freeze one admitted installation role for the complete diagnostic run.
     // Each query still creates a fresh one-request stage, while mid-run Admin
     // changes cannot silently mix retrieval configurations in one manifest.
-    const reranker = await createPrismaKnowledgeRerankerRuntime(prisma).resolve();
+    failureStage = "reranker_runtime";
+    const configuredReranker = await createPrismaKnowledgeRerankerRuntime(prisma)
+      .resolve();
+    const reranker: KnowledgeRerankerRoleResolution =
+      options.diagnosticDisableReranker
+        ? Object.freeze({ kind: "absent" as const })
+        : configuredReranker;
     const frozenManifest = buildFrozenManifest(
       state,
       suite,
+      allQueries,
       options.configLabel,
       bindings[0]!,
       runtime,
       reranker
     );
+    const manifestFingerprint = knowledgeRunManifestFingerprint(frozenManifest);
+    const schedule = Object.freeze({
+      concurrency: options.concurrency,
+      queryStartIntervalMs: options.queryStartIntervalMs,
+      rateLimitCooldownMs: options.rateLimitCooldownMs
+    });
+    failureStage = "retrieval_checkpoint";
+    const checkpoint = scoreable
+      ? await prepareRetrievalCheckpoint({
+          manifestFingerprint,
+          outputDirectory,
+          queries,
+          resume: options.resume,
+          runId: generatedRunId,
+          schedule
+        })
+      : null;
+    const runId = checkpoint?.runId ?? generatedRunId;
     emit("run_started", {
       configLabel: options.configLabel,
       datasetFingerprint: knowledgeDatasetFingerprint(frozenManifest),
-      manifestFingerprint: knowledgeRunManifestFingerprint(frozenManifest),
+      diagnosticCandidateAudit: options.diagnosticCandidateAudit,
+      diagnosticRerankerDisabled: options.diagnosticDisableReranker,
+      manifestFingerprint,
       queryCount: queries.length,
       resultLabel: suite.resultLabel,
+      resumedQueryCount: checkpoint?.resumedOutcomes.size ?? 0,
       runId,
-      scoreable: options.queryLimit === undefined
+      scoreable,
+      schedule
     });
+    failureStage = "queries";
     await mkdir(cacheRoot, { recursive: true });
     let cacheHits = 0;
     let nextProgressAt = 0;
     let completed = 0;
+    let resumedQueryCount = 0;
+    const rerankerFallbackReasons = new Map<string, number>();
+    const requestPacer = createKnowledgeBenchmarkRequestPacer({
+      intervalMs: options.queryStartIntervalMs
+    });
     // Public suites contain distinct query ids with identical query text.
     // Coalesce concurrent misses so one cache key produces exactly one paid
     // embedding request and every identical query uses the same vector.
     const pendingEmbeddings = new Map<string, Promise<CachedEmbedding>>();
+    const recordFallbackReason = (fallbackReason: string | null): void => {
+      if (!fallbackReason) return;
+      rerankerFallbackReasons.set(
+        fallbackReason,
+        (rerankerFallbackReasons.get(fallbackReason) ?? 0) + 1
+      );
+    };
+    const emitProgress = (): void => {
+      if (Date.now() < nextProgressAt) return;
+      emit("retrieval_progress", {
+        cacheHits,
+        completedQueries: completed,
+        rerankerFallbackReasons: Object.fromEntries(
+          [...rerankerFallbackReasons].sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0)
+        ),
+        resumedQueryCount,
+        totalQueries: queries.length
+      });
+      nextProgressAt = Date.now() + 15_000;
+    };
     const outcomes = await mapConcurrentOrdered(
       queries,
       options.concurrency,
-      async (query): Promise<KnowledgeQueryOutcome> => {
+      async (query, queryIndex): Promise<KnowledgeRetrievalCheckpointOutcome> => {
+        const resumed = checkpoint?.resumedOutcomes.get(queryIndex);
+        if (resumed) {
+          resumedQueryCount += 1;
+          completed += 1;
+          recordFallbackReason(resumed.rerankerDiagnostic.fallbackReason);
+          emitProgress();
+          return resumed;
+        }
+        await requestPacer.admit();
         const cachePath = resolve(
           cacheRoot,
           `${queryEmbeddingCacheKey(frozenManifest, query.text)}.json`
@@ -623,10 +917,110 @@ async function main(): Promise<void> {
             vector: cached!.vector
           }))
         });
-        const searchMs = Date.now() - searchStartedAt;
         const rerankerEvidence = result.rerankerBinding;
+        if (options.diagnosticCandidateAudit) {
+          const candidateOrder = result.rankingEvidence?.candidateOrder;
+          if (!candidateOrder) {
+            throw new Error("knowledge_benchmark_candidate_audit_unavailable");
+          }
+          const relevantSourceIds = Object.keys(query.relevant).flatMap(
+            (officialId) => sourceIdsByOfficialId[officialId] ?? []
+          );
+          if (relevantSourceIds.length === 0) {
+            throw new Error("knowledge_benchmark_relevant_document_not_ingested");
+          }
+          const relevantPassages = await prisma.$queryRaw<Array<{
+            chunkId: string;
+            sourceId: string;
+          }>>(Prisma.sql`
+            SELECT
+              passage."id" AS "chunkId",
+              version."sourceId" AS "sourceId"
+            FROM "KnowledgeArtifactPassageIndex" AS passage
+            INNER JOIN "KnowledgeHierarchicalIndexArtifact" AS hierarchy
+              ON hierarchy."id" = passage."indexArtifactId"
+            INNER JOIN "KnowledgeSourceIndexArtifact" AS artifact
+              ON artifact."id" = hierarchy."sourceArtifactId"
+             AND artifact."sourceVersionId" = hierarchy."sourceVersionId"
+            INNER JOIN "KnowledgeSourceVersion" AS version
+              ON version."id" = artifact."sourceVersionId"
+            WHERE version."sourceId" IN (${Prisma.join(relevantSourceIds)})
+          `);
+          const candidateRankByChunkId = new Map(
+            candidateOrder.map((chunkId, index) => [
+              chunkId,
+              index + 1
+            ])
+          );
+          const preRerankRankByChunkId = new Map(
+            (rerankerEvidence?.orderedCandidateChunkIds ?? []).map((chunkId, index) => [
+              chunkId,
+              index + 1
+            ])
+          );
+          const ranksBySourceId = new Map<string, number[]>();
+          const preRerankRanksBySourceId = new Map<string, number[]>();
+          for (const passage of relevantPassages) {
+            const rank = candidateRankByChunkId.get(passage.chunkId);
+            if (rank !== undefined) {
+              const ranks = ranksBySourceId.get(passage.sourceId) ?? [];
+              ranks.push(rank);
+              ranksBySourceId.set(passage.sourceId, ranks);
+            }
+            const preRerankRank = preRerankRankByChunkId.get(passage.chunkId);
+            if (preRerankRank !== undefined) {
+              const ranks = preRerankRanksBySourceId.get(passage.sourceId) ?? [];
+              ranks.push(preRerankRank);
+              preRerankRanksBySourceId.set(passage.sourceId, ranks);
+            }
+          }
+          const relevantCandidateRanks = Object.fromEntries(
+            Object.keys(query.relevant).sort().map((officialId) => {
+              const ranks = (sourceIdsByOfficialId[officialId] ?? []).flatMap(
+                (sourceId) => ranksBySourceId.get(sourceId) ?? []
+              );
+              return [officialId, ranks.length === 0 ? null : Math.min(...ranks)];
+            })
+          );
+          const relevantPreRerankRanks = Object.fromEntries(
+            Object.keys(query.relevant).sort().map((officialId) => {
+              const ranks = (sourceIdsByOfficialId[officialId] ?? []).flatMap(
+                (sourceId) => preRerankRanksBySourceId.get(sourceId) ?? []
+              );
+              return [officialId, ranks.length === 0 ? null : Math.min(...ranks)];
+            })
+          );
+          emit("candidate_audit", {
+            candidateCount: candidateOrder.length,
+            queryId: query.officialId,
+            relevantCandidateRanks,
+            relevantPreRerankRanks
+          });
+        }
+        const searchMs = Date.now() - searchStartedAt;
         if (reranker.kind === "ready" && !rerankerEvidence) {
           throw new Error("knowledge_benchmark_reranker_evidence_missing");
+        }
+        const rerankerDiagnostic = Object.freeze(reranker.kind === "absent"
+          ? {
+              fallbackReason: null,
+              status: "disabled" as const,
+              timedOut: false
+            }
+          : reranker.kind === "unavailable"
+            ? {
+                fallbackReason: "reranker_model_unavailable",
+                status: "degraded" as const,
+                timedOut: false
+              }
+            : {
+                fallbackReason: rerankerEvidence!.fallbackReason,
+                status: rerankerEvidence!.status,
+                timedOut: rerankerEvidence!.timedOut
+              });
+        recordFallbackReason(rerankerDiagnostic.fallbackReason);
+        if (rerankerDiagnostic.fallbackReason === "rerank_provider_rate_limited") {
+          requestPacer.defer(options.rateLimitCooldownMs);
         }
         const rankedDocumentIds = expandRankedDocuments(
           // The product result order is authoritative after hosted reranking.
@@ -641,16 +1035,7 @@ async function main(): Promise<void> {
         );
         const rerankRequestMade = rerankerEvidence !== undefined &&
           rerankerEvidence.inputCandidateCount > 1;
-        completed += 1;
-        if (Date.now() >= nextProgressAt) {
-          emit("retrieval_progress", {
-            cacheHits,
-            completedQueries: completed,
-            totalQueries: queries.length
-          });
-          nextProgressAt = Date.now() + 15_000;
-        }
-        return Object.freeze({
+        const outcome = Object.freeze({
           candidatesAfterRerank: result.passages.length,
           candidatesBeforeRerank:
             rerankerEvidence?.inputCandidateCount ?? result.candidateCount,
@@ -667,6 +1052,7 @@ async function main(): Promise<void> {
               rerankerEvidence?.status === "partial"),
           rerankFallback: reranker.kind === "unavailable" ||
             rerankerEvidence?.status === "degraded",
+          rerankerDiagnostic,
           rerankMs: rerankRequestMade
             ? rerankerEvidence?.durationMs ?? null
             : null,
@@ -677,23 +1063,46 @@ async function main(): Promise<void> {
           }),
           retrievalMs: embedMs + searchMs
         });
+        if (checkpoint) {
+          await writeJsonAtomic(
+            checkpointOutcomePath(checkpoint.outcomeDirectory, queryIndex),
+            {
+              manifestFingerprint,
+              outcome,
+              schemaVersion: KNOWLEDGE_RETRIEVAL_CHECKPOINT_SCHEMA_VERSION
+            }
+          );
+        }
+        completed += 1;
+        emitProgress();
+        return outcome;
       }
     );
     const metrics = aggregateKnowledgeSuiteMetrics(outcomes);
+    const embedCacheMisses = metrics.usage.embedding.requests;
+    const embedCacheHits = queries.length - embedCacheMisses;
+    failureStage = "results";
     await mkdir(outputDirectory, { recursive: true });
-    if (options.queryLimit === undefined) {
+    if (scoreable) {
       await writeJsonAtomic(resolve(outputDirectory, "summary.json"), {
         configLabel: options.configLabel,
         createdAt: new Date().toISOString(),
         datasetFingerprint: knowledgeDatasetFingerprint(frozenManifest),
         execution: {
-          embedCacheHits: cacheHits,
-          embedCacheMisses: queries.length - cacheHits,
+          embedCacheHits,
+          embedCacheMisses,
+          queryStartIntervalMs: options.queryStartIntervalMs,
+          rateLimitCooldownMs: options.rateLimitCooldownMs,
+          rerankerFallbackReasons: Object.fromEntries(
+            [...rerankerFallbackReasons].sort(([left], [right]) =>
+              left < right ? -1 : left > right ? 1 : 0)
+          ),
+          resumedQueryCount,
           uniqueSources: Object.keys(officialIdsBySourceId).length,
           zeroOcrAsserted: true
         },
         manifest: frozenManifest,
-        manifestFingerprint: knowledgeRunManifestFingerprint(frozenManifest),
+        manifestFingerprint,
         metrics,
         resultLabel: suite.resultLabel,
         runId,
@@ -702,18 +1111,20 @@ async function main(): Promise<void> {
     }
     // Audit projection with official public dataset ids only.
     await writeJsonAtomic(resolve(outputDirectory, "rankings.json"), {
-      manifestFingerprint: knowledgeRunManifestFingerprint(frozenManifest),
+      manifestFingerprint,
       queries: outcomes.map((outcome) => ({
         queryId: outcome.queryId,
         rankedDocumentIds: outcome.rankedDocumentIds,
-        relevantDocumentIds: Object.keys(outcome.relevant).sort()
+        relevantDocumentIds: Object.keys(outcome.relevant).sort(),
+        reranker: outcome.rerankerDiagnostic
       })),
       runId,
+      schedule,
       schemaVersion: RANKINGS_SCHEMA_VERSION,
-      scoreable: options.queryLimit === undefined
+      scoreable
     });
     emit("run_complete", {
-      cacheHits,
+      cacheHits: embedCacheHits,
       exactRelevantHitRate: metrics.exactRelevantHitRate,
       mrr10: metrics.mrr10,
       ndcg10: metrics.ndcg10,
@@ -721,10 +1132,15 @@ async function main(): Promise<void> {
       recall10: metrics.recall10,
       recall50: metrics.recall50,
       rerankFallbackRate: metrics.rerankFallbackRate,
+      rerankerFallbackReasons: Object.fromEntries(
+        [...rerankerFallbackReasons].sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0)
+      ),
+      resumedQueryCount,
       retrievalMsP50: metrics.retrievalMsP50,
       retrievalMsP95: metrics.retrievalMsP95,
       runId,
-      scoreable: options.queryLimit === undefined
+      scoreable
     });
   } finally {
     await prisma.$disconnect();
@@ -735,7 +1151,7 @@ main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : "unknown";
   const code = /^[A-Za-z0-9_:,.-]{1,200}$/u.test(message)
     ? message
-    : "knowledge_benchmark_retrieve_failed";
+    : `knowledge_benchmark_retrieve_failed:${failureStage}`;
   emit("retrieve_failed", { code });
   process.exitCode = 1;
 });

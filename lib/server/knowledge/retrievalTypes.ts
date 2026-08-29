@@ -56,6 +56,12 @@ export const KNOWLEDGE_PRIOR_CONTENT_HASH_MAX = 256;
 export const KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES = 48 * 1024;
 export const KNOWLEDGE_SCOPE_MAX_BINDINGS = 128;
 export const KNOWLEDGE_SCOPE_MAX_SOURCES = 999;
+export const KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER = "eager_v1" as const;
+export const KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED = "disclosed_v1" as const;
+
+export type KnowledgeSourceBindingStrategy =
+  | typeof KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
+  | typeof KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED;
 
 export type KnowledgeExactCaseMode = "insensitive" | "sensitive";
 export type KnowledgeExactMatchMode = "pattern" | "phrase" | "token";

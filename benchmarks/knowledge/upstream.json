@@ -7,6 +7,7 @@
       "querySplit": "test",
       "resultLabel": "RusBEIR / rus-SciFact / test",
       "expectedCorpusDocumentCount": 5183,
+      "expectedExcludedQueryCount": 0,
       "expectedQueryCount": 300,
       "licenseNote": "MIT per the upstream Hugging Face dataset cards (kaengreg/rus-scifact, kaengreg/rus-scifact-qrels).",
       "sources": [
@@ -44,7 +45,8 @@
       "dataset": "ConvFinQA",
       "querySplit": "turn_0",
       "resultLabel": "T2-RAGBench / ConvFinQA / turn_0",
-      "expectedCorpusDocumentCount": null,
+      "expectedCorpusDocumentCount": 1806,
+      "expectedExcludedQueryCount": 5,
       "expectedQueryCount": 3458,
       "licenseNote": "CC-BY-4.0 per the upstream Hugging Face dataset card (G4KMU/t2-ragbench). turn_0 is the only official ConvFinQA query split in this artifact; there is no official train/dev/test split for ConvFinQA.",
       "sources": [
