@@ -10,8 +10,10 @@ The qualification profiles use an explicitly selected reviewed System Model
 through codex-lb for the answer and structured Memory roles: `gpt-5.6-luna` is
 the frozen default, and `gpt-5.6-sol` is the only tracked alternate.
 `qwen/qwen3-embedding-8b` through OpenRouter handles document and query
-embeddings, and the installation's selected dedicated reranker is used when
-one is configured. The `official` profile intentionally disables
+embeddings. The current qualification freezes the dedicated reranker route as
+Voyage Rerank 2.5, Cohere Rerank 4 Pro, then Qwen3 Reranker 8B; every fallback
+restarts the whole logical rerank so model score scales are never mixed. The
+`official` profile intentionally disables
 automatic fact learning and pattern synthesis so the result measures recall
 from imported chat history and remains comparable with the upstream oracle.
 Each official timestamped session becomes one ordinary source chat;
@@ -84,7 +86,7 @@ docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compos
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-luna
 docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-embedding qwen/qwen3-embedding-8b
-docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker qwen/qwen3-reranker-8b
+docker compose -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-reranker voyageai/rerank-2.5
 ```
 
 Do not repeat the bootstrap command while benchmark users exist. Restart only
@@ -102,13 +104,17 @@ AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-b
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE --sample-size 1
 ```
 
-FU-09's content-free blind selection is frozen as
-`qualifications/fu09-blind-50-v1.json`. It selects 50 previously unused case
-IDs across all six upstream categories and fixes Luna, the official profile,
-provider targets, timeouts, and conservative concurrency. Run that exact batch
-with `--qualification-manifest fu09-blind-50-v1`; selection or runtime override
-flags are rejected when the manifest is present. The paid/disposable guards
-remain mandatory and the manifest does not authorize a provider run.
+FU-09's original content-free selection remains frozen as the provenance-only
+`qualifications/fu09-blind-50-v1.json`. The current reader-first qualification
+is `qualifications/fu2-reader-first-blind-50-v1.json`: it reuses those exact 50
+case IDs across all six upstream categories while freezing Luna, the official
+profile, the ordered three-model reranker route and per-model floors, case
+concurrency two, session concurrency sixteen, and all other runtime bounds.
+Run it with `--qualification-manifest fu2-reader-first-blind-50-v1`; selection
+or runtime override flags are rejected when the manifest is present. The old
+single-Qwen runtime manifest fails closed under the new route. The
+paid/disposable guards remain mandatory and no manifest authorizes provider
+traffic by itself.
 
 Use repeated `--question-id ID` arguments for an explicit ad hoc set, or combine
 `--sample-size N --seed SEED` for another reproducible qualification sample.

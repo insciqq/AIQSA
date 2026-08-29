@@ -235,6 +235,11 @@ type BenchmarkRerankerRole = Readonly<{
   upstreamModelId: string;
 }>;
 
+type QualificationRerankerRouteEntry = Readonly<{
+  relevanceScoreFloor: number | null;
+  upstreamModelId: string;
+}>;
+
 type ProviderRoles = Readonly<{
   reranker: BenchmarkRerankerRole;
   rerankerRoute: readonly BenchmarkRerankerRole[];
@@ -511,8 +516,15 @@ function applyQualificationManifest(
   options: CliOptions,
   manifest: LongMemEvalQualificationManifest
 ): CliOptions {
+  const manifestRoute = qualificationManifestRerankerRoute(manifest);
+  const activeRoute = approvedRerankerDeployments.map(({ preset }) => ({
+    relevanceScoreFloor: preset.relevanceScoreFloor,
+    upstreamModelId: preset.upstreamModelId
+  }));
   if (manifest.runtime.embedding.upstreamModelId !== qualificationEmbeddingModelId ||
-    manifest.runtime.reranker.upstreamModelId !== legacyQualificationRerankerModelId ||
+    manifest.id !== "fu2-reader-first-blind-50-v1" ||
+    manifest.runtime.reranker.policyVersion !== RERANKER_ROUTE_POLICY_VERSION ||
+    !qualificationRerankerRoutesMatch(manifestRoute, activeRoute) ||
     manifest.runtime.systemModel.reasoningEffort !==
       qualificationSystemReasoningEffort ||
     manifest.runtime.workerConcurrency.global !== qualificationMemoryJobParallelism ||
@@ -536,6 +548,41 @@ function applyQualificationManifest(
     sessionConcurrency: manifest.runtime.sessionConcurrency,
     systemModelId: manifest.runtime.systemModel.upstreamModelId
   });
+}
+
+function qualificationManifestRerankerRoute(
+  manifest: LongMemEvalQualificationManifest
+): readonly QualificationRerankerRouteEntry[] {
+  if (manifest.id === "fu09-blind-50-v1") {
+    return Object.freeze([Object.freeze({
+      relevanceScoreFloor: null,
+      upstreamModelId: legacyQualificationRerankerModelId
+    })]);
+  }
+  return manifest.runtime.reranker.route;
+}
+
+function qualificationRerankerRoutesMatch(
+  expected: readonly QualificationRerankerRouteEntry[],
+  actual: readonly QualificationRerankerRouteEntry[]
+): boolean {
+  return expected.length === actual.length && expected.every((entry, index) => {
+    const candidate = actual[index];
+    return candidate?.upstreamModelId === entry.upstreamModelId &&
+      candidate.relevanceScoreFloor === entry.relevanceScoreFloor;
+  });
+}
+
+function assertQualificationResolvedRerankerRoute(
+  manifest: LongMemEvalQualificationManifest,
+  roles: ProviderRoles
+): void {
+  if (!qualificationRerankerRoutesMatch(
+    qualificationManifestRerankerRoute(manifest),
+    roles.rerankerRoute
+  )) {
+    throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
+  }
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -2835,6 +2882,9 @@ async function main(): Promise<void> {
     await assertDatabaseIdentity(prisma);
     const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
     const roles = await resolveProviderRoles(prisma, options.systemModelId);
+    if (qualificationManifest) {
+      assertQualificationResolvedRerankerRoute(qualificationManifest, roles);
+    }
     const selection = selectLongMemEvalCases(allCases, {
       ...(options.questionIds.length > 0
         ? { questionIds: options.questionIds }

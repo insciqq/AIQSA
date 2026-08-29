@@ -623,6 +623,7 @@ describe("LongMemEval adapter contract", () => {
       sessionCompletionState: "READY",
       snapshotMs: 20,
       speculativeBaselineUsed: null,
+      speculativeHybridUsed: null,
       targetTokens: 4_000,
       temporalFilteredCandidateCount: 0,
       temporalParserConfidence: null,

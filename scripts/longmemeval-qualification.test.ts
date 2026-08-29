@@ -28,6 +28,37 @@ describe("LongMemEval frozen qualification manifest", () => {
     );
   });
 
+  it("freezes the reader-first reranker route and case concurrency two", async () => {
+    const [legacy, manifest] = await Promise.all([
+      loadLongMemEvalQualificationManifest("fu09-blind-50-v1"),
+      loadLongMemEvalQualificationManifest("fu2-reader-first-blind-50-v1")
+    ]);
+
+    expect(manifest.runtime.caseConcurrency).toBe(2);
+    expect(manifest.runtime.sessionConcurrency).toBe(16);
+    expect(manifest.runtime.reranker).toEqual({
+      policyVersion: "openrouter-reranker-route-v1",
+      provider: "OpenRouter",
+      route: [
+        {
+          relevanceScoreFloor: null,
+          upstreamModelId: "voyageai/rerank-2.5"
+        },
+        {
+          relevanceScoreFloor: null,
+          upstreamModelId: "cohere/rerank-4-pro"
+        },
+        {
+          relevanceScoreFloor: 0.01,
+          upstreamModelId: "qwen/qwen3-reranker-8b"
+        }
+      ]
+    });
+    expect(manifest.selection).toEqual(legacy.selection);
+    expect(manifest.source.appCommit)
+      .toBe("b0a8f387962592fd70d8a23dd18b31b04a12f8be");
+  });
+
   it("binds every selected id to its frozen upstream category", async () => {
     const manifest = await loadLongMemEvalQualificationManifest("fu09-blind-50-v1");
     const metadata = manifest.selection.cases.map((entry) => ({ ...entry }));
@@ -45,5 +76,27 @@ describe("LongMemEval frozen qualification manifest", () => {
 
     expect(() => decodeLongMemEvalQualificationManifest(drifted))
       .toThrow("longmemeval_qualification_manifest_invalid");
+  });
+
+  it("rejects reader-first reranker route drift", async () => {
+    const manifest = await loadLongMemEvalQualificationManifest(
+      "fu2-reader-first-blind-50-v1"
+    );
+    if (manifest.id !== "fu2-reader-first-blind-50-v1") {
+      throw new Error("reader_first_manifest_expected");
+    }
+    const drifted: unknown = {
+      ...manifest,
+      runtime: {
+        ...manifest.runtime,
+        reranker: {
+          ...manifest.runtime.reranker,
+          route: [...manifest.runtime.reranker.route].reverse()
+        }
+      }
+    };
+
+    expect(() => decodeLongMemEvalQualificationManifest(drifted))
+      .toThrow();
   });
 });

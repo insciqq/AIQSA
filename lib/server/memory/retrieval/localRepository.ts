@@ -93,7 +93,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v27";
+  "memory-local-retrieval-repository-v28";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
@@ -4745,6 +4745,27 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       };
     }
   };
+  const retrieveSpeculatively = async (
+    input: MemoryLocalRetrievalInput,
+    parentSignal?: AbortSignal
+  ): Promise<MemoryLocalRetrievalResult> => {
+    const controller = new AbortController();
+    const forwardAbort = () => {
+      if (!controller.signal.aborted) controller.abort(parentSignal?.reason);
+    };
+    if (parentSignal?.aborted) forwardAbort();
+    else parentSignal?.addEventListener("abort", forwardAbort, { once: true });
+    const timeout = !controller.signal.aborted
+      ? setTimeout(() => controller.abort({ code: "memory_speculative_baseline_settle" }),
+          MEMORY_SPECULATIVE_BASELINE_SETTLE_MS)
+      : null;
+    try {
+      return await repository.retrieve({ ...input, settleSignal: controller.signal });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      parentSignal?.removeEventListener("abort", forwardAbort);
+    }
+  };
   return Object.freeze({
     ...repository,
     /** Reader-first latency hedge. This deliberately executes only the
@@ -4755,22 +4776,17 @@ export function createPrismaLocalMemoryRetrievalRepository(client: PrismaClient 
       input: MemoryLocalRetrievalInput,
       parentSignal?: AbortSignal
     ) {
-      const controller = new AbortController();
-      const forwardAbort = () => {
-        if (!controller.signal.aborted) controller.abort(parentSignal?.reason);
-      };
-      if (parentSignal?.aborted) forwardAbort();
-      else parentSignal?.addEventListener("abort", forwardAbort, { once: true });
-      const timeout = !controller.signal.aborted
-        ? setTimeout(() => controller.abort({ code: "memory_speculative_baseline_settle" }),
-            MEMORY_SPECULATIVE_BASELINE_SETTLE_MS)
-        : null;
-      try {
-        return await repository.retrieve({ ...input, settleSignal: controller.signal });
-      } finally {
-        if (timeout) clearTimeout(timeout);
-        parentSignal?.removeEventListener("abort", forwardAbort);
-      }
+      return retrieveSpeculatively(input, parentSignal);
+    },
+    /** Once the original-query embedding is already ready, hedge the same
+     * deterministic reader plan with its dense lanes. Provider work remains
+     * outside the repository; this method only owns bounded local settlement. */
+    async retrieveSpeculativeHybrid(
+      input: MemoryLocalRetrievalInput,
+      parentSignal?: AbortSignal
+    ) {
+      if (!input.vector) throw new Error("memory_speculative_hybrid_vector_missing");
+      return retrieveSpeculatively(input, parentSignal);
     }
   });
 }

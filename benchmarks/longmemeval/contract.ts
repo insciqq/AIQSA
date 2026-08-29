@@ -384,6 +384,7 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   sessionCompletionState: string | null;
   snapshotMs: number | null;
   speculativeBaselineUsed: boolean | null;
+  speculativeHybridUsed: boolean | null;
   targetTokens: number | null;
   temporalFilteredCandidateCount: number | null;
   temporalParserConfidence: number | null;
@@ -689,6 +690,9 @@ export function sanitizeLongMemEvalRetrievalAudit(
     snapshotMs: nonNegativeInteger(budget.snapshotMs),
     speculativeBaselineUsed: typeof component.speculativeBaselineUsed === "boolean"
       ? component.speculativeBaselineUsed
+      : null,
+    speculativeHybridUsed: typeof component.speculativeHybridUsed === "boolean"
+      ? component.speculativeHybridUsed
       : null,
     targetTokens: nonNegativeInteger(budget.targetTokens),
     temporalFilteredCandidateCount:
