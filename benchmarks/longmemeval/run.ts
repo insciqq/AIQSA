@@ -101,6 +101,7 @@ import {
   evaluateLongMemEvalComponentMetrics,
   longMemEvalEmbeddingBatchSizeDistribution,
   longMemEvalExpectedUtilityModelId,
+  longMemEvalHybridRebuildFailed,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
@@ -1508,10 +1509,11 @@ async function waitForHybridIndex(
 ): Promise<Readonly<{ activeChunks: number; hybridEntries: number }>> {
   const deadline = Date.now() + timeoutMs;
   let nextProgressAt = 0;
+  const rebuildRepository = createPrismaMemoryRebuildRepository(prisma);
   while (Date.now() < deadline) {
     const [
       settings,
-      rebuildJob,
+      rebuildStatus,
       activeJobs,
       failedEmbeddingJobs,
       activeChunks,
@@ -1522,10 +1524,7 @@ async function waitForHybridIndex(
           select: { activeIndexGenerationId: true },
           where: { userId }
         }),
-        prisma.memoryJob.findUnique({
-          select: { state: true },
-          where: { id: rebuildJobId }
-        }),
+        rebuildRepository.status(userId, rebuildJobId),
         prisma.memoryJob.count({
           where: { state: { in: [...activeJobStates] }, userId }
         }),
@@ -1542,7 +1541,8 @@ async function waitForHybridIndex(
           where: { logicalRole: "MEMORY_DOCUMENT_EMBED", userId }
         })
       ]);
-    if (!rebuildJob || unsuccessfulJobStates.has(rebuildJob.state)) {
+    const rebuildState = rebuildStatus?.state ?? null;
+    if (longMemEvalHybridRebuildFailed(rebuildState)) {
       throw new Error("longmemeval_hybrid_rebuild_failed");
     }
     if (failedEmbeddingJobs > 0) {
@@ -1567,7 +1567,7 @@ async function waitForHybridIndex(
       throw new Error("longmemeval_embedding_model_mismatch");
     }
     if (generation?.state === "ACTIVE" && generation.indexMode === "HYBRID" &&
-      rebuildJob.state === "SUCCEEDED" && activeJobs === 0 &&
+      rebuildState === "SUCCEEDED" && activeJobs === 0 &&
       activeChunks > 0 && entries.length > 0 &&
       entries.every(({ embeddingState }) => embeddingState === "READY") &&
       successfulEmbeddings.length > 0) {

@@ -13,6 +13,7 @@ import {
   longMemEvalQuestionPrompt,
   longMemEvalEmbeddingBatchSizeDistribution,
   longMemEvalExpectedUtilityModelId,
+  longMemEvalHybridRebuildFailed,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
@@ -45,6 +46,15 @@ function fixture(questionId = "question-1") {
 }
 
 describe("LongMemEval adapter contract", () => {
+  it("fails immediately on the authoritative rebuild status", () => {
+    expect(longMemEvalHybridRebuildFailed(null)).toBe(true);
+    expect(longMemEvalHybridRebuildFailed("FAILED")).toBe(true);
+    expect(longMemEvalHybridRebuildFailed("STALE")).toBe(true);
+    expect(longMemEvalHybridRebuildFailed("CANCELLED")).toBe(true);
+    expect(longMemEvalHybridRebuildFailed("CATCHING_UP")).toBe(false);
+    expect(longMemEvalHybridRebuildFailed("SUCCEEDED")).toBe(false);
+  });
+
   it("requires USED Memory outcomes independently of oracle scoring", () => {
     expect(longMemEvalQualificationGate({
       executionFailures: 0,

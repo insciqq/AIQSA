@@ -2,6 +2,11 @@ name: aiqsa-memory-benchmark-second
 
 services:
   app:
+    command: >-
+      sh -c "find /app/.next -mindepth 1 -delete &&
+      npm run db:generate &&
+      npm run db:migrate:deploy &&
+      exec npm run dev"
     container_name: aiqsa-memory-benchmark-second-app
     environment:
       AIQSA_APP_BASE_URL: http://localhost:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}
@@ -11,8 +16,11 @@ services:
       AIQSA_MEMORY_JOB_PARALLELISM: "8"
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "4"
       DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
+      NODE_OPTIONS: "--max-old-space-size=2560"
+    mem_limit: ${AIQSA_MEMORY_BENCHMARK_APP_MEMORY_LIMIT:-4g}
     ports: !override
       - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}:3000"
+    restart: unless-stopped
 
   docling:
     container_name: aiqsa-memory-benchmark-second-docling
